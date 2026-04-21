@@ -185,7 +185,7 @@ def test_invoke_gemini_appends_additional_instruction_when_provided(
     result = agents.invoke_gemini(
         "PE",
         HANDOFF_PATH,
-        additional_instruction="Scope the next epic instead of repeating Epic-Close.",
+        additional_instruction="Scope the next epic instead of repeating finalizer.",
     )
 
     assert result.exit_code == 0
@@ -199,7 +199,7 @@ def test_invoke_gemini_appends_additional_instruction_when_provided(
         (
             f"{config.GEMINI_PE_MENTION} Execute your assigned task based on the "
             f"provided handoff document. @{ABSOLUTE_HANDOFF_PATH} Additional instruction: "
-            "Scope the next epic instead of repeating Epic-Close."
+            "Scope the next epic instead of repeating finalizer."
         ),
     ]
 
@@ -2010,7 +2010,7 @@ def test_invoke_claude_subagent_preserves_ledger_parser_contract(
     parsed = ledger._parse_subagent_output(result.stdout)
 
     assert parsed.ledger_updated is True
-    assert parsed.claude_md_updated is True
+    assert parsed.project_state_updated is True
     assert parsed.handoff_rewritten is True
     assert parsed.epic_closed == "Dispatch Loop Runtime Hardening"
     assert parsed.next_epic == "Web Search During Analysis"

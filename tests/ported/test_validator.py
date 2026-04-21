@@ -293,7 +293,7 @@ def test_validate_handoff_warns_only_for_long_frontmatter_reason(
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Claude Audit Report
+            """# Auditor Report
 
 **Agent:** auditor (auditor)
 **Latest verified repo SHA:** `02b475f`
@@ -482,13 +482,13 @@ def test_validate_handoff_rejects_epic_close_type_without_audit_or_ledger(
     assert any("frontmatter_routing_rule" in error for error in result.errors)
 
 
-def test_validate_handoff_rejects_claude_ledger_without_epic_close_type(
+def test_validate_handoff_rejects_finalizer_without_epic_close_type(
     tmp_path: Path,
 ) -> None:
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Claude Audit Report
+            """# Auditor Report
 
 **Agent:** auditor (auditor)
 **Latest verified repo SHA:** `82ce839`
@@ -628,7 +628,7 @@ All required checks passed.
 auditor: update `PROJECT_STATE.md`, update `PROJECT_STATE.md`, commit, and push.
 
 Canonical Routing Instruction:
-Next: ClaudeCode
+Next: auditor
 """,
             next_agent="finalizer",
             reason="Epic audit approved; ledger update requested.",
@@ -1099,13 +1099,13 @@ def test_validate_handoff_rejects_planner_self_loop_back_to_gemini_pe(
     assert any("planner_self_loop" in error for error in result.errors)
 
 
-def test_validate_handoff_rejects_auditor_self_loop_back_to_claude_code(
+def test_validate_handoff_rejects_auditor_self_loop_back_to_auditor(
     tmp_path: Path,
 ) -> None:
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Claude Audit Handback
+            """# Auditor Handback
 
 **Agent:** auditor (auditor)
 **Latest verified repo SHA:** `59206fb3f3ac027ef3ba07f4d7c8db0410edc926`

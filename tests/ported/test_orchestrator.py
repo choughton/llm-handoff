@@ -1938,8 +1938,7 @@ producer: auditor
             subagent_exit_code=0,
             stdout="",
             stderr="",
-            ledger_updated=True,
-            claude_md_updated=True,
+            project_state_updated=True,
             handoff_rewritten=False,
         )
 

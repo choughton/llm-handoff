@@ -42,7 +42,7 @@ def test_run_epic_close_invokes_ledger_updater_and_parses_success(
         )
     )
 
-    monkeypatch.setattr(ledger, "invoke_claude_subagent", invoke_mock)
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
 
     result = ledger.run_epic_close(log=log_mock)
 
@@ -51,16 +51,12 @@ def test_run_epic_close_invokes_ledger_updater_and_parses_success(
     assert result.push_status == "PUSHED"
     assert result.push_detail == "origin/main now matches HEAD."
     assert result.ledger_updated is True
-    assert result.claude_md_updated is True
+    assert result.project_state_updated is True
     assert result.handoff_rewritten is True
     assert result.epic_closed == "Security & Supply Chain Hardening (Semgrep)"
     assert result.next_epic == "planner"
     assert result.audit_sha == AUDIT_SHA
-    invoke_mock.assert_called_once_with(
-        subagent_name="ledger-updater",
-        prompt=EXPECTED_PROMPT,
-        log=log_mock,
-    )
+    invoke_mock.assert_called_once_with("ledger-updater", EXPECTED_PROMPT, log=log_mock)
 
 
 def test_run_epic_close_logs_exit_code_to_dispatch_logger(
@@ -76,7 +72,7 @@ def test_run_epic_close_logs_exit_code_to_dispatch_logger(
         )
     )
 
-    monkeypatch.setattr(ledger, "invoke_claude_subagent", invoke_mock)
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
 
     ledger.run_epic_close(log=log_mock)
 
@@ -108,14 +104,14 @@ def test_run_epic_close_parses_audit_sha_from_rich_line(
             stdout="""LEDGER UPDATED: YES
 PROJECT_STATE.MD UPDATED: YES
 HANDOFF.MD REWRITTEN: NO
-EPIC CLOSED: Dispatch Gemini Stream-JSON + Default Codex Resume
-NEXT EPIC (routed to Gemini-PE): None (Gemini-PE to scope from docs/uat/EPICS_UAT_REMEDIATION_2026-04-18.md)
+EPIC CLOSED: Dispatch Stream-JSON + Default Backend Resume
+NEXT EPIC (routed to planner): None (planner to scope from docs/PROJECT_EPICS.md)
 AUDIT SHA: 82ce839 (impl), 3407c66 (tests), audit recorded at 15d9118
 COMMIT SHA: bc1d3d5
 PUSH RESULT: PUSHED (2ead6e2..bc1d3d5 main -> main)
 CHANGES MADE:
-- PROJECT_STATE.md: appended one-line entry for Dispatch Gemini Stream-JSON + Default Codex Resume
-- PROJECT_STATE.md: advanced active epic pointer to None — awaiting next epic dispatch (Gemini-PE scoping)
+- PROJECT_STATE.md: appended one-line entry for Dispatch Stream-JSON + Default Backend Resume
+- PROJECT_STATE.md: advanced active epic pointer to None - awaiting next epic dispatch (planner scoping)
 """,
             stderr="",
             exit_code=0,
@@ -123,7 +119,7 @@ CHANGES MADE:
         )
     )
 
-    monkeypatch.setattr(ledger, "invoke_claude_subagent", invoke_mock)
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
 
     result = ledger.run_epic_close(log=log_mock)
 
@@ -148,7 +144,7 @@ def test_run_epic_close_parses_first_commit_sha_from_rich_line(
 PROJECT_STATE.MD UPDATED: YES
 HANDOFF.MD REWRITTEN: YES
 EPIC CLOSED: Post-UAT Audit Nit Cleanup
-NEXT EPIC (routed to Gemini-PE): None — awaiting next epic dispatch (Gemini-PE scoping)
+NEXT EPIC (routed to planner): None - awaiting next epic dispatch (planner scoping)
 AUDIT SHA: 4fd7b14
 COMMIT SHA: 4281d3a (ledger/PROJECT_STATE.md/HANDOFF.md), 32a5771 (scope_sha patch)
 PUSH RESULT: PUSHED (84e3854..32a5771 main -> main)
@@ -163,7 +159,7 @@ CHANGES MADE:
         )
     )
 
-    monkeypatch.setattr(ledger, "invoke_claude_subagent", invoke_mock)
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
 
     result = ledger.run_epic_close(log=log_mock)
 
@@ -190,7 +186,7 @@ def test_run_epic_close_treats_unparseable_output_as_failure_and_uses_dispatch_l
     logger_warning_mock = Mock()
     logger_info_mock = Mock()
 
-    monkeypatch.setattr(ledger, "invoke_claude_subagent", invoke_mock)
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
     monkeypatch.setattr(ledger.logger, "error", logger_error_mock)
     monkeypatch.setattr(ledger.logger, "warning", logger_warning_mock)
     monkeypatch.setattr(ledger.logger, "info", logger_info_mock)
@@ -228,7 +224,7 @@ def test_run_epic_close_logs_push_failure_without_retry(
     )
 
     caplog.set_level(logging.ERROR)
-    monkeypatch.setattr(ledger, "invoke_claude_subagent", invoke_mock)
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
 
     result = ledger.run_epic_close()
 
@@ -253,7 +249,7 @@ def test_run_epic_close_returns_failed_result_when_subagent_fails(
     )
 
     caplog.set_level(logging.ERROR)
-    monkeypatch.setattr(ledger, "invoke_claude_subagent", invoke_mock)
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
 
     result = ledger.run_epic_close()
 

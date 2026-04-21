@@ -786,7 +786,7 @@ def test_route_handles_next_step_claude_misroute_instruction() -> None:
     )
 
 
-def test_route_uses_explicit_epic_close_metadata_over_claude_label() -> None:
+def test_route_uses_explicit_epic_close_metadata_over_auditor_label() -> None:
     handoff_content = """
     ## Audit
 
@@ -800,7 +800,7 @@ def test_route_uses_explicit_epic_close_metadata_over_claude_label() -> None:
     auditor: update `PROJECT_STATE.md`, update `PROJECT_STATE.md`, commit, and push.
 
     Canonical Routing Instruction:
-    Next: ClaudeCode
+    Next: auditor
     """.strip()
 
     assert route(handoff_content) == _legacy(

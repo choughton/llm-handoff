@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Callable, Literal
 
-from llm_handoff.agents import invoke_claude_subagent
+from llm_handoff.agents import invoke_support_role
 
 
 PushStatus = Literal["PUSHED", "FAILED", "SKIPPED", "UNKNOWN"]
@@ -38,7 +38,7 @@ _YES_NO_LINE_RE = r"(?im)^{label}:\s*(YES|NO)(?:\s*\((.+)\))?\s*$"
 _SCOPE_CLOSED_RE = re.compile(r"(?im)^SCOPE CLOSED:\s*(.+)\s*$")
 _EPIC_CLOSED_RE = re.compile(r"(?im)^EPIC CLOSED:\s*(.+)\s*$")
 _NEXT_ROUTE_RE = re.compile(r"(?im)^NEXT ROUTE:\s*(.+)\s*$")
-_NEXT_EPIC_RE = re.compile(r"(?im)^NEXT EPIC \(routed to Gemini-PE\):\s*(.+)\s*$")
+_NEXT_EPIC_RE = re.compile(r"(?im)^NEXT EPIC(?:\s*\([^)]+\))?:\s*(.+)\s*$")
 _AUDIT_SHA_LINE_RE = re.compile(r"(?im)^AUDIT SHA:\s*(.+)\s*$")
 _COMMIT_SHA_LINE_RE = re.compile(r"(?im)^COMMIT SHA:\s*(.+)\s*$")
 _PUSH_RESULT_RE = re.compile(
@@ -59,7 +59,6 @@ class EpicCloseResult:
     parse_error: str | None = None
     project_state_updated: bool = False
     ledger_updated: bool | None = None
-    claude_md_updated: bool | None = None
     handoff_rewritten: bool = False
     scope_closed: str | None = None
     epic_closed: str | None = None
@@ -72,16 +71,10 @@ class EpicCloseResult:
     changes_made: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        state_updated = (
-            self.project_state_updated
-            or bool(self.ledger_updated)
-            or bool(self.claude_md_updated)
-        )
+        state_updated = self.project_state_updated or bool(self.ledger_updated)
         object.__setattr__(self, "project_state_updated", state_updated)
         if self.ledger_updated is None:
             object.__setattr__(self, "ledger_updated", state_updated)
-        if self.claude_md_updated is None:
-            object.__setattr__(self, "claude_md_updated", state_updated)
         if self.scope_closed is None and self.epic_closed is not None:
             object.__setattr__(self, "scope_closed", self.epic_closed)
         if self.epic_closed is None:
@@ -109,10 +102,6 @@ class _ParsedLedgerOutput:
         return self.project_state_updated
 
     @property
-    def claude_md_updated(self) -> bool:
-        return self.project_state_updated
-
-    @property
     def epic_closed(self) -> str:
         return self.scope_closed
 
@@ -122,10 +111,8 @@ class _ParsedLedgerOutput:
 
 
 def run_epic_close(*, log: LogFn | None = None) -> EpicCloseResult:
-    subagent_result = invoke_claude_subagent(
-        subagent_name="ledger-updater",
-        prompt=LEDGER_UPDATER_PROMPT,
-        log=log,
+    subagent_result = invoke_support_role(
+        "ledger-updater", LEDGER_UPDATER_PROMPT, log=log
     )
     _emit(
         log,
@@ -285,7 +272,7 @@ def _parse_audit_sha(output: str) -> str:
     matches = _SHA_RE.findall(audit_value)
     if not matches:
         raise ValueError("Missing AUDIT SHA line.")
-    # Claude sometimes includes impl/tests context before the actual audit ref.
+    # Some providers include implementation/test context before the audit ref.
     return matches[-1]
 
 
