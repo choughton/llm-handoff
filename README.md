@@ -42,6 +42,8 @@ are parser fixtures, not user-facing docs.
 | File | Purpose |
 | --- | --- |
 | [README.md](README.md) | Public front door and project positioning. |
+| [QUICKSTART.md](QUICKSTART.md) | Short source-checkout path for a first dry run. |
+| [WALKTHROUGH.md](WALKTHROUGH.md) | Longer first-run guide explaining source and target repo flow. |
 | [INSTALL.md](INSTALL.md) | Install paths, provider CLI checks, and first run. |
 | [CONFIGURATION.md](CONFIGURATION.md) | Supported `dispatch_config.yaml` surface. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map and design choices. |
@@ -152,6 +154,9 @@ python -m venv .venv
 
 See [INSTALL.md](INSTALL.md) for provider CLI checks, local dependencies, and
 the target-repo initialization workflow, including macOS and Linux commands.
+For the shortest path through a first dry run, see
+[QUICKSTART.md](QUICKSTART.md). For a slower explanation of the source-checkout
+plus target-repo workflow, see [WALKTHROUGH.md](WALKTHROUGH.md).
 
 To preview the copyable reference workflow for another repository:
 

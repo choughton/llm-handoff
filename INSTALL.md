@@ -3,6 +3,10 @@
 `llm-handoff` is in pre-release extraction. These instructions describe the
 source-checkout workflow and the target-repo initialization path.
 
+For a shorter first-run path, see [QUICKSTART.md](QUICKSTART.md). For a more
+detailed source-checkout and target-repo explanation, see
+[WALKTHROUGH.md](WALKTHROUGH.md).
+
 ## Requirements
 
 - Python 3.11 or newer.
