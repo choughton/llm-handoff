@@ -1,8 +1,7 @@
 # Installation
 
 `llm-handoff` is in pre-release extraction. These instructions describe the
-source-checkout workflow that works today and the target-repo workflow that the
-template command is expected to provide.
+source-checkout workflow and the target-repo initialization path.
 
 ## Requirements
 
@@ -74,15 +73,20 @@ CLI.
 
 ## Initialize A Target Repository
 
-The target-repo initializer is planned but not implemented yet:
+From the `llm-handoff` source checkout, preview the reference workflow files
+that would be copied into a target repository:
 
 ```bash
-cd path/to/your-project
-python -m llm_handoff init --template reference-workflow
+python -m llm_handoff init path/to/your-project --template reference-workflow --dry-run
 ```
 
-Until `init` exists, copy or adapt the reference files from this source checkout
-into the target repository:
+Then initialize the target repository:
+
+```bash
+python -m llm_handoff init path/to/your-project --template reference-workflow
+```
+
+The initializer copies:
 
 ```text
 AGENTS.md
@@ -102,8 +106,13 @@ docs/handoff/*.md
 .claude/agents/ledger-updater.md
 ```
 
-Use `dispatch_config.example.yaml` as the starting point for the target repo's
-`dispatch_config.yaml`.
+It does not copy the template README into the target repo. Existing identical
+files are skipped. Existing changed files abort initialization unless you pass
+`--force` after reviewing what would be overwritten.
+
+You can still copy or fork the files under
+[examples/reference-workflow](examples/reference-workflow/README.md) manually
+if you want a custom protocol layout.
 
 ## Dry Run
 

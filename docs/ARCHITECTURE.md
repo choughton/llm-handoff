@@ -31,6 +31,7 @@ Continue, pause, or escalate
 
 - `llm_handoff.__main__`: CLI entry point.
 - `llm_handoff.config`: dispatch configuration and repo-root detection.
+- `llm_handoff.init_workflow`: target-repo reference workflow initialization.
 - `llm_handoff.router`: handoff parsing and route selection.
 - `llm_handoff.validator`: post-dispatch handoff validation.
 - `llm_handoff.orchestrator`: dispatch loop and failure-mode handling.
@@ -41,9 +42,9 @@ Continue, pause, or escalate
 - `llm_handoff.text_io`: robust text decoding for handoff files.
 
 The current scaffold has the core config loader, router, validator,
-normalizer, provider invocation layer, and prompt templates. The remaining
-architectural work is to finish target-repo initialization and make every
-role-to-provider choice configurable without changing the public role names.
+normalizer, provider invocation layer, target-repo initializer, and prompt
+templates. The remaining architectural work is to make every role-to-provider
+choice configurable without changing the public role names.
 
 ## Handoff File
 

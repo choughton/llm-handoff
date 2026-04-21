@@ -15,6 +15,11 @@ from llm_handoff.config import (
     detect_repo_root,
     load_dispatch_config,
 )
+from llm_handoff.init_workflow import (
+    InitConflictError,
+    UnknownTemplateError,
+    init_reference_workflow,
+)
 from llm_handoff.logging_util import DispatchLogger
 from llm_handoff.orchestrator import run_loop
 
@@ -109,8 +114,65 @@ def _run_dispatch(
         _restore_console_title(previous_title, changed=changed_title)
 
 
+def _format_path_list(paths: tuple[Path, ...]) -> str:
+    return "\n".join(f"  - {path.as_posix()}" for path in paths)
+
+
+@app.command("init")
+def init_command(
+    target_root: Path = typer.Argument(
+        Path("."),
+        help="Target repository root to initialize.",
+    ),
+    template: str = typer.Option(
+        "reference-workflow",
+        "--template",
+        help="Reference template to copy.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Preview the files that would be copied without writing them.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "--overwrite",
+        help="Overwrite existing files that differ from the template.",
+    ),
+) -> None:
+    _configure_stdio_encoding()
+    try:
+        result = init_reference_workflow(
+            target_root,
+            template=template,
+            dry_run=dry_run,
+            force=force,
+        )
+    except UnknownTemplateError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    except InitConflictError as exc:
+        typer.echo("Initialization aborted: target files already exist.", err=True)
+        typer.echo("Use --force to overwrite them after reviewing the diff.", err=True)
+        typer.echo(_format_path_list(exc.conflicts), err=True)
+        raise typer.Exit(1) from exc
+
+    action = "DRY RUN" if result.dry_run else "Initialized"
+    typer.echo(f"{action}: {result.template} in {result.target_root}")
+    typer.echo(f"Copy: {len(result.copied)} file(s)")
+    if result.skipped:
+        typer.echo(f"Skip identical: {len(result.skipped)} file(s)")
+    if result.conflicts:
+        typer.echo(f"Conflict: {len(result.conflicts)} file(s)")
+        typer.echo(_format_path_list(result.conflicts))
+        if result.dry_run:
+            typer.echo("Run without --dry-run to initialize, or use --force to overwrite.")
+
+
 @app.callback(invoke_without_command=True)
 def _dispatch_callback(
+    ctx: typer.Context,
     dry_run: bool = typer.Option(False, "--dry-run"),
     use_manual_frontend: bool = typer.Option(
         False,
@@ -151,6 +213,8 @@ def _dispatch_callback(
         help="Path to dispatch_config.yaml. Relative paths resolve from the repo root.",
     ),
 ) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
     _configure_stdio_encoding()
     raise typer.Exit(
         _run_dispatch(

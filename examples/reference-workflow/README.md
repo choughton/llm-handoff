@@ -77,6 +77,16 @@ handoff examples, archive files, and helper prompts.
 
 ## Usage Notes
 
-Until `llm_handoff init` is implemented, copy this directory's contents into a
-target repository and edit `dispatch_config.yaml`, `PROJECT_STATE.md`, and
-`docs/handoff/HANDOFF.md` for that repo's first assignment.
+From the `llm-handoff` source checkout, initialize a target repository with:
+
+```bash
+python -m llm_handoff init path/to/your-project --template reference-workflow --dry-run
+python -m llm_handoff init path/to/your-project --template reference-workflow
+```
+
+The initializer copies this directory's contents except this README. It skips
+identical files and refuses to overwrite changed files unless `--force` is
+passed.
+
+After copying, edit `dispatch_config.yaml`, `PROJECT_STATE.md`, and
+`docs/handoff/HANDOFF.md` for the target repo's first assignment.

@@ -147,7 +147,13 @@ python -m llm_handoff --help
 ```
 
 See [INSTALL.md](INSTALL.md) for provider CLI checks, local dependencies, and
-the planned target-repo initialization workflow.
+the target-repo initialization workflow.
+
+To preview the copyable reference workflow for another repository:
+
+```bash
+python -m llm_handoff init path/to/your-project --template reference-workflow --dry-run
+```
 
 ## What This Is
 
@@ -217,8 +223,7 @@ advances when the handoff state parses, routes, and validates.
 - Provider CLI behavior can change underneath the dispatcher.
 - Validator calls optimize for correctness over token cost.
 - Dual-run protection and semantic SHA checks are required before public launch.
-- Full role-to-provider adapter wiring and `init` template generation are
-  still planned work.
+- Full role-to-provider adapter wiring is still planned work.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design constraints in
 more detail.

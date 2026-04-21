@@ -13,7 +13,7 @@ the focused public-default tests.
 Current full-suite result:
 
 ```text
-276 passed
+290 passed
 ```
 
 The `tests/ported/` directory is still named as migration history, but it is
@@ -33,6 +33,7 @@ python -m pytest tests/test_public_defaults.py -q
 python -m pytest tests/test_config.py -q
 python -m pytest tests/test_generic_router.py -q
 python -m pytest tests/test_cli.py -q
+python -m pytest tests/test_init_workflow.py -q
 python -m pytest tests/test_handoff_normalizer.py -q
 python -m pytest tests/ported/test_handoff_docs.py -q
 ```
@@ -42,6 +43,7 @@ python -m pytest tests/ported/test_handoff_docs.py -q
 Expected test areas:
 
 - CLI help and config loading.
+- Target-repo reference workflow initialization.
 - Repo-root detection.
 - Handoff frontmatter parsing.
 - Generic role routing.
