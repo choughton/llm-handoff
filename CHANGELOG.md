@@ -10,6 +10,8 @@ This project follows a simple pre-release changelog until the first public tag.
 - Added public repository instructions and README.
 - Added documentation split for installation, configuration, architecture,
   testing, contribution scope, security, and reference workflow setup.
+- Added generic handoff prompt files plus Codex, Gemini, and Claude agent
+  templates.
 - Preserved Apache-2.0 licensing.
 
 ## 0.0.0

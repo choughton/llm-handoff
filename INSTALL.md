@@ -1,8 +1,8 @@
 # Installation
 
 `llm-handoff` is in pre-release extraction. These instructions describe the
-intended install and first-run workflow. The dispatcher can be run from a
-source checkout; template initialization is still planned work.
+source-checkout workflow that works today and the target-repo workflow that the
+template command is expected to provide.
 
 ## Requirements
 
@@ -74,32 +74,36 @@ CLI.
 
 ## Initialize A Target Repository
 
-Planned workflow:
+The target-repo initializer is planned but not implemented yet:
 
 ```bash
 cd path/to/your-project
 python -m llm_handoff init --template reference-workflow
 ```
 
-The init command should copy a reference protocol into the target repository,
-including:
+Until `init` exists, copy or adapt the reference files from this source checkout
+into the target repository:
 
 ```text
 AGENTS.md
 PROJECT_STATE.md
 dispatch_config.yaml
 docs/handoff/HANDOFF.md
+docs/handoff/*.md
 .geminiignore
 .gemini/agents/planner.md
 .gemini/agents/frontend.md
+.gemini/policies/planner_guardrails.toml
 .codex/skills/llm-handoff/SKILL.md
+.codex/skills/llm-handoff/agents/openai.yaml
 .claude/agents/auditor.md
+.claude/agents/handoff-router.md
 .claude/agents/handoff-validator.md
-.claude/agents/finalizer.md
+.claude/agents/ledger-updater.md
 ```
 
-Until `init` exists, use `examples/reference-workflow/` as the source template
-for the written protocol.
+Use `dispatch_config.example.yaml` as the starting point for the target repo's
+`dispatch_config.yaml`.
 
 ## Dry Run
 
@@ -118,6 +122,10 @@ python -m llm_handoff --config dispatch_config.yaml
 
 The dispatcher reads the handoff file, invokes one role, validates the updated
 handoff, then continues or pauses.
+
+When running against a separate target repository before packaging support
+exists, run with the source checkout on `PYTHONPATH` or from the source checkout
+itself while pointing the config paths at the target repo.
 
 ## Debugging
 

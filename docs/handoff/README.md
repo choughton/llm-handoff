@@ -12,9 +12,9 @@ The handoff file is the mutex and the debugger: every transition is visible as t
 | `SHARED_REPO_INIT_PROMPT.md` | all agents | Common bootstrap instructions for fresh sessions |
 | `PLANNER_INITIAL_PROMPT.md` | planner | First planner session prompt |
 | `PLANNER_HANDOFF_PROMPT.md` | planner | Ongoing planner dispatch prompt |
-| `BACKEND_HANDOFF_PROMPT.md` | backend | Backend/Codex implementation prompt |
-| `FRONTEND_HANDOFF_PROMPT.md` | frontend | Frontend/Gemini implementation prompt |
-| `AUDITOR_HANDOFF_PROMPT.md` | auditor | Claude audit prompt |
+| `BACKEND_HANDOFF_PROMPT.md` | backend | Backend implementation prompt; Codex is one adapter example |
+| `FRONTEND_HANDOFF_PROMPT.md` | frontend | Frontend implementation prompt; Gemini is one adapter example |
+| `AUDITOR_HANDOFF_PROMPT.md` | auditor | Audit prompt; Claude is one adapter example |
 | `FINALIZER_HANDOFF_PROMPT.md` | finalizer | Project-state and handoff-close prompt |
 
 ## Required Frontmatter

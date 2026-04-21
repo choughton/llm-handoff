@@ -198,7 +198,7 @@ A handoff begins with YAML frontmatter:
 ```markdown
 ---
 next_agent: planner
-reason: Scope the first implementation task.
+reason: "Scope the first implementation task."
 producer: user
 ---
 ```

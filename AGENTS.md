@@ -36,7 +36,7 @@ Keep the tool small and inspectable.
 - Do not turn this into a general multi-agent framework.
 - Do not add a web UI, service daemon, database, queue, or plugin marketplace.
 - Do not abstract away Git. Git is part of the mechanism.
-- Do not assume Crossfire-specific names, paths, or invariants.
+- Do not assume source-project-specific names, paths, or invariants.
 - Do not auto-push by default. Local commits are acceptable; remote pushes must
   be explicit user-controlled behavior.
 
@@ -54,9 +54,9 @@ Use these public names consistently:
 - Optional flat handoff path: `HANDOFF.md`
 - Generic project state file: `PROJECT_STATE.md`
 
-Avoid old internal names such as `llm_dev_team_dispatcher`, `crossfire_pe`,
-`crossfire_frontend`, `crossfire_backend`, and `llm-crossfire-codex` except in
-tests that explicitly verify those names are rejected or removed.
+Avoid legacy extraction names in public docs, examples, prompts, and config
+except in tests that explicitly verify unsupported aliases are rejected or
+removed.
 
 ## Agent Role Vocabulary
 

@@ -40,9 +40,10 @@ Continue, pause, or escalate
 - `llm_handoff.logging_util`: dispatch log writer.
 - `llm_handoff.text_io`: robust text decoding for handoff files.
 
-The first extraction pass removed source-project names from package code. The
-remaining architectural work is to move hard-coded adapter choices into config,
-prompts, or examples.
+The current scaffold has the core config loader, router, validator,
+normalizer, provider invocation layer, and prompt templates. The remaining
+architectural work is to finish target-repo initialization and make every
+role-to-provider choice configurable without changing the public role names.
 
 ## Handoff File
 
@@ -129,6 +130,20 @@ generic roles such as `planner`, `backend`, or `frontend` to concrete providers
 such as Gemini, Codex, or Claude.
 
 The dispatcher does not sandbox these tools and does not manage their auth.
+
+## Prompt And Agent Templates
+
+The written protocol is part of the runtime surface. The source checkout ships:
+
+- `docs/handoff/*.md` for shared handoff prompts and the live handoff template;
+- `.codex/skills/llm-handoff/SKILL.md` for the backend role when served by
+  Codex;
+- `.gemini/agents/*.md` for planner and frontend role templates;
+- `.claude/agents/*.md` for auditor, router, validator, and finalizer support.
+
+These files are templates, not hidden state. A consuming repository can copy
+them, fork them, or replace them as long as the frontmatter contract remains
+valid.
 
 ## Non-Goals
 

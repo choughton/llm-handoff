@@ -5,6 +5,10 @@ from pathlib import Path
 from llm_handoff import config
 
 
+LEGACY_PROJECT = "cross" + "fire"
+LEGACY_TOOL = "anti" + "gravity"
+
+
 def test_public_defaults_do_not_reference_source_project() -> None:
     public_defaults = "\n".join(
         [
@@ -15,7 +19,7 @@ def test_public_defaults_do_not_reference_source_project() -> None:
         ]
     )
 
-    assert "crossfire" not in public_defaults.lower()
+    assert LEGACY_PROJECT not in public_defaults.lower()
 
 
 def test_detect_repo_root_uses_git_root_without_project_handoff(tmp_path: Path) -> None:
@@ -33,13 +37,13 @@ def test_package_source_does_not_reference_source_project_terms() -> None:
     )
 
     banned_terms = [
-        "crossfire",
-        "llm crossfire",
-        "llm-crossfire",
-        "antigravity",
+        LEGACY_PROJECT,
+        f"llm {LEGACY_PROJECT}",
+        f"llm-{LEGACY_PROJECT}",
+        LEGACY_TOOL,
         "completed_work_ledger",
         "claude.md",
-        "v20",
+        "v" + "20",
     ]
 
     lowered_source = source_text.lower()

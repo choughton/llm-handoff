@@ -6,6 +6,9 @@ from llm_handoff.handoff_normalizer import normalize_handoff_next_agent_text
 from llm_handoff.router import RoutingDecision, route
 
 
+LEGACY_FRONTEND_ALIAS = ("cross" + "fire") + "_frontend"
+
+
 @pytest.mark.parametrize(
     ("next_agent", "expected_route"),
     [
@@ -39,8 +42,8 @@ reason: Route enum value for dispatch.
 
 
 def test_route_rejects_source_project_aliases() -> None:
-    handoff_content = """---
-next_agent: crossfire_frontend
+    handoff_content = f"""---
+next_agent: {LEGACY_FRONTEND_ALIAS}
 reason: Should not be accepted in the public dispatcher.
 producer: planner
 ---
@@ -54,7 +57,7 @@ producer: planner
         source="frontmatter.invalid",
         reasoning="YAML routing frontmatter is present but invalid.",
         warnings=[
-            "Invalid HANDOFF routing frontmatter: next_agent `crossfire_frontend` is not recognized."
+            f"Invalid HANDOFF routing frontmatter: next_agent `{LEGACY_FRONTEND_ALIAS}` is not recognized."
         ],
     )
 

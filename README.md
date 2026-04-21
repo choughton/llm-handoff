@@ -32,20 +32,80 @@ The current scaffold is not a release-ready source checkout yet. See
 
 ## Repository Map
 
+All Markdown documentation and shipped Markdown prompt artifacts are linked
+here. Test fixture handoffs are included in a collapsed section because they
+are parser fixtures, not user-facing docs.
+
+### Core Docs
+
 | File | Purpose |
 | --- | --- |
 | [README.md](README.md) | Public front door and project positioning. |
 | [INSTALL.md](INSTALL.md) | Install paths, provider CLI checks, and first run. |
 | [CONFIGURATION.md](CONFIGURATION.md) | Supported `dispatch_config.yaml` surface. |
-| [dispatch_config.example.yaml](dispatch_config.example.yaml) | Example role-to-provider config shape. |
-| [requirements-dev.txt](requirements-dev.txt) | Source-checkout runtime and test dependencies. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map and design choices. |
 | [docs/TESTING.md](docs/TESTING.md) | Test strategy and current scaffold state. |
-| [examples/reference-workflow/README.md](examples/reference-workflow/README.md) | Copyable workflow protocol plan. |
 | [AGENTS.md](AGENTS.md) | Instructions for coding agents working in this repo. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution scope and project boundaries. |
 | [SECURITY.md](SECURITY.md) | Safe usage and vulnerability reporting. |
 | [CHANGELOG.md](CHANGELOG.md) | Release and extraction history. |
+
+### Runtime And Examples
+
+| File | Purpose |
+| --- | --- |
+| [dispatch_config.example.yaml](dispatch_config.example.yaml) | Example role-to-provider config shape. |
+| [requirements-dev.txt](requirements-dev.txt) | Source-checkout runtime and test dependencies. |
+| [examples/reference-workflow/README.md](examples/reference-workflow/README.md) | Copyable workflow protocol plan. |
+
+### Handoff Protocol
+
+| File | Purpose |
+| --- | --- |
+| [docs/handoff/README.md](docs/handoff/README.md) | Handoff directory guide and schema summary. |
+| [docs/handoff/HANDOFF.md](docs/handoff/HANDOFF.md) | Placeholder live handoff template. |
+| [docs/handoff/SHARED_REPO_INIT_PROMPT.md](docs/handoff/SHARED_REPO_INIT_PROMPT.md) | Shared startup prompt for roles. |
+| [docs/handoff/PLANNER_INITIAL_PROMPT.md](docs/handoff/PLANNER_INITIAL_PROMPT.md) | First planner prompt for new workflows. |
+| [docs/handoff/PLANNER_HANDOFF_PROMPT.md](docs/handoff/PLANNER_HANDOFF_PROMPT.md) | Planner handoff prompt. |
+| [docs/handoff/BACKEND_HANDOFF_PROMPT.md](docs/handoff/BACKEND_HANDOFF_PROMPT.md) | Backend role prompt. |
+| [docs/handoff/FRONTEND_HANDOFF_PROMPT.md](docs/handoff/FRONTEND_HANDOFF_PROMPT.md) | Frontend role prompt. |
+| [docs/handoff/AUDITOR_HANDOFF_PROMPT.md](docs/handoff/AUDITOR_HANDOFF_PROMPT.md) | Auditor role prompt. |
+| [docs/handoff/FINALIZER_HANDOFF_PROMPT.md](docs/handoff/FINALIZER_HANDOFF_PROMPT.md) | Finalizer role prompt. |
+
+### Provider Agent Templates
+
+| File | Purpose |
+| --- | --- |
+| [.codex/skills/llm-handoff/SKILL.md](.codex/skills/llm-handoff/SKILL.md) | Codex backend skill bootstrap. |
+| [.gemini/agents/planner.md](.gemini/agents/planner.md) | Gemini planner agent template. |
+| [.gemini/agents/frontend.md](.gemini/agents/frontend.md) | Gemini frontend agent template. |
+| [.claude/agents/auditor.md](.claude/agents/auditor.md) | Claude auditor agent template. |
+| [.claude/agents/handoff-router.md](.claude/agents/handoff-router.md) | Claude routing clarification agent. |
+| [.claude/agents/handoff-validator.md](.claude/agents/handoff-validator.md) | Claude handoff validator agent. |
+| [.claude/agents/ledger-updater.md](.claude/agents/ledger-updater.md) | Claude finalizer compatibility agent. |
+
+<details>
+<summary>Ported Test Fixture Markdown</summary>
+
+| File | Purpose |
+| --- | --- |
+| [tests/ported/fixtures/handoffs/audit_story_close_next_story.md](tests/ported/fixtures/handoffs/audit_story_close_next_story.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/codex_handback_story_close.md](tests/ported/fixtures/handoffs/codex_handback_story_close.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/conflicting_signals.md](tests/ported/fixtures/handoffs/conflicting_signals.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/empty.md](tests/ported/fixtures/handoffs/empty.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/escalation.md](tests/ported/fixtures/handoffs/escalation.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/legacy_manual_frontend_dispatch.md](tests/ported/fixtures/handoffs/legacy_manual_frontend_dispatch.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/misroute.md](tests/ported/fixtures/handoffs/misroute.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/next_step_header_epic_close.md](tests/ported/fixtures/handoffs/next_step_header_epic_close.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/next_step_header_for_codex.md](tests/ported/fixtures/handoffs/next_step_header_for_codex.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/next_step_qualifier_suffix_claude.md](tests/ported/fixtures/handoffs/next_step_qualifier_suffix_claude.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/next_step_subheading_frontend.md](tests/ported/fixtures/handoffs/next_step_subheading_frontend.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/no_signal.md](tests/ported/fixtures/handoffs/no_signal.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/pe_task_assignment_codex.md](tests/ported/fixtures/handoffs/pe_task_assignment_codex.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/prose_next_agent_gemini_pe.md](tests/ported/fixtures/handoffs/prose_next_agent_gemini_pe.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/story_close_ledger_language.md](tests/ported/fixtures/handoffs/story_close_ledger_language.md) | Router fixture. |
+
+</details>
 
 ## Source Checkout
 
@@ -55,6 +115,8 @@ source:
 ```bash
 git clone https://github.com/choughton/llm-handoff.git
 cd llm-handoff
+python -m venv .venv
+python -m pip install -r requirements-dev.txt
 python -m llm_handoff --help
 ```
 

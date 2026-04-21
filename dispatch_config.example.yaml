@@ -1,7 +1,7 @@
 # Example llm-handoff configuration.
 #
-# Config-file loading is planned work. This file documents the intended public
-# shape for source checkout users and target-repo templates.
+# This file documents the public role-to-provider shape for source checkout
+# users and target-repo templates.
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md

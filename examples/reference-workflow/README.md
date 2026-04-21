@@ -14,13 +14,17 @@ AGENTS.md
 PROJECT_STATE.md
 dispatch_config.yaml
 docs/handoff/HANDOFF.md
+docs/handoff/*.md
 .geminiignore
 .gemini/agents/planner.md
 .gemini/agents/frontend.md
+.gemini/policies/planner_guardrails.toml
 .codex/skills/llm-handoff/SKILL.md
+.codex/skills/llm-handoff/agents/openai.yaml
 .claude/agents/auditor.md
+.claude/agents/handoff-router.md
 .claude/agents/handoff-validator.md
-.claude/agents/finalizer.md
+.claude/agents/ledger-updater.md
 ```
 
 ## Role Contract
@@ -73,5 +77,7 @@ handoff examples, archive files, and helper prompts.
 
 ## Extraction Notes
 
-The template files themselves still need to be generated from the genericized
-workflow. Do not copy source-project prompt text directly into this example.
+The first generic prompt templates now live in the source checkout under
+`docs/handoff/`, `.codex/`, `.gemini/`, and `.claude/`. The remaining work is
+to add an initializer that copies those files into a target repository and
+rewrites example placeholders for that repo.
