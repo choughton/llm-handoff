@@ -24,3 +24,24 @@ def test_detect_repo_root_uses_git_root_without_project_handoff(tmp_path: Path) 
     (tmp_path / ".git").mkdir()
 
     assert config.detect_repo_root(nested) == tmp_path.resolve()
+
+
+def test_package_source_does_not_reference_source_project_terms() -> None:
+    package_root = Path(__file__).resolve().parents[1] / "llm_handoff"
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in package_root.rglob("*.py")
+    )
+
+    banned_terms = [
+        "crossfire",
+        "llm crossfire",
+        "llm-crossfire",
+        "antigravity",
+        "completed_work_ledger",
+        "claude.md",
+        "v20",
+    ]
+
+    lowered_source = source_text.lower()
+    for term in banned_terms:
+        assert term not in lowered_source

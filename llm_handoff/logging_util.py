@@ -163,7 +163,7 @@ class DispatchLogger:
         )
         return (
             "# ============================================================================\n"
-            "# LLM Crossfire Dispatch Log (v2 — subagent-integrated, single-dispatch-per-cycle)\n"
+            "# llm-handoff Dispatch Log (single-dispatch-per-cycle)\n"
             "# ============================================================================\n"
             f"# Started:        {current_time.strftime('%Y-%m-%d %H:%M:%S %z')[:-2]}:{current_time.strftime('%z')[-2:]}\n"
             f"# Repo root:      {self.repo_root}\n"

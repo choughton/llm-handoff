@@ -17,15 +17,18 @@ from llm_handoff import config
 
 
 ValidAgent = Literal[
+    "auditor",
+    "backend",
     "claude-audit",
     "claude-ledger",
     "codex",
-    "crossfire_backend",
+    "finalizer",
+    "frontend",
     "gemini-pe",
-    "crossfire_pe",
     "gemini-frontend",
-    "crossfire_frontend",
-    "antigravity",
+    "implementer",
+    "planner",
+    "validator",
     "user",
     "unknown",
 ]

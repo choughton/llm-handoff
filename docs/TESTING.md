@@ -6,17 +6,18 @@ contract.
 
 ## Current State
 
-The current repository is a pre-release scaffold. Some tests intentionally fail
-because they describe the genericization work still required.
+The current repository is a pre-release scaffold. The focused extraction tests
+now pass and cover the public defaults, CLI help text, generic frontmatter
+routing, and rejection of source-project aliases.
 
-At the scaffold checkpoint, the focused tests reported:
+Current focused result:
 
 ```text
-7 failed, 6 passed
+14 passed
 ```
 
-Those failures are expected until source-project defaults and aliases are
-removed.
+The suite is still small. Add tests with each extraction pass before widening
+the runtime surface.
 
 ## Running Tests
 

@@ -34,38 +34,37 @@ _SUBSTANCE_RE = re.compile(
     r"(?im)\b(completed work|verification|validation|results|test suites?|execution sha|implementation sha|(?:4-check\s+)?audit gate|audit verdict|checks:)\b"
 )
 _ALLOWED_NEXT_AGENTS = {
+    "auditor",
+    "backend",
     "claude-audit",
     "claude-ledger",
     "codex",
-    "crossfire_backend",
+    "finalizer",
+    "frontend",
     "gemini-pe",
-    "crossfire_pe",
     "gemini-frontend",
-    "crossfire_frontend",
-    "antigravity",
+    "implementer",
+    "planner",
+    "validator",
     "user",
 }
 _ALLOWED_CLOSE_TYPES = {"story", "epic"}
 _FRONTMATTER_ROUTE_MAP = {
+    "auditor": "ClaudeCode-Audit",
+    "backend": "Codex",
     "claude-audit": "ClaudeCode-Audit",
     "claude-ledger": "Epic-Close",
     "codex": "Codex",
-    "crossfire_backend": "Codex",
+    "finalizer": "Epic-Close",
+    "frontend": "Gemini-Frontend",
     "gemini-pe": "Gemini-PE",
-    "crossfire_pe": "Gemini-PE",
     "gemini-frontend": "Gemini-Frontend",
-    "crossfire_frontend": "Gemini-Frontend",
-    "antigravity": "Gemini-Frontend",
+    "implementer": "Codex",
+    "planner": "Gemini-PE",
+    "validator": "ClaudeCode-Misroute",
     "user": "Escalation",
 }
-_FRONTMATTER_ALIAS_WARNINGS = {
-    "crossfire_backend": "frontmatter_next_agent_alias: "
-    "producer {producer} used crossfire_backend; normalized to codex.",
-    "crossfire_pe": "frontmatter_next_agent_alias: "
-    "producer {producer} used crossfire_pe; normalized to gemini-pe.",
-    "crossfire_frontend": "frontmatter_next_agent_alias: "
-    "producer {producer} used crossfire_frontend; normalized to gemini-frontend.",
-}
+_FRONTMATTER_ALIAS_WARNINGS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -160,23 +159,24 @@ def validate_handoff_frontmatter(parsed: HandoffRouting) -> ValidationResult:
             f"producer {producer} emitted prior_sha `{parsed.prior_sha}`; expected 7-40 hex chars."
         )
 
-    if parsed.close_type == "epic" and parsed.next_agent not in {
-        "claude-audit",
-        "claude-ledger",
-    }:
+    epic_close_agents = {"auditor", "claude-audit", "claude-ledger", "finalizer"}
+    if parsed.close_type == "epic" and parsed.next_agent not in epic_close_agents:
         errors.append(
             "frontmatter_routing_rule: close_type `epic` requires next_agent "
-            "`claude-audit` or `claude-ledger`."
+            "`auditor`, `claude-audit`, `finalizer`, or `claude-ledger`."
         )
 
-    if parsed.next_agent == "claude-ledger" and parsed.close_type != "epic":
+    if parsed.next_agent in {"claude-ledger", "finalizer"} and parsed.close_type != "epic":
         errors.append(
-            "frontmatter_routing_rule: next_agent `claude-ledger` requires close_type `epic`."
+            f"frontmatter_routing_rule: next_agent `{parsed.next_agent}` requires close_type `epic`."
         )
 
-    if parsed.next_agent == "claude-ledger" and parsed.producer != "claude-audit":
+    if parsed.next_agent in {"claude-ledger", "finalizer"} and parsed.producer not in {
+        "auditor",
+        "claude-audit",
+    }:
         errors.append(
-            "frontmatter_routing_rule: next_agent `claude-ledger` requires producer `claude-audit`."
+            f"frontmatter_routing_rule: next_agent `{parsed.next_agent}` requires producer `auditor` or `claude-audit`."
         )
 
     routing_instruction = _FRONTMATTER_ROUTE_MAP.get(parsed.next_agent or "")
@@ -315,17 +315,19 @@ def _normalize_agent(agent_text: str) -> str | None:
         if "misroute" in normalized_text:
             return "ClaudeCode-Misroute"
         return "ClaudeCode-Audit"
-    if "crossfire_backend" in normalized_text:
+    if normalized_text in {"auditor", "audit", "reviewer"}:
+        return "ClaudeCode-Audit"
+    if normalized_text in {"validator", "handoff-validator"}:
+        return "ClaudeCode-Misroute"
+    if normalized_text in {"finalizer", "ledger", "ledger-updater", "epic-close"}:
+        return "Epic-Close"
+    if normalized_text in {"implementer", "backend"}:
         return "Codex"
     if "codex" in normalized_text:
         return "Codex"
-    if "crossfire_pe" in normalized_text:
+    if normalized_text in {"planner", "plan"}:
         return "Gemini-PE"
-    if (
-        "crossfire_frontend" in normalized_text
-        or "frontend" in normalized_text
-        or "antigravity" in normalized_text
-    ):
+    if "frontend" in normalized_text:
         return "Gemini-Frontend"
     if "gemini" in normalized_text:
         return "Gemini-PE"

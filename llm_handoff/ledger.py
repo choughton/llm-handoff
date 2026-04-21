@@ -8,29 +8,26 @@ from typing import Callable, Literal
 from llm_handoff.agents import invoke_claude_subagent
 
 
-PushStatus = Literal["PUSHED", "FAILED", "UNKNOWN"]
+PushStatus = Literal["PUSHED", "FAILED", "SKIPPED", "UNKNOWN"]
 
 LEDGER_UPDATER_PROMPT = (
-    "Use the ledger-updater agent to update the project ledger. "
-    "Read docs/handoff/HANDOFF.md for the completed epic details and audit verdict. "
-    "Append a one-line entry to docs/COMPLETED_WORK_LEDGER.md. "
-    "Update CLAUDE.md section 2 Current Status to reflect the epic closure. "
+    "Use the finalizer or ledger-updater agent to update the project state. "
+    "Read docs/handoff/HANDOFF.md for the completed scope and validation verdict. "
+    "Update PROJECT_STATE.md with the completed scope, next state, and durable commit references. "
     "Rewrite docs/handoff/HANDOFF.md so YAML frontmatter routes the next cycle "
-    "to Gemini-PE for the next campaign phase or to user if blocked; do not "
-    "leave it routing to claude-ledger after the ledger entry is complete. "
-    "Commit docs/COMPLETED_WORK_LEDGER.md, CLAUDE.md, and docs/handoff/HANDOFF.md "
-    "atomically with a verbose AGENTS.md-compliant message and Co-Authored-By "
-    "trailer, then push main to origin per AGENTS.md section 4.6 (ledger "
-    "maintainer is authorized to push at epic boundary). "
+    "to planner for the next phase or to user if blocked; do not leave it "
+    "routing to finalizer after the state update is complete. "
+    "Commit PROJECT_STATE.md and docs/handoff/HANDOFF.md atomically with a "
+    "clear message and any required Co-Authored-By trailer. Do not push unless "
+    "the repository instructions explicitly allow this finalizer to push. "
     "Return ONLY this exact machine-readable format, one field per line: "
-    "LEDGER UPDATED: YES or NO; "
-    "CLAUDE.MD UPDATED: YES or NO; "
+    "PROJECT STATE UPDATED: YES or NO; "
     "HANDOFF.MD REWRITTEN: YES or NO; "
-    "EPIC CLOSED: <epic name>; "
-    "NEXT EPIC (routed to Gemini-PE): <epic name or None>; "
+    "SCOPE CLOSED: <scope name>; "
+    "NEXT ROUTE: <planner, user, or another supported next_agent>; "
     "AUDIT SHA: <full or short sha>; "
-    "COMMIT SHA: <single full or short sha for the ledger/CLAUDE.md/HANDOFF.md commit>; "
-    "PUSH RESULT: PUSHED or FAILED (optional detail); "
+    "COMMIT SHA: <single full or short sha for the PROJECT_STATE.md/HANDOFF.md commit>; "
+    "PUSH RESULT: SKIPPED, PUSHED, or FAILED (optional detail); "
     "CHANGES MADE: followed by dash-prefixed bullet lines. "
     "If follow-up patch commits are created, list them under CHANGES MADE, not on "
     "the COMMIT SHA line. "
@@ -38,12 +35,12 @@ LEDGER_UPDATER_PROMPT = (
 )
 
 _YES_NO_LINE_RE = r"(?im)^{label}:\s*(YES|NO)(?:\s*\((.+)\))?\s*$"
-_EPIC_CLOSED_RE = re.compile(r"(?im)^EPIC CLOSED:\s*(.+)\s*$")
-_NEXT_EPIC_RE = re.compile(r"(?im)^NEXT EPIC \(routed to Gemini-PE\):\s*(.+)\s*$")
+_SCOPE_CLOSED_RE = re.compile(r"(?im)^SCOPE CLOSED:\s*(.+)\s*$")
+_NEXT_ROUTE_RE = re.compile(r"(?im)^NEXT ROUTE:\s*(.+)\s*$")
 _AUDIT_SHA_LINE_RE = re.compile(r"(?im)^AUDIT SHA:\s*(.+)\s*$")
 _COMMIT_SHA_LINE_RE = re.compile(r"(?im)^COMMIT SHA:\s*(.+)\s*$")
 _PUSH_RESULT_RE = re.compile(
-    r"(?im)^PUSH RESULT:\s*(PUSHED|FAILED)(?:\s*\((.+)\))?\s*$"
+    r"(?im)^PUSH RESULT:\s*(SKIPPED|PUSHED|FAILED)(?:\s*\((.+)\))?\s*$"
 )
 _CHANGES_MADE_RE = re.compile(r"(?ims)^CHANGES MADE:\s*(.+)$")
 _SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
@@ -58,11 +55,10 @@ class EpicCloseResult:
     stdout: str
     stderr: str
     parse_error: str | None = None
-    ledger_updated: bool = False
-    claude_md_updated: bool = False
+    project_state_updated: bool = False
     handoff_rewritten: bool = False
-    epic_closed: str | None = None
-    next_epic: str | None = None
+    scope_closed: str | None = None
+    next_route: str | None = None
     audit_sha: str | None = None
     commit_sha: str | None = None
     push_status: PushStatus = "UNKNOWN"
@@ -72,11 +68,10 @@ class EpicCloseResult:
 
 @dataclass(frozen=True)
 class _ParsedLedgerOutput:
-    ledger_updated: bool
-    claude_md_updated: bool
+    project_state_updated: bool
     handoff_rewritten: bool
-    epic_closed: str
-    next_epic: str
+    scope_closed: str
+    next_route: str
     audit_sha: str
     commit_sha: str
     push_status: PushStatus
@@ -156,18 +151,17 @@ def run_epic_close(*, log: LogFn | None = None) -> EpicCloseResult:
             log,
             "WARN",
             "ledger-updater reported HANDOFF.MD REWRITTEN: NO; dispatcher will "
-            "treat repeated Epic-Close routing as stale and redirect to Gemini-PE.",
+            "treat repeated finalizer routing as stale and redirect to the planner.",
         )
 
     return EpicCloseResult(
         subagent_exit_code=subagent_result.exit_code,
         stdout=subagent_result.stdout,
         stderr=subagent_result.stderr,
-        ledger_updated=parsed_output.ledger_updated,
-        claude_md_updated=parsed_output.claude_md_updated,
+        project_state_updated=parsed_output.project_state_updated,
         handoff_rewritten=parsed_output.handoff_rewritten,
-        epic_closed=parsed_output.epic_closed,
-        next_epic=parsed_output.next_epic,
+        scope_closed=parsed_output.scope_closed,
+        next_route=parsed_output.next_route,
         audit_sha=parsed_output.audit_sha,
         commit_sha=parsed_output.commit_sha,
         push_status=parsed_output.push_status,
@@ -178,11 +172,10 @@ def run_epic_close(*, log: LogFn | None = None) -> EpicCloseResult:
 
 def _parse_subagent_output(output: str) -> _ParsedLedgerOutput:
     return _ParsedLedgerOutput(
-        ledger_updated=_parse_yes_no_field(output, "LEDGER UPDATED"),
-        claude_md_updated=_parse_yes_no_field(output, "CLAUDE.MD UPDATED"),
+        project_state_updated=_parse_yes_no_field(output, "PROJECT STATE UPDATED"),
         handoff_rewritten=_parse_yes_no_field(output, "HANDOFF.MD REWRITTEN"),
-        epic_closed=_require_match(_EPIC_CLOSED_RE, output, "EPIC CLOSED").group(1),
-        next_epic=_require_match(_NEXT_EPIC_RE, output, "NEXT EPIC").group(1),
+        scope_closed=_require_match(_SCOPE_CLOSED_RE, output, "SCOPE CLOSED").group(1),
+        next_route=_require_match(_NEXT_ROUTE_RE, output, "NEXT ROUTE").group(1),
         audit_sha=_parse_audit_sha(output),
         commit_sha=_parse_commit_sha(output),
         push_status=_require_match(_PUSH_RESULT_RE, output, "PUSH RESULT").group(1),

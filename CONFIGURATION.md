@@ -4,7 +4,9 @@
 `dispatch_config.yaml` in the target repository.
 
 This document describes the planned public configuration surface. The current
-code scaffold still needs to be wired to this schema.
+code scaffold still needs to be wired to this schema. See
+[dispatch_config.example.yaml](dispatch_config.example.yaml) for a copyable
+example shape.
 
 ## Minimal Shape
 

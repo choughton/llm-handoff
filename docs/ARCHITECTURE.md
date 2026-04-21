@@ -36,13 +36,13 @@ Continue, pause, or escalate
 - `llm_handoff.orchestrator`: dispatch loop and failure-mode handling.
 - `llm_handoff.agents`: provider CLI invocation and stream handling.
 - `llm_handoff.handoff_normalizer`: frontmatter `next_agent` normalization.
-- `llm_handoff.ledger`: finalizer-style close flow from the source project.
+- `llm_handoff.ledger`: finalizer-style close flow for durable state updates.
 - `llm_handoff.logging_util`: dispatch log writer.
 - `llm_handoff.text_io`: robust text decoding for handoff files.
 
-The current scaffold still contains source-project assumptions in several of
-these modules. The next extraction pass should move those assumptions into
-config, prompts, or examples.
+The first extraction pass removed source-project names from package code. The
+remaining architectural work is to move hard-coded adapter choices into config,
+prompts, or examples.
 
 ## Handoff File
 

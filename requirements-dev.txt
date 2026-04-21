@@ -1,0 +1,8 @@
+anthropic
+click
+instructor
+pydantic
+PyYAML
+tenacity
+typer
+pytest

@@ -10,9 +10,10 @@ def _binary_name(base_name: str) -> str:
     return f"{base_name}.cmd" if os.name == "nt" else base_name
 
 
-GEMINI_PE_MENTION = "@crossfire_pe"
-GEMINI_FRONTEND_MENTION = "@crossfire_frontend"
-CODEX_SKILL_NAME = "llm-crossfire-codex"
+DISPATCH_WINDOW_TITLE = "llm-handoff dispatcher"
+GEMINI_PE_MENTION = "@planner"
+GEMINI_FRONTEND_MENTION = "@frontend"
+CODEX_SKILL_NAME = "llm-handoff"
 CODEX_WEB_SEARCH_MODE = "disabled"
 
 CLAUDE_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
@@ -33,10 +34,11 @@ CODEX_BINARY = _binary_name("codex")
 CLAUDE_BINARY = _binary_name("claude")
 
 DEFAULT_HANDOFF_PATH = Path("docs/handoff/HANDOFF.md")
-DEFAULT_CLAUDE_MD_PATH = Path("CLAUDE.md")
-DEFAULT_SHARED_INIT_PROMPT_PATH = Path("docs/handoff/SHARED_REPO_INIT_PROMPT.md")
+DEFAULT_PROJECT_STATE_PATH = Path("PROJECT_STATE.md")
+DEFAULT_CLAUDE_MD_PATH = DEFAULT_PROJECT_STATE_PATH
+DEFAULT_SHARED_INIT_PROMPT_PATH = Path("examples/reference-workflow/README.md")
 CODEX_OUTPUT_SCHEMA_PATH = (
-    Path("tools") / "dispatch" / "schemas" / "codex_final_response.schema.json"
+    Path("llm_handoff") / "schemas" / "codex_final_response.schema.json"
 )
 CODEX_OUTPUT_DIRECTORY = Path("logs") / "dispatch" / "codex"
 CODEX_OUTPUT_LAST_MESSAGE_PATH = CODEX_OUTPUT_DIRECTORY / "last-message.json"
@@ -48,9 +50,11 @@ def detect_repo_root(start: Path | None = None) -> Path:
     candidates = (current, *current.parents)
 
     for candidate in candidates:
-        if (candidate / "AGENTS.md").exists() and (
-            candidate / DEFAULT_HANDOFF_PATH
-        ).exists():
+        if (candidate / ".git").exists():
+            return candidate
+
+    for candidate in candidates:
+        if (candidate / DEFAULT_HANDOFF_PATH).exists():
             return candidate
 
     return current
@@ -63,7 +67,7 @@ class DispatchConfig(BaseModel):
     handoff_path: Path = DEFAULT_HANDOFF_PATH
     claude_md_path: Path = DEFAULT_CLAUDE_MD_PATH
     dry_run: bool = False
-    use_antigravity: bool = False
+    use_manual_frontend: bool = False
     use_gemini_api_key_env: bool = False
     use_codex_resume: bool = True
     use_gemini_resume: bool = GEMINI_RESUME_DEFAULT

@@ -10,15 +10,18 @@ import click
 import typer
 
 from llm_handoff.agents import _cleanup_codex_output_artifacts, _codex_artifact_paths
-from llm_handoff.config import DispatchConfig, detect_repo_root
+from llm_handoff.config import (
+    DISPATCH_WINDOW_TITLE,
+    DispatchConfig,
+    detect_repo_root,
+)
 from llm_handoff.logging_util import DispatchLogger
 from llm_handoff.orchestrator import run_loop
 
-_DISPATCH_WINDOW_TITLE = "LLM Crossfire Dispatch Script"
 _WINDOWS = os.name == "nt"
 app = typer.Typer(
     add_completion=False,
-    help="LLM Crossfire dispatch loop.",
+    help="llm-handoff dispatcher.",
     invoke_without_command=True,
 )
 
@@ -50,7 +53,7 @@ def _set_dispatch_console_title() -> tuple[str, bool]:
         previous_title = buffer.value if title_length > 0 else ""
         # Preserve the captured title even if SetConsoleTitleW fails so restore
         # logic can distinguish "unchanged" from "unknown previous title".
-        if not kernel32.SetConsoleTitleW(_DISPATCH_WINDOW_TITLE):
+        if not kernel32.SetConsoleTitleW(DISPATCH_WINDOW_TITLE):
             return previous_title, False
         return previous_title, True
     except (AttributeError, OSError):
@@ -70,7 +73,7 @@ def _restore_console_title(previous_title: str, *, changed: bool) -> None:
 def _run_dispatch(
     *,
     dry_run: bool,
-    use_antigravity: bool,
+    use_manual_frontend: bool,
     use_gemini_api_key_env: bool,
     use_codex_resume: bool,
     use_gemini_resume: bool,
@@ -79,7 +82,7 @@ def _run_dispatch(
     config = DispatchConfig(
         repo_root=detect_repo_root(repo_root),
         dry_run=dry_run,
-        use_antigravity=use_antigravity,
+        use_manual_frontend=use_manual_frontend,
         use_gemini_api_key_env=use_gemini_api_key_env,
         use_codex_resume=use_codex_resume,
         use_gemini_resume=use_gemini_resume,
@@ -104,7 +107,11 @@ def _run_dispatch(
 @app.callback(invoke_without_command=True)
 def _dispatch_callback(
     dry_run: bool = typer.Option(False, "--dry-run"),
-    use_antigravity: bool = typer.Option(False, "--use-antigravity"),
+    use_manual_frontend: bool = typer.Option(
+        False,
+        "--manual-frontend",
+        help="Pause for manual frontend work instead of launching the frontend CLI.",
+    ),
     use_gemini_api_key_env: bool = typer.Option(
         False,
         "--use-gemini-api-key-env",
@@ -138,7 +145,7 @@ def _dispatch_callback(
     raise typer.Exit(
         _run_dispatch(
             dry_run=dry_run,
-            use_antigravity=use_antigravity,
+            use_manual_frontend=use_manual_frontend,
             use_gemini_api_key_env=use_gemini_api_key_env,
             use_codex_resume=use_codex_resume,
             use_gemini_resume=use_gemini_resume,

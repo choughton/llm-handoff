@@ -1,0 +1,51 @@
+# Example llm-handoff configuration.
+#
+# Config-file loading is planned work. This file documents the intended public
+# shape for source checkout users and target-repo templates.
+
+handoff_path: docs/handoff/HANDOFF.md
+project_state_path: PROJECT_STATE.md
+auto_push: false
+
+agents:
+  planner:
+    provider: gemini
+    binary: gemini
+    mention: "@planner"
+    resume: true
+    timeout_ms: 1200000
+
+  implementer:
+    provider: codex
+    binary: codex
+    skill_name: llm-handoff
+    resume: true
+    timeout_ms: 1200000
+
+  frontend:
+    provider: gemini
+    binary: gemini
+    mention: "@frontend"
+    resume: false
+    timeout_ms: 1200000
+
+  auditor:
+    provider: claude
+    binary: claude
+    model: claude-opus-4-7
+    resume: false
+    timeout_ms: 900000
+
+  validator:
+    provider: claude
+    binary: claude
+    model: claude-haiku-4-5
+    resume: false
+    timeout_ms: 900000
+
+  finalizer:
+    provider: claude
+    binary: claude
+    model: claude-opus-4-7
+    resume: false
+    timeout_ms: 900000

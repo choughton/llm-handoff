@@ -23,21 +23,24 @@ RouteName = Literal[
 ]
 Confidence = Literal["HIGH", "MEDIUM", "LOW"]
 NextAgent = Literal[
+    "auditor",
+    "backend",
     "claude-audit",
     "claude-ledger",
     "codex",
-    "crossfire_backend",
+    "finalizer",
+    "frontend",
     "gemini-pe",
-    "crossfire_pe",
     "gemini-frontend",
-    "crossfire_frontend",
-    "antigravity",
+    "implementer",
+    "planner",
+    "validator",
     "user",
 ]
 CloseType = Literal["story", "epic"]
 
 _AGENT_PREFIX_RE = re.compile(
-    r"(?i)^(Claude\s*Code|Codex|crossfire_frontend|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|Antigravity)\b(.*)$"
+    r"(?i)^(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|planner|implementer|backend|frontend|auditor|validator|finalizer)\b(.*)$"
 )
 _NEXT_STEP_HEADER_RE = re.compile(r"(?i)^(#{1,6})\s+Next\s+Steps?\b(.*)$")
 _TASK_ASSIGNMENT_HEADER_RE = re.compile(r"(?i)^(#{1,6})\s+Task Assignment\b")
@@ -65,23 +68,21 @@ LEGACY_FRONTMATTER_WARNING = (
     "falling back to legacy prose routing."
 )
 _FRONTMATTER_ROUTE_MAP: dict[str, RouteName] = {
+    "auditor": "ClaudeCode-Audit",
+    "backend": "Codex",
     "claude-audit": "ClaudeCode-Audit",
     "claude-ledger": "Epic-Close",
     "codex": "Codex",
-    "crossfire_backend": "Codex",
+    "finalizer": "Epic-Close",
+    "frontend": "Gemini-Frontend",
     "gemini-pe": "Gemini-PE",
-    "crossfire_pe": "Gemini-PE",
     "gemini-frontend": "Gemini-Frontend",
-    "crossfire_frontend": "Gemini-Frontend",
-    "antigravity": "Gemini-Frontend",
+    "implementer": "Codex",
+    "planner": "Gemini-PE",
+    "validator": "ClaudeCode-Misroute",
     "user": "Escalation",
 }
-_FRONTMATTER_ALIAS_WARNINGS = {
-    "antigravity": "Legacy Antigravity reference normalized to Gemini-Frontend.",
-    "crossfire_backend": "crossfire_backend frontmatter alias normalized to Codex.",
-    "crossfire_pe": "crossfire_pe frontmatter alias normalized to Gemini-PE.",
-    "crossfire_frontend": "crossfire_frontend frontmatter alias normalized to Gemini-Frontend.",
-}
+_FRONTMATTER_ALIAS_WARNINGS: dict[str, str] = {}
 _ALLOWED_CLOSE_TYPES = {"story", "epic"}
 _FRONTMATTER_KNOWN_KEYS = {
     "next_agent",
@@ -501,19 +502,24 @@ def _frontmatter_route_errors(frontmatter: HandoffRouting) -> list[str]:
         elif _SHA_FULL_RE.fullmatch(frontmatter.scope_sha) is None:
             errors.append("scope_sha must be a 7-40 character git SHA.")
 
-    if close_type == "epic" and next_agent not in {
-        "claude-audit",
-        "claude-ledger",
-    }:
+    epic_close_agents = {"auditor", "claude-audit", "claude-ledger", "finalizer"}
+    if close_type == "epic" and next_agent not in epic_close_agents:
         errors.append(
-            "close_type `epic` requires next_agent `claude-audit` or `claude-ledger`."
+            "close_type `epic` requires next_agent `auditor`, `claude-audit`, `finalizer`, or `claude-ledger`."
         )
 
-    if next_agent == "claude-ledger" and close_type != "epic":
-        errors.append("next_agent `claude-ledger` requires close_type `epic`.")
+    if next_agent in {"claude-ledger", "finalizer"} and close_type != "epic":
+        errors.append(
+            f"next_agent `{next_agent}` requires close_type `epic`."
+        )
 
-    if next_agent == "claude-ledger" and frontmatter.producer != "claude-audit":
-        errors.append("next_agent `claude-ledger` requires producer `claude-audit`.")
+    if next_agent in {"claude-ledger", "finalizer"} and frontmatter.producer not in {
+        "auditor",
+        "claude-audit",
+    }:
+        errors.append(
+            f"next_agent `{next_agent}` requires producer `auditor` or `claude-audit`."
+        )
 
     return errors
 
@@ -583,7 +589,6 @@ def _find_canonical_dispatch(
 ) -> _Signal | None:
     for raw_line in reversed(lines):
         line = raw_line.strip()
-        lowered = line.lower()
 
         if re.match(r"(?i)^Next:\s*epic[-\s]+close\s*$", line) or re.match(
             r"(?i)^Next:\s*close\s+epic\s*$", line
@@ -620,16 +625,6 @@ def _find_canonical_dispatch(
         route_name, route_warnings = _normalize_agent(dispatch_target, dispatch_target)
         if route_name is None:
             continue
-
-        if route_name == "Gemini-Frontend" and "antigravity" in lowered:
-            return _Signal(
-                route="Gemini-Frontend",
-                confidence="HIGH",
-                source="canonical_dispatch_line",
-                reasoning="Legacy Antigravity dispatch is normalized to Gemini-Frontend.",
-                warnings=tuple(route_warnings),
-                priority=80,
-            )
 
         reasoning = _agent_reasoning(route_name, "canonical_dispatch_line")
         return _Signal(
@@ -812,15 +807,12 @@ def _find_prose_next_agent(
             )
 
         reasoning = _agent_reasoning(agent, "next_agent_prose")
-        warnings: tuple[str, ...] = ()
-        if "antigravity" in target_text.lower():
-            warnings = ("Legacy Antigravity reference normalized to Gemini-Frontend.",)
         return _Signal(
             route=agent,
             confidence="HIGH",
             source="next_agent_prose",
             reasoning=reasoning,
-            warnings=warnings,
+            warnings=(),
             priority=50,
         )
 
@@ -884,7 +876,7 @@ def _claude_code_signal(
     ):
         warnings = list(extra_warnings)
         warnings.append(
-            "Ledger-close wording is ambiguous; CLAUDE.md shows remaining stories, so Epic-Close was not selected."
+            "Finalizer wording is ambiguous; the project state shows remaining work, so Epic-Close was not selected."
         )
         return _Signal(
             route="ClaudeCode-Audit",
@@ -953,7 +945,7 @@ def _source_label(source: str) -> str:
 
 def _extract_header_agent(suffix: str) -> tuple[RouteName | None, tuple[str, ...]]:
     match = re.search(
-        r"(?i)\b(for|to|:|→|->)\s+(Claude\s*Code|Codex|crossfire_frontend|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|Antigravity)\b",
+        r"(?i)\b(for|to|:|→|->)\s+(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|planner|implementer|backend|frontend|auditor|validator|finalizer)\b",
         suffix,
     )
     if match is None:
@@ -984,17 +976,25 @@ def _normalize_agent(
 ) -> tuple[RouteName | None, list[str]]:
     text = agent_text.strip()
     warnings: list[str] = []
+    normalized = text.lower()
 
     if re.search(r"(?i)Claude\s*Code", text):
         return "ClaudeCode-Audit", warnings
+    if normalized in {"auditor", "audit", "reviewer"}:
+        return "ClaudeCode-Audit", warnings
+    if normalized in {"validator", "handoff-validator"}:
+        return "ClaudeCode-Misroute", warnings
+    if normalized in {"finalizer", "ledger", "ledger-updater", "epic-close"}:
+        return "Epic-Close", warnings
+    if normalized in {"planner", "plan"}:
+        return "Gemini-PE", warnings
+    if normalized in {"implementer", "backend"}:
+        return "Codex", warnings
+    if normalized == "frontend":
+        return "Gemini-Frontend", warnings
     if re.search(r"(?i)\bCodex\b", text):
         return "Codex", warnings
-    if re.search(r"(?i)\bcrossfire_frontend\b", text) or re.search(
-        r"(?i)Gemini[\s-]+Frontend", text
-    ):
-        return "Gemini-Frontend", warnings
-    if re.search(r"(?i)\bAntigravity\b", text):
-        warnings.append("Legacy Antigravity reference normalized to Gemini-Frontend.")
+    if re.search(r"(?i)Gemini[\s-]+Frontend", text):
         return "Gemini-Frontend", warnings
     if re.search(r"(?i)Gemini[\s-]+PE", text):
         return "Gemini-PE", warnings

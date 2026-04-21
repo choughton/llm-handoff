@@ -1,8 +1,9 @@
 # Installation
 
 `llm-handoff` is in pre-release extraction. These instructions describe the
-intended install and first-run workflow. Some commands will become active once
-dependency setup and config loading are finalized.
+intended install and first-run workflow. The dispatcher can be run from a
+source checkout; config loading and template initialization are still planned
+work.
 
 ## Requirements
 
@@ -43,7 +44,7 @@ python -m pip install --upgrade pip
 
 ## Install Local Dependencies
 
-Planned source-checkout dependency install:
+Source-checkout dependency install:
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -142,5 +143,5 @@ The handoff file is the live state. Git is the durable history.
 python -m pytest tests -q
 ```
 
-The current scaffold tests intentionally include failing tests that describe the
-next genericization targets. See [docs/TESTING.md](docs/TESTING.md).
+The current scaffold tests describe the genericization contract. See
+[docs/TESTING.md](docs/TESTING.md).

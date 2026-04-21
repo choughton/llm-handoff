@@ -1283,7 +1283,7 @@ def _is_codex_resume_recoverable_failure(result: _ProcessResult) -> bool:
     return any(marker in failure_text for marker in resume_markers)
 
 
-def invoke_antigravity(
+def invoke_manual_frontend(
     handoff_path: Path,
     *,
     log: LogFn | None = None,
@@ -1291,7 +1291,7 @@ def invoke_antigravity(
     repo_root = Path.cwd()
     resolved_handoff_path = _resolve_handoff_path(handoff_path, repo_root)
     message = (
-        "Antigravity is a manual GUI step. Complete the frontend work using "
+        "Manual frontend mode is enabled. Complete the frontend work using "
         f"{resolved_handoff_path}, then press any key to continue dispatch."
     )
     start_time = time.monotonic()

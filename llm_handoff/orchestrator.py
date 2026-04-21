@@ -10,10 +10,10 @@ from typing import Callable
 from llm_handoff.agents import (
     DispatchResult,
     SubagentResult,
-    invoke_antigravity,
     invoke_claude_subagent,
     invoke_codex,
     invoke_gemini,
+    invoke_manual_frontend,
 )
 from llm_handoff.config import DispatchConfig
 from llm_handoff.ledger import run_epic_close
@@ -39,12 +39,12 @@ from llm_handoff.validator import (
 
 
 AUDIT_PROMPT = (
-    "Use the crossfire-auditor agent to audit the work described in "
-    "docs/handoff/HANDOFF.md. Read the pointer documents per the agent's "
-    "operating rules. Run the full 4-check audit gate (tsc, vitest, build, "
-    "pytest). Verify v20 invariants against the diff. Return the standard audit "
-    "report format. After the report, update docs/handoff/HANDOFF.md with the "
-    "audit findings and a routing instruction for the next agent."
+    "Use the auditor agent to audit the work described in "
+    "docs/handoff/HANDOFF.md. Read the repository instructions and relevant "
+    "state files before judging the diff. Run the configured verification "
+    "commands when available. Return a concise audit report, then update "
+    "docs/handoff/HANDOFF.md with findings and a routing instruction for the "
+    "next agent."
 )
 
 MISROUTE_PROMPT = (
@@ -85,8 +85,8 @@ LOW_CONFIDENCE_ROUTE_VALIDATOR_PROMPT_TEMPLATE = (
 )
 PLANNER_SELF_LOOP_VALIDATOR_PROMPT = (
     "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
-    "The dispatcher detected a planner self-loop: Gemini-PE just finished, "
-    "and the updated HANDOFF.md still routes to Gemini-PE. "
+    "The dispatcher detected a planner self-loop: the planner just finished, "
+    "and the updated HANDOFF.md still routes back to the planner. "
     "Focus on why the planner routed the handoff back to itself and what must "
     "change in routing, ownership, or content requirements. Return ONLY the "
     "structured output format."
@@ -115,11 +115,11 @@ POST_DISPATCH_ROUTING_RECOVERY_INSTRUCTION_TEMPLATE = (
 )
 STALE_EPIC_CLOSE_GEMINI_RECOVERY_INSTRUCTION = (
     "The prior Epic-Close cycle already completed, but HANDOFF.md was not "
-    "rewritten and still contains stale Epic-Close routing. Treat CLAUDE.md and "
-    "docs/COMPLETED_WORK_LEDGER.md as the source of truth for the current "
-    "campaign phase. Evaluate the current repo state, scope the next phase or "
-    "next epic, and rewrite HANDOFF.md for the next cycle instead of "
-    "repeating Epic-Close."
+    "rewritten and still contains stale Epic-Close routing. Treat "
+    "PROJECT_STATE.md and Git history as the source of truth for the current "
+    "workflow phase. Evaluate the current repo state, scope the next phase, "
+    "and rewrite HANDOFF.md for the next cycle instead of repeating "
+    "Epic-Close."
 )
 
 LogFn = Callable[[str, str], None]
@@ -197,7 +197,7 @@ def run_loop(
                 source="post_dispatch_routing_recovery",
                 reasoning=(
                     "The previous cycle ended with a non-dispatchable handoff, "
-                    "so Gemini-PE is repairing routing or escalating."
+                    "so the planner is repairing routing or escalating."
                 ),
                 warnings=[],
             )
@@ -221,7 +221,7 @@ def run_loop(
             _log(
                 log_fn,
                 "WARN",
-                "STALE Epic-Close detected after a completed ledger close; redirecting this cycle to Gemini PE for forward routing.",
+                "STALE Epic-Close detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
             )
             decision = recovery_decision
 
@@ -416,7 +416,7 @@ def run_loop(
                     _log(
                         log_fn,
                         "AGENT",
-                        f"Post-dispatch handoff for {previous_agent} is not dispatchable. Scheduling Gemini-PE to repair routing or escalate on the next cycle.",
+                        f"Post-dispatch handoff for {previous_agent} is not dispatchable. Scheduling the planner to repair routing or escalate on the next cycle.",
                     )
                     current_handoff_content = (
                         _read_required_text(config.handoff_full_path) or ""
@@ -514,9 +514,9 @@ def _dispatch_route(
         )
 
     if route == "Gemini-Frontend":
-        if config.use_antigravity:
-            _log(log, "DISPATCH", "Dispatching Antigravity (GUI, manual pause).")
-            return invoke_antigravity(handoff_path, log=log), "Antigravity (GUI)"
+        if config.use_manual_frontend:
+            _log(log, "DISPATCH", "Pausing for manual frontend work.")
+            return invoke_manual_frontend(handoff_path, log=log), "Manual frontend"
 
         _log(log, "DISPATCH", "Dispatching Gemini Frontend.")
         return (
@@ -533,7 +533,7 @@ def _dispatch_route(
     if route == "ClaudeCode-Audit":
         _log(log, "DISPATCH", "Dispatching Claude Code for audit.")
         return _dispatch_from_subagent(
-            invoke_claude_subagent("crossfire-auditor", AUDIT_PROMPT, log=log)
+            invoke_claude_subagent("auditor", AUDIT_PROMPT, log=log)
         ), "Claude Code (audit)"
 
     if route == "ClaudeCode-Misroute":
@@ -750,7 +750,7 @@ def _run_self_loop_validator(
 ) -> None:
     if self_loop_kind == "planner":
         prompt = PLANNER_SELF_LOOP_VALIDATOR_PROMPT
-        message = "Gemini-PE produced a planner self-loop. Invoking Claude handoff-validator..."
+        message = "The planner produced a self-loop. Invoking Claude handoff-validator..."
     else:
         prompt = AGENT_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE.format(
             previous_agent=previous_agent
@@ -848,7 +848,7 @@ def _self_loop_terminal_status(
     self_loop_kind: str,
 ) -> str:
     if self_loop_kind == "planner":
-        return f"Post-dispatch gate PAUSED for {previous_agent}; Gemini-PE routed the handoff back to itself."
+        return f"Post-dispatch gate PAUSED for {previous_agent}; the planner routed the handoff back to itself."
     return f"Post-dispatch gate PAUSED for {previous_agent}; HANDOFF routed work back to the same agent."
 
 
@@ -857,7 +857,7 @@ def _self_loop_pause_reason(
     self_loop_kind: str,
 ) -> str:
     if self_loop_kind == "planner":
-        return "Gemini-PE routed HANDOFF.md back to Gemini-PE. Update the handoff; dispatch will resume after the file changes."
+        return "The planner routed HANDOFF.md back to itself. Update the handoff; dispatch will resume after the file changes."
     return f"{previous_agent} routed HANDOFF.md back to itself. Update the handoff; dispatch will resume after the file changes."
 
 
@@ -947,8 +947,8 @@ def _log_dry_run(config: DispatchConfig, route: RouteName, log: LogFn) -> None:
 
     if route == "Gemini-Frontend":
         target = (
-            "Antigravity (GUI, manual)"
-            if config.use_antigravity
+            "manual frontend pause"
+            if config.use_manual_frontend
             else "Gemini Frontend (CLI)"
         )
         _log(log, "DISPATCH", f"[DRY RUN] Would dispatch {target} for frontend work")
@@ -977,13 +977,13 @@ def _log_dry_run(config: DispatchConfig, route: RouteName, log: LogFn) -> None:
 
 def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
     frontend_mode = (
-        "Antigravity (GUI, manual pause)"
-        if config.use_antigravity
-        else "Gemini CLI crossfire_frontend"
+        "manual frontend pause"
+        if config.use_manual_frontend
+        else "Gemini CLI frontend"
     )
 
     _log(log, "INFO", "================================================")
-    _log(log, "INFO", "  LLM Crossfire Dispatch Loop v2 Starting       ")
+    _log(log, "INFO", "  llm-handoff dispatch loop starting           ")
     _log(log, "INFO", "  Single-dispatch-per-cycle, HANDOFF.md routes  ")
     _log(log, "INFO", "================================================")
     _log(log, "INFO", f"Repo root:          {config.repo_root}")
@@ -993,7 +993,7 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         "Smart router:       ON (frontmatter primary; legacy fallback warning)",
     )
     _log(log, "INFO", "Handoff validation: ON (hard gate)")
-    _log(log, "INFO", "Auto ledger:        ON (always)")
+    _log(log, "INFO", "Finalizer route:    ON")
     _log(log, "INFO", "Chaining:           NONE (single dispatch per cycle)")
     _log(log, "INFO", f"Frontend agent:     {frontend_mode}")
     _log(
