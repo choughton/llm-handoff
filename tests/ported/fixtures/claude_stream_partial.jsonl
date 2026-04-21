@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"session-partial","model":"claude-opus-4-7","tools":["Bash"]}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## Audit Verdict: IN PROGRESS\n\n- pytest: still running"}]}}

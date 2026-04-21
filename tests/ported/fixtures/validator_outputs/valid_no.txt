@@ -1,0 +1,11 @@
+VALID: NO
+CHECKS:
+  SHA-PRESENT:    FAIL - No git commit SHA found in HANDOFF.md.
+  SHA-FRESH:      WARN - Freshness could not be checked because no commit SHA was present.
+  ROUTING:        FAIL - No routing instruction for the next agent was found.
+  CONTENT:        PASS - Handoff includes implementation notes.
+  GIT-STATE:      PASS - No additional git-state issues were reported.
+SUMMARY: Handoff is missing required pointer-protocol fields.
+BLOCKERS:
+  1. Add a commit SHA to the handoff.
+  2. Add a routing instruction for the next agent.

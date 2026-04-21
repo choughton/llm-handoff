@@ -1,0 +1,2770 @@
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+from typing import Any
+from unittest.mock import Mock
+
+import pytest
+
+from llm_handoff.agents import DispatchResult, SubagentResult
+from llm_handoff.ledger import EpicCloseResult
+from llm_handoff.validator import ValidationResult
+
+
+def _load_orchestrator_module():
+    return importlib.import_module("llm_handoff.orchestrator")
+
+
+def _load_main_module():
+    return importlib.import_module("llm_handoff.__main__")
+
+
+def _dispatch_config(
+    repo_root: Path,
+    *,
+    dry_run: bool = False,
+    use_manual_frontend: bool = False,
+    use_gemini_api_key_env: bool = False,
+    use_codex_resume: bool = True,
+    use_gemini_resume: bool = True,
+    poll_interval_seconds: int = 0,
+    max_consecutive_failures: int = 3,
+):
+    config_module = importlib.import_module("llm_handoff.config")
+    return config_module.DispatchConfig(
+        repo_root=repo_root,
+        dry_run=dry_run,
+        use_manual_frontend=use_manual_frontend,
+        use_gemini_api_key_env=use_gemini_api_key_env,
+        use_codex_resume=use_codex_resume,
+        use_gemini_resume=use_gemini_resume,
+        poll_interval_seconds=poll_interval_seconds,
+        max_consecutive_failures=max_consecutive_failures,
+    )
+
+
+def _write_repo(
+    tmp_path: Path,
+    handoff_content: str,
+    *,
+    claude_md_content: str = "# CLAUDE\n",
+) -> tuple[Path, Path]:
+    repo_root = tmp_path
+    handoff_path = repo_root / "docs" / "handoff" / "HANDOFF.md"
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+    handoff_path.write_text(handoff_content, encoding="utf-8")
+    (repo_root / "PROJECT_STATE.md").write_text(claude_md_content, encoding="utf-8")
+    (repo_root / "AGENTS.md").write_text("dispatch test fixture\n", encoding="utf-8")
+    return repo_root, handoff_path
+
+
+def test_read_required_text_accepts_utf16_le_bom(tmp_path: Path) -> None:
+    handoff_path = tmp_path / "HANDOFF.md"
+    handoff_path.write_text("# Frontend Handback\n", encoding="utf-16")
+    orchestrator = _load_orchestrator_module()
+
+    assert orchestrator._read_required_text(handoff_path) == "# Frontend Handback\n"
+
+
+def _dispatch_result(*, exit_code: int = 0) -> DispatchResult:
+    return DispatchResult(
+        stdout="",
+        stderr="",
+        exit_code=exit_code,
+        elapsed_seconds=0.01,
+    )
+
+
+def _subagent_result(
+    *,
+    exit_code: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+) -> SubagentResult:
+    return SubagentResult(
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=exit_code,
+        elapsed_seconds=0.01,
+    )
+
+
+def _validation_result(verdict: str = "YES") -> ValidationResult:
+    return ValidationResult(
+        verdict=verdict,
+        warnings=[],
+        errors=[],
+        routing_instruction="Codex",
+    )
+
+
+def test_run_loop_dispatches_only_one_agent_per_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Codex:** Implement Story 5.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    dispatches: list[str] = []
+    log_messages: list[tuple[str, str]] = []
+
+    def fake_codex(path: Path, *, log=None, use_resume=False) -> DispatchResult:
+        assert path == handoff_path
+        assert callable(log)
+        assert use_resume is True
+        dispatches.append("Codex")
+        handoff_path.write_text(
+            """## Next Step
+
+- **Claude Code:** Audit Story 5.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert prompt
+        assert callable(log)
+        dispatches.append(subagent_name)
+        handoff_path.write_text(
+            """## Escalation
+
+Manual handoff review required.
+""",
+            encoding="utf-8",
+        )
+        return _subagent_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_codex", fake_codex)
+    monkeypatch.setattr(orchestrator, "invoke_claude_subagent", fake_subagent)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert dispatches == ["Codex", "auditor"]
+    assert any("Routing instruction: Codex" in message for _, message in log_messages)
+    assert any(
+        "Routing instruction: ClaudeCode-Audit" in message
+        for _, message in log_messages
+    )
+
+
+def test_run_loop_logs_dispatch_progress_for_completed_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    impl_sha = "9482fcf8cb0eb1099ef90b02fe2a8238c551d383"
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Codex:** Implement Story 5.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+
+    def fake_codex(path: Path, *, log=None, use_resume=False) -> DispatchResult:
+        assert path == handoff_path
+        assert callable(log)
+        assert use_resume is True
+        handoff_path.write_text(
+            f"""# Codex Handback
+
+**Agent:** Codex
+**Latest Commit SHA:** `{impl_sha}`
+
+## Summary
+
+Completed work.
+
+## Next Step
+
+- **Claude Code:** Audit Story 5.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result(exit_code=0)
+
+    monkeypatch.setattr(orchestrator, "invoke_codex", fake_codex)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("DISPATCH", "Dispatching Codex.") in log_messages
+    assert ("INFO", "Codex exited with code 0") in log_messages
+    assert (
+        "INFO",
+        f"Codex updated {handoff_path} (hash changed)",
+    ) in log_messages
+    assert (
+        "INFO",
+        "New SHA(s) found in handoff file: 9482fcf8cb0e... (1 added)",
+    ) in log_messages
+    assert ("AGENT", "Running post-dispatch validation for Codex...") in log_messages
+    assert ("AGENT", "Handoff validation verdict: YES") in log_messages
+    assert ("AGENT", "Post-dispatch gate PASSED for Codex.") in log_messages
+
+
+def test_run_loop_logs_handoff_scope_metadata(
+    tmp_path: Path,
+) -> None:
+    repo_root, _ = _write_repo(
+        tmp_path,
+        """---
+next_agent: codex
+reason: Implement synthesis schema story.
+epic_id: E-SYN-1
+story_id: E-SYN-1-S1
+story_title: Synthesis Schema Update
+remaining_stories:
+  - E-SYN-1-S2 HTML Export Template Redesign
+producer: gemini-pe
+---
+
+## Task Assignment
+
+**Agent:** Codex
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert (
+        "INFO",
+        "Handoff scope: epic=E-SYN-1; story=E-SYN-1-S1 (Synthesis Schema Update); remaining=E-SYN-1-S2 HTML Export Template Redesign",
+    ) in log_messages
+
+
+def test_run_loop_repairs_malformed_reason_frontmatter_before_routing(
+    tmp_path: Path,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: codex
+reason: Dispatch E2-S1: Implement backend as_completed loop.
+producer: gemini-pe
+---
+
+## Task Assignment
+
+**Agent:** Codex
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", "Routing instruction: Codex") in log_messages
+    assert (
+        "WARN",
+        "Auto-repaired HANDOFF YAML frontmatter by quoting reason.",
+    ) in log_messages
+    assert "Dispatch E2-S1: Implement backend as_completed loop." in (
+        handoff_path.read_text(encoding="utf-8")
+    )
+
+
+def test_run_loop_skips_next_agent_normalizer_for_exact_frontmatter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: codex
+reason: Implement the next backend story.
+producer: gemini-pe
+---
+
+## Task Assignment
+
+**Agent:** Codex
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+
+    def fail_normalizer(_freeform: str) -> str:
+        raise AssertionError("canonical next_agent should not call the normalizer")
+
+    monkeypatch.setattr(orchestrator, "normalize_next_agent", fail_normalizer)
+
+    assert orchestrator.run_loop(config, max_cycles=1) == 0
+
+
+def test_run_loop_normalizes_fuzzy_next_agent_before_routing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: Claude Code (Auditor)
+reason: Frontend implementation complete; audit requested.
+scope_sha: 25c45ca
+close_type: story
+producer: gemini-frontend
+---
+
+## Implementer Handback
+
+**Agent:** gemini-frontend
+**Latest verified repo SHA:** `25c45ca`
+
+## Completed Work
+
+- Built the Round History panel.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    log_messages: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "normalize_next_agent",
+        lambda freeform, **_kwargs: (
+            "claude-audit" if freeform == "Claude Code (Auditor)" else "unknown"
+        ),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", "Routing instruction: ClaudeCode-Audit") in log_messages
+    assert (
+        "WARN",
+        "router: next_agent 'Claude Code (Auditor)' is not a deterministic enum match; invoking normalizer.",
+    ) in log_messages
+    assert (
+        "INFO",
+        "router: next_agent normalizer returned 'claude-audit' for 'Claude Code (Auditor)'.",
+    ) in log_messages
+    assert (
+        "INFO",
+        "router: rewrote next_agent to deterministic output 'claude-audit' in HANDOFF.md.",
+    ) in log_messages
+    handoff_content = handoff_path.read_text(encoding="utf-8")
+    assert "next_agent: claude-audit\n" in handoff_content
+    assert (
+        "reason: Frontend implementation complete; audit requested.\n"
+        in handoff_content
+    )
+    assert "scope_sha: 25c45ca\n" in handoff_content
+
+
+def test_run_loop_pauses_when_next_agent_normalizer_returns_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: banana
+reason: Invalid route.
+producer: gemini-pe
+---
+
+## Task Assignment
+
+**Agent:** RouterBot
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    log_messages: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "normalize_next_agent",
+        lambda _freeform, **_kwargs: "unknown",
+    )
+    monkeypatch.setattr(orchestrator, "_run_unknown_route_validator", lambda _log: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_pause_until_handoff_changes",
+        lambda *_args, **_kwargs: False,
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert (
+        "WARN",
+        "router: next_agent 'banana' is not a deterministic enum match; invoking normalizer.",
+    ) in log_messages
+    assert (
+        "INFO",
+        "router: next_agent normalizer returned 'unknown' for 'banana'.",
+    ) in log_messages
+    assert (
+        "WARN",
+        "router: next_agent 'banana' could not be normalized; leaving HANDOFF.md unchanged.",
+    ) in log_messages
+
+
+def test_run_loop_accepts_utf16_manual_frontend_handback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    impl_sha = "236f82f812e405c595dd3fb194c98d8f1d11d89e"
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: gemini-frontend
+reason: Frontend implementation requested.
+producer: gemini-pe
+---
+
+## Task Assignment
+
+**Agent:** frontend
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, use_manual_frontend=True)
+    log_messages: list[tuple[str, str]] = []
+
+    def fake_manual_frontend(path: Path, *, log=None) -> DispatchResult:
+        assert path == handoff_path
+        assert callable(log)
+        handoff_path.write_text(
+            f"""---
+next_agent: claude-audit
+reason: E1-S6 frontend implementation complete; audit requested.
+scope_sha: 236f82f
+close_type: story
+producer: gemini-frontend
+---
+
+# E1-S6 Frontend Handback
+
+**Agent:** gemini-frontend (manual frontend)
+**Latest verified repo SHA:** `{impl_sha}`
+
+## Completed Work
+
+- Added the frontend stale-state signaling UI.
+
+## Verification
+
+- `npm test`
+- `npm run build`
+""",
+            encoding="utf-16",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_manual_frontend", fake_manual_frontend)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", "Routing instruction: Gemini-Frontend") in log_messages
+    assert ("INFO", "manual frontend (GUI) exited with code 0") in log_messages
+    assert ("AGENT", "Handoff validation verdict: YES") in log_messages
+
+
+def test_run_loop_normalizes_post_dispatch_handoff_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    impl_sha = "236f82f812e405c595dd3fb194c98d8f1d11d89e"
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: gemini-frontend
+reason: Frontend implementation requested.
+producer: gemini-pe
+---
+
+## Task Assignment
+
+**Agent:** frontend
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, use_manual_frontend=True)
+    log_messages: list[tuple[str, str]] = []
+
+    def fake_manual_frontend(path: Path, *, log=None) -> DispatchResult:
+        assert path == handoff_path
+        handoff_path.write_text(
+            f"""---
+next_agent: Claude Code (Auditor)
+reason: E1-S6 frontend implementation complete; audit requested.
+scope_sha: 236f82f
+close_type: story
+producer: gemini-frontend
+---
+
+# E1-S6 Frontend Handback
+
+**Agent:** gemini-frontend (manual frontend)
+**Latest verified repo SHA:** `{impl_sha}`
+
+## Completed Work
+
+- Added the frontend stale-state signaling UI.
+
+## Verification
+
+- `npm test`
+- `npm run build`
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_manual_frontend", fake_manual_frontend)
+    monkeypatch.setattr(
+        orchestrator,
+        "normalize_next_agent",
+        lambda freeform, **_kwargs: (
+            "claude-audit" if freeform == "Claude Code (Auditor)" else "unknown"
+        ),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert (
+        "WARN",
+        "router: next_agent 'Claude Code (Auditor)' is not a deterministic enum match; invoking normalizer.",
+    ) in log_messages
+    assert (
+        "INFO",
+        "router: next_agent normalizer returned 'claude-audit' for 'Claude Code (Auditor)'.",
+    ) in log_messages
+    assert (
+        "INFO",
+        "router: rewrote next_agent to deterministic output 'claude-audit' in HANDOFF.md.",
+    ) in log_messages
+    assert ("AGENT", "Handoff validation verdict: YES") in log_messages
+    assert "next_agent: claude-audit\n" in handoff_path.read_text(encoding="utf-8")
+    assert (
+        "AGENT",
+        "Post-dispatch gate PASSED for manual frontend (GUI).",
+    ) in log_messages
+
+
+@pytest.mark.parametrize(
+    ("handoff_content", "expected_fragment"),
+    [
+        pytest.param(
+            """## Escalation
+
+Human review needed.
+""",
+            "ESCALATION DETECTED",
+            id="escalation",
+        ),
+        pytest.param(
+            """# No routing data
+
+There is no next step in this file.
+""",
+            "No routing instruction found",
+            id="unknown",
+        ),
+    ],
+)
+def test_run_loop_pauses_cleanly_for_escalation_or_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    handoff_content: str,
+    expected_fragment: str,
+) -> None:
+    repo_root, _ = _write_repo(tmp_path, handoff_content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    codex_calls: list[Path] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: (
+            codex_calls.append(path) or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: _subagent_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert codex_calls == []
+    assert any(expected_fragment in message for _, message in log_messages)
+
+
+def test_run_loop_runs_handoff_validator_before_pausing_on_unknown_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _ = _write_repo(
+        tmp_path,
+        """# No routing data
+
+There is no next step in this file.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: (
+            subagent_calls.append((subagent_name, prompt, log))
+            or _subagent_result(
+                stdout="""VALID: NO
+  ROUTING: FAIL - HANDOFF does not provide a dispatchable next step.
+  SHA-PRESENT: WARN - Planner handoff does not yet include a git commit SHA.
+"""
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: _dispatch_result(),
+    )
+
+    def fake_log(level: str, message: str) -> None:
+        log_messages.append((level, message))
+
+    exit_code = orchestrator.run_loop(config, log=fake_log)
+
+    assert exit_code == 0
+    assert len(subagent_calls) == 1
+    assert subagent_calls[0][0] == "handoff-validator"
+    assert "could not find a dispatchable routing instruction" in subagent_calls[0][1]
+    assert subagent_calls[0][2] is fake_log
+    assert (
+        "AGENT",
+        "No dispatchable route found. Invoking Claude handoff-validator...",
+    ) in log_messages
+    assert ("AGENT", "Handoff-validator exited with code 0") in log_messages
+    assert ("AGENT", "Handoff validation verdict: NO") in log_messages
+    assert (
+        "ERROR",
+        "routing: HANDOFF does not provide a dispatchable next step.",
+    ) in log_messages
+    assert (
+        "WARN",
+        "sha-present: Planner handoff does not yet include a git commit SHA.",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "No routing instruction found in HANDOFF.md. Update the handoff; dispatch will resume after the file changes.",
+    ) in log_messages
+
+
+def test_run_loop_waits_for_handoff_change_before_resuming_unknown_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """# No routing data
+
+There is no next step in this file.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(
+        repo_root,
+        dry_run=True,
+        poll_interval_seconds=1,
+    )
+    log_messages: list[tuple[str, str]] = []
+    sleep_calls: list[int] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: _subagent_result(
+            stdout="""VALID: NO
+  ROUTING: FAIL - HANDOFF does not provide a dispatchable next step.
+"""
+        ),
+    )
+
+    def fake_sleep(seconds: int) -> None:
+        sleep_calls.append(seconds)
+        handoff_path.write_text(
+            """## Next Step
+
+- **Codex:** Preview the dispatch.
+""",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert sleep_calls == [1]
+    assert (
+        "PAUSE",
+        "Waiting for HANDOFF.md to change; polling every 1s.",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "Detected HANDOFF.md change. Resuming dispatch loop.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: Codex") in log_messages
+    assert ("DISPATCH", "[DRY RUN] Would dispatch Codex") in log_messages
+
+
+def test_run_loop_runs_handoff_validator_and_pauses_on_gemini_self_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Gemini-PE:** Scope the next epic.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, poll_interval_seconds=1)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+    sleep_calls: list[int] = []
+    codex_calls: list[Path] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_gemini",
+        lambda role, path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+            (
+                handoff_path.write_text(
+                    """---
+next_agent: gemini-pe
+reason: Planner self-loop fixture.
+producer: gemini-pe
+---
+
+Mode: Non-Implementing Principal Engineer (review/orchestration only)
+
+## Task Assignment
+
+**Agent:** Gemini-PE
+**Epic/Story:** Scope the next epic
+""",
+                    encoding="utf-8",
+                ),
+                _dispatch_result(),
+            )[1]
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: (
+            subagent_calls.append((subagent_name, prompt, log))
+            or _subagent_result(
+                stdout="""VALID: NO
+  ROUTING: FAIL - Gemini-PE routed the handoff back to itself instead of handing off to another agent.
+"""
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: (
+            codex_calls.append(path),
+            path.write_text(
+                """---
+next_agent: claude-audit
+reason: Story 1 complete; audit requested.
+scope_sha: 9482fcf
+close_type: story
+producer: codex
+---
+
+# Codex Handback
+
+**Agent:** Codex
+**Latest Commit SHA:** `9482fcf8cb0eb1099ef90b02fe2a8238c551d383`
+
+## Completed Work
+
+Completed work.
+
+## Next Step
+
+- **Claude Code:** Audit Story 1.
+""",
+                encoding="utf-8",
+            ),
+            _dispatch_result(),
+        )[2],
+    )
+
+    def fake_sleep(seconds: int) -> None:
+        sleep_calls.append(seconds)
+        handoff_path.write_text(
+            """## Next Step
+
+- **Codex:** Implement Story 1.
+""",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(subagent_calls) == 1
+    assert subagent_calls[0][0] == "handoff-validator"
+    assert "detected a planner self-loop" in subagent_calls[0][1]
+    assert codex_calls == [handoff_path]
+    assert sleep_calls == [1]
+    assert (
+        "ERROR",
+        "planner_self_loop: Gemini-PE handoff routes work back to Gemini-PE, which would immediately re-dispatch the planner. Route to an implementer, auditor, or explicit pause state instead.",
+    ) in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch gate PAUSED for Gemini-PE; Gemini-PE routed the handoff back to itself.",
+    ) in log_messages
+    assert (
+        "AGENT",
+        "Gemini-PE produced a planner self-loop. Invoking Claude handoff-validator...",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "Gemini-PE routed HANDOFF.md back to Gemini-PE. Update the handoff; dispatch will resume after the file changes.",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "Detected HANDOFF.md change. Resuming dispatch loop.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: Codex") in log_messages
+    assert ("AGENT", "Post-dispatch gate PASSED for Codex.") in log_messages
+
+
+def test_run_loop_runs_handoff_validator_and_pauses_on_claude_audit_self_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Claude Code:** Audit the current story.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, poll_interval_seconds=1)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+    codex_calls: list[Path] = []
+    sleep_calls: list[int] = []
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert callable(log)
+        subagent_calls.append((subagent_name, prompt, log))
+        if subagent_name == "auditor":
+            handoff_path.write_text(
+                """---
+next_agent: claude-audit
+reason: Auditor self-loop fixture.
+scope_sha: 59206fb
+producer: claude-audit
+---
+
+# Claude Audit Handback
+
+**Agent:** Claude Code (auditor)
+**Latest verified repo SHA:** `59206fb3f3ac027ef3ba07f4d7c8db0410edc926`
+
+## Audit Summary
+
+Audit complete.
+
+## Next Step
+
+- **Claude Code:** Audit the next item.
+""",
+                encoding="utf-8",
+            )
+            return _subagent_result()
+        return _subagent_result(
+            stdout="""VALID: NO
+  ROUTING: FAIL - Claude Code (audit) routed the handoff back to itself instead of handing off to another agent.
+"""
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_claude_subagent", fake_subagent)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: (
+            codex_calls.append(path),
+            path.write_text(
+                """---
+next_agent: claude-audit
+reason: Story 1 complete; audit requested.
+scope_sha: 9482fcf
+close_type: story
+producer: codex
+---
+
+# Codex Handback
+
+**Agent:** Codex
+**Latest Commit SHA:** `9482fcf8cb0eb1099ef90b02fe2a8238c551d383`
+
+## Completed Work
+
+Completed work.
+
+## Next Step
+
+- **Claude Code:** Audit Story 1.
+""",
+                encoding="utf-8",
+            ),
+            _dispatch_result(),
+        )[2],
+    )
+
+    def fake_sleep(seconds: int) -> None:
+        sleep_calls.append(seconds)
+        handoff_path.write_text(
+            """## Next Step
+
+- **Codex:** Implement Story 1.
+""",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert [call[0] for call in subagent_calls] == [
+        "auditor",
+        "handoff-validator",
+    ]
+    assert "detected a self-loop" in subagent_calls[1][1]
+    assert codex_calls == [handoff_path]
+    assert sleep_calls == [1]
+    assert (
+        "ERROR",
+        "agent_self_loop: ClaudeCode-Audit handoff routes work back to ClaudeCode-Audit, which would immediately re-dispatch the same agent. Route to a different agent or explicit pause state instead.",
+    ) in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch gate PAUSED for Claude Code (audit); HANDOFF routed work back to the same agent.",
+    ) in log_messages
+    assert (
+        "AGENT",
+        "Claude Code (audit) produced a self-loop. Invoking Claude handoff-validator...",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "Claude Code (audit) routed HANDOFF.md back to itself. Update the handoff; dispatch will resume after the file changes.",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "Detected HANDOFF.md change. Resuming dispatch loop.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: Codex") in log_messages
+    assert ("AGENT", "Post-dispatch gate PASSED for Codex.") in log_messages
+
+
+def test_run_loop_schedules_gemini_recovery_for_non_dispatchable_audit_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Claude Code:** Audit the current dispatch fix.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    gemini_calls: list[tuple[str, Path, bool, str | None, Any]] = []
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert callable(log)
+        assert subagent_name == "auditor"
+        handoff_path.write_text(
+            """# Claude Audit Handback
+
+**Agent:** ClaudeCode-Audit
+**Latest verified repo SHA:** `a41a24f`
+
+## Audit Verdict: APPROVED
+
+The change is correct.
+
+## Next Step
+
+Next: Epic-Close — ledger-updater: append the ledger entry and push.
+""",
+            encoding="utf-8",
+        )
+        return _subagent_result()
+
+    validation_results = iter(
+        [
+            ValidationResult(
+                verdict="NO",
+                warnings=[],
+                errors=[
+                    "routing_instruction_missing: HANDOFF does not provide a dispatchable next step."
+                ],
+                routing_instruction=None,
+            ),
+            ValidationResult(
+                verdict="WARNINGS-ONLY",
+                warnings=[
+                    "sha_missing: Planner handoff does not yet include a git commit SHA."
+                ],
+                errors=[],
+                routing_instruction="Escalation",
+            ),
+        ]
+    )
+
+    def fake_gemini(
+        role: str,
+        path: Path,
+        use_api_key_env: bool = False,
+        additional_instruction: str | None = None,
+        log=None,
+        **kwargs,
+    ) -> DispatchResult:
+        assert callable(log)
+        gemini_calls.append((role, path, use_api_key_env, additional_instruction, log))
+        path.write_text(
+            """Mode: Non-Implementing Principal Engineer (review/orchestration only)
+
+## Escalation
+
+The handoff routing is malformed. Human clarification required before dispatch.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_claude_subagent", fake_subagent)
+    monkeypatch.setattr(orchestrator, "invoke_gemini", fake_gemini)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: next(validation_results),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(gemini_calls) == 1
+    assert gemini_calls[0][:3] == ("PE", handoff_path, False)
+    assert gemini_calls[0][3] is not None
+    assert "does not contain a dispatchable routing instruction" in gemini_calls[0][3]
+    assert "canonical dispatchable route" in gemini_calls[0][3]
+    assert (
+        "AGENT",
+        "Post-dispatch handoff for Claude Code (audit) is not dispatchable. Scheduling Gemini-PE to repair routing or escalate on the next cycle.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: Gemini-PE") in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch gate PASSED WITH WARNINGS for Gemini-PE.",
+    ) in log_messages
+
+
+def test_run_loop_validates_and_pauses_when_gemini_handoff_lacks_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Gemini PE:** Repair the malformed handoff.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, poll_interval_seconds=1)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+    codex_calls: list[Path] = []
+    sleep_calls: list[int] = []
+
+    def fake_gemini(
+        role: str,
+        path: Path,
+        use_api_key_env: bool = False,
+        additional_instruction: str | None = None,
+        log=None,
+        **kwargs,
+    ) -> DispatchResult:
+        del use_api_key_env, additional_instruction, kwargs
+        assert role == "PE"
+        assert callable(log)
+        path.write_text(
+            """# Gemini PE Review
+
+The implementation should be audited by Claude Code, but this handoff is missing a dispatchable route.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    validation_results = iter(
+        [
+            ValidationResult(
+                verdict="NO",
+                warnings=[],
+                errors=[
+                    "routing_instruction_missing: HANDOFF does not provide a dispatchable next step."
+                ],
+                routing_instruction=None,
+            ),
+            ValidationResult(
+                verdict="YES",
+                warnings=[],
+                errors=[],
+                routing_instruction="ClaudeCode-Audit",
+            ),
+        ]
+    )
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert callable(log)
+        subagent_calls.append((subagent_name, prompt, log))
+        return _subagent_result(
+            stdout="""VALID: NO
+  ROUTING: FAIL - HANDOFF does not provide a dispatchable next step.
+"""
+        )
+
+    def fake_codex(path: Path, *, log=None, use_resume=False) -> DispatchResult:
+        del log, use_resume
+        codex_calls.append(path)
+        path.write_text(
+            """# Codex Handback
+
+**Agent:** Codex
+**Latest Commit SHA:** `9482fcf8cb0eb1099ef90b02fe2a8238c551d383`
+
+## Completed Work
+
+Completed work.
+
+## Next Step
+
+- **Claude Code:** Audit Story 1.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    def fake_sleep(seconds: int) -> None:
+        sleep_calls.append(seconds)
+        handoff_path.write_text(
+            """## Next Step
+
+- **Codex:** Implement Story 1.
+""",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_gemini", fake_gemini)
+    monkeypatch.setattr(orchestrator, "invoke_codex", fake_codex)
+    monkeypatch.setattr(orchestrator, "invoke_claude_subagent", fake_subagent)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: next(validation_results),
+    )
+    monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(subagent_calls) == 1
+    assert subagent_calls[0][0] == "handoff-validator"
+    assert "missing a dispatchable route" in subagent_calls[0][1]
+    assert codex_calls == [handoff_path]
+    assert sleep_calls == [1]
+    assert (
+        "AGENT",
+        "Gemini-PE produced a handoff without a dispatchable route. Invoking Claude handoff-validator...",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "Gemini-PE produced HANDOFF.md without a dispatchable route. Update the handoff; dispatch will resume after the file changes.",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "Detected HANDOFF.md change. Resuming dispatch loop.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: Codex") in log_messages
+    assert ("AGENT", "Post-dispatch gate PASSED for Codex.") in log_messages
+
+
+def test_run_loop_repairs_gemini_written_frontmatter_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: gemini-pe
+reason: Scope next backend story.
+producer: claude-audit
+---
+
+## Handoff
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+
+    def fake_gemini(
+        role: str,
+        path: Path,
+        use_api_key_env: bool = False,
+        additional_instruction: str | None = None,
+        log=None,
+        **kwargs,
+    ) -> DispatchResult:
+        del use_api_key_env, additional_instruction, kwargs
+        assert role == "PE"
+        assert callable(log)
+        path.write_text(
+            """---
+next_agent: codex
+reason: Dispatch E2-S1: Implement backend as_completed loop.
+producer: gemini-pe
+---
+
+## Task Assignment
+
+**Agent:** Codex
+
+### Objective
+Implement the backend dispatch refactor.
+
+### Acceptance Criteria
+- Persist per-model completion incrementally.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_gemini", fake_gemini)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert (
+        "WARN",
+        "Auto-repaired HANDOFF YAML frontmatter by quoting reason.",
+    ) in log_messages
+    assert ("AGENT", "Handoff validation verdict: WARNINGS-ONLY") in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch gate PASSED WITH WARNINGS for Gemini-PE.",
+    ) in log_messages
+    assert "Dispatch E2-S1: Implement backend as_completed loop." in (
+        handoff_path.read_text(encoding="utf-8")
+    )
+
+
+def test_run_loop_detects_stale_route_after_two_unchanged_cycles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Codex:** Implement Story 5.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    codex_calls: list[Path] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: (
+            codex_calls.append(path) or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: (
+            subagent_calls.append((subagent_name, prompt, log)) or _subagent_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert codex_calls == [handoff_path]
+    assert len(subagent_calls) == 1
+    assert subagent_calls[0][0] == "handoff-validator"
+    assert "detected stale routing" in subagent_calls[0][1].lower()
+    assert any("STALE ROUTING DETECTED" in message for _, message in log_messages)
+    assert (
+        "AGENT",
+        "Stale HANDOFF detected for route Codex. Invoking Claude handoff-validator...",
+    ) in log_messages
+
+
+def test_run_loop_does_not_redirect_fresh_epic_close_when_claude_md_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Claude Code:** Close the epic, update the ledger, and push to origin.
+""",
+        claude_md_content=(
+            "## 2. CURRENT STATUS\n"
+            "- **Active Epic:** **None — awaiting next epic dispatch (Gemini-PE scoping).**\n"
+        ),
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    ledger_calls: list[Any] = []
+    gemini_calls: list[tuple[str, Path, bool, str | None, Any]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "run_epic_close",
+        lambda log=None: (
+            ledger_calls.append(log)
+            or EpicCloseResult(subagent_exit_code=0, stdout="", stderr="")
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_gemini",
+        lambda role, path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+            gemini_calls.append(
+                (role, path, use_api_key_env, additional_instruction, log)
+            )
+            or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(ledger_calls) == 1
+    assert callable(ledger_calls[0])
+    assert gemini_calls == []
+    assert (
+        "DISPATCH",
+        "Dispatching Claude Code ledger-updater for epic close.",
+    ) in log_messages
+    assert all(
+        "STALE Epic-Close detected" not in message for _, message in log_messages
+    )
+
+
+def test_run_loop_redirects_completed_stale_epic_close_to_gemini_pe_scoping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Claude Code:** Close the epic, update the ledger, and push to origin.
+""",
+        claude_md_content=(
+            "## 2. CURRENT STATUS\n"
+            "- **Active Epic:** UAT Remediation Epic 1 — ACTIVE.\n"
+        ),
+    )
+    claude_md_path = repo_root / "PROJECT_STATE.md"
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    ledger_calls: list[Any] = []
+    gemini_calls: list[tuple[str, Path, bool, str | None, Any]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+
+    def fake_epic_close(log=None) -> EpicCloseResult:
+        ledger_calls.append(log)
+        claude_md_path.write_text(
+            "## 2. CURRENT STATUS\n"
+            "- **Active Epic:** **None — awaiting next epic dispatch (Gemini-PE scoping).**\n",
+            encoding="utf-8",
+        )
+        return EpicCloseResult(
+            subagent_exit_code=0,
+            stdout="",
+            stderr="",
+            handoff_rewritten=False,
+        )
+
+    monkeypatch.setattr(orchestrator, "run_epic_close", fake_epic_close)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_gemini",
+        lambda role, path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+            gemini_calls.append(
+                (role, path, use_api_key_env, additional_instruction, log)
+            )
+            or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: (
+            subagent_calls.append((subagent_name, prompt, log)) or _subagent_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(ledger_calls) == 1
+    assert callable(ledger_calls[0])
+    assert subagent_calls == []
+    assert len(gemini_calls) == 1
+    assert gemini_calls[0][:3] == ("PE", handoff_path, False)
+    assert gemini_calls[0][3] is not None
+    assert "prior Epic-Close cycle already completed" in gemini_calls[0][3]
+    assert (
+        "WARN",
+        "STALE Epic-Close detected after a completed ledger close; redirecting this cycle to Gemini PE for forward routing.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: Gemini-PE") in log_messages
+    assert ("AGENT", "Post-dispatch gate PASSED for Gemini-PE.") in log_messages
+
+
+def test_run_loop_redirects_stale_epic_close_after_ledger_advances_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: claude-ledger
+reason: E2 approved; close ledger.
+scope_sha: a656195
+close_type: epic
+producer: claude-audit
+---
+
+# E2 Close
+
+**Claude Code (ledger-updater):** Close the E2 epic.
+""",
+        claude_md_content=(
+            "## 2. CURRENT STATUS\n- **Active Epic:** UAT Remediation E2 — ACTIVE.\n"
+        ),
+    )
+    claude_md_path = repo_root / "PROJECT_STATE.md"
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    ledger_calls: list[Any] = []
+    gemini_calls: list[tuple[str, Path, bool, str | None, Any]] = []
+
+    def fake_epic_close(log=None) -> EpicCloseResult:
+        ledger_calls.append(log)
+        claude_md_path.write_text(
+            "## 2. CURRENT STATUS\n"
+            "- **Active Epic:** UAT Remediation (E3-E6) + Doc-Role Anchor Correctness (S2.5).\n",
+            encoding="utf-8",
+        )
+        return EpicCloseResult(
+            subagent_exit_code=0,
+            stdout="",
+            stderr="",
+            ledger_updated=True,
+            claude_md_updated=True,
+            handoff_rewritten=False,
+        )
+
+    monkeypatch.setattr(orchestrator, "run_epic_close", fake_epic_close)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_gemini",
+        lambda role, path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+            gemini_calls.append(
+                (role, path, use_api_key_env, additional_instruction, log)
+            )
+            or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(ledger_calls) == 1
+    assert len(gemini_calls) == 1
+    assert gemini_calls[0][:3] == ("PE", handoff_path, False)
+    assert gemini_calls[0][3] is not None
+    assert "prior Epic-Close cycle already completed" in gemini_calls[0][3]
+    assert "repeating Epic-Close" in gemini_calls[0][3]
+    assert (
+        "WARN",
+        "STALE Epic-Close detected after a completed ledger close; redirecting this cycle to Gemini PE for forward routing.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: Gemini-PE") in log_messages
+
+
+def test_run_loop_trips_circuit_breaker_after_three_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _ = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Codex:** Keep retrying.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, max_consecutive_failures=3)
+    log_messages: list[tuple[str, str]] = []
+    attempts: list[int] = []
+
+    def failing_codex(_path: Path, *, log=None, use_resume=False) -> DispatchResult:
+        assert callable(log)
+        assert use_resume is True
+        attempts.append(len(attempts) + 1)
+        return _dispatch_result(exit_code=9)
+
+    monkeypatch.setattr(orchestrator, "invoke_codex", failing_codex)
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda _seconds: None)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 1
+    assert attempts == [1, 2, 3]
+    assert any(
+        "Hit maximum consecutive failures" in message for _, message in log_messages
+    )
+
+
+def test_run_loop_dry_run_skips_dispatch_and_logs_startup_banner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _ = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Codex:** Preview the dispatch.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    log_messages: list[tuple[str, str]] = []
+
+    def unexpected_call(*args: Any, **kwargs: Any) -> DispatchResult:
+        raise AssertionError("dry-run must not dispatch an agent")
+
+    monkeypatch.setattr(orchestrator, "invoke_codex", unexpected_call)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert any("Smart router:" in message for _, message in log_messages)
+    assert any("Handoff validation:" in message for _, message in log_messages)
+    assert any("Auto ledger:" in message for _, message in log_messages)
+    assert any("Chaining:" in message for _, message in log_messages)
+    assert any("Frontend agent:" in message for _, message in log_messages)
+    assert (
+        "INFO",
+        "Codex session:      MANAGED RESUME (persisted thread id)",
+    ) in log_messages
+    assert (
+        "INFO",
+        "Gemini PE session:  MANAGED RESUME (in-memory session id)",
+    ) in log_messages
+    assert (
+        "INFO",
+        "Gemini API env:     STRIP GOOGLE_API_KEY/GEMINI_API_KEY",
+    ) in log_messages
+    assert any("[DRY RUN]" in message for _, message in log_messages)
+
+
+def test_run_loop_uses_manual_frontend_for_frontend_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Gemini-Frontend:** Build the UI slice.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, use_manual_frontend=True)
+    manual_frontend_calls: list[tuple[Path, Any]] = []
+    gemini_calls: list[tuple[str, Path]] = []
+    log_messages: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_manual_frontend",
+        lambda path, log=None: (
+            manual_frontend_calls.append((path, log)) or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_gemini",
+        lambda role, path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+            gemini_calls.append((role, path, use_api_key_env, log))
+            or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    def fake_log(level: str, message: str) -> None:
+        log_messages.append((level, message))
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=fake_log)
+
+    assert exit_code == 0
+    assert manual_frontend_calls == [(handoff_path, fake_log)]
+    assert gemini_calls == []
+    assert ("DISPATCH", "Dispatching manual frontend (GUI, manual pause).") in log_messages
+
+
+def test_run_loop_passes_gemini_api_key_opt_in_to_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Gemini-PE:** Review the backend slice.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, use_gemini_api_key_env=True)
+    gemini_calls: list[tuple[str, Path, bool]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_gemini",
+        lambda role, path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+            gemini_calls.append((role, path, use_api_key_env, log))
+            or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1)
+
+    assert exit_code == 0
+    assert len(gemini_calls) == 1
+    assert gemini_calls[0][:3] == ("PE", handoff_path, True)
+    assert callable(gemini_calls[0][3])
+
+
+def test_run_loop_tracks_gemini_pe_session_in_memory_across_cycles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_handoff = """## Next Step
+
+- **Gemini-PE:** Scope the next implementation.
+"""
+    codex_handoff = """## Next Step
+
+- **Codex:** Implement the scoped backend work.
+"""
+    resumed_gemini_handoff = """## Next Step
+
+- **Gemini-PE:** Continue orchestration after Codex handback.
+"""
+    repo_root, handoff_path = _write_repo(tmp_path, initial_handoff)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    gemini_calls: list[dict[str, Any]] = []
+
+    def fake_gemini(
+        role: str,
+        path: Path,
+        use_api_key_env: bool = False,
+        additional_instruction: str | None = None,
+        log=None,
+        use_resume: bool = False,
+        session_id: str | None = None,
+        previous_handoff_sha: str | None = None,
+        current_handoff_sha: str | None = None,
+    ) -> DispatchResult:
+        gemini_calls.append(
+            {
+                "role": role,
+                "path": path,
+                "use_api_key_env": use_api_key_env,
+                "additional_instruction": additional_instruction,
+                "log": log,
+                "use_resume": use_resume,
+                "session_id": session_id,
+                "previous_handoff_sha": previous_handoff_sha,
+                "current_handoff_sha": current_handoff_sha,
+            }
+        )
+        if len(gemini_calls) == 1:
+            path.write_text(codex_handoff, encoding="utf-8")
+            return DispatchResult(
+                stdout="",
+                stderr="",
+                exit_code=0,
+                elapsed_seconds=0.01,
+                session_id="gemini-session-1",
+            )
+        path.write_text("## Escalation\n\nDone for test.\n", encoding="utf-8")
+        return DispatchResult(
+            stdout="",
+            stderr="",
+            exit_code=0,
+            elapsed_seconds=0.01,
+            session_id=session_id,
+        )
+
+    def fake_codex(path: Path, log=None, use_resume: bool = False) -> DispatchResult:
+        del log, use_resume
+        path.write_text(resumed_gemini_handoff, encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_gemini", fake_gemini)
+    monkeypatch.setattr(orchestrator, "invoke_codex", fake_codex)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(config, max_cycles=3)
+
+    assert exit_code == 0
+    assert len(gemini_calls) == 2
+    assert gemini_calls[0]["use_resume"] is True
+    assert gemini_calls[0]["session_id"] is None
+    assert gemini_calls[0]["previous_handoff_sha"] is None
+    assert gemini_calls[0]["current_handoff_sha"] == orchestrator._content_sha(
+        initial_handoff
+    )
+    assert gemini_calls[1]["use_resume"] is True
+    assert gemini_calls[1]["session_id"] == "gemini-session-1"
+    assert gemini_calls[1]["previous_handoff_sha"] == orchestrator._content_sha(
+        initial_handoff
+    )
+    assert gemini_calls[1]["current_handoff_sha"] == orchestrator._content_sha(
+        resumed_gemini_handoff
+    )
+
+
+def test_run_loop_passes_logger_to_gemini_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Gemini-Frontend:** Review the UI slice.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    gemini_calls: list[tuple[str, Path, bool, Any]] = []
+    log_messages: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_gemini",
+        lambda role, path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+            gemini_calls.append((role, path, use_api_key_env, log))
+            or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    def fake_log(level: str, message: str) -> None:
+        log_messages.append((level, message))
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=fake_log)
+
+    assert exit_code == 0
+    assert gemini_calls == [("Frontend", handoff_path, False, fake_log)]
+
+
+def test_run_loop_passes_logger_to_codex_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Codex:** Review the backend slice.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    codex_calls: list[tuple[Path, Any, bool]] = []
+    log_messages: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: (
+            codex_calls.append((path, log, use_resume)) or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    def fake_log(level: str, message: str) -> None:
+        log_messages.append((level, message))
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=fake_log)
+
+    assert exit_code == 0
+    assert codex_calls == [(handoff_path, fake_log, True)]
+
+
+def test_run_loop_passes_codex_resume_mode_to_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Codex:** Review the backend slice.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, use_codex_resume=True)
+    codex_calls: list[tuple[Path, Any, bool]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: (
+            codex_calls.append((path, log, use_resume)) or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1)
+
+    assert exit_code == 0
+    assert len(codex_calls) == 1
+    assert codex_calls[0][0] == handoff_path
+    assert codex_calls[0][2] is True
+
+
+def test_run_loop_passes_logger_to_claude_subagent_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _ = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **Claude Code:** Audit Story 5.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    subagent_calls: list[tuple[str, str, Any]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: (
+            subagent_calls.append((subagent_name, prompt, log)) or _subagent_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    def fake_log(level: str, message: str) -> None:
+        del level, message
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=fake_log)
+
+    assert exit_code == 0
+    assert len(subagent_calls) == 1
+    assert subagent_calls[0][0] == "auditor"
+    assert subagent_calls[0][2] is fake_log
+
+
+def test_run_loop_routes_epic_close_to_ledger_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _ = _write_repo(tmp_path, "Next: close epic\n")
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    ledger_logs: list[Any] = []
+    log_messages: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "run_epic_close",
+        lambda log=None: (
+            ledger_logs.append(log)
+            or EpicCloseResult(subagent_exit_code=0, stdout="", stderr="")
+        ),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(ledger_logs) == 1
+    assert callable(ledger_logs[0])
+    assert (
+        "DISPATCH",
+        "Dispatching Claude Code ledger-updater for epic close.",
+    ) in log_messages
+
+
+def test_run_loop_runs_handoff_validator_and_pauses_on_epic_close_parse_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(tmp_path, "Next: close epic\n")
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, poll_interval_seconds=1)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+    codex_calls: list[Path] = []
+    sleep_calls: list[int] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "run_epic_close",
+        lambda log=None: EpicCloseResult(
+            subagent_exit_code=1,
+            stdout="ledger updater wrote prose instead of structured fields",
+            stderr="",
+            parse_error="Missing LEDGER UPDATED line.",
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: (
+            subagent_calls.append((subagent_name, prompt, log))
+            or _subagent_result(
+                stdout="""VALID: NO
+  ROUTING: FAIL - Epic-Close was attempted before Claude audit approval was present.
+"""
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: (
+            codex_calls.append(path) or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    def fake_sleep(seconds: int) -> None:
+        sleep_calls.append(seconds)
+        handoff_path.write_text(
+            """## Next Step
+
+- **Codex:** Implement Story 1.
+""",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(subagent_calls) == 1
+    assert subagent_calls[0][0] == "handoff-validator"
+    assert "attempted epic-close" in subagent_calls[0][1].lower()
+    assert codex_calls == [handoff_path]
+    assert sleep_calls == [1]
+    assert any(
+        level == "AGENT"
+        and "Epic-Close produced unparseable ledger-updater output" in message
+        for level, message in log_messages
+    )
+    assert any(
+        level == "PAUSE" and "ledger-updater output was unparseable" in message
+        for level, message in log_messages
+    )
+    assert any(
+        level == "PAUSE" and "Detected HANDOFF.md change" in message
+        for level, message in log_messages
+    )
+    assert ("INFO", "Routing instruction: Codex") in log_messages
+
+
+def test_run_loop_runs_handoff_validator_before_low_confidence_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Task Assignment
+
+**Agent:** Codex
+
+## Next Step
+
+- **Gemini-PE:** Scope the next story.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, poll_interval_seconds=1)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+    codex_calls: list[Path] = []
+    gemini_calls: list[tuple[str, Path]] = []
+    sleep_calls: list[int] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_claude_subagent",
+        lambda subagent_name, prompt, log=None: (
+            subagent_calls.append((subagent_name, prompt, log))
+            or _subagent_result(
+                stdout="""VALID: NO
+  ROUTING: FAIL - Multiple routing signals conflict; clarify the handoff before dispatch.
+"""
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_codex",
+        lambda path, log=None, use_resume=False: (
+            codex_calls.append(path) or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_gemini",
+        lambda mode, path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+            gemini_calls.append((mode, path)) or _dispatch_result()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    def fake_sleep(seconds: int) -> None:
+        sleep_calls.append(seconds)
+        handoff_path.write_text(
+            """## Next Step
+
+- **Codex:** Implement Story 1.
+""",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(subagent_calls) == 1
+    assert subagent_calls[0][0] == "handoff-validator"
+    assert (
+        "low-confidence routing decision to Gemini-PE".lower()
+        in subagent_calls[0][1].lower()
+    )
+    assert sleep_calls == [1]
+    assert codex_calls == [handoff_path]
+    assert gemini_calls == []
+    assert (
+        "AGENT",
+        "Routing decision for Gemini-PE is only LOW confidence. Invoking Claude handoff-validator before dispatch...",
+    ) in log_messages
+    assert (
+        "PAUSE",
+        "Routing instruction Gemini-PE is only LOW confidence. Update HANDOFF.md; dispatch will resume after the file changes.",
+    ) in log_messages
+    assert (
+        "ERROR",
+        "routing: Multiple routing signals conflict; clarify the handoff before dispatch.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: Codex") in log_messages
+
+
+def test_main_returns_zero_for_help_without_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    main_module = _load_main_module()
+
+    monkeypatch.setattr(
+        main_module,
+        "_cleanup_codex_output_artifacts",
+        Mock(side_effect=AssertionError("help should not clean artifacts")),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "run_loop",
+        Mock(side_effect=AssertionError("help should not dispatch")),
+    )
+
+    assert main_module.main(["--help"]) == 0
+    assert "llm-handoff dispatch loop" in capsys.readouterr().out
+
+
+def test_main_parses_cli_flags_and_dispatches_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    captured: dict[str, Any] = {}
+
+    class FakeDispatchLogger:
+        def __init__(
+            self,
+            *,
+            repo_root,
+            max_consecutive_failures,
+            use_codex_resume,
+            use_gemini_resume,
+        ):
+            captured["logger_repo_root"] = repo_root
+            captured["logger_max_consecutive_failures"] = max_consecutive_failures
+            captured["logger_use_codex_resume"] = use_codex_resume
+            captured["logger_use_gemini_resume"] = use_gemini_resume
+
+        def __call__(self, level: str, message: str) -> None:
+            captured.setdefault("log_calls", []).append((level, message))
+
+        def mark_startup_complete(self) -> None:
+            captured["startup_marked"] = True
+
+    def fake_run_loop(config, *, log=None):
+        captured["config"] = config
+        captured["log"] = log
+        return 41
+
+    monkeypatch.setattr(
+        main_module,
+        "_set_dispatch_console_title",
+        lambda: ("previous title", True),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_restore_console_title",
+        lambda previous_title, *, changed: captured.setdefault(
+            "restored_titles",
+            [],
+        ).append((previous_title, changed)),
+    )
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+
+    exit_code = main_module.main(
+        [
+            "--dry-run",
+            "--manual-frontend",
+            "--use-gemini-api-key-env",
+            "--repo-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 41
+    config = captured["config"]
+    assert config.repo_root == tmp_path
+    assert config.dry_run is True
+    assert config.use_manual_frontend is True
+    assert config.use_gemini_api_key_env is True
+    assert config.use_codex_resume is True
+    assert config.use_gemini_resume is True
+    assert captured["logger_repo_root"] == tmp_path
+    assert (
+        captured["logger_max_consecutive_failures"] == config.max_consecutive_failures
+    )
+    assert captured["logger_use_codex_resume"] is True
+    assert captured["logger_use_gemini_resume"] is True
+    assert isinstance(captured["log"], FakeDispatchLogger)
+    assert captured["restored_titles"] == [("previous title", True)]
+
+
+def test_main_supports_opting_out_of_codex_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    captured: dict[str, Any] = {}
+
+    class FakeDispatchLogger:
+        def __init__(
+            self,
+            *,
+            repo_root,
+            max_consecutive_failures,
+            use_codex_resume,
+            use_gemini_resume,
+        ):
+            captured["logger_repo_root"] = repo_root
+            captured["logger_use_codex_resume"] = use_codex_resume
+            captured["logger_use_gemini_resume"] = use_gemini_resume
+            del max_consecutive_failures
+
+        def __call__(self, level: str, message: str) -> None:
+            captured.setdefault("log_calls", []).append((level, message))
+
+        def mark_startup_complete(self) -> None:
+            captured["startup_marked"] = True
+
+    def fake_run_loop(config, *, log=None):
+        captured["config"] = config
+        captured["log"] = log
+        return 0
+
+    monkeypatch.setattr(
+        main_module,
+        "_set_dispatch_console_title",
+        lambda: ("previous title", True),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_restore_console_title",
+        lambda previous_title, *, changed: captured.setdefault(
+            "restored_titles",
+            [],
+        ).append((previous_title, changed)),
+    )
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+
+    exit_code = main_module.main(["--no-codex-resume", "--repo-root", str(tmp_path)])
+
+    assert exit_code == 0
+    assert captured["config"].use_codex_resume is False
+    assert captured["logger_use_codex_resume"] is False
+    assert captured["config"].use_gemini_resume is True
+    assert captured["logger_use_gemini_resume"] is True
+
+
+def test_main_supports_opting_out_of_gemini_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    captured: dict[str, Any] = {}
+
+    class FakeDispatchLogger:
+        def __init__(
+            self,
+            *,
+            repo_root,
+            max_consecutive_failures,
+            use_codex_resume,
+            use_gemini_resume,
+        ):
+            captured["logger_repo_root"] = repo_root
+            captured["logger_use_codex_resume"] = use_codex_resume
+            captured["logger_use_gemini_resume"] = use_gemini_resume
+            del max_consecutive_failures
+
+        def __call__(self, level: str, message: str) -> None:
+            captured.setdefault("log_calls", []).append((level, message))
+
+        def mark_startup_complete(self) -> None:
+            captured["startup_marked"] = True
+
+    def fake_run_loop(config, *, log=None):
+        captured["config"] = config
+        captured["log"] = log
+        return 0
+
+    monkeypatch.setattr(
+        main_module,
+        "_set_dispatch_console_title",
+        lambda: ("previous title", True),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_restore_console_title",
+        lambda previous_title, *, changed: captured.setdefault(
+            "restored_titles",
+            [],
+        ).append((previous_title, changed)),
+    )
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+
+    exit_code = main_module.main(["--no-gemini-resume", "--repo-root", str(tmp_path)])
+
+    assert exit_code == 0
+    assert captured["config"].use_gemini_resume is False
+    assert captured["logger_use_gemini_resume"] is False
+    assert captured["config"].use_codex_resume is True
+    assert captured["logger_use_codex_resume"] is True
+
+
+def test_main_returns_130_on_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    captured: dict[str, Any] = {}
+
+    class FakeDispatchLogger:
+        def __init__(
+            self,
+            *,
+            repo_root,
+            max_consecutive_failures,
+            use_codex_resume,
+            use_gemini_resume,
+        ):
+            captured["logger_repo_root"] = repo_root
+            captured["logger_max_consecutive_failures"] = max_consecutive_failures
+            captured["logger_use_codex_resume"] = use_codex_resume
+            captured["logger_use_gemini_resume"] = use_gemini_resume
+
+        def __call__(self, level: str, message: str) -> None:
+            captured.setdefault("log_calls", []).append((level, message))
+
+        def mark_startup_complete(self) -> None:
+            captured["startup_marked"] = True
+
+    def fake_run_loop(config, *, log=None):
+        del config, log
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        main_module,
+        "_set_dispatch_console_title",
+        lambda: ("previous title", True),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_restore_console_title",
+        lambda previous_title, *, changed: captured.setdefault(
+            "restored_titles",
+            [],
+        ).append((previous_title, changed)),
+    )
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+
+    exit_code = main_module.main(["--repo-root", str(tmp_path)])
+
+    assert exit_code == 130
+    assert captured["logger_repo_root"] == tmp_path
+    assert captured["logger_use_codex_resume"] is True
+    assert captured["log_calls"] == [("WARN", "Dispatch interrupted by user. Exiting.")]
+    assert captured["restored_titles"] == [("previous title", True)]
+
+
+def test_main_cleans_stale_codex_output_artifacts_before_running_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    captured: dict[str, Any] = {}
+
+    class FakeDispatchLogger:
+        def __init__(
+            self,
+            *,
+            repo_root,
+            max_consecutive_failures,
+            use_codex_resume,
+            use_gemini_resume,
+        ):
+            del repo_root, max_consecutive_failures, use_codex_resume, use_gemini_resume
+
+        def __call__(self, level: str, message: str) -> None:
+            captured.setdefault("log_calls", []).append((level, message))
+
+        def mark_startup_complete(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        main_module,
+        "_set_dispatch_console_title",
+        lambda: ("previous title", True),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_restore_console_title",
+        lambda previous_title, *, changed: captured.setdefault(
+            "restored_titles",
+            [],
+        ).append((previous_title, changed)),
+    )
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(
+        main_module,
+        "_codex_artifact_paths",
+        lambda repo_root: f"paths-for:{repo_root}",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_cleanup_codex_output_artifacts",
+        lambda artifact_paths: captured.setdefault("cleanup_calls", []).append(
+            artifact_paths
+        ),
+    )
+    monkeypatch.setattr(main_module, "run_loop", lambda config, *, log=None: 0)
+
+    exit_code = main_module.main(["--repo-root", str(tmp_path)])
+
+    assert exit_code == 0
+    assert captured["cleanup_calls"] == [f"paths-for:{tmp_path.resolve()}"]
+
+
+def test_set_dispatch_console_title_sets_and_restores_windows_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    call_log: list[tuple[str, object, object | None]] = []
+
+    class FakeKernel32:
+        def GetConsoleTitleW(self, buffer, size):
+            del size
+            call_log.append(("get", buffer, None))
+            buffer.value = "Previous Tab Title"
+            return len(buffer.value)
+
+        def SetConsoleTitleW(self, title):
+            call_log.append(("set", title, None))
+            return 1
+
+    class FakeCtypes:
+        def __init__(self):
+            self.windll = type("FakeWindll", (), {"kernel32": FakeKernel32()})()
+
+        @staticmethod
+        def create_unicode_buffer(size):
+            call_log.append(("buffer", size, None))
+            return type("FakeBuffer", (), {"value": ""})()
+
+    monkeypatch.setattr(main_module, "ctypes", FakeCtypes())
+    monkeypatch.setattr(main_module, "_WINDOWS", True)
+
+    previous_title, changed = main_module._set_dispatch_console_title()
+    main_module._restore_console_title(previous_title, changed=changed)
+
+    assert previous_title == "Previous Tab Title"
+    assert changed is True
+    assert ("buffer", 32768, None) in call_log
+    assert any(entry[0] == "get" for entry in call_log)
+    assert ("set", "llm-handoff dispatcher", None) in call_log
+    assert ("set", "Previous Tab Title", None) in call_log
+
+
+def test_set_dispatch_console_title_preserves_previous_title_when_set_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    call_log: list[tuple[str, object, object | None]] = []
+
+    class FakeKernel32:
+        def GetConsoleTitleW(self, buffer, size):
+            del size
+            call_log.append(("get", buffer, None))
+            buffer.value = "Previous Tab Title"
+            return len(buffer.value)
+
+        def SetConsoleTitleW(self, title):
+            call_log.append(("set", title, None))
+            return 0
+
+    class FakeCtypes:
+        def __init__(self):
+            self.windll = type("FakeWindll", (), {"kernel32": FakeKernel32()})()
+
+        @staticmethod
+        def create_unicode_buffer(size):
+            call_log.append(("buffer", size, None))
+            return type("FakeBuffer", (), {"value": ""})()
+
+    monkeypatch.setattr(main_module, "ctypes", FakeCtypes())
+    monkeypatch.setattr(main_module, "_WINDOWS", True)
+
+    previous_title, changed = main_module._set_dispatch_console_title()
+    main_module._restore_console_title(previous_title, changed=changed)
+
+    assert previous_title == "Previous Tab Title"
+    assert changed is False
+    assert ("set", "llm-handoff dispatcher", None) in call_log
+    assert ("set", "Previous Tab Title", None) not in call_log
+
+
+def test_configure_stdio_encoding_reconfigures_non_utf8_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    stdout_calls: list[tuple[str, str]] = []
+    stderr_calls: list[tuple[str, str]] = []
+
+    class FakeStream:
+        def __init__(self, encoding: str | None, calls: list[tuple[str, str]]) -> None:
+            self.encoding = encoding
+            self._calls = calls
+
+        def reconfigure(self, *, encoding: str, errors: str) -> None:
+            self._calls.append((encoding, errors))
+
+    monkeypatch.setattr(
+        main_module.sys,
+        "stdout",
+        FakeStream("cp1252", stdout_calls),
+    )
+    monkeypatch.setattr(
+        main_module.sys,
+        "stderr",
+        FakeStream("cp1252", stderr_calls),
+    )
+
+    main_module._configure_stdio_encoding()
+
+    assert stdout_calls == [("utf-8", "replace")]
+    assert stderr_calls == [("utf-8", "replace")]
+
+
+def test_dispatch_cmd_wraps_repo_venv_python() -> None:
+    wrapper_path = Path("scripts") / "dispatch.cmd"
+    assert wrapper_path.read_text(encoding="utf-8").strip() == (
+        "@echo off & %~dp0..\\venv\\Scripts\\python.exe -m llm_handoff %*"
+    )
+
+
+def test_dispatch_ps1_wraps_repo_venv_python() -> None:
+    wrapper_path = Path("scripts") / "dispatch.ps1"
+    assert wrapper_path.read_text(encoding="utf-8").strip() == (
+        '$dispatchWindowTitle = "llm-handoff dispatcher"\n'
+        "$previousWindowTitle = $null\n"
+        "$exitCode = 0\n"
+        "\n"
+        "try {\n"
+        "    try {\n"
+        "        $previousWindowTitle = $Host.UI.RawUI.WindowTitle\n"
+        "        $Host.UI.RawUI.WindowTitle = $dispatchWindowTitle\n"
+        "    }\n"
+        "    catch {\n"
+        "    }\n"
+        "\n"
+        '    & "$PSScriptRoot\\..\\venv\\Scripts\\python.exe" -m llm_handoff @args\n'
+        "    $exitCode = $LASTEXITCODE\n"
+        "}\n"
+        "finally {\n"
+        "    if ($null -ne $previousWindowTitle) {\n"
+        "        try {\n"
+        "            $Host.UI.RawUI.WindowTitle = $previousWindowTitle\n"
+        "        }\n"
+        "        catch {\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "exit $exitCode"
+    )
