@@ -1,13 +1,13 @@
 # Reference Workflow
 
-This directory will contain the copyable written protocol for a target
-repository that wants to use `llm-handoff`.
+This directory contains the copyable written protocol for a target repository
+that wants to use `llm-handoff`.
 
 The dispatcher is not just Python code. It depends on agent instructions,
 handoff conventions, ignore rules, and a config file that all agree on the same
 role names.
 
-## Planned Files
+## Included Files
 
 ```text
 AGENTS.md
@@ -75,9 +75,8 @@ HANDOFF.md
 The nested path is recommended for non-trivial repos because it leaves room for
 handoff examples, archive files, and helper prompts.
 
-## Extraction Notes
+## Usage Notes
 
-The first generic prompt templates now live in the source checkout under
-`docs/handoff/`, `.codex/`, `.gemini/`, and `.claude/`. The remaining work is
-to add an initializer that copies those files into a target repository and
-rewrites example placeholders for that repo.
+Until `llm_handoff init` is implemented, copy this directory's contents into a
+target repository and edit `dispatch_config.yaml`, `PROJECT_STATE.md`, and
+`docs/handoff/HANDOFF.md` for that repo's first assignment.

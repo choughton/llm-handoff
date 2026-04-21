@@ -1,0 +1,63 @@
+# llm-handoff reference workflow configuration.
+#
+# Copy this file to a target repository as dispatch_config.yaml, then adjust
+# provider binaries, models, timeouts, and role mappings for that repository.
+
+handoff_path: docs/handoff/HANDOFF.md
+project_state_path: PROJECT_STATE.md
+auto_push: false
+
+agents:
+  planner:
+    provider: gemini
+    binary: gemini
+    mention: "@planner"
+    resume: true
+    timeout_ms: 1200000
+
+  backend:
+    provider: codex
+    binary: codex
+    skill_name: llm-handoff
+    resume: true
+    timeout_ms: 1200000
+
+  frontend:
+    provider: gemini
+    binary: gemini
+    mention: "@frontend"
+    resume: false
+    timeout_ms: 1200000
+
+  auditor:
+    provider: claude
+    binary: claude
+    model: claude-opus-4-7
+    resume: false
+    timeout_ms: 900000
+
+  validator:
+    provider: claude
+    binary: claude
+    model: claude-haiku-4-5
+    resume: false
+    timeout_ms: 900000
+
+  finalizer:
+    provider: claude
+    binary: claude
+    model: claude-opus-4-7
+    resume: false
+    timeout_ms: 900000
+
+normalizer:
+  provider: claude
+  model: claude-haiku-4-5
+  timeout_ms: 60000
+  on_unknown: fail_closed
+  # Runtime auth order: provider API key first, provider CLI auth fallback.
+  # Other intended provider examples:
+  # provider: gemini
+  # model: <gemini-flash-model>
+  # provider: openai
+  # model: <openai-small-model>

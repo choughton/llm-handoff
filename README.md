@@ -85,6 +85,32 @@ are parser fixtures, not user-facing docs.
 | [.claude/agents/ledger-updater.md](.claude/agents/ledger-updater.md) | Claude finalizer compatibility agent. |
 
 <details>
+<summary>Reference Workflow Template Markdown</summary>
+
+| File | Purpose |
+| --- | --- |
+| [examples/reference-workflow/AGENTS.md](examples/reference-workflow/AGENTS.md) | Target-repo agent instructions template. |
+| [examples/reference-workflow/PROJECT_STATE.md](examples/reference-workflow/PROJECT_STATE.md) | Target-repo durable state template. |
+| [examples/reference-workflow/docs/handoff/README.md](examples/reference-workflow/docs/handoff/README.md) | Template handoff directory guide. |
+| [examples/reference-workflow/docs/handoff/HANDOFF.md](examples/reference-workflow/docs/handoff/HANDOFF.md) | Template starter handoff. |
+| [examples/reference-workflow/docs/handoff/SHARED_REPO_INIT_PROMPT.md](examples/reference-workflow/docs/handoff/SHARED_REPO_INIT_PROMPT.md) | Template shared startup prompt. |
+| [examples/reference-workflow/docs/handoff/PLANNER_INITIAL_PROMPT.md](examples/reference-workflow/docs/handoff/PLANNER_INITIAL_PROMPT.md) | Template first planner prompt. |
+| [examples/reference-workflow/docs/handoff/PLANNER_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/PLANNER_HANDOFF_PROMPT.md) | Template planner prompt. |
+| [examples/reference-workflow/docs/handoff/BACKEND_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/BACKEND_HANDOFF_PROMPT.md) | Template backend prompt. |
+| [examples/reference-workflow/docs/handoff/FRONTEND_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/FRONTEND_HANDOFF_PROMPT.md) | Template frontend prompt. |
+| [examples/reference-workflow/docs/handoff/AUDITOR_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/AUDITOR_HANDOFF_PROMPT.md) | Template auditor prompt. |
+| [examples/reference-workflow/docs/handoff/FINALIZER_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/FINALIZER_HANDOFF_PROMPT.md) | Template finalizer prompt. |
+| [examples/reference-workflow/.codex/skills/llm-handoff/SKILL.md](examples/reference-workflow/.codex/skills/llm-handoff/SKILL.md) | Template Codex backend skill. |
+| [examples/reference-workflow/.gemini/agents/planner.md](examples/reference-workflow/.gemini/agents/planner.md) | Template Gemini planner agent. |
+| [examples/reference-workflow/.gemini/agents/frontend.md](examples/reference-workflow/.gemini/agents/frontend.md) | Template Gemini frontend agent. |
+| [examples/reference-workflow/.claude/agents/auditor.md](examples/reference-workflow/.claude/agents/auditor.md) | Template Claude auditor agent. |
+| [examples/reference-workflow/.claude/agents/handoff-router.md](examples/reference-workflow/.claude/agents/handoff-router.md) | Template Claude router agent. |
+| [examples/reference-workflow/.claude/agents/handoff-validator.md](examples/reference-workflow/.claude/agents/handoff-validator.md) | Template Claude validator agent. |
+| [examples/reference-workflow/.claude/agents/ledger-updater.md](examples/reference-workflow/.claude/agents/ledger-updater.md) | Template Claude finalizer compatibility agent. |
+
+</details>
+
+<details>
 <summary>Ported Test Fixture Markdown</summary>
 
 | File | Purpose |
