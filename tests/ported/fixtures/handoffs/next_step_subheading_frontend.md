@@ -1,10 +1,10 @@
-# Codex Handback
+# Backend Handback
 
-**Agent:** Codex
+**Agent:** backend
 **Status:** Complete
 
 ## Next Step
 
-### Gemini Frontend — Primary
+### frontend - Primary
 
 Implement the React and Tailwind UI polish for the follow-up story.

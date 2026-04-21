@@ -2,7 +2,7 @@ Mode: Non-Implementing Principal Engineer (review/orchestration only)
 
 ## Task Assignment
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Dispatch Loop Python Rewrite / Story 1
 **Phase:** Implementation
 

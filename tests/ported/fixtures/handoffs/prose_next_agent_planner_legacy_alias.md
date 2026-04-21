@@ -1,7 +1,7 @@
 # Handoff: Security & Supply Chain Hardening CLOSED — Next Epic Scoping Requested
 
 **Date:** 2026-04-17
-**Agent:** Claude Code (ledger-close)
+**Agent:** finalizer
 
 ## Previous Epic Close
 
@@ -9,7 +9,7 @@
 
 ## Routing Instruction
 
-### Next Agent → Gemini-PE (Next Epic Scoping)
+### Next Agent -> planner (Next Epic Scoping)
 
 - Read `PROJECT_STATE.md` section 2 to confirm the active epic.
-- Rewrite `docs/handoff/HANDOFF.md` to route Story 1 to Codex with acceptance criteria.
+- Rewrite `docs/handoff/HANDOFF.md` to route Story 1 to backend with acceptance criteria.

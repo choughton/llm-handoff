@@ -13,7 +13,7 @@ def _binary_name(base_name: str) -> str:
 
 
 DISPATCH_WINDOW_TITLE = "llm-handoff dispatcher"
-GEMINI_PE_MENTION = "@planner"
+GEMINI_PLANNER_MENTION = "@planner"
 GEMINI_FRONTEND_MENTION = "@frontend"
 CODEX_SKILL_NAME = "llm-handoff"
 CODEX_WEB_SEARCH_MODE = "disabled"
@@ -127,7 +127,7 @@ def _default_agent_configs() -> dict[AgentRole, AgentConfig]:
         "planner": AgentConfig(
             provider="gemini",
             binary=GEMINI_BINARY,
-            mention=GEMINI_PE_MENTION,
+            mention=GEMINI_PLANNER_MENTION,
             resume=GEMINI_RESUME_DEFAULT,
             timeout_ms=AGENT_TIMEOUT_MS,
             retries=GEMINI_MAX_RETRIES,

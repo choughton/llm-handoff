@@ -117,19 +117,19 @@ are parser fixtures, not user-facing docs.
 | File | Purpose |
 | --- | --- |
 | [tests/ported/fixtures/handoffs/audit_story_close_next_story.md](tests/ported/fixtures/handoffs/audit_story_close_next_story.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/codex_handback_story_close.md](tests/ported/fixtures/handoffs/codex_handback_story_close.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/legacy_backend_handback_story_close.md](tests/ported/fixtures/handoffs/legacy_backend_handback_story_close.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/conflicting_signals.md](tests/ported/fixtures/handoffs/conflicting_signals.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/empty.md](tests/ported/fixtures/handoffs/empty.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/escalation.md](tests/ported/fixtures/handoffs/escalation.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/legacy_manual_frontend_dispatch.md](tests/ported/fixtures/handoffs/legacy_manual_frontend_dispatch.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/misroute.md](tests/ported/fixtures/handoffs/misroute.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/next_step_header_epic_close.md](tests/ported/fixtures/handoffs/next_step_header_epic_close.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/next_step_header_for_codex.md](tests/ported/fixtures/handoffs/next_step_header_for_codex.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/next_step_qualifier_suffix_claude.md](tests/ported/fixtures/handoffs/next_step_qualifier_suffix_claude.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/next_step_header_for_backend.md](tests/ported/fixtures/handoffs/next_step_header_for_backend.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/next_step_qualifier_suffix_auditor.md](tests/ported/fixtures/handoffs/next_step_qualifier_suffix_auditor.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/next_step_subheading_frontend.md](tests/ported/fixtures/handoffs/next_step_subheading_frontend.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/no_signal.md](tests/ported/fixtures/handoffs/no_signal.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/pe_task_assignment_codex.md](tests/ported/fixtures/handoffs/pe_task_assignment_codex.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/prose_next_agent_gemini_pe.md](tests/ported/fixtures/handoffs/prose_next_agent_gemini_pe.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/planner_task_assignment_backend.md](tests/ported/fixtures/handoffs/planner_task_assignment_backend.md) | Router fixture. |
+| [tests/ported/fixtures/handoffs/prose_next_agent_planner_legacy_alias.md](tests/ported/fixtures/handoffs/prose_next_agent_planner_legacy_alias.md) | Router fixture. |
 | [tests/ported/fixtures/handoffs/story_close_ledger_language.md](tests/ported/fixtures/handoffs/story_close_ledger_language.md) | Router fixture. |
 
 </details>

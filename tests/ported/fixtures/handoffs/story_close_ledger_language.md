@@ -1,8 +1,8 @@
-# Claude Code Audit — Story 1 Close
+# Auditor Report - Story 1 Close
 
-**Agent:** Claude Code (auditor)
+**Agent:** auditor
 **Verdict:** **APPROVED**
 
 ## Next Step
 
-- **Claude Code:** Ledger push this story, then route Story 2 to Codex after the close.
+- **auditor:** Ledger push this story, then route Story 2 to backend after the close.

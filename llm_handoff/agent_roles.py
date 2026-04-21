@@ -36,7 +36,7 @@ def invoke_planner_role(
     log: LogFn | None = None,
 ) -> DispatchResult:
     return invoke_gemini(
-        "PE",
+        "Planner",
         handoff_path,
         use_api_key_env=use_api_key_env,
         additional_instruction=additional_instruction,

@@ -261,7 +261,7 @@ producer: frontend
 def test_route_normalizes_planner_frontmatter_alias() -> None:
     handoff_content = """---
 next_agent: planner
-reason: Return to PE scoping.
+reason: Return to planner scoping.
 producer: auditor
 ---
 
@@ -373,7 +373,7 @@ producer: backend
     ("fixture_name", "project_state_content", "expected"),
     [
         pytest.param(
-            "pe_task_assignment_codex.md",
+            "planner_task_assignment_backend.md",
             None,
             RoutingDecision(
                 route="backend",
@@ -382,10 +382,10 @@ producer: backend
                 reasoning="Task Assignment block names backend as the target agent.",
                 warnings=[],
             ),
-            id="task_assignment_block_routes_to_codex",
+            id="task_assignment_block_routes_to_backend",
         ),
         pytest.param(
-            "codex_handback_story_close.md",
+            "legacy_backend_handback_story_close.md",
             None,
             RoutingDecision(
                 route="auditor",
@@ -409,7 +409,7 @@ producer: backend
             id="audit_story_close_routes_to_next_story_implementer",
         ),
         pytest.param(
-            "next_step_header_for_codex.md",
+            "next_step_header_for_backend.md",
             None,
             RoutingDecision(
                 route="backend",
@@ -445,7 +445,7 @@ producer: backend
             id="regression_next_step_subheading_agent_label",
         ),
         pytest.param(
-            "next_step_qualifier_suffix_claude.md",
+            "next_step_qualifier_suffix_auditor.md",
             None,
             RoutingDecision(
                 route="auditor",
@@ -457,7 +457,7 @@ producer: backend
             id="regression_next_step_agent_label_with_qualifier_suffix",
         ),
         pytest.param(
-            "prose_next_agent_gemini_pe.md",
+            "prose_next_agent_planner_legacy_alias.md",
             None,
             RoutingDecision(
                 route="planner",
@@ -604,7 +604,7 @@ def test_route_matches_fixture(
                 reasoning="Canonical dispatch line routes work to backend.",
                 warnings=[],
             ),
-            id="canonical_codex_dispatch",
+            id="canonical_backend_dispatch",
         ),
         pytest.param(
             "Next: dispatch auditor",
@@ -615,10 +615,10 @@ def test_route_matches_fixture(
                 reasoning="Canonical dispatch line routes work to auditor for audit.",
                 warnings=[],
             ),
-            id="canonical_claude_audit_dispatch",
+            id="canonical_auditor_dispatch",
         ),
         pytest.param(
-            "Next: dispatch Gemini",
+            "Next: dispatch planner",
             RoutingDecision(
                 route="planner",
                 confidence="HIGH",
@@ -626,7 +626,7 @@ def test_route_matches_fixture(
                 reasoning="Canonical dispatch line routes work to planner.",
                 warnings=[],
             ),
-            id="canonical_generic_gemini_dispatch",
+            id="canonical_generic_planner_dispatch",
         ),
     ],
 )
@@ -648,7 +648,7 @@ def test_route_supports_canonical_dispatch_variants(
                 reasoning="Prose Next Agent line routes work to auditor for audit.",
                 warnings=[],
             ),
-            id="prose_next_agent_claude_audit",
+            id="prose_next_agent_auditor",
         ),
         pytest.param(
             "### Next Agent -> auditor (epic close + ledger push)",
@@ -734,7 +734,7 @@ def test_route_ignores_non_agent_bold_line_and_uses_header_agent() -> None:
     handoff_content = """
     # Audit Verdict
 
-    ## Next Step For Gemini
+    ## Next Step For planner
 
     - **Scope:** clarify the follow-up work for Story 2.
     """.strip()
@@ -768,7 +768,7 @@ def test_route_routes_generic_gemini_to_frontend_when_action_demands_it() -> Non
     )
 
 
-def test_route_handles_next_step_claude_misroute_instruction() -> None:
+def test_route_handles_next_step_auditor_misroute_instruction() -> None:
     handoff_content = """
     ## Next Step
 
@@ -816,7 +816,7 @@ def test_route_uses_explicit_epic_close_metadata_over_auditor_label() -> None:
 
 def test_route_uses_embedded_task_assignment_in_pe_review_report() -> None:
     handoff_content = """
-    # Gemini PE Review
+    # Planner Review
 
     The plan is approved and the next task assignment is below.
 
@@ -849,7 +849,7 @@ def test_route_treats_ledger_close_and_push_as_epic_close_when_no_stories_remain
     None
 ):
     handoff_content = """
-    # Dispatch Gemini Stream-JSON + Default backend Resume — AUDIT APPROVED-WITH-NITS
+    # Dispatch Stream-JSON + Default backend Resume - AUDIT APPROVED-WITH-NITS
 
     ## Next Step
 
@@ -857,7 +857,7 @@ def test_route_treats_ledger_close_and_push_as_epic_close_when_no_stories_remain
       1. Append the ledger entry to `PROJECT_STATE.md`.
       2. Push `main` to `origin`.
 
-    - **Gemini PE (AFTER ledger close + push):** Process the UAT remediation epic.
+    - **planner (AFTER ledger close + push):** Process the UAT remediation epic.
     """.strip()
 
     assert route(handoff_content) == _legacy(

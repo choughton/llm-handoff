@@ -1,6 +1,6 @@
-# Codex Handback
+# Backend Handback
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Security & Supply Chain Hardening / Story 1: Dockerfile USER
 **Status:** Complete and verified
 **Latest verified repo SHA:** `dd6feb6bb2d490f60fe915fe67527c662b5856fb`
@@ -12,4 +12,4 @@
 
 ## Next Step
 
-- **Claude Code:** Audit Story 1 against the Semgrep hardening acceptance criteria using the verified Dockerfile + regression test state above.
+- **auditor:** Audit Story 1 against the Semgrep hardening acceptance criteria using the verified Dockerfile + regression test state above.

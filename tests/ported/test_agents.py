@@ -73,7 +73,7 @@ def _read_fixture(name: str) -> str:
 
 
 def test_config_exposes_story_2_constants() -> None:
-    assert config.GEMINI_PE_MENTION == "@planner"
+    assert config.GEMINI_PLANNER_MENTION == "@planner"
     assert config.GEMINI_FRONTEND_MENTION == "@frontend"
     assert config.CODEX_SKILL_NAME == "llm-handoff"
     assert config.CLAUDE_PERMISSIONS_FLAG == "--dangerously-skip-permissions"
@@ -124,7 +124,7 @@ def test_resolve_command_binary_falls_back_from_cmd_wrapper_to_exe(
     assert agents._resolve_command_binary("claude.cmd") == resolved_path
 
 
-def test_invoke_gemini_pe_uses_expected_prompt_and_timeout(
+def test_invoke_gemini_planner_uses_expected_prompt_and_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_mock = Mock(
@@ -139,7 +139,7 @@ def test_invoke_gemini_pe_uses_expected_prompt_and_timeout(
     monkeypatch.setenv("GOOGLE_API_KEY", "google-secret")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
 
-    result = agents.invoke_gemini("PE", HANDOFF_PATH)
+    result = agents.invoke_gemini("Planner", HANDOFF_PATH)
 
     assert result.exit_code == 0
     assert result.stdout == "gemini stdout"
@@ -154,7 +154,7 @@ def test_invoke_gemini_pe_uses_expected_prompt_and_timeout(
         "--sandbox=false",
         "-p",
         (
-            f"{config.GEMINI_PE_MENTION} Execute your assigned task based on the "
+            f"{config.GEMINI_PLANNER_MENTION} Execute your assigned task based on the "
             f"provided handoff document. @{ABSOLUTE_HANDOFF_PATH}"
         ),
     ]
@@ -183,7 +183,7 @@ def test_invoke_gemini_appends_additional_instruction_when_provided(
     monkeypatch.setattr(agents.time, "monotonic", Mock(side_effect=[100.0, 101.0]))
 
     result = agents.invoke_gemini(
-        "PE",
+        "Planner",
         HANDOFF_PATH,
         additional_instruction="Scope the next epic instead of repeating finalizer.",
     )
@@ -197,14 +197,14 @@ def test_invoke_gemini_appends_additional_instruction_when_provided(
         "--sandbox=false",
         "-p",
         (
-            f"{config.GEMINI_PE_MENTION} Execute your assigned task based on the "
+            f"{config.GEMINI_PLANNER_MENTION} Execute your assigned task based on the "
             f"provided handoff document. @{ABSOLUTE_HANDOFF_PATH} Additional instruction: "
             "Scope the next epic instead of repeating finalizer."
         ),
     ]
 
 
-def test_invoke_gemini_pe_resume_uses_uuid_and_sha_invalidation_prompt(
+def test_invoke_gemini_planner_resume_uses_uuid_and_sha_invalidation_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session_id = "3b0f6421-8846-40ac-b8f0-34d14a6778ec"
@@ -220,7 +220,7 @@ def test_invoke_gemini_pe_resume_uses_uuid_and_sha_invalidation_prompt(
     monkeypatch.setattr(agents.time, "monotonic", Mock(side_effect=[300.0, 302.0]))
 
     result = agents.invoke_gemini(
-        "PE",
+        "Planner",
         HANDOFF_PATH,
         use_resume=True,
         session_id=session_id,
@@ -240,7 +240,9 @@ def test_invoke_gemini_pe_resume_uses_uuid_and_sha_invalidation_prompt(
         "--yolo",
     ]
     prompt = command[-1]
-    assert prompt.startswith(f"{config.GEMINI_PE_MENTION} Continue your assigned task")
+    assert prompt.startswith(
+        f"{config.GEMINI_PLANNER_MENTION} Continue your assigned task"
+    )
     assert f"@{ABSOLUTE_HANDOFF_PATH}" not in prompt
     assert str(ABSOLUTE_HANDOFF_PATH) in prompt
     assert "HANDOFF.md SHA at your prior turn was previous-sha" in prompt
@@ -271,7 +273,7 @@ def test_invoke_gemini_resume_failure_falls_back_to_fresh_session(
     monkeypatch.setattr(agents.time, "monotonic", Mock(side_effect=[400.0, 405.0]))
 
     result = agents.invoke_gemini(
-        "PE",
+        "Planner",
         HANDOFF_PATH,
         use_resume=True,
         session_id="stale-id",
@@ -292,7 +294,7 @@ def test_invoke_gemini_resume_failure_falls_back_to_fresh_session(
     assert log_mock.call_args_list == [
         call(
             "WARN",
-            "Gemini PE managed session stale-id could not be resumed. Clearing the in-memory session and starting a fresh Gemini PE session for this dispatch.",
+            "Gemini planner managed session stale-id could not be resumed. Clearing the in-memory session and starting a fresh Gemini planner session for this dispatch.",
         )
     ]
 
@@ -300,7 +302,7 @@ def test_invoke_gemini_resume_failure_falls_back_to_fresh_session(
 def test_gemini_stream_json_monitor_parses_valid_events() -> None:
     log_mock = Mock()
     monitor = agents._GeminiStreamJsonMonitor(
-        agent_name="Gemini PE",
+        agent_name="Gemini planner",
         log=log_mock,
         attempt_number=1,
         max_attempts=4,
@@ -327,20 +329,20 @@ def test_gemini_stream_json_monitor_parses_valid_events() -> None:
     assert finalized.session_id == "session-123"
     messages = [entry.args[1] for entry in log_mock.call_args_list]
     assert (
-        "Gemini PE: Gemini session session-123 started (model: gemini-3.1-pro-preview)"
+        "Gemini planner: Gemini session session-123 started (model: gemini-3.1-pro-preview)"
         in messages
     )
-    assert "Gemini PE: I will now read the handoff." in messages
-    assert "Gemini PE: Reading docs/handoff/HANDOFF.md" in messages
+    assert "Gemini planner: I will now read the handoff." in messages
+    assert "Gemini planner: Reading docs/handoff/HANDOFF.md" in messages
     assert (
-        "Gemini PE: Gemini result (status=success, tokens=12 input / 4 output tokens)"
+        "Gemini planner: Gemini result (status=success, tokens=12 input / 4 output tokens)"
         in messages
     )
 
 
 def test_gemini_stream_json_monitor_skips_rate_limit_monitor_without_log() -> None:
     monitor = agents._GeminiStreamJsonMonitor(
-        agent_name="Gemini PE",
+        agent_name="Gemini planner",
         log=None,
         attempt_number=1,
         max_attempts=4,
@@ -395,7 +397,7 @@ def test_format_gemini_result_tokens_includes_units() -> None:
 def test_gemini_stream_json_monitor_handles_malformed_json_without_crashing() -> None:
     log_mock = Mock()
     monitor = agents._GeminiStreamJsonMonitor(
-        agent_name="Gemini PE",
+        agent_name="Gemini planner",
         log=log_mock,
         attempt_number=1,
         max_attempts=4,
@@ -409,10 +411,10 @@ def test_gemini_stream_json_monitor_handles_malformed_json_without_crashing() ->
 
     assert finalized.stdout == "Valid progress line."
     assert log_mock.call_args_list == [
-        call("AGENT", "Gemini PE: Valid progress line."),
+        call("AGENT", "Gemini planner: Valid progress line."),
         call(
             "WARN",
-            'Gemini PE stream-json parse failed: {"type":"tool_use","tool_name":"read_file"',
+            'Gemini planner stream-json parse failed: {"type":"tool_use","tool_name":"read_file"',
         ),
     ]
 
@@ -420,7 +422,7 @@ def test_gemini_stream_json_monitor_handles_malformed_json_without_crashing() ->
 def test_gemini_stream_json_monitor_ignores_pretty_json_429_blocks_on_stderr() -> None:
     log_mock = Mock()
     monitor = agents._GeminiStreamJsonMonitor(
-        agent_name="Gemini PE",
+        agent_name="Gemini planner",
         log=log_mock,
         attempt_number=1,
         max_attempts=4,
@@ -527,7 +529,7 @@ def test_invoke_gemini_logs_retry_wait_before_sleep(
     monkeypatch.setattr(agents.time, "sleep", sleep_mock)
     monkeypatch.setattr(agents.time, "monotonic", Mock(side_effect=[30.0, 32.0]))
 
-    result = agents.invoke_gemini("PE", HANDOFF_PATH, log=log_mock)
+    result = agents.invoke_gemini("Planner", HANDOFF_PATH, log=log_mock)
 
     assert result.exit_code == 0
     assert (
@@ -723,7 +725,7 @@ def test_invoke_gemini_stops_after_three_retries(
     monkeypatch.setattr(agents.time, "sleep", sleep_mock)
     monkeypatch.setattr(agents.time, "monotonic", Mock(side_effect=[20.0, 25.0]))
 
-    result = agents.invoke_gemini("PE", HANDOFF_PATH)
+    result = agents.invoke_gemini("Planner", HANDOFF_PATH)
 
     assert result.exit_code == 9
     assert result.stdout == ""

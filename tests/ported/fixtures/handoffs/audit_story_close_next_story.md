@@ -1,6 +1,6 @@
-# Claude Code Audit — Story 2 Close
+# Auditor Report - Story 2 Close
 
-**Agent:** Claude Code (auditor)
+**Agent:** auditor
 **Epic/Story:** Security & Supply Chain Hardening / Story 2
 **Verdict:** **APPROVED**
 **Close Type:** STORY-CLOSE
@@ -8,4 +8,4 @@
 
 ## Next Step (Routing)
 
-- **Codex:** Begin Story 3 — audit all string-returning FastAPI endpoints and wrap them with explicit `PlainTextResponse` / `JSONResponse`.
+- **backend:** Begin Story 3 — audit all string-returning FastAPI endpoints and wrap them with explicit `PlainTextResponse` / `JSONResponse`.

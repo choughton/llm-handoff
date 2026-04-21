@@ -74,7 +74,7 @@ def test_parse_validation_output_requires_valid_verdict_line() -> None:
         parse_validation_output("ROUTING: PASS - backend")
 
 
-def test_validate_handoff_rejects_unchanged_content_hash_for_codex(
+def test_validate_handoff_rejects_unchanged_content_hash_for_backend(
     tmp_path: Path,
 ) -> None:
     handoff_content = _with_frontmatter(
@@ -117,7 +117,7 @@ def test_validate_handoff_rejects_unchanged_content_hash_for_codex(
     assert any("no_new_sha" in error for error in result.errors)
 
 
-def test_validate_handoff_accepts_codex_handback_with_sha_and_routing(
+def test_validate_handoff_accepts_backend_handback_with_sha_and_routing(
     tmp_path: Path,
 ) -> None:
     handoff_path = _write_handoff(
@@ -325,7 +325,7 @@ APPROVED-WITH-NITS. Route the next implementation story to backend.
     )
 
 
-def test_validate_handoff_rejects_scope_claim_mismatch_for_codex(
+def test_validate_handoff_rejects_scope_claim_mismatch_for_backend(
     tmp_path: Path,
 ) -> None:
     handoff_path = _write_handoff(
@@ -438,7 +438,7 @@ def test_validate_handoff_frontmatter_accepts_planner_alias() -> None:
     result = validator.validate_handoff_frontmatter(
         HandoffRouting(
             next_agent="planner",
-            reason="Return to PE scoping.",
+            reason="Return to planner scoping.",
             producer="auditor",
         )
     )
@@ -513,7 +513,7 @@ APPROVED.
     assert any("frontmatter_routing_rule" in error for error in result.errors)
 
 
-def test_validate_handoff_rejects_claude_ledger_from_non_auditor_producer(
+def test_validate_handoff_rejects_finalizer_from_non_auditor_producer(
     tmp_path: Path,
 ) -> None:
     handoff_path = _write_handoff(
@@ -605,7 +605,7 @@ Implement the next story.
     assert any("frontmatter_missing" in error for error in result.errors)
 
 
-def test_validate_handoff_accepts_claude_audit_epic_close_metadata(
+def test_validate_handoff_accepts_auditor_epic_close_metadata(
     tmp_path: Path,
 ) -> None:
     handoff_path = _write_handoff(
@@ -614,7 +614,7 @@ def test_validate_handoff_accepts_claude_audit_epic_close_metadata(
             """## Audit
 
 **Agent:** auditor (auditor)
-**Epic/Story:** Dispatch Gemini Route-Missing Handoff Recovery
+**Epic/Story:** Dispatch Route-Missing Handoff Recovery
 **Test SHA:** `3251966`
 **Implementation SHA:** `833da7d`
 **Handoff SHA:** `76ab974`
@@ -1069,7 +1069,7 @@ Human decision required.
     )
 
 
-def test_validate_handoff_rejects_planner_self_loop_back_to_gemini_pe(
+def test_validate_handoff_rejects_planner_self_loop_back_to_legacy_alias(
     tmp_path: Path,
 ) -> None:
     handoff_path = _write_handoff(
@@ -1142,7 +1142,7 @@ def test_validate_handoff_allows_auditor_handoff_to_epic_close_for_ledger_close_
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Dispatch Gemini Stream-JSON + Default backend Resume — AUDIT APPROVED-WITH-NITS
+            """# Dispatch Stream-JSON + Default backend Resume - AUDIT APPROVED-WITH-NITS
 
 **Agent:** auditor
 **Verified repo SHAs:** impl `82ce839`, tests `3407c66`
@@ -1155,7 +1155,7 @@ def test_validate_handoff_allows_auditor_handoff_to_epic_close_for_ledger_close_
   1. Append the ledger entry to `PROJECT_STATE.md`.
   2. Push `main` to `origin`.
 
-- **Gemini PE (AFTER ledger close + push):** Process the UAT remediation epic.
+- **planner (AFTER ledger close + push):** Process the UAT remediation epic.
 """,
             next_agent="finalizer",
             reason="Epic audit approved; ledger close requested.",
@@ -1175,6 +1175,6 @@ def test_validate_handoff_allows_auditor_handoff_to_epic_close_for_ledger_close_
     assert all("agent_self_loop" not in error for error in result.errors)
 
 
-def test_author_role_coalesces_claude_variants() -> None:
+def test_author_role_coalesces_support_variants() -> None:
     assert validator._author_role("auditor") == "auditor-family"
     assert validator._author_role("validator") == "auditor-family"

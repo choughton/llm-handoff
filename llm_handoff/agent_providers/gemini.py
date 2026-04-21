@@ -28,7 +28,7 @@ from llm_handoff.agent_streams import _LiveAgentOutputMonitor
 from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
 
 
-GeminiRole = Literal["PE", "Frontend"]
+GeminiRole = Literal["Planner", "Frontend"]
 RateLimitLastBlockPolicy = Literal["emit_when_metadata_complete", "exclude_last"]
 _REAL_TIME_MONOTONIC = time.monotonic
 
@@ -373,7 +373,7 @@ def invoke_gemini(
 ) -> DispatchResult:
     repo_root = Path.cwd()
     resolved_handoff_path = _resolve_handoff_path(handoff_path, repo_root)
-    should_resume = role == "PE" and use_resume and bool(session_id)
+    should_resume = role == "Planner" and use_resume and bool(session_id)
     command = _build_gemini_command(
         role,
         resolved_handoff_path,
@@ -402,8 +402,8 @@ def invoke_gemini(
         if log is not None:
             log(
                 "WARN",
-                "Gemini PE managed session "
-                f"{session_id} could not be resumed. Clearing the in-memory session and starting a fresh Gemini PE session for this dispatch.",
+                "Gemini planner managed session "
+                f"{session_id} could not be resumed. Clearing the in-memory session and starting a fresh Gemini planner session for this dispatch.",
             )
         fresh_command = _build_gemini_command(
             role,
@@ -477,7 +477,9 @@ def _build_gemini_prompt(
     current_handoff_sha: str | None,
 ) -> str:
     mention = (
-        config.GEMINI_PE_MENTION if role == "PE" else config.GEMINI_FRONTEND_MENTION
+        config.GEMINI_PLANNER_MENTION
+        if role == "Planner"
+        else config.GEMINI_FRONTEND_MENTION
     )
     if use_resume:
         prompt = (
@@ -1181,8 +1183,8 @@ def _gemini_agent_name_from_command(command: list[str]) -> str:
     command_text = " ".join(command)
     # The configured Gemini mentions are intentionally non-overlapping; simple
     # substring checks keep dispatch logging cheap and deterministic.
-    if config.GEMINI_PE_MENTION in command_text:
-        return "Gemini PE"
+    if config.GEMINI_PLANNER_MENTION in command_text:
+        return "Gemini planner"
     if config.GEMINI_FRONTEND_MENTION in command_text:
         return "Gemini Frontend"
     return "Gemini CLI"

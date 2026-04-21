@@ -1,8 +1,8 @@
-# Claude Code Audit — Story Close
+# Auditor Report - Story Close
 
-**Agent:** Claude Code (auditor)
+**Agent:** auditor
 **Verdict:** **APPROVED**
 
-## Next Step For Codex
+## Next Step For backend
 
 Implement Story 2 with a failing test commit first, then the implementation commit.
