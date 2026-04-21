@@ -110,11 +110,11 @@ Normalizer outcomes:
 ## Git As State
 
 The dispatcher expects Git commit SHAs to appear in handoffs that claim
-completed work. SHA validation should become both syntactic and semantic before
-production use:
+completed work. When the handoff is inside a Git worktree, `scope_sha`
+validation is both syntactic and semantic:
 
 - syntax: 7 to 40 hexadecimal characters;
-- semantics: `git cat-file -e <sha>` succeeds in the target repo.
+- semantics: `git cat-file -e <sha>^{commit}` succeeds in the target repo.
 
 Git is not an interchangeable backend in this design. It is part of the
 mechanism.

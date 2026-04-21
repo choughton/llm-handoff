@@ -231,7 +231,6 @@ advances when the handoff state parses, routes, and validates.
 - The reference implementation has been validated primarily in one workflow.
 - Provider CLI behavior can change underneath the dispatcher.
 - Validator calls optimize for correctness over token cost.
-- Semantic SHA existence checks remain hardening work before production use.
 - Runtime config is loaded, but the current dispatch runtime supports only the
   documented reference provider matrix. Unsupported role-to-provider mappings
   fail closed until true portability is implemented.

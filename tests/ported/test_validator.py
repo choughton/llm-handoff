@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -21,6 +22,32 @@ def _write_handoff(tmp_path: Path, content: str) -> Path:
     handoff_path = tmp_path / "HANDOFF.md"
     handoff_path.write_text(content, encoding="utf-8")
     return handoff_path
+
+
+def _git(repo_root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _init_git_repo(repo_root: Path) -> str:
+    _git(repo_root, "init")
+    _git(
+        repo_root,
+        "-c",
+        "user.name=llm-handoff tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    )
+    return _git(repo_root, "rev-parse", "HEAD")
 
 
 def _with_frontmatter(
@@ -162,6 +189,74 @@ def test_validate_handoff_accepts_backend_handback_with_sha_and_routing(
     assert result.warnings == []
     assert result.errors == []
     assert result.routing_instruction == "auditor"
+
+
+def test_validate_handoff_rejects_scope_sha_that_does_not_exist_in_git(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    unknown_sha = "f" * 40
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            f"""# backend Handback
+
+**Agent:** backend
+**Latest verified repo SHA:** `{unknown_sha}`
+
+## Completed Work
+
+- Completed the scoped change.
+
+## Verification
+
+- `pytest`
+""",
+            next_agent="auditor",
+            reason="Story complete; audit requested.",
+            scope_sha=unknown_sha,
+            close_type="story",
+            producer="backend",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend")
+
+    assert result.verdict == "NO"
+    assert any("frontmatter_scope_sha_unknown" in error for error in result.errors)
+
+
+def test_validate_handoff_accepts_scope_sha_that_exists_in_git(
+    tmp_path: Path,
+) -> None:
+    head_sha = _init_git_repo(tmp_path)
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            f"""# backend Handback
+
+**Agent:** backend
+**Latest verified repo SHA:** `{head_sha}`
+
+## Completed Work
+
+- Completed the scoped change.
+
+## Verification
+
+- `pytest`
+""",
+            next_agent="auditor",
+            reason="Story complete; audit requested.",
+            scope_sha=head_sha,
+            close_type="story",
+            producer="backend",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend")
+
+    assert not any("frontmatter_scope_sha" in error for error in result.errors)
 
 
 def test_validate_handoff_accepts_utf16_le_bom_manual_frontend_handback(

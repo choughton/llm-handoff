@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 import re
+import subprocess
 from typing import Literal
 
 from llm_handoff.router import (
@@ -76,7 +77,11 @@ def parse_validation_output(output: str) -> ValidationResult:
     )
 
 
-def validate_handoff_frontmatter(parsed: HandoffRouting) -> ValidationResult:
+def validate_handoff_frontmatter(
+    parsed: HandoffRouting,
+    *,
+    git_cwd: Path | None = None,
+) -> ValidationResult:
     producer = parsed.producer or "unknown producer"
     errors: list[str] = []
     warnings: list[str] = []
@@ -115,22 +120,31 @@ def validate_handoff_frontmatter(parsed: HandoffRouting) -> ValidationResult:
             f"producer {producer} used unsupported close_type `{parsed.close_type}`."
         )
 
+    scope_sha_syntax_valid = bool(
+        parsed.scope_sha and _SHA_VALUE_RE.fullmatch(parsed.scope_sha)
+    )
+
     if parsed.close_type is not None:
         if not parsed.scope_sha:
             errors.append(
                 "frontmatter_scope_sha_missing: "
                 f"producer {producer} omitted scope_sha while close_type is set."
             )
-        elif _SHA_VALUE_RE.fullmatch(parsed.scope_sha) is None:
+        elif not scope_sha_syntax_valid:
             errors.append(
                 "frontmatter_scope_sha_invalid: "
                 f"producer {producer} emitted scope_sha `{parsed.scope_sha}`; expected 7-40 hex chars."
             )
 
-    if parsed.scope_sha and _SHA_VALUE_RE.fullmatch(parsed.scope_sha) is None:
+    if parsed.scope_sha and not scope_sha_syntax_valid:
         errors.append(
             "frontmatter_scope_sha_invalid: "
             f"producer {producer} emitted scope_sha `{parsed.scope_sha}`; expected 7-40 hex chars."
+        )
+    elif parsed.scope_sha and _git_commit_exists(parsed.scope_sha, git_cwd) is False:
+        errors.append(
+            "frontmatter_scope_sha_unknown: "
+            f"producer {producer} emitted scope_sha `{parsed.scope_sha}`, but it does not resolve to a commit in this repository."
         )
 
     if parsed.prior_sha and _SHA_VALUE_RE.fullmatch(parsed.prior_sha) is None:
@@ -176,6 +190,7 @@ def validate_handoff(
         handoff_content,
         previous_agent,
         prior_handoff_sha=prior_handoff_sha,
+        git_cwd=handoff_path.parent,
     )
 
 
@@ -184,6 +199,7 @@ def validate_handoff_text(
     previous_agent: str,
     *,
     prior_handoff_sha: str | None = None,
+    git_cwd: Path | None = None,
 ) -> ValidationResult:
     normalized_content = handoff_content.lstrip("\ufeff")
     current_handoff_sha = sha256(normalized_content.encode("utf-8")).hexdigest()
@@ -221,7 +237,10 @@ def validate_handoff_text(
                 "frontmatter (producer: unknown producer)."
             )
         else:
-            frontmatter_result = validate_handoff_frontmatter(frontmatter)
+            frontmatter_result = validate_handoff_frontmatter(
+                frontmatter,
+                git_cwd=git_cwd,
+            )
             errors.extend(frontmatter_result.errors)
             warnings.extend(frontmatter_result.warnings)
             routing_instruction = frontmatter_result.routing_instruction
@@ -289,6 +308,26 @@ def validate_handoff_text(
 def _normalize_agent(agent_text: str) -> str | None:
     role, _warnings = normalize_agent_label(agent_text)
     return role
+
+
+def _git_commit_exists(sha: str, cwd: Path | None) -> bool | None:
+    if cwd is None:
+        return None
+
+    rev_parse = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if rev_parse.returncode != 0:
+        return None
+
+    completed = subprocess.run(
+        ["git", "-C", str(cwd), "cat-file", "-e", f"{sha}^{{commit}}"],
+        capture_output=True,
+        text=True,
+    )
+    return completed.returncode == 0
 
 
 def _requires_commit_sha(previous_route: str | None) -> bool:
