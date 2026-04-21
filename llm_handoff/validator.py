@@ -106,6 +106,12 @@ def validate_handoff_frontmatter(parsed: HandoffRouting) -> ValidationResult:
             f"frontmatter_reason_too_long: producer {producer} emitted a reason >= 200 characters."
         )
 
+    if not parsed.producer:
+        errors.append(
+            "frontmatter_producer_missing: "
+            "HANDOFF frontmatter omitted required producer."
+        )
+
     if parsed.close_type is not None and parsed.close_type not in _ALLOWED_CLOSE_TYPES:
         errors.append(
             "frontmatter_close_type_invalid: "

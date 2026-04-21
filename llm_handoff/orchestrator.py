@@ -679,7 +679,11 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
     previous_agent: str,
     log: LogFn,
 ) -> HandoffRepairAttempt:
-    if not _is_repairable_handoff_hygiene_failure(validation_result):
+    handoff_content = _read_required_text(config.handoff_full_path) or ""
+    if not _is_repairable_handoff_hygiene_failure(
+        validation_result,
+        handoff_content=handoff_content,
+    ):
         return HandoffRepairAttempt(attempted=False, succeeded=False)
 
     before_state = _capture_handoff_repair_state(config)
@@ -700,7 +704,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         log,
         "WARN",
         "Post-dispatch handoff hygiene failed for "
-        f"{previous_agent}: {_format_validation_errors(validation_result)}",
+        f"{previous_agent}: {_format_validation_repair_issues(validation_result)}",
     )
     _log(
         log,
@@ -737,6 +741,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         config=config,
         before_state=before_state,
         after_state=after_state,
+        validation_result=validation_result,
     )
     if postcondition_error is not None:
         _log(log, "ERROR", f"Producer repair failed invariant: {postcondition_error}")
@@ -773,14 +778,29 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
     )
 
 
-def _is_repairable_handoff_hygiene_failure(result: ValidationResult) -> bool:
+def _is_repairable_handoff_hygiene_failure(
+    result: ValidationResult,
+    *,
+    handoff_content: str,
+) -> bool:
     if result.verdict != "NO" or not result.errors:
         return False
     repairable_prefixes = (
+        "frontmatter_reason_missing:",
+        "frontmatter_producer_missing:",
         "scope_claim_missing:",
         "scope_claim_mismatch:",
     )
-    return all(error.startswith(repairable_prefixes) for error in result.errors)
+    for error in result.errors:
+        if error.startswith("frontmatter_scope_sha_missing:"):
+            if _COMMIT_SHA_RE.search(handoff_content) is None:
+                return False
+            continue
+        if error.startswith("frontmatter_close_type_invalid:"):
+            continue
+        if not error.startswith(repairable_prefixes):
+            return False
+    return True
 
 
 def _dispatch_handoff_hygiene_repair(
@@ -791,7 +811,7 @@ def _dispatch_handoff_hygiene_repair(
     log: LogFn,
 ) -> DispatchResult | None:
     repair_prompt = POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE.format(
-        errors=_format_validation_errors(validation_result)
+        errors=_format_validation_repair_issues(validation_result)
     )
     previous_agent_lower = previous_agent.lower()
     if "auditor" in previous_agent_lower and "audit" in previous_agent_lower:
@@ -806,6 +826,8 @@ def _dispatch_handoff_hygiene_repair(
             additional_instruction=repair_prompt,
         )
     if previous_agent == "frontend":
+        if config.use_manual_frontend:
+            return None
         return invoke_frontend_role(
             config.handoff_full_path,
             use_manual_frontend=config.use_manual_frontend,
@@ -831,6 +853,7 @@ def _handoff_repair_postcondition_error(
     config: DispatchConfig,
     before_state: HandoffRepairState,
     after_state: HandoffRepairState,
+    validation_result: ValidationResult,
 ) -> str | None:
     handoff_path = config.handoff_path.as_posix()
     if after_state.head_sha is None:
@@ -860,9 +883,62 @@ def _handoff_repair_postcondition_error(
             f"before={before_state.dirty_files}, after={after_state.dirty_files}"
         )
 
-    if after_state.critical_frontmatter != before_state.critical_frontmatter:
+    mutable_fields = _repair_mutable_frontmatter_fields(
+        validation_result,
+        before_state=before_state,
+    )
+    if _filter_frontmatter_signature(
+        after_state.critical_frontmatter,
+        mutable_fields,
+    ) != _filter_frontmatter_signature(
+        before_state.critical_frontmatter,
+        mutable_fields,
+    ):
         return "repair changed preserved routing frontmatter fields"
     return None
+
+
+def _repair_mutable_frontmatter_fields(
+    validation_result: ValidationResult,
+    *,
+    before_state: HandoffRepairState,
+) -> frozenset[str]:
+    fields: set[str] = set()
+    if _frontmatter_field_value(before_state.critical_frontmatter, "producer") is None:
+        fields.add("producer")
+    if _frontmatter_field_value(before_state.critical_frontmatter, "scope_sha") is None:
+        fields.add("scope_sha")
+    for error in validation_result.errors:
+        if error.startswith("frontmatter_producer_missing:"):
+            fields.add("producer")
+        elif error.startswith("frontmatter_scope_sha_missing:"):
+            fields.add("scope_sha")
+        elif error.startswith("frontmatter_scope_sha_invalid:"):
+            fields.add("scope_sha")
+        elif error.startswith("frontmatter_close_type_invalid:"):
+            fields.add("close_type")
+    return frozenset(fields)
+
+
+def _frontmatter_field_value(
+    signature: tuple[tuple[str, object], ...] | None,
+    field_name: str,
+) -> object | None:
+    if signature is None:
+        return None
+    for key, value in signature:
+        if key == field_name:
+            return value
+    return None
+
+
+def _filter_frontmatter_signature(
+    signature: tuple[tuple[str, object], ...] | None,
+    mutable_fields: frozenset[str],
+) -> tuple[tuple[str, object], ...] | None:
+    if signature is None:
+        return None
+    return tuple((key, value) for key, value in signature if key not in mutable_fields)
 
 
 def _critical_frontmatter_signature(
@@ -889,6 +965,16 @@ def _critical_frontmatter_signature(
 
 def _format_validation_errors(result: ValidationResult) -> str:
     return "; ".join(result.errors) if result.errors else "none"
+
+
+def _format_validation_repair_issues(result: ValidationResult) -> str:
+    issues = list(result.errors)
+    issues.extend(
+        warning
+        for warning in result.warnings
+        if warning.startswith("acceptance_coverage_unclear:")
+    )
+    return "; ".join(issues) if issues else "none"
 
 
 def _git_head(repo_root: Path) -> str | None:

@@ -449,6 +449,18 @@ def test_validate_handoff_frontmatter_accepts_planner_alias() -> None:
     assert result.warnings == []
 
 
+def test_validate_handoff_frontmatter_rejects_missing_producer() -> None:
+    result = validator.validate_handoff_frontmatter(
+        HandoffRouting(
+            next_agent="planner",
+            reason="Return to planner scoping.",
+        )
+    )
+
+    assert result.verdict == "NO"
+    assert any("frontmatter_producer_missing" in error for error in result.errors)
+
+
 def test_validate_handoff_rejects_epic_close_type_without_audit_or_ledger(
     tmp_path: Path,
 ) -> None:

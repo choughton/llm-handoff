@@ -1180,6 +1180,100 @@ Audit complete with verification.
     ) in log_messages
 
 
+def test_run_loop_allows_repair_to_add_missing_frontmatter_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **auditor:** Audit the current story.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+
+    invalid_handoff = """---
+next_agent: planner
+close_type: story-close
+---
+
+# Auditor Handback
+
+**Agent:** auditor
+
+## Audit Summary
+
+Audit complete. Verification passed for commit 59206fb.
+"""
+    repaired_handoff = """---
+next_agent: planner
+reason: Story audit approved; scope next story.
+scope_sha: 59206fb
+close_type: story
+producer: auditor
+---
+
+# Auditor Handback
+
+**Agent:** auditor
+
+## Audit Summary
+
+Audit complete. Verification passed for commit 59206fb.
+"""
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert callable(log)
+        subagent_calls.append((subagent_name, prompt, log))
+        if len(subagent_calls) == 1:
+            handoff_path.write_text(invalid_handoff, encoding="utf-8")
+        else:
+            assert subagent_name == "auditor"
+            assert "frontmatter_reason_missing" in prompt
+            assert "frontmatter_producer_missing" in prompt
+            assert "frontmatter_scope_sha_missing" in prompt
+            assert "frontmatter_close_type_invalid" in prompt
+            handoff_path.write_text(repaired_handoff, encoding="utf-8")
+        return _subagent_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_subagent)
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_head",
+        Mock(side_effect=["a" * 40, "b" * 40]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_dirty_files",
+        Mock(side_effect=[("docs/handoff/HANDOFF.md",), ()]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_changed_files_since",
+        Mock(return_value=("docs/handoff/HANDOFF.md",)),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert [call[0] for call in subagent_calls] == [
+        "auditor",
+        "auditor",
+    ]
+    assert (
+        "AGENT",
+        "Producer handoff hygiene repair passed post-checks.",
+    ) in log_messages
+
+
 def test_run_loop_routes_failed_handoff_hygiene_repair_to_planner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1294,6 +1388,158 @@ Implement the next story.
         "Post-dispatch handoff hygiene repair failed. Scheduling the planner to clean HANDOFF.md or escalate.",
     ) in log_messages
     assert ("INFO", "Routing instruction: planner") in log_messages
+
+
+def test_run_loop_routes_manual_frontend_handoff_hygiene_failure_to_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: frontend
+reason: "Run frontend diagnostic."
+producer: planner
+---
+
+## Task Assignment
+
+**Agent:** frontend
+
+### Objective
+Diagnose the UI issue.
+
+### Acceptance Criteria
+- Commit the diagnostic note.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, use_manual_frontend=True)
+    log_messages: list[tuple[str, str]] = []
+    planner_calls: list[tuple[str | None, Any]] = []
+
+    invalid_handoff = """---
+next_agent: planner
+---
+
+# Frontend Handback
+
+The diagnostic is complete.
+
+Diagnostic commit SHA: 476c2b0
+"""
+    planner_handoff = """---
+next_agent: backend
+reason: "Implement the follow-up story."
+producer: planner
+---
+
+## Task Assignment
+
+**Agent:** backend
+
+### Objective
+Implement the follow-up.
+
+### Acceptance Criteria
+- Complete the scoped work.
+"""
+
+    def fake_frontend(
+        path: Path,
+        *,
+        use_manual_frontend: bool = False,
+        **_kwargs: Any,
+    ) -> DispatchResult:
+        assert use_manual_frontend is True
+        path.write_text(invalid_handoff, encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_planner(
+        path: Path,
+        *,
+        additional_instruction: str | None = None,
+        log=None,
+        **_kwargs: Any,
+    ) -> DispatchResult:
+        planner_calls.append((additional_instruction, log))
+        path.write_text(planner_handoff, encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_frontend_role", fake_frontend)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(orchestrator, "_git_head", Mock(return_value="a" * 40))
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(planner_calls) == 1
+    assert "producer failed one-shot HANDOFF hygiene repair" in (
+        planner_calls[0][0] or ""
+    )
+    assert "frontmatter_reason_missing" in (planner_calls[0][0] or "")
+    assert "scope_claim_missing" in (planner_calls[0][0] or "")
+    assert (
+        "ERROR",
+        "No supported producer repair path for frontend.",
+    ) in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch handoff hygiene repair failed. Scheduling the planner to clean HANDOFF.md or escalate.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: planner") in log_messages
+
+
+def test_handoff_hygiene_repair_requires_body_sha_for_missing_scope_sha() -> None:
+    orchestrator = _load_orchestrator_module()
+    result = ValidationResult(
+        verdict="NO",
+        warnings=[],
+        errors=[
+            "frontmatter_scope_sha_missing: producer backend omitted scope_sha while close_type is set.",
+        ],
+        routing_instruction="auditor",
+    )
+
+    assert (
+        orchestrator._is_repairable_handoff_hygiene_failure(
+            result,
+            handoff_content="Body references commit 476c2b0.",
+        )
+        is True
+    )
+    assert (
+        orchestrator._is_repairable_handoff_hygiene_failure(
+            result,
+            handoff_content="Body has no commit pointer.",
+        )
+        is False
+    )
+
+
+def test_handoff_hygiene_repair_prompt_includes_acceptance_warnings() -> None:
+    orchestrator = _load_orchestrator_module()
+    result = ValidationResult(
+        verdict="NO",
+        warnings=[
+            "acceptance_coverage_unclear: Task Assignment is missing an Objective section.",
+            "sha_missing: Planner handoff does not yet include a git commit SHA.",
+        ],
+        errors=[
+            "scope_claim_mismatch: planner handoffs must use a Task Assignment block.",
+        ],
+        routing_instruction="backend",
+    )
+
+    issues = orchestrator._format_validation_repair_issues(result)
+
+    assert "scope_claim_mismatch" in issues
+    assert "acceptance_coverage_unclear" in issues
+    assert "sha_missing" not in issues
 
 
 def test_run_loop_aborts_when_planner_cannot_recover_failed_handoff_hygiene_repair(
