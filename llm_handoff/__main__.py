@@ -249,8 +249,7 @@ def _dispatch_callback(
         False,
         "--use-planner-api-key-env",
         help=(
-            "Preserve the planner provider API key environment for planner launches. "
-            "Provider-specific blocked variables are still stripped."
+            "Preserve GEMINI_API_KEY for planner launches. GOOGLE_API_KEY is still stripped."
         ),
     ),
     backend_resume: bool = typer.Option(

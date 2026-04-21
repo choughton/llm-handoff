@@ -6,6 +6,9 @@ target repository.
 `llm-handoff` is not published to PyPI. Clone this repo, run it from source, and
 point it at the repository you want to coordinate.
 
+This is pre-release software. Read the [README status](README.md#status) before
+using it against a repository with sensitive or production work.
+
 ## 1. Clone The Dispatcher
 
 Windows PowerShell:

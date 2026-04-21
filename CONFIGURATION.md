@@ -96,6 +96,11 @@ planner_api_key_env: false
 Provider-named runtime keys from the source extraction are not supported in the
 public config. Use the role-based keys shown above.
 
+When `planner_api_key_env` is `false`, planner launches strip
+`GEMINI_API_KEY`. `GOOGLE_API_KEY` is always stripped for planner launches.
+When `planner_api_key_env` is `true`, `GEMINI_API_KEY` is preserved, but
+`GOOGLE_API_KEY` is still stripped.
+
 ## Agent Roles
 
 Public docs and templates should use generic role names:
@@ -112,6 +117,10 @@ Provider names are adapter details. The current pre-release implementation
 supports the reference provider matrix below and fails closed if a role is
 configured with a different provider. True arbitrary role-to-provider
 portability is planned before v1, but is not implemented yet.
+
+When a config file defines only some `agents` entries, the loader merges those
+entries over the reference defaults. After merging, all reference roles must be
+present.
 
 | Role | Currently Supported Provider |
 | --- | --- |
@@ -155,7 +164,8 @@ Claude-specific fields:
 Gemini-specific fields:
 
 - `mention`: optional agent mention used by Gemini agent files.
-- `use_api_key_env`: whether to preserve Gemini API key environment variables.
+- `use_api_key_env`: whether to preserve `GEMINI_API_KEY` for Gemini planner
+  launches. `GOOGLE_API_KEY` is always stripped by the current adapter.
 
 ## Next-Agent Normalizer
 

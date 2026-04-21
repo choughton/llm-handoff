@@ -157,7 +157,7 @@ PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE = (
     "source, tests, project-state files, ledger files, or completed work. Commit "
     "exactly docs/handoff/HANDOFF.md before finishing."
 )
-STALE_EPIC_CLOSE_GEMINI_RECOVERY_INSTRUCTION = (
+STALE_FINALIZER_RECOVERY_INSTRUCTION = (
     "The prior finalizer cycle already completed, but HANDOFF.md was not "
     "rewritten and still contains stale finalizer routing. Treat "
     "PROJECT_STATE.md and Git history as the source of truth for the current "
@@ -442,7 +442,7 @@ def run_loop(
                     forced_additional_instruction
                     if forced_additional_instruction is not None
                     else (
-                        STALE_EPIC_CLOSE_GEMINI_RECOVERY_INSTRUCTION
+                        STALE_FINALIZER_RECOVERY_INSTRUCTION
                         if decision.source == "stale_epic_close_recovery"
                         else None
                     )

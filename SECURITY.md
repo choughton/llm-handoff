@@ -16,6 +16,10 @@ After the first tagged release, supported versions will be listed here.
   its handoff, prompt, and agent instruction files.
 - Do not put secrets in `HANDOFF.md`, `PROJECT_STATE.md`, prompt templates, or
   dispatch logs.
+- `HANDOFF.md` and `PROJECT_STATE.md` are intended to be committed workflow
+  state. In team repositories, treat them like any other committed project
+  context: review them for sensitive paths, customer details, credentials, and
+  private implementation notes before publishing or sharing.
 - Review provider CLI permissions before enabling a workflow.
 - On Windows, prefer explicit, trusted CLI install paths when overriding provider
   commands. The dispatcher may execute `.cmd` wrappers found on `PATH`; an

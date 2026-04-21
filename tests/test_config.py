@@ -52,6 +52,9 @@ agents:
     assert loaded.normalizer.timeout_ms == 12345
     assert loaded.agents["backend"].provider == "codex"
     assert loaded.agents["planner"].mention == "@planner"
+    assert loaded.agents["frontend"].provider == "gemini"
+    assert loaded.agents["validator"].provider == "claude"
+    assert loaded.agents["finalizer"].provider == "claude"
 
 
 def test_load_dispatch_config_uses_defaults_when_file_is_absent(
@@ -79,6 +82,20 @@ def test_load_dispatch_config_rejects_unsupported_role_provider_mapping(
 
     with pytest.raises(ValueError, match="True provider portability is planned"):
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_dispatch_config_rejects_missing_required_agent_roles(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="required reference roles"):
+        DispatchConfig.model_validate(
+            {
+                "repo_root": tmp_path,
+                "agents": {
+                    "backend": {
+                        "provider": "codex",
+                    },
+                },
+            }
+        )
 
 
 def test_load_dispatch_config_rejects_unsupported_normalizer_provider(

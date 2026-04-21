@@ -84,6 +84,7 @@ SUPPORTED_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "validator": "claude",
     "finalizer": "claude",
 }
+REQUIRED_AGENT_ROLES = frozenset(SUPPORTED_AGENT_PROVIDERS)
 
 
 class AgentConfig(BaseModel):
@@ -226,8 +227,12 @@ class DispatchConfig(BaseModel):
         cls,
         value: dict[AgentRole, AgentConfig],
     ) -> dict[AgentRole, AgentConfig]:
-        if not value:
-            raise ValueError("agents must define at least one role.")
+        missing_roles = sorted(REQUIRED_AGENT_ROLES.difference(value))
+        if missing_roles:
+            raise ValueError(
+                "agents must define the required reference roles: "
+                f"{', '.join(missing_roles)}."
+            )
         for role, agent_config in value.items():
             expected_provider = SUPPORTED_AGENT_PROVIDERS[role]
             if agent_config.provider != expected_provider:
@@ -290,11 +295,32 @@ def load_dispatch_config(
     data["dry_run"] = dry_run
     data["use_manual_frontend"] = use_manual_frontend
     data["planner_api_key_env"] = planner_api_key_env
+    _merge_agent_defaults(data)
     if backend_resume is not None:
         data["backend_resume"] = backend_resume
     if planner_resume is not None:
         data["planner_resume"] = planner_resume
     return DispatchConfig.model_validate(data)
+
+
+def _merge_agent_defaults(data: dict[str, object]) -> None:
+    configured_agents = data.get("agents")
+    if configured_agents is None or not isinstance(configured_agents, dict):
+        return
+
+    default_agents: dict[str, object] = {
+        role: agent_config.model_dump(exclude_none=True)
+        for role, agent_config in _default_agent_configs().items()
+    }
+    merged_agents = dict(default_agents)
+    for role, configured in configured_agents.items():
+        if isinstance(role, str) and isinstance(configured, dict):
+            default_config = default_agents.get(role)
+            if isinstance(default_config, dict):
+                merged_agents[role] = {**default_config, **configured}
+                continue
+        merged_agents[role] = configured
+    data["agents"] = merged_agents
 
 
 def _read_config_file(repo_root: Path, config_path: Path | None) -> dict[str, object]:

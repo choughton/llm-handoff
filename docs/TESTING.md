@@ -13,7 +13,7 @@ the focused public-default tests.
 Current full-suite result:
 
 ```text
-292 passed
+306 passed
 ```
 
 The `tests/ported/` directory is still named as migration history, but it is

@@ -103,25 +103,12 @@ Then initialize the target repository:
 python -m llm_handoff init path/to/your-project --template reference-workflow
 ```
 
-The initializer copies:
-
-```text
-AGENTS.md
-PROJECT_STATE.md
-dispatch_config.yaml
-docs/handoff/HANDOFF.md
-docs/handoff/*.md
-.geminiignore
-.gemini/agents/planner.md
-.gemini/agents/frontend.md
-.gemini/policies/planner_guardrails.toml
-.codex/skills/llm-handoff/SKILL.md
-.codex/skills/llm-handoff/agents/openai.yaml
-.claude/agents/auditor.md
-.claude/agents/handoff-router.md
-.claude/agents/handoff-validator.md
-.claude/agents/ledger-updater.md
-```
+The initializer recursively copies the reference workflow template from
+[`examples/reference-workflow/`](examples/reference-workflow/). That directory
+is the authoritative inventory of copied files. It includes the target-repo
+`AGENTS.md`, `PROJECT_STATE.md`, `dispatch_config.yaml`, handoff prompt
+templates, provider agent templates, provider policy files, and provider ignore
+files.
 
 It does not copy the template README into the target repo. Existing identical
 files are skipped. Existing changed files abort initialization unless you pass
@@ -139,6 +126,9 @@ python -m llm_handoff --config dispatch_config.yaml --dry-run
 
 A dry run parses the handoff, resolves the configured role, and reports the
 provider CLI it would invoke without launching the agent.
+
+If `--config` is omitted, the dispatcher looks for `dispatch_config.yaml` in
+the detected repo root.
 
 ## Run The Loop
 

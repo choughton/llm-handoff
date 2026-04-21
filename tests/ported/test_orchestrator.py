@@ -2316,6 +2316,18 @@ def test_run_loop_redirects_completed_stale_epic_close_to_planner_scoping(
     assert ("AGENT", "Post-dispatch gate PASSED for planner.") in log_messages
 
 
+def test_stale_finalizer_recovery_instruction_is_provider_agnostic() -> None:
+    orchestrator = _load_orchestrator_module()
+
+    instruction = orchestrator.STALE_FINALIZER_RECOVERY_INSTRUCTION.lower()
+
+    assert "gemini" not in instruction
+    assert "claude" not in instruction
+    assert "codex" not in instruction
+    old_name = "STALE_EPIC_CLOSE_" + "GEM" + "INI_RECOVERY_INSTRUCTION"
+    assert not hasattr(orchestrator, old_name)
+
+
 def test_run_loop_redirects_stale_epic_close_after_ledger_advances_campaign(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
