@@ -102,6 +102,29 @@ producer: planner
     )
 
 
+def test_parse_handoff_frontmatter_accepts_windows_and_unc_paths(
+    tmp_path: Path,
+) -> None:
+    handoff_path = tmp_path / "HANDOFF.md"
+    handoff_path.write_text(
+        r"""---
+next_agent: backend
+reason: Inspect C:\repo\src and \\server\share\docs.
+producer: planner
+---
+
+# Task Assignment
+""",
+        encoding="utf-8",
+    )
+
+    assert parse_handoff_frontmatter(handoff_path) == HandoffRouting(
+        next_agent="backend",
+        reason=r"Inspect C:\repo\src and \\server\share\docs.",
+        producer="planner",
+    )
+
+
 def test_parse_handoff_frontmatter_accepts_utf16_le_bom(
     tmp_path: Path,
 ) -> None:

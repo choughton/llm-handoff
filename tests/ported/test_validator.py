@@ -101,6 +101,34 @@ def test_parse_validation_output_requires_valid_verdict_line() -> None:
         parse_validation_output("ROUTING: PASS - backend")
 
 
+def test_validate_handoff_accepts_windows_and_unc_paths_in_body() -> None:
+    handoff_content = _with_frontmatter(
+        r"""# Task Assignment
+
+**Agent:** backend
+
+## Objective
+
+Update the local fixture under C:\repo\src and compare it with \\server\share\docs.
+
+## Acceptance Criteria
+
+- Preserve Windows and UNC path text without changing routing.
+
+Reference SHA: 82ce839
+""",
+        next_agent="backend",
+        reason="Route backend path-handling fixture.",
+        producer="planner",
+    )
+
+    result = validator.validate_handoff_text(handoff_content, "planner")
+
+    assert result.verdict == "YES"
+    assert result.routing_instruction == "backend"
+    assert result.errors == []
+
+
 def test_validate_handoff_rejects_unchanged_content_hash_for_backend(
     tmp_path: Path,
 ) -> None:
