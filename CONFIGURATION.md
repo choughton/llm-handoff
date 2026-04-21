@@ -4,10 +4,9 @@
 `dispatch_config.yaml` in the target repository.
 
 This document describes the public configuration surface currently parsed by
-the source checkout. Full role-to-provider adapter wiring is still being
-ported. See
-[dispatch_config.example.yaml](dispatch_config.example.yaml) for a copyable
-example shape.
+the source checkout. Runtime role-to-provider dispatch is config-driven for the
+registered CLI adapters. See [dispatch_config.example.yaml](dispatch_config.example.yaml)
+for a copyable example shape.
 
 ## Minimal Shape
 
@@ -113,16 +112,18 @@ Public docs and templates should use generic role names:
 - `finalizer`
 - `user`
 
-Provider names are adapter details. The current pre-release implementation
-supports the reference provider matrix below and fails closed if a role is
-configured with a different provider. True arbitrary role-to-provider
-portability is planned before v1, but is not implemented yet.
+Provider names are adapter details. The runtime dispatch layer selects the
+adapter from each role's `provider` field. The currently registered runtime
+adapters are `codex`, `gemini`, and `claude`; providers without a registered
+adapter fail closed at config load.
 
 When a config file defines only some `agents` entries, the loader merges those
 entries over the reference defaults. After merging, all reference roles must be
-present.
+present. If a role changes providers, omitted provider-specific fields are
+filled from that provider's default field bundle rather than the role's old
+provider defaults.
 
-| Role | Currently Supported Provider |
+| Role | Reference Provider |
 | --- | --- |
 | `planner` | `gemini` |
 | `backend` | `codex` |
@@ -130,6 +131,11 @@ present.
 | `auditor` | `claude` |
 | `validator` | `claude` |
 | `finalizer` | `claude` |
+
+The table documents the shipped reference workflow defaults, not a hard
+runtime matrix. If you map a role to another registered provider, make sure the
+target repository has the corresponding provider prompt, skill, subagent, or
+agent file needed for that provider to perform the role.
 
 Example:
 
@@ -148,6 +154,8 @@ Common fields:
 
 - `provider`: adapter family such as `codex`, `gemini`, or `claude`.
 - `binary`: command name or absolute executable path.
+- `agent_name`: optional display/subagent name for logs or provider-specific
+  role selection.
 - `resume`: whether the adapter may reuse a prior session.
 - `timeout_ms`: process timeout for a single dispatch.
 - `retries`: provider retry count where supported.
@@ -164,8 +172,8 @@ Claude-specific fields:
 Gemini-specific fields:
 
 - `mention`: optional agent mention used by Gemini agent files.
-- `use_api_key_env`: whether to preserve `GEMINI_API_KEY` for Gemini planner
-  launches. `GOOGLE_API_KEY` is always stripped by the current adapter.
+- `use_api_key_env`: whether to preserve `GEMINI_API_KEY` for a Gemini-backed
+  role. `GOOGLE_API_KEY` is always stripped by the current adapter.
 
 ## Next-Agent Normalizer
 

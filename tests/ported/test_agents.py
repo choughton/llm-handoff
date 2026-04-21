@@ -1523,7 +1523,7 @@ def test_invoke_codex_uses_repo_skill_prompt_and_json_artifacts_when_stateless(
         "Work statelessly and do not assume prior session memory. "
         "The skill replaces any legacy shared bootstrap or Codex handoff prompt files for this repo. "
         "Follow the skill's repo operating procedure, read/write/follow HANDOFF.md as needed, "
-        "and execute the current Codex assignment."
+        "and execute the current backend assignment."
     )
     artifact_paths = agents._codex_artifact_paths(Path.cwd())
 
@@ -1644,7 +1644,7 @@ def test_invoke_codex_bootstraps_new_managed_session_when_no_resume_state_exists
         f"Use the repo skill ${config.CODEX_SKILL_NAME}. This is the first managed Codex dispatch session for this repo. "
         f"Read {Path('docs/handoff/SHARED_REPO_INIT_PROMPT.md')} and use it as the bootstrap checklist for repo context loading, but do not stop after the startup report. "
         f"After bootstrapping, read {HANDOFF_PATH} and treat it as the live task file. "
-        "Follow HANDOFF.md as needed, update it when you finish, and execute the current Codex assignment."
+        "Follow HANDOFF.md as needed, update it when you finish, and execute the current backend assignment."
     )
 
     assert result.exit_code == 0

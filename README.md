@@ -231,9 +231,9 @@ advances when the handoff state parses, routes, and validates.
 - The reference implementation has been validated primarily in one workflow.
 - Provider CLI behavior can change underneath the dispatcher.
 - Validator calls optimize for correctness over token cost.
-- Runtime config is loaded, but the current dispatch runtime supports only the
-  documented reference provider matrix. Unsupported role-to-provider mappings
-  fail closed until true portability is implemented.
+- Runtime role providers are configurable across the registered CLI adapters:
+  `codex`, `gemini`, and `claude`. Provider-specific prompt files and local auth
+  are still the user's responsibility.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design constraints in
 more detail.

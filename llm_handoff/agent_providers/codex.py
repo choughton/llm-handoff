@@ -160,24 +160,34 @@ def invoke_codex(
     log: LogFn | None = None,
     use_resume: bool = False,
     additional_instruction: str | None = None,
+    role_name: str = "backend",
+    agent_name: str = "Codex",
+    binary: str | None = None,
+    skill_name: str | None = None,
+    timeout_ms: int | None = None,
 ) -> DispatchResult:
     repo_root = Path.cwd()
     artifact_paths = _codex_artifact_paths(repo_root)
     _cleanup_codex_output_artifacts(artifact_paths)
+    resolved_binary = binary or config.CODEX_BINARY
+    resolved_skill_name = skill_name or config.CODEX_SKILL_NAME
+    resolved_timeout_ms = timeout_ms or config.AGENT_TIMEOUT_MS
     start_time = time.monotonic()
     if use_resume:
         saved_thread_id = _read_codex_session_state(artifact_paths)
         if saved_thread_id:
             result = _run_codex_json_command(
-                "Codex",
+                agent_name,
                 _build_codex_resume_command(
                     handoff_path,
                     artifact_paths=artifact_paths,
                     thread_id=saved_thread_id,
                     additional_instruction=additional_instruction,
+                    binary=resolved_binary,
+                    skill_name=resolved_skill_name,
                 ),
                 cwd=repo_root,
-                timeout_ms=config.AGENT_TIMEOUT_MS,
+                timeout_ms=resolved_timeout_ms,
                 output_last_message_path=artifact_paths.output_last_message_path,
                 log=log,
             )
@@ -194,31 +204,37 @@ def invoke_codex(
                     )
                 _clear_codex_session_state(artifact_paths)
                 result = _run_codex_json_command(
-                    "Codex",
+                    agent_name,
                     _build_codex_exec_command(
                         _build_codex_managed_bootstrap_prompt(
                             handoff_path,
+                            role_name=role_name,
+                            skill_name=resolved_skill_name,
                             additional_instruction=additional_instruction,
                         ),
                         artifact_paths=artifact_paths,
+                        binary=resolved_binary,
                     ),
                     cwd=repo_root,
-                    timeout_ms=config.AGENT_TIMEOUT_MS,
+                    timeout_ms=resolved_timeout_ms,
                     output_last_message_path=artifact_paths.output_last_message_path,
                     log=log,
                 )
         else:
             result = _run_codex_json_command(
-                "Codex",
+                agent_name,
                 _build_codex_exec_command(
                     _build_codex_managed_bootstrap_prompt(
                         handoff_path,
+                        role_name=role_name,
+                        skill_name=resolved_skill_name,
                         additional_instruction=additional_instruction,
                     ),
                     artifact_paths=artifact_paths,
+                    binary=resolved_binary,
                 ),
                 cwd=repo_root,
-                timeout_ms=config.AGENT_TIMEOUT_MS,
+                timeout_ms=resolved_timeout_ms,
                 output_last_message_path=artifact_paths.output_last_message_path,
                 log=log,
             )
@@ -226,16 +242,19 @@ def invoke_codex(
             _write_codex_session_state(artifact_paths, result.thread_id)
     else:
         result = _run_codex_json_command(
-            "Codex",
+            agent_name,
             _build_codex_exec_command(
                 _build_codex_stateless_prompt(
                     handoff_path,
+                    role_name=role_name,
+                    skill_name=resolved_skill_name,
                     additional_instruction=additional_instruction,
                 ),
                 artifact_paths=artifact_paths,
+                binary=resolved_binary,
             ),
             cwd=repo_root,
-            timeout_ms=config.AGENT_TIMEOUT_MS,
+            timeout_ms=resolved_timeout_ms,
             output_last_message_path=artifact_paths.output_last_message_path,
             log=log,
         )
@@ -251,9 +270,10 @@ def _build_codex_exec_command(
     prompt: str,
     *,
     artifact_paths: _CodexArtifactPaths,
+    binary: str | None = None,
 ) -> list[str]:
     return [
-        config.CODEX_BINARY,
+        binary or config.CODEX_BINARY,
         "--yolo",
         "exec",
         "--json",
@@ -273,9 +293,11 @@ def _build_codex_resume_command(
     artifact_paths: _CodexArtifactPaths,
     thread_id: str,
     additional_instruction: str | None = None,
+    binary: str | None = None,
+    skill_name: str | None = None,
 ) -> list[str]:
     return [
-        config.CODEX_BINARY,
+        binary or config.CODEX_BINARY,
         "--yolo",
         "exec",
         "resume",
@@ -287,6 +309,7 @@ def _build_codex_resume_command(
         thread_id,
         _build_codex_resume_prompt(
             handoff_path,
+            skill_name=skill_name or config.CODEX_SKILL_NAME,
             additional_instruction=additional_instruction,
         ),
     ]
@@ -295,14 +318,17 @@ def _build_codex_resume_command(
 def _build_codex_stateless_prompt(
     handoff_path: Path,
     *,
+    role_name: str = "backend",
+    skill_name: str | None = None,
     additional_instruction: str | None = None,
 ) -> str:
+    resolved_skill_name = skill_name or config.CODEX_SKILL_NAME
     prompt = (
-        f"Use the repo skill ${config.CODEX_SKILL_NAME}. Read {handoff_path} and treat it as the live task file. "
+        f"Use the repo skill ${resolved_skill_name}. Read {handoff_path} and treat it as the live task file. "
         "Work statelessly and do not assume prior session memory. "
         "The skill replaces any legacy shared bootstrap or Codex handoff prompt files for this repo. "
         "Follow the skill's repo operating procedure, read/write/follow HANDOFF.md as needed, "
-        "and execute the current Codex assignment."
+        f"and execute the current {role_name} assignment."
     )
     return _append_agent_additional_instruction(prompt, additional_instruction)
 
@@ -310,13 +336,17 @@ def _build_codex_stateless_prompt(
 def _build_codex_managed_bootstrap_prompt(
     handoff_path: Path,
     *,
+    role_name: str = "backend",
+    skill_name: str | None = None,
     additional_instruction: str | None = None,
 ) -> str:
+    resolved_skill_name = skill_name or config.CODEX_SKILL_NAME
     prompt = (
-        f"Use the repo skill ${config.CODEX_SKILL_NAME}. This is the first managed Codex dispatch session for this repo. "
+        f"Use the repo skill ${resolved_skill_name}. This is the first managed Codex dispatch session for this repo. "
         f"Read {config.DEFAULT_SHARED_INIT_PROMPT_PATH} and use it as the bootstrap checklist for repo context loading, but do not stop after the startup report. "
         f"After bootstrapping, read {handoff_path} and treat it as the live task file. "
-        "Follow HANDOFF.md as needed, update it when you finish, and execute the current Codex assignment."
+        "Follow HANDOFF.md as needed, update it when you finish, "
+        f"and execute the current {role_name} assignment."
     )
     return _append_agent_additional_instruction(prompt, additional_instruction)
 
@@ -324,12 +354,14 @@ def _build_codex_managed_bootstrap_prompt(
 def _build_codex_resume_prompt(
     handoff_path: Path,
     *,
+    skill_name: str | None = None,
     additional_instruction: str | None = None,
 ) -> str:
+    resolved_skill_name = skill_name or config.CODEX_SKILL_NAME
     prompt = (
         "Continue the existing Codex dispatch session for this repo. "
         f"Re-read {handoff_path} and treat it as the live task file. "
-        f"Follow the repo skill ${config.CODEX_SKILL_NAME} as the governing workflow. "
+        f"Follow the repo skill ${resolved_skill_name} as the governing workflow. "
         "Use prior session context where it helps, but treat HANDOFF.md and the repo source-of-truth docs as authoritative for the current assignment."
     )
     return _append_agent_additional_instruction(prompt, additional_instruction)

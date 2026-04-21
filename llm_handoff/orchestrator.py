@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import inspect
 from pathlib import Path
 import re
 import subprocess
@@ -327,7 +328,7 @@ def run_loop(
         _log(log_fn, "INFO", f"Routing source: {decision.source}")
 
         if decision.route == "unknown":
-            _run_unknown_route_validator(log_fn)
+            _run_unknown_route_validator(config, log_fn)
             if not _pause_until_handoff_changes(
                 config,
                 handoff_sha=handoff_sha,
@@ -363,7 +364,7 @@ def run_loop(
             and previous_cycle.route == current_cycle.route
             and previous_cycle.handoff_sha == current_cycle.handoff_sha
         ):
-            _run_stale_route_validator(current_cycle.route, log_fn)
+            _run_stale_route_validator(config, current_cycle.route, log_fn)
             if not _pause_until_handoff_changes(
                 config,
                 handoff_sha=current_cycle.handoff_sha,
@@ -385,7 +386,7 @@ def run_loop(
             return 0
 
         if decision.confidence != "HIGH":
-            _run_low_confidence_route_validator(decision, log_fn)
+            _run_low_confidence_route_validator(config, decision, log_fn)
             if not _pause_until_handoff_changes(
                 config,
                 handoff_sha=current_cycle.handoff_sha,
@@ -403,10 +404,10 @@ def run_loop(
                 "DISPATCH",
                 "Dispatching auditor ledger-updater for epic close.",
             )
-            ledger_result = run_epic_close(log=log_fn)
+            ledger_result = _invoke_epic_close(config=config, log=log_fn)
             parse_error = ledger_result.parse_error
             if parse_error:
-                _run_epic_close_validator(parse_error, log_fn)
+                _run_epic_close_validator(config, parse_error, log_fn)
                 if not _pause_until_handoff_changes(
                     config,
                     handoff_sha=current_cycle.handoff_sha,
@@ -601,6 +602,7 @@ def run_loop(
                     continue
                 if _has_missing_route_error(validation_result):
                     _run_post_dispatch_missing_route_validator(
+                        config=config,
                         previous_agent=previous_agent,
                         log=log_fn,
                     )
@@ -616,6 +618,7 @@ def run_loop(
                     continue
                 if self_loop_kind is not None:
                     _run_self_loop_validator(
+                        config=config,
                         previous_agent=previous_agent,
                         self_loop_kind=self_loop_kind,
                         log=log_fn,
@@ -659,23 +662,20 @@ def _dispatch_route(
 
     if route == "backend":
         _log(log, "DISPATCH", "Dispatching backend.")
-        if additional_instruction is not None:
-            return invoke_backend_role(
-                handoff_path,
-                log=log,
-                use_resume=config.backend_resume_enabled,
-                additional_instruction=additional_instruction,
-            ), "backend"
-        return invoke_backend_role(
+        return _invoke_dispatch_callable(
+            invoke_backend_role,
             handoff_path,
             log=log,
             use_resume=config.backend_resume_enabled,
+            additional_instruction=additional_instruction,
+            agent_config=config.agents["backend"],
         ), "backend"
 
     if route == "planner":
         _log(log, "DISPATCH", "Dispatching planner.")
         return (
-            invoke_planner_role(
+            _invoke_dispatch_callable(
+                invoke_planner_role,
                 handoff_path,
                 use_api_key_env=config.planner_api_key_env_enabled,
                 additional_instruction=additional_instruction,
@@ -684,6 +684,7 @@ def _dispatch_route(
                 previous_handoff_sha=planner_previous_handoff_sha,
                 current_handoff_sha=current_handoff_sha,
                 log=log,
+                agent_config=config.agents["planner"],
             ),
             "planner",
         )
@@ -695,12 +696,14 @@ def _dispatch_route(
             _log(log, "DISPATCH", "Dispatching frontend.")
 
         return (
-            invoke_frontend_role(
+            _invoke_dispatch_callable(
+                invoke_frontend_role,
                 handoff_path,
                 use_manual_frontend=config.use_manual_frontend,
                 use_api_key_env=config.planner_api_key_env_enabled,
                 additional_instruction=additional_instruction,
                 log=log,
+                agent_config=config.agents["frontend"],
             ),
             "frontend",
         )
@@ -708,16 +711,63 @@ def _dispatch_route(
     if route == "auditor":
         _log(log, "DISPATCH", "Dispatching auditor for audit.")
         return _dispatch_from_subagent(
-            invoke_support_role("auditor", AUDIT_PROMPT, log=log)
+            _invoke_support_callable(
+                "auditor",
+                AUDIT_PROMPT,
+                role="auditor",
+                handoff_path=handoff_path,
+                agent_config=config.agents["auditor"],
+                log=log,
+            )
         ), "auditor (audit)"
 
     if route == "validator":
         _log(log, "DISPATCH", "Dispatching validator for route clarification.")
         return _dispatch_from_subagent(
-            invoke_support_role("handoff-router", MISROUTE_PROMPT, log=log)
+            _invoke_support_callable(
+                "handoff-router",
+                MISROUTE_PROMPT,
+                role="validator",
+                handoff_path=handoff_path,
+                agent_config=config.agents["validator"],
+                log=log,
+            )
         ), "validator"
 
     raise ValueError(f"Unsupported route: {route}")
+
+
+def _invoke_dispatch_callable(
+    func: Callable[..., DispatchResult],
+    handoff_path: Path,
+    **kwargs: object,
+) -> DispatchResult:
+    return func(handoff_path, **_supported_kwargs(func, kwargs))
+
+
+def _invoke_support_callable(
+    subagent_name: str,
+    prompt: str,
+    **kwargs: object,
+) -> SubagentResult:
+    return invoke_support_role(
+        subagent_name,
+        prompt,
+        **_supported_kwargs(invoke_support_role, kwargs),
+    )
+
+
+def _supported_kwargs(
+    func: Callable[..., object],
+    kwargs: dict[str, object],
+) -> dict[str, object]:
+    signature = inspect.signature(func)
+    if any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in signature.parameters}
 
 
 def _dispatch_from_subagent(result: SubagentResult) -> DispatchResult:
@@ -726,6 +776,16 @@ def _dispatch_from_subagent(result: SubagentResult) -> DispatchResult:
         stderr=result.stderr,
         exit_code=result.exit_code,
         elapsed_seconds=result.elapsed_seconds,
+    )
+
+
+def _invoke_epic_close(
+    *,
+    config: DispatchConfig,
+    log: LogFn,
+):
+    return run_epic_close(
+        **_supported_kwargs(run_epic_close, {"config": config, "log": log})
     )
 
 
@@ -873,24 +933,35 @@ def _dispatch_handoff_hygiene_repair(
     previous_agent_lower = previous_agent.lower()
     if "auditor" in previous_agent_lower and "audit" in previous_agent_lower:
         return _dispatch_from_subagent(
-            invoke_support_role("auditor", repair_prompt, log=log)
+            _invoke_support_callable(
+                "auditor",
+                repair_prompt,
+                role="auditor",
+                handoff_path=config.handoff_full_path,
+                agent_config=config.agents["auditor"],
+                log=log,
+            )
         )
     if previous_agent == "backend":
-        return invoke_backend_role(
+        return _invoke_dispatch_callable(
+            invoke_backend_role,
             config.handoff_full_path,
             log=log,
             use_resume=config.backend_resume_enabled,
             additional_instruction=repair_prompt,
+            agent_config=config.agents["backend"],
         )
     if previous_agent == "frontend":
         if config.use_manual_frontend:
             return None
-        return invoke_frontend_role(
+        return _invoke_dispatch_callable(
+            invoke_frontend_role,
             config.handoff_full_path,
             use_manual_frontend=config.use_manual_frontend,
             use_api_key_env=config.planner_api_key_env_enabled,
             additional_instruction=repair_prompt,
             log=log,
+            agent_config=config.agents["frontend"],
         )
     return None
 
@@ -1124,14 +1195,18 @@ def _record_failure(
 
 
 def _run_validator(
+    config: DispatchConfig,
     subagent_name: str,
     prompt: str,
     label: str,
     log: LogFn,
 ) -> None:
-    result = invoke_support_role(
+    result = _invoke_support_callable(
         subagent_name,
         prompt,
+        role="validator",
+        handoff_path=config.handoff_full_path,
+        agent_config=config.agents["validator"],
         log=log,
     )
     _log(log, "AGENT", f"{label} exited with code {result.exit_code}")
@@ -1158,13 +1233,14 @@ def _run_validator(
         _log(log, "ERROR", error)
 
 
-def _run_unknown_route_validator(log: LogFn) -> None:
+def _run_unknown_route_validator(config: DispatchConfig, log: LogFn) -> None:
     _log(
         log,
         "AGENT",
         "No dispatchable route found. Invoking the validator role...",
     )
     _run_validator(
+        config,
         "handoff-validator",
         HANDOFF_VALIDATOR_PROMPT,
         "Handoff-validator",
@@ -1293,13 +1369,18 @@ def _handoff_story_summary(
     return story_id or story_title
 
 
-def _run_stale_route_validator(route: RouteName, log: LogFn) -> None:
+def _run_stale_route_validator(
+    config: DispatchConfig,
+    route: RouteName,
+    log: LogFn,
+) -> None:
     _log(
         log,
         "AGENT",
         f"Stale HANDOFF detected for route {route}. Invoking the validator role...",
     )
     _run_validator(
+        config,
         "handoff-validator",
         STALE_ROUTE_VALIDATOR_PROMPT_TEMPLATE.format(route=route),
         "Handoff-validator",
@@ -1307,13 +1388,18 @@ def _run_stale_route_validator(route: RouteName, log: LogFn) -> None:
     )
 
 
-def _run_epic_close_validator(parse_error: str, log: LogFn) -> None:
+def _run_epic_close_validator(
+    config: DispatchConfig,
+    parse_error: str,
+    log: LogFn,
+) -> None:
     _log(
         log,
         "AGENT",
         "finalizer produced unparseable ledger-updater output. Invoking the validator role...",
     )
     _run_validator(
+        config,
         "handoff-validator",
         EPIC_CLOSE_VALIDATOR_PROMPT_TEMPLATE.format(parse_error=parse_error),
         "Handoff-validator",
@@ -1322,6 +1408,7 @@ def _run_epic_close_validator(parse_error: str, log: LogFn) -> None:
 
 
 def _run_low_confidence_route_validator(
+    config: DispatchConfig,
     decision: RoutingDecision,
     log: LogFn,
 ) -> None:
@@ -1331,6 +1418,7 @@ def _run_low_confidence_route_validator(
         f"Routing decision for {decision.route} is only {decision.confidence} confidence. Invoking the validator role before dispatch...",
     )
     _run_validator(
+        config,
         "handoff-validator",
         LOW_CONFIDENCE_ROUTE_VALIDATOR_PROMPT_TEMPLATE.format(
             confidence=decision.confidence,
@@ -1344,6 +1432,7 @@ def _run_low_confidence_route_validator(
 
 def _run_self_loop_validator(
     *,
+    config: DispatchConfig,
     previous_agent: str,
     self_loop_kind: str,
     log: LogFn,
@@ -1361,6 +1450,7 @@ def _run_self_loop_validator(
 
     _log(log, "AGENT", message)
     _run_validator(
+        config,
         "handoff-validator",
         prompt,
         "Handoff-validator",
@@ -1370,6 +1460,7 @@ def _run_self_loop_validator(
 
 def _run_post_dispatch_missing_route_validator(
     *,
+    config: DispatchConfig,
     previous_agent: str,
     log: LogFn,
 ) -> None:
@@ -1379,6 +1470,7 @@ def _run_post_dispatch_missing_route_validator(
         f"{previous_agent} produced a handoff without a dispatchable route. Invoking the validator role...",
     )
     _run_validator(
+        config,
         "handoff-validator",
         POST_DISPATCH_MISSING_ROUTE_VALIDATOR_PROMPT_TEMPLATE.format(
             previous_agent=previous_agent

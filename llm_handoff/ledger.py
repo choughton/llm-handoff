@@ -6,6 +6,7 @@ import re
 from typing import Callable, Literal
 
 from llm_handoff.agents import invoke_support_role
+from llm_handoff.config import DispatchConfig
 
 
 PushStatus = Literal["PUSHED", "FAILED", "SKIPPED", "UNKNOWN"]
@@ -110,9 +111,23 @@ class _ParsedLedgerOutput:
         return self.next_route
 
 
-def run_epic_close(*, log: LogFn | None = None) -> EpicCloseResult:
+def run_epic_close(
+    *,
+    config: DispatchConfig | None = None,
+    log: LogFn | None = None,
+) -> EpicCloseResult:
+    kwargs = {}
+    if config is not None:
+        kwargs = {
+            "role": "finalizer",
+            "handoff_path": config.handoff_full_path,
+            "agent_config": config.agents["finalizer"],
+        }
     subagent_result = invoke_support_role(
-        "ledger-updater", LEDGER_UPDATER_PROMPT, log=log
+        "ledger-updater",
+        LEDGER_UPDATER_PROMPT,
+        log=log,
+        **kwargs,
     )
     _emit(
         log,

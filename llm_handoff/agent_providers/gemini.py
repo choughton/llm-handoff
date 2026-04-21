@@ -28,7 +28,7 @@ from llm_handoff.agent_streams import _LiveAgentOutputMonitor
 from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
 
 
-GeminiRole = Literal["Planner", "Frontend"]
+GeminiRole = str
 RateLimitLastBlockPolicy = Literal["emit_when_metadata_complete", "exclude_last"]
 _REAL_TIME_MONOTONIC = time.monotonic
 
@@ -58,6 +58,7 @@ class _GeminiLiveRateLimitMonitor:
     attempt_number: int
     max_attempts: int
     log: LogFn | None
+    agent_name: str = "Gemini CLI"
     live_event_count: int = 0
     _agent_output_monitor: _LiveAgentOutputMonitor | None = field(init=False)
     _stream_states: dict[str, _GeminiRateLimitStreamState] = field(
@@ -72,7 +73,7 @@ class _GeminiLiveRateLimitMonitor:
             self._agent_output_monitor = None
             return
         self._agent_output_monitor = _LiveAgentOutputMonitor(
-            agent_name="Gemini CLI",
+            agent_name=self.agent_name,
             log=self.log,
         )
 
@@ -363,6 +364,12 @@ def invoke_gemini(
     role: GeminiRole,
     handoff_path: Path,
     *,
+    mention: str | None = None,
+    agent_name: str | None = None,
+    binary: str | None = None,
+    timeout_ms: int | None = None,
+    max_retries: int | None = None,
+    retry_base_seconds: float | None = None,
     use_api_key_env: bool = False,
     additional_instruction: str | None = None,
     use_resume: bool = False,
@@ -373,10 +380,14 @@ def invoke_gemini(
 ) -> DispatchResult:
     repo_root = Path.cwd()
     resolved_handoff_path = _resolve_handoff_path(handoff_path, repo_root)
-    should_resume = role == "Planner" and use_resume and bool(session_id)
+    should_resume = use_resume and bool(session_id)
+    resolved_mention = mention or _default_gemini_mention(role)
+    resolved_agent_name = agent_name or _gemini_role_label(role)
     command = _build_gemini_command(
         role,
         resolved_handoff_path,
+        mention=resolved_mention,
+        binary=binary,
         additional_instruction=additional_instruction,
         resume_session_id=session_id if should_resume else None,
         previous_handoff_sha=previous_handoff_sha,
@@ -389,6 +400,10 @@ def invoke_gemini(
         repo_root=repo_root,
         use_api_key_env=use_api_key_env,
         stop_on_resume_recoverable_failure=should_resume,
+        agent_name=resolved_agent_name,
+        timeout_ms=timeout_ms,
+        max_retries=max_retries,
+        retry_base_seconds=retry_base_seconds,
         log=log,
     )
     session_invalidated = False
@@ -400,14 +415,17 @@ def invoke_gemini(
     ):
         session_invalidated = True
         if log is not None:
+            role_phrase = str(role).strip().lower() or "agent"
             log(
                 "WARN",
-                "Gemini planner managed session "
-                f"{session_id} could not be resumed. Clearing the in-memory session and starting a fresh Gemini planner session for this dispatch.",
+                f"Gemini {role_phrase} managed session "
+                f"{session_id} could not be resumed. Clearing the in-memory session and starting a fresh Gemini {role_phrase} session for this dispatch.",
             )
         fresh_command = _build_gemini_command(
             role,
             resolved_handoff_path,
+            mention=resolved_mention,
+            binary=binary,
             additional_instruction=additional_instruction,
             resume_session_id=None,
             previous_handoff_sha=None,
@@ -418,6 +436,10 @@ def invoke_gemini(
             repo_root=repo_root,
             use_api_key_env=use_api_key_env,
             stop_on_resume_recoverable_failure=False,
+            agent_name=resolved_agent_name,
+            timeout_ms=timeout_ms,
+            max_retries=max_retries,
+            retry_base_seconds=retry_base_seconds,
             log=log,
         )
 
@@ -439,12 +461,14 @@ def _build_gemini_command(
     role: GeminiRole,
     resolved_handoff_path: Path,
     *,
+    mention: str | None = None,
+    binary: str | None = None,
     additional_instruction: str | None,
     resume_session_id: str | None,
     previous_handoff_sha: str | None,
     current_handoff_sha: str | None,
 ) -> list[str]:
-    command = [config.GEMINI_BINARY]
+    command = [binary or config.GEMINI_BINARY]
     if resume_session_id:
         command.extend(["--resume", resume_session_id])
     command.extend(
@@ -457,6 +481,7 @@ def _build_gemini_command(
             _build_gemini_prompt(
                 role,
                 resolved_handoff_path,
+                mention=mention,
                 additional_instruction=additional_instruction,
                 use_resume=bool(resume_session_id),
                 previous_handoff_sha=previous_handoff_sha,
@@ -471,19 +496,16 @@ def _build_gemini_prompt(
     role: GeminiRole,
     resolved_handoff_path: Path,
     *,
+    mention: str | None = None,
     additional_instruction: str | None,
     use_resume: bool,
     previous_handoff_sha: str | None,
     current_handoff_sha: str | None,
 ) -> str:
-    mention = (
-        config.GEMINI_PLANNER_MENTION
-        if role == "Planner"
-        else config.GEMINI_FRONTEND_MENTION
-    )
+    resolved_mention = mention or _default_gemini_mention(role)
     if use_resume:
         prompt = (
-            f"{mention} Continue your assigned task based on the current handoff state. "
+            f"{resolved_mention} Continue your assigned task based on the current handoff state. "
             "The HANDOFF.md SHA at your prior turn was "
             f"{previous_handoff_sha or 'unknown'}; the current SHA is "
             f"{current_handoff_sha or 'unknown'}. If the SHA has changed, use your tools "
@@ -492,7 +514,7 @@ def _build_gemini_prompt(
         )
     else:
         prompt = (
-            f"{mention} Execute your assigned task based on the provided handoff "
+            f"{resolved_mention} Execute your assigned task based on the provided handoff "
             f"document. @{resolved_handoff_path}"
         )
     if additional_instruction:
@@ -506,9 +528,16 @@ def _run_gemini_with_retries(
     repo_root: Path,
     use_api_key_env: bool,
     stop_on_resume_recoverable_failure: bool,
+    agent_name: str = "Gemini CLI",
+    timeout_ms: int | None = None,
+    max_retries: int | None = None,
+    retry_base_seconds: float | None = None,
     log: LogFn | None,
 ) -> _ProcessResult:
-    max_attempts = config.GEMINI_MAX_RETRIES + 1
+    max_attempts = (
+        config.GEMINI_MAX_RETRIES if max_retries is None else max_retries
+    ) + 1
+    resolved_timeout_ms = timeout_ms or config.AGENT_TIMEOUT_MS
     env = _build_gemini_env(use_api_key_env=use_api_key_env)
     attempt_count = 0
 
@@ -518,10 +547,11 @@ def _run_gemini_with_retries(
         result = _run_gemini_command(
             command,
             cwd=repo_root,
-            timeout_ms=config.AGENT_TIMEOUT_MS,
+            timeout_ms=resolved_timeout_ms,
             env=env,
             attempt_number=attempt_count,
             max_attempts=max_attempts,
+            agent_name=agent_name,
             log=log,
         )
         rate_limit_events = _extract_gemini_rate_limit_events(result)
@@ -549,7 +579,13 @@ def _run_gemini_with_retries(
             )
         ),
         stop=stop_after_attempt(max_attempts),
-        wait=wait_exponential(multiplier=config.GEMINI_RETRY_BASE_SECONDS),
+        wait=wait_exponential(
+            multiplier=(
+                config.GEMINI_RETRY_BASE_SECONDS
+                if retry_base_seconds is None
+                else retry_base_seconds
+            )
+        ),
         sleep=time.sleep,
         before_sleep=lambda retry_state: _log_gemini_retry_wait(
             retry_state,
@@ -1073,6 +1109,7 @@ def _run_gemini_command(
     env: dict[str, str] | None,
     attempt_number: int,
     max_attempts: int,
+    agent_name: str = "Gemini CLI",
     log: LogFn | None,
 ) -> _ProcessResult:
     if _command_requests_gemini_stream_json(command):
@@ -1083,6 +1120,7 @@ def _run_gemini_command(
             env=env,
             attempt_number=attempt_number,
             max_attempts=max_attempts,
+            agent_name=agent_name,
             log=log,
         )
         # The stream-json monitor rewrites stdout to assistant text but leaves
@@ -1101,6 +1139,7 @@ def _run_gemini_command(
                 env=env,
                 attempt_number=attempt_number,
                 max_attempts=max_attempts,
+                agent_name=agent_name,
                 log=log,
             )
         return result
@@ -1112,6 +1151,7 @@ def _run_gemini_command(
         env=env,
         attempt_number=attempt_number,
         max_attempts=max_attempts,
+        agent_name=agent_name,
         log=log,
     )
 
@@ -1124,10 +1164,11 @@ def _run_gemini_stream_json_command(
     env: dict[str, str] | None,
     attempt_number: int,
     max_attempts: int,
+    agent_name: str = "Gemini CLI",
     log: LogFn | None,
 ) -> _ProcessResult:
     monitor = _GeminiStreamJsonMonitor(
-        agent_name=_gemini_agent_name_from_command(command),
+        agent_name=agent_name,
         log=log,
         attempt_number=attempt_number,
         max_attempts=max_attempts,
@@ -1151,11 +1192,13 @@ def _run_gemini_plain_text_command(
     env: dict[str, str] | None,
     attempt_number: int,
     max_attempts: int,
+    agent_name: str = "Gemini CLI",
     log: LogFn | None,
 ) -> _ProcessResult:
     monitor = _GeminiLiveRateLimitMonitor(
         attempt_number=attempt_number,
         max_attempts=max_attempts,
+        agent_name=agent_name,
         log=log,
     )
     result = _run_command_streaming(
@@ -1188,6 +1231,22 @@ def _gemini_agent_name_from_command(command: list[str]) -> str:
     if config.GEMINI_FRONTEND_MENTION in command_text:
         return "Gemini Frontend"
     return "Gemini CLI"
+
+
+def _default_gemini_mention(role: GeminiRole) -> str:
+    normalized_role = str(role).strip().lower()
+    if normalized_role == "planner":
+        return config.GEMINI_PLANNER_MENTION
+    if normalized_role == "frontend":
+        return config.GEMINI_FRONTEND_MENTION
+    return f"@{normalized_role or 'agent'}"
+
+
+def _gemini_role_label(role: GeminiRole) -> str:
+    normalized_role = str(role).strip()
+    if not normalized_role:
+        return "Gemini CLI"
+    return f"Gemini {normalized_role}"
 
 
 def _strip_gemini_stream_json_args(command: list[str]) -> list[str]:

@@ -213,15 +213,25 @@ def invoke_claude_subagent(
     subagent_name: str,
     prompt: str,
     *,
+    binary: str | None = None,
+    model: str | None = None,
+    permissions_flag: str | None = None,
+    timeout_ms: int | None = None,
+    agent_name: str | None = None,
     log: LogFn | None = None,
 ) -> SubagentResult:
     repo_root = Path.cwd()
+    resolved_binary = binary or config.CLAUDE_BINARY
+    resolved_permissions_flag = permissions_flag or config.CLAUDE_PERMISSIONS_FLAG
+    resolved_model = model or config.CLAUDE_MODEL
+    resolved_timeout_ms = timeout_ms or config.SUBAGENT_TIMEOUT_MS
+    resolved_agent_name = agent_name or f"Claude {subagent_name}"
     start_time = time.monotonic()
     stream_json_command = [
-        config.CLAUDE_BINARY,
-        config.CLAUDE_PERMISSIONS_FLAG,
+        resolved_binary,
+        resolved_permissions_flag,
         "--model",
-        config.CLAUDE_MODEL,
+        resolved_model,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -229,10 +239,10 @@ def invoke_claude_subagent(
         prompt,
     ]
     result = _run_claude_stream_json_command(
-        f"Claude {subagent_name}",
+        resolved_agent_name,
         stream_json_command,
         cwd=repo_root,
-        timeout_ms=config.SUBAGENT_TIMEOUT_MS,
+        timeout_ms=resolved_timeout_ms,
         env=_build_claude_env(),
         log=log,
     )
@@ -243,17 +253,17 @@ def invoke_claude_subagent(
                 "Claude stream-json output is not supported by the installed Claude CLI. Falling back to buffered text mode; upgrade Claude Code to restore live subagent streaming.",
             )
         result = _run_logged_agent_command(
-            f"Claude {subagent_name}",
+            resolved_agent_name,
             [
-                config.CLAUDE_BINARY,
-                config.CLAUDE_PERMISSIONS_FLAG,
+                resolved_binary,
+                resolved_permissions_flag,
                 "--model",
-                config.CLAUDE_MODEL,
+                resolved_model,
                 "-p",
                 prompt,
             ],
             cwd=repo_root,
-            timeout_ms=config.SUBAGENT_TIMEOUT_MS,
+            timeout_ms=resolved_timeout_ms,
             env=_build_claude_env(),
             log=log,
             stream_all_stdout=True,

@@ -115,6 +115,7 @@ _format_claude_tool_use_label = _claude._format_claude_tool_use_label
 _coerce_claude_usage_value = _claude._coerce_claude_usage_value
 _build_claude_env = _claude._build_claude_env
 
+invoke_role = _roles.invoke_role
 invoke_backend_role = _roles.invoke_backend_role
 invoke_planner_role = _roles.invoke_planner_role
 invoke_frontend_role = _roles.invoke_frontend_role

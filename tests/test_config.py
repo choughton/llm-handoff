@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from llm_handoff import config as config_module
 from llm_handoff import __main__ as main_module
 from llm_handoff.config import DispatchConfig, load_dispatch_config
 
@@ -68,7 +69,7 @@ def test_load_dispatch_config_uses_defaults_when_file_is_absent(
     assert loaded.agents["backend"].skill_name == "llm-handoff"
 
 
-def test_load_dispatch_config_rejects_unsupported_role_provider_mapping(
+def test_load_dispatch_config_accepts_non_default_role_provider_mapping(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "dispatch_config.yaml"
@@ -80,7 +81,54 @@ def test_load_dispatch_config_rejects_unsupported_role_provider_mapping(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="True provider portability is planned"):
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.agents["backend"].provider == "claude"
+    assert loaded.agents["backend"].binary == config_module.CLAUDE_BINARY
+    assert loaded.agents["backend"].model == config_module.CLAUDE_MODEL
+    assert loaded.agents["backend"].skill_name is None
+    assert loaded.agents["planner"].provider == "gemini"
+
+
+def test_load_dispatch_config_uses_provider_defaults_when_role_provider_changes(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """agents:
+  auditor:
+    provider: codex
+  backend:
+    provider: gemini
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.agents["auditor"].provider == "codex"
+    assert loaded.agents["auditor"].binary == config_module.CODEX_BINARY
+    assert loaded.agents["auditor"].skill_name == config_module.CODEX_SKILL_NAME
+    assert loaded.agents["auditor"].model is None
+    assert loaded.agents["backend"].provider == "gemini"
+    assert loaded.agents["backend"].binary == config_module.GEMINI_BINARY
+    assert loaded.agents["backend"].mention == "@backend"
+    assert loaded.agents["backend"].skill_name is None
+
+
+def test_load_dispatch_config_rejects_provider_without_runtime_adapter(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """agents:
+  backend:
+    provider: openai
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="no runtime adapter is registered"):
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 

@@ -51,11 +51,11 @@ Continue, pause, or escalate
 
 The current source checkout has the core config loader, router, validator,
 normalizer, provider invocation layer, target-repo initializer, and prompt
-templates. The current dispatch runtime supports a reference provider matrix:
-planner and frontend through Gemini, backend through Codex, and auditor,
-validator, and finalizer through Claude. Configured providers outside that
-matrix fail closed. The remaining architectural work is true role-to-provider
-portability without changing the public role names.
+templates. Runtime role dispatch is provider-config driven: each generic role
+uses its `agents.<role>.provider` adapter, currently one of `codex`, `gemini`,
+or `claude`. The shipped reference workflow still maps planner/frontend to
+Gemini, backend to Codex, and auditor/validator/finalizer to Claude, but that
+is a template default rather than an execution-layer constraint.
 
 ## Handoff File
 
@@ -157,6 +157,11 @@ dispatcher loops writing the same target repo at the same time.
 Provider CLIs are adapters, not workflow roles. A public config should map
 generic roles such as `planner`, `backend`, or `frontend` to concrete providers
 such as Gemini, Codex, or Claude.
+
+`llm_handoff.agent_roles.invoke_role` is the adapter registry boundary. The
+orchestrator passes the target role's `AgentConfig`; provider modules translate
+that generic role invocation into concrete CLI flags, prompt mentions,
+subagent names, session-resume behavior, and timeouts.
 
 The dispatcher does not sandbox these tools and does not manage their auth.
 

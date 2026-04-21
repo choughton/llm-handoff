@@ -30,18 +30,22 @@ def _dispatch_config(
     planner_resume: bool = True,
     poll_interval_seconds: int = 0,
     max_consecutive_failures: int = 3,
+    agents: dict[str, Any] | None = None,
 ):
     config_module = importlib.import_module("llm_handoff.config")
-    return config_module.DispatchConfig(
-        repo_root=repo_root,
-        dry_run=dry_run,
-        use_manual_frontend=use_manual_frontend,
-        planner_api_key_env=planner_api_key_env,
-        backend_resume=backend_resume,
-        planner_resume=planner_resume,
-        poll_interval_seconds=poll_interval_seconds,
-        max_consecutive_failures=max_consecutive_failures,
-    )
+    kwargs: dict[str, Any] = {
+        "repo_root": repo_root,
+        "dry_run": dry_run,
+        "use_manual_frontend": use_manual_frontend,
+        "planner_api_key_env": planner_api_key_env,
+        "backend_resume": backend_resume,
+        "planner_resume": planner_resume,
+        "poll_interval_seconds": poll_interval_seconds,
+        "max_consecutive_failures": max_consecutive_failures,
+    }
+    if agents is not None:
+        kwargs["agents"] = agents
+    return config_module.DispatchConfig(**kwargs)
 
 
 def _write_repo(
@@ -423,7 +427,11 @@ producer: planner
         "normalize_next_agent",
         lambda _freeform, **_kwargs: "unknown",
     )
-    monkeypatch.setattr(orchestrator, "_run_unknown_route_validator", lambda _log: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_unknown_route_validator",
+        lambda _config, _log: None,
+    )
     monkeypatch.setattr(
         orchestrator,
         "_pause_until_handoff_changes",
@@ -2841,6 +2849,68 @@ def test_run_loop_passes_logger_to_codex_dispatch(
 
     assert exit_code == 0
     assert codex_calls == [(handoff_path, fake_log, True)]
+
+
+def test_run_loop_passes_configured_agent_provider_to_backend_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **backend:** Review the backend slice.
+""",
+    )
+    config_module = importlib.import_module("llm_handoff.config")
+    agents = config_module._default_agent_configs()
+    agents["backend"] = config_module.AgentConfig(
+        provider="claude",
+        binary="claude-custom",
+        model="claude-test",
+        permissions_flag="--allowed",
+        timeout_ms=123,
+        agent_name="backend-worker",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, agents=agents)
+    backend_calls: list[dict[str, Any]] = []
+
+    def fake_backend(
+        path: Path,
+        *,
+        log=None,
+        use_resume: bool = False,
+        additional_instruction: str | None = None,
+        agent_config=None,
+    ) -> DispatchResult:
+        backend_calls.append(
+            {
+                "path": path,
+                "log": log,
+                "use_resume": use_resume,
+                "additional_instruction": additional_instruction,
+                "agent_config": agent_config,
+            }
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1)
+
+    assert exit_code == 0
+    assert len(backend_calls) == 1
+    assert backend_calls[0]["path"] == handoff_path
+    assert backend_calls[0]["use_resume"] is True
+    assert backend_calls[0]["additional_instruction"] is None
+    assert backend_calls[0]["agent_config"].provider == "claude"
+    assert backend_calls[0]["agent_config"].agent_name == "backend-worker"
 
 
 def test_run_loop_passes_codex_resume_mode_to_dispatch(

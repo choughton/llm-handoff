@@ -76,7 +76,7 @@ AgentRole = Literal[
 ProviderName = Literal["codex", "gemini", "claude", "openai"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
 
-SUPPORTED_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
+DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "planner": "gemini",
     "backend": "codex",
     "frontend": "gemini",
@@ -84,7 +84,8 @@ SUPPORTED_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "validator": "claude",
     "finalizer": "claude",
 }
-REQUIRED_AGENT_ROLES = frozenset(SUPPORTED_AGENT_PROVIDERS)
+RUNTIME_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini"})
+REQUIRED_AGENT_ROLES = frozenset(DEFAULT_AGENT_PROVIDERS)
 
 
 class AgentConfig(BaseModel):
@@ -93,6 +94,7 @@ class AgentConfig(BaseModel):
     provider: ProviderName
     binary: str | None = None
     mention: str | None = None
+    agent_name: str | None = None
     skill_name: str | None = None
     model: str | None = None
     permissions_flag: str | None = None
@@ -145,53 +147,47 @@ class NormalizerConfig(BaseModel):
 
 def _default_agent_configs() -> dict[AgentRole, AgentConfig]:
     return {
-        "planner": AgentConfig(
-            provider="gemini",
-            binary=GEMINI_BINARY,
-            mention=GEMINI_PLANNER_MENTION,
-            resume=GEMINI_RESUME_DEFAULT,
-            timeout_ms=AGENT_TIMEOUT_MS,
-            retries=GEMINI_MAX_RETRIES,
-        ),
-        "backend": AgentConfig(
-            provider="codex",
-            binary=CODEX_BINARY,
-            skill_name=CODEX_SKILL_NAME,
-            resume=True,
-            timeout_ms=AGENT_TIMEOUT_MS,
-        ),
-        "frontend": AgentConfig(
-            provider="gemini",
-            binary=GEMINI_BINARY,
-            mention=GEMINI_FRONTEND_MENTION,
-            resume=False,
-            timeout_ms=AGENT_TIMEOUT_MS,
-        ),
-        "auditor": AgentConfig(
-            provider="claude",
-            binary=CLAUDE_BINARY,
-            model=CLAUDE_MODEL,
-            permissions_flag=CLAUDE_PERMISSIONS_FLAG,
-            resume=False,
-            timeout_ms=SUBAGENT_TIMEOUT_MS,
-        ),
-        "validator": AgentConfig(
-            provider="claude",
-            binary=CLAUDE_BINARY,
-            model=NORMALIZER_MODEL,
-            permissions_flag=CLAUDE_PERMISSIONS_FLAG,
-            resume=False,
-            timeout_ms=SUBAGENT_TIMEOUT_MS,
-        ),
-        "finalizer": AgentConfig(
-            provider="claude",
-            binary=CLAUDE_BINARY,
-            model=CLAUDE_MODEL,
-            permissions_flag=CLAUDE_PERMISSIONS_FLAG,
-            resume=False,
-            timeout_ms=SUBAGENT_TIMEOUT_MS,
-        ),
+        role: AgentConfig.model_validate(_agent_defaults_for_provider(role, provider))
+        for role, provider in DEFAULT_AGENT_PROVIDERS.items()
     }
+
+
+def _agent_defaults_for_provider(role: str, provider: object) -> dict[str, object]:
+    if provider == "codex":
+        return {
+            "provider": provider,
+            "binary": CODEX_BINARY,
+            "skill_name": CODEX_SKILL_NAME,
+            "resume": True,
+            "timeout_ms": AGENT_TIMEOUT_MS,
+        }
+    if provider == "gemini":
+        return {
+            "provider": provider,
+            "binary": GEMINI_BINARY,
+            "mention": _default_gemini_mention_for_role(role),
+            "resume": GEMINI_RESUME_DEFAULT if role == "planner" else False,
+            "timeout_ms": AGENT_TIMEOUT_MS,
+            "retries": GEMINI_MAX_RETRIES,
+        }
+    if provider == "claude":
+        return {
+            "provider": provider,
+            "binary": CLAUDE_BINARY,
+            "model": NORMALIZER_MODEL if role == "validator" else CLAUDE_MODEL,
+            "permissions_flag": CLAUDE_PERMISSIONS_FLAG,
+            "resume": False,
+            "timeout_ms": SUBAGENT_TIMEOUT_MS,
+        }
+    return {"provider": provider}
+
+
+def _default_gemini_mention_for_role(role: str) -> str:
+    if role == "planner":
+        return GEMINI_PLANNER_MENTION
+    if role == "frontend":
+        return GEMINI_FRONTEND_MENTION
+    return f"@{role}"
 
 
 class DispatchConfig(BaseModel):
@@ -234,13 +230,10 @@ class DispatchConfig(BaseModel):
                 f"{', '.join(missing_roles)}."
             )
         for role, agent_config in value.items():
-            expected_provider = SUPPORTED_AGENT_PROVIDERS[role]
-            if agent_config.provider != expected_provider:
+            if agent_config.provider not in RUNTIME_PROVIDER_ADAPTERS:
                 raise ValueError(
-                    "current reference dispatcher supports provider "
-                    f"`{expected_provider}` for role `{role}`; configured "
-                    f"`{agent_config.provider}`. True provider portability is "
-                    "planned but not implemented yet."
+                    "no runtime adapter is registered for provider "
+                    f"`{agent_config.provider}` on role `{role}`."
                 )
         return value
 
@@ -315,7 +308,12 @@ def _merge_agent_defaults(data: dict[str, object]) -> None:
     merged_agents = dict(default_agents)
     for role, configured in configured_agents.items():
         if isinstance(role, str) and isinstance(configured, dict):
-            default_config = default_agents.get(role)
+            configured_provider = configured.get("provider")
+            default_config = (
+                _agent_defaults_for_provider(role, configured_provider)
+                if configured_provider is not None
+                else default_agents.get(role)
+            )
             if isinstance(default_config, dict):
                 merged_agents[role] = {**default_config, **configured}
                 continue

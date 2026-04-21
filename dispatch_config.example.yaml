@@ -1,8 +1,8 @@
 # Example llm-handoff configuration.
 #
-# This file documents the current reference role-to-provider matrix for source
-# checkout users and target-repo templates. Unsupported role/provider mappings
-# fail closed until true provider portability is implemented.
+# This file documents the shipped reference role-to-provider mapping for source
+# checkout users and target-repo templates. Roles can be remapped to registered
+# runtime adapters: codex, gemini, or claude.
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md

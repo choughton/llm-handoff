@@ -1,9 +1,8 @@
 # llm-handoff reference workflow configuration.
 #
 # Copy this file to a target repository as dispatch_config.yaml, then adjust
-# provider binaries, models, and timeouts for that repository. The current
-# pre-release dispatcher enforces this reference role/provider matrix until
-# true provider portability is implemented.
+# provider binaries, models, timeouts, and role-provider mappings for that
+# repository. The shipped mapping is only the reference workflow default.
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
