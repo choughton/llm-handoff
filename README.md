@@ -19,6 +19,35 @@ genericized from a project-specific implementation into a public reference
 workflow. Expect names, configuration, and examples to change until the first
 tagged release.
 
+The current scaffold is not a release-ready package yet. See
+[CHANGELOG.md](CHANGELOG.md) for the extraction state.
+
+## Table Of Contents
+
+### This README
+
+- [What This Is](#what-this-is)
+- [What This Is Not](#what-this-is-not)
+- [How It Works](#how-it-works)
+- [Documentation Files](#documentation-files)
+- [Known Limitations](#known-limitations)
+- [License](#license)
+
+### Documentation Files
+
+| File | Purpose |
+| --- | --- |
+| [README.md](README.md) | Public front door and project positioning. |
+| [INSTALL.md](INSTALL.md) | Install paths, provider CLI checks, and first run. |
+| [CONFIGURATION.md](CONFIGURATION.md) | Planned `dispatch_config.yaml` surface. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map and design choices. |
+| [docs/TESTING.md](docs/TESTING.md) | Test strategy and current scaffold state. |
+| [examples/reference-workflow/README.md](examples/reference-workflow/README.md) | Copyable workflow protocol plan. |
+| [AGENTS.md](AGENTS.md) | Instructions for coding agents working in this repo. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution scope and project boundaries. |
+| [SECURITY.md](SECURITY.md) | Safe usage and vulnerability reporting. |
+| [CHANGELOG.md](CHANGELOG.md) | Release and extraction history. |
+
 ## What This Is
 
 - A Python CLI for serially dispatching work between AI coding CLIs.
@@ -35,7 +64,7 @@ tagged release.
 - Not self-healing. It detects, validates, and pauses.
 - Not production-certified for arbitrary repositories.
 
-## Core Mechanism
+## How It Works
 
 `llm-handoff` treats model output as untrusted input.
 
@@ -46,153 +75,15 @@ tagged release.
 5. The updated handoff is validated.
 6. The loop continues, pauses, or escalates to the user.
 
-The default handoff path is:
+The handoff file is the mutex and the debugger. There is no hidden queue,
+database, or dashboard required to understand the current state.
 
-```text
-docs/handoff/HANDOFF.md
-```
+## Documentation Files
 
-A flat root-level handoff is also supported through configuration:
-
-```yaml
-handoff_path: HANDOFF.md
-```
-
-## Why A File?
-
-The handoff file is the mutex and the debugger. If the loop gets stuck, inspect:
-
-```text
-docs/handoff/HANDOFF.md
-logs/dispatch/
-git log --oneline
-```
-
-There is no hidden queue, database, or dashboard required to understand the
-current state.
-
-## Planned Quick Start
-
-The intended source workflow is:
-
-```bash
-git clone https://github.com/choughton/llm-handoff.git
-cd llm-handoff
-python -m venv .venv
-python -m pip install -e ".[dev]"
-llm-handoff --help
-```
-
-The intended target-repo workflow is:
-
-```bash
-cd path/to/your-project
-llm-handoff init --template reference-workflow
-llm-handoff --config dispatch_config.yaml --dry-run
-llm-handoff --config dispatch_config.yaml
-```
-
-The `init` command is planned as part of the public extraction. Until then, the
-reference workflow templates will live under `examples/reference-workflow/`.
-
-## Reference Workflow Shape
-
-The public template should include:
-
-```text
-AGENTS.md
-PROJECT_STATE.md
-dispatch_config.yaml
-docs/handoff/HANDOFF.md
-.geminiignore
-.gemini/agents/planner.md
-.gemini/agents/frontend.md
-.codex/skills/llm-handoff/SKILL.md
-.claude/agents/auditor.md
-.claude/agents/handoff-validator.md
-.claude/agents/finalizer.md
-```
-
-These files are part of the mechanism. The dispatcher is not just Python code;
-it is Python code plus a written protocol that tells agents how to cooperate.
-
-## Handoff Frontmatter
-
-A minimal handoff starts like this:
-
-```markdown
----
-next_agent: planner
-reason: Scope the first implementation task.
-producer: user
----
-
-# Task Assignment
-
-## Objective
-
-Inspect this repository and propose the first small implementation task.
-
-## Acceptance Criteria
-
-- Identify the repo structure.
-- Write a concrete handoff for the implementer.
-- Include clear next_agent frontmatter.
-```
-
-Canonical public role names are expected to be:
-
-- `planner`
-- `implementer`
-- `frontend`
-- `auditor`
-- `validator`
-- `finalizer`
-- `user`
-
-Provider CLIs are implementation details configured separately.
-
-## Configuration Direction
-
-The planned config shape is:
-
-```yaml
-handoff_path: docs/handoff/HANDOFF.md
-project_state_path: PROJECT_STATE.md
-auto_push: false
-
-agents:
-  planner:
-    provider: gemini
-    binary: gemini
-    resume: true
-    timeout_ms: 1200000
-
-  implementer:
-    provider: codex
-    binary: codex
-    skill_name: llm-handoff
-    resume: true
-    timeout_ms: 1200000
-
-  auditor:
-    provider: claude
-    binary: claude
-    model: claude-opus-4-7
-    resume: false
-    timeout_ms: 900000
-```
-
-`auto_push` should remain `false` by default. The dispatcher may help create
-local commits, but publishing to a remote should be an explicit user decision.
-
-## Design Constraints
-
-- Serial execution is intentional.
-- Git is a required part of the state model.
-- Handoff validation should fail closed on parse errors.
-- Ambiguous routing should pause or dispatch a validator, not guess.
-- The public workflow must not depend on project-specific names or documents.
+The table of contents above links every Markdown document in this repository.
+The most important next reads are [INSTALL.md](INSTALL.md),
+[CONFIGURATION.md](CONFIGURATION.md), and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Known Limitations
 
@@ -202,6 +93,9 @@ local commits, but publishing to a remote should be an explicit user decision.
 - Dual-run protection and semantic SHA checks are required before public launch.
 - The current extraction still contains project-specific names that must be
   removed before release.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design constraints in
+more detail.
 
 ## License
 
