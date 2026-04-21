@@ -1349,6 +1349,110 @@ Audit complete with verification.
     ) in log_messages
 
 
+def test_run_loop_allows_handoff_repair_with_existing_unrelated_dirty_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **auditor:** Audit the current story.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+
+    invalid_handoff = """---
+next_agent: planner
+reason: Story audit approved; scope next story.
+scope_sha: 59206fb
+close_type: story
+producer: auditor
+---
+
+# Auditor Handback
+
+## Audit Summary
+
+Audit complete with verification.
+
+## Prior Backend Handback
+
+**Agent:** backend
+"""
+    repaired_handoff = """---
+next_agent: planner
+reason: Story audit approved; scope next story.
+scope_sha: 59206fb
+close_type: story
+producer: auditor
+---
+
+# Auditor Handback
+
+**Agent:** auditor
+
+## Audit Summary
+
+Audit complete with verification.
+
+## Prior Backend Handback
+
+**Agent:** backend
+"""
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert callable(log)
+        subagent_calls.append((subagent_name, prompt, log))
+        if len(subagent_calls) == 1:
+            handoff_path.write_text(invalid_handoff, encoding="utf-8")
+        else:
+            assert "Repair only docs/handoff/HANDOFF.md" in prompt
+            handoff_path.write_text(repaired_handoff, encoding="utf-8")
+        return _subagent_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_subagent)
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_head",
+        Mock(side_effect=["a" * 40, "b" * 40]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_dirty_files",
+        Mock(
+            side_effect=[
+                ("docs/handoff/HANDOFF.md", "notes.txt"),
+                ("notes.txt",),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_changed_files_since",
+        Mock(return_value=("docs/handoff/HANDOFF.md",)),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert [call[0] for call in subagent_calls] == [
+        "auditor",
+        "auditor",
+    ]
+    assert (
+        "AGENT",
+        "Producer handoff hygiene repair passed post-checks.",
+    ) in log_messages
+
+
 def test_run_loop_allows_repair_to_add_missing_frontmatter_fields(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3186,6 +3290,64 @@ def test_run_dispatch_refuses_existing_dispatch_lock(
         "Another llm-handoff dispatcher appears to be running"
         in capsys.readouterr().err
     )
+
+
+def test_run_dispatch_can_run_from_source_checkout_against_target_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    source_checkout = tmp_path / "llm-handoff-source"
+    target_repo = tmp_path / "target-repo"
+    source_checkout.mkdir()
+    target_repo.mkdir()
+    (target_repo / ".git").mkdir()
+    (target_repo / "dispatch_config.yaml").write_text(
+        "handoff_path: docs/handoff/HANDOFF.md\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class FakeDispatchLogger:
+        def __init__(self, **kwargs: object) -> None:
+            captured["logger_kwargs"] = kwargs
+
+        def __call__(self, level: str, message: str) -> None:
+            captured.setdefault("log_calls", []).append((level, message))
+
+        def mark_startup_complete(self) -> None:
+            captured["startup_marked"] = True
+
+    def fake_run_loop(config, *, log=None):
+        captured["config"] = config
+        captured["log"] = log
+        captured["target_lock_exists_during_run"] = (
+            target_repo / ".dispatch.lock"
+        ).exists()
+        captured["source_lock_exists_during_run"] = (
+            source_checkout / ".dispatch.lock"
+        ).exists()
+        return 0
+
+    monkeypatch.chdir(source_checkout)
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+
+    exit_code = main_module._run_dispatch(
+        dry_run=True,
+        use_manual_frontend=False,
+        planner_api_key_env=False,
+        backend_resume=True,
+        planner_resume=True,
+        repo_root=target_repo,
+        config_path=target_repo / "dispatch_config.yaml",
+    )
+
+    assert exit_code == 0
+    assert captured["config"].repo_root == target_repo.resolve()
+    assert captured["target_lock_exists_during_run"] is True
+    assert captured["source_lock_exists_during_run"] is False
+    assert not (target_repo / ".dispatch.lock").exists()
 
 
 def test_main_supports_opting_out_of_backend_resume(
