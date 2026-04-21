@@ -2,7 +2,7 @@
 
 `llm-handoff` is in pre-release extraction. These instructions describe the
 intended install and first-run workflow. Some commands will become active once
-packaging and config loading are finalized.
+dependency setup and config loading are finalized.
 
 ## Requirements
 
@@ -41,16 +41,17 @@ python -m venv .venv
 python -m pip install --upgrade pip
 ```
 
-## Install The Package
+## Install Local Dependencies
 
-Planned editable install:
+Planned source-checkout dependency install:
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install -r requirements-dev.txt
 ```
 
-This will become the preferred source checkout workflow after `pyproject.toml`
-is added. Until then, use the repo checkout directly for extraction work.
+No PyPI distribution is planned. This repository is intended to be cloned and
+run from source. If a `pyproject.toml` is added later, it should support local
+tooling and tests, not package publication.
 
 ## Check Provider CLIs
 
@@ -77,7 +78,7 @@ Planned workflow:
 
 ```bash
 cd path/to/your-project
-llm-handoff init --template reference-workflow
+python -m llm_handoff init --template reference-workflow
 ```
 
 The init command should copy a reference protocol into the target repository,
@@ -105,7 +106,7 @@ for the written protocol.
 Planned command:
 
 ```bash
-llm-handoff --config dispatch_config.yaml --dry-run
+python -m llm_handoff --config dispatch_config.yaml --dry-run
 ```
 
 A dry run should parse the handoff, resolve the configured role, and report the
@@ -116,7 +117,7 @@ provider CLI it would invoke without launching the agent.
 Planned command:
 
 ```bash
-llm-handoff --config dispatch_config.yaml
+python -m llm_handoff --config dispatch_config.yaml
 ```
 
 The dispatcher reads the handoff file, invokes one role, validates the updated

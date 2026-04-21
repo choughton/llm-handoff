@@ -23,7 +23,7 @@ Use these files as the repo-level source of truth once they exist:
 - `README.md` for the public positioning and user workflow.
 - `dispatch_config.example.yaml` for the supported configuration surface.
 - `examples/reference-workflow/` for copyable protocol templates.
-- `llm_handoff/` for the dispatcher package.
+- `llm_handoff/` for the dispatcher module.
 - `tests/` for the behavioral contract.
 
 If a code path and the README disagree, update the narrower technical artifact
@@ -48,7 +48,7 @@ when users choose to fork or adapt it.
 Use these public names consistently:
 
 - Repository: `llm-handoff`
-- Python package: `llm_handoff`
+- Python module: `llm_handoff`
 - Console command: `llm-handoff`
 - Default handoff path: `docs/handoff/HANDOFF.md`
 - Optional flat handoff path: `HANDOFF.md`

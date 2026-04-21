@@ -127,7 +127,7 @@ Gemini-specific fields:
 
 ## Prompt Templates
 
-Prompt templates should be bundled with the package and overrideable from the
+Prompt templates should be stored in the source tree and overrideable from the
 target repo.
 
 Planned config:
@@ -136,7 +136,7 @@ Planned config:
 prompts_dir: .llm-handoff/prompts
 ```
 
-If omitted, package defaults should be used.
+If omitted, source-tree defaults should be used.
 
 ## Frontmatter Contract
 

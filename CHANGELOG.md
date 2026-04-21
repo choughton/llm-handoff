@@ -14,4 +14,4 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## 0.0.0
 
-- No release has been published yet.
+- No public release tag has been published yet.
