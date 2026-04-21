@@ -3,8 +3,9 @@
 `llm-handoff` is expected to use a YAML config file named
 `dispatch_config.yaml` in the target repository.
 
-This document describes the planned public configuration surface. The current
-code scaffold still needs to be wired to this schema. See
+This document describes the public configuration surface currently parsed by
+the source checkout. Full role-to-provider adapter wiring is still being
+ported. See
 [dispatch_config.example.yaml](dispatch_config.example.yaml) for a copyable
 example shape.
 
@@ -142,7 +143,7 @@ The normalizer is intentionally constrained:
 - `unknown` fails closed and routes to validation or user intervention instead
   of guessing.
 
-Planned config shape:
+Config shape:
 
 ```yaml
 normalizer:
@@ -158,7 +159,8 @@ as Gemini Flash or an OpenAI mini model, as long as the adapter enforces the
 same canonical-role-or-unknown output contract.
 
 The current code scaffold implements the Claude API and Claude CLI paths first.
-Provider adapters for Gemini or OpenAI normalizer calls are planned config work.
+Provider adapters for Gemini or OpenAI normalizer calls are planned adapter
+work.
 
 The normalizer has two runtime auth paths:
 

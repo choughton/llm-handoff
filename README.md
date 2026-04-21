@@ -36,7 +36,7 @@ The current scaffold is not a release-ready source checkout yet. See
 | --- | --- |
 | [README.md](README.md) | Public front door and project positioning. |
 | [INSTALL.md](INSTALL.md) | Install paths, provider CLI checks, and first run. |
-| [CONFIGURATION.md](CONFIGURATION.md) | Planned `dispatch_config.yaml` surface. |
+| [CONFIGURATION.md](CONFIGURATION.md) | Supported `dispatch_config.yaml` surface. |
 | [dispatch_config.example.yaml](dispatch_config.example.yaml) | Example role-to-provider config shape. |
 | [requirements-dev.txt](requirements-dev.txt) | Source-checkout runtime and test dependencies. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map and design choices. |
@@ -129,7 +129,8 @@ advances when the handoff state parses, routes, and validates.
 - Provider CLI behavior can change underneath the dispatcher.
 - Validator calls optimize for correctness over token cost.
 - Dual-run protection and semantic SHA checks are required before public launch.
-- Config-file loading and `init` template generation are still planned work.
+- Full role-to-provider adapter wiring and `init` template generation are
+  still planned work.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design constraints in
 more detail.

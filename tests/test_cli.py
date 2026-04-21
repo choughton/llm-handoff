@@ -10,5 +10,6 @@ def test_help_text_names_public_dispatcher(capsys) -> None:
     output = capsys.readouterr().out
     assert "llm-handoff dispatcher" in output
     assert "--manual-frontend" in output
+    assert "--config" in output
     assert "Crossfire" not in output
     assert "antigravity" not in output.lower()

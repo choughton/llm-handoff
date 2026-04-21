@@ -12,8 +12,8 @@ import typer
 from llm_handoff.agents import _cleanup_codex_output_artifacts, _codex_artifact_paths
 from llm_handoff.config import (
     DISPATCH_WINDOW_TITLE,
-    DispatchConfig,
     detect_repo_root,
+    load_dispatch_config,
 )
 from llm_handoff.logging_util import DispatchLogger
 from llm_handoff.orchestrator import run_loop
@@ -78,9 +78,14 @@ def _run_dispatch(
     use_codex_resume: bool,
     use_gemini_resume: bool,
     repo_root: Path | None,
+    config_path: Path | None,
 ) -> int:
-    config = DispatchConfig(
-        repo_root=detect_repo_root(repo_root),
+    root_start = repo_root
+    if root_start is None and config_path is not None:
+        root_start = config_path.parent
+    config = load_dispatch_config(
+        repo_root=detect_repo_root(root_start),
+        config_path=config_path,
         dry_run=dry_run,
         use_manual_frontend=use_manual_frontend,
         use_gemini_api_key_env=use_gemini_api_key_env,
@@ -140,6 +145,11 @@ def _dispatch_callback(
         ),
     ),
     repo_root: Path | None = typer.Option(None, "--repo-root"),
+    config_path: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Path to dispatch_config.yaml. Relative paths resolve from the repo root.",
+    ),
 ) -> None:
     _configure_stdio_encoding()
     raise typer.Exit(
@@ -150,6 +160,7 @@ def _dispatch_callback(
             use_codex_resume=use_codex_resume,
             use_gemini_resume=use_gemini_resume,
             repo_root=repo_root,
+            config_path=config_path,
         )
     )
 

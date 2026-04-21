@@ -13,7 +13,7 @@ routing, and rejection of source-project aliases.
 Current focused result:
 
 ```text
-19 passed
+22 passed
 ```
 
 The suite is still small. Add tests with each extraction pass before widening
@@ -29,6 +29,7 @@ Run focused files during extraction:
 
 ```bash
 python -m pytest tests/test_public_defaults.py -q
+python -m pytest tests/test_config.py -q
 python -m pytest tests/test_generic_router.py -q
 python -m pytest tests/test_cli.py -q
 ```

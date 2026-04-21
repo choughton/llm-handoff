@@ -30,7 +30,7 @@ def test_normalizer_uses_structured_api_path_when_api_key_is_available(
         assert max_retries == 2
         return "backend"
 
-    def fail_cli(raw_value: str, *, model: str) -> str:
+    def fail_cli(raw_value: str, *, model: str, timeout_ms: int) -> str:
         raise AssertionError("CLI fallback should not run when an API key is present.")
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
@@ -62,9 +62,10 @@ def test_normalizer_uses_cli_path_when_api_key_is_absent(
     def fail_api(*args: object, **kwargs: object) -> str:
         raise AssertionError("API path should not run without an API key.")
 
-    def fake_cli(raw_value: str, *, model: str) -> str:
+    def fake_cli(raw_value: str, *, model: str, timeout_ms: int) -> str:
         assert raw_value == "implementer"
         assert model == "claude-haiku-test"
+        assert timeout_ms == 12345
         return "backend"
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -83,6 +84,7 @@ def test_normalizer_uses_cli_path_when_api_key_is_absent(
         handoff_normalizer.normalize_next_agent(
             "implementer",
             model="claude-haiku-test",
+            timeout_ms=12345,
         )
         == "backend"
     )

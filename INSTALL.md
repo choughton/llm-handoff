@@ -2,8 +2,7 @@
 
 `llm-handoff` is in pre-release extraction. These instructions describe the
 intended install and first-run workflow. The dispatcher can be run from a
-source checkout; config loading and template initialization are still planned
-work.
+source checkout; template initialization is still planned work.
 
 ## Requirements
 
@@ -104,18 +103,14 @@ for the written protocol.
 
 ## Dry Run
 
-Planned command:
-
 ```bash
 python -m llm_handoff --config dispatch_config.yaml --dry-run
 ```
 
-A dry run should parse the handoff, resolve the configured role, and report the
+A dry run parses the handoff, resolves the configured role, and reports the
 provider CLI it would invoke without launching the agent.
 
 ## Run The Loop
-
-Planned command:
 
 ```bash
 python -m llm_handoff --config dispatch_config.yaml

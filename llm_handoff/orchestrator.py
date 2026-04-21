@@ -15,7 +15,7 @@ from llm_handoff.agents import (
     invoke_gemini,
     invoke_manual_frontend,
 )
-from llm_handoff.config import DispatchConfig
+from llm_handoff.config import DispatchConfig, NormalizerConfig
 from llm_handoff.ledger import run_epic_close
 from llm_handoff.handoff_normalizer import (
     CANONICAL_NEXT_AGENT_SET,
@@ -180,6 +180,7 @@ def run_loop(
         handoff_content = _normalize_handoff_next_agent_file(
             config.handoff_full_path,
             handoff_content,
+            config.normalizer,
             log_fn,
         )
 
@@ -361,6 +362,7 @@ def run_loop(
                 _normalize_handoff_next_agent_file(
                     config.handoff_full_path,
                     post_dispatch_handoff_content,
+                    config.normalizer,
                     log_fn,
                 )
             _log_dispatch_completion(
@@ -1049,6 +1051,7 @@ def _repair_handoff_frontmatter_file(
 def _normalize_handoff_next_agent_file(
     handoff_path: Path,
     handoff_content: str,
+    normalizer_config: NormalizerConfig,
     log: LogFn,
 ) -> str:
     try:
@@ -1061,7 +1064,12 @@ def _normalize_handoff_next_agent_file(
             )
         normalization = normalize_handoff_next_agent_text(
             handoff_content,
-            normalizer=normalize_next_agent,
+            normalizer=lambda raw_value: normalize_next_agent(
+                raw_value,
+                provider=normalizer_config.provider,
+                model=normalizer_config.model,
+                timeout_ms=normalizer_config.timeout_ms,
+            ),
         )
     except Exception as exc:
         _log(

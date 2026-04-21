@@ -16,8 +16,8 @@ from pydantic import BaseModel, Field
 from llm_handoff import config
 
 
-DEFAULT_NORMALIZER_PROVIDER = "claude"
-DEFAULT_NORMALIZER_MODEL = "claude-haiku-4-5"
+DEFAULT_NORMALIZER_PROVIDER = config.NORMALIZER_PROVIDER
+DEFAULT_NORMALIZER_MODEL = config.NORMALIZER_MODEL
 ValidAgent = Literal[
     "auditor",
     "backend",
@@ -38,7 +38,6 @@ CANONICAL_NEXT_AGENTS = tuple(
     agent for agent in get_args(ValidAgent) if agent != "unknown"
 )
 CANONICAL_NEXT_AGENT_SET = frozenset(CANONICAL_NEXT_AGENTS)
-CLI_NORMALIZER_TIMEOUT_SECONDS = 60
 _NEXT_AGENT_LINE_RE = re.compile(r"^(\s*next_agent\s*:\s*).*$")
 
 
@@ -66,6 +65,7 @@ def normalize_next_agent(
     *,
     provider: str = DEFAULT_NORMALIZER_PROVIDER,
     model: str = DEFAULT_NORMALIZER_MODEL,
+    timeout_ms: int = config.NORMALIZER_TIMEOUT_MS,
     api_key: str | None = None,
     client: object | None = None,
     max_retries: int = 2,
@@ -99,7 +99,11 @@ def normalize_next_agent(
             max_retries=max_retries,
         )
 
-    return _normalize_next_agent_with_claude_cli(raw_value, model=model)
+    return _normalize_next_agent_with_claude_cli(
+        raw_value,
+        model=model,
+        timeout_ms=timeout_ms,
+    )
 
 
 def _normalize_next_agent_with_instructor(
@@ -126,7 +130,12 @@ def _normalize_next_agent_with_instructor(
     return result.normalized
 
 
-def _normalize_next_agent_with_claude_cli(raw_value: str, *, model: str) -> str:
+def _normalize_next_agent_with_claude_cli(
+    raw_value: str,
+    *,
+    model: str,
+    timeout_ms: int,
+) -> str:
     command = [
         _resolve_command_binary(config.CLAUDE_BINARY),
         config.CLAUDE_PERMISSIONS_FLAG,
@@ -149,7 +158,7 @@ def _normalize_next_agent_with_claude_cli(raw_value: str, *, model: str) -> str:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=CLI_NORMALIZER_TIMEOUT_SECONDS,
+            timeout=timeout_ms / 1000,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(
