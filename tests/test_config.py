@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from llm_handoff import __main__ as main_module
 from llm_handoff.config import DispatchConfig, load_dispatch_config
 
@@ -61,6 +63,37 @@ def test_load_dispatch_config_uses_defaults_when_file_is_absent(
     assert loaded.project_state_path == Path("PROJECT_STATE.md")
     assert loaded.normalizer.provider == "claude"
     assert loaded.agents["backend"].skill_name == "llm-handoff"
+
+
+def test_load_dispatch_config_rejects_unsupported_role_provider_mapping(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """agents:
+  backend:
+    provider: claude
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="True provider portability is planned"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_load_dispatch_config_rejects_unsupported_normalizer_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """normalizer:
+  provider: openai
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Additional normalizer providers are planned"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
 def test_run_dispatch_loads_config_file(

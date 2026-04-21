@@ -13,7 +13,6 @@ from llm_handoff.router import (
     route as route_handoff,
 )
 from llm_handoff.roles import (
-    legacy_next_agent_warning,
     normalize_agent_label,
     normalize_next_agent_value,
 )
@@ -94,8 +93,6 @@ def validate_handoff_frontmatter(parsed: HandoffRouting) -> ValidationResult:
             "frontmatter_next_agent_invalid: "
             f"producer {producer} used unsupported next_agent `{parsed.next_agent}`."
         )
-    elif alias_warning := legacy_next_agent_warning(parsed.next_agent):
-        warnings.append(f"frontmatter_next_agent_alias: {alias_warning}")
 
     if not parsed.reason:
         errors.append(

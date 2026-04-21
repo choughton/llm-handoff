@@ -82,19 +82,9 @@ def _run_dispatch(
     planner_api_key_env: bool = False,
     backend_resume: bool = True,
     planner_resume: bool = True,
-    use_gemini_api_key_env: bool | None = None,
-    use_codex_resume: bool | None = None,
-    use_gemini_resume: bool | None = None,
     repo_root: Path | None = None,
     config_path: Path | None = None,
 ) -> int:
-    if use_gemini_api_key_env is not None:
-        planner_api_key_env = use_gemini_api_key_env
-    if use_codex_resume is not None:
-        backend_resume = use_codex_resume
-    if use_gemini_resume is not None:
-        planner_resume = use_gemini_resume
-
     root_start = repo_root
     if root_start is None and config_path is not None:
         root_start = config_path.parent
@@ -194,18 +184,14 @@ def _dispatch_callback(
     planner_api_key_env: bool = typer.Option(
         False,
         "--use-planner-api-key-env",
-        "--use-gemini-api-key-env",
         help=(
             "Preserve the planner provider API key environment for planner launches. "
             "Provider-specific blocked variables are still stripped."
         ),
     ),
-    # Typer exposes both forms from this option declaration. Keep provider-named
-    # aliases for older dispatch wrappers while the public controls use roles.
     backend_resume: bool = typer.Option(
         True,
         "--use-backend-resume/--no-backend-resume",
-        "--use-codex-resume/--no-codex-resume",
         help=(
             "Reuse the managed backend session, or start a fresh stateless backend "
             "session for this dispatch."
@@ -214,7 +200,6 @@ def _dispatch_callback(
     planner_resume: bool = typer.Option(
         True,
         "--use-planner-resume/--no-planner-resume",
-        "--use-gemini-resume/--no-gemini-resume",
         help=(
             "Reuse the in-memory managed planner session, or run the planner "
             "statelessly for this dispatch."

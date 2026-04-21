@@ -9,8 +9,6 @@ from llm_handoff.normalizer_models import NormalizedNextAgent, normalizer_prompt
 from llm_handoff.normalizer_providers.claude import normalize_next_agent_with_claude
 from llm_handoff.roles import (
     CANONICAL_NEXT_AGENT_ROLES,
-    is_legacy_next_agent_alias,
-    normalize_next_agent_value,
 )
 
 
@@ -73,10 +71,6 @@ def normalize_next_agent(
         return "unknown"
     if raw_value in CANONICAL_NEXT_AGENT_SET:
         return raw_value
-    if is_legacy_next_agent_alias(raw_value):
-        normalized = normalize_next_agent_value(raw_value)
-        if normalized is not None:
-            return normalized
 
     adapter = _NORMALIZER_PROVIDER_ADAPTERS.get(provider)
     if adapter is None:

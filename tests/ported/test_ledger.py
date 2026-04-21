@@ -151,7 +151,7 @@ PUSH RESULT: PUSHED (84e3854..32a5771 main -> main)
 CHANGES MADE:
 - PROJECT_STATE.md: appended one compact line for Post-UAT Audit Nit Cleanup
 - PROJECT_STATE.md: Active Epic set to None — awaiting next epic dispatch
-- docs/handoff/HANDOFF.md: rewritten with YAML frontmatter routing to gemini-pe
+- docs/handoff/HANDOFF.md: rewritten with YAML frontmatter routing to planner
 """,
             stderr="",
             exit_code=0,

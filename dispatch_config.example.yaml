@@ -1,7 +1,8 @@
 # Example llm-handoff configuration.
 #
-# This file documents the public role-to-provider shape for source checkout
-# users and target-repo templates.
+# This file documents the current reference role-to-provider matrix for source
+# checkout users and target-repo templates. Unsupported role/provider mappings
+# fail closed until true provider portability is implemented.
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
@@ -59,8 +60,4 @@ normalizer:
   timeout_ms: 60000
   on_unknown: fail_closed
   # Runtime auth order: provider API key first, provider CLI auth fallback.
-  # Other intended provider examples:
-  # provider: gemini
-  # model: <gemini-flash-model>
-  # provider: openai
-  # model: <openai-small-model>
+  # Additional normalizer providers are planned but not implemented yet.

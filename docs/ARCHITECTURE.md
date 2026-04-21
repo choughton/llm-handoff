@@ -51,8 +51,11 @@ Continue, pause, or escalate
 
 The current source checkout has the core config loader, router, validator,
 normalizer, provider invocation layer, target-repo initializer, and prompt
-templates. The remaining architectural work is to make every role-to-provider
-choice configurable without changing the public role names.
+templates. The current dispatch runtime supports a reference provider matrix:
+planner and frontend through Gemini, backend through Codex, and auditor,
+validator, and finalizer through Claude. Configured providers outside that
+matrix fail closed. The remaining architectural work is true role-to-provider
+portability without changing the public role names.
 
 ## Handoff File
 

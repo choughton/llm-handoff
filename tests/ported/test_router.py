@@ -183,18 +183,15 @@ producer: planner
 @pytest.mark.parametrize(
     ("next_agent", "expected_route", "extra_frontmatter"),
     [
-        ("claude-audit", "auditor", ""),
+        ("backend", "backend", ""),
+        ("planner", "planner", ""),
+        ("frontend", "frontend", ""),
+        ("auditor", "auditor", ""),
         (
-            "claude-ledger",
+            "finalizer",
             "finalizer",
             "scope_sha: 82ce839\nclose_type: epic\n",
         ),
-        ("codex", "backend", ""),
-        ("backend", "backend", ""),
-        ("gemini-pe", "planner", ""),
-        ("planner", "planner", ""),
-        ("gemini-frontend", "frontend", ""),
-        ("manual frontend", "frontend", ""),
         ("user", "user", ""),
     ],
 )
@@ -203,7 +200,7 @@ def test_route_supports_all_frontmatter_next_agent_values(
     expected_route: str,
     extra_frontmatter: str,
 ) -> None:
-    producer = "claude-audit" if next_agent == "claude-ledger" else "test"
+    producer = "auditor" if next_agent == "finalizer" else "test"
     handoff_content = f"""---
 next_agent: {next_agent}
 reason: Route enum value for dispatch.
@@ -476,7 +473,7 @@ producer: backend
                 confidence="HIGH",
                 source="canonical_dispatch_line",
                 reasoning="Canonical dispatch line routes work to frontend.",
-                warnings=["Legacy manual frontend reference normalized to frontend."],
+                warnings=[],
             ),
             id="legacy_manual_frontend_dispatch_maps_to_frontend",
         ),
@@ -668,7 +665,7 @@ def test_route_supports_canonical_dispatch_variants(
                 confidence="HIGH",
                 source="next_agent_prose",
                 reasoning="Prose Next Agent line routes work to frontend.",
-                warnings=["Legacy manual frontend reference normalized to frontend."],
+                warnings=[],
             ),
             id="prose_next_agent_manual_frontend",
         ),
@@ -750,11 +747,11 @@ def test_route_ignores_non_agent_bold_line_and_uses_header_agent() -> None:
     )
 
 
-def test_route_routes_generic_gemini_to_frontend_when_action_demands_it() -> None:
+def test_route_routes_frontend_label_to_frontend_when_action_demands_it() -> None:
     handoff_content = """
     ## Next Step
 
-    - **Gemini:** Handle the React and Tailwind UI polish for the next story.
+    - **frontend:** Handle the React and Tailwind UI polish for the next story.
     """.strip()
 
     assert route(handoff_content) == _legacy(

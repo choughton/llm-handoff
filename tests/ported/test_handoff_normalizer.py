@@ -37,8 +37,6 @@ def test_normalize_next_agent_passes_exact_canonical_without_llm(
     )
 
     assert handoff_normalizer.normalize_next_agent("auditor") == "auditor"
-    assert handoff_normalizer.normalize_next_agent("claude-audit") == "auditor"
-    assert handoff_normalizer.normalize_next_agent("Codex") == "backend"
 
 
 @pytest.mark.parametrize(

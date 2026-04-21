@@ -172,7 +172,7 @@ def test_validate_handoff_accepts_utf16_le_bom_manual_frontend_handback(
         _with_frontmatter(
             """# E1-S6 Frontend Handback
 
-**Agent:** gemini-frontend (manual frontend)
+**Agent:** frontend (manual frontend)
 **Latest verified repo SHA:** `236f82f812e405c595dd3fb194c98d8f1d11d89e`
 
 ## Completed Work
@@ -685,7 +685,7 @@ Completed work and verification are documented.
 
 ## Task Assignment
 
-**Agent:** gemini-pe
+**Agent:** planner
 **Epic/Story:** UAT-REMEDIATION-E2-S3
 
 ### Objective

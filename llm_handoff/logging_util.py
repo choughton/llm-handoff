@@ -47,21 +47,13 @@ class DispatchLogger:
         max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES,
         backend_resume: bool = True,
         planner_resume: bool = True,
-        use_codex_resume: bool | None = None,
-        use_gemini_resume: bool | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.console = console or sys.stdout
         self._now = now or datetime.now
         self.max_consecutive_failures = max_consecutive_failures
-        if use_codex_resume is not None:
-            backend_resume = use_codex_resume
-        if use_gemini_resume is not None:
-            planner_resume = use_gemini_resume
         self.backend_resume = backend_resume
         self.planner_resume = planner_resume
-        self.use_codex_resume = backend_resume
-        self.use_gemini_resume = planner_resume
         self.log_directory = self._resolve_log_directory(log_directory)
         self.log_file_path: Path | None = None
         self._startup_phase = True

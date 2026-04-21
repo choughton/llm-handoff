@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import yaml
 
 
@@ -76,6 +76,15 @@ AgentRole = Literal[
 ProviderName = Literal["codex", "gemini", "claude", "openai"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
 
+SUPPORTED_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
+    "planner": "gemini",
+    "backend": "codex",
+    "frontend": "gemini",
+    "auditor": "claude",
+    "validator": "claude",
+    "finalizer": "claude",
+}
+
 
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -113,6 +122,17 @@ class NormalizerConfig(BaseModel):
     model: str = NORMALIZER_MODEL
     timeout_ms: int = NORMALIZER_TIMEOUT_MS
     on_unknown: UnknownNormalizerPolicy = "fail_closed"
+
+    @field_validator("provider", mode="after")
+    @classmethod
+    def _validate_provider(cls, value: ProviderName) -> ProviderName:
+        if value != "claude":
+            raise ValueError(
+                "current reference dispatcher supports provider `claude` for "
+                "next-agent normalization. Additional normalizer providers are "
+                "planned but not implemented yet."
+            )
+        return value
 
     @field_validator("timeout_ms", mode="after")
     @classmethod
@@ -190,24 +210,6 @@ class DispatchConfig(BaseModel):
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
 
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_legacy_provider_keys(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        normalized = dict(value)
-        legacy_keys = {
-            "use_gemini_api_key_env": "planner_api_key_env",
-            "use_codex_resume": "backend_resume",
-            "use_gemini_resume": "planner_resume",
-        }
-        for legacy_key, canonical_key in legacy_keys.items():
-            if legacy_key in normalized and canonical_key not in normalized:
-                normalized[canonical_key] = normalized.pop(legacy_key)
-            else:
-                normalized.pop(legacy_key, None)
-        return normalized
-
     @field_validator("repo_root", mode="after")
     @classmethod
     def _resolve_repo_root(cls, value: Path) -> Path:
@@ -226,6 +228,15 @@ class DispatchConfig(BaseModel):
     ) -> dict[AgentRole, AgentConfig]:
         if not value:
             raise ValueError("agents must define at least one role.")
+        for role, agent_config in value.items():
+            expected_provider = SUPPORTED_AGENT_PROVIDERS[role]
+            if agent_config.provider != expected_provider:
+                raise ValueError(
+                    "current reference dispatcher supports provider "
+                    f"`{expected_provider}` for role `{role}`; configured "
+                    f"`{agent_config.provider}`. True provider portability is "
+                    "planned but not implemented yet."
+                )
         return value
 
     @field_validator("poll_interval_seconds", mode="after")
@@ -262,18 +273,6 @@ class DispatchConfig(BaseModel):
     def planner_api_key_env_enabled(self) -> bool:
         return self.planner_api_key_env
 
-    @property
-    def use_codex_resume(self) -> bool:
-        return self.backend_resume
-
-    @property
-    def use_gemini_resume(self) -> bool:
-        return self.planner_resume
-
-    @property
-    def use_gemini_api_key_env(self) -> bool:
-        return self.planner_api_key_env
-
 
 def load_dispatch_config(
     *,
@@ -284,21 +283,12 @@ def load_dispatch_config(
     planner_api_key_env: bool = False,
     backend_resume: bool | None = None,
     planner_resume: bool | None = None,
-    use_gemini_api_key_env: bool | None = None,
-    use_codex_resume: bool | None = None,
-    use_gemini_resume: bool | None = None,
 ) -> DispatchConfig:
     resolved_repo_root = Path(repo_root).resolve()
     data = _read_config_file(resolved_repo_root, config_path)
     data["repo_root"] = resolved_repo_root
     data["dry_run"] = dry_run
     data["use_manual_frontend"] = use_manual_frontend
-    if use_gemini_api_key_env is not None:
-        planner_api_key_env = use_gemini_api_key_env
-    if use_codex_resume is not None:
-        backend_resume = use_codex_resume
-    if use_gemini_resume is not None:
-        planner_resume = use_gemini_resume
     data["planner_api_key_env"] = planner_api_key_env
     if backend_resume is not None:
         data["backend_resume"] = backend_resume

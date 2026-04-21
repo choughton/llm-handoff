@@ -348,7 +348,7 @@ producer: frontend
 
 ## Implementer Handback
 
-**Agent:** gemini-frontend
+**Agent:** frontend
 **Latest verified repo SHA:** `25c45ca`
 
 ## Completed Work
@@ -494,7 +494,7 @@ producer: frontend
 
 # E1-S6 Frontend Handback
 
-**Agent:** gemini-frontend (manual frontend)
+**Agent:** frontend (manual frontend)
 **Latest verified repo SHA:** `{impl_sha}`
 
 ## Completed Work
@@ -566,7 +566,7 @@ producer: frontend
 
 # E1-S6 Frontend Handback
 
-**Agent:** gemini-frontend (manual frontend)
+**Agent:** frontend (manual frontend)
 **Latest verified repo SHA:** `{impl_sha}`
 
 ## Completed Work
@@ -3085,7 +3085,7 @@ def test_main_parses_cli_flags_and_dispatches_config(
         [
             "--dry-run",
             "--manual-frontend",
-            "--use-gemini-api-key-env",
+            "--use-planner-api-key-env",
             "--repo-root",
             str(tmp_path),
         ]
@@ -3109,7 +3109,7 @@ def test_main_parses_cli_flags_and_dispatches_config(
     assert captured["restored_titles"] == [("previous title", True)]
 
 
-def test_main_supports_opting_out_of_codex_resume(
+def test_main_supports_opting_out_of_backend_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3157,7 +3157,7 @@ def test_main_supports_opting_out_of_codex_resume(
     monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
     monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
 
-    exit_code = main_module.main(["--no-codex-resume", "--repo-root", str(tmp_path)])
+    exit_code = main_module.main(["--no-backend-resume", "--repo-root", str(tmp_path)])
 
     assert exit_code == 0
     assert captured["config"].backend_resume is False
@@ -3166,7 +3166,7 @@ def test_main_supports_opting_out_of_codex_resume(
     assert captured["logger_planner_resume"] is True
 
 
-def test_main_supports_opting_out_of_gemini_resume(
+def test_main_supports_opting_out_of_planner_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3214,7 +3214,7 @@ def test_main_supports_opting_out_of_gemini_resume(
     monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
     monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
 
-    exit_code = main_module.main(["--no-gemini-resume", "--repo-root", str(tmp_path)])
+    exit_code = main_module.main(["--no-planner-resume", "--repo-root", str(tmp_path)])
 
     assert exit_code == 0
     assert captured["config"].planner_resume is False

@@ -1,7 +1,9 @@
 # llm-handoff reference workflow configuration.
 #
 # Copy this file to a target repository as dispatch_config.yaml, then adjust
-# provider binaries, models, timeouts, and role mappings for that repository.
+# provider binaries, models, and timeouts for that repository. The current
+# pre-release dispatcher enforces this reference role/provider matrix until
+# true provider portability is implemented.
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
@@ -56,8 +58,4 @@ normalizer:
   timeout_ms: 60000
   on_unknown: fail_closed
   # Runtime auth order: provider API key first, provider CLI auth fallback.
-  # Other intended provider examples:
-  # provider: gemini
-  # model: <gemini-flash-model>
-  # provider: openai
-  # model: <openai-small-model>
+  # Additional normalizer providers are planned but not implemented yet.

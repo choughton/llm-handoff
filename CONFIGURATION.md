@@ -93,8 +93,8 @@ planner_resume: true
 planner_api_key_env: false
 ```
 
-Provider-named keys from the reference adapter mapping are accepted as backward
-compatibility aliases, but new configs should prefer the role-based names.
+Provider-named runtime keys from the source extraction are not supported in the
+public config. Use the role-based keys shown above.
 
 ## Agent Roles
 
@@ -108,7 +108,19 @@ Public docs and templates should use generic role names:
 - `finalizer`
 - `user`
 
-Provider names are adapter details.
+Provider names are adapter details. The current pre-release implementation
+supports the reference provider matrix below and fails closed if a role is
+configured with a different provider. True arbitrary role-to-provider
+portability is planned before v1, but is not implemented yet.
+
+| Role | Currently Supported Provider |
+| --- | --- |
+| `planner` | `gemini` |
+| `backend` | `codex` |
+| `frontend` | `gemini` or manual frontend pause |
+| `auditor` | `claude` |
+| `validator` | `claude` |
+| `finalizer` | `claude` |
 
 Example:
 
@@ -170,14 +182,12 @@ normalizer:
   on_unknown: fail_closed
 ```
 
-The public contract should not require Claude Haiku. A target repository should
-be able to choose a small, low-latency model from an available provider, such
-as Gemini Flash or an OpenAI mini model, as long as the adapter enforces the
-same canonical-role-or-unknown output contract.
-
-The current code scaffold implements the Claude API and Claude CLI paths first.
-Provider adapters for Gemini or OpenAI normalizer calls are planned adapter
-work.
+The current public scaffold supports the Claude normalizer adapter only. The
+public contract should eventually allow a target repository to choose a small,
+low-latency model from an available provider, such as Gemini Flash or an OpenAI
+mini model, as long as the adapter enforces the same
+canonical-role-or-unknown output contract. Provider adapters for Gemini or
+OpenAI normalizer calls are planned adapter work, not current runtime support.
 
 The normalizer has two runtime auth paths:
 

@@ -10,7 +10,6 @@ import yaml
 
 from llm_handoff.roles import (
     DispatchRole,
-    legacy_next_agent_warning,
     normalize_agent_label,
     normalize_next_agent_value,
 )
@@ -440,8 +439,6 @@ def _route_from_frontmatter(frontmatter: HandoffRouting) -> RoutingDecision:
     if route_name is None:
         route_name = "unknown"
     warnings: list[str] = []
-    if alias_warning := legacy_next_agent_warning(next_agent):
-        warnings.append(alias_warning)
     warnings.extend(_frontmatter_metadata_warnings(frontmatter))
 
     return RoutingDecision(
