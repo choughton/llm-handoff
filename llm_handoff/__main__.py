@@ -167,7 +167,9 @@ def init_command(
         typer.echo(f"Conflict: {len(result.conflicts)} file(s)")
         typer.echo(_format_path_list(result.conflicts))
         if result.dry_run:
-            typer.echo("Run without --dry-run to initialize, or use --force to overwrite.")
+            typer.echo(
+                "Run without --dry-run to initialize, or use --force to overwrite."
+            )
 
 
 @app.callback(invoke_without_command=True)
@@ -247,4 +249,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -335,4 +335,3 @@ def _emit(log: LogFn | None, level: str, message: str) -> None:
         logger.error(message)
         return
     logger.info(message)
-

@@ -55,6 +55,7 @@ are parser fixtures, not user-facing docs.
 | File | Purpose |
 | --- | --- |
 | [dispatch_config.example.yaml](dispatch_config.example.yaml) | Example role-to-provider config shape. |
+| [.pre-commit-config.yaml](.pre-commit-config.yaml) | Lightweight contributor hooks for whitespace, YAML/TOML, large files, and Ruff. |
 | [requirements-dev.txt](requirements-dev.txt) | Source-checkout runtime and test dependencies. |
 | [examples/reference-workflow/README.md](examples/reference-workflow/README.md) | Copyable workflow protocol plan. |
 

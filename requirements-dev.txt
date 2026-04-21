@@ -6,3 +6,5 @@ PyYAML
 tenacity
 typer
 pytest
+pre-commit
+ruff

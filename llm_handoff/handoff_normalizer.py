@@ -34,9 +34,7 @@ ValidAgent = Literal[
     "unknown",
 ]
 
-CANONICAL_NEXT_AGENTS = tuple(
-    agent for agent in CANONICAL_NEXT_AGENT_ROLES
-)
+CANONICAL_NEXT_AGENTS = tuple(agent for agent in CANONICAL_NEXT_AGENT_ROLES)
 CANONICAL_NEXT_AGENT_SET = frozenset(CANONICAL_NEXT_AGENTS)
 _NEXT_AGENT_LINE_RE = re.compile(r"^(\s*next_agent\s*:\s*).*$")
 
@@ -336,4 +334,3 @@ def _next_agent_line(
             continue
         return index, line.split(":", 1)[1].strip().strip("'\"")
     return None, None
-

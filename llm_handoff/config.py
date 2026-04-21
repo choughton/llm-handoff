@@ -299,4 +299,3 @@ def _resolve_config_path(repo_root: Path, config_path: Path | None) -> Path | No
     if default_path.exists():
         return default_path
     return None
-

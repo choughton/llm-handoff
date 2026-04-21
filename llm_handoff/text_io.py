@@ -41,4 +41,3 @@ def _normalize_newlines(text: str) -> str:
 
 
 __all__ = ["read_dispatch_text"]
-

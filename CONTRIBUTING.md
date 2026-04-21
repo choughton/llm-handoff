@@ -28,6 +28,17 @@ Open an issue before proposing broad architecture changes.
 
 See [INSTALL.md](INSTALL.md).
 
+```bash
+python -m pip install -r requirements-dev.txt
+pre-commit install
+```
+
+Run the local hooks before opening a PR:
+
+```bash
+pre-commit run --all-files
+```
+
 ## Tests
 
 Run the relevant focused tests before opening a PR:
@@ -35,6 +46,9 @@ Run the relevant focused tests before opening a PR:
 ```bash
 python -m pytest tests -q
 ```
+
+The full test suite is intentionally not part of pre-commit. Run it manually
+before sending changes, and expect CI to enforce it once CI is wired.
 
 If a test is expected to fail because the extraction is incomplete, state that
 clearly in the PR and point to the next required implementation step.

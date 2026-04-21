@@ -129,9 +129,7 @@ def normalize_agent_label(
         if normalized == "gemini" and _FRONTEND_HINT_RE.search(context):
             role = "frontend"
         if normalized == "manual frontend" or normalized == "manual frontend gui":
-            warnings.append(
-                "Legacy manual frontend reference normalized to frontend."
-            )
+            warnings.append("Legacy manual frontend reference normalized to frontend.")
         return role, tuple(warnings)
 
     if "claude" in normalized:
@@ -139,9 +137,7 @@ def normalize_agent_label(
     if "codex" in normalized:
         return "backend", ()
     if "manual frontend" in normalized:
-        return "frontend", (
-            "Legacy manual frontend reference normalized to frontend.",
-        )
+        return "frontend", ("Legacy manual frontend reference normalized to frontend.",)
     if "gemini-frontend" in normalized or "gemini frontend" in normalized:
         return "frontend", ()
     if "gemini-pe" in normalized or "gemini pe" in normalized:

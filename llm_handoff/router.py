@@ -479,19 +479,13 @@ def _frontmatter_route_errors(frontmatter: HandoffRouting) -> list[str]:
     normalized_producer = normalize_next_agent_value(frontmatter.producer)
     epic_close_agents = {"auditor", "finalizer"}
     if close_type == "epic" and normalized_next_agent not in epic_close_agents:
-        errors.append(
-            "close_type `epic` requires next_agent `auditor` or `finalizer`."
-        )
+        errors.append("close_type `epic` requires next_agent `auditor` or `finalizer`.")
 
     if normalized_next_agent == "finalizer" and close_type != "epic":
-        errors.append(
-            f"next_agent `{next_agent}` requires close_type `epic`."
-        )
+        errors.append(f"next_agent `{next_agent}` requires close_type `epic`.")
 
     if normalized_next_agent == "finalizer" and normalized_producer != "auditor":
-        errors.append(
-            f"next_agent `{next_agent}` requires producer `auditor`."
-        )
+        errors.append(f"next_agent `{next_agent}` requires producer `auditor`.")
 
     return errors
 
@@ -562,10 +556,10 @@ def _find_canonical_dispatch(
     for raw_line in reversed(lines):
         line = raw_line.strip()
 
-        if re.match(r"(?i)^Next:\s*finalizer\s*$", line) or re.match(
-            r"(?i)^Next:\s*epic[-\s]+close\s*$", line
-        ) or re.match(
-            r"(?i)^Next:\s*close\s+epic\s*$", line
+        if (
+            re.match(r"(?i)^Next:\s*finalizer\s*$", line)
+            or re.match(r"(?i)^Next:\s*epic[-\s]+close\s*$", line)
+            or re.match(r"(?i)^Next:\s*close\s+epic\s*$", line)
         ):
             return _epic_close_signal("canonical_dispatch_line")
 
@@ -602,7 +596,9 @@ def _find_canonical_dispatch(
     return None
 
 
-def _find_next_step(lines: list[str], project_state_content: str | None) -> _Signal | None:
+def _find_next_step(
+    lines: list[str], project_state_content: str | None
+) -> _Signal | None:
     in_next_step = False
     next_step_depth = 0
     header_agent: RouteName | None = None
@@ -834,9 +830,9 @@ def _auditor_signal(
             priority=priority,
         )
 
-    if _LEDGER_AMBIGUOUS_RE.search(action_text) and _project_state_has_remaining_stories(
-        project_state_content
-    ):
+    if _LEDGER_AMBIGUOUS_RE.search(
+        action_text
+    ) and _project_state_has_remaining_stories(project_state_content):
         warnings = list(extra_warnings)
         warnings.append(
             "Finalizer wording is ambiguous; the project state shows remaining work, so finalizer was not selected."
@@ -980,4 +976,3 @@ def _epic_close_signal(source: str) -> _Signal:
         reasoning=_agent_reasoning("finalizer", source),
         priority=90,
     )
-

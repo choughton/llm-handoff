@@ -41,12 +41,12 @@ def test_normalize_next_agent_passes_exact_canonical_without_llm(
 
 
 @pytest.mark.parametrize(
-        ("freeform", "canonical"),
-        [
-            ("Claude Code (Auditor)", "auditor"),
-            ("gemini pe", "planner"),
-            ("frontend role", "frontend"),
-            ("ledger", "finalizer"),
+    ("freeform", "canonical"),
+    [
+        ("Claude Code (Auditor)", "auditor"),
+        ("gemini pe", "planner"),
+        ("frontend role", "frontend"),
+        ("ledger", "finalizer"),
     ],
 )
 def test_normalize_next_agent_uses_instructor_for_freeform_values(
@@ -183,9 +183,7 @@ def test_normalize_next_agent_falls_back_to_claude_cli_when_sdk_auth_fails(
     )
     monkeypatch.setattr(handoff_normalizer.subprocess, "run", fake_run)
 
-    assert (
-        handoff_normalizer.normalize_next_agent("Claude Code (Auditor)") == "auditor"
-    )
+    assert handoff_normalizer.normalize_next_agent("Claude Code (Auditor)") == "auditor"
     assert len(calls) == 1
 
 

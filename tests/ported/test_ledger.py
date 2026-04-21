@@ -88,9 +88,15 @@ def test_run_epic_close_logs_exit_code_to_dispatch_logger(
 def test_ledger_updater_prompt_uses_public_finalizer_contract() -> None:
     assert "PROJECT STATE UPDATED: YES or NO" in EXPECTED_PROMPT
     assert "SCOPE CLOSED: <scope name>" in EXPECTED_PROMPT
-    assert "NEXT ROUTE: <planner, user, or another supported next_agent>" in EXPECTED_PROMPT
+    assert (
+        "NEXT ROUTE: <planner, user, or another supported next_agent>"
+        in EXPECTED_PROMPT
+    )
     assert "PUSH RESULT: SKIPPED, PUSHED, or FAILED" in EXPECTED_PROMPT
-    assert "Do not push unless the repository instructions explicitly allow" in EXPECTED_PROMPT
+    assert (
+        "Do not push unless the repository instructions explicitly allow"
+        in EXPECTED_PROMPT
+    )
 
 
 def test_run_epic_close_parses_audit_sha_from_rich_line(

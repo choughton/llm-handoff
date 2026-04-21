@@ -476,9 +476,7 @@ producer: backend
                 confidence="HIGH",
                 source="canonical_dispatch_line",
                 reasoning="Canonical dispatch line routes work to frontend.",
-                warnings=[
-                    "Legacy manual frontend reference normalized to frontend."
-                ],
+                warnings=["Legacy manual frontend reference normalized to frontend."],
             ),
             id="legacy_manual_frontend_dispatch_maps_to_frontend",
         ),
@@ -567,9 +565,9 @@ def test_route_matches_fixture(
 ) -> None:
     handoff_content = _fixture_text(fixture_name)
 
-    assert route(handoff_content, project_state_content=project_state_content) == _legacy(
-        expected
-    )
+    assert route(
+        handoff_content, project_state_content=project_state_content
+    ) == _legacy(expected)
 
 
 @pytest.mark.parametrize(
@@ -670,9 +668,7 @@ def test_route_supports_canonical_dispatch_variants(
                 confidence="HIGH",
                 source="next_agent_prose",
                 reasoning="Prose Next Agent line routes work to frontend.",
-                warnings=[
-                    "Legacy manual frontend reference normalized to frontend."
-                ],
+                warnings=["Legacy manual frontend reference normalized to frontend."],
             ),
             id="prose_next_agent_manual_frontend",
         ),

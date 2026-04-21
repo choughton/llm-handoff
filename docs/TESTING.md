@@ -26,6 +26,20 @@ suite is reorganized.
 python -m pytest tests -q
 ```
 
+## Local Hooks
+
+The repo includes a light pre-commit configuration for whitespace, YAML/TOML
+syntax, large-file checks, and Ruff. Install and run it with:
+
+```bash
+python -m pip install -r requirements-dev.txt
+pre-commit install
+pre-commit run --all-files
+```
+
+The hooks are intentionally fast. They do not run pytest; use the pytest command
+above for the full gate.
+
 Run focused files during extraction:
 
 ```bash

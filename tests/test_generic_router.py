@@ -27,7 +27,11 @@ def test_route_supports_generic_frontmatter_next_agent_values(
     next_agent: str,
     expected_route: str,
 ) -> None:
-    extra = "scope_sha: 82ce839\nclose_type: epic\n" if next_agent == "claude-ledger" else ""
+    extra = (
+        "scope_sha: 82ce839\nclose_type: epic\n"
+        if next_agent == "claude-ledger"
+        else ""
+    )
     producer = "claude-audit" if next_agent == "claude-ledger" else "planner"
     handoff_content = f"""---
 next_agent: {next_agent}

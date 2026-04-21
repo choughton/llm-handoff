@@ -206,4 +206,3 @@ class DispatchLogger:
 
 
 __all__ = ["DispatchLogger", "DEFAULT_LOG_DIRECTORY", "LEVEL_TO_COLOR"]
-
