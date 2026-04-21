@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import yaml
 
 
@@ -22,6 +22,8 @@ CLAUDE_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
 CLAUDE_MODEL = "claude-opus-4-7"
 NORMALIZER_PROVIDER = "claude"
 NORMALIZER_MODEL = "claude-haiku-4-5"
+GEMINI_NORMALIZER_MODEL = "gemini-2.5-flash"
+OPENAI_NORMALIZER_MODEL = "gpt-5.4-mini"
 NORMALIZER_TIMEOUT_MS = 60_000
 
 AGENT_TIMEOUT_MS = 1_200_000
@@ -85,6 +87,12 @@ DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "finalizer": "claude",
 }
 RUNTIME_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini"})
+NORMALIZER_PROVIDER_ADAPTERS = frozenset({"claude", "gemini", "openai"})
+NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
+    "claude": NORMALIZER_MODEL,
+    "gemini": GEMINI_NORMALIZER_MODEL,
+    "openai": OPENAI_NORMALIZER_MODEL,
+}
 REQUIRED_AGENT_ROLES = frozenset(DEFAULT_AGENT_PROVIDERS)
 
 
@@ -126,14 +134,26 @@ class NormalizerConfig(BaseModel):
     timeout_ms: int = NORMALIZER_TIMEOUT_MS
     on_unknown: UnknownNormalizerPolicy = "fail_closed"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_provider_model(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        provider = value.get("provider", NORMALIZER_PROVIDER)
+        if "model" in value and value["model"] is not None:
+            return value
+        provider_default = NORMALIZER_PROVIDER_MODELS.get(provider)
+        if provider_default is None:
+            return value
+        return {**value, "model": provider_default}
+
     @field_validator("provider", mode="after")
     @classmethod
     def _validate_provider(cls, value: ProviderName) -> ProviderName:
-        if value != "claude":
+        if value not in NORMALIZER_PROVIDER_ADAPTERS:
             raise ValueError(
-                "current reference dispatcher supports provider `claude` for "
-                "next-agent normalization. Additional normalizer providers are "
-                "planned but not implemented yet."
+                "no next-agent normalizer adapter is registered for provider "
+                f"`{value}`."
             )
         return value
 

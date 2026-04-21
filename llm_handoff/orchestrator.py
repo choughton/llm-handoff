@@ -9,14 +9,13 @@ import subprocess
 import time
 from typing import Callable
 
-from llm_handoff.agents import (
-    DispatchResult,
-    SubagentResult,
+from llm_handoff.agent_roles import (
     invoke_backend_role,
     invoke_frontend_role,
     invoke_planner_role,
     invoke_support_role,
 )
+from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig, NormalizerConfig
 from llm_handoff.ledger import run_epic_close
 from llm_handoff.handoff_normalizer import (

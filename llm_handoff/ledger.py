@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Callable, Literal
 
-from llm_handoff.agents import invoke_support_role
+from llm_handoff.agent_roles import invoke_support_role
 from llm_handoff.config import DispatchConfig
 
 

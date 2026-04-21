@@ -7,6 +7,8 @@ from typing import Callable, Protocol
 from llm_handoff import config
 from llm_handoff.normalizer_models import NormalizedNextAgent, normalizer_prompt
 from llm_handoff.normalizer_providers.claude import normalize_next_agent_with_claude
+from llm_handoff.normalizer_providers.gemini import normalize_next_agent_with_gemini
+from llm_handoff.normalizer_providers.openai import normalize_next_agent_with_openai
 from llm_handoff.roles import (
     CANONICAL_NEXT_AGENT_ROLES,
 )
@@ -34,6 +36,8 @@ class NormalizerAdapter(Protocol):
 
 _NORMALIZER_PROVIDER_ADAPTERS: dict[str, NormalizerAdapter] = {
     "claude": normalize_next_agent_with_claude,
+    "gemini": normalize_next_agent_with_gemini,
+    "openai": normalize_next_agent_with_openai,
 }
 _normalizer_prompt = normalizer_prompt
 

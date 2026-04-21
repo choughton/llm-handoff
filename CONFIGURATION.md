@@ -200,20 +200,19 @@ normalizer:
   on_unknown: fail_closed
 ```
 
-The current public scaffold supports the Claude normalizer adapter only. The
-public contract should eventually allow a target repository to choose a small,
-low-latency model from an available provider, such as Gemini Flash or an OpenAI
-mini model, as long as the adapter enforces the same
-canonical-role-or-unknown output contract. Provider adapters for Gemini or
-OpenAI normalizer calls are planned adapter work, not current runtime support.
+The registered normalizer adapters are `claude`, `gemini`, and `openai`.
+`claude` is the reference default. If `provider` changes and `model` is omitted,
+the loader fills a provider-specific default model.
 
-The normalizer has two runtime auth paths:
+The normalizer has two runtime auth shapes:
 
-- API key path: when the configured provider has an API key available, the
-  dispatcher should call the provider API with a structured Pydantic output
-  schema.
-- CLI auth path: when no API key is available, the dispatcher may fall back to
-  the configured provider CLI session, such as Claude Code OAuth.
+- API key path: the configured provider API is called with the
+  `NormalizedNextAgent` Pydantic schema. Gemini requires `GEMINI_API_KEY` or
+  `GOOGLE_API_KEY`; OpenAI requires `OPENAI_API_KEY`; Claude uses
+  `ANTHROPIC_API_KEY` when present.
+- CLI auth path: Claude may fall back to the local Claude Code CLI session when
+  no Anthropic API key is available. Gemini and OpenAI normalizer adapters are
+  API-only in the current scaffold.
 
 The API path should not silently fall back to CLI auth after selecting an API
 key. If the structured API call fails, the dispatcher should fail closed and

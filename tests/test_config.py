@@ -152,13 +152,39 @@ def test_load_dispatch_config_rejects_unsupported_normalizer_provider(
     config_path = tmp_path / "dispatch_config.yaml"
     config_path.write_text(
         """normalizer:
-  provider: openai
+  provider: codex
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="Additional normalizer providers are planned"):
+    with pytest.raises(ValueError, match="no next-agent normalizer adapter"):
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_model"),
+    [
+        ("gemini", config_module.GEMINI_NORMALIZER_MODEL),
+        ("openai", config_module.OPENAI_NORMALIZER_MODEL),
+    ],
+)
+def test_load_dispatch_config_accepts_non_claude_normalizer_provider(
+    tmp_path: Path,
+    provider: str,
+    expected_model: str,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        f"""normalizer:
+  provider: {provider}
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.normalizer.provider == provider
+    assert loaded.normalizer.model == expected_model
 
 
 def test_run_dispatch_loads_config_file(

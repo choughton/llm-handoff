@@ -1,6 +1,8 @@
 anthropic
 click
+google-genai
 instructor
+openai
 pydantic
 PyYAML
 tenacity

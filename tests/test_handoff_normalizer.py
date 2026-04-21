@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from llm_handoff import handoff_normalizer
+from llm_handoff.normalizer_models import NormalizedNextAgent
 from llm_handoff.normalizer_providers import claude as claude_normalizer
+from llm_handoff.normalizer_providers import gemini as gemini_normalizer
+from llm_handoff.normalizer_providers import openai as openai_normalizer
 
 
 def test_normalizer_uses_structured_api_path_when_api_key_is_available(
@@ -91,6 +94,102 @@ def test_normalizer_uses_cli_path_when_api_key_is_absent(
     )
 
 
+class _FakeGeminiModels:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def generate_content(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        return type(
+            "GeminiResponse",
+            (),
+            {"parsed": NormalizedNextAgent(normalized="backend")},
+        )()
+
+
+class _FakeGeminiClient:
+    def __init__(self) -> None:
+        self.models = _FakeGeminiModels()
+
+
+def test_normalizer_dispatches_to_configured_gemini_provider() -> None:
+    client = _FakeGeminiClient()
+
+    assert (
+        handoff_normalizer.normalize_next_agent(
+            "implementer",
+            provider="gemini",
+            model="gemini-flash-test",
+            client=client,
+        )
+        == "backend"
+    )
+    assert client.models.calls[0]["model"] == "gemini-flash-test"
+    assert "implementer" in client.models.calls[0]["contents"]
+
+
+class _FakeOpenAIResponses:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def parse(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        return type(
+            "OpenAIResponse",
+            (),
+            {"output_parsed": NormalizedNextAgent(normalized="auditor")},
+        )()
+
+
+class _FakeOpenAIClient:
+    def __init__(self) -> None:
+        self.responses = _FakeOpenAIResponses()
+
+
+def test_normalizer_dispatches_to_configured_openai_provider() -> None:
+    client = _FakeOpenAIClient()
+
+    assert (
+        handoff_normalizer.normalize_next_agent(
+            "review gate",
+            provider="openai",
+            model="gpt-test",
+            client=client,
+        )
+        == "auditor"
+    )
+    assert client.responses.calls[0]["model"] == "gpt-test"
+    assert client.responses.calls[0]["text_format"] is NormalizedNextAgent
+    assert "review gate" in client.responses.calls[0]["input"]
+
+
+def test_gemini_normalizer_requires_api_key_when_client_is_not_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="requires GEMINI_API_KEY"):
+        gemini_normalizer.normalize_next_agent_with_gemini(
+            "implementer",
+            model="gemini-flash-test",
+            timeout_ms=1000,
+        )
+
+
+def test_openai_normalizer_requires_api_key_when_client_is_not_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="requires OPENAI_API_KEY"):
+        openai_normalizer.normalize_next_agent_with_openai(
+            "implementer",
+            model="gpt-test",
+            timeout_ms=1000,
+        )
+
+
 def test_normalizer_rejects_unsupported_provider() -> None:
     with pytest.raises(ValueError, match="Unsupported next_agent normalizer provider"):
-        handoff_normalizer.normalize_next_agent("implementer", provider="openai")
+        handoff_normalizer.normalize_next_agent("implementer", provider="codex")

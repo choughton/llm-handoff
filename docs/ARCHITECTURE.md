@@ -35,7 +35,8 @@ Continue, pause, or escalate
 - `llm_handoff.router`: handoff parsing and route selection.
 - `llm_handoff.validator`: post-dispatch handoff validation.
 - `llm_handoff.orchestrator`: dispatch loop and failure-mode handling.
-- `llm_handoff.agents`: compatibility facade for agent invocation imports.
+- `llm_handoff.agents`: compatibility facade for older tests and imports; new
+  runtime code should use the layered modules directly.
 - `llm_handoff.agent_types`: shared dispatch result types.
 - `llm_handoff.agent_process`: subprocess execution and path helpers.
 - `llm_handoff.agent_streams`: shared CLI stream filtering.
@@ -84,20 +85,18 @@ roles are `planner`, `backend`, `frontend`, `auditor`, `validator`,
 
 If `next_agent` is not an exact enum match, the dispatcher can invoke an
 internal next-agent normalizer backed by a configured small model. The current
-scaffold uses Claude Haiku as the default implementation. Future normalizer
-adapter work can add equivalent low-latency models from other providers. This
-is not a workflow role and not a general reasoning step. It is a
-constrained resolver for obvious freeform values.
+scaffold supports Claude, Gemini, and OpenAI normalizer adapters. Claude is the
+reference default. This is not a workflow role and not a general reasoning
+step. It is a constrained resolver for obvious freeform values.
 
 The normalizer has two execution paths. If a provider API key is available, it
 uses a structured API call with the Pydantic `NormalizedNextAgent` schema. If
-no API key is available, it can fall back to the configured provider CLI
-session. Once the API path is selected, API errors fail closed instead of
-silently switching to local OAuth state.
+no API key is available, the Claude adapter can fall back to the local Claude
+Code CLI session. Gemini and OpenAI normalizer adapters are API-only. Once the
+API path is selected, API errors fail closed instead of silently switching to
+local OAuth state.
 
-The first scaffold implements the Claude API and Claude CLI normalizer paths.
-Provider adapters for other model families should keep the same schema and
-failure contract.
+All normalizer provider adapters keep the same schema and failure contract.
 
 Normalizer outcomes:
 

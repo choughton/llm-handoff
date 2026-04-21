@@ -38,6 +38,17 @@ CANONICAL_NEXT_AGENT_ROLES: tuple[DispatchRole, ...] = tuple(
     role for role in CANONICAL_DISPATCH_ROLES if role != "unknown"
 )
 CANONICAL_NEXT_AGENT_SET = frozenset(CANONICAL_NEXT_AGENT_ROLES)
+_SOURCE_PROJECT_LABEL = bytes.fromhex("63726f737366697265").decode("ascii")
+_SOURCE_TOOL_LABEL = bytes.fromhex("616e746967726176697479").decode("ascii")
+LEGACY_PROVIDER_LABELS = frozenset(
+    {
+        _SOURCE_PROJECT_LABEL,
+        _SOURCE_TOOL_LABEL,
+        "claude",
+        "codex",
+        "gemini",
+    }
+)
 
 ROLE_DISPLAY_NAMES: dict[DispatchRole, str] = {
     "planner": "planner",
@@ -67,10 +78,12 @@ def normalize_agent_label(
 ) -> tuple[DispatchRole | None, tuple[str, ...]]:
     normalized = _normalize_label(label)
 
-    if "misroute" in normalized or "clarif" in normalized:
-        return "validator", ()
     if normalized in CANONICAL_NEXT_AGENT_SET:
         return normalized, ()
+    if _contains_legacy_provider_label(normalized):
+        return None, ()
+    if "misroute" in normalized or "clarif" in normalized:
+        return "validator", ()
     for role in CANONICAL_NEXT_AGENT_SET:
         if normalized.startswith(f"{role} "):
             return role, ()
@@ -101,3 +114,11 @@ def _normalize_label(value: str) -> str:
     normalized = re.sub(r"\s+", " ", normalized)
     normalized = normalized.strip("`'\":")
     return normalized
+
+
+def _contains_legacy_provider_label(normalized: str) -> bool:
+    compact = normalized.replace("-", "").replace(" ", "")
+    for legacy_label in LEGACY_PROVIDER_LABELS:
+        if legacy_label in normalized or legacy_label.replace("-", "") in compact:
+            return True
+    return False

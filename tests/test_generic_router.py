@@ -96,6 +96,31 @@ producer: planner
     )
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        "codex",
+        "gemini-pe",
+        "gemini-frontend",
+        "claude-audit",
+        "claude misroute clarification",
+        LEGACY_FRONTEND_ALIAS,
+    ],
+)
+def test_route_rejects_provider_named_legacy_prose_routing_values(
+    target: str,
+) -> None:
+    handoff_content = f"""# Handoff
+
+Next: dispatch {target}
+"""
+
+    decision = route(handoff_content)
+
+    assert decision.route == "unknown"
+    assert decision.source == "no_signal"
+
+
 def test_route_rejects_broad_implementer_role() -> None:
     handoff_content = """---
 next_agent: implementer

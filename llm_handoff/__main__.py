@@ -11,7 +11,10 @@ from typing import Sequence
 import click
 import typer
 
-from llm_handoff.agents import _cleanup_codex_output_artifacts, _codex_artifact_paths
+from llm_handoff.agent_providers.codex import (
+    _cleanup_codex_output_artifacts,
+    _codex_artifact_paths,
+)
 from llm_handoff.config import (
     DISPATCH_WINDOW_TITLE,
     detect_repo_root,
