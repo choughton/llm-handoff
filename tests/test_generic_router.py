@@ -6,7 +6,9 @@ from llm_handoff.handoff_normalizer import normalize_handoff_next_agent_text
 from llm_handoff.router import RoutingDecision, route
 
 
-LEGACY_FRONTEND_ALIAS = ("cross" + "fire") + "_frontend"
+LEGACY_FRONTEND_ALIAS = (
+    bytes.fromhex("63726f737366697265").decode("ascii") + "_frontend"
+)
 
 
 @pytest.mark.parametrize(

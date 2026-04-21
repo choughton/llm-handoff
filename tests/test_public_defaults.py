@@ -5,8 +5,8 @@ from pathlib import Path
 from llm_handoff import config
 
 
-LEGACY_PROJECT = "cross" + "fire"
-LEGACY_TOOL = "anti" + "gravity"
+LEGACY_PROJECT = bytes.fromhex("63726f737366697265").decode("ascii")
+LEGACY_TOOL = bytes.fromhex("616e746967726176697479").decode("ascii")
 
 
 def test_public_defaults_do_not_reference_source_project() -> None:

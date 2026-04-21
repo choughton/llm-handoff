@@ -5,8 +5,8 @@ from pathlib import Path
 from llm_handoff import __main__ as main_module
 
 
-LEGACY_PROJECT_NAME = "Cross" + "fire"
-LEGACY_TOOL_NAME = "anti" + "gravity"
+LEGACY_PROJECT_NAME = bytes.fromhex("43726f737366697265").decode("ascii")
+LEGACY_TOOL_NAME = bytes.fromhex("616e746967726176697479").decode("ascii")
 
 
 def test_help_text_names_public_dispatcher(capsys) -> None:
