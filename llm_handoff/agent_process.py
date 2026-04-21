@@ -14,6 +14,9 @@ from llm_handoff.agent_streams import StderrMode, _LiveAgentOutputMonitor
 from llm_handoff.agent_types import LogFn, _ProcessResult
 
 
+PROCESS_READER_JOIN_TIMEOUT_SECONDS = 0.2
+
+
 def _append_agent_additional_instruction(
     prompt: str,
     additional_instruction: str | None,
@@ -155,7 +158,10 @@ def _run_command_streaming(
 
     process.wait()
     for reader in readers:
-        reader.join()
+        if timed_out:
+            reader.join(timeout=PROCESS_READER_JOIN_TIMEOUT_SECONDS)
+        else:
+            reader.join()
     _drain_stream_queue(
         stream_queue,
         stdout_parts=stdout_parts,

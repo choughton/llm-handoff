@@ -2211,3 +2211,72 @@ def test_run_command_streaming_uses_utf8_decoding_for_subprocess_output(
     assert result.exit_code == 0
     assert popen_kwargs["encoding"] == "utf-8"
     assert popen_kwargs["errors"] == "replace"
+
+
+def test_run_command_streaming_does_not_join_reader_threads_forever_after_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import llm_handoff.agent_process as agent_process
+
+    join_timeouts: list[float | None] = []
+
+    class FakeStream:
+        def readline(self) -> str:
+            return ""
+
+        def close(self) -> None:
+            return None
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon: bool) -> None:
+            del target, args
+            assert daemon is True
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            join_timeouts.append(timeout)
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = FakeStream()
+            self.stderr = FakeStream()
+            self.returncode = 1
+            self.killed = False
+
+        def poll(self) -> int | None:
+            return 1 if self.killed else None
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self) -> int:
+            return 1
+
+    monotonic_values = iter([0.0, 1.0])
+
+    monkeypatch.setattr(agent_process.threading, "Thread", FakeThread)
+    monkeypatch.setattr(
+        agent_process.subprocess,
+        "Popen",
+        lambda _command, **_kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(
+        agent_process.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    result = agents._run_command_streaming(
+        [config.CLAUDE_BINARY, "--version"],
+        cwd=Path.cwd(),
+        timeout_ms=1,
+    )
+
+    assert result.exit_code == 1
+    assert "Process timed out after" in result.stderr
+    assert join_timeouts == [
+        agent_process.PROCESS_READER_JOIN_TIMEOUT_SECONDS,
+        agent_process.PROCESS_READER_JOIN_TIMEOUT_SECONDS,
+    ]
