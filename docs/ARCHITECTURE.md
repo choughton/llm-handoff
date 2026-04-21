@@ -84,9 +84,9 @@ roles are `planner`, `backend`, `frontend`, `auditor`, `validator`,
 
 If `next_agent` is not an exact enum match, the dispatcher can invoke an
 internal next-agent normalizer backed by a configured small model. The current
-scaffold uses Claude Haiku as the default implementation, but the public
-configuration should allow equivalent low-latency models from other providers.
-This is not a workflow role and not a general reasoning step. It is a
+scaffold uses Claude Haiku as the default implementation. Future normalizer
+adapter work can add equivalent low-latency models from other providers. This
+is not a workflow role and not a general reasoning step. It is a
 constrained resolver for obvious freeform values.
 
 The normalizer has two execution paths. If a provider API key is available, it

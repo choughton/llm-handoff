@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
 import llm_handoff.ledger as ledger
 from llm_handoff.agents import SubagentResult
+from llm_handoff import config as config_module
 
 
 FULL_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -57,6 +59,44 @@ def test_run_epic_close_invokes_ledger_updater_and_parses_success(
     assert result.next_epic == "planner"
     assert result.audit_sha == AUDIT_SHA
     invoke_mock.assert_called_once_with("ledger-updater", EXPECTED_PROMPT, log=log_mock)
+
+
+def test_run_epic_close_passes_configured_finalizer_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_mock = Mock()
+    agents = config_module._default_agent_configs()
+    agents["finalizer"] = config_module.AgentConfig(
+        provider="codex",
+        binary="codex-custom",
+        skill_name="finalizer-skill",
+        timeout_ms=321,
+        agent_name="finalizer-codex",
+    )
+    dispatch_config = config_module.DispatchConfig(repo_root=tmp_path, agents=agents)
+    invoke_mock = Mock(
+        return_value=SubagentResult(
+            stdout=_ledger_output(push_result="SKIPPED"),
+            stderr="",
+            exit_code=0,
+            elapsed_seconds=2.5,
+        )
+    )
+
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
+
+    result = ledger.run_epic_close(config=dispatch_config, log=log_mock)
+
+    assert result.subagent_exit_code == 0
+    invoke_mock.assert_called_once_with(
+        "ledger-updater",
+        EXPECTED_PROMPT,
+        log=log_mock,
+        role="finalizer",
+        handoff_path=dispatch_config.handoff_full_path,
+        agent_config=dispatch_config.agents["finalizer"],
+    )
 
 
 def test_run_epic_close_logs_exit_code_to_dispatch_logger(

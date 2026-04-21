@@ -2988,6 +2988,72 @@ def test_run_loop_passes_logger_to_claude_subagent_dispatch(
     assert subagent_calls[0][2] is fake_log
 
 
+def test_run_loop_passes_configured_agent_provider_to_auditor_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **auditor:** Audit Story 5.
+""",
+    )
+    config_module = importlib.import_module("llm_handoff.config")
+    agents = config_module._default_agent_configs()
+    agents["auditor"] = config_module.AgentConfig(
+        provider="gemini",
+        binary="gemini-custom",
+        mention="@auditor",
+        retries=2,
+        timeout_ms=456,
+        agent_name="auditor-gemini",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, agents=agents)
+    subagent_calls: list[dict[str, Any]] = []
+
+    def fake_subagent(
+        subagent_name: str,
+        prompt: str,
+        *,
+        role=None,
+        handoff_path=None,
+        agent_config=None,
+        log=None,
+    ) -> SubagentResult:
+        subagent_calls.append(
+            {
+                "subagent_name": subagent_name,
+                "prompt": prompt,
+                "role": role,
+                "handoff_path": handoff_path,
+                "agent_config": agent_config,
+                "log": log,
+            }
+        )
+        return _subagent_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_subagent)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1)
+
+    assert exit_code == 0
+    assert len(subagent_calls) == 1
+    assert subagent_calls[0]["subagent_name"] == "auditor"
+    assert subagent_calls[0]["prompt"] == orchestrator.AUDIT_PROMPT
+    assert subagent_calls[0]["role"] == "auditor"
+    assert subagent_calls[0]["handoff_path"] == handoff_path
+    assert subagent_calls[0]["agent_config"].provider == "gemini"
+    assert subagent_calls[0]["agent_config"].agent_name == "auditor-gemini"
+    assert callable(subagent_calls[0]["log"])
+
+
 def test_run_loop_routes_epic_close_to_ledger_flow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2995,17 +3061,14 @@ def test_run_loop_routes_epic_close_to_ledger_flow(
     repo_root, _ = _write_repo(tmp_path, "Next: close epic\n")
     orchestrator = _load_orchestrator_module()
     config = _dispatch_config(repo_root)
-    ledger_logs: list[Any] = []
+    ledger_calls: list[dict[str, Any]] = []
     log_messages: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(
-        orchestrator,
-        "run_epic_close",
-        lambda log=None: (
-            ledger_logs.append(log)
-            or EpicCloseResult(subagent_exit_code=0, stdout="", stderr="")
-        ),
-    )
+    def fake_run_epic_close(*, config=None, log=None) -> EpicCloseResult:
+        ledger_calls.append({"config": config, "log": log})
+        return EpicCloseResult(subagent_exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(orchestrator, "run_epic_close", fake_run_epic_close)
 
     exit_code = orchestrator.run_loop(
         config,
@@ -3014,8 +3077,9 @@ def test_run_loop_routes_epic_close_to_ledger_flow(
     )
 
     assert exit_code == 0
-    assert len(ledger_logs) == 1
-    assert callable(ledger_logs[0])
+    assert len(ledger_calls) == 1
+    assert ledger_calls[0]["config"] is config
+    assert callable(ledger_calls[0]["log"])
     assert (
         "DISPATCH",
         "Dispatching auditor ledger-updater for epic close.",
