@@ -109,7 +109,7 @@ def test_dispatch_config_coerces_string_inputs(tmp_path: Path) -> None:
 def test_resolve_command_binary_falls_back_from_cmd_wrapper_to_exe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    resolved_path = r"C:\Users\example\.local\bin\claude.exe"
+    resolved_path = r"C:\Tools\agent-clis\claude.exe"
     original_which = shutil.which
 
     def fake_which(command_name: str) -> str | None:
@@ -1136,7 +1136,7 @@ def test_run_logged_agent_command_streams_filtered_codex_stdout(
             "codex\n",
             "The Story 7 work is committed and the handoff is committed.\n",
             "exec\n",
-            "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status --short --branch' in C:\\Users\\example\\GitHub\\target-repo\n",
+            "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status --short --branch' in C:\\Workspace\\target-repo\n",
             "succeeded in 322ms. diff --git a/scripts/dispatch-loop.ps1 b/scripts/dispatch-loop.ps1\n",
             "index 1234567..89abcde 100644\n",
             "@@ -1,4 +1,4 @@\n",
@@ -1166,7 +1166,7 @@ def test_run_logged_agent_command_streams_filtered_codex_stdout(
         call("AGENT", "Codex: exec"),
         call(
             "AGENT",
-            "Codex: \"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status --short --branch' in C:\\Users\\example\\GitHub\\target-repo",
+            "Codex: \"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status --short --branch' in C:\\Workspace\\target-repo",
         ),
         call("AGENT", "Codex: succeeded in 322ms."),
         call("AGENT", "Codex: VALID: YES"),
@@ -1237,7 +1237,7 @@ def test_run_logged_agent_command_promotes_codex_stderr_progress_and_suppresses_
         for chunk in (
             "OpenAI Codex v0.121.0 (research preview)\n",
             "--------\n",
-            "workdir: C:\\Users\\example\\GitHub\\target-repo\n",
+            "workdir: C:\\Workspace\\target-repo\n",
             "model: gpt-5.4\n",
             "user\n",
             "Use the repo skill $llm-handoff.\n",
@@ -1245,11 +1245,11 @@ def test_run_logged_agent_command_promotes_codex_stderr_progress_and_suppresses_
             "codex\n",
             "Using the `llm-handoff` skill for this repo.\n",
             "exec\n",
-            '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -Raw \'.\\docs\\PROJECT_SPEC.md\'" in C:\\Users\\example\\GitHub\\target-repo\n',
+            '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -Raw \'.\\docs\\PROJECT_SPEC.md\'" in C:\\Workspace\\target-repo\n',
             "# llm-handoff - Product Requirements Document (PRD)\n",
             "**Version:** 2.0\n",
             "exec\n",
-            "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status --short --branch' in C:\\Users\\example\\GitHub\\target-repo\n",
+            "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status --short --branch' in C:\\Workspace\\target-repo\n",
             "succeeded in 322ms.\n",
             "codex\n",
             "I found strong existing coverage in `tests/api/test_api_export.py`.\n",
@@ -1273,7 +1273,7 @@ def test_run_logged_agent_command_promotes_codex_stderr_progress_and_suppresses_
     assert log_mock.call_args_list == [
         call("AGENT", "Codex: OpenAI Codex v0.121.0 (research preview)"),
         call("AGENT", "Codex: --------"),
-        call("AGENT", "Codex: workdir: C:\\Users\\example\\GitHub\\target-repo"),
+        call("AGENT", "Codex: workdir: C:\\Workspace\\target-repo"),
         call("AGENT", "Codex: model: gpt-5.4"),
         call("AGENT", "Codex: user"),
         call("AGENT", "Codex: Use the repo skill $llm-handoff."),
@@ -1286,12 +1286,12 @@ def test_run_logged_agent_command_promotes_codex_stderr_progress_and_suppresses_
         call("AGENT", "Codex: exec"),
         call(
             "AGENT",
-            'Codex: "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -Raw \'.\\docs\\PROJECT_SPEC.md\'" in C:\\Users\\example\\GitHub\\target-repo',
+            'Codex: "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -Raw \'.\\docs\\PROJECT_SPEC.md\'" in C:\\Workspace\\target-repo',
         ),
         call("AGENT", "Codex: exec"),
         call(
             "AGENT",
-            "Codex: \"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status --short --branch' in C:\\Users\\example\\GitHub\\target-repo",
+            "Codex: \"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status --short --branch' in C:\\Workspace\\target-repo",
         ),
         call("AGENT", "Codex: succeeded in 322ms."),
         call("AGENT", "Codex: codex"),

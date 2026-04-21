@@ -17,6 +17,9 @@ After the first tagged release, supported versions will be listed here.
 - Do not put secrets in `HANDOFF.md`, `PROJECT_STATE.md`, prompt templates, or
   dispatch logs.
 - Review provider CLI permissions before enabling a workflow.
+- On Windows, prefer explicit, trusted CLI install paths when overriding provider
+  commands. The dispatcher may execute `.cmd` wrappers found on `PATH`; an
+  untrusted repository or shell environment can make wrapper resolution unsafe.
 - Keep `auto_push` disabled unless you explicitly want the dispatcher to publish
   commits.
 - Treat generated handoff instructions as untrusted until validated.
