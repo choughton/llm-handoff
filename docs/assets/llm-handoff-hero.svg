@@ -115,11 +115,9 @@
   <path d="M512 462 H324" stroke="#f59e0b" stroke-width="7" fill="none" marker-end="url(#arrowAmber)"/>
   <path d="M992 410 C1076 300 1062 160 774 150 C560 142 373 152 209 202" stroke="#6ee7b7" stroke-width="4" fill="none" opacity="0.55" marker-end="url(#arrowGreen)"/>
 
-  <g transform="translate(70 548)">
-    <text x="0" y="0" class="principle">Prompts advisory</text>
-    <circle cx="255" cy="-8" r="5" fill="#38bdf8"/>
-    <text x="282" y="0" class="principle">Validators authoritative</text>
-    <circle cx="640" cy="-8" r="5" fill="#38bdf8"/>
-    <text x="667" y="0" class="principle">Git records state</text>
+  <g transform="translate(0 592)">
+    <text x="230" y="0" text-anchor="middle" class="principle">Prompts advisory</text>
+    <text x="600" y="0" text-anchor="middle" class="principle">Validators authoritative</text>
+    <text x="970" y="0" text-anchor="middle" class="principle">Git records state</text>
   </g>
 </svg>
