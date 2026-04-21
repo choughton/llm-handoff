@@ -32,6 +32,11 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 ```
 
+When a later command is shown as `python -m ...`, Windows PowerShell users who
+have not activated the environment should run it as
+`.\.venv\Scripts\python.exe -m ...` instead. If you activate the environment
+yourself, `python` is fine.
+
 macOS or Linux:
 
 ```bash
@@ -43,6 +48,14 @@ python -m pip install --upgrade pip
 ## Install Local Dependencies
 
 Source-checkout dependency install:
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+```
+
+macOS or Linux:
 
 ```bash
 python -m pip install -r requirements-dev.txt

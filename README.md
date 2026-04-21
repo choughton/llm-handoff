@@ -140,16 +140,18 @@ are parser fixtures, not user-facing docs.
 This will not be published to PyPI. The intended workflow is clone-and-run from
 source:
 
-```bash
+Windows PowerShell:
+
+```powershell
 git clone https://github.com/choughton/llm-handoff.git
 cd llm-handoff
 python -m venv .venv
-python -m pip install -r requirements-dev.txt
-python -m llm_handoff --help
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m llm_handoff --help
 ```
 
 See [INSTALL.md](INSTALL.md) for provider CLI checks, local dependencies, and
-the target-repo initialization workflow.
+the target-repo initialization workflow, including macOS and Linux commands.
 
 To preview the copyable reference workflow for another repository:
 
