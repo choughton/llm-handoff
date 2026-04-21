@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 import re
+import subprocess
 import time
 from typing import Callable
 
@@ -113,6 +114,27 @@ POST_DISPATCH_ROUTING_RECOVERY_INSTRUCTION_TEMPLATE = (
     "HANDOFF.md with either a canonical dispatchable route for the next agent "
     "or an explicit user section if the work cannot be routed safely."
 )
+POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE = (
+    "Repair only docs/handoff/HANDOFF.md from your immediately preceding "
+    "handoff. Do not re-execute implementation work. Do not modify source, "
+    "tests, project-state files, ledger files, or any file except "
+    "docs/handoff/HANDOFF.md. Fix only these handoff hygiene validation errors: "
+    "{errors}. Preserve the current frontmatter next_agent, producer, scope_sha, "
+    "prior_sha, close_type, epic_id, story_id, story_title, and "
+    "remaining_stories unless the listed validation error explicitly names that "
+    "field. Commit exactly docs/handoff/HANDOFF.md before finishing. Failing to "
+    "edit HANDOFF.md or failing to commit the edit is a critical failure."
+)
+POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE = (
+    "The producer failed one-shot HANDOFF hygiene repair after post-dispatch "
+    "validation errors: {errors}. Do not modify source, tests, project-state "
+    "files, ledger files, or completed work. Only rewrite "
+    "docs/handoff/HANDOFF.md to produce a dispatchable next step, or route to "
+    "user if unsafe. Preserve scope_sha, prior_sha, close_type, epic_id, "
+    "story_id, story_title, remaining_stories, producer, and the audit/work "
+    "evidence unless a listed validator error explicitly identifies that field "
+    "as invalid. Commit exactly docs/handoff/HANDOFF.md before finishing."
+)
 STALE_EPIC_CLOSE_GEMINI_RECOVERY_INSTRUCTION = (
     "The prior finalizer cycle already completed, but HANDOFF.md was not "
     "rewritten and still contains stale finalizer routing. Treat "
@@ -138,6 +160,23 @@ class Cycle:
 class PendingPlannerRecovery:
     handoff_sha: str
     additional_instruction: str
+    kind: str = "routing"
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffRepairState:
+    head_sha: str | None
+    handoff_sha: str
+    dirty_files: tuple[str, ...]
+    critical_frontmatter: tuple[tuple[str, object], ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffRepairAttempt:
+    attempted: bool
+    succeeded: bool
+    validation_result: ValidationResult | None = None
+    failure_reason: str | None = None
 
 
 def run_loop(
@@ -188,6 +227,7 @@ def run_loop(
         handoff_sha = _content_sha(handoff_content)
         _log_handoff_scope(handoff_content, log_fn)
         forced_additional_instruction: str | None = None
+        active_planner_recovery_kind: str | None = None
         if (
             pending_planner_recovery is not None
             and pending_planner_recovery.handoff_sha == handoff_sha
@@ -205,6 +245,7 @@ def run_loop(
             forced_additional_instruction = (
                 pending_planner_recovery.additional_instruction
             )
+            active_planner_recovery_kind = pending_planner_recovery.kind
             pending_planner_recovery = None
         else:
             pending_planner_recovery = None
@@ -414,6 +455,75 @@ def run_loop(
                 ),
             )
             if validation_result.verdict == "NO":
+                if active_planner_recovery_kind == "handoff_hygiene":
+                    _log(
+                        log_fn,
+                        "ERROR",
+                        "Planner failed to operationalize HANDOFF.md after producer hygiene repair was exhausted.",
+                    )
+                    _log(
+                        log_fn,
+                        "ERROR",
+                        "Automatic HANDOFF hygiene recovery is exhausted; user repair is required.",
+                    )
+                    return 1
+
+                repair_attempt = _attempt_post_dispatch_handoff_hygiene_repair(
+                    config=config,
+                    validation_result=validation_result,
+                    previous_agent=previous_agent,
+                    log=log_fn,
+                )
+                if repair_attempt.succeeded and repair_attempt.validation_result:
+                    validation_result = repair_attempt.validation_result
+                    self_loop_kind = _self_loop_kind(validation_result)
+                    _log(
+                        log_fn,
+                        "AGENT",
+                        f"Running post-repair validation for {previous_agent}...",
+                    )
+                    _log_validation(
+                        validation_result,
+                        previous_agent,
+                        log_fn,
+                        override_terminal_status=(
+                            _self_loop_terminal_status(
+                                previous_agent,
+                                self_loop_kind,
+                            )
+                            if self_loop_kind is not None
+                            else None
+                        ),
+                    )
+                    if validation_result.verdict != "NO":
+                        previous_cycle = current_cycle
+                        consecutive_failures = 0
+                        if max_cycles is not None and cycle_number >= max_cycles:
+                            return 0
+                        _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
+                        _log(log_fn, "INFO", "")
+                        continue
+
+                if repair_attempt.attempted and not repair_attempt.succeeded:
+                    _log(
+                        log_fn,
+                        "AGENT",
+                        "Post-dispatch handoff hygiene repair failed. Scheduling the planner to clean HANDOFF.md or escalate.",
+                    )
+                    current_handoff_content = (
+                        _read_required_text(config.handoff_full_path) or ""
+                    )
+                    pending_planner_recovery = PendingPlannerRecovery(
+                        handoff_sha=_content_sha(current_handoff_content),
+                        additional_instruction=POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE.format(
+                            errors=_format_validation_errors(validation_result)
+                        ),
+                        kind="handoff_hygiene",
+                    )
+                    previous_cycle = current_cycle
+                    consecutive_failures = 0
+                    continue
+
                 if _should_schedule_planner_recovery(validation_result, previous_agent):
                     _log(
                         log_fn,
@@ -492,6 +602,13 @@ def _dispatch_route(
 
     if route == "backend":
         _log(log, "DISPATCH", "Dispatching backend.")
+        if additional_instruction is not None:
+            return invoke_backend_role(
+                handoff_path,
+                log=log,
+                use_resume=config.backend_resume_enabled,
+                additional_instruction=additional_instruction,
+            ), "backend"
         return invoke_backend_role(
             handoff_path,
             log=log,
@@ -553,6 +670,286 @@ def _dispatch_from_subagent(result: SubagentResult) -> DispatchResult:
         exit_code=result.exit_code,
         elapsed_seconds=result.elapsed_seconds,
     )
+
+
+def _attempt_post_dispatch_handoff_hygiene_repair(
+    *,
+    config: DispatchConfig,
+    validation_result: ValidationResult,
+    previous_agent: str,
+    log: LogFn,
+) -> HandoffRepairAttempt:
+    if not _is_repairable_handoff_hygiene_failure(validation_result):
+        return HandoffRepairAttempt(attempted=False, succeeded=False)
+
+    before_state = _capture_handoff_repair_state(config)
+    if before_state.head_sha is None:
+        return HandoffRepairAttempt(
+            attempted=True,
+            succeeded=False,
+            failure_reason="git HEAD could not be resolved before repair",
+        )
+    if before_state.critical_frontmatter is None:
+        return HandoffRepairAttempt(
+            attempted=True,
+            succeeded=False,
+            failure_reason="frontmatter could not be parsed before repair",
+        )
+
+    _log(
+        log,
+        "WARN",
+        "Post-dispatch handoff hygiene failed for "
+        f"{previous_agent}: {_format_validation_errors(validation_result)}",
+    )
+    _log(
+        log,
+        "AGENT",
+        "Running one-shot producer repair for docs/handoff/HANDOFF.md only.",
+    )
+    repair_result = _dispatch_handoff_hygiene_repair(
+        config=config,
+        previous_agent=previous_agent,
+        validation_result=validation_result,
+        log=log,
+    )
+    if repair_result is None:
+        _log(log, "ERROR", f"No supported producer repair path for {previous_agent}.")
+        return HandoffRepairAttempt(
+            attempted=True,
+            succeeded=False,
+            failure_reason="unsupported producer repair path",
+        )
+    if repair_result.exit_code != 0:
+        _log(
+            log,
+            "ERROR",
+            f"Producer repair exited with code {repair_result.exit_code}.",
+        )
+        return HandoffRepairAttempt(
+            attempted=True,
+            succeeded=False,
+            failure_reason=f"repair exit code {repair_result.exit_code}",
+        )
+
+    after_state = _capture_handoff_repair_state(config)
+    postcondition_error = _handoff_repair_postcondition_error(
+        config=config,
+        before_state=before_state,
+        after_state=after_state,
+    )
+    if postcondition_error is not None:
+        _log(log, "ERROR", f"Producer repair failed invariant: {postcondition_error}")
+        return HandoffRepairAttempt(
+            attempted=True,
+            succeeded=False,
+            failure_reason=postcondition_error,
+        )
+
+    repaired_validation = validate_handoff(
+        config.handoff_full_path,
+        previous_agent,
+        prior_handoff_sha=before_state.handoff_sha,
+    )
+    if repaired_validation.verdict == "NO":
+        _log(
+            log,
+            "ERROR",
+            "Producer repair did not produce a valid handoff: "
+            f"{_format_validation_errors(repaired_validation)}",
+        )
+        return HandoffRepairAttempt(
+            attempted=True,
+            succeeded=False,
+            validation_result=repaired_validation,
+            failure_reason="repair validation failed",
+        )
+
+    _log(log, "AGENT", "Producer handoff hygiene repair passed post-checks.")
+    return HandoffRepairAttempt(
+        attempted=True,
+        succeeded=True,
+        validation_result=repaired_validation,
+    )
+
+
+def _is_repairable_handoff_hygiene_failure(result: ValidationResult) -> bool:
+    if result.verdict != "NO" or not result.errors:
+        return False
+    repairable_prefixes = (
+        "scope_claim_missing:",
+        "scope_claim_mismatch:",
+    )
+    return all(error.startswith(repairable_prefixes) for error in result.errors)
+
+
+def _dispatch_handoff_hygiene_repair(
+    *,
+    config: DispatchConfig,
+    previous_agent: str,
+    validation_result: ValidationResult,
+    log: LogFn,
+) -> DispatchResult | None:
+    repair_prompt = POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE.format(
+        errors=_format_validation_errors(validation_result)
+    )
+    previous_agent_lower = previous_agent.lower()
+    if "auditor" in previous_agent_lower and "audit" in previous_agent_lower:
+        return _dispatch_from_subagent(
+            invoke_support_role("auditor", repair_prompt, log=log)
+        )
+    if previous_agent == "backend":
+        return invoke_backend_role(
+            config.handoff_full_path,
+            log=log,
+            use_resume=config.backend_resume_enabled,
+            additional_instruction=repair_prompt,
+        )
+    if previous_agent == "frontend":
+        return invoke_frontend_role(
+            config.handoff_full_path,
+            use_manual_frontend=config.use_manual_frontend,
+            use_api_key_env=config.planner_api_key_env_enabled,
+            additional_instruction=repair_prompt,
+            log=log,
+        )
+    return None
+
+
+def _capture_handoff_repair_state(config: DispatchConfig) -> HandoffRepairState:
+    handoff_content = _read_required_text(config.handoff_full_path) or ""
+    return HandoffRepairState(
+        head_sha=_git_head(config.repo_root),
+        handoff_sha=_content_sha(handoff_content),
+        dirty_files=_git_dirty_files(config.repo_root),
+        critical_frontmatter=_critical_frontmatter_signature(handoff_content),
+    )
+
+
+def _handoff_repair_postcondition_error(
+    *,
+    config: DispatchConfig,
+    before_state: HandoffRepairState,
+    after_state: HandoffRepairState,
+) -> str | None:
+    handoff_path = config.handoff_path.as_posix()
+    if after_state.head_sha is None:
+        return "git HEAD could not be resolved after repair"
+    if after_state.head_sha == before_state.head_sha:
+        return "HEAD did not change; repair did not create a commit"
+    if after_state.handoff_sha == before_state.handoff_sha:
+        return "HANDOFF.md hash did not change"
+
+    changed_files = _git_changed_files_since(
+        config.repo_root,
+        before_state.head_sha or "",
+        after_state.head_sha,
+    )
+    if changed_files != (handoff_path,):
+        return (
+            "repair commit touched files outside docs/handoff/HANDOFF.md: "
+            f"{', '.join(changed_files) or '<none>'}"
+        )
+
+    expected_dirty = tuple(
+        path for path in before_state.dirty_files if path != handoff_path
+    )
+    if after_state.dirty_files != expected_dirty:
+        return (
+            "repair changed dirty worktree state outside the handoff: "
+            f"before={before_state.dirty_files}, after={after_state.dirty_files}"
+        )
+
+    if after_state.critical_frontmatter != before_state.critical_frontmatter:
+        return "repair changed preserved routing frontmatter fields"
+    return None
+
+
+def _critical_frontmatter_signature(
+    handoff_content: str,
+) -> tuple[tuple[str, object], ...] | None:
+    try:
+        frontmatter = parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        return None
+    if frontmatter is None:
+        return None
+    return (
+        ("next_agent", frontmatter.next_agent),
+        ("producer", frontmatter.producer),
+        ("scope_sha", frontmatter.scope_sha),
+        ("prior_sha", frontmatter.prior_sha),
+        ("close_type", frontmatter.close_type),
+        ("epic_id", frontmatter.epic_id),
+        ("story_id", frontmatter.story_id),
+        ("story_title", frontmatter.story_title),
+        ("remaining_stories", frontmatter.remaining_stories),
+    )
+
+
+def _format_validation_errors(result: ValidationResult) -> str:
+    return "; ".join(result.errors) if result.errors else "none"
+
+
+def _git_head(repo_root: Path) -> str | None:
+    return _run_git_stdout(repo_root, ["git", "rev-parse", "HEAD"])
+
+
+def _git_dirty_files(repo_root: Path) -> tuple[str, ...]:
+    output = _run_git_stdout(
+        repo_root,
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+    )
+    if output is None:
+        return ()
+    files: list[str] = []
+    for line in output.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        if path:
+            files.append(Path(path).as_posix())
+    return tuple(sorted(files))
+
+
+def _git_changed_files_since(
+    repo_root: Path,
+    before_head: str,
+    after_head: str,
+) -> tuple[str, ...]:
+    output = _run_git_stdout(
+        repo_root,
+        ["git", "diff", "--name-only", f"{before_head}..{after_head}"],
+    )
+    if output is None:
+        return ()
+    return tuple(
+        sorted(
+            Path(line.strip()).as_posix()
+            for line in output.splitlines()
+            if line.strip()
+        )
+    )
+
+
+def _run_git_stdout(repo_root: Path, command: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
 
 
 def _record_failure(
@@ -756,7 +1153,9 @@ def _run_self_loop_validator(
         prompt = AGENT_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE.format(
             previous_agent=previous_agent
         )
-        message = f"{previous_agent} produced a self-loop. Invoking the validator role..."
+        message = (
+            f"{previous_agent} produced a self-loop. Invoking the validator role..."
+        )
 
     _log(log, "AGENT", message)
     _run_validator(
@@ -1158,4 +1557,3 @@ def _default_log(level: str, message: str) -> None:
 
 
 __all__ = ["Cycle", "run_loop"]
-

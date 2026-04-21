@@ -1088,6 +1088,7 @@ def invoke_codex(
     *,
     log: LogFn | None = None,
     use_resume: bool = False,
+    additional_instruction: str | None = None,
 ) -> DispatchResult:
     repo_root = Path.cwd()
     artifact_paths = _codex_artifact_paths(repo_root)
@@ -1102,6 +1103,7 @@ def invoke_codex(
                     handoff_path,
                     artifact_paths=artifact_paths,
                     thread_id=saved_thread_id,
+                    additional_instruction=additional_instruction,
                 ),
                 cwd=repo_root,
                 timeout_ms=config.AGENT_TIMEOUT_MS,
@@ -1123,7 +1125,10 @@ def invoke_codex(
                 result = _run_codex_json_command(
                     "Codex",
                     _build_codex_exec_command(
-                        _build_codex_managed_bootstrap_prompt(handoff_path),
+                        _build_codex_managed_bootstrap_prompt(
+                            handoff_path,
+                            additional_instruction=additional_instruction,
+                        ),
                         artifact_paths=artifact_paths,
                     ),
                     cwd=repo_root,
@@ -1135,7 +1140,10 @@ def invoke_codex(
             result = _run_codex_json_command(
                 "Codex",
                 _build_codex_exec_command(
-                    _build_codex_managed_bootstrap_prompt(handoff_path),
+                    _build_codex_managed_bootstrap_prompt(
+                        handoff_path,
+                        additional_instruction=additional_instruction,
+                    ),
                     artifact_paths=artifact_paths,
                 ),
                 cwd=repo_root,
@@ -1149,7 +1157,10 @@ def invoke_codex(
         result = _run_codex_json_command(
             "Codex",
             _build_codex_exec_command(
-                _build_codex_stateless_prompt(handoff_path),
+                _build_codex_stateless_prompt(
+                    handoff_path,
+                    additional_instruction=additional_instruction,
+                ),
                 artifact_paths=artifact_paths,
             ),
             cwd=repo_root,
@@ -1190,6 +1201,7 @@ def _build_codex_resume_command(
     *,
     artifact_paths: _CodexArtifactPaths,
     thread_id: str,
+    additional_instruction: str | None = None,
 ) -> list[str]:
     return [
         config.CODEX_BINARY,
@@ -1202,36 +1214,63 @@ def _build_codex_resume_command(
         "--output-last-message",
         str(artifact_paths.output_last_message_path),
         thread_id,
-        _build_codex_resume_prompt(handoff_path),
+        _build_codex_resume_prompt(
+            handoff_path,
+            additional_instruction=additional_instruction,
+        ),
     ]
 
 
-def _build_codex_stateless_prompt(handoff_path: Path) -> str:
-    return (
+def _build_codex_stateless_prompt(
+    handoff_path: Path,
+    *,
+    additional_instruction: str | None = None,
+) -> str:
+    prompt = (
         f"Use the repo skill ${config.CODEX_SKILL_NAME}. Read {handoff_path} and treat it as the live task file. "
         "Work statelessly and do not assume prior session memory. "
         "The skill replaces any legacy shared bootstrap or Codex handoff prompt files for this repo. "
         "Follow the skill's repo operating procedure, read/write/follow HANDOFF.md as needed, "
         "and execute the current Codex assignment."
     )
+    return _append_agent_additional_instruction(prompt, additional_instruction)
 
 
-def _build_codex_managed_bootstrap_prompt(handoff_path: Path) -> str:
-    return (
+def _build_codex_managed_bootstrap_prompt(
+    handoff_path: Path,
+    *,
+    additional_instruction: str | None = None,
+) -> str:
+    prompt = (
         f"Use the repo skill ${config.CODEX_SKILL_NAME}. This is the first managed Codex dispatch session for this repo. "
         f"Read {config.DEFAULT_SHARED_INIT_PROMPT_PATH} and use it as the bootstrap checklist for repo context loading, but do not stop after the startup report. "
         f"After bootstrapping, read {handoff_path} and treat it as the live task file. "
         "Follow HANDOFF.md as needed, update it when you finish, and execute the current Codex assignment."
     )
+    return _append_agent_additional_instruction(prompt, additional_instruction)
 
 
-def _build_codex_resume_prompt(handoff_path: Path) -> str:
-    return (
+def _build_codex_resume_prompt(
+    handoff_path: Path,
+    *,
+    additional_instruction: str | None = None,
+) -> str:
+    prompt = (
         "Continue the existing Codex dispatch session for this repo. "
         f"Re-read {handoff_path} and treat it as the live task file. "
         f"Follow the repo skill ${config.CODEX_SKILL_NAME} as the governing workflow. "
         "Use prior session context where it helps, but treat HANDOFF.md and the repo source-of-truth docs as authoritative for the current assignment."
     )
+    return _append_agent_additional_instruction(prompt, additional_instruction)
+
+
+def _append_agent_additional_instruction(
+    prompt: str,
+    additional_instruction: str | None,
+) -> str:
+    if not additional_instruction:
+        return prompt
+    return f"{prompt} Additional instruction: {additional_instruction.strip()}"
 
 
 def _codex_artifact_paths(repo_root: Path) -> _CodexArtifactPaths:
@@ -1286,6 +1325,7 @@ def _is_codex_resume_recoverable_failure(result: _ProcessResult) -> bool:
 def invoke_manual_frontend(
     handoff_path: Path,
     *,
+    additional_instruction: str | None = None,
     log: LogFn | None = None,
 ) -> DispatchResult:
     repo_root = Path.cwd()
@@ -1294,6 +1334,8 @@ def invoke_manual_frontend(
         "manual frontend is a manual GUI step. Complete the frontend work using "
         f"{resolved_handoff_path}, then press any key to continue dispatch."
     )
+    if additional_instruction:
+        message = f"{message} Additional instruction: {additional_instruction.strip()}"
     start_time = time.monotonic()
 
     if log is not None:
@@ -1373,8 +1415,14 @@ def invoke_backend_role(
     *,
     log: LogFn | None = None,
     use_resume: bool = False,
+    additional_instruction: str | None = None,
 ) -> DispatchResult:
-    return invoke_codex(handoff_path, log=log, use_resume=use_resume)
+    return invoke_codex(
+        handoff_path,
+        log=log,
+        use_resume=use_resume,
+        additional_instruction=additional_instruction,
+    )
 
 
 def invoke_planner_role(
@@ -1410,7 +1458,11 @@ def invoke_frontend_role(
     log: LogFn | None = None,
 ) -> DispatchResult:
     if use_manual_frontend:
-        return invoke_manual_frontend(handoff_path, log=log)
+        return invoke_manual_frontend(
+            handoff_path,
+            additional_instruction=additional_instruction,
+            log=log,
+        )
     return invoke_gemini(
         "Frontend",
         handoff_path,
@@ -2619,4 +2671,3 @@ def _wait_for_manual_continue() -> None:
         input()
     except EOFError:
         return
-

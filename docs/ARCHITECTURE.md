@@ -115,6 +115,7 @@ The dispatcher should name and isolate failure modes rather than guessing:
 - unknown route;
 - low-confidence route;
 - stale handoff;
+- handoff hygiene failure after dispatch;
 - planner self-loop;
 - agent self-loop;
 - missing route after dispatch;
@@ -123,6 +124,14 @@ The dispatcher should name and isolate failure modes rather than guessing:
 
 When a failure mode is detected, the safe default is to pause or dispatch a
 validator role with a scoped prompt.
+
+For narrow post-dispatch handoff hygiene failures, the dispatcher has a bounded
+repair lane. The producer gets one repair-only dispatch constrained to
+`docs/handoff/HANDOFF.md`; the repair must create a commit, change the handoff
+hash, touch only the handoff file, preserve critical frontmatter, leave dirty
+state unchanged except for the handoff, and pass validation. If that producer
+repair fails, the planner gets one cleanup-only attempt. If the planner cannot
+operationalize the handoff, the dispatcher aborts to the user.
 
 ## Provider CLIs
 

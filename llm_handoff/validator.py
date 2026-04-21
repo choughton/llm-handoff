@@ -382,7 +382,7 @@ def _content_warnings(
 def _author_role(route_name: str | None) -> str | None:
     # Ownership validation treats audit and validator remediation as the
     # same author while routing still keeps the two dispatch paths distinct.
-    if route_name in {"auditor", "validator"}:
+    if route_name in {"auditor", "validator", "auditor (audit)"}:
         return "auditor-family"
     return route_name
 
@@ -407,4 +407,3 @@ def _infer_route_from_text(detail: str) -> str | None:
     if inferred_route is not None:
         return inferred_route
     return None
-

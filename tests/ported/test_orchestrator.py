@@ -158,10 +158,7 @@ Manual handoff review required.
     assert exit_code == 0
     assert dispatches == ["backend", "auditor"]
     assert any("Routing instruction: backend" in message for _, message in log_messages)
-    assert any(
-        "Routing instruction: auditor" in message
-        for _, message in log_messages
-    )
+    assert any("Routing instruction: auditor" in message for _, message in log_messages)
 
 
 def test_run_loop_logs_dispatch_progress_for_completed_agent(
@@ -614,7 +611,7 @@ producer: frontend
     assert "next_agent: auditor\n" in handoff_path.read_text(encoding="utf-8")
     assert (
         "AGENT",
-            "Post-dispatch gate PASSED for frontend.",
+        "Post-dispatch gate PASSED for frontend.",
     ) in log_messages
 
 
@@ -1072,6 +1069,326 @@ Completed work.
     assert ("AGENT", "Post-dispatch gate PASSED for backend.") in log_messages
 
 
+def test_run_loop_allows_one_producer_repair_for_handoff_hygiene_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **auditor:** Audit the current story.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+
+    invalid_handoff = """---
+next_agent: planner
+reason: Story audit approved; scope next story.
+scope_sha: 59206fb
+close_type: story
+producer: auditor
+---
+
+# Auditor Handback
+
+## Audit Summary
+
+Audit complete with verification.
+
+## Prior Backend Handback
+
+**Agent:** backend
+"""
+    repaired_handoff = """---
+next_agent: planner
+reason: Story audit approved; scope next story.
+scope_sha: 59206fb
+close_type: story
+producer: auditor
+---
+
+# Auditor Handback
+
+**Agent:** auditor
+
+## Audit Summary
+
+Audit complete with verification.
+
+## Prior Backend Handback
+
+**Agent:** backend
+"""
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert callable(log)
+        subagent_calls.append((subagent_name, prompt, log))
+        if len(subagent_calls) == 1:
+            handoff_path.write_text(invalid_handoff, encoding="utf-8")
+        else:
+            assert subagent_name == "auditor"
+            assert "Repair only docs/handoff/HANDOFF.md" in prompt
+            handoff_path.write_text(repaired_handoff, encoding="utf-8")
+        return _subagent_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_subagent)
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_head",
+        Mock(side_effect=["a" * 40, "b" * 40]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_dirty_files",
+        Mock(side_effect=[("docs/handoff/HANDOFF.md",), ()]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_changed_files_since",
+        Mock(return_value=("docs/handoff/HANDOFF.md",)),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert [call[0] for call in subagent_calls] == [
+        "auditor",
+        "auditor",
+    ]
+    assert (
+        "AGENT",
+        "Running one-shot producer repair for docs/handoff/HANDOFF.md only.",
+    ) in log_messages
+    assert (
+        "AGENT",
+        "Producer handoff hygiene repair passed post-checks.",
+    ) in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch gate PASSED for auditor (audit).",
+    ) in log_messages
+
+
+def test_run_loop_routes_failed_handoff_hygiene_repair_to_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **auditor:** Audit the current story.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+    planner_calls: list[tuple[str | None, Any]] = []
+
+    invalid_handoff = """---
+next_agent: planner
+reason: Story audit approved; scope next story.
+scope_sha: 59206fb
+close_type: story
+producer: auditor
+---
+
+# Auditor Handback
+
+## Audit Summary
+
+Audit complete with verification.
+
+## Prior Backend Handback
+
+**Agent:** backend
+"""
+    planner_handoff = """---
+next_agent: backend
+reason: Dispatch the next story to backend.
+scope_sha: 59206fb
+producer: planner
+---
+
+# Task Assignment
+
+**Agent:** backend
+
+## Objective
+
+Implement the next story.
+
+## Acceptance Criteria
+
+- Complete the scoped work.
+"""
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert callable(log)
+        subagent_calls.append((subagent_name, prompt, log))
+        handoff_path.write_text(invalid_handoff, encoding="utf-8")
+        return _subagent_result()
+
+    def fake_planner(
+        path: Path,
+        *,
+        additional_instruction: str | None = None,
+        log=None,
+        **_kwargs: Any,
+    ) -> DispatchResult:
+        planner_calls.append((additional_instruction, log))
+        path.write_text(planner_handoff, encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_subagent)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_head",
+        Mock(side_effect=["a" * 40, "a" * 40]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_dirty_files",
+        Mock(side_effect=[("docs/handoff/HANDOFF.md",), ("docs/handoff/HANDOFF.md",)]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_changed_files_since",
+        Mock(return_value=()),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert [call[0] for call in subagent_calls] == [
+        "auditor",
+        "auditor",
+    ]
+    assert len(planner_calls) == 1
+    assert "producer failed one-shot HANDOFF hygiene repair" in (
+        planner_calls[0][0] or ""
+    )
+    assert (
+        "ERROR",
+        "Producer repair failed invariant: HEAD did not change; repair did not create a commit",
+    ) in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch handoff hygiene repair failed. Scheduling the planner to clean HANDOFF.md or escalate.",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: planner") in log_messages
+
+
+def test_run_loop_aborts_when_planner_cannot_recover_failed_handoff_hygiene_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **auditor:** Audit the current story.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str, Any]] = []
+    planner_calls: list[str | None] = []
+
+    invalid_handoff = """---
+next_agent: planner
+reason: Story audit approved; scope next story.
+scope_sha: 59206fb
+close_type: story
+producer: auditor
+---
+
+# Auditor Handback
+
+## Audit Summary
+
+Audit complete with verification.
+
+## Prior Backend Handback
+
+**Agent:** backend
+"""
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        assert callable(log)
+        subagent_calls.append((subagent_name, prompt, log))
+        handoff_path.write_text(invalid_handoff, encoding="utf-8")
+        return _subagent_result()
+
+    def fake_planner(
+        path: Path,
+        *,
+        additional_instruction: str | None = None,
+        **_kwargs: Any,
+    ) -> DispatchResult:
+        planner_calls.append(additional_instruction)
+        path.write_text(
+            "# Planner Notes\n\nI could not determine a safe route.\n",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_subagent)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_head",
+        Mock(side_effect=["a" * 40, "a" * 40]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_dirty_files",
+        Mock(side_effect=[("docs/handoff/HANDOFF.md",), ("docs/handoff/HANDOFF.md",)]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_changed_files_since",
+        Mock(return_value=()),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 1
+    assert [call[0] for call in subagent_calls] == [
+        "auditor",
+        "auditor",
+    ]
+    assert len(planner_calls) == 1
+    assert "producer failed one-shot HANDOFF hygiene repair" in (planner_calls[0] or "")
+    assert (
+        "ERROR",
+        "Planner failed to operationalize HANDOFF.md after producer hygiene repair was exhausted.",
+    ) in log_messages
+    assert (
+        "ERROR",
+        "Automatic HANDOFF hygiene recovery is exhausted; user repair is required.",
+    ) in log_messages
+
+
 def test_run_loop_schedules_gemini_recovery_for_non_dispatchable_audit_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1497,9 +1814,7 @@ def test_run_loop_does_not_redirect_fresh_epic_close_when_claude_md_is_stale(
         "DISPATCH",
         "Dispatching auditor ledger-updater for epic close.",
     ) in log_messages
-    assert all(
-        "STALE finalizer detected" not in message for _, message in log_messages
-    )
+    assert all("STALE finalizer detected" not in message for _, message in log_messages)
 
 
 def test_run_loop_redirects_completed_stale_epic_close_to_gemini_pe_scoping(
@@ -1782,7 +2097,10 @@ def test_run_loop_uses_manual_frontend_for_frontend_when_enabled(
 
     assert exit_code == 0
     assert manual_frontend_calls == [(handoff_path, fake_log)]
-    assert ("DISPATCH", "Dispatching manual frontend (GUI, manual pause).") in log_messages
+    assert (
+        "DISPATCH",
+        "Dispatching manual frontend (GUI, manual pause).",
+    ) in log_messages
 
 
 def test_run_loop_passes_planner_api_key_opt_in_to_dispatch(
@@ -1804,8 +2122,7 @@ def test_run_loop_passes_planner_api_key_opt_in_to_dispatch(
         orchestrator,
         "invoke_planner_role",
         lambda path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
-            planner_calls.append((path, use_api_key_env, log))
-            or _dispatch_result()
+            planner_calls.append((path, use_api_key_env, log)) or _dispatch_result()
         ),
     )
     monkeypatch.setattr(
