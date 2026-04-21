@@ -20,6 +20,8 @@ After the first tagged release, supported versions will be listed here.
 - Keep `auto_push` disabled unless you explicitly want the dispatcher to publish
   commits.
 - Treat generated handoff instructions as untrusted until validated.
+- If `.dispatch.lock` exists, confirm no other dispatcher is active before
+  removing it manually.
 
 ## Reporting A Vulnerability
 

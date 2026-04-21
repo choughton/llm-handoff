@@ -144,6 +144,14 @@ state unchanged except for the handoff, and pass validation. If that producer
 repair fails, the planner gets one cleanup-only attempt. If the planner cannot
 operationalize the handoff, the dispatcher aborts to the user.
 
+## Dispatch Lock
+
+The CLI creates `.dispatch.lock` in the target repo before starting the loop and
+removes it on exit. If the lock already exists, dispatch fails closed with a
+message telling the user to confirm no other dispatcher is active before
+removing the lock. This protects the handoff file and Git state from two local
+dispatcher loops writing the same target repo at the same time.
+
 ## Provider CLIs
 
 Provider CLIs are adapters, not workflow roles. A public config should map

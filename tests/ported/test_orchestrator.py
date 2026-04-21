@@ -3109,6 +3109,73 @@ def test_main_parses_cli_flags_and_dispatches_config(
     assert captured["restored_titles"] == [("previous title", True)]
 
 
+def test_run_dispatch_removes_dispatch_lock_after_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_module = _load_main_module()
+    (tmp_path / ".git").mkdir()
+    lock_path = tmp_path / ".dispatch.lock"
+    captured: dict[str, object] = {}
+
+    class FakeDispatchLogger:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __call__(self, level: str, message: str) -> None:
+            captured.setdefault("log_calls", []).append((level, message))
+
+        def mark_startup_complete(self) -> None:
+            captured["startup_marked"] = True
+
+    def fake_run_loop(config, *, log=None):
+        captured["lock_exists_during_run"] = lock_path.exists()
+        captured["config"] = config
+        captured["log"] = log
+        return 0
+
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+
+    exit_code = main_module._run_dispatch(
+        dry_run=True,
+        use_manual_frontend=False,
+        repo_root=tmp_path,
+    )
+
+    assert exit_code == 0
+    assert captured["lock_exists_during_run"] is True
+    assert not lock_path.exists()
+
+
+def test_run_dispatch_refuses_existing_dispatch_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    main_module = _load_main_module()
+    (tmp_path / ".git").mkdir()
+    lock_path = tmp_path / ".dispatch.lock"
+    lock_path.write_text("pid: 123\n", encoding="utf-8")
+    run_loop = Mock(return_value=0)
+
+    monkeypatch.setattr(main_module, "run_loop", run_loop)
+
+    exit_code = main_module._run_dispatch(
+        dry_run=True,
+        use_manual_frontend=False,
+        repo_root=tmp_path,
+    )
+
+    assert exit_code == 1
+    assert lock_path.exists()
+    run_loop.assert_not_called()
+    assert (
+        "Another llm-handoff dispatcher appears to be running"
+        in capsys.readouterr().err
+    )
+
+
 def test_main_supports_opting_out_of_backend_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

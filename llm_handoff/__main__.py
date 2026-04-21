@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ctypes
+from dataclasses import dataclass
+from datetime import datetime
 import os
 from pathlib import Path
 import sys
@@ -24,11 +26,18 @@ from llm_handoff.logging_util import DispatchLogger
 from llm_handoff.orchestrator import run_loop
 
 _WINDOWS = os.name == "nt"
+DISPATCH_LOCK_FILENAME = ".dispatch.lock"
 app = typer.Typer(
     add_completion=False,
     help="File-based handoff dispatcher for multi-CLI AI coding workflows.",
     invoke_without_command=True,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchLock:
+    path: Path
+    fd: int
 
 
 def _configure_stdio_encoding() -> None:
@@ -97,21 +106,76 @@ def _run_dispatch(
         backend_resume=backend_resume,
         planner_resume=planner_resume,
     )
-    _cleanup_codex_output_artifacts(_codex_artifact_paths(config.repo_root))
-    logger = DispatchLogger(
-        repo_root=config.repo_root,
-        max_consecutive_failures=config.max_consecutive_failures,
-        backend_resume=config.backend_resume,
-        planner_resume=config.planner_resume,
-    )
-    previous_title, changed_title = _set_dispatch_console_title()
+    lock = _try_acquire_dispatch_lock(config.repo_root)
+    if lock is None:
+        lock_path = _dispatch_lock_path(config.repo_root)
+        print(
+            "Another llm-handoff dispatcher appears to be running for this repo. "
+            f"Remove {lock_path} only after confirming no dispatcher is active.",
+            file=sys.stderr,
+        )
+        return 1
     try:
-        return run_loop(config, log=logger)
-    except KeyboardInterrupt:
-        logger("WARN", "Dispatch interrupted by user. Exiting.")
-        return 130
+        _cleanup_codex_output_artifacts(_codex_artifact_paths(config.repo_root))
+        logger = DispatchLogger(
+            repo_root=config.repo_root,
+            max_consecutive_failures=config.max_consecutive_failures,
+            backend_resume=config.backend_resume,
+            planner_resume=config.planner_resume,
+        )
+        previous_title, changed_title = _set_dispatch_console_title()
+        try:
+            return run_loop(config, log=logger)
+        except KeyboardInterrupt:
+            logger("WARN", "Dispatch interrupted by user. Exiting.")
+            return 130
+        finally:
+            _restore_console_title(previous_title, changed=changed_title)
     finally:
-        _restore_console_title(previous_title, changed=changed_title)
+        _release_dispatch_lock(lock)
+
+
+def _dispatch_lock_path(repo_root: Path) -> Path:
+    return Path(repo_root).resolve() / DISPATCH_LOCK_FILENAME
+
+
+def _try_acquire_dispatch_lock(repo_root: Path) -> DispatchLock | None:
+    lock_path = _dispatch_lock_path(repo_root)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(str(lock_path), flags)
+    except FileExistsError:
+        return None
+    except OSError as exc:
+        print(f"Unable to create dispatch lock {lock_path}: {exc}", file=sys.stderr)
+        return None
+
+    lock_text = (
+        f"pid: {os.getpid()}\n"
+        f"created_at: {datetime.now().isoformat(timespec='seconds')}\n"
+        f"repo_root: {Path(repo_root).resolve()}\n"
+    )
+    try:
+        os.write(fd, lock_text.encode("utf-8"))
+    except OSError as exc:
+        os.close(fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+        print(f"Unable to write dispatch lock {lock_path}: {exc}", file=sys.stderr)
+        return None
+    return DispatchLock(path=lock_path, fd=fd)
+
+
+def _release_dispatch_lock(lock: DispatchLock) -> None:
+    try:
+        os.close(lock.fd)
+    finally:
+        try:
+            lock.path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _format_path_list(paths: tuple[Path, ...]) -> str:
