@@ -2615,7 +2615,7 @@ def test_main_returns_zero_for_help_without_dispatch(
     )
 
     assert main_module.main(["--help"]) == 0
-    assert "llm-handoff dispatch loop" in capsys.readouterr().out
+    assert "File-based handoff dispatcher" in capsys.readouterr().out
 
 
 def test_main_parses_cli_flags_and_dispatches_config(

@@ -27,8 +27,9 @@ genericized from a project-specific implementation into a public reference
 workflow. Expect names, configuration, and examples to change until the first
 tagged release.
 
-The current scaffold is not a release-ready source checkout yet. See
-[CHANGELOG.md](CHANGELOG.md) for the extraction state.
+This is still pre-release software, not a production-certified tool for
+arbitrary repositories. See [CHANGELOG.md](CHANGELOG.md) for the extraction
+state.
 
 ## Repository Map
 
@@ -223,8 +224,10 @@ advances when the handoff state parses, routes, and validates.
 - The reference implementation has been validated primarily in one workflow.
 - Provider CLI behavior can change underneath the dispatcher.
 - Validator calls optimize for correctness over token cost.
-- Dual-run protection and semantic SHA checks are required before public launch.
-- Full role-to-provider adapter wiring is still planned work.
+- Dual-run protection and semantic SHA existence checks remain hardening work
+  before production use.
+- Runtime config is loaded, but every role-to-provider choice is not fully
+  pluggable yet.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design constraints in
 more detail.

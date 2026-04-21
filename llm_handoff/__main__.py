@@ -26,7 +26,7 @@ from llm_handoff.orchestrator import run_loop
 _WINDOWS = os.name == "nt"
 app = typer.Typer(
     add_completion=False,
-    help="llm-handoff dispatcher. llm-handoff dispatch loop.",
+    help="File-based handoff dispatcher for multi-CLI AI coding workflows.",
     invoke_without_command=True,
 )
 

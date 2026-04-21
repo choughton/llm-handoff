@@ -49,7 +49,7 @@ Continue, pause, or escalate
 - `llm_handoff.logging_util`: dispatch log writer.
 - `llm_handoff.text_io`: robust text decoding for handoff files.
 
-The current scaffold has the core config loader, router, validator,
+The current source checkout has the core config loader, router, validator,
 normalizer, provider invocation layer, target-repo initializer, and prompt
 templates. The remaining architectural work is to make every role-to-provider
 choice configurable without changing the public role names.
@@ -107,8 +107,8 @@ Normalizer outcomes:
 ## Git As State
 
 The dispatcher expects Git commit SHAs to appear in handoffs that claim
-completed work. SHA validation should be both syntactic and semantic before the
-public release:
+completed work. SHA validation should become both syntactic and semantic before
+production use:
 
 - syntax: 7 to 40 hexadecimal characters;
 - semantics: `git cat-file -e <sha>` succeeds in the target repo.
