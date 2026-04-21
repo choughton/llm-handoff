@@ -43,6 +43,7 @@ _ALLOWED_NEXT_AGENTS = {
     "frontend",
     "gemini-pe",
     "gemini-frontend",
+    "manual frontend",
     "planner",
     "validator",
     "user",
@@ -58,11 +59,17 @@ _FRONTMATTER_ROUTE_MAP = {
     "frontend": "Gemini-Frontend",
     "gemini-pe": "Gemini-PE",
     "gemini-frontend": "Gemini-Frontend",
+    "manual frontend": "Gemini-Frontend",
     "planner": "Gemini-PE",
     "validator": "ClaudeCode-Misroute",
     "user": "Escalation",
 }
-_FRONTMATTER_ALIAS_WARNINGS: dict[str, str] = {}
+_FRONTMATTER_ALIAS_WARNINGS: dict[str, str] = {
+    "backend": "frontmatter_next_agent_alias: backend frontmatter alias normalized to Codex.",
+    "frontend": "frontmatter_next_agent_alias: frontend frontmatter alias normalized to Gemini-Frontend.",
+    "manual frontend": "frontmatter_next_agent_alias: legacy manual frontend reference normalized to Gemini-Frontend.",
+    "planner": "frontmatter_next_agent_alias: planner frontmatter alias normalized to Gemini-PE.",
+}
 
 
 @dataclass(frozen=True)

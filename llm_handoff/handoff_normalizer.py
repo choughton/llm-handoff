@@ -92,12 +92,16 @@ def normalize_next_agent(
     if _api_key_available(api_key):
         # Keep API-key auth and CLI OAuth separate so a bad key fails closed
         # instead of silently using a local interactive session.
-        return _normalize_next_agent_with_instructor(
-            raw_value,
-            client=_build_claude_api_client(api_key),
-            model=model,
-            max_retries=max_retries,
-        )
+        try:
+            return _normalize_next_agent_with_instructor(
+                raw_value,
+                client=_build_claude_api_client(api_key),
+                model=model,
+                max_retries=max_retries,
+            )
+        except RuntimeError as exc:
+            if not _is_sdk_auth_resolution_failure(exc):
+                raise
 
     return _normalize_next_agent_with_claude_cli(
         raw_value,
@@ -203,6 +207,10 @@ def _build_claude_api_client(api_key: str | None = None) -> Anthropic:
     if effective_api_key:
         return Anthropic(api_key=effective_api_key)
     return Anthropic()
+
+
+def _is_sdk_auth_resolution_failure(exc: RuntimeError) -> bool:
+    return "could not resolve authentication method" in str(exc).lower()
 
 
 def _coerce_cli_result_payload(result: object) -> object:

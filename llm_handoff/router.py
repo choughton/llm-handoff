@@ -32,6 +32,7 @@ NextAgent = Literal[
     "frontend",
     "gemini-pe",
     "gemini-frontend",
+    "manual frontend",
     "planner",
     "validator",
     "user",
@@ -39,7 +40,7 @@ NextAgent = Literal[
 CloseType = Literal["story", "epic"]
 
 _AGENT_PREFIX_RE = re.compile(
-    r"(?i)^(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|planner|backend|frontend|auditor|validator|finalizer)\b(.*)$"
+    r"(?i)^(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|manual\s+frontend|planner|backend|frontend|auditor|validator|finalizer)\b(.*)$"
 )
 _NEXT_STEP_HEADER_RE = re.compile(r"(?i)^(#{1,6})\s+Next\s+Steps?\b(.*)$")
 _TASK_ASSIGNMENT_HEADER_RE = re.compile(r"(?i)^(#{1,6})\s+Task Assignment\b")
@@ -76,11 +77,17 @@ _FRONTMATTER_ROUTE_MAP: dict[str, RouteName] = {
     "frontend": "Gemini-Frontend",
     "gemini-pe": "Gemini-PE",
     "gemini-frontend": "Gemini-Frontend",
+    "manual frontend": "Gemini-Frontend",
     "planner": "Gemini-PE",
     "validator": "ClaudeCode-Misroute",
     "user": "Escalation",
 }
-_FRONTMATTER_ALIAS_WARNINGS: dict[str, str] = {}
+_FRONTMATTER_ALIAS_WARNINGS: dict[str, str] = {
+    "backend": "backend frontmatter alias normalized to Codex.",
+    "frontend": "frontend frontmatter alias normalized to Gemini-Frontend.",
+    "manual frontend": "Legacy manual frontend reference normalized to Gemini-Frontend.",
+    "planner": "planner frontmatter alias normalized to Gemini-PE.",
+}
 _ALLOWED_CLOSE_TYPES = {"story", "epic"}
 _FRONTMATTER_KNOWN_KEYS = {
     "next_agent",
@@ -943,7 +950,7 @@ def _source_label(source: str) -> str:
 
 def _extract_header_agent(suffix: str) -> tuple[RouteName | None, tuple[str, ...]]:
     match = re.search(
-        r"(?i)\b(for|to|:|→|->)\s+(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|planner|backend|frontend|auditor|validator|finalizer)\b",
+        r"(?i)\b(for|to|:|→|->)\s+(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|manual\s+frontend|planner|backend|frontend|auditor|validator|finalizer)\b",
         suffix,
     )
     if match is None:
@@ -989,6 +996,9 @@ def _normalize_agent(
     if normalized == "backend":
         return "Codex", warnings
     if normalized == "frontend":
+        return "Gemini-Frontend", warnings
+    if normalized in {"manual frontend", "manual frontend gui"}:
+        warnings.append("Legacy manual frontend reference normalized to Gemini-Frontend.")
         return "Gemini-Frontend", warnings
     if re.search(r"(?i)\bCodex\b", text):
         return "Codex", warnings

@@ -36,7 +36,9 @@ LEDGER_UPDATER_PROMPT = (
 
 _YES_NO_LINE_RE = r"(?im)^{label}:\s*(YES|NO)(?:\s*\((.+)\))?\s*$"
 _SCOPE_CLOSED_RE = re.compile(r"(?im)^SCOPE CLOSED:\s*(.+)\s*$")
+_EPIC_CLOSED_RE = re.compile(r"(?im)^EPIC CLOSED:\s*(.+)\s*$")
 _NEXT_ROUTE_RE = re.compile(r"(?im)^NEXT ROUTE:\s*(.+)\s*$")
+_NEXT_EPIC_RE = re.compile(r"(?im)^NEXT EPIC \(routed to Gemini-PE\):\s*(.+)\s*$")
 _AUDIT_SHA_LINE_RE = re.compile(r"(?im)^AUDIT SHA:\s*(.+)\s*$")
 _COMMIT_SHA_LINE_RE = re.compile(r"(?im)^COMMIT SHA:\s*(.+)\s*$")
 _PUSH_RESULT_RE = re.compile(
@@ -56,14 +58,38 @@ class EpicCloseResult:
     stderr: str
     parse_error: str | None = None
     project_state_updated: bool = False
+    ledger_updated: bool | None = None
+    claude_md_updated: bool | None = None
     handoff_rewritten: bool = False
     scope_closed: str | None = None
+    epic_closed: str | None = None
     next_route: str | None = None
+    next_epic: str | None = None
     audit_sha: str | None = None
     commit_sha: str | None = None
     push_status: PushStatus = "UNKNOWN"
     push_detail: str | None = None
     changes_made: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        state_updated = (
+            self.project_state_updated
+            or bool(self.ledger_updated)
+            or bool(self.claude_md_updated)
+        )
+        object.__setattr__(self, "project_state_updated", state_updated)
+        if self.ledger_updated is None:
+            object.__setattr__(self, "ledger_updated", state_updated)
+        if self.claude_md_updated is None:
+            object.__setattr__(self, "claude_md_updated", state_updated)
+        if self.scope_closed is None and self.epic_closed is not None:
+            object.__setattr__(self, "scope_closed", self.epic_closed)
+        if self.epic_closed is None:
+            object.__setattr__(self, "epic_closed", self.scope_closed)
+        if self.next_route is None and self.next_epic is not None:
+            object.__setattr__(self, "next_route", self.next_epic)
+        if self.next_epic is None:
+            object.__setattr__(self, "next_epic", self.next_route)
 
 
 @dataclass(frozen=True)
@@ -77,6 +103,22 @@ class _ParsedLedgerOutput:
     push_status: PushStatus
     push_detail: str | None
     changes_made: tuple[str, ...]
+
+    @property
+    def ledger_updated(self) -> bool:
+        return self.project_state_updated
+
+    @property
+    def claude_md_updated(self) -> bool:
+        return self.project_state_updated
+
+    @property
+    def epic_closed(self) -> str:
+        return self.scope_closed
+
+    @property
+    def next_epic(self) -> str:
+        return self.next_route
 
 
 def run_epic_close(*, log: LogFn | None = None) -> EpicCloseResult:
@@ -172,10 +214,22 @@ def run_epic_close(*, log: LogFn | None = None) -> EpicCloseResult:
 
 def _parse_subagent_output(output: str) -> _ParsedLedgerOutput:
     return _ParsedLedgerOutput(
-        project_state_updated=_parse_yes_no_field(output, "PROJECT STATE UPDATED"),
+        project_state_updated=_parse_yes_no_field_any(
+            output,
+            (
+                "PROJECT STATE UPDATED",
+                "PROJECT_STATE.MD UPDATED",
+                "LEDGER UPDATED",
+            ),
+            "PROJECT STATE UPDATED",
+        ),
         handoff_rewritten=_parse_yes_no_field(output, "HANDOFF.MD REWRITTEN"),
-        scope_closed=_require_match(_SCOPE_CLOSED_RE, output, "SCOPE CLOSED").group(1),
-        next_route=_require_match(_NEXT_ROUTE_RE, output, "NEXT ROUTE").group(1),
+        scope_closed=_require_match_any(
+            (_SCOPE_CLOSED_RE, _EPIC_CLOSED_RE), output, "SCOPE CLOSED"
+        ).group(1),
+        next_route=_require_match_any(
+            (_NEXT_ROUTE_RE, _NEXT_EPIC_RE), output, "NEXT ROUTE"
+        ).group(1),
         audit_sha=_parse_audit_sha(output),
         commit_sha=_parse_commit_sha(output),
         push_status=_require_match(_PUSH_RESULT_RE, output, "PUSH RESULT").group(1),
@@ -194,11 +248,36 @@ def _parse_yes_no_field(output: str, label: str) -> bool:
     return match.group(1) == "YES"
 
 
+def _parse_yes_no_field_any(
+    output: str,
+    labels: tuple[str, ...],
+    display_label: str,
+) -> bool:
+    for label in labels:
+        pattern = re.compile(_YES_NO_LINE_RE.format(label=re.escape(label)))
+        match = pattern.search(output)
+        if match is not None:
+            return match.group(1) == "YES"
+    raise ValueError(f"Missing {display_label} line.")
+
+
 def _require_match(pattern: re.Pattern[str], output: str, label: str) -> re.Match[str]:
     match = pattern.search(output)
     if match is None:
         raise ValueError(f"Missing {label} line.")
     return match
+
+
+def _require_match_any(
+    patterns: tuple[re.Pattern[str], ...],
+    output: str,
+    label: str,
+) -> re.Match[str]:
+    for pattern in patterns:
+        match = pattern.search(output)
+        if match is not None:
+            return match
+    raise ValueError(f"Missing {label} line.")
 
 
 def _parse_audit_sha(output: str) -> str:

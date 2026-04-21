@@ -1291,7 +1291,7 @@ def invoke_manual_frontend(
     repo_root = Path.cwd()
     resolved_handoff_path = _resolve_handoff_path(handoff_path, repo_root)
     message = (
-        "Manual frontend mode is enabled. Complete the frontend work using "
+        "manual frontend is a manual GUI step. Complete the frontend work using "
         f"{resolved_handoff_path}, then press any key to continue dispatch."
     )
     start_time = time.monotonic()

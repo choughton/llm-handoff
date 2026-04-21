@@ -517,8 +517,8 @@ def _dispatch_route(
 
     if route == "Gemini-Frontend":
         if config.use_manual_frontend:
-            _log(log, "DISPATCH", "Pausing for manual frontend work.")
-            return invoke_manual_frontend(handoff_path, log=log), "Manual frontend"
+            _log(log, "DISPATCH", "Dispatching manual frontend (GUI, manual pause).")
+            return invoke_manual_frontend(handoff_path, log=log), "manual frontend (GUI)"
 
         _log(log, "DISPATCH", "Dispatching Gemini Frontend.")
         return (

@@ -40,7 +40,7 @@ CLAUDE_BINARY = _binary_name("claude")
 
 DEFAULT_HANDOFF_PATH = Path("docs/handoff/HANDOFF.md")
 DEFAULT_PROJECT_STATE_PATH = Path("PROJECT_STATE.md")
-DEFAULT_SHARED_INIT_PROMPT_PATH = Path("examples/reference-workflow/README.md")
+DEFAULT_SHARED_INIT_PROMPT_PATH = Path("docs/handoff/SHARED_REPO_INIT_PROMPT.md")
 DEFAULT_CONFIG_PATH = Path("dispatch_config.yaml")
 CODEX_OUTPUT_SCHEMA_PATH = (
     Path("llm_handoff") / "schemas" / "codex_final_response.schema.json"
