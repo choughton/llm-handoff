@@ -22,7 +22,7 @@ agents:
     resume: true
     timeout_ms: 1200000
 
-  implementer:
+  backend:
     provider: codex
     binary: codex
     skill_name: llm-handoff
@@ -83,7 +83,7 @@ user explicitly opts in.
 Public docs and templates should use generic role names:
 
 - `planner`
-- `implementer`
+- `backend`
 - `frontend`
 - `auditor`
 - `validator`
@@ -96,7 +96,7 @@ Example:
 
 ```yaml
 agents:
-  implementer:
+  backend:
     provider: codex
     binary: codex
     skill_name: llm-handoff
@@ -126,6 +126,55 @@ Gemini-specific fields:
 
 - `mention`: optional agent mention used by Gemini agent files.
 - `use_api_key_env`: whether to preserve Gemini API key environment variables.
+
+## Next-Agent Normalizer
+
+The dispatcher has an internal next-agent normalizer for non-canonical
+`next_agent` values. The deterministic enum check runs first. If the value is
+not a supported role, the dispatcher may make a small model call to normalize
+obvious freeform values to one of the public roles.
+
+The normalizer is intentionally constrained:
+
+- it can only return a canonical role such as `backend`, `frontend`, or
+  `auditor`;
+- it should return `unknown` when intent is ambiguous;
+- `unknown` fails closed and routes to validation or user intervention instead
+  of guessing.
+
+Planned config shape:
+
+```yaml
+normalizer:
+  provider: claude
+  model: claude-haiku-4-5
+  timeout_ms: 60000
+  on_unknown: fail_closed
+```
+
+The public contract should not require Claude Haiku. A target repository should
+be able to choose a small, low-latency model from an available provider, such
+as Gemini Flash or an OpenAI mini model, as long as the adapter enforces the
+same canonical-role-or-unknown output contract.
+
+The current code scaffold implements the Claude API and Claude CLI paths first.
+Provider adapters for Gemini or OpenAI normalizer calls are planned config work.
+
+The normalizer has two runtime auth paths:
+
+- API key path: when the configured provider has an API key available, the
+  dispatcher should call the provider API with a structured Pydantic output
+  schema.
+- CLI auth path: when no API key is available, the dispatcher may fall back to
+  the configured provider CLI session, such as Claude Code OAuth.
+
+The API path should not silently fall back to CLI auth after selecting an API
+key. If the structured API call fails, the dispatcher should fail closed and
+leave the handoff unchanged for validation.
+
+There is intentionally no `enabled` switch. The normalizer is part of the
+routing pipeline: exact enum matches remain deterministic, obvious freeform
+values get one constrained normalization attempt, and ambiguity fails closed.
 
 ## Prompt Templates
 

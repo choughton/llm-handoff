@@ -28,7 +28,7 @@ docs/handoff/HANDOFF.md
 Public role names:
 
 - `planner`
-- `implementer`
+- `backend`
 - `frontend`
 - `auditor`
 - `validator`
@@ -36,7 +36,7 @@ Public role names:
 - `user`
 
 Provider CLIs are configured separately. For example, a repo can map
-`planner` to Gemini and `implementer` to Codex without making those provider
+`planner` to Gemini and `backend` to Codex without making those provider
 names part of the handoff protocol.
 
 ## Handoff Contract

@@ -43,7 +43,6 @@ _ALLOWED_NEXT_AGENTS = {
     "frontend",
     "gemini-pe",
     "gemini-frontend",
-    "implementer",
     "planner",
     "validator",
     "user",
@@ -59,7 +58,6 @@ _FRONTMATTER_ROUTE_MAP = {
     "frontend": "Gemini-Frontend",
     "gemini-pe": "Gemini-PE",
     "gemini-frontend": "Gemini-Frontend",
-    "implementer": "Codex",
     "planner": "Gemini-PE",
     "validator": "ClaudeCode-Misroute",
     "user": "Escalation",
@@ -269,7 +267,7 @@ def validate_handoff_text(
     if previous_route is not None and routing_instruction == previous_route:
         if previous_route == "Gemini-PE":
             errors.append(
-                "planner_self_loop: Gemini-PE handoff routes work back to Gemini-PE, which would immediately re-dispatch the planner. Route to an implementer, auditor, or explicit pause state instead."
+                "planner_self_loop: Gemini-PE handoff routes work back to Gemini-PE, which would immediately re-dispatch the planner. Route to a backend agent, auditor, or explicit pause state instead."
             )
         else:
             errors.append(
@@ -321,7 +319,7 @@ def _normalize_agent(agent_text: str) -> str | None:
         return "ClaudeCode-Misroute"
     if normalized_text in {"finalizer", "ledger", "ledger-updater", "epic-close"}:
         return "Epic-Close"
-    if normalized_text in {"implementer", "backend"}:
+    if normalized_text == "backend":
         return "Codex"
     if "codex" in normalized_text:
         return "Codex"

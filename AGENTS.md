@@ -63,7 +63,7 @@ tests that explicitly verify those names are rejected or removed.
 Use generic role names in public docs, examples, and config:
 
 - `planner`
-- `implementer`
+- `backend`
 - `frontend`
 - `auditor`
 - `validator`

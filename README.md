@@ -83,10 +83,12 @@ the planned target-repo initialization workflow.
 
 1. The dispatcher reads a handoff file.
 2. YAML frontmatter declares the next role.
-3. A deterministic router proposes the next dispatch.
-4. The configured provider CLI runs that role.
-5. The updated handoff is validated.
-6. The loop continues, pauses, or escalates to the user.
+3. A deterministic router checks the role.
+4. If the role is non-canonical, a constrained model-backed normalizer may
+   rewrite obvious values or return `unknown`.
+5. The configured provider CLI runs one role.
+6. The updated handoff is validated.
+7. The loop continues, pauses, or escalates to the user.
 
 ```text
 agent writes HANDOFF.md
@@ -96,6 +98,9 @@ dispatcher reads state
         |
         v
 router selects next_agent
+        |
+        v
+normalizer resolves non-canonical values
         |
         v
 provider CLI runs one role

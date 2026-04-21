@@ -10,7 +10,7 @@ work.
 - Python 3.11 or newer.
 - Git.
 - One or more provider CLIs, depending on your workflow:
-  - Codex CLI for implementer-style dispatches.
+  - Codex CLI for backend-style dispatches.
   - Gemini CLI for planner or frontend-style dispatches.
   - Claude Code CLI for auditor, validator, or finalizer-style dispatches.
 - Optional: GitHub CLI (`gh`) for repository checks and release workflow.

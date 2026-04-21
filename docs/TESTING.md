@@ -13,7 +13,7 @@ routing, and rejection of source-project aliases.
 Current focused result:
 
 ```text
-14 passed
+19 passed
 ```
 
 The suite is still small. Add tests with each extraction pass before widening

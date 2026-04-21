@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from llm_handoff import config
 
 
+DEFAULT_NORMALIZER_PROVIDER = "claude"
+DEFAULT_NORMALIZER_MODEL = "claude-haiku-4-5"
 ValidAgent = Literal[
     "auditor",
     "backend",
@@ -26,7 +28,6 @@ ValidAgent = Literal[
     "frontend",
     "gemini-pe",
     "gemini-frontend",
-    "implementer",
     "planner",
     "validator",
     "user",
@@ -37,7 +38,6 @@ CANONICAL_NEXT_AGENTS = tuple(
     agent for agent in get_args(ValidAgent) if agent != "unknown"
 )
 CANONICAL_NEXT_AGENT_SET = frozenset(CANONICAL_NEXT_AGENTS)
-HAIKU_NORMALIZER_MODEL = "claude-haiku-4-5"
 CLI_NORMALIZER_TIMEOUT_SECONDS = 60
 _NEXT_AGENT_LINE_RE = re.compile(r"^(\s*next_agent\s*:\s*).*$")
 
@@ -64,6 +64,9 @@ class HandoffNextAgentNormalization:
 def normalize_next_agent(
     freeform: str,
     *,
+    provider: str = DEFAULT_NORMALIZER_PROVIDER,
+    model: str = DEFAULT_NORMALIZER_MODEL,
+    api_key: str | None = None,
     client: object | None = None,
     max_retries: int = 2,
 ) -> str:
@@ -75,37 +78,40 @@ def normalize_next_agent(
     if raw_value in CANONICAL_NEXT_AGENT_SET:
         return raw_value
 
+    if provider != "claude":
+        raise ValueError(f"Unsupported next_agent normalizer provider `{provider}`.")
+
     if client is not None:
         return _normalize_next_agent_with_instructor(
             raw_value,
             client=client,
+            model=model,
             max_retries=max_retries,
         )
 
-    if _sdk_auth_available():
-        try:
-            return _normalize_next_agent_with_instructor(
-                raw_value,
-                client=Anthropic(),
-                max_retries=max_retries,
-            )
-        except Exception:
-            # Claude Code OAuth is the dispatcher's primary Claude auth path.
-            # If SDK auth is absent, stale, or misconfigured, fall back to CLI.
-            pass
+    if _api_key_available(api_key):
+        # Keep API-key auth and CLI OAuth separate so a bad key fails closed
+        # instead of silently using a local interactive session.
+        return _normalize_next_agent_with_instructor(
+            raw_value,
+            client=_build_claude_api_client(api_key),
+            model=model,
+            max_retries=max_retries,
+        )
 
-    return _normalize_next_agent_with_claude_cli(raw_value)
+    return _normalize_next_agent_with_claude_cli(raw_value, model=model)
 
 
 def _normalize_next_agent_with_instructor(
     raw_value: str,
     *,
     client: object,
+    model: str,
     max_retries: int,
 ) -> str:
     instructed = instructor.from_anthropic(client)
     result = instructed.messages.create(
-        model=HAIKU_NORMALIZER_MODEL,
+        model=model,
         response_model=NormalizedNextAgent,
         max_retries=max_retries,
         max_tokens=64,
@@ -120,12 +126,12 @@ def _normalize_next_agent_with_instructor(
     return result.normalized
 
 
-def _normalize_next_agent_with_claude_cli(raw_value: str) -> str:
+def _normalize_next_agent_with_claude_cli(raw_value: str, *, model: str) -> str:
     command = [
         _resolve_command_binary(config.CLAUDE_BINARY),
         config.CLAUDE_PERMISSIONS_FLAG,
         "--model",
-        HAIKU_NORMALIZER_MODEL,
+        model,
         "--output-format",
         "json",
         "--json-schema",
@@ -179,6 +185,17 @@ def _parse_claude_cli_normalization_output(stdout: str) -> str:
     return NormalizedNextAgent.model_validate(response_payload).normalized
 
 
+def _api_key_available(api_key: str | None = None) -> bool:
+    return bool(api_key or os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def _build_claude_api_client(api_key: str | None = None) -> Anthropic:
+    effective_api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if effective_api_key:
+        return Anthropic(api_key=effective_api_key)
+    return Anthropic()
+
+
 def _coerce_cli_result_payload(result: object) -> object:
     if isinstance(result, dict):
         return result
@@ -198,12 +215,6 @@ def _normalizer_prompt(raw_value: str) -> str:
         "receiving agent. Valid values are: "
         f"{', '.join(get_args(ValidAgent))}. Return 'unknown' if nothing "
         "plausibly matches or the value is ambiguous."
-    )
-
-
-def _sdk_auth_available() -> bool:
-    return bool(
-        os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
     )
 
 

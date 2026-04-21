@@ -15,7 +15,7 @@ agents:
     resume: true
     timeout_ms: 1200000
 
-  implementer:
+  backend:
     provider: codex
     binary: codex
     skill_name: llm-handoff
@@ -49,3 +49,15 @@ agents:
     model: claude-opus-4-7
     resume: false
     timeout_ms: 900000
+
+normalizer:
+  provider: claude
+  model: claude-haiku-4-5
+  timeout_ms: 60000
+  on_unknown: fail_closed
+  # Runtime auth order: provider API key first, provider CLI auth fallback.
+  # Other intended provider examples:
+  # provider: gemini
+  # model: <gemini-flash-model>
+  # provider: openai
+  # model: <openai-small-model>

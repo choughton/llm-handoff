@@ -32,7 +32,6 @@ NextAgent = Literal[
     "frontend",
     "gemini-pe",
     "gemini-frontend",
-    "implementer",
     "planner",
     "validator",
     "user",
@@ -40,7 +39,7 @@ NextAgent = Literal[
 CloseType = Literal["story", "epic"]
 
 _AGENT_PREFIX_RE = re.compile(
-    r"(?i)^(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|planner|implementer|backend|frontend|auditor|validator|finalizer)\b(.*)$"
+    r"(?i)^(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|planner|backend|frontend|auditor|validator|finalizer)\b(.*)$"
 )
 _NEXT_STEP_HEADER_RE = re.compile(r"(?i)^(#{1,6})\s+Next\s+Steps?\b(.*)$")
 _TASK_ASSIGNMENT_HEADER_RE = re.compile(r"(?i)^(#{1,6})\s+Task Assignment\b")
@@ -77,7 +76,6 @@ _FRONTMATTER_ROUTE_MAP: dict[str, RouteName] = {
     "frontend": "Gemini-Frontend",
     "gemini-pe": "Gemini-PE",
     "gemini-frontend": "Gemini-Frontend",
-    "implementer": "Codex",
     "planner": "Gemini-PE",
     "validator": "ClaudeCode-Misroute",
     "user": "Escalation",
@@ -945,7 +943,7 @@ def _source_label(source: str) -> str:
 
 def _extract_header_agent(suffix: str) -> tuple[RouteName | None, tuple[str, ...]]:
     match = re.search(
-        r"(?i)\b(for|to|:|→|->)\s+(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|planner|implementer|backend|frontend|auditor|validator|finalizer)\b",
+        r"(?i)\b(for|to|:|→|->)\s+(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|planner|backend|frontend|auditor|validator|finalizer)\b",
         suffix,
     )
     if match is None:
@@ -988,7 +986,7 @@ def _normalize_agent(
         return "Epic-Close", warnings
     if normalized in {"planner", "plan"}:
         return "Gemini-PE", warnings
-    if normalized in {"implementer", "backend"}:
+    if normalized == "backend":
         return "Codex", warnings
     if normalized == "frontend":
         return "Gemini-Frontend", warnings

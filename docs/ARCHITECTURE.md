@@ -63,6 +63,37 @@ The handoff file contains two layers:
 - YAML frontmatter for machine routing.
 - Markdown body for human and agent context.
 
+## Next-Agent Normalizer
+
+The router treats canonical frontmatter as the authority. Supported public
+roles are `planner`, `backend`, `frontend`, `auditor`, `validator`,
+`finalizer`, and `user`.
+
+If `next_agent` is not an exact enum match, the dispatcher can invoke an
+internal next-agent normalizer backed by a configured small model. The current
+scaffold uses Claude Haiku as the default implementation, but the public
+configuration should allow equivalent low-latency models from other providers.
+This is not a workflow role and not a general reasoning step. It is a
+constrained resolver for obvious freeform values.
+
+The normalizer has two execution paths. If a provider API key is available, it
+uses a structured API call with the Pydantic `NormalizedNextAgent` schema. If
+no API key is available, it can fall back to the configured provider CLI
+session. Once the API path is selected, API errors fail closed instead of
+silently switching to local OAuth state.
+
+The first scaffold implements the Claude API and Claude CLI normalizer paths.
+Provider adapters for other model families should keep the same schema and
+failure contract.
+
+Normalizer outcomes:
+
+- canonical role: rewrite `next_agent` and continue through deterministic
+  routing;
+- `unknown`: fail closed and send the handoff to validation or user
+  intervention;
+- invalid model output: fail closed rather than inventing a route.
+
 ## Git As State
 
 The dispatcher expects Git commit SHAs to appear in handoffs that claim
@@ -94,8 +125,8 @@ validator role with a scoped prompt.
 ## Provider CLIs
 
 Provider CLIs are adapters, not workflow roles. A public config should map
-generic roles such as `planner` or `implementer` to concrete providers such as
-Gemini, Codex, or Claude.
+generic roles such as `planner`, `backend`, or `frontend` to concrete providers
+such as Gemini, Codex, or Claude.
 
 The dispatcher does not sandbox these tools and does not manage their auth.
 
