@@ -135,6 +135,15 @@ POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE = (
     "evidence unless a listed validator error explicitly identifies that field "
     "as invalid. Commit exactly docs/handoff/HANDOFF.md before finishing."
 )
+PRE_DISPATCH_INVALID_FRONTMATTER_PLANNER_RECOVERY_TEMPLATE = (
+    "The current HANDOFF.md has invalid but parseable routing frontmatter before "
+    "dispatch. Do not execute implementation, audit, or scoping work yet. Do not "
+    "modify source, tests, project-state files, ledger files, or completed work. "
+    "Only rewrite docs/handoff/HANDOFF.md into a valid dispatchable handoff, or "
+    "route to user if unsafe. Preserve the intended next_agent `{next_agent}` "
+    "unless the handoff evidence proves that route is unsafe. Router warning: "
+    "{warning}. Commit exactly docs/handoff/HANDOFF.md before finishing."
+)
 STALE_EPIC_CLOSE_GEMINI_RECOVERY_INSTRUCTION = (
     "The prior finalizer cycle already completed, but HANDOFF.md was not "
     "rewritten and still contains stale finalizer routing. Treat "
@@ -161,6 +170,12 @@ class PendingPlannerRecovery:
     handoff_sha: str
     additional_instruction: str
     kind: str = "routing"
+
+
+@dataclass(frozen=True, slots=True)
+class PreDispatchPlannerRecovery:
+    decision: RoutingDecision
+    additional_instruction: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +281,22 @@ def run_loop(
                 "STALE finalizer detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
             )
             decision = recovery_decision
+
+        if decision.route == "unknown":
+            pre_dispatch_recovery = _pre_dispatch_invalid_frontmatter_recovery(
+                decision,
+                handoff_content,
+            )
+            if pre_dispatch_recovery is not None:
+                _log(
+                    log_fn,
+                    "WARN",
+                    "HANDOFF.md has invalid but parseable routing frontmatter; routing to planner for cleanup-only recovery.",
+                )
+                decision = pre_dispatch_recovery.decision
+                forced_additional_instruction = (
+                    pre_dispatch_recovery.additional_instruction
+                )
 
         _log(log_fn, "INFO", f"Routing source: {decision.source}")
 
@@ -1139,6 +1170,46 @@ def _stale_route_recovery_decision(
             "still routes to finalizer with unchanged content."
         ),
         warnings=[],
+    )
+
+
+def _pre_dispatch_invalid_frontmatter_recovery(
+    decision: RoutingDecision,
+    handoff_content: str,
+) -> PreDispatchPlannerRecovery | None:
+    if decision.source != "frontmatter.invalid":
+        return None
+
+    try:
+        frontmatter = parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        return None
+    if frontmatter is None:
+        return None
+
+    next_agent = (frontmatter.next_agent or "").strip()
+    if not next_agent or next_agent == "user":
+        return None
+    if next_agent not in CANONICAL_NEXT_AGENT_SET:
+        return None
+
+    warning = "; ".join(decision.warnings) or decision.reasoning
+    return PreDispatchPlannerRecovery(
+        decision=RoutingDecision(
+            route="planner",
+            confidence="HIGH",
+            source="pre_dispatch_frontmatter_recovery",
+            reasoning=(
+                "HANDOFF frontmatter is invalid but parseable and names a "
+                "recognized next_agent, so the planner is repairing the "
+                "handoff before normal dispatch continues."
+            ),
+            warnings=decision.warnings,
+        ),
+        additional_instruction=PRE_DISPATCH_INVALID_FRONTMATTER_PLANNER_RECOVERY_TEMPLATE.format(
+            next_agent=next_agent,
+            warning=warning,
+        ),
     )
 
 

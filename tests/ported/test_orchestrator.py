@@ -739,6 +739,89 @@ There is no next step in this file.
     ) in log_messages
 
 
+def test_run_loop_routes_parseable_invalid_frontmatter_to_planner_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: backend
+producer: auditor
+---
+
+# Auditor Handback
+
+Diagnostic commit SHA: 476c2b0.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    planner_calls: list[str | None] = []
+
+    def fail_support_role(*_args: Any, **_kwargs: Any) -> SubagentResult:
+        raise AssertionError("startup recovery should not invoke handoff-validator")
+
+    def fake_planner(
+        path: Path,
+        *,
+        additional_instruction: str | None = None,
+        log=None,
+        **_kwargs: Any,
+    ) -> DispatchResult:
+        assert path == handoff_path
+        assert callable(log)
+        planner_calls.append(additional_instruction)
+        path.write_text(
+            """---
+next_agent: backend
+reason: Repair startup handoff routing before backend dispatch.
+producer: planner
+---
+
+## Task Assignment
+
+**Agent:** backend
+
+### Objective
+Continue the intended backend route.
+
+### Acceptance Criteria
+- Keep the route dispatchable.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fail_support_role)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(planner_calls) == 1
+    assert "invalid but parseable routing frontmatter" in (planner_calls[0] or "")
+    assert "next_agent `backend`" in (planner_calls[0] or "")
+    assert "reason is required" in (planner_calls[0] or "")
+    assert (
+        "WARN",
+        "HANDOFF.md has invalid but parseable routing frontmatter; routing to planner for cleanup-only recovery.",
+    ) in log_messages
+    assert ("INFO", "Routing source: pre_dispatch_frontmatter_recovery") in log_messages
+    assert ("INFO", "Routing instruction: planner") in log_messages
+    assert ("DISPATCH", "Dispatching planner.") in log_messages
+
+
 def test_run_loop_waits_for_handoff_change_before_resuming_unknown_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
