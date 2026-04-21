@@ -739,7 +739,93 @@ There is no next step in this file.
     ) in log_messages
 
 
-def test_run_loop_routes_parseable_invalid_frontmatter_to_planner_recovery(
+def test_run_loop_dispatches_parseable_invalid_planner_frontmatter_as_planner_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: planner
+producer: auditor
+---
+
+# Auditor Handback
+
+Diagnostic commit SHA: 476c2b0.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    planner_calls: list[str | None] = []
+
+    def fail_support_role(*_args: Any, **_kwargs: Any) -> SubagentResult:
+        raise AssertionError("startup recovery should not invoke handoff-validator")
+
+    def fake_planner(
+        path: Path,
+        *,
+        additional_instruction: str | None = None,
+        log=None,
+        **_kwargs: Any,
+    ) -> DispatchResult:
+        assert path == handoff_path
+        assert callable(log)
+        planner_calls.append(additional_instruction)
+        path.write_text(
+            """---
+next_agent: backend
+reason: Continue with the scoped backend implementation.
+producer: planner
+---
+
+## Task Assignment
+
+**Agent:** backend
+
+### Objective
+Continue the intended backend route.
+
+### Acceptance Criteria
+- Keep the route dispatchable.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fail_support_role)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert len(planner_calls) == 1
+    assert "normal planner planning/scoping dispatch" in (planner_calls[0] or "")
+    assert "Do not stop after only fixing frontmatter" in (planner_calls[0] or "")
+    assert "reason is required" in (planner_calls[0] or "")
+    assert (
+        "WARN",
+        "HANDOFF.md routes to planner but has invalid frontmatter; dispatching planner normally with frontmatter repair instruction.",
+    ) in log_messages
+    assert (
+        "INFO",
+        "Routing source: pre_dispatch_planner_frontmatter_repair",
+    ) in log_messages
+    assert ("INFO", "Routing instruction: planner") in log_messages
+    assert ("DISPATCH", "Dispatching planner.") in log_messages
+
+
+def test_run_loop_routes_parseable_invalid_non_planner_frontmatter_to_planner_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -810,7 +896,7 @@ Continue the intended backend route.
 
     assert exit_code == 0
     assert len(planner_calls) == 1
-    assert "invalid but parseable routing frontmatter" in (planner_calls[0] or "")
+    assert "cleanup-only recovery" in (planner_calls[0] or "")
     assert "next_agent `backend`" in (planner_calls[0] or "")
     assert "reason is required" in (planner_calls[0] or "")
     assert (

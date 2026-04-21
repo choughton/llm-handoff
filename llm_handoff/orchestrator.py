@@ -137,12 +137,25 @@ POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE = (
 )
 PRE_DISPATCH_INVALID_FRONTMATTER_PLANNER_RECOVERY_TEMPLATE = (
     "The current HANDOFF.md has invalid but parseable routing frontmatter before "
-    "dispatch. Do not execute implementation, audit, or scoping work yet. Do not "
-    "modify source, tests, project-state files, ledger files, or completed work. "
-    "Only rewrite docs/handoff/HANDOFF.md into a valid dispatchable handoff, or "
-    "route to user if unsafe. Preserve the intended next_agent `{next_agent}` "
-    "unless the handoff evidence proves that route is unsafe. Router warning: "
-    "{warning}. Commit exactly docs/handoff/HANDOFF.md before finishing."
+    "dispatch. This is cleanup-only recovery. Do not execute implementation, "
+    "audit, or scoping work yet. Do not modify source, tests, project-state "
+    "files, ledger files, or completed work. Only rewrite "
+    "docs/handoff/HANDOFF.md into a valid dispatchable handoff, or route to user "
+    "if unsafe. Preserve the intended next_agent `{next_agent}` unless the "
+    "handoff evidence proves that route is unsafe. Router warning: {warning}. "
+    "Commit exactly docs/handoff/HANDOFF.md before finishing."
+)
+PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE = (
+    "The current HANDOFF.md routes to planner, but its routing frontmatter is "
+    "invalid before dispatch. Treat this as a normal planner planning/scoping "
+    "dispatch, not cleanup-only recovery. First account for the router warning "
+    "while rewriting HANDOFF.md: {warning}. Then perform the planner work "
+    "requested by the handoff body and produce the next dispatchable handoff. "
+    "Do not stop after only fixing frontmatter. Do not route back to planner "
+    "unless the result is an explicit user-facing pause/escalation that cannot "
+    "be assigned to backend, frontend, auditor, or finalizer. Do not modify "
+    "source, tests, project-state files, ledger files, or completed work. Commit "
+    "exactly docs/handoff/HANDOFF.md before finishing."
 )
 STALE_EPIC_CLOSE_GEMINI_RECOVERY_INSTRUCTION = (
     "The prior finalizer cycle already completed, but HANDOFF.md was not "
@@ -288,10 +301,23 @@ def run_loop(
                 handoff_content,
             )
             if pre_dispatch_recovery is not None:
+                if (
+                    pre_dispatch_recovery.decision.source
+                    == "pre_dispatch_planner_frontmatter_repair"
+                ):
+                    recovery_message = (
+                        "HANDOFF.md routes to planner but has invalid frontmatter; "
+                        "dispatching planner normally with frontmatter repair instruction."
+                    )
+                else:
+                    recovery_message = (
+                        "HANDOFF.md has invalid but parseable routing frontmatter; "
+                        "routing to planner for cleanup-only recovery."
+                    )
                 _log(
                     log_fn,
                     "WARN",
-                    "HANDOFF.md has invalid but parseable routing frontmatter; routing to planner for cleanup-only recovery.",
+                    recovery_message,
                 )
                 decision = pre_dispatch_recovery.decision
                 forced_additional_instruction = (
@@ -1194,6 +1220,25 @@ def _pre_dispatch_invalid_frontmatter_recovery(
         return None
 
     warning = "; ".join(decision.warnings) or decision.reasoning
+    if next_agent == "planner":
+        return PreDispatchPlannerRecovery(
+            decision=RoutingDecision(
+                route="planner",
+                confidence="HIGH",
+                source="pre_dispatch_planner_frontmatter_repair",
+                reasoning=(
+                    "HANDOFF frontmatter is invalid but parseable and routes to "
+                    "planner, so the planner is dispatched normally with a "
+                    "frontmatter repair instruction before doing the requested "
+                    "planning work."
+                ),
+                warnings=decision.warnings,
+            ),
+            additional_instruction=PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE.format(
+                warning=warning,
+            ),
+        )
+
     return PreDispatchPlannerRecovery(
         decision=RoutingDecision(
             route="planner",
