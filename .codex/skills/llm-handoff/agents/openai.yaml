@@ -1,0 +1,6 @@
+version: 1
+agents:
+  - name: llm-handoff-backend
+    display_name: "llm-handoff backend"
+    short_description: "Backend role bootstrap for llm-handoff repositories"
+    default_prompt: "Use $llm-handoff, read docs/handoff/HANDOFF.md, and execute the backend assignment within the repository role boundary."

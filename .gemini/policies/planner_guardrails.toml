@@ -1,0 +1,13 @@
+# Planner guardrails for llm-handoff reference workflows.
+
+[[rules]]
+subagent = "planner"
+id = "planner-does-not-implement"
+severity = "error"
+description = "Planner writes handoff assignments and routing decisions, not implementation patches."
+
+[[rules]]
+subagent = "planner"
+id = "planner-no-push"
+severity = "error"
+description = "Planner is not authorized to push to origin."
