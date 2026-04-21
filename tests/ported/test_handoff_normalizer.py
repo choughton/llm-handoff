@@ -35,17 +35,18 @@ def test_normalize_next_agent_passes_exact_canonical_without_llm(
         handoff_normalizer.instructor, "from_anthropic", fail_from_anthropic
     )
 
-    assert handoff_normalizer.normalize_next_agent("claude-audit") == "claude-audit"
+    assert handoff_normalizer.normalize_next_agent("auditor") == "auditor"
+    assert handoff_normalizer.normalize_next_agent("claude-audit") == "auditor"
+    assert handoff_normalizer.normalize_next_agent("Codex") == "backend"
 
 
 @pytest.mark.parametrize(
-    ("freeform", "canonical"),
-    [
-        ("Claude Code (Auditor)", "claude-audit"),
-        ("gemini pe", "gemini-pe"),
-        ("frontend role", "frontend"),
-        ("ledger", "claude-ledger"),
-        ("Codex", "codex"),
+        ("freeform", "canonical"),
+        [
+            ("Claude Code (Auditor)", "auditor"),
+            ("gemini pe", "planner"),
+            ("frontend role", "frontend"),
+            ("ledger", "finalizer"),
     ],
 )
 def test_normalize_next_agent_uses_instructor_for_freeform_values(
@@ -124,8 +125,8 @@ def test_normalize_next_agent_uses_claude_cli_oauth_without_sdk_credentials(
             stdout=json.dumps(
                 {
                     "type": "result",
-                    "result": "Done. The normalized agent value is `claude-audit`.",
-                    "structured_output": {"normalized": "claude-audit"},
+                    "result": "Done. The normalized agent value is `auditor`.",
+                    "structured_output": {"normalized": "auditor"},
                 }
             ),
             stderr="",
@@ -138,9 +139,7 @@ def test_normalize_next_agent_uses_claude_cli_oauth_without_sdk_credentials(
     )
     monkeypatch.setattr(handoff_normalizer.subprocess, "run", fake_run)
 
-    assert handoff_normalizer.normalize_next_agent("Claude Code (Auditor)") == (
-        "claude-audit"
-    )
+    assert handoff_normalizer.normalize_next_agent("Claude Code (Auditor)") == "auditor"
     [call] = calls
     command = call["command"]
     kwargs = call["kwargs"]
@@ -172,7 +171,7 @@ def test_normalize_next_agent_falls_back_to_claude_cli_when_sdk_auth_fails(
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps({"result": json.dumps({"normalized": "claude-audit"})}),
+            stdout=json.dumps({"result": json.dumps({"normalized": "auditor"})}),
             stderr="",
         )
 
@@ -185,8 +184,7 @@ def test_normalize_next_agent_falls_back_to_claude_cli_when_sdk_auth_fails(
     monkeypatch.setattr(handoff_normalizer.subprocess, "run", fake_run)
 
     assert (
-        handoff_normalizer.normalize_next_agent("Claude Code (Auditor)")
-        == "claude-audit"
+        handoff_normalizer.normalize_next_agent("Claude Code (Auditor)") == "auditor"
     )
     assert len(calls) == 1
 

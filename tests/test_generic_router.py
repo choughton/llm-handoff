@@ -12,15 +12,15 @@ LEGACY_FRONTEND_ALIAS = ("cross" + "fire") + "_frontend"
 @pytest.mark.parametrize(
     ("next_agent", "expected_route"),
     [
-        ("backend", "Codex"),
-        ("codex", "Codex"),
-        ("planner", "Gemini-PE"),
-        ("gemini-pe", "Gemini-PE"),
-        ("frontend", "Gemini-Frontend"),
-        ("gemini-frontend", "Gemini-Frontend"),
-        ("claude-audit", "ClaudeCode-Audit"),
-        ("claude-ledger", "Epic-Close"),
-        ("user", "Escalation"),
+        ("backend", "backend"),
+        ("codex", "backend"),
+        ("planner", "planner"),
+        ("gemini-pe", "planner"),
+        ("frontend", "frontend"),
+        ("gemini-frontend", "frontend"),
+        ("claude-audit", "auditor"),
+        ("claude-ledger", "finalizer"),
+        ("user", "user"),
     ],
 )
 def test_route_supports_generic_frontmatter_next_agent_values(
@@ -52,7 +52,7 @@ producer: planner
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Unknown",
+        route="unknown",
         confidence="LOW",
         source="frontmatter.invalid",
         reasoning="YAML routing frontmatter is present but invalid.",
@@ -73,7 +73,7 @@ producer: planner
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Unknown",
+        route="unknown",
         confidence="LOW",
         source="frontmatter.invalid",
         reasoning="YAML routing frontmatter is present but invalid.",
@@ -101,4 +101,4 @@ producer: planner
     assert normalization.rewritten
     assert normalization.original == "implementer"
     assert normalization.normalized == "backend"
-    assert route(normalization.content).route == "Codex"
+    assert route(normalization.content).route == "backend"

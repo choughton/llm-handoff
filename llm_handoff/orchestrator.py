@@ -10,10 +10,10 @@ from typing import Callable
 from llm_handoff.agents import (
     DispatchResult,
     SubagentResult,
-    invoke_claude_subagent,
-    invoke_codex,
-    invoke_gemini,
-    invoke_manual_frontend,
+    invoke_backend_role,
+    invoke_frontend_role,
+    invoke_planner_role,
+    invoke_support_role,
 )
 from llm_handoff.config import DispatchConfig, NormalizerConfig
 from llm_handoff.ledger import run_epic_close
@@ -69,7 +69,7 @@ STALE_ROUTE_VALIDATOR_PROMPT_TEMPLATE = (
 )
 EPIC_CLOSE_VALIDATOR_PROMPT_TEMPLATE = (
     "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
-    "The dispatcher attempted Epic-Close, but the ledger-updater returned "
+    "The dispatcher attempted finalizer, but the ledger-updater returned "
     "unparseable output: {parse_error}. "
     "Focus on whether the handoff was truly ready for epic close or should "
     "route to audit, planning, or escalation instead. Return ONLY the "
@@ -111,15 +111,15 @@ POST_DISPATCH_ROUTING_RECOVERY_INSTRUCTION_TEMPLATE = (
     "HANDOFF.md does not contain a dispatchable routing instruction. Read the "
     "current HANDOFF.md and determine the correct next step. Rewrite "
     "HANDOFF.md with either a canonical dispatchable route for the next agent "
-    "or an explicit Escalation section if the work cannot be routed safely."
+    "or an explicit user section if the work cannot be routed safely."
 )
 STALE_EPIC_CLOSE_GEMINI_RECOVERY_INSTRUCTION = (
-    "The prior Epic-Close cycle already completed, but HANDOFF.md was not "
-    "rewritten and still contains stale Epic-Close routing. Treat "
+    "The prior finalizer cycle already completed, but HANDOFF.md was not "
+    "rewritten and still contains stale finalizer routing. Treat "
     "PROJECT_STATE.md and Git history as the source of truth for the current "
     "workflow phase. Evaluate the current repo state, scope the next phase, "
     "and rewrite HANDOFF.md for the next cycle instead of repeating "
-    "Epic-Close."
+    "finalizer."
 )
 
 LogFn = Callable[[str, str], None]
@@ -157,8 +157,8 @@ def run_loop(
     previous_cycle: Cycle | None = None
     cycle_number = 0
     pending_planner_recovery: PendingPlannerRecovery | None = None
-    gemini_pe_session_id: str | None = None
-    gemini_pe_previous_handoff_sha: str | None = None
+    planner_session_id: str | None = None
+    planner_previous_handoff_sha: str | None = None
 
     while True:
         cycle_number += 1
@@ -184,7 +184,7 @@ def run_loop(
             log_fn,
         )
 
-        claude_md_content = _read_optional_text(config.claude_md_full_path)
+        project_state_content = _read_optional_text(config.project_state_full_path)
         handoff_sha = _content_sha(handoff_content)
         _log_handoff_scope(handoff_content, log_fn)
         forced_additional_instruction: str | None = None
@@ -193,7 +193,7 @@ def run_loop(
             and pending_planner_recovery.handoff_sha == handoff_sha
         ):
             decision = RoutingDecision(
-                route="Gemini-PE",
+                route="planner",
                 confidence="HIGH",
                 source="post_dispatch_routing_recovery",
                 reasoning=(
@@ -210,11 +210,11 @@ def run_loop(
             pending_planner_recovery = None
             decision = route_handoff(
                 handoff_content,
-                claude_md_content=claude_md_content,
+                project_state_content=project_state_content,
             )
         recovery_decision = _stale_route_recovery_decision(
             decision.route,
-            claude_md_content=claude_md_content,
+            project_state_content=project_state_content,
             previous_cycle=previous_cycle,
             handoff_sha=handoff_sha,
         )
@@ -222,13 +222,13 @@ def run_loop(
             _log(
                 log_fn,
                 "WARN",
-                "STALE Epic-Close detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
+                "STALE finalizer detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
             )
             decision = recovery_decision
 
         _log(log_fn, "INFO", f"Routing source: {decision.source}")
 
-        if decision.route == "Unknown":
+        if decision.route == "unknown":
             _run_unknown_route_validator(log_fn)
             if not _pause_until_handoff_changes(
                 config,
@@ -241,7 +241,7 @@ def run_loop(
                 return 0
             continue
 
-        if decision.route == "Escalation":
+        if decision.route == "user":
             if not _pause_until_handoff_changes(
                 config,
                 handoff_sha=handoff_sha,
@@ -299,11 +299,11 @@ def run_loop(
                 return 0
             continue
 
-        if current_cycle.route == "Epic-Close":
+        if current_cycle.route == "finalizer":
             _log(
                 log_fn,
                 "DISPATCH",
-                "Dispatching Claude Code ledger-updater for epic close.",
+                "Dispatching auditor ledger-updater for epic close.",
             )
             ledger_result = run_epic_close(log=log_fn)
             parse_error = ledger_result.parse_error
@@ -313,7 +313,7 @@ def run_loop(
                     config,
                     handoff_sha=current_cycle.handoff_sha,
                     reason=(
-                        "Epic-Close ledger-updater output was unparseable. Update HANDOFF.md; dispatch will resume after the file changes."
+                        "finalizer ledger-updater output was unparseable. Update HANDOFF.md; dispatch will resume after the file changes."
                     ),
                     log=log_fn,
                 ):
@@ -337,8 +337,8 @@ def run_loop(
                 current_cycle.route,
                 config,
                 log_fn,
-                gemini_pe_session_id=gemini_pe_session_id,
-                gemini_pe_previous_handoff_sha=gemini_pe_previous_handoff_sha,
+                planner_session_id=planner_session_id,
+                planner_previous_handoff_sha=planner_previous_handoff_sha,
                 current_handoff_sha=current_cycle.handoff_sha,
                 additional_instruction=(
                     forced_additional_instruction
@@ -373,15 +373,15 @@ def run_loop(
                 prior_handoff_sha=current_cycle.handoff_sha,
                 log=log_fn,
             )
-            if current_cycle.route == "Gemini-PE" and config.use_gemini_resume:
+            if current_cycle.route == "planner" and config.planner_resume_enabled:
                 if dispatch_result.session_invalidated:
-                    gemini_pe_session_id = None
-                    gemini_pe_previous_handoff_sha = None
+                    planner_session_id = None
+                    planner_previous_handoff_sha = None
                 if dispatch_result.exit_code == 0:
                     if dispatch_result.session_id:
-                        gemini_pe_session_id = dispatch_result.session_id
-                    if gemini_pe_session_id:
-                        gemini_pe_previous_handoff_sha = current_cycle.handoff_sha
+                        planner_session_id = dispatch_result.session_id
+                    if planner_session_id:
+                        planner_previous_handoff_sha = current_cycle.handoff_sha
             if dispatch_result.exit_code != 0:
                 consecutive_failures = _record_failure(
                     config,
@@ -483,66 +483,65 @@ def _dispatch_route(
     config: DispatchConfig,
     log: LogFn,
     *,
-    gemini_pe_session_id: str | None = None,
-    gemini_pe_previous_handoff_sha: str | None = None,
+    planner_session_id: str | None = None,
+    planner_previous_handoff_sha: str | None = None,
     current_handoff_sha: str | None = None,
     additional_instruction: str | None = None,
 ) -> tuple[DispatchResult, str]:
     handoff_path = config.handoff_full_path
 
-    if route == "Codex":
-        _log(log, "DISPATCH", "Dispatching Codex.")
-        return invoke_codex(
+    if route == "backend":
+        _log(log, "DISPATCH", "Dispatching backend.")
+        return invoke_backend_role(
             handoff_path,
             log=log,
-            use_resume=config.use_codex_resume,
-        ), "Codex"
+            use_resume=config.backend_resume_enabled,
+        ), "backend"
 
-    if route == "Gemini-PE":
-        _log(log, "DISPATCH", "Dispatching Gemini PE.")
+    if route == "planner":
+        _log(log, "DISPATCH", "Dispatching planner.")
         return (
-            invoke_gemini(
-                "PE",
+            invoke_planner_role(
                 handoff_path,
-                use_api_key_env=config.use_gemini_api_key_env,
+                use_api_key_env=config.planner_api_key_env_enabled,
                 additional_instruction=additional_instruction,
-                use_resume=config.use_gemini_resume,
-                session_id=gemini_pe_session_id,
-                previous_handoff_sha=gemini_pe_previous_handoff_sha,
+                use_resume=config.planner_resume_enabled,
+                session_id=planner_session_id,
+                previous_handoff_sha=planner_previous_handoff_sha,
                 current_handoff_sha=current_handoff_sha,
                 log=log,
             ),
-            "Gemini-PE",
+            "planner",
         )
 
-    if route == "Gemini-Frontend":
+    if route == "frontend":
         if config.use_manual_frontend:
             _log(log, "DISPATCH", "Dispatching manual frontend (GUI, manual pause).")
-            return invoke_manual_frontend(handoff_path, log=log), "manual frontend (GUI)"
+        else:
+            _log(log, "DISPATCH", "Dispatching frontend.")
 
-        _log(log, "DISPATCH", "Dispatching Gemini Frontend.")
         return (
-            invoke_gemini(
-                "Frontend",
+            invoke_frontend_role(
                 handoff_path,
-                use_api_key_env=config.use_gemini_api_key_env,
+                use_manual_frontend=config.use_manual_frontend,
+                use_api_key_env=config.planner_api_key_env_enabled,
                 additional_instruction=additional_instruction,
                 log=log,
             ),
-            "Gemini-Frontend",
+            "frontend",
         )
 
-    if route == "ClaudeCode-Audit":
-        _log(log, "DISPATCH", "Dispatching Claude Code for audit.")
+    if route == "auditor":
+        _log(log, "DISPATCH", "Dispatching auditor for audit.")
         return _dispatch_from_subagent(
-            invoke_claude_subagent("auditor", AUDIT_PROMPT, log=log)
-        ), "Claude Code (audit)"
+            invoke_support_role("auditor", AUDIT_PROMPT, log=log)
+        ), "auditor (audit)"
 
-    if route == "ClaudeCode-Misroute":
-        _log(log, "DISPATCH", "Dispatching Claude Code for misroute clarification.")
+    if route == "validator":
+        _log(log, "DISPATCH", "Dispatching validator for route clarification.")
         return _dispatch_from_subagent(
-            invoke_claude_subagent("handoff-router", MISROUTE_PROMPT, log=log)
-        ), "Claude Code (misroute)"
+            invoke_support_role("handoff-router", MISROUTE_PROMPT, log=log)
+        ), "validator"
 
     raise ValueError(f"Unsupported route: {route}")
 
@@ -590,7 +589,7 @@ def _run_validator(
     label: str,
     log: LogFn,
 ) -> None:
-    result = invoke_claude_subagent(
+    result = invoke_support_role(
         subagent_name,
         prompt,
         log=log,
@@ -623,7 +622,7 @@ def _run_unknown_route_validator(log: LogFn) -> None:
     _log(
         log,
         "AGENT",
-        "No dispatchable route found. Invoking Claude handoff-validator...",
+        "No dispatchable route found. Invoking the validator role...",
     )
     _run_validator(
         "handoff-validator",
@@ -636,25 +635,25 @@ def _run_unknown_route_validator(log: LogFn) -> None:
 def _stale_route_recovery_decision(
     route: RouteName,
     *,
-    claude_md_content: str | None,
+    project_state_content: str | None,
     previous_cycle: Cycle | None,
     handoff_sha: str,
 ) -> RoutingDecision | None:
-    if route != "Epic-Close":
+    if route != "finalizer":
         return None
     if previous_cycle is None:
         return None
-    if previous_cycle.route != "Epic-Close":
+    if previous_cycle.route != "finalizer":
         return None
     if previous_cycle.handoff_sha != handoff_sha:
         return None
     return RoutingDecision(
-        route="Gemini-PE",
+        route="planner",
         confidence="HIGH",
         source="stale_epic_close_recovery",
         reasoning=(
-            "The prior Epic-Close cycle completed successfully, but HANDOFF.md "
-            "still routes to Epic-Close with unchanged content."
+            "The prior finalizer cycle completed successfully, but HANDOFF.md "
+            "still routes to finalizer with unchanged content."
         ),
         warnings=[],
     )
@@ -699,7 +698,7 @@ def _run_stale_route_validator(route: RouteName, log: LogFn) -> None:
     _log(
         log,
         "AGENT",
-        f"Stale HANDOFF detected for route {route}. Invoking Claude handoff-validator...",
+        f"Stale HANDOFF detected for route {route}. Invoking the validator role...",
     )
     _run_validator(
         "handoff-validator",
@@ -713,7 +712,7 @@ def _run_epic_close_validator(parse_error: str, log: LogFn) -> None:
     _log(
         log,
         "AGENT",
-        "Epic-Close produced unparseable ledger-updater output. Invoking Claude handoff-validator...",
+        "finalizer produced unparseable ledger-updater output. Invoking the validator role...",
     )
     _run_validator(
         "handoff-validator",
@@ -730,7 +729,7 @@ def _run_low_confidence_route_validator(
     _log(
         log,
         "AGENT",
-        f"Routing decision for {decision.route} is only {decision.confidence} confidence. Invoking Claude handoff-validator before dispatch...",
+        f"Routing decision for {decision.route} is only {decision.confidence} confidence. Invoking the validator role before dispatch...",
     )
     _run_validator(
         "handoff-validator",
@@ -752,12 +751,12 @@ def _run_self_loop_validator(
 ) -> None:
     if self_loop_kind == "planner":
         prompt = PLANNER_SELF_LOOP_VALIDATOR_PROMPT
-        message = "The planner produced a self-loop. Invoking Claude handoff-validator..."
+        message = "The planner produced a self-loop. Invoking the validator role..."
     else:
         prompt = AGENT_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE.format(
             previous_agent=previous_agent
         )
-        message = f"{previous_agent} produced a self-loop. Invoking Claude handoff-validator..."
+        message = f"{previous_agent} produced a self-loop. Invoking the validator role..."
 
     _log(log, "AGENT", message)
     _run_validator(
@@ -776,7 +775,7 @@ def _run_post_dispatch_missing_route_validator(
     _log(
         log,
         "AGENT",
-        f"{previous_agent} produced a handoff without a dispatchable route. Invoking Claude handoff-validator...",
+        f"{previous_agent} produced a handoff without a dispatchable route. Invoking the validator role...",
     )
     _run_validator(
         "handoff-validator",
@@ -834,7 +833,7 @@ def _should_schedule_planner_recovery(
     result: ValidationResult,
     previous_agent: str,
 ) -> bool:
-    if "gemini" in previous_agent.lower():
+    if previous_agent == "planner":
         return False
     return _has_missing_route_error(result)
 
@@ -939,40 +938,40 @@ def _log_validation(
 
 
 def _log_dry_run(config: DispatchConfig, route: RouteName, log: LogFn) -> None:
-    if route == "Codex":
-        _log(log, "DISPATCH", "[DRY RUN] Would dispatch Codex")
+    if route == "backend":
+        _log(log, "DISPATCH", "[DRY RUN] Would dispatch backend")
         return
 
-    if route == "Gemini-PE":
-        _log(log, "DISPATCH", "[DRY RUN] Would dispatch Gemini PE")
+    if route == "planner":
+        _log(log, "DISPATCH", "[DRY RUN] Would dispatch planner")
         return
 
-    if route == "Gemini-Frontend":
+    if route == "frontend":
         target = (
             "manual frontend pause"
             if config.use_manual_frontend
-            else "Gemini Frontend (CLI)"
+            else "configured frontend provider"
         )
         _log(log, "DISPATCH", f"[DRY RUN] Would dispatch {target} for frontend work")
         return
 
-    if route == "ClaudeCode-Audit":
-        _log(log, "DISPATCH", "[DRY RUN] Would dispatch Claude Code for audit")
+    if route == "auditor":
+        _log(log, "DISPATCH", "[DRY RUN] Would dispatch auditor for audit")
         return
 
-    if route == "ClaudeCode-Misroute":
+    if route == "validator":
         _log(
             log,
             "DISPATCH",
-            "[DRY RUN] Would dispatch Claude Code for misroute clarification",
+            "[DRY RUN] Would dispatch auditor for misroute clarification",
         )
         return
 
-    if route == "Epic-Close":
+    if route == "finalizer":
         _log(
             log,
             "DISPATCH",
-            "[DRY RUN] Would handle Epic-Close with auto ledger update",
+            "[DRY RUN] Would handle finalizer with auto ledger update",
         )
         return
 
@@ -981,7 +980,7 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
     frontend_mode = (
         "manual frontend pause"
         if config.use_manual_frontend
-        else "Gemini CLI frontend"
+        else "configured frontend provider"
     )
 
     _log(log, "INFO", "================================================")
@@ -1001,23 +1000,23 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
     _log(
         log,
         "INFO",
-        "Codex session:      MANAGED RESUME (persisted thread id)"
-        if config.use_codex_resume
-        else "Codex session:      STATELESS (new session per dispatch)",
+        "backend session:      MANAGED RESUME (persisted thread id)"
+        if config.backend_resume_enabled
+        else "backend session:      STATELESS (new session per dispatch)",
     )
     _log(
         log,
         "INFO",
-        "Gemini PE session:  MANAGED RESUME (in-memory session id)"
-        if config.use_gemini_resume
-        else "Gemini PE session:  STATELESS (new session per dispatch)",
+        "Planner session:    MANAGED RESUME (in-memory session id)"
+        if config.planner_resume_enabled
+        else "Planner session:    STATELESS (new session per dispatch)",
     )
     _log(
         log,
         "INFO",
-        "Gemini API env:     PRESERVE GEMINI_API_KEY; STRIP GOOGLE_API_KEY"
-        if config.use_gemini_api_key_env
-        else "Gemini API env:     STRIP GOOGLE_API_KEY/GEMINI_API_KEY",
+        "Planner API env:    PRESERVE configured provider API key"
+        if config.planner_api_key_env_enabled
+        else "Planner API env:    STRIP configured provider API keys",
     )
 
 

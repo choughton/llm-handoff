@@ -101,5 +101,5 @@ def test_reference_workflow_starter_handoff_routes_to_planner() -> None:
     assert frontmatter is not None
     assert frontmatter.next_agent == "planner"
     assert frontmatter.producer == "user"
-    assert decision.route == "Gemini-PE"
+    assert decision.route == "planner"
     assert decision.confidence == "HIGH"

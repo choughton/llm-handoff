@@ -47,26 +47,26 @@ def test_parse_handoff_frontmatter_reads_required_and_optional_fields(
     handoff_path = tmp_path / "HANDOFF.md"
     handoff_path.write_text(
         """---
-next_agent: claude-audit
+next_agent: auditor
 reason: Story complete; audit requested.
 scope_sha: 82ce839
 close_type: story
 prior_sha: 3407c66
-producer: codex
+producer: backend
 ---
 
-# Codex Handback
+# backend Handback
 """,
         encoding="utf-8",
     )
 
     assert parse_handoff_frontmatter(handoff_path) == HandoffRouting(
-        next_agent="claude-audit",
+        next_agent="auditor",
         reason="Story complete; audit requested.",
         scope_sha="82ce839",
         close_type="story",
         prior_sha="3407c66",
-        producer="codex",
+        producer="backend",
     )
 
 
@@ -76,14 +76,14 @@ def test_parse_handoff_frontmatter_reads_scope_metadata(
     handoff_path = tmp_path / "HANDOFF.md"
     handoff_path.write_text(
         """---
-next_agent: codex
+next_agent: backend
 reason: Implement the next synthesis story.
 epic_id: E-SYN-1
 story_id: E-SYN-1-S1
 story_title: Synthesis Schema Update
 remaining_stories:
   - E-SYN-1-S2 HTML Export Template Redesign
-producer: gemini-pe
+producer: planner
 ---
 
 # Task Assignment
@@ -92,9 +92,9 @@ producer: gemini-pe
     )
 
     assert parse_handoff_frontmatter(handoff_path) == HandoffRouting(
-        next_agent="codex",
+        next_agent="backend",
         reason="Implement the next synthesis story.",
-        producer="gemini-pe",
+        producer="planner",
         epic_id="E-SYN-1",
         story_id="E-SYN-1-S1",
         story_title="Synthesis Schema Update",
@@ -108,11 +108,11 @@ def test_parse_handoff_frontmatter_accepts_utf16_le_bom(
     handoff_path = tmp_path / "HANDOFF.md"
     handoff_path.write_text(
         """---
-next_agent: claude-audit
+next_agent: auditor
 reason: manual frontend handback ready for audit.
 scope_sha: 236f82f
 close_type: story
-producer: gemini-frontend
+producer: frontend
 ---
 
 # Frontend Handback
@@ -121,26 +121,26 @@ producer: gemini-frontend
     )
 
     assert parse_handoff_frontmatter(handoff_path) == HandoffRouting(
-        next_agent="claude-audit",
+        next_agent="auditor",
         reason="manual frontend handback ready for audit.",
         scope_sha="236f82f",
         close_type="story",
-        producer="gemini-frontend",
+        producer="frontend",
     )
 
 
 def test_parse_handoff_frontmatter_returns_none_when_block_missing() -> None:
     assert (
-        parse_handoff_frontmatter_text("# Legacy Handoff\n\nNext: dispatch Codex")
+        parse_handoff_frontmatter_text("# Legacy Handoff\n\nNext: dispatch backend")
         is None
     )
 
 
 def test_repair_handoff_frontmatter_quotes_reason_with_colon() -> None:
     handoff_content = """---
-next_agent: codex
+next_agent: backend
 reason: Dispatch E2-S1: Implement backend asyncio.as_completed loop.
-producer: gemini-pe
+producer: planner
 ---
 
 ## Task Assignment
@@ -150,9 +150,9 @@ producer: gemini-pe
 
     assert repair.repaired is True
     assert parse_handoff_frontmatter_text(repair.content) == HandoffRouting(
-        next_agent="codex",
+        next_agent="backend",
         reason="Dispatch E2-S1: Implement backend asyncio.as_completed loop.",
-        producer="gemini-pe",
+        producer="planner",
     )
     assert repair.warnings == (
         "Auto-repaired HANDOFF YAML frontmatter by quoting reason.",
@@ -161,21 +161,21 @@ producer: gemini-pe
 
 def test_route_uses_frontmatter_before_legacy_prose() -> None:
     handoff_content = """---
-next_agent: codex
+next_agent: backend
 reason: Implement the next backend story.
-producer: gemini-pe
+producer: planner
 ---
 
 ## Next Step
 
-- **Claude Code:** Audit this stale prose.
+- **auditor:** Audit this stale prose.
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Codex",
+        route="backend",
         confidence="HIGH",
         source="frontmatter.next_agent",
-        reasoning="YAML routing frontmatter routes work to Codex.",
+        reasoning="YAML routing frontmatter routes work to backend.",
         warnings=[],
     )
 
@@ -183,19 +183,19 @@ producer: gemini-pe
 @pytest.mark.parametrize(
     ("next_agent", "expected_route", "extra_frontmatter"),
     [
-        ("claude-audit", "ClaudeCode-Audit", ""),
+        ("claude-audit", "auditor", ""),
         (
             "claude-ledger",
-            "Epic-Close",
+            "finalizer",
             "scope_sha: 82ce839\nclose_type: epic\n",
         ),
-        ("codex", "Codex", ""),
-        ("backend", "Codex", ""),
-        ("gemini-pe", "Gemini-PE", ""),
-        ("planner", "Gemini-PE", ""),
-        ("gemini-frontend", "Gemini-Frontend", ""),
-        ("manual frontend", "Gemini-Frontend", ""),
-        ("user", "Escalation", ""),
+        ("codex", "backend", ""),
+        ("backend", "backend", ""),
+        ("gemini-pe", "planner", ""),
+        ("planner", "planner", ""),
+        ("gemini-frontend", "frontend", ""),
+        ("manual frontend", "frontend", ""),
+        ("user", "user", ""),
     ],
 )
 def test_route_supports_all_frontmatter_next_agent_values(
@@ -224,27 +224,25 @@ def test_route_normalizes_frontend_frontmatter_alias() -> None:
     handoff_content = """---
 next_agent: frontend
 reason: Assign frontend implementation work.
-producer: gemini-pe
+producer: planner
 ---
 
 # Handoff
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Gemini-Frontend",
+        route="frontend",
         confidence="HIGH",
         source="frontmatter.next_agent",
-        reasoning="YAML routing frontmatter routes work to Gemini-Frontend.",
-        warnings=[
-            "frontend frontmatter alias normalized to Gemini-Frontend."
-        ],
+        reasoning="YAML routing frontmatter routes work to frontend.",
+        warnings=[],
     )
 
 
 def test_route_normalizes_backend_frontmatter_alias() -> None:
     handoff_content = """---
 next_agent: backend
-reason: Hand off backend implementation to Codex.
+reason: Hand off backend implementation to backend.
 producer: frontend
 ---
 
@@ -252,11 +250,11 @@ producer: frontend
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Codex",
+        route="backend",
         confidence="HIGH",
         source="frontmatter.next_agent",
-        reasoning="YAML routing frontmatter routes work to Codex.",
-        warnings=["backend frontmatter alias normalized to Codex."],
+        reasoning="YAML routing frontmatter routes work to backend.",
+        warnings=[],
     )
 
 
@@ -264,18 +262,18 @@ def test_route_normalizes_planner_frontmatter_alias() -> None:
     handoff_content = """---
 next_agent: planner
 reason: Return to PE scoping.
-producer: claude-audit
+producer: auditor
 ---
 
 # Handoff
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Gemini-PE",
+        route="planner",
         confidence="HIGH",
         source="frontmatter.next_agent",
-        reasoning="YAML routing frontmatter routes work to Gemini-PE.",
-        warnings=["planner frontmatter alias normalized to Gemini-PE."],
+        reasoning="YAML routing frontmatter routes work to planner.",
+        warnings=[],
     )
 
 
@@ -284,19 +282,19 @@ def test_route_preserves_user_escalation_when_optional_prior_sha_is_invalid() ->
 next_agent: user
 reason: PO decision required before continuing.
 prior_sha: 2eee66b29811e6ee4ffee970039c35474c678a39bce20d1905d1e935210864e5
-producer: gemini-pe
+producer: planner
 ---
 
-## Escalation
+## user
 
 Human decision required.
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Escalation",
+        route="user",
         confidence="HIGH",
         source="frontmatter.next_agent",
-        reasoning="YAML routing frontmatter names Escalation as the target agent.",
+        reasoning="YAML routing frontmatter names user as the target agent.",
         warnings=[
             "Invalid HANDOFF routing frontmatter metadata: prior_sha must be a 7-40 character git SHA."
         ],
@@ -307,7 +305,7 @@ def test_route_rejects_human_readable_frontmatter_next_agent_without_pre_normali
     None
 ):
     handoff_content = """---
-next_agent: Claude Code (Auditor)
+next_agent: auditor (Auditor)
 reason: Frontend implementation complete; audit requested.
 scope_sha: 25c45ca
 close_type: story
@@ -318,12 +316,12 @@ producer: frontend (manual frontend)
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Unknown",
+        route="unknown",
         confidence="LOW",
         source="frontmatter.invalid",
         reasoning="YAML routing frontmatter is present but invalid.",
         warnings=[
-            "Invalid HANDOFF routing frontmatter: next_agent `Claude Code (Auditor)` is not recognized."
+            "Invalid HANDOFF routing frontmatter: next_agent `auditor (Auditor)` is not recognized."
         ],
     )
 
@@ -334,11 +332,11 @@ next_agent: [codex
 reason: malformed YAML should stop routing
 ---
 
-Next: dispatch Codex
+Next: dispatch backend
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Unknown",
+        route="unknown",
         confidence="LOW",
         source="frontmatter.parse_error",
         reasoning="YAML routing frontmatter is present but could not be parsed.",
@@ -350,38 +348,38 @@ Next: dispatch Codex
 
 def test_route_rejects_ledger_frontmatter_from_non_auditor_producer() -> None:
     handoff_content = """---
-next_agent: claude-ledger
+next_agent: finalizer
 reason: Attempt to bypass the audit gate.
 scope_sha: 82ce839
 close_type: epic
-producer: codex
+producer: backend
 ---
 
-# Codex Handback
+# backend Handback
 """
 
     assert route(handoff_content) == RoutingDecision(
-        route="Unknown",
+        route="unknown",
         confidence="LOW",
         source="frontmatter.invalid",
         reasoning="YAML routing frontmatter is present but invalid.",
         warnings=[
-            "Invalid HANDOFF routing frontmatter: next_agent `claude-ledger` requires producer `auditor` or `claude-audit`."
+            "Invalid HANDOFF routing frontmatter: next_agent `finalizer` requires producer `auditor`."
         ],
     )
 
 
 @pytest.mark.parametrize(
-    ("fixture_name", "claude_md_content", "expected"),
+    ("fixture_name", "project_state_content", "expected"),
     [
         pytest.param(
             "pe_task_assignment_codex.md",
             None,
             RoutingDecision(
-                route="Codex",
+                route="backend",
                 confidence="HIGH",
                 source="task_assignment_block",
-                reasoning="Task Assignment block names Codex as the target agent.",
+                reasoning="Task Assignment block names backend as the target agent.",
                 warnings=[],
             ),
             id="task_assignment_block_routes_to_codex",
@@ -390,10 +388,10 @@ producer: codex
             "codex_handback_story_close.md",
             None,
             RoutingDecision(
-                route="ClaudeCode-Audit",
+                route="auditor",
                 confidence="HIGH",
                 source="next_step_section",
-                reasoning="Next Step section routes work to Claude Code for audit.",
+                reasoning="Next Step section routes work to auditor for audit.",
                 warnings=[],
             ),
             id="regression_handback_next_step_overrides_reporter_agent",
@@ -402,10 +400,10 @@ producer: codex
             "audit_story_close_next_story.md",
             None,
             RoutingDecision(
-                route="Codex",
+                route="backend",
                 confidence="HIGH",
                 source="next_step_section",
-                reasoning="Next Step section routes work to Codex.",
+                reasoning="Next Step section routes work to backend.",
                 warnings=[],
             ),
             id="audit_story_close_routes_to_next_story_implementer",
@@ -414,10 +412,10 @@ producer: codex
             "next_step_header_for_codex.md",
             None,
             RoutingDecision(
-                route="Codex",
+                route="backend",
                 confidence="HIGH",
                 source="next_step_header",
-                reasoning="Next Step header names Codex as the target agent.",
+                reasoning="Next Step header names backend as the target agent.",
                 warnings=[],
             ),
             id="regression_next_step_header_for_agent",
@@ -426,10 +424,10 @@ producer: codex
             "next_step_header_epic_close.md",
             None,
             RoutingDecision(
-                route="Epic-Close",
+                route="finalizer",
                 confidence="HIGH",
                 source="next_step_header",
-                reasoning="Next Step header routes Claude Code work to the epic-close flow.",
+                reasoning="Next Step header routes auditor work to the epic-close flow.",
                 warnings=[],
             ),
             id="regression_next_step_header_epic_close_from_body_context",
@@ -438,10 +436,10 @@ producer: codex
             "next_step_subheading_frontend.md",
             None,
             RoutingDecision(
-                route="Gemini-Frontend",
+                route="frontend",
                 confidence="HIGH",
                 source="next_step_subheading",
-                reasoning="Next Step sub-heading routes work to Gemini-Frontend.",
+                reasoning="Next Step sub-heading routes work to frontend.",
                 warnings=[],
             ),
             id="regression_next_step_subheading_agent_label",
@@ -450,10 +448,10 @@ producer: codex
             "next_step_qualifier_suffix_claude.md",
             None,
             RoutingDecision(
-                route="ClaudeCode-Audit",
+                route="auditor",
                 confidence="HIGH",
                 source="next_step_section",
-                reasoning="Next Step section routes work to Claude Code for audit.",
+                reasoning="Next Step section routes work to auditor for audit.",
                 warnings=[],
             ),
             id="regression_next_step_agent_label_with_qualifier_suffix",
@@ -462,10 +460,10 @@ producer: codex
             "prose_next_agent_gemini_pe.md",
             None,
             RoutingDecision(
-                route="Gemini-PE",
+                route="planner",
                 confidence="HIGH",
                 source="next_agent_prose",
-                reasoning="Prose Next Agent line routes work to Gemini-PE.",
+                reasoning="Prose Next Agent line routes work to planner.",
                 warnings=[],
             ),
             id="regression_prose_next_agent_arrow_in_closed_handoff",
@@ -474,12 +472,12 @@ producer: codex
             "legacy_manual_frontend_dispatch.md",
             None,
             RoutingDecision(
-                route="Gemini-Frontend",
+                route="frontend",
                 confidence="HIGH",
                 source="canonical_dispatch_line",
-                reasoning="Canonical dispatch line routes work to Gemini-Frontend.",
+                reasoning="Canonical dispatch line routes work to frontend.",
                 warnings=[
-                    "Legacy manual frontend reference normalized to Gemini-Frontend."
+                    "Legacy manual frontend reference normalized to frontend."
                 ],
             ),
             id="legacy_manual_frontend_dispatch_maps_to_frontend",
@@ -488,10 +486,10 @@ producer: codex
             "misroute.md",
             None,
             RoutingDecision(
-                route="ClaudeCode-Misroute",
+                route="validator",
                 confidence="HIGH",
                 source="canonical_dispatch_line",
-                reasoning="Canonical dispatch line routes work to Claude Code for misroute clarification.",
+                reasoning="Canonical dispatch line routes work to validator.",
                 warnings=[],
             ),
             id="explicit_misroute_dispatch",
@@ -500,7 +498,7 @@ producer: codex
             "escalation.md",
             None,
             RoutingDecision(
-                route="Escalation",
+                route="user",
                 confidence="HIGH",
                 source="escalation_heading",
                 reasoning="Escalation heading takes precedence over all other routing signals.",
@@ -512,12 +510,12 @@ producer: codex
             "story_close_ledger_language.md",
             CLAUDE_MULTI_STORY_EPIC,
             RoutingDecision(
-                route="ClaudeCode-Audit",
+                route="auditor",
                 confidence="MEDIUM",
                 source="next_step_section",
-                reasoning="Next Step section keeps Claude Code on the audit path because the ledger wording is not an explicit epic-close signal.",
+                reasoning="Next Step section keeps auditor on the audit path because the ledger wording is not an explicit epic-close signal.",
                 warnings=[
-                    "Finalizer wording is ambiguous; the project state shows remaining work, so Epic-Close was not selected."
+                    "Finalizer wording is ambiguous; the project state shows remaining work, so finalizer was not selected."
                 ],
             ),
             id="regression_story_close_ledger_language_is_not_epic_close",
@@ -526,7 +524,7 @@ producer: codex
             "conflicting_signals.md",
             None,
             RoutingDecision(
-                route="Gemini-PE",
+                route="planner",
                 confidence="LOW",
                 source="next_step_section",
                 reasoning="Next Step section overrides the Task Assignment block under router precedence.",
@@ -540,7 +538,7 @@ producer: codex
             "no_signal.md",
             None,
             RoutingDecision(
-                route="Unknown",
+                route="unknown",
                 confidence="LOW",
                 source="no_signal",
                 reasoning="No recognizable routing signal was found in HANDOFF content.",
@@ -552,7 +550,7 @@ producer: codex
             "empty.md",
             None,
             RoutingDecision(
-                route="Unknown",
+                route="unknown",
                 confidence="LOW",
                 source="no_signal",
                 reasoning="No recognizable routing signal was found in HANDOFF content.",
@@ -564,12 +562,12 @@ producer: codex
 )
 def test_route_matches_fixture(
     fixture_name: str,
-    claude_md_content: str | None,
+    project_state_content: str | None,
     expected: RoutingDecision,
 ) -> None:
     handoff_content = _fixture_text(fixture_name)
 
-    assert route(handoff_content, claude_md_content=claude_md_content) == _legacy(
+    assert route(handoff_content, project_state_content=project_state_content) == _legacy(
         expected
     )
 
@@ -580,7 +578,7 @@ def test_route_matches_fixture(
         pytest.param(
             "Next: close epic",
             RoutingDecision(
-                route="Epic-Close",
+                route="finalizer",
                 confidence="HIGH",
                 source="canonical_dispatch_line",
                 reasoning="Canonical dispatch line routes work to the epic-close flow.",
@@ -589,9 +587,9 @@ def test_route_matches_fixture(
             id="canonical_epic_close",
         ),
         pytest.param(
-            "Next: Epic-Close",
+            "Next: finalizer",
             RoutingDecision(
-                route="Epic-Close",
+                route="finalizer",
                 confidence="HIGH",
                 source="canonical_dispatch_line",
                 reasoning="Canonical dispatch line routes work to the epic-close flow.",
@@ -600,23 +598,23 @@ def test_route_matches_fixture(
             id="canonical_epic_close_route_name",
         ),
         pytest.param(
-            "Next: dispatch Codex",
+            "Next: dispatch backend",
             RoutingDecision(
-                route="Codex",
+                route="backend",
                 confidence="HIGH",
                 source="canonical_dispatch_line",
-                reasoning="Canonical dispatch line routes work to Codex.",
+                reasoning="Canonical dispatch line routes work to backend.",
                 warnings=[],
             ),
             id="canonical_codex_dispatch",
         ),
         pytest.param(
-            "Next: dispatch Claude Code",
+            "Next: dispatch auditor",
             RoutingDecision(
-                route="ClaudeCode-Audit",
+                route="auditor",
                 confidence="HIGH",
                 source="canonical_dispatch_line",
-                reasoning="Canonical dispatch line routes work to Claude Code for audit.",
+                reasoning="Canonical dispatch line routes work to auditor for audit.",
                 warnings=[],
             ),
             id="canonical_claude_audit_dispatch",
@@ -624,10 +622,10 @@ def test_route_matches_fixture(
         pytest.param(
             "Next: dispatch Gemini",
             RoutingDecision(
-                route="Gemini-PE",
+                route="planner",
                 confidence="HIGH",
                 source="canonical_dispatch_line",
-                reasoning="Canonical dispatch line routes work to Gemini-PE.",
+                reasoning="Canonical dispatch line routes work to planner.",
                 warnings=[],
             ),
             id="canonical_generic_gemini_dispatch",
@@ -644,20 +642,20 @@ def test_route_supports_canonical_dispatch_variants(
     ("handoff_content", "expected"),
     [
         pytest.param(
-            "### Next Agent -> Claude Code",
+            "### Next Agent -> auditor",
             RoutingDecision(
-                route="ClaudeCode-Audit",
+                route="auditor",
                 confidence="HIGH",
                 source="next_agent_prose",
-                reasoning="Prose Next Agent line routes work to Claude Code for audit.",
+                reasoning="Prose Next Agent line routes work to auditor for audit.",
                 warnings=[],
             ),
             id="prose_next_agent_claude_audit",
         ),
         pytest.param(
-            "### Next Agent -> Claude Code (epic close + ledger push)",
+            "### Next Agent -> auditor (epic close + ledger push)",
             RoutingDecision(
-                route="Epic-Close",
+                route="finalizer",
                 confidence="HIGH",
                 source="next_agent_prose",
                 reasoning="Prose Next Agent line routes work to the epic-close flow.",
@@ -668,12 +666,12 @@ def test_route_supports_canonical_dispatch_variants(
         pytest.param(
             "### Next Agent -> manual frontend",
             RoutingDecision(
-                route="Gemini-Frontend",
+                route="frontend",
                 confidence="HIGH",
                 source="next_agent_prose",
-                reasoning="Prose Next Agent line routes work to Gemini-Frontend.",
+                reasoning="Prose Next Agent line routes work to frontend.",
                 warnings=[
-                    "Legacy manual frontend reference normalized to Gemini-Frontend."
+                    "Legacy manual frontend reference normalized to frontend."
                 ],
             ),
             id="prose_next_agent_manual_frontend",
@@ -688,9 +686,9 @@ def test_route_supports_prose_next_agent_variants(
 
 def test_route_uses_next_step_header_after_same_level_heading_boundary() -> None:
     handoff_content = """
-    # Claude Code Audit
+    # auditor Audit
 
-    ## Next Step For Codex
+    ## Next Step For backend
 
     Implement Story 2 after the audit closes.
 
@@ -701,10 +699,10 @@ def test_route_uses_next_step_header_after_same_level_heading_boundary() -> None
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="Codex",
+            route="backend",
             confidence="HIGH",
             source="next_step_header",
-            reasoning="Next Step header names Codex as the target agent.",
+            reasoning="Next Step header names backend as the target agent.",
             warnings=[],
         )
     )
@@ -714,23 +712,23 @@ def test_route_does_not_treat_epic_close_noun_phrase_as_epic_close_instruction()
     None
 ):
     handoff_content = """
-    # Ledger Parse Failure Handling — Codex Handback
+    # Ledger Parse Failure Handling — backend Handback
 
     ## Completed Work
 
-    Addressed the Epic-Close failure mode where the ledger-updater returned prose.
+    Addressed the finalizer failure mode where the ledger-updater returned prose.
 
     ## Next Step
 
-    - **Claude Code:** Audit the ledger parse failure handling change and confirm it fails the Epic-Close cycle instead of rolling into stale-route pause.
+    - **auditor:** Audit the ledger parse failure handling change and confirm it fails the finalizer cycle instead of rolling into stale-route pause.
     """.strip()
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="ClaudeCode-Audit",
+            route="auditor",
             confidence="HIGH",
             source="next_step_section",
-            reasoning="Next Step section routes work to Claude Code for audit.",
+            reasoning="Next Step section routes work to auditor for audit.",
             warnings=[],
         )
     )
@@ -747,10 +745,10 @@ def test_route_ignores_non_agent_bold_line_and_uses_header_agent() -> None:
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="Gemini-PE",
+            route="planner",
             confidence="HIGH",
             source="next_step_header",
-            reasoning="Next Step header names Gemini-PE as the target agent.",
+            reasoning="Next Step header names planner as the target agent.",
             warnings=[],
         )
     )
@@ -765,10 +763,10 @@ def test_route_routes_generic_gemini_to_frontend_when_action_demands_it() -> Non
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="Gemini-Frontend",
+            route="frontend",
             confidence="HIGH",
             source="next_step_section",
-            reasoning="Next Step section routes work to Gemini-Frontend.",
+            reasoning="Next Step section routes work to frontend.",
             warnings=[],
         )
     )
@@ -778,15 +776,15 @@ def test_route_handles_next_step_claude_misroute_instruction() -> None:
     handoff_content = """
     ## Next Step
 
-    - **Claude Code:** handle misroute clarification before re-dispatching.
+    - **auditor:** handle misroute clarification before re-dispatching.
     """.strip()
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="ClaudeCode-Misroute",
+            route="validator",
             confidence="HIGH",
             source="next_step_section",
-            reasoning="Next Step section routes work to Claude Code for misroute clarification.",
+            reasoning="Next Step section routes work to auditor for misroute clarification.",
             warnings=[],
         )
     )
@@ -796,14 +794,14 @@ def test_route_uses_explicit_epic_close_metadata_over_claude_label() -> None:
     handoff_content = """
     ## Audit
 
-    **Agent:** Claude Code (auditor)
+    **Agent:** auditor (auditor)
     **Test SHA:** `3251966`
     **Implementation SHA:** `833da7d`
     **Verdict:** **APPROVED**
     **Close Type:** EPIC-CLOSE
 
     ### Suggested Next Step
-    Claude Code: update `PROJECT_STATE.md`, update `PROJECT_STATE.md`, commit, and push.
+    auditor: update `PROJECT_STATE.md`, update `PROJECT_STATE.md`, commit, and push.
 
     Canonical Routing Instruction:
     Next: ClaudeCode
@@ -811,7 +809,7 @@ def test_route_uses_explicit_epic_close_metadata_over_claude_label() -> None:
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="Epic-Close",
+            route="finalizer",
             confidence="HIGH",
             source="close_type_metadata",
             reasoning="Close Type metadata declares the handoff ready for the epic-close flow.",
@@ -828,12 +826,12 @@ def test_route_uses_embedded_task_assignment_in_pe_review_report() -> None:
 
     ## Task Assignment
 
-    **Agent:** Claude Code
+    **Agent:** auditor
     **Epic/Story:** Audit the completed dispatch fix
 
     ### Objective
 
-    Audit the Codex implementation.
+    Audit the backend implementation.
 
     ### Acceptance Criteria
 
@@ -842,10 +840,10 @@ def test_route_uses_embedded_task_assignment_in_pe_review_report() -> None:
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="ClaudeCode-Audit",
+            route="auditor",
             confidence="HIGH",
             source="task_assignment_block",
-            reasoning="Task Assignment block names ClaudeCode-Audit as the target agent.",
+            reasoning="Task Assignment block names auditor as the target agent.",
             warnings=[],
         )
     )
@@ -855,11 +853,11 @@ def test_route_treats_ledger_close_and_push_as_epic_close_when_no_stories_remain
     None
 ):
     handoff_content = """
-    # Dispatch Gemini Stream-JSON + Default Codex Resume — AUDIT APPROVED-WITH-NITS
+    # Dispatch Gemini Stream-JSON + Default backend Resume — AUDIT APPROVED-WITH-NITS
 
     ## Next Step
 
-    - **Claude Code (ledger close + push):**
+    - **auditor (ledger close + push):**
       1. Append the ledger entry to `PROJECT_STATE.md`.
       2. Push `main` to `origin`.
 
@@ -868,10 +866,10 @@ def test_route_treats_ledger_close_and_push_as_epic_close_when_no_stories_remain
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="Epic-Close",
+            route="finalizer",
             confidence="HIGH",
             source="next_step_section",
-            reasoning="Next Step section routes Claude Code work to the epic-close flow.",
+            reasoning="Next Step section routes auditor work to the epic-close flow.",
             warnings=[],
         )
     )
@@ -886,7 +884,7 @@ def test_route_returns_unknown_for_unrecognized_task_assignment_agent() -> None:
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="Unknown",
+            route="unknown",
             confidence="LOW",
             source="no_signal",
             reasoning="No recognizable routing signal was found in HANDOFF content.",
@@ -910,7 +908,7 @@ def test_route_returns_unknown_when_task_assignment_block_has_no_agent() -> None
 
     assert route(handoff_content) == _legacy(
         RoutingDecision(
-            route="Unknown",
+            route="unknown",
             confidence="LOW",
             source="no_signal",
             reasoning="No recognizable routing signal was found in HANDOFF content.",

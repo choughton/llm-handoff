@@ -236,6 +236,18 @@ class DispatchConfig(BaseModel):
     def claude_md_full_path(self) -> Path:
         return self.project_state_full_path
 
+    @property
+    def backend_resume_enabled(self) -> bool:
+        return self.use_codex_resume
+
+    @property
+    def planner_resume_enabled(self) -> bool:
+        return self.use_gemini_resume
+
+    @property
+    def planner_api_key_env_enabled(self) -> bool:
+        return self.use_gemini_api_key_env
+
 
 def load_dispatch_config(
     *,

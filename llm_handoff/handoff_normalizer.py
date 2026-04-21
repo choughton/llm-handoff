@@ -14,6 +14,11 @@ import instructor
 from pydantic import BaseModel, Field
 
 from llm_handoff import config
+from llm_handoff.roles import (
+    CANONICAL_NEXT_AGENT_ROLES,
+    is_legacy_next_agent_alias,
+    normalize_next_agent_value,
+)
 
 
 DEFAULT_NORMALIZER_PROVIDER = config.NORMALIZER_PROVIDER
@@ -21,13 +26,8 @@ DEFAULT_NORMALIZER_MODEL = config.NORMALIZER_MODEL
 ValidAgent = Literal[
     "auditor",
     "backend",
-    "claude-audit",
-    "claude-ledger",
-    "codex",
     "finalizer",
     "frontend",
-    "gemini-pe",
-    "gemini-frontend",
     "planner",
     "validator",
     "user",
@@ -35,7 +35,7 @@ ValidAgent = Literal[
 ]
 
 CANONICAL_NEXT_AGENTS = tuple(
-    agent for agent in get_args(ValidAgent) if agent != "unknown"
+    agent for agent in CANONICAL_NEXT_AGENT_ROLES
 )
 CANONICAL_NEXT_AGENT_SET = frozenset(CANONICAL_NEXT_AGENTS)
 _NEXT_AGENT_LINE_RE = re.compile(r"^(\s*next_agent\s*:\s*).*$")
@@ -77,6 +77,10 @@ def normalize_next_agent(
         return "unknown"
     if raw_value in CANONICAL_NEXT_AGENT_SET:
         return raw_value
+    if is_legacy_next_agent_alias(raw_value):
+        normalized = normalize_next_agent_value(raw_value)
+        if normalized is not None:
+            return normalized
 
     if provider != "claude":
         raise ValueError(f"Unsupported next_agent normalizer provider `{provider}`.")

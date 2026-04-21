@@ -12,6 +12,11 @@ from llm_handoff.router import (
     parse_handoff_frontmatter_text,
     route as route_handoff,
 )
+from llm_handoff.roles import (
+    legacy_next_agent_warning,
+    normalize_agent_label,
+    normalize_next_agent_value,
+)
 from llm_handoff.text_io import read_dispatch_text
 
 
@@ -33,43 +38,7 @@ _AGENT_LINE_RE = re.compile(r"(?im)^\*\*Agent:\*\*\s*(.+?)\s*$")
 _SUBSTANCE_RE = re.compile(
     r"(?im)\b(completed work|verification|validation|results|test suites?|execution sha|implementation sha|(?:4-check\s+)?audit gate|audit verdict|checks:)\b"
 )
-_ALLOWED_NEXT_AGENTS = {
-    "auditor",
-    "backend",
-    "claude-audit",
-    "claude-ledger",
-    "codex",
-    "finalizer",
-    "frontend",
-    "gemini-pe",
-    "gemini-frontend",
-    "manual frontend",
-    "planner",
-    "validator",
-    "user",
-}
 _ALLOWED_CLOSE_TYPES = {"story", "epic"}
-_FRONTMATTER_ROUTE_MAP = {
-    "auditor": "ClaudeCode-Audit",
-    "backend": "Codex",
-    "claude-audit": "ClaudeCode-Audit",
-    "claude-ledger": "Epic-Close",
-    "codex": "Codex",
-    "finalizer": "Epic-Close",
-    "frontend": "Gemini-Frontend",
-    "gemini-pe": "Gemini-PE",
-    "gemini-frontend": "Gemini-Frontend",
-    "manual frontend": "Gemini-Frontend",
-    "planner": "Gemini-PE",
-    "validator": "ClaudeCode-Misroute",
-    "user": "Escalation",
-}
-_FRONTMATTER_ALIAS_WARNINGS: dict[str, str] = {
-    "backend": "frontmatter_next_agent_alias: backend frontmatter alias normalized to Codex.",
-    "frontend": "frontmatter_next_agent_alias: frontend frontmatter alias normalized to Gemini-Frontend.",
-    "manual frontend": "frontmatter_next_agent_alias: legacy manual frontend reference normalized to Gemini-Frontend.",
-    "planner": "frontmatter_next_agent_alias: planner frontmatter alias normalized to Gemini-PE.",
-}
 
 
 @dataclass(frozen=True)
@@ -113,17 +82,20 @@ def validate_handoff_frontmatter(parsed: HandoffRouting) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
 
+    normalized_next_agent = normalize_next_agent_value(parsed.next_agent)
+    normalized_producer = normalize_next_agent_value(parsed.producer)
+
     if not parsed.next_agent:
         errors.append(
             f"frontmatter_next_agent_missing: producer {producer} omitted required next_agent."
         )
-    elif parsed.next_agent not in _ALLOWED_NEXT_AGENTS:
+    elif normalized_next_agent is None:
         errors.append(
             "frontmatter_next_agent_invalid: "
             f"producer {producer} used unsupported next_agent `{parsed.next_agent}`."
         )
-    elif alias_warning := _FRONTMATTER_ALIAS_WARNINGS.get(parsed.next_agent):
-        warnings.append(alias_warning.format(producer=producer))
+    elif alias_warning := legacy_next_agent_warning(parsed.next_agent):
+        warnings.append(f"frontmatter_next_agent_alias: {alias_warning}")
 
     if not parsed.reason:
         errors.append(
@@ -164,27 +136,24 @@ def validate_handoff_frontmatter(parsed: HandoffRouting) -> ValidationResult:
             f"producer {producer} emitted prior_sha `{parsed.prior_sha}`; expected 7-40 hex chars."
         )
 
-    epic_close_agents = {"auditor", "claude-audit", "claude-ledger", "finalizer"}
-    if parsed.close_type == "epic" and parsed.next_agent not in epic_close_agents:
+    epic_close_agents = {"auditor", "finalizer"}
+    if parsed.close_type == "epic" and normalized_next_agent not in epic_close_agents:
         errors.append(
             "frontmatter_routing_rule: close_type `epic` requires next_agent "
-            "`auditor`, `claude-audit`, `finalizer`, or `claude-ledger`."
+            "`auditor` or `finalizer`."
         )
 
-    if parsed.next_agent in {"claude-ledger", "finalizer"} and parsed.close_type != "epic":
+    if normalized_next_agent == "finalizer" and parsed.close_type != "epic":
         errors.append(
             f"frontmatter_routing_rule: next_agent `{parsed.next_agent}` requires close_type `epic`."
         )
 
-    if parsed.next_agent in {"claude-ledger", "finalizer"} and parsed.producer not in {
-        "auditor",
-        "claude-audit",
-    }:
+    if normalized_next_agent == "finalizer" and normalized_producer != "auditor":
         errors.append(
-            f"frontmatter_routing_rule: next_agent `{parsed.next_agent}` requires producer `auditor` or `claude-audit`."
+            f"frontmatter_routing_rule: next_agent `{parsed.next_agent}` requires producer `auditor`."
         )
 
-    routing_instruction = _FRONTMATTER_ROUTE_MAP.get(parsed.next_agent or "")
+    routing_instruction = normalized_next_agent
     return ValidationResult(
         verdict=_derive_verdict(errors, warnings),
         warnings=_dedupe(warnings),
@@ -259,7 +228,7 @@ def validate_handoff_text(
     routing_decision = route_handoff(normalized_content)
     if frontmatter_missing:
         routing_instruction = (
-            None if routing_decision.route == "Unknown" else routing_decision.route
+            None if routing_decision.route == "unknown" else routing_decision.route
         )
     if routing_instruction is None:
         errors.append(
@@ -272,9 +241,9 @@ def validate_handoff_text(
             "routing_instruction_missing: HANDOFF frontmatter did not produce a dispatchable route."
         )
     if previous_route is not None and routing_instruction == previous_route:
-        if previous_route == "Gemini-PE":
+        if previous_route == "planner":
             errors.append(
-                "planner_self_loop: Gemini-PE handoff routes work back to Gemini-PE, which would immediately re-dispatch the planner. Route to a backend agent, auditor, or explicit pause state instead."
+                "planner_self_loop: planner handoff routes work back to planner, which would immediately re-dispatch the planner. Route to a backend agent, auditor, or explicit pause state instead."
             )
         else:
             errors.append(
@@ -315,36 +284,16 @@ def validate_handoff_text(
 
 
 def _normalize_agent(agent_text: str) -> str | None:
-    normalized_text = agent_text.strip().lower()
-    if "claude" in normalized_text:
-        if "misroute" in normalized_text:
-            return "ClaudeCode-Misroute"
-        return "ClaudeCode-Audit"
-    if normalized_text in {"auditor", "audit", "reviewer"}:
-        return "ClaudeCode-Audit"
-    if normalized_text in {"validator", "handoff-validator"}:
-        return "ClaudeCode-Misroute"
-    if normalized_text in {"finalizer", "ledger", "ledger-updater", "epic-close"}:
-        return "Epic-Close"
-    if normalized_text == "backend":
-        return "Codex"
-    if "codex" in normalized_text:
-        return "Codex"
-    if normalized_text in {"planner", "plan"}:
-        return "Gemini-PE"
-    if "frontend" in normalized_text:
-        return "Gemini-Frontend"
-    if "gemini" in normalized_text:
-        return "Gemini-PE"
-    return None
+    role, _warnings = normalize_agent_label(agent_text)
+    return role
 
 
 def _requires_commit_sha(previous_route: str | None) -> bool:
     return previous_route in {
-        "Codex",
-        "Gemini-Frontend",
-        "ClaudeCode-Audit",
-        "ClaudeCode-Misroute",
+        "backend",
+        "frontend",
+        "auditor",
+        "validator",
     }
 
 
@@ -360,18 +309,18 @@ def _scope_claim_errors(
 
     has_task_assignment = _TASK_ASSIGNMENT_RE.search(handoff_content) is not None
 
-    if previous_route == "Gemini-PE":
-        if routing_instruction == "Escalation":
+    if previous_route == "planner":
+        if routing_instruction == "user":
             return []
         if not has_task_assignment:
             return [
-                "scope_claim_mismatch: Gemini-PE handoffs must use a Task Assignment block."
+                "scope_claim_mismatch: planner handoffs must use a Task Assignment block."
             ]
         return []
 
     if has_task_assignment and _REPORTING_HEADER_RE.search(handoff_content) is None:
         return [
-            "scope_claim_mismatch: Implementer or auditor handoff still looks like a Task Assignment."
+            "scope_claim_mismatch: Implementation or audit handoff still looks like a Task Assignment."
         ]
 
     agent_match = _ownership_agent_line_match(handoff_content)
@@ -409,8 +358,8 @@ def _content_warnings(
 ) -> list[str]:
     warnings: list[str] = []
 
-    if previous_route == "Gemini-PE":
-        if routing_instruction == "Escalation":
+    if previous_route == "planner":
+        if routing_instruction == "user":
             return warnings
         if _OBJECTIVE_RE.search(handoff_content) is None:
             warnings.append(
@@ -431,10 +380,10 @@ def _content_warnings(
 
 
 def _author_role(route_name: str | None) -> str | None:
-    # Ownership validation treats Claude audit and misroute remediation as the
+    # Ownership validation treats audit and validator remediation as the
     # same author while routing still keeps the two dispatch paths distinct.
-    if route_name in {"ClaudeCode-Audit", "ClaudeCode-Misroute"}:
-        return "ClaudeCode"
+    if route_name in {"auditor", "validator"}:
+        return "auditor-family"
     return route_name
 
 
@@ -457,7 +406,5 @@ def _infer_route_from_text(detail: str) -> str | None:
     inferred_route = _normalize_agent(detail)
     if inferred_route is not None:
         return inferred_route
-    if "codex" in detail.lower():
-        return "Codex"
     return None
 

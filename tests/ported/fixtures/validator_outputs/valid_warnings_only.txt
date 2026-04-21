@@ -2,7 +2,7 @@ VALID: WARNINGS-ONLY
 CHECKS:
   SHA-PRESENT:    WARN - Planner handoff does not yet include a commit SHA.
   SHA-FRESH:      PASS - Freshness is not required for a planner handoff without a SHA.
-  ROUTING:        PASS - Task Assignment routes work to Codex.
+  ROUTING:        PASS - Task Assignment routes work to backend.
   CONTENT:        PASS - Objective and acceptance criteria are present.
   GIT-STATE:      PASS - No additional git-state issues were reported.
 SUMMARY: Handoff is usable but should record a commit SHA once implementation lands.

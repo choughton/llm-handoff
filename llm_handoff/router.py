@@ -8,40 +8,28 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 import yaml
 
+from llm_handoff.roles import (
+    DispatchRole,
+    legacy_next_agent_warning,
+    normalize_agent_label,
+    normalize_next_agent_value,
+)
 from llm_handoff.text_io import read_dispatch_text
 
 
-RouteName = Literal[
-    "Codex",
-    "Gemini-PE",
-    "Gemini-Frontend",
-    "ClaudeCode-Audit",
-    "ClaudeCode-Misroute",
-    "Escalation",
-    "Epic-Close",
-    "Unknown",
-]
+RouteName = DispatchRole
 Confidence = Literal["HIGH", "MEDIUM", "LOW"]
 NextAgent = Literal[
     "auditor",
     "backend",
-    "claude-audit",
-    "claude-ledger",
-    "codex",
     "finalizer",
     "frontend",
-    "gemini-pe",
-    "gemini-frontend",
-    "manual frontend",
     "planner",
     "validator",
     "user",
 ]
 CloseType = Literal["story", "epic"]
 
-_AGENT_PREFIX_RE = re.compile(
-    r"(?i)^(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|manual\s+frontend|planner|backend|frontend|auditor|validator|finalizer)\b(.*)$"
-)
 _NEXT_STEP_HEADER_RE = re.compile(r"(?i)^(#{1,6})\s+Next\s+Steps?\b(.*)$")
 _TASK_ASSIGNMENT_HEADER_RE = re.compile(r"(?i)^(#{1,6})\s+Task Assignment\b")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+")
@@ -60,34 +48,12 @@ _LEDGER_CLOSE_RE = re.compile(
 )
 _LEDGER_AMBIGUOUS_RE = re.compile(r"(?i)\b(ledger|push(?:\s+to\s+origin)?)\b")
 _MISROUTE_RE = re.compile(r"(?i)(misroute|clarif)")
-_FRONTEND_HINT_RE = re.compile(r"(?i)(frontend|ui|react|tailwind)")
 _SHORT_SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
 _SHA_FULL_RE = re.compile(r"(?i)^[0-9a-f]{7,40}$")
 LEGACY_FRONTMATTER_WARNING = (
     "Deprecated HANDOFF routing format: missing YAML routing frontmatter; "
     "falling back to legacy prose routing."
 )
-_FRONTMATTER_ROUTE_MAP: dict[str, RouteName] = {
-    "auditor": "ClaudeCode-Audit",
-    "backend": "Codex",
-    "claude-audit": "ClaudeCode-Audit",
-    "claude-ledger": "Epic-Close",
-    "codex": "Codex",
-    "finalizer": "Epic-Close",
-    "frontend": "Gemini-Frontend",
-    "gemini-pe": "Gemini-PE",
-    "gemini-frontend": "Gemini-Frontend",
-    "manual frontend": "Gemini-Frontend",
-    "planner": "Gemini-PE",
-    "validator": "ClaudeCode-Misroute",
-    "user": "Escalation",
-}
-_FRONTMATTER_ALIAS_WARNINGS: dict[str, str] = {
-    "backend": "backend frontmatter alias normalized to Codex.",
-    "frontend": "frontend frontmatter alias normalized to Gemini-Frontend.",
-    "manual frontend": "Legacy manual frontend reference normalized to Gemini-Frontend.",
-    "planner": "planner frontmatter alias normalized to Gemini-PE.",
-}
 _ALLOWED_CLOSE_TYPES = {"story", "epic"}
 _FRONTMATTER_KNOWN_KEYS = {
     "next_agent",
@@ -257,14 +223,14 @@ def repair_handoff_frontmatter_text(handoff_content: str) -> HandoffFrontmatterR
 
 
 def route(
-    handoff_content: str, claude_md_content: str | None = None
+    handoff_content: str, project_state_content: str | None = None
 ) -> RoutingDecision:
     normalized_content = handoff_content.lstrip("\ufeff")
     try:
         frontmatter = parse_handoff_frontmatter_text(normalized_content)
     except HandoffFrontmatterError:
         return RoutingDecision(
-            route="Unknown",
+            route="unknown",
             confidence="LOW",
             source="frontmatter.parse_error",
             reasoning="YAML routing frontmatter is present but could not be parsed.",
@@ -279,7 +245,7 @@ def route(
     return _with_legacy_warning(
         _route_legacy(
             normalized_content,
-            claude_md_content=claude_md_content,
+            project_state_content=project_state_content,
         )
     )
 
@@ -287,12 +253,12 @@ def route(
 def _route_legacy(
     handoff_content: str,
     *,
-    claude_md_content: str | None = None,
+    project_state_content: str | None = None,
 ) -> RoutingDecision:
     normalized_content = handoff_content.lstrip("\ufeff")
     if not normalized_content.strip():
         return RoutingDecision(
-            route="Unknown",
+            route="unknown",
             confidence="LOW",
             source="no_signal",
             reasoning="No recognizable routing signal was found in HANDOFF content.",
@@ -310,11 +276,11 @@ def _route_legacy(
     if close_type_signal is not None:
         return _to_decision(close_type_signal)
 
-    canonical_signal = _find_canonical_dispatch(lines, claude_md_content)
+    canonical_signal = _find_canonical_dispatch(lines, project_state_content)
     if canonical_signal is not None:
         candidates.append(canonical_signal)
 
-    next_step_signal = _find_next_step(lines, claude_md_content)
+    next_step_signal = _find_next_step(lines, project_state_content)
     if next_step_signal is not None:
         candidates.append(next_step_signal)
 
@@ -322,13 +288,13 @@ def _route_legacy(
     if task_assignment_signal is not None:
         candidates.append(task_assignment_signal)
 
-    prose_signal = _find_prose_next_agent(lines, claude_md_content)
+    prose_signal = _find_prose_next_agent(lines, project_state_content)
     if prose_signal is not None:
         candidates.append(prose_signal)
 
     if not candidates:
         return RoutingDecision(
-            route="Unknown",
+            route="unknown",
             confidence="LOW",
             source="no_signal",
             reasoning="No recognizable routing signal was found in HANDOFF content.",
@@ -462,7 +428,7 @@ def _route_from_frontmatter(frontmatter: HandoffRouting) -> RoutingDecision:
     errors = _frontmatter_route_errors(frontmatter)
     if errors:
         return RoutingDecision(
-            route="Unknown",
+            route="unknown",
             confidence="LOW",
             source="frontmatter.invalid",
             reasoning="YAML routing frontmatter is present but invalid.",
@@ -470,9 +436,11 @@ def _route_from_frontmatter(frontmatter: HandoffRouting) -> RoutingDecision:
         )
 
     next_agent = frontmatter.next_agent or ""
-    route_name = _FRONTMATTER_ROUTE_MAP[next_agent]
+    route_name = normalize_next_agent_value(next_agent)
+    if route_name is None:
+        route_name = "unknown"
     warnings: list[str] = []
-    if alias_warning := _FRONTMATTER_ALIAS_WARNINGS.get(next_agent):
+    if alias_warning := legacy_next_agent_warning(next_agent):
         warnings.append(alias_warning)
     warnings.extend(_frontmatter_metadata_warnings(frontmatter))
 
@@ -492,7 +460,7 @@ def _frontmatter_route_errors(frontmatter: HandoffRouting) -> list[str]:
 
     if not next_agent:
         errors.append("next_agent is required.")
-    elif next_agent not in _FRONTMATTER_ROUTE_MAP:
+    elif normalize_next_agent_value(next_agent) is None:
         errors.append(f"next_agent `{next_agent}` is not recognized.")
 
     if not frontmatter.reason:
@@ -507,23 +475,22 @@ def _frontmatter_route_errors(frontmatter: HandoffRouting) -> list[str]:
         elif _SHA_FULL_RE.fullmatch(frontmatter.scope_sha) is None:
             errors.append("scope_sha must be a 7-40 character git SHA.")
 
-    epic_close_agents = {"auditor", "claude-audit", "claude-ledger", "finalizer"}
-    if close_type == "epic" and next_agent not in epic_close_agents:
+    normalized_next_agent = normalize_next_agent_value(next_agent)
+    normalized_producer = normalize_next_agent_value(frontmatter.producer)
+    epic_close_agents = {"auditor", "finalizer"}
+    if close_type == "epic" and normalized_next_agent not in epic_close_agents:
         errors.append(
-            "close_type `epic` requires next_agent `auditor`, `claude-audit`, `finalizer`, or `claude-ledger`."
+            "close_type `epic` requires next_agent `auditor` or `finalizer`."
         )
 
-    if next_agent in {"claude-ledger", "finalizer"} and close_type != "epic":
+    if normalized_next_agent == "finalizer" and close_type != "epic":
         errors.append(
             f"next_agent `{next_agent}` requires close_type `epic`."
         )
 
-    if next_agent in {"claude-ledger", "finalizer"} and frontmatter.producer not in {
-        "auditor",
-        "claude-audit",
-    }:
+    if normalized_next_agent == "finalizer" and normalized_producer != "auditor":
         errors.append(
-            f"next_agent `{next_agent}` requires producer `auditor` or `claude-audit`."
+            f"next_agent `{next_agent}` requires producer `auditor`."
         )
 
     return errors
@@ -564,9 +531,9 @@ def _to_decision(signal: _Signal) -> RoutingDecision:
 
 def _find_escalation(lines: list[str]) -> _Signal | None:
     for raw_line in lines:
-        if re.match(r"(?i)^#{1,6}\s*Escalation\s*$", raw_line.strip()):
+        if re.match(r"(?i)^#{1,6}\s*(Escalation|User)\s*$", raw_line.strip()):
             return _Signal(
-                route="Escalation",
+                route="user",
                 confidence="HIGH",
                 source="escalation_heading",
                 reasoning="Escalation heading takes precedence over all other routing signals.",
@@ -580,7 +547,7 @@ def _find_close_type(lines: list[str]) -> _Signal | None:
         line = raw_line.strip().replace("*", "").replace("`", "")
         if re.match(r"(?i)^Close\s+Type\s*:\s*EPIC[-\s]*CLOSE\s*$", line):
             return _Signal(
-                route="Epic-Close",
+                route="finalizer",
                 confidence="HIGH",
                 source="close_type_metadata",
                 reasoning="Close Type metadata declares the handoff ready for the epic-close flow.",
@@ -590,12 +557,14 @@ def _find_close_type(lines: list[str]) -> _Signal | None:
 
 
 def _find_canonical_dispatch(
-    lines: list[str], claude_md_content: str | None
+    lines: list[str], project_state_content: str | None
 ) -> _Signal | None:
     for raw_line in reversed(lines):
         line = raw_line.strip()
 
-        if re.match(r"(?i)^Next:\s*epic[-\s]+close\s*$", line) or re.match(
+        if re.match(r"(?i)^Next:\s*finalizer\s*$", line) or re.match(
+            r"(?i)^Next:\s*epic[-\s]+close\s*$", line
+        ) or re.match(
             r"(?i)^Next:\s*close\s+epic\s*$", line
         ):
             return _epic_close_signal("canonical_dispatch_line")
@@ -605,31 +574,20 @@ def _find_canonical_dispatch(
             continue
 
         dispatch_target = match.group(1).strip()
-        if re.match(
-            r"(?i)^Claude\s+Code\s+for\s+misroute\s+clarification$", dispatch_target
-        ):
-            return _Signal(
-                route="ClaudeCode-Misroute",
-                confidence="HIGH",
-                source="canonical_dispatch_line",
-                reasoning="Canonical dispatch line routes work to Claude Code for misroute clarification.",
-                priority=80,
-            )
-
-        if re.match(r"(?i)^Claude\s+Code(?:\s+for\s+audit)?$", dispatch_target):
-            return _claude_code_signal(
-                source="canonical_dispatch_line",
-                action_text=dispatch_target,
-                claude_md_content=claude_md_content,
-                audit_reasoning="Canonical dispatch line routes work to Claude Code for audit.",
-                misroute_reasoning="Canonical dispatch line routes work to Claude Code for misroute clarification.",
-                epic_reasoning="Canonical dispatch line routes Claude Code work to the epic-close flow.",
-                priority=80,
-            )
-
         route_name, route_warnings = _normalize_agent(dispatch_target, dispatch_target)
         if route_name is None:
             continue
+
+        if route_name == "auditor":
+            return _auditor_signal(
+                source="canonical_dispatch_line",
+                action_text=dispatch_target,
+                project_state_content=project_state_content,
+                audit_reasoning="Canonical dispatch line routes work to auditor for audit.",
+                misroute_reasoning="Canonical dispatch line routes work to auditor for misroute clarification.",
+                epic_reasoning="Canonical dispatch line routes auditor work to the epic-close flow.",
+                priority=80,
+            )
 
         reasoning = _agent_reasoning(route_name, "canonical_dispatch_line")
         return _Signal(
@@ -644,7 +602,7 @@ def _find_canonical_dispatch(
     return None
 
 
-def _find_next_step(lines: list[str], claude_md_content: str | None) -> _Signal | None:
+def _find_next_step(lines: list[str], project_state_content: str | None) -> _Signal | None:
     in_next_step = False
     next_step_depth = 0
     header_agent: RouteName | None = None
@@ -685,7 +643,7 @@ def _find_next_step(lines: list[str], claude_md_content: str | None) -> _Signal 
                     source="next_step_subheading",
                     agent=agent,
                     action=action,
-                    claude_md_content=claude_md_content,
+                    project_state_content=project_state_content,
                     warnings=agent_warnings,
                 )
 
@@ -703,7 +661,7 @@ def _find_next_step(lines: list[str], claude_md_content: str | None) -> _Signal 
             source="next_step_section",
             agent=agent,
             action=action,
-            claude_md_content=claude_md_content,
+            project_state_content=project_state_content,
             warnings=agent_warnings,
         )
 
@@ -714,14 +672,14 @@ def _find_next_step(lines: list[str], claude_md_content: str | None) -> _Signal 
     if body_lines:
         full_context = full_context + "\n" + "\n".join(body_lines)
 
-    if header_agent == "ClaudeCode-Audit":
-        return _claude_code_signal(
+    if header_agent == "auditor":
+        return _auditor_signal(
             source="next_step_header",
             action_text=full_context,
-            claude_md_content=claude_md_content,
-            audit_reasoning="Next Step header names Claude Code as the target agent.",
-            misroute_reasoning="Next Step header routes work to Claude Code for misroute clarification.",
-            epic_reasoning="Next Step header routes Claude Code work to the epic-close flow.",
+            project_state_content=project_state_content,
+            audit_reasoning="Next Step header names auditor as the target agent.",
+            misroute_reasoning="Next Step header routes work to auditor for misroute clarification.",
+            epic_reasoning="Next Step header routes auditor work to the epic-close flow.",
             priority=70,
         )
 
@@ -781,7 +739,7 @@ def _find_task_assignment(lines: list[str]) -> _Signal | None:
 
 
 def _find_prose_next_agent(
-    lines: list[str], claude_md_content: str | None
+    lines: list[str], project_state_content: str | None
 ) -> _Signal | None:
     for raw_line in reversed(lines):
         line = raw_line.strip()
@@ -792,7 +750,7 @@ def _find_prose_next_agent(
         target_text = match.group(1).strip()
         if _is_explicit_epic_close(target_text) or _is_ledger_close_transition(
             target_text,
-            claude_md_content=claude_md_content,
+            project_state_content=project_state_content,
         ):
             return _epic_close_signal("next_agent_prose")
 
@@ -800,14 +758,14 @@ def _find_prose_next_agent(
         if agent is None:
             continue
 
-        if agent == "ClaudeCode-Audit":
-            return _claude_code_signal(
+        if agent == "auditor":
+            return _auditor_signal(
                 source="next_agent_prose",
                 action_text=target_text,
-                claude_md_content=claude_md_content,
-                audit_reasoning="Prose Next Agent line routes work to Claude Code for audit.",
-                misroute_reasoning="Prose Next Agent line routes work to Claude Code for misroute clarification.",
-                epic_reasoning="Prose Next Agent line routes Claude Code work to the epic-close flow.",
+                project_state_content=project_state_content,
+                audit_reasoning="Prose Next Agent line routes work to auditor for audit.",
+                misroute_reasoning="Prose Next Agent line routes work to auditor for misroute clarification.",
+                epic_reasoning="Prose Next Agent line routes auditor work to the epic-close flow.",
                 priority=50,
             )
 
@@ -829,17 +787,17 @@ def _build_next_step_signal(
     source: str,
     agent: RouteName,
     action: str,
-    claude_md_content: str | None,
+    project_state_content: str | None,
     warnings: tuple[str, ...],
 ) -> _Signal:
-    if agent == "ClaudeCode-Audit":
-        return _claude_code_signal(
+    if agent == "auditor":
+        return _auditor_signal(
             source=source,
             action_text=action,
-            claude_md_content=claude_md_content,
-            audit_reasoning=f"{_source_label(source)} routes work to Claude Code for audit.",
-            misroute_reasoning=f"{_source_label(source)} routes work to Claude Code for misroute clarification.",
-            epic_reasoning=f"{_source_label(source)} routes Claude Code work to the epic-close flow.",
+            project_state_content=project_state_content,
+            audit_reasoning=f"{_source_label(source)} routes work to auditor for audit.",
+            misroute_reasoning=f"{_source_label(source)} routes work to auditor for misroute clarification.",
+            epic_reasoning=f"{_source_label(source)} routes auditor work to the epic-close flow.",
             priority=70 if source == "next_step_header" else 75,
             extra_warnings=warnings,
         )
@@ -855,11 +813,11 @@ def _build_next_step_signal(
     )
 
 
-def _claude_code_signal(
+def _auditor_signal(
     *,
     source: str,
     action_text: str,
-    claude_md_content: str | None,
+    project_state_content: str | None,
     audit_reasoning: str,
     misroute_reasoning: str,
     epic_reasoning: str,
@@ -868,7 +826,7 @@ def _claude_code_signal(
 ) -> _Signal:
     if _MISROUTE_RE.search(action_text):
         return _Signal(
-            route="ClaudeCode-Misroute",
+            route="validator",
             confidence="HIGH",
             source=source,
             reasoning=misroute_reasoning,
@@ -876,18 +834,18 @@ def _claude_code_signal(
             priority=priority,
         )
 
-    if _LEDGER_AMBIGUOUS_RE.search(action_text) and _claude_has_remaining_stories(
-        claude_md_content
+    if _LEDGER_AMBIGUOUS_RE.search(action_text) and _project_state_has_remaining_stories(
+        project_state_content
     ):
         warnings = list(extra_warnings)
         warnings.append(
-            "Finalizer wording is ambiguous; the project state shows remaining work, so Epic-Close was not selected."
+            "Finalizer wording is ambiguous; the project state shows remaining work, so finalizer was not selected."
         )
         return _Signal(
-            route="ClaudeCode-Audit",
+            route="auditor",
             confidence="MEDIUM",
             source=source,
-            reasoning="Next Step section keeps Claude Code on the audit path because the ledger wording is not an explicit epic-close signal."
+            reasoning="Next Step section keeps auditor on the audit path because the ledger wording is not an explicit epic-close signal."
             if source == "next_step_section"
             else audit_reasoning,
             warnings=tuple(warnings),
@@ -896,10 +854,10 @@ def _claude_code_signal(
 
     if _is_explicit_epic_close(action_text) or _is_ledger_close_transition(
         action_text,
-        claude_md_content=claude_md_content,
+        project_state_content=project_state_content,
     ):
         return _Signal(
-            route="Epic-Close",
+            route="finalizer",
             confidence="HIGH",
             source=source,
             reasoning=epic_reasoning,
@@ -908,7 +866,7 @@ def _claude_code_signal(
         )
 
     return _Signal(
-        route="ClaudeCode-Audit",
+        route="auditor",
         confidence="HIGH",
         source=source,
         reasoning=audit_reasoning,
@@ -919,13 +877,15 @@ def _claude_code_signal(
 
 def _agent_reasoning(route_name: RouteName, source: str) -> str:
     label = _source_label(source)
-    if route_name == "Codex":
-        return f"{label} routes work to Codex."
-    if route_name == "Gemini-PE":
-        return f"{label} routes work to Gemini-PE."
-    if route_name == "Gemini-Frontend":
-        return f"{label} routes work to Gemini-Frontend."
-    if route_name == "Epic-Close":
+    if route_name == "backend":
+        return f"{label} routes work to backend."
+    if route_name == "planner":
+        return f"{label} routes work to planner."
+    if route_name == "frontend":
+        return f"{label} routes work to frontend."
+    if route_name == "validator":
+        return f"{label} routes work to validator."
+    if route_name == "finalizer":
         return f"{label} routes work to the epic-close flow."
     return f"{label} names {route_name} as the target agent."
 
@@ -950,7 +910,7 @@ def _source_label(source: str) -> str:
 
 def _extract_header_agent(suffix: str) -> tuple[RouteName | None, tuple[str, ...]]:
     match = re.search(
-        r"(?i)\b(for|to|:|→|->)\s+(Claude\s*Code|Codex|Gemini[\s-]+Frontend|Gemini[\s-]+PE|Gemini|manual\s+frontend|planner|backend|frontend|auditor|validator|finalizer)\b",
+        r"(?i)\b(for|to|:|→|->)\s+(.+?)\s*$",
         suffix,
     )
     if match is None:
@@ -963,56 +923,22 @@ def _extract_header_agent(suffix: str) -> tuple[RouteName | None, tuple[str, ...
 def _extract_agent_and_action(
     inside_label: str, trailing_text: str
 ) -> tuple[RouteName | None, str, tuple[str, ...]]:
-    match = _AGENT_PREFIX_RE.match(inside_label.strip())
-    if match is None:
-        return None, "", ()
-
     route_name, warnings = _normalize_agent(
-        match.group(1), inside_label + " " + trailing_text
+        inside_label,
+        inside_label + " " + trailing_text,
     )
     if route_name is None:
         return None, "", ()
 
-    action = (match.group(2) + " " + trailing_text).strip()
-    action = re.sub(r"^\s*:\s*", "", action)
+    action = (inside_label + " " + trailing_text).strip()
     return route_name, action.strip(), tuple(warnings)
 
 
 def _normalize_agent(
     agent_text: str, action_text: str
 ) -> tuple[RouteName | None, list[str]]:
-    text = agent_text.strip()
-    warnings: list[str] = []
-    normalized = text.lower()
-
-    if re.search(r"(?i)Claude\s*Code", text):
-        return "ClaudeCode-Audit", warnings
-    if normalized in {"auditor", "audit", "reviewer"}:
-        return "ClaudeCode-Audit", warnings
-    if normalized in {"validator", "handoff-validator"}:
-        return "ClaudeCode-Misroute", warnings
-    if normalized in {"finalizer", "ledger", "ledger-updater", "epic-close"}:
-        return "Epic-Close", warnings
-    if normalized in {"planner", "plan"}:
-        return "Gemini-PE", warnings
-    if normalized == "backend":
-        return "Codex", warnings
-    if normalized == "frontend":
-        return "Gemini-Frontend", warnings
-    if normalized in {"manual frontend", "manual frontend gui"}:
-        warnings.append("Legacy manual frontend reference normalized to Gemini-Frontend.")
-        return "Gemini-Frontend", warnings
-    if re.search(r"(?i)\bCodex\b", text):
-        return "Codex", warnings
-    if re.search(r"(?i)Gemini[\s-]+Frontend", text):
-        return "Gemini-Frontend", warnings
-    if re.search(r"(?i)Gemini[\s-]+PE", text):
-        return "Gemini-PE", warnings
-    if re.search(r"(?i)\bGemini\b", text):
-        if _FRONTEND_HINT_RE.search(action_text):
-            return "Gemini-Frontend", warnings
-        return "Gemini-PE", warnings
-    return None, warnings
+    role, warnings = normalize_agent_label(agent_text, context=action_text)
+    return role, list(warnings)
 
 
 def _is_reporting_document(lines: list[str]) -> bool:
@@ -1024,10 +950,10 @@ def _is_reporting_document(lines: list[str]) -> bool:
     return False
 
 
-def _claude_has_remaining_stories(claude_md_content: str | None) -> bool:
-    if not claude_md_content:
+def _project_state_has_remaining_stories(project_state_content: str | None) -> bool:
+    if not project_state_content:
         return False
-    return re.search(r"(?i)remaining stor(?:y|ies)", claude_md_content) is not None
+    return re.search(r"(?i)remaining stor(?:y|ies)", project_state_content) is not None
 
 
 def _is_explicit_epic_close(text: str) -> bool:
@@ -1037,21 +963,21 @@ def _is_explicit_epic_close(text: str) -> bool:
 def _is_ledger_close_transition(
     text: str,
     *,
-    claude_md_content: str | None,
+    project_state_content: str | None,
 ) -> bool:
     if _LEDGER_CLOSE_RE.search(text) is None:
         return False
     if re.search(r"(?i)\bepic\b", text) is not None:
         return True
-    return not _claude_has_remaining_stories(claude_md_content)
+    return not _project_state_has_remaining_stories(project_state_content)
 
 
 def _epic_close_signal(source: str) -> _Signal:
     return _Signal(
-        route="Epic-Close",
+        route="finalizer",
         confidence="HIGH",
         source=source,
-        reasoning=_agent_reasoning("Epic-Close", source),
+        reasoning=_agent_reasoning("finalizer", source),
         priority=90,
     )
 

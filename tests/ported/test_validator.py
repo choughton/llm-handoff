@@ -71,16 +71,16 @@ def test_parse_validation_output_handles_all_structured_verdict_shapes(
 
 def test_parse_validation_output_requires_valid_verdict_line() -> None:
     with pytest.raises(ValueError, match="Missing VALID verdict line"):
-        parse_validation_output("ROUTING: PASS - Codex")
+        parse_validation_output("ROUTING: PASS - backend")
 
 
 def test_validate_handoff_rejects_unchanged_content_hash_for_codex(
     tmp_path: Path,
 ) -> None:
     handoff_content = _with_frontmatter(
-        """# Codex Handback
+        """# backend Handback
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Dispatch Loop Python Rewrite / Story 3
 **Status:** Complete and verified
 **Latest verified repo SHA:** `877f54d07d06d033b6b3f6dded924d170e9e2116`
@@ -95,25 +95,25 @@ def test_validate_handoff_rejects_unchanged_content_hash_for_codex(
 
 ## Next Step
 
-- **Claude Code:** Audit Story 3 against the validator acceptance criteria.
+- **auditor:** Audit Story 3 against the validator acceptance criteria.
 """,
-        next_agent="claude-audit",
+        next_agent="auditor",
         reason="Story 3 complete; audit requested.",
         scope_sha="877f54d",
         close_type="story",
-        producer="codex",
+        producer="backend",
     )
     handoff_path = _write_handoff(tmp_path, handoff_content)
     prior_handoff_sha = sha256(handoff_content.encode("utf-8")).hexdigest()
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha=prior_handoff_sha,
     )
 
     assert result.verdict == "NO"
-    assert result.routing_instruction == "ClaudeCode-Audit"
+    assert result.routing_instruction == "auditor"
     assert any("no_new_sha" in error for error in result.errors)
 
 
@@ -123,9 +123,9 @@ def test_validate_handoff_accepts_codex_handback_with_sha_and_routing(
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Codex Handback
+            """# backend Handback
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Dispatch Loop Python Rewrite / Story 3
 **Status:** Complete and verified
 **Latest verified repo SHA:** `877f54d07d06d033b6b3f6dded924d170e9e2116`
@@ -142,26 +142,26 @@ def test_validate_handoff_accepts_codex_handback_with_sha_and_routing(
 
 ## Next Step
 
-- **Claude Code:** Audit Story 3 against the validator acceptance criteria and route Story 4 if approved.
+- **auditor:** Audit Story 3 against the validator acceptance criteria and route Story 4 if approved.
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="Story 3 complete; audit requested.",
             scope_sha="877f54d",
             close_type="story",
-            producer="codex",
+            producer="backend",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="0" * 64,
     )
 
     assert result.verdict == "YES"
     assert result.warnings == []
     assert result.errors == []
-    assert result.routing_instruction == "ClaudeCode-Audit"
+    assert result.routing_instruction == "auditor"
 
 
 def test_validate_handoff_accepts_utf16_le_bom_manual_frontend_handback(
@@ -184,11 +184,11 @@ def test_validate_handoff_accepts_utf16_le_bom_manual_frontend_handback(
 - `npm test`
 - `npm run build`
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="E1-S6 frontend implementation complete; audit requested.",
             scope_sha="236f82f",
             close_type="story",
-            producer="gemini-frontend",
+            producer="frontend",
         ),
         encoding="utf-16",
     )
@@ -200,7 +200,7 @@ def test_validate_handoff_accepts_utf16_le_bom_manual_frontend_handback(
     )
 
     assert result.verdict == "YES"
-    assert result.routing_instruction == "ClaudeCode-Audit"
+    assert result.routing_instruction == "auditor"
     assert result.errors == []
 
 
@@ -224,11 +224,11 @@ def test_validate_handoff_accepts_manual_frontend_results_and_execution_sha_sect
 ### Execution SHA
 Revert cleanly compiled as implementation SHA: `{impl_sha}`.
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="E6-S2 frontend implementation complete; audit requested.",
             scope_sha=impl_sha,
             close_type="story",
-            producer="gemini-frontend",
+            producer="frontend",
         ),
     )
 
@@ -240,7 +240,7 @@ Revert cleanly compiled as implementation SHA: `{impl_sha}`.
 
     assert result.verdict == "YES"
     assert result.errors == []
-    assert result.routing_instruction == "ClaudeCode-Audit"
+    assert result.routing_instruction == "auditor"
     assert all(
         "acceptance_coverage_unclear" not in warning for warning in result.warnings
     )
@@ -256,7 +256,7 @@ def test_validate_handoff_returns_warnings_only_for_planner_without_sha(
 
 ## Task Assignment
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Dispatch Loop Python Rewrite / Story 3
 **Phase:** Implementation
 
@@ -269,21 +269,21 @@ Implement `llm_handoff/validator.py` as a pure-function module.
 - Parse the three structured verdict shapes.
 - Enforce SHA, routing, and scope-claim checks.
 """,
-            next_agent="codex",
+            next_agent="backend",
             reason="Implement validator story.",
-            producer="gemini-pe",
+            producer="planner",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Gemini-PE",
+        "planner",
         prior_handoff_sha="1" * 64,
     )
 
     assert result.verdict == "WARNINGS-ONLY"
     assert result.errors == []
-    assert result.routing_instruction == "Codex"
+    assert result.routing_instruction == "backend"
     assert any("sha_missing" in warning for warning in result.warnings)
 
 
@@ -295,29 +295,29 @@ def test_validate_handoff_warns_only_for_long_frontmatter_reason(
         _with_frontmatter(
             """# Claude Audit Report
 
-**Agent:** Claude Code (auditor)
+**Agent:** auditor (auditor)
 **Latest verified repo SHA:** `02b475f`
 
 ## Audit Verdict
 
-APPROVED-WITH-NITS. Route the next implementation story to Codex.
+APPROVED-WITH-NITS. Route the next implementation story to backend.
 """,
-            next_agent="codex",
+            next_agent="backend",
             reason="x" * 200,
             scope_sha="02b475f",
             close_type="story",
-            producer="claude-audit",
+            producer="auditor",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Claude Code (audit)",
+        "auditor (audit)",
         prior_handoff_sha="1" * 64,
     )
 
     assert result.verdict == "WARNINGS-ONLY"
-    assert result.routing_instruction == "Codex"
+    assert result.routing_instruction == "backend"
     assert result.errors == []
     assert any("frontmatter_reason_too_long" in warning for warning in result.warnings)
     assert all(
@@ -335,7 +335,7 @@ def test_validate_handoff_rejects_scope_claim_mismatch_for_codex(
 
 ## Task Assignment
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Dispatch Loop Python Rewrite / Story 3
 **Phase:** Implementation
 
@@ -347,17 +347,17 @@ Implement `llm_handoff/validator.py`.
 
 - Add the validator tests first.
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="Audit requested after malformed ownership.",
             scope_sha="877f54d",
             close_type="story",
-            producer="codex",
+            producer="backend",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="2" * 64,
     )
 
@@ -372,12 +372,12 @@ def test_validate_handoff_rejects_missing_frontmatter_next_agent_with_producer(
         tmp_path,
         """---
 reason: Missing next_agent should fail.
-producer: codex
+producer: backend
 ---
 
-# Codex Handback
+# backend Handback
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Dispatch Loop Python Rewrite / Story 3
 **Status:** Complete and verified
 **Latest verified repo SHA:** `877f54d07d06d033b6b3f6dded924d170e9e2116`
@@ -394,14 +394,14 @@ producer: codex
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="3" * 64,
     )
 
     assert result.verdict == "NO"
     assert result.routing_instruction is None
     assert any("frontmatter_next_agent_missing" in error for error in result.errors)
-    assert any("producer codex" in error for error in result.errors)
+    assert any("producer backend" in error for error in result.errors)
 
 
 def test_validate_handoff_frontmatter_accepts_frontend_alias() -> None:
@@ -409,29 +409,29 @@ def test_validate_handoff_frontmatter_accepts_frontend_alias() -> None:
         HandoffRouting(
             next_agent="frontend",
             reason="Assign frontend implementation work.",
-            producer="gemini-pe",
+            producer="planner",
         )
     )
 
-    assert result.verdict == "WARNINGS-ONLY"
-    assert result.routing_instruction == "Gemini-Frontend"
+    assert result.verdict == "YES"
+    assert result.routing_instruction == "frontend"
     assert result.errors == []
-    assert any("frontmatter_next_agent_alias" in warning for warning in result.warnings)
+    assert result.warnings == []
 
 
 def test_validate_handoff_frontmatter_accepts_backend_alias() -> None:
     result = validator.validate_handoff_frontmatter(
         HandoffRouting(
             next_agent="backend",
-            reason="Hand off backend implementation to Codex.",
+            reason="Hand off backend implementation to backend.",
             producer="frontend",
         )
     )
 
-    assert result.verdict == "WARNINGS-ONLY"
-    assert result.routing_instruction == "Codex"
+    assert result.verdict == "YES"
+    assert result.routing_instruction == "backend"
     assert result.errors == []
-    assert any("frontmatter_next_agent_alias" in warning for warning in result.warnings)
+    assert result.warnings == []
 
 
 def test_validate_handoff_frontmatter_accepts_planner_alias() -> None:
@@ -439,14 +439,14 @@ def test_validate_handoff_frontmatter_accepts_planner_alias() -> None:
         HandoffRouting(
             next_agent="planner",
             reason="Return to PE scoping.",
-            producer="claude-audit",
+            producer="auditor",
         )
     )
 
-    assert result.verdict == "WARNINGS-ONLY"
-    assert result.routing_instruction == "Gemini-PE"
+    assert result.verdict == "YES"
+    assert result.routing_instruction == "planner"
     assert result.errors == []
-    assert any("frontmatter_next_agent_alias" in warning for warning in result.warnings)
+    assert result.warnings == []
 
 
 def test_validate_handoff_rejects_epic_close_type_without_audit_or_ledger(
@@ -455,26 +455,26 @@ def test_validate_handoff_rejects_epic_close_type_without_audit_or_ledger(
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Codex Handback
+            """# backend Handback
 
-**Agent:** Codex
+**Agent:** backend
 **Latest verified repo SHA:** `82ce839`
 
 ## Completed Work
 
 - Completed the epic implementation.
 """,
-            next_agent="codex",
+            next_agent="backend",
             reason="Epic complete but routed to implementer.",
             scope_sha="82ce839",
             close_type="epic",
-            producer="codex",
+            producer="backend",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="c" * 64,
     )
 
@@ -490,22 +490,22 @@ def test_validate_handoff_rejects_claude_ledger_without_epic_close_type(
         _with_frontmatter(
             """# Claude Audit Report
 
-**Agent:** Claude Code (auditor)
+**Agent:** auditor (auditor)
 **Latest verified repo SHA:** `82ce839`
 
 ## Audit Verdict
 
 APPROVED.
 """,
-            next_agent="claude-ledger",
+            next_agent="finalizer",
             reason="Ledger requested without close_type.",
-            producer="claude-audit",
+            producer="auditor",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Claude Code (audit)",
+        "auditor (audit)",
         prior_handoff_sha="d" * 64,
     )
 
@@ -519,26 +519,26 @@ def test_validate_handoff_rejects_claude_ledger_from_non_auditor_producer(
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Codex Handback
+            """# backend Handback
 
-**Agent:** Codex
+**Agent:** backend
 **Latest verified repo SHA:** `82ce839`
 
 ## Completed Work
 
 - Completed the epic implementation.
 """,
-            next_agent="claude-ledger",
+            next_agent="finalizer",
             reason="Attempt to bypass the audit gate.",
             scope_sha="82ce839",
             close_type="epic",
-            producer="codex",
+            producer="backend",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="e" * 64,
     )
 
@@ -558,13 +558,13 @@ reason: malformed YAML should fail validation
 
 ## Task Assignment
 
-**Agent:** Codex
+**Agent:** backend
 """,
     )
 
     result = validate_handoff(
         handoff_path,
-        "Gemini-PE",
+        "planner",
         prior_handoff_sha="e" * 64,
     )
 
@@ -582,7 +582,7 @@ def test_validate_handoff_rejects_missing_frontmatter_but_reports_legacy_route(
 
 ## Task Assignment
 
-**Agent:** Codex
+**Agent:** backend
 
 ### Objective
 
@@ -596,12 +596,12 @@ Implement the next story.
 
     result = validate_handoff(
         handoff_path,
-        "Gemini-PE",
+        "planner",
         prior_handoff_sha="f" * 64,
     )
 
     assert result.verdict == "NO"
-    assert result.routing_instruction == "Codex"
+    assert result.routing_instruction == "backend"
     assert any("frontmatter_missing" in error for error in result.errors)
 
 
@@ -613,7 +613,7 @@ def test_validate_handoff_accepts_claude_audit_epic_close_metadata(
         _with_frontmatter(
             """## Audit
 
-**Agent:** Claude Code (auditor)
+**Agent:** auditor (auditor)
 **Epic/Story:** Dispatch Gemini Route-Missing Handoff Recovery
 **Test SHA:** `3251966`
 **Implementation SHA:** `833da7d`
@@ -625,27 +625,27 @@ def test_validate_handoff_accepts_claude_audit_epic_close_metadata(
 All required checks passed.
 
 ### Suggested Next Step
-Claude Code: update `PROJECT_STATE.md`, update `PROJECT_STATE.md`, commit, and push.
+auditor: update `PROJECT_STATE.md`, update `PROJECT_STATE.md`, commit, and push.
 
 Canonical Routing Instruction:
 Next: ClaudeCode
 """,
-            next_agent="claude-ledger",
+            next_agent="finalizer",
             reason="Epic audit approved; ledger update requested.",
             scope_sha="833da7d",
             close_type="epic",
-            producer="claude-audit",
+            producer="auditor",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Claude Code (audit)",
+        "auditor (audit)",
         prior_handoff_sha="9" * 64,
     )
 
     assert result.verdict == "YES"
-    assert result.routing_instruction == "Epic-Close"
+    assert result.routing_instruction == "finalizer"
     assert result.errors == []
 
 
@@ -677,27 +677,27 @@ Completed work and verification are documented.
 **Epic/Story:** UAT-REMEDIATION-E2-S3
 
 ### Objective
-Dispatch the next story to Codex.
+Dispatch the next story to backend.
 
 ### Acceptance Criteria
-- Gemini-PE writes a Codex task assignment.
+- planner writes a backend task assignment.
 """,
-            next_agent="gemini-pe",
+            next_agent="planner",
             reason="Audit approved; planner should dispatch the next story.",
             scope_sha="9aac032",
             close_type="story",
-            producer="claude-audit",
+            producer="auditor",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Claude Code (audit)",
+        "auditor (audit)",
         prior_handoff_sha="6" * 64,
     )
 
     assert result.verdict == "YES"
-    assert result.routing_instruction == "Gemini-PE"
+    assert result.routing_instruction == "planner"
     assert result.errors == []
 
 
@@ -711,7 +711,7 @@ def test_validate_handoff_warns_for_unknown_previous_agent(
 
 ## Task Assignment
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Dispatch Loop Python Rewrite / Story 7
 
 ### Objective
@@ -724,13 +724,13 @@ Retire the PowerShell dispatcher.
 
 ## Next Step
 
-- **Claude Code:** Audit Story 7 and verify the cutover.
+- **auditor:** Audit Story 7 and verify the cutover.
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="Audit Story 7.",
             scope_sha="877f54d",
             close_type="story",
-            producer="gemini-pe",
+            producer="planner",
         ),
     )
 
@@ -742,18 +742,18 @@ Retire the PowerShell dispatcher.
 
     assert result.verdict == "WARNINGS-ONLY"
     assert result.errors == []
-    assert result.routing_instruction == "ClaudeCode-Audit"
+    assert result.routing_instruction == "auditor"
     assert any("unknown_previous_agent" in warning for warning in result.warnings)
 
 
 @pytest.mark.parametrize(
     ("agent_text", "expected_route"),
     [
-        ("Claude Code for misroute clarification", "ClaudeCode-Misroute"),
-        ("backend", "Codex"),
-        ("planner", "Gemini-PE"),
-        ("frontend", "Gemini-Frontend"),
-        ("manual frontend GUI", "Gemini-Frontend"),
+        ("auditor for misroute clarification", "validator"),
+        ("backend", "backend"),
+        ("planner", "planner"),
+        ("frontend", "frontend"),
+        ("manual frontend GUI", "frontend"),
     ],
 )
 def test_normalize_agent_handles_misroute_and_frontend_aliases(
@@ -769,7 +769,7 @@ def test_validate_handoff_rejects_human_readable_frontmatter_next_agent_without_
     handoff_path = _write_handoff(
         tmp_path,
         """---
-next_agent: Claude Code (Auditor)
+next_agent: auditor (Auditor)
 reason: Frontend implementation complete; audit requested.
 scope_sha: 25c45ca
 close_type: story
@@ -795,7 +795,7 @@ producer: frontend (manual frontend)
 
     result = validate_handoff(
         handoff_path,
-        "Gemini-Frontend",
+        "frontend",
         prior_handoff_sha="6" * 64,
     )
 
@@ -814,17 +814,17 @@ def test_validate_handoff_rejects_planner_output_without_task_assignment_block(
 
 ## Next Step
 
-- **Codex:** Implement Story 7.
+- **backend:** Implement Story 7.
 """,
-            next_agent="codex",
+            next_agent="backend",
             reason="Implement Story 7.",
-            producer="gemini-pe",
+            producer="planner",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Gemini-PE",
+        "planner",
         prior_handoff_sha="5" * 64,
     )
 
@@ -853,24 +853,24 @@ def test_validate_handoff_accepts_frontmatter_producer_for_completed_work(
 
 ## Next Step
 
-- **Claude Code:** Audit Story 7.
+- **auditor:** Audit Story 7.
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="Story 7 complete; audit requested.",
             scope_sha="877f54d",
             close_type="story",
-            producer="codex",
+            producer="backend",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="6" * 64,
     )
 
     assert result.verdict == "YES"
-    assert result.routing_instruction == "ClaudeCode-Audit"
+    assert result.routing_instruction == "auditor"
     assert result.errors == []
 
 
@@ -895,19 +895,19 @@ def test_validate_handoff_rejects_missing_agent_line_when_producer_mismatches(
 
 ## Next Step
 
-- **Claude Code:** Audit Story 7.
+- **auditor:** Audit Story 7.
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="Story 7 complete; audit requested.",
             scope_sha="877f54d",
             close_type="story",
-            producer="gemini-pe",
+            producer="planner",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="6" * 64,
     )
 
@@ -937,19 +937,19 @@ def test_validate_handoff_rejects_mismatched_agent_ownership_line(
 
 ## Next Step
 
-- **Claude Code:** Audit Story 7.
+- **auditor:** Audit Story 7.
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="Story 7 complete; audit requested.",
             scope_sha="877f54d",
             close_type="story",
-            producer="codex",
+            producer="backend",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="7" * 64,
     )
 
@@ -967,18 +967,18 @@ def test_validate_handoff_warns_when_planner_sections_are_missing(
 
 ## Task Assignment
 
-**Agent:** Codex
+**Agent:** backend
 **Epic/Story:** Dispatch Loop Python Rewrite / Story 7
 """,
-            next_agent="codex",
+            next_agent="backend",
             reason="Implement Story 7.",
-            producer="gemini-pe",
+            producer="planner",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Gemini-PE",
+        "planner",
         prior_handoff_sha="8" * 64,
     )
 
@@ -993,34 +993,34 @@ def test_validate_handoff_accepts_user_escalation_frontmatter(
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Codex Handback
+            """# backend Handback
 
-**Agent:** Codex
+**Agent:** backend
 **Latest verified repo SHA:** `877f54d`
 
 ## Completed Work
 
 - Identified a blocking ambiguity.
 
-## Escalation
+## user
 
 The routing remains ambiguous after review. Human decision required.
 """,
             next_agent="user",
             reason="Ambiguous routing requires PO decision.",
             scope_sha="877f54d",
-            producer="codex",
+            producer="backend",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Codex",
+        "backend",
         prior_handoff_sha="8" * 64,
     )
 
     assert result.verdict == "YES"
-    assert result.routing_instruction == "Escalation"
+    assert result.routing_instruction == "user"
     assert all("scope_claim_mismatch" not in error for error in result.errors)
     assert all("Objective section" not in warning for warning in result.warnings)
     assert all(
@@ -1042,12 +1042,12 @@ story_title: Tier header case
 remaining_stories:
   - E6-S3 Reject Finding undo toast
 prior_sha: 2eee66b29811e6ee4ffee970039c35474c678a39bce20d1905d1e935210864e5
-producer: gemini-pe
+producer: planner
 ---
 
 Mode: Non-Implementing Principal Engineer (review/orchestration only)
 
-## Escalation
+## user
 
 Human decision required.
 """,
@@ -1055,12 +1055,12 @@ Human decision required.
 
     result = validate_handoff(
         handoff_path,
-        "Gemini-PE",
+        "planner",
         prior_handoff_sha="8" * 64,
     )
 
     assert result.verdict == "NO"
-    assert result.routing_instruction == "Escalation"
+    assert result.routing_instruction == "user"
     assert any("frontmatter_prior_sha_invalid" in error for error in result.errors)
     assert all("routing_instruction_missing" not in error for error in result.errors)
     assert all("scope_claim_mismatch" not in error for error in result.errors)
@@ -1079,23 +1079,23 @@ def test_validate_handoff_rejects_planner_self_loop_back_to_gemini_pe(
 
 ## Task Assignment
 
-**Agent:** Gemini-PE
+**Agent:** planner
 **Epic/Story:** Scope the next epic
 """,
-            next_agent="gemini-pe",
+            next_agent="planner",
             reason="Planner self-loop fixture.",
-            producer="gemini-pe",
+            producer="planner",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Gemini-PE",
+        "planner",
         prior_handoff_sha="9" * 64,
     )
 
     assert result.verdict == "NO"
-    assert result.routing_instruction == "Gemini-PE"
+    assert result.routing_instruction == "planner"
     assert any("planner_self_loop" in error for error in result.errors)
 
 
@@ -1107,7 +1107,7 @@ def test_validate_handoff_rejects_auditor_self_loop_back_to_claude_code(
         _with_frontmatter(
             """# Claude Audit Handback
 
-**Agent:** Claude Code (auditor)
+**Agent:** auditor (auditor)
 **Latest verified repo SHA:** `59206fb3f3ac027ef3ba07f4d7c8db0410edc926`
 
 ## Audit Summary
@@ -1116,23 +1116,23 @@ Audit complete.
 
 ## Next Step
 
-- **Claude Code:** Audit the next item.
+- **auditor:** Audit the next item.
 """,
-            next_agent="claude-audit",
+            next_agent="auditor",
             reason="Auditor self-loop fixture.",
             scope_sha="59206fb",
-            producer="claude-audit",
+            producer="auditor",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Claude Code (audit)",
+        "auditor (audit)",
         prior_handoff_sha="a" * 64,
     )
 
     assert result.verdict == "NO"
-    assert result.routing_instruction == "ClaudeCode-Audit"
+    assert result.routing_instruction == "auditor"
     assert any("agent_self_loop" in error for error in result.errors)
 
 
@@ -1142,39 +1142,39 @@ def test_validate_handoff_allows_auditor_handoff_to_epic_close_for_ledger_close_
     handoff_path = _write_handoff(
         tmp_path,
         _with_frontmatter(
-            """# Dispatch Gemini Stream-JSON + Default Codex Resume — AUDIT APPROVED-WITH-NITS
+            """# Dispatch Gemini Stream-JSON + Default backend Resume — AUDIT APPROVED-WITH-NITS
 
-**Agent:** ClaudeCode-Audit
+**Agent:** auditor
 **Verified repo SHAs:** impl `82ce839`, tests `3407c66`
 
 ## Audit Verdict: APPROVED-WITH-NITS
 
 ## Next Step
 
-- **Claude Code (ledger close + push):**
+- **auditor (ledger close + push):**
   1. Append the ledger entry to `PROJECT_STATE.md`.
   2. Push `main` to `origin`.
 
 - **Gemini PE (AFTER ledger close + push):** Process the UAT remediation epic.
 """,
-            next_agent="claude-ledger",
+            next_agent="finalizer",
             reason="Epic audit approved; ledger close requested.",
             scope_sha="82ce839",
             close_type="epic",
-            producer="claude-audit",
+            producer="auditor",
         ),
     )
 
     result = validate_handoff(
         handoff_path,
-        "Claude Code (audit)",
+        "auditor (audit)",
         prior_handoff_sha="b" * 64,
     )
 
-    assert result.routing_instruction == "Epic-Close"
+    assert result.routing_instruction == "finalizer"
     assert all("agent_self_loop" not in error for error in result.errors)
 
 
 def test_author_role_coalesces_claude_variants() -> None:
-    assert validator._author_role("ClaudeCode-Audit") == "ClaudeCode"
-    assert validator._author_role("ClaudeCode-Misroute") == "ClaudeCode"
+    assert validator._author_role("auditor") == "auditor-family"
+    assert validator._author_role("validator") == "auditor-family"
