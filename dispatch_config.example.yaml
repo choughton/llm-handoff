@@ -6,6 +6,9 @@
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
 auto_push: false
+backend_resume: true
+planner_resume: true
+planner_api_key_env: false
 
 agents:
   planner:

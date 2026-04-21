@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import yaml
 
 
@@ -184,11 +184,29 @@ class DispatchConfig(BaseModel):
     normalizer: NormalizerConfig = Field(default_factory=NormalizerConfig)
     dry_run: bool = False
     use_manual_frontend: bool = False
-    use_gemini_api_key_env: bool = False
-    use_codex_resume: bool = True
-    use_gemini_resume: bool = GEMINI_RESUME_DEFAULT
+    planner_api_key_env: bool = False
+    backend_resume: bool = True
+    planner_resume: bool = GEMINI_RESUME_DEFAULT
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_provider_keys(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        legacy_keys = {
+            "use_gemini_api_key_env": "planner_api_key_env",
+            "use_codex_resume": "backend_resume",
+            "use_gemini_resume": "planner_resume",
+        }
+        for legacy_key, canonical_key in legacy_keys.items():
+            if legacy_key in normalized and canonical_key not in normalized:
+                normalized[canonical_key] = normalized.pop(legacy_key)
+            else:
+                normalized.pop(legacy_key, None)
+        return normalized
 
     @field_validator("repo_root", mode="after")
     @classmethod
@@ -233,20 +251,28 @@ class DispatchConfig(BaseModel):
         return (self.repo_root / self.project_state_path).resolve()
 
     @property
-    def claude_md_full_path(self) -> Path:
-        return self.project_state_full_path
-
-    @property
     def backend_resume_enabled(self) -> bool:
-        return self.use_codex_resume
+        return self.backend_resume
 
     @property
     def planner_resume_enabled(self) -> bool:
-        return self.use_gemini_resume
+        return self.planner_resume
 
     @property
     def planner_api_key_env_enabled(self) -> bool:
-        return self.use_gemini_api_key_env
+        return self.planner_api_key_env
+
+    @property
+    def use_codex_resume(self) -> bool:
+        return self.backend_resume
+
+    @property
+    def use_gemini_resume(self) -> bool:
+        return self.planner_resume
+
+    @property
+    def use_gemini_api_key_env(self) -> bool:
+        return self.planner_api_key_env
 
 
 def load_dispatch_config(
@@ -255,7 +281,10 @@ def load_dispatch_config(
     config_path: Path | None = None,
     dry_run: bool = False,
     use_manual_frontend: bool = False,
-    use_gemini_api_key_env: bool = False,
+    planner_api_key_env: bool = False,
+    backend_resume: bool | None = None,
+    planner_resume: bool | None = None,
+    use_gemini_api_key_env: bool | None = None,
     use_codex_resume: bool | None = None,
     use_gemini_resume: bool | None = None,
 ) -> DispatchConfig:
@@ -264,11 +293,17 @@ def load_dispatch_config(
     data["repo_root"] = resolved_repo_root
     data["dry_run"] = dry_run
     data["use_manual_frontend"] = use_manual_frontend
-    data["use_gemini_api_key_env"] = use_gemini_api_key_env
+    if use_gemini_api_key_env is not None:
+        planner_api_key_env = use_gemini_api_key_env
     if use_codex_resume is not None:
-        data["use_codex_resume"] = use_codex_resume
+        backend_resume = use_codex_resume
     if use_gemini_resume is not None:
-        data["use_gemini_resume"] = use_gemini_resume
+        planner_resume = use_gemini_resume
+    data["planner_api_key_env"] = planner_api_key_env
+    if backend_resume is not None:
+        data["backend_resume"] = backend_resume
+    if planner_resume is not None:
+        data["planner_resume"] = planner_resume
     return DispatchConfig.model_validate(data)
 
 

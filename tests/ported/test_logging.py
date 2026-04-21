@@ -28,15 +28,15 @@ def _build_logger(
     repo_root: Path,
     *,
     console: io.StringIO | None = None,
-    use_codex_resume: bool = True,
-    use_gemini_resume: bool = True,
+    backend_resume: bool = True,
+    planner_resume: bool = True,
 ):
     return logging_util.DispatchLogger(
         repo_root=repo_root,
         console=console,
         now=lambda: FIXED_NOW,
-        use_codex_resume=use_codex_resume,
-        use_gemini_resume=use_gemini_resume,
+        backend_resume=backend_resume,
+        planner_resume=planner_resume,
     )
 
 
@@ -75,8 +75,8 @@ def test_dispatch_logger_initializes_log_file_with_expected_header(
         "# ============================================================================\n"
         "# Started:        2026-04-17 12:34:56 -07:00\n"
         f"# Repo root:      {repo_root.resolve()}\n"
-        "# Codex session:  MANAGED RESUME (persisted thread id)\n"
-        "# Gemini PE:      MANAGED RESUME (in-memory session id)\n"
+        "# Backend session: MANAGED RESUME (persisted thread id)\n"
+        "# Planner session: MANAGED RESUME (in-memory session id)\n"
         "# Smart router:   ON (always)\n"
         "# Validate HOs:   ON (hard gate)\n"
         "# Auto ledger:    ON (always)\n"
@@ -87,14 +87,14 @@ def test_dispatch_logger_initializes_log_file_with_expected_header(
     )
 
 
-def test_dispatch_logger_header_reflects_stateless_codex_opt_out_mode(
+def test_dispatch_logger_header_reflects_stateless_backend_opt_out_mode(
     tmp_path: Path,
 ) -> None:
     logging_util = _load_logging_module()
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
-    logger = _build_logger(logging_util, repo_root, use_codex_resume=False)
+    logger = _build_logger(logging_util, repo_root, backend_resume=False)
 
     assert logger.log_file_path.read_text(encoding="utf-8").startswith(
         "# ============================================================================\n"
@@ -102,19 +102,19 @@ def test_dispatch_logger_header_reflects_stateless_codex_opt_out_mode(
         "# ============================================================================\n"
         "# Started:        2026-04-17 12:34:56 -07:00\n"
         f"# Repo root:      {repo_root.resolve()}\n"
-        "# Codex session:  STATELESS (new session per dispatch)\n"
-        "# Gemini PE:      MANAGED RESUME (in-memory session id)\n"
+        "# Backend session: STATELESS (new session per dispatch)\n"
+        "# Planner session: MANAGED RESUME (in-memory session id)\n"
     )
 
 
-def test_dispatch_logger_header_reflects_stateless_gemini_opt_out_mode(
+def test_dispatch_logger_header_reflects_stateless_planner_opt_out_mode(
     tmp_path: Path,
 ) -> None:
     logging_util = _load_logging_module()
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
-    logger = _build_logger(logging_util, repo_root, use_gemini_resume=False)
+    logger = _build_logger(logging_util, repo_root, planner_resume=False)
 
     assert logger.log_file_path.read_text(encoding="utf-8").startswith(
         "# ============================================================================\n"
@@ -122,8 +122,8 @@ def test_dispatch_logger_header_reflects_stateless_gemini_opt_out_mode(
         "# ============================================================================\n"
         "# Started:        2026-04-17 12:34:56 -07:00\n"
         f"# Repo root:      {repo_root.resolve()}\n"
-        "# Codex session:  MANAGED RESUME (persisted thread id)\n"
-        "# Gemini PE:      STATELESS (new session per dispatch)\n"
+        "# Backend session: MANAGED RESUME (persisted thread id)\n"
+        "# Planner session: STATELESS (new session per dispatch)\n"
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from llm_handoff import handoff_normalizer
+from llm_handoff.normalizer_providers import claude as claude_normalizer
 
 
 def test_normalizer_uses_structured_api_path_when_api_key_is_available(
@@ -34,14 +35,14 @@ def test_normalizer_uses_structured_api_path_when_api_key_is_available(
         raise AssertionError("CLI fallback should not run when an API key is present.")
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
-    monkeypatch.setattr(handoff_normalizer, "Anthropic", fake_anthropic)
+    monkeypatch.setattr(claude_normalizer, "Anthropic", fake_anthropic)
     monkeypatch.setattr(
-        handoff_normalizer,
+        claude_normalizer,
         "_normalize_next_agent_with_instructor",
         fake_api_normalizer,
     )
     monkeypatch.setattr(
-        handoff_normalizer,
+        claude_normalizer,
         "_normalize_next_agent_with_claude_cli",
         fail_cli,
     )
@@ -70,12 +71,12 @@ def test_normalizer_uses_cli_path_when_api_key_is_absent(
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(
-        handoff_normalizer,
+        claude_normalizer,
         "_normalize_next_agent_with_instructor",
         fail_api,
     )
     monkeypatch.setattr(
-        handoff_normalizer,
+        claude_normalizer,
         "_normalize_next_agent_with_claude_cli",
         fake_cli,
     )

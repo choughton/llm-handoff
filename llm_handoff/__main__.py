@@ -79,12 +79,22 @@ def _run_dispatch(
     *,
     dry_run: bool,
     use_manual_frontend: bool,
-    use_gemini_api_key_env: bool,
-    use_codex_resume: bool,
-    use_gemini_resume: bool,
-    repo_root: Path | None,
-    config_path: Path | None,
+    planner_api_key_env: bool = False,
+    backend_resume: bool = True,
+    planner_resume: bool = True,
+    use_gemini_api_key_env: bool | None = None,
+    use_codex_resume: bool | None = None,
+    use_gemini_resume: bool | None = None,
+    repo_root: Path | None = None,
+    config_path: Path | None = None,
 ) -> int:
+    if use_gemini_api_key_env is not None:
+        planner_api_key_env = use_gemini_api_key_env
+    if use_codex_resume is not None:
+        backend_resume = use_codex_resume
+    if use_gemini_resume is not None:
+        planner_resume = use_gemini_resume
+
     root_start = repo_root
     if root_start is None and config_path is not None:
         root_start = config_path.parent
@@ -93,16 +103,16 @@ def _run_dispatch(
         config_path=config_path,
         dry_run=dry_run,
         use_manual_frontend=use_manual_frontend,
-        use_gemini_api_key_env=use_gemini_api_key_env,
-        use_codex_resume=use_codex_resume,
-        use_gemini_resume=use_gemini_resume,
+        planner_api_key_env=planner_api_key_env,
+        backend_resume=backend_resume,
+        planner_resume=planner_resume,
     )
     _cleanup_codex_output_artifacts(_codex_artifact_paths(config.repo_root))
     logger = DispatchLogger(
         repo_root=config.repo_root,
         max_consecutive_failures=config.max_consecutive_failures,
-        use_codex_resume=config.use_codex_resume,
-        use_gemini_resume=config.use_gemini_resume,
+        backend_resume=config.backend_resume,
+        planner_resume=config.planner_resume,
     )
     previous_title, changed_title = _set_dispatch_console_title()
     try:
@@ -181,30 +191,32 @@ def _dispatch_callback(
         "--manual-frontend",
         help="Pause for manual frontend work instead of launching the frontend CLI.",
     ),
-    use_gemini_api_key_env: bool = typer.Option(
+    planner_api_key_env: bool = typer.Option(
         False,
+        "--use-planner-api-key-env",
         "--use-gemini-api-key-env",
         help=(
-            "Preserve GEMINI_API_KEY for Gemini CLI launches. "
-            "GOOGLE_API_KEY is still stripped."
+            "Preserve the planner provider API key environment for planner launches. "
+            "Provider-specific blocked variables are still stripped."
         ),
     ),
-    # Typer exposes both forms from this option declaration. Keep the explicit
-    # --use-codex-resume alias for older dispatch wrappers while the default is
-    # resume-enabled and --no-codex-resume remains the operational opt-out.
-    use_codex_resume: bool = typer.Option(
+    # Typer exposes both forms from this option declaration. Keep provider-named
+    # aliases for older dispatch wrappers while the public controls use roles.
+    backend_resume: bool = typer.Option(
         True,
+        "--use-backend-resume/--no-backend-resume",
         "--use-codex-resume/--no-codex-resume",
         help=(
-            "Reuse the managed Codex session, or start a fresh stateless Codex "
+            "Reuse the managed backend session, or start a fresh stateless backend "
             "session for this dispatch."
         ),
     ),
-    use_gemini_resume: bool = typer.Option(
+    planner_resume: bool = typer.Option(
         True,
+        "--use-planner-resume/--no-planner-resume",
         "--use-gemini-resume/--no-gemini-resume",
         help=(
-            "Reuse the in-memory managed Gemini PE session, or run Gemini PE "
+            "Reuse the in-memory managed planner session, or run the planner "
             "statelessly for this dispatch."
         ),
     ),
@@ -222,9 +234,9 @@ def _dispatch_callback(
         _run_dispatch(
             dry_run=dry_run,
             use_manual_frontend=use_manual_frontend,
-            use_gemini_api_key_env=use_gemini_api_key_env,
-            use_codex_resume=use_codex_resume,
-            use_gemini_resume=use_gemini_resume,
+            planner_api_key_env=planner_api_key_env,
+            backend_resume=backend_resume,
+            planner_resume=planner_resume,
             repo_root=repo_root,
             config_path=config_path,
         )

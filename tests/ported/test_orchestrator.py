@@ -25,9 +25,9 @@ def _dispatch_config(
     *,
     dry_run: bool = False,
     use_manual_frontend: bool = False,
-    use_gemini_api_key_env: bool = False,
-    use_codex_resume: bool = True,
-    use_gemini_resume: bool = True,
+    planner_api_key_env: bool = False,
+    backend_resume: bool = True,
+    planner_resume: bool = True,
     poll_interval_seconds: int = 0,
     max_consecutive_failures: int = 3,
 ):
@@ -36,9 +36,9 @@ def _dispatch_config(
         repo_root=repo_root,
         dry_run=dry_run,
         use_manual_frontend=use_manual_frontend,
-        use_gemini_api_key_env=use_gemini_api_key_env,
-        use_codex_resume=use_codex_resume,
-        use_gemini_resume=use_gemini_resume,
+        planner_api_key_env=planner_api_key_env,
+        backend_resume=backend_resume,
+        planner_resume=planner_resume,
         poll_interval_seconds=poll_interval_seconds,
         max_consecutive_failures=max_consecutive_failures,
     )
@@ -48,13 +48,16 @@ def _write_repo(
     tmp_path: Path,
     handoff_content: str,
     *,
-    claude_md_content: str = "# CLAUDE\n",
+    project_state_content: str = "# PROJECT STATE\n",
 ) -> tuple[Path, Path]:
     repo_root = tmp_path
     handoff_path = repo_root / "docs" / "handoff" / "HANDOFF.md"
     handoff_path.parent.mkdir(parents=True, exist_ok=True)
     handoff_path.write_text(handoff_content, encoding="utf-8")
-    (repo_root / "PROJECT_STATE.md").write_text(claude_md_content, encoding="utf-8")
+    (repo_root / "PROJECT_STATE.md").write_text(
+        project_state_content,
+        encoding="utf-8",
+    )
     (repo_root / "AGENTS.md").write_text("dispatch test fixture\n", encoding="utf-8")
     return repo_root, handoff_path
 
@@ -1757,7 +1760,7 @@ def test_run_loop_detects_stale_route_after_two_unchanged_cycles(
     ) in log_messages
 
 
-def test_run_loop_does_not_redirect_fresh_epic_close_when_claude_md_is_stale(
+def test_run_loop_does_not_redirect_fresh_epic_close_when_project_state_is_stale(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1767,7 +1770,7 @@ def test_run_loop_does_not_redirect_fresh_epic_close_when_claude_md_is_stale(
 
 - **auditor:** Close the epic, update the ledger, and push to origin.
 """,
-        claude_md_content=(
+        project_state_content=(
             "## 2. CURRENT STATUS\n"
             "- **Active Epic:** **None — awaiting next epic dispatch (planner scoping).**\n"
         ),
@@ -1817,7 +1820,7 @@ def test_run_loop_does_not_redirect_fresh_epic_close_when_claude_md_is_stale(
     assert all("STALE finalizer detected" not in message for _, message in log_messages)
 
 
-def test_run_loop_redirects_completed_stale_epic_close_to_gemini_pe_scoping(
+def test_run_loop_redirects_completed_stale_epic_close_to_planner_scoping(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1827,12 +1830,12 @@ def test_run_loop_redirects_completed_stale_epic_close_to_gemini_pe_scoping(
 
 - **auditor:** Close the epic, update the ledger, and push to origin.
 """,
-        claude_md_content=(
+        project_state_content=(
             "## 2. CURRENT STATUS\n"
             "- **Active Epic:** UAT Remediation Epic 1 — ACTIVE.\n"
         ),
     )
-    claude_md_path = repo_root / "PROJECT_STATE.md"
+    project_state_path = repo_root / "PROJECT_STATE.md"
     orchestrator = _load_orchestrator_module()
     config = _dispatch_config(repo_root)
     log_messages: list[tuple[str, str]] = []
@@ -1842,7 +1845,7 @@ def test_run_loop_redirects_completed_stale_epic_close_to_gemini_pe_scoping(
 
     def fake_epic_close(log=None) -> EpicCloseResult:
         ledger_calls.append(log)
-        claude_md_path.write_text(
+        project_state_path.write_text(
             "## 2. CURRENT STATUS\n"
             "- **Active Epic:** **None — awaiting next epic dispatch (planner scoping).**\n",
             encoding="utf-8",
@@ -1916,11 +1919,11 @@ producer: auditor
 
 **auditor (ledger-updater):** Close the E2 epic.
 """,
-        claude_md_content=(
+        project_state_content=(
             "## 2. CURRENT STATUS\n- **Active Epic:** UAT Remediation E2 — ACTIVE.\n"
         ),
     )
-    claude_md_path = repo_root / "PROJECT_STATE.md"
+    project_state_path = repo_root / "PROJECT_STATE.md"
     orchestrator = _load_orchestrator_module()
     config = _dispatch_config(repo_root)
     log_messages: list[tuple[str, str]] = []
@@ -1929,7 +1932,7 @@ producer: auditor
 
     def fake_epic_close(log=None) -> EpicCloseResult:
         ledger_calls.append(log)
-        claude_md_path.write_text(
+        project_state_path.write_text(
             "## 2. CURRENT STATUS\n"
             "- **Active Epic:** UAT Remediation (E3-E6) + Doc-Role Anchor Correctness (S2.5).\n",
             encoding="utf-8",
@@ -2114,7 +2117,7 @@ def test_run_loop_passes_planner_api_key_opt_in_to_dispatch(
 """,
     )
     orchestrator = _load_orchestrator_module()
-    config = _dispatch_config(repo_root, use_gemini_api_key_env=True)
+    config = _dispatch_config(repo_root, planner_api_key_env=True)
     planner_calls: list[tuple[Path, bool, Any]] = []
 
     monkeypatch.setattr(
@@ -2321,7 +2324,7 @@ def test_run_loop_passes_codex_resume_mode_to_dispatch(
 """,
     )
     orchestrator = _load_orchestrator_module()
-    config = _dispatch_config(repo_root, use_codex_resume=True)
+    config = _dispatch_config(repo_root, backend_resume=True)
     codex_calls: list[tuple[Path, Any, bool]] = []
 
     monkeypatch.setattr(
@@ -2628,13 +2631,13 @@ def test_main_parses_cli_flags_and_dispatches_config(
             *,
             repo_root,
             max_consecutive_failures,
-            use_codex_resume,
-            use_gemini_resume,
+            backend_resume,
+            planner_resume,
         ):
             captured["logger_repo_root"] = repo_root
             captured["logger_max_consecutive_failures"] = max_consecutive_failures
-            captured["logger_use_codex_resume"] = use_codex_resume
-            captured["logger_use_gemini_resume"] = use_gemini_resume
+            captured["logger_backend_resume"] = backend_resume
+            captured["logger_planner_resume"] = planner_resume
 
         def __call__(self, level: str, message: str) -> None:
             captured.setdefault("log_calls", []).append((level, message))
@@ -2678,15 +2681,15 @@ def test_main_parses_cli_flags_and_dispatches_config(
     assert config.repo_root == tmp_path
     assert config.dry_run is True
     assert config.use_manual_frontend is True
-    assert config.use_gemini_api_key_env is True
-    assert config.use_codex_resume is True
-    assert config.use_gemini_resume is True
+    assert config.planner_api_key_env is True
+    assert config.backend_resume is True
+    assert config.planner_resume is True
     assert captured["logger_repo_root"] == tmp_path
     assert (
         captured["logger_max_consecutive_failures"] == config.max_consecutive_failures
     )
-    assert captured["logger_use_codex_resume"] is True
-    assert captured["logger_use_gemini_resume"] is True
+    assert captured["logger_backend_resume"] is True
+    assert captured["logger_planner_resume"] is True
     assert isinstance(captured["log"], FakeDispatchLogger)
     assert captured["restored_titles"] == [("previous title", True)]
 
@@ -2704,12 +2707,12 @@ def test_main_supports_opting_out_of_codex_resume(
             *,
             repo_root,
             max_consecutive_failures,
-            use_codex_resume,
-            use_gemini_resume,
+            backend_resume,
+            planner_resume,
         ):
             captured["logger_repo_root"] = repo_root
-            captured["logger_use_codex_resume"] = use_codex_resume
-            captured["logger_use_gemini_resume"] = use_gemini_resume
+            captured["logger_backend_resume"] = backend_resume
+            captured["logger_planner_resume"] = planner_resume
             del max_consecutive_failures
 
         def __call__(self, level: str, message: str) -> None:
@@ -2742,10 +2745,10 @@ def test_main_supports_opting_out_of_codex_resume(
     exit_code = main_module.main(["--no-codex-resume", "--repo-root", str(tmp_path)])
 
     assert exit_code == 0
-    assert captured["config"].use_codex_resume is False
-    assert captured["logger_use_codex_resume"] is False
-    assert captured["config"].use_gemini_resume is True
-    assert captured["logger_use_gemini_resume"] is True
+    assert captured["config"].backend_resume is False
+    assert captured["logger_backend_resume"] is False
+    assert captured["config"].planner_resume is True
+    assert captured["logger_planner_resume"] is True
 
 
 def test_main_supports_opting_out_of_gemini_resume(
@@ -2761,12 +2764,12 @@ def test_main_supports_opting_out_of_gemini_resume(
             *,
             repo_root,
             max_consecutive_failures,
-            use_codex_resume,
-            use_gemini_resume,
+            backend_resume,
+            planner_resume,
         ):
             captured["logger_repo_root"] = repo_root
-            captured["logger_use_codex_resume"] = use_codex_resume
-            captured["logger_use_gemini_resume"] = use_gemini_resume
+            captured["logger_backend_resume"] = backend_resume
+            captured["logger_planner_resume"] = planner_resume
             del max_consecutive_failures
 
         def __call__(self, level: str, message: str) -> None:
@@ -2799,10 +2802,10 @@ def test_main_supports_opting_out_of_gemini_resume(
     exit_code = main_module.main(["--no-gemini-resume", "--repo-root", str(tmp_path)])
 
     assert exit_code == 0
-    assert captured["config"].use_gemini_resume is False
-    assert captured["logger_use_gemini_resume"] is False
-    assert captured["config"].use_codex_resume is True
-    assert captured["logger_use_codex_resume"] is True
+    assert captured["config"].planner_resume is False
+    assert captured["logger_planner_resume"] is False
+    assert captured["config"].backend_resume is True
+    assert captured["logger_backend_resume"] is True
 
 
 def test_main_returns_130_on_keyboard_interrupt(
@@ -2818,13 +2821,13 @@ def test_main_returns_130_on_keyboard_interrupt(
             *,
             repo_root,
             max_consecutive_failures,
-            use_codex_resume,
-            use_gemini_resume,
+            backend_resume,
+            planner_resume,
         ):
             captured["logger_repo_root"] = repo_root
             captured["logger_max_consecutive_failures"] = max_consecutive_failures
-            captured["logger_use_codex_resume"] = use_codex_resume
-            captured["logger_use_gemini_resume"] = use_gemini_resume
+            captured["logger_backend_resume"] = backend_resume
+            captured["logger_planner_resume"] = planner_resume
 
         def __call__(self, level: str, message: str) -> None:
             captured.setdefault("log_calls", []).append((level, message))
@@ -2856,7 +2859,7 @@ def test_main_returns_130_on_keyboard_interrupt(
 
     assert exit_code == 130
     assert captured["logger_repo_root"] == tmp_path
-    assert captured["logger_use_codex_resume"] is True
+    assert captured["logger_backend_resume"] is True
     assert captured["log_calls"] == [("WARN", "Dispatch interrupted by user. Exiting.")]
     assert captured["restored_titles"] == [("previous title", True)]
 
@@ -2874,10 +2877,10 @@ def test_main_cleans_stale_codex_output_artifacts_before_running_dispatch(
             *,
             repo_root,
             max_consecutive_failures,
-            use_codex_resume,
-            use_gemini_resume,
+            backend_resume,
+            planner_resume,
         ):
-            del repo_root, max_consecutive_failures, use_codex_resume, use_gemini_resume
+            del repo_root, max_consecutive_failures, backend_resume, planner_resume
 
         def __call__(self, level: str, message: str) -> None:
             captured.setdefault("log_calls", []).append((level, message))

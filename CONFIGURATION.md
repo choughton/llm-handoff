@@ -15,6 +15,9 @@ example shape.
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
 auto_push: false
+backend_resume: true
+planner_resume: true
+planner_api_key_env: false
 
 agents:
   planner:
@@ -78,6 +81,20 @@ auto_push: false
 Remote pushes should be explicit. The dispatcher may create local commits as
 part of a finalizer workflow, but it should not publish to a remote unless a
 user explicitly opts in.
+
+## Runtime Controls
+
+The dispatcher exposes role-based runtime toggles for session reuse and planner
+API-key environment handling:
+
+```yaml
+backend_resume: true
+planner_resume: true
+planner_api_key_env: false
+```
+
+Provider-named keys from the reference adapter mapping are accepted as backward
+compatibility aliases, but new configs should prefer the role-based names.
 
 ## Agent Roles
 

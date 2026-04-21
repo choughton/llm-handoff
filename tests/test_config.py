@@ -38,14 +38,14 @@ agents:
         repo_root=tmp_path,
         config_path=config_path,
         dry_run=True,
-        use_codex_resume=False,
+        backend_resume=False,
     )
 
     assert loaded.repo_root == tmp_path.resolve()
     assert loaded.handoff_path == Path("HANDOFF.md")
     assert loaded.project_state_path == Path("STATE.md")
     assert loaded.dry_run is True
-    assert loaded.use_codex_resume is False
+    assert loaded.backend_resume is False
     assert loaded.normalizer.model == "claude-haiku-test"
     assert loaded.normalizer.timeout_ms == 12345
     assert loaded.agents["backend"].provider == "codex"
@@ -90,9 +90,9 @@ normalizer:
     exit_code = main_module._run_dispatch(
         dry_run=True,
         use_manual_frontend=False,
-        use_gemini_api_key_env=False,
-        use_codex_resume=True,
-        use_gemini_resume=True,
+        planner_api_key_env=False,
+        backend_resume=True,
+        planner_resume=True,
         repo_root=tmp_path,
         config_path=Path("dispatch_config.yaml"),
     )

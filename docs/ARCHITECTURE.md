@@ -35,8 +35,16 @@ Continue, pause, or escalate
 - `llm_handoff.router`: handoff parsing and route selection.
 - `llm_handoff.validator`: post-dispatch handoff validation.
 - `llm_handoff.orchestrator`: dispatch loop and failure-mode handling.
-- `llm_handoff.agents`: provider CLI invocation and stream handling.
-- `llm_handoff.handoff_normalizer`: frontmatter `next_agent` normalization.
+- `llm_handoff.agents`: compatibility facade for agent invocation imports.
+- `llm_handoff.agent_types`: shared dispatch result types.
+- `llm_handoff.agent_process`: subprocess execution and path helpers.
+- `llm_handoff.agent_streams`: shared CLI stream filtering.
+- `llm_handoff.agent_providers.*`: concrete provider CLI adapters.
+- `llm_handoff.agent_roles`: generic role-to-adapter invocation wrappers.
+- `llm_handoff.handoff_normalizer`: frontmatter `next_agent` normalization
+  control flow.
+- `llm_handoff.normalizer_models`: normalizer schema and prompt contract.
+- `llm_handoff.normalizer_providers.*`: model-provider normalizer adapters.
 - `llm_handoff.ledger`: finalizer-style close flow for durable state updates.
 - `llm_handoff.logging_util`: dispatch log writer.
 - `llm_handoff.text_io`: robust text decoding for handoff files.

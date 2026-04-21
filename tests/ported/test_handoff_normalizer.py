@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 import llm_handoff.handoff_normalizer as handoff_normalizer
+from llm_handoff.normalizer_providers import claude as claude_normalizer
 
 
 class _FakeMessages:
@@ -32,7 +33,7 @@ def test_normalize_next_agent_passes_exact_canonical_without_llm(
         raise AssertionError("exact canonical next_agent should not call Instructor")
 
     monkeypatch.setattr(
-        handoff_normalizer.instructor, "from_anthropic", fail_from_anthropic
+        claude_normalizer.instructor, "from_anthropic", fail_from_anthropic
     )
 
     assert handoff_normalizer.normalize_next_agent("auditor") == "auditor"
@@ -57,7 +58,7 @@ def test_normalize_next_agent_uses_instructor_for_freeform_values(
     fake_instructed = _FakeInstructedClient(canonical)
 
     monkeypatch.setattr(
-        handoff_normalizer.instructor,
+        claude_normalizer.instructor,
         "from_anthropic",
         lambda _client: fake_instructed,
     )
@@ -86,7 +87,7 @@ def test_normalize_next_agent_returns_unknown_for_blank_without_llm(
         raise AssertionError("blank next_agent should not call Instructor")
 
     monkeypatch.setattr(
-        handoff_normalizer.instructor, "from_anthropic", fail_from_anthropic
+        claude_normalizer.instructor, "from_anthropic", fail_from_anthropic
     )
 
     assert handoff_normalizer.normalize_next_agent(freeform) == "unknown"
@@ -99,7 +100,7 @@ def test_normalize_next_agent_can_return_unknown_from_instructor(
 ) -> None:
     fake_instructed = _FakeInstructedClient("unknown")
     monkeypatch.setattr(
-        handoff_normalizer.instructor,
+        claude_normalizer.instructor,
         "from_anthropic",
         lambda _client: fake_instructed,
     )
@@ -135,9 +136,9 @@ def test_normalize_next_agent_uses_claude_cli_oauth_without_sdk_credentials(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.setattr(
-        handoff_normalizer.instructor, "from_anthropic", fake_from_anthropic
+        claude_normalizer.instructor, "from_anthropic", fake_from_anthropic
     )
-    monkeypatch.setattr(handoff_normalizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_normalizer.subprocess, "run", fake_run)
 
     assert handoff_normalizer.normalize_next_agent("Claude Code (Auditor)") == "auditor"
     [call] = calls
@@ -177,11 +178,11 @@ def test_normalize_next_agent_falls_back_to_claude_cli_when_sdk_auth_fails(
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "bad-key")
     monkeypatch.setattr(
-        handoff_normalizer.instructor,
+        claude_normalizer.instructor,
         "from_anthropic",
         lambda _client: _FailingInstructedClient(),
     )
-    monkeypatch.setattr(handoff_normalizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_normalizer.subprocess, "run", fake_run)
 
     assert handoff_normalizer.normalize_next_agent("Claude Code (Auditor)") == "auditor"
     assert len(calls) == 1

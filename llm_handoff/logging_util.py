@@ -45,15 +45,23 @@ class DispatchLogger:
         now: LogClock | None = None,
         log_directory: Path = DEFAULT_LOG_DIRECTORY,
         max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES,
-        use_codex_resume: bool = True,
-        use_gemini_resume: bool = True,
+        backend_resume: bool = True,
+        planner_resume: bool = True,
+        use_codex_resume: bool | None = None,
+        use_gemini_resume: bool | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.console = console or sys.stdout
         self._now = now or datetime.now
         self.max_consecutive_failures = max_consecutive_failures
-        self.use_codex_resume = use_codex_resume
-        self.use_gemini_resume = use_gemini_resume
+        if use_codex_resume is not None:
+            backend_resume = use_codex_resume
+        if use_gemini_resume is not None:
+            planner_resume = use_gemini_resume
+        self.backend_resume = backend_resume
+        self.planner_resume = planner_resume
+        self.use_codex_resume = backend_resume
+        self.use_gemini_resume = planner_resume
         self.log_directory = self._resolve_log_directory(log_directory)
         self.log_file_path: Path | None = None
         self._startup_phase = True
@@ -151,14 +159,14 @@ class DispatchLogger:
         return current_time
 
     def _build_header(self, current_time: datetime) -> str:
-        codex_session_mode = (
+        backend_session_mode = (
             "MANAGED RESUME (persisted thread id)"
-            if self.use_codex_resume
+            if self.backend_resume
             else "STATELESS (new session per dispatch)"
         )
-        gemini_pe_session_mode = (
+        planner_session_mode = (
             "MANAGED RESUME (in-memory session id)"
-            if self.use_gemini_resume
+            if self.planner_resume
             else "STATELESS (new session per dispatch)"
         )
         return (
@@ -167,8 +175,8 @@ class DispatchLogger:
             "# ============================================================================\n"
             f"# Started:        {current_time.strftime('%Y-%m-%d %H:%M:%S %z')[:-2]}:{current_time.strftime('%z')[-2:]}\n"
             f"# Repo root:      {self.repo_root}\n"
-            f"# Codex session:  {codex_session_mode}\n"
-            f"# Gemini PE:      {gemini_pe_session_mode}\n"
+            f"# Backend session: {backend_session_mode}\n"
+            f"# Planner session: {planner_session_mode}\n"
             "# Smart router:   ON (always)\n"
             "# Validate HOs:   ON (hard gate)\n"
             "# Auto ledger:    ON (always)\n"
