@@ -6,26 +6,19 @@ contract.
 
 ## Current State
 
-The current repository is a pre-release scaffold. The focused extraction tests
-now pass and cover the public defaults, CLI help text, generic frontmatter
-routing, and rejection of source-project aliases.
+The current repository is a pre-release scaffold. The full dispatcher test
+suite now runs as one public gate, including the ported migration coverage and
+the focused public-default tests.
 
-Current focused public-runtime result:
-
-```text
-22 passed
-```
-
-Current prompt-doc result:
+Current full-suite result:
 
 ```text
-16 passed
+276 passed
 ```
 
-The wider `tests/ported/` suite is retained as migration coverage from the
-source dispatcher. It is not yet the public release gate; individual ported
-tests graduate into the focused suite as their expectations are generalized.
-Add tests with each extraction pass before widening the runtime surface.
+The `tests/ported/` directory is still named as migration history, but it is
+part of the release gate. Individual tests can be moved or renamed later as the
+suite is reorganized.
 
 ## Running Tests
 
@@ -40,6 +33,7 @@ python -m pytest tests/test_public_defaults.py -q
 python -m pytest tests/test_config.py -q
 python -m pytest tests/test_generic_router.py -q
 python -m pytest tests/test_cli.py -q
+python -m pytest tests/test_handoff_normalizer.py -q
 python -m pytest tests/ported/test_handoff_docs.py -q
 ```
 

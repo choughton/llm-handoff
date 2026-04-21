@@ -900,19 +900,19 @@ Completed work.
     assert sleep_calls == [1]
     assert (
         "ERROR",
-        "planner_self_loop: Gemini-PE handoff routes work back to Gemini-PE, which would immediately re-dispatch the planner. Route to an implementer, auditor, or explicit pause state instead.",
+        "planner_self_loop: Gemini-PE handoff routes work back to Gemini-PE, which would immediately re-dispatch the planner. Route to a backend agent, auditor, or explicit pause state instead.",
     ) in log_messages
     assert (
         "AGENT",
-        "Post-dispatch gate PAUSED for Gemini-PE; Gemini-PE routed the handoff back to itself.",
+        "Post-dispatch gate PAUSED for Gemini-PE; the planner routed the handoff back to itself.",
     ) in log_messages
     assert (
         "AGENT",
-        "Gemini-PE produced a planner self-loop. Invoking Claude handoff-validator...",
+        "The planner produced a self-loop. Invoking Claude handoff-validator...",
     ) in log_messages
     assert (
         "PAUSE",
-        "Gemini-PE routed HANDOFF.md back to Gemini-PE. Update the handoff; dispatch will resume after the file changes.",
+        "The planner routed HANDOFF.md back to itself. Update the handoff; dispatch will resume after the file changes.",
     ) in log_messages
     assert (
         "PAUSE",
@@ -1159,7 +1159,7 @@ The handoff routing is malformed. Human clarification required before dispatch.
     assert "canonical dispatchable route" in gemini_calls[0][3]
     assert (
         "AGENT",
-        "Post-dispatch handoff for Claude Code (audit) is not dispatchable. Scheduling Gemini-PE to repair routing or escalate on the next cycle.",
+        "Post-dispatch handoff for Claude Code (audit) is not dispatchable. Scheduling the planner to repair routing or escalate on the next cycle.",
     ) in log_messages
     assert ("INFO", "Routing instruction: Gemini-PE") in log_messages
     assert (
@@ -1572,7 +1572,7 @@ def test_run_loop_redirects_completed_stale_epic_close_to_gemini_pe_scoping(
     assert "prior Epic-Close cycle already completed" in gemini_calls[0][3]
     assert (
         "WARN",
-        "STALE Epic-Close detected after a completed ledger close; redirecting this cycle to Gemini PE for forward routing.",
+        "STALE Epic-Close detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
     ) in log_messages
     assert ("INFO", "Routing instruction: Gemini-PE") in log_messages
     assert ("AGENT", "Post-dispatch gate PASSED for Gemini-PE.") in log_messages
@@ -1655,7 +1655,7 @@ producer: claude-audit
     assert "repeating Epic-Close" in gemini_calls[0][3]
     assert (
         "WARN",
-        "STALE Epic-Close detected after a completed ledger close; redirecting this cycle to Gemini PE for forward routing.",
+        "STALE Epic-Close detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
     ) in log_messages
     assert ("INFO", "Routing instruction: Gemini-PE") in log_messages
 
@@ -1725,7 +1725,7 @@ def test_run_loop_dry_run_skips_dispatch_and_logs_startup_banner(
     assert exit_code == 0
     assert any("Smart router:" in message for _, message in log_messages)
     assert any("Handoff validation:" in message for _, message in log_messages)
-    assert any("Auto ledger:" in message for _, message in log_messages)
+    assert any("Finalizer route:" in message for _, message in log_messages)
     assert any("Chaining:" in message for _, message in log_messages)
     assert any("Frontend agent:" in message for _, message in log_messages)
     assert (

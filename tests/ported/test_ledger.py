@@ -11,47 +11,21 @@ from llm_handoff.agents import SubagentResult
 
 FULL_SHA = "0123456789abcdef0123456789abcdef01234567"
 AUDIT_SHA = "939702b"
-EXPECTED_PROMPT = (
-    "Use the ledger-updater agent to update the project ledger. "
-    "Read docs/handoff/HANDOFF.md for the completed epic details and audit verdict. "
-    "Append a one-line entry to PROJECT_STATE.md. "
-    "Update PROJECT_STATE.md section 2 Current Status to reflect the epic closure. "
-    "Rewrite docs/handoff/HANDOFF.md so YAML frontmatter routes the next cycle "
-    "to Gemini-PE for the next campaign phase or to user if blocked; do not "
-    "leave it routing to claude-ledger after the ledger entry is complete. "
-    "Commit PROJECT_STATE.md, PROJECT_STATE.md, and docs/handoff/HANDOFF.md "
-    "atomically with a verbose AGENTS.md-compliant message and Co-Authored-By "
-    "trailer, then push main to origin per AGENTS.md section 4.6 (ledger "
-    "maintainer is authorized to push at epic boundary). "
-    "Return ONLY this exact machine-readable format, one field per line: "
-    "LEDGER UPDATED: YES or NO; "
-    "PROJECT_STATE.MD UPDATED: YES or NO; "
-    "HANDOFF.MD REWRITTEN: YES or NO; "
-    "EPIC CLOSED: <epic name>; "
-    "NEXT EPIC (routed to Gemini-PE): <epic name or None>; "
-    "AUDIT SHA: <full or short sha>; "
-    "COMMIT SHA: <single full or short sha for the ledger/PROJECT_STATE.md/HANDOFF.md commit>; "
-    "PUSH RESULT: PUSHED or FAILED (optional detail); "
-    "CHANGES MADE: followed by dash-prefixed bullet lines. "
-    "If follow-up patch commits are created, list them under CHANGES MADE, not on "
-    "the COMMIT SHA line. "
-    "Do not return prose, explanations, markdown headings, or conversational text."
-)
+EXPECTED_PROMPT = ledger.LEDGER_UPDATER_PROMPT
 
 
 def _ledger_output(*, push_result: str) -> str:
-    return f"""LEDGER UPDATED: YES
-PROJECT_STATE.MD UPDATED: YES
+    return f"""PROJECT STATE UPDATED: YES
 HANDOFF.MD REWRITTEN: YES
-EPIC CLOSED: Security & Supply Chain Hardening (Semgrep)
-NEXT EPIC (routed to Gemini-PE): Dispatch Loop Python Rewrite
+SCOPE CLOSED: Security & Supply Chain Hardening (Semgrep)
+NEXT ROUTE: planner
 AUDIT SHA: {AUDIT_SHA}
 COMMIT SHA: {FULL_SHA}
 PUSH RESULT: {push_result}
 CHANGES MADE:
   - PROJECT_STATE.md: appended the epic closure entry
   - PROJECT_STATE.md: advanced the active epic pointer
-  - docs/handoff/HANDOFF.md: routed the next cycle to Gemini-PE
+  - docs/handoff/HANDOFF.md: routed the next cycle to planner
 """
 
 
@@ -80,7 +54,7 @@ def test_run_epic_close_invokes_ledger_updater_and_parses_success(
     assert result.claude_md_updated is True
     assert result.handoff_rewritten is True
     assert result.epic_closed == "Security & Supply Chain Hardening (Semgrep)"
-    assert result.next_epic == "Dispatch Loop Python Rewrite"
+    assert result.next_epic == "planner"
     assert result.audit_sha == AUDIT_SHA
     invoke_mock.assert_called_once_with(
         subagent_name="ledger-updater",
@@ -109,6 +83,14 @@ def test_run_epic_close_logs_exit_code_to_dispatch_logger(
     assert ("AGENT", "Subagent ledger-updater exited with code 0") in [
         call.args for call in log_mock.call_args_list
     ]
+
+
+def test_ledger_updater_prompt_uses_public_finalizer_contract() -> None:
+    assert "PROJECT STATE UPDATED: YES or NO" in EXPECTED_PROMPT
+    assert "SCOPE CLOSED: <scope name>" in EXPECTED_PROMPT
+    assert "NEXT ROUTE: <planner, user, or another supported next_agent>" in EXPECTED_PROMPT
+    assert "PUSH RESULT: SKIPPED, PUSHED, or FAILED" in EXPECTED_PROMPT
+    assert "Do not push unless the repository instructions explicitly allow" in EXPECTED_PROMPT
 
 
 def test_run_epic_close_parses_audit_sha_from_rich_line(
@@ -146,7 +128,7 @@ CHANGES MADE:
     assert result.handoff_rewritten is False
     assert (
         "WARN",
-        "ledger-updater reported HANDOFF.MD REWRITTEN: NO; dispatcher will treat repeated Epic-Close routing as stale and redirect to Gemini-PE.",
+        "ledger-updater reported HANDOFF.MD REWRITTEN: NO; dispatcher will treat repeated finalizer routing as stale and redirect to the planner.",
     ) in [call.args for call in log_mock.call_args_list]
 
 
@@ -213,7 +195,7 @@ def test_run_epic_close_treats_unparseable_output_as_failure_and_uses_dispatch_l
     assert result.commit_sha is None
     assert (
         "ERROR",
-        "ledger-updater returned unparseable output: Missing LEDGER UPDATED line.",
+        "ledger-updater returned unparseable output: Missing PROJECT STATE UPDATED line.",
     ) in [call.args for call in log_mock.call_args_list]
     assert (
         "WARN",

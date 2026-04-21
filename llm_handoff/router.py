@@ -679,21 +679,21 @@ def _find_next_step(lines: list[str], claude_md_content: str | None) -> _Signal 
         heading_match = _HEADING_RE.match(trimmed)
         if heading_match is not None and len(heading_match.group(1)) > next_step_depth:
             heading_text = trimmed[len(heading_match.group(1)) :].strip()
-            agent, action = _extract_agent_and_action(heading_text, "")
+            agent, action, agent_warnings = _extract_agent_and_action(heading_text, "")
             if agent is not None:
                 return _build_next_step_signal(
                     source="next_step_subheading",
                     agent=agent,
                     action=action,
                     claude_md_content=claude_md_content,
-                    warnings=(),
+                    warnings=agent_warnings,
                 )
 
         bold_match = re.match(r"(?i)^[-*+]?\s*\*\*(.+?)\*\*\s*:?\s*(.*)$", trimmed)
         if bold_match is None:
             continue
 
-        agent, action = _extract_agent_and_action(
+        agent, action, agent_warnings = _extract_agent_and_action(
             bold_match.group(1), bold_match.group(2)
         )
         if agent is None:
@@ -704,7 +704,7 @@ def _find_next_step(lines: list[str], claude_md_content: str | None) -> _Signal 
             agent=agent,
             action=action,
             claude_md_content=claude_md_content,
-            warnings=(),
+            warnings=agent_warnings,
         )
 
     if header_agent is None:
@@ -796,7 +796,7 @@ def _find_prose_next_agent(
         ):
             return _epic_close_signal("next_agent_prose")
 
-        agent, action = _extract_agent_and_action(target_text, "")
+        agent, action, agent_warnings = _extract_agent_and_action(target_text, "")
         if agent is None:
             continue
 
@@ -817,7 +817,7 @@ def _find_prose_next_agent(
             confidence="HIGH",
             source="next_agent_prose",
             reasoning=reasoning,
-            warnings=(),
+            warnings=agent_warnings,
             priority=50,
         )
 
@@ -962,18 +962,20 @@ def _extract_header_agent(suffix: str) -> tuple[RouteName | None, tuple[str, ...
 
 def _extract_agent_and_action(
     inside_label: str, trailing_text: str
-) -> tuple[RouteName | None, str]:
+) -> tuple[RouteName | None, str, tuple[str, ...]]:
     match = _AGENT_PREFIX_RE.match(inside_label.strip())
     if match is None:
-        return None, ""
+        return None, "", ()
 
-    route_name, _ = _normalize_agent(match.group(1), inside_label + " " + trailing_text)
+    route_name, warnings = _normalize_agent(
+        match.group(1), inside_label + " " + trailing_text
+    )
     if route_name is None:
-        return None, ""
+        return None, "", ()
 
     action = (match.group(2) + " " + trailing_text).strip()
     action = re.sub(r"^\s*:\s*", "", action)
-    return route_name, action.strip()
+    return route_name, action.strip(), tuple(warnings)
 
 
 def _normalize_agent(

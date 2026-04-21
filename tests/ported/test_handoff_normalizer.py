@@ -43,7 +43,7 @@ def test_normalize_next_agent_passes_exact_canonical_without_llm(
     [
         ("Claude Code (Auditor)", "claude-audit"),
         ("gemini pe", "gemini-pe"),
-        ("frontend", "gemini-frontend"),
+        ("frontend role", "frontend"),
         ("ledger", "claude-ledger"),
         ("Codex", "codex"),
     ],

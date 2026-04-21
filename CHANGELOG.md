@@ -12,6 +12,7 @@ This project follows a simple pre-release changelog until the first public tag.
   testing, contribution scope, security, and reference workflow setup.
 - Added generic handoff prompt files plus Codex, Gemini, and Claude agent
   templates.
+- Promoted the ported dispatcher tests into the public full-suite gate.
 - Preserved Apache-2.0 licensing.
 
 ## 0.0.0

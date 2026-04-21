@@ -366,7 +366,7 @@ producer: codex
         source="frontmatter.invalid",
         reasoning="YAML routing frontmatter is present but invalid.",
         warnings=[
-            "Invalid HANDOFF routing frontmatter: next_agent `claude-ledger` requires producer `claude-audit`."
+            "Invalid HANDOFF routing frontmatter: next_agent `claude-ledger` requires producer `auditor` or `claude-audit`."
         ],
     )
 
@@ -477,7 +477,7 @@ producer: codex
                 route="Gemini-Frontend",
                 confidence="HIGH",
                 source="canonical_dispatch_line",
-                reasoning="Legacy manual frontend dispatch is normalized to Gemini-Frontend.",
+                reasoning="Canonical dispatch line routes work to Gemini-Frontend.",
                 warnings=[
                     "Legacy manual frontend reference normalized to Gemini-Frontend."
                 ],
@@ -517,7 +517,7 @@ producer: codex
                 source="next_step_section",
                 reasoning="Next Step section keeps Claude Code on the audit path because the ledger wording is not an explicit epic-close signal.",
                 warnings=[
-                    "Ledger-close wording is ambiguous; PROJECT_STATE.md shows remaining stories, so Epic-Close was not selected."
+                    "Finalizer wording is ambiguous; the project state shows remaining work, so Epic-Close was not selected."
                 ],
             ),
             id="regression_story_close_ledger_language_is_not_epic_close",
