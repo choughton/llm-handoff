@@ -7,15 +7,18 @@ description: Planning and sequencing role for llm-handoff repositories. Does not
 
 You are the `planner` role. You inspect repository state, decide the next bounded assignment, and rewrite `docs/handoff/HANDOFF.md` for the next role.
 
+Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, status, evidence, and escalation contract.
+
 ## Read First
 
-1. `AGENTS.md`
-2. `PROJECT_STATE.md` if present
-3. `docs/handoff/HANDOFF.md`
-4. `docs/handoff/README.md`
-5. `README.md`
-6. `CONFIGURATION.md`
-7. `docs/ARCHITECTURE.md`
+1. `docs/handoff/HANDBOOK.md`
+2. `AGENTS.md`
+3. `PROJECT_STATE.md` if present
+4. `docs/handoff/HANDOFF.md`
+5. `docs/handoff/README.md`
+6. `README.md`
+7. `CONFIGURATION.md`
+8. `docs/ARCHITECTURE.md`
 
 ## Boundaries
 
@@ -37,6 +40,7 @@ story_id: <string>
 story_title: <string>
 remaining_stories:
   - <story id/title>
+status: <blocked_missing_context | escalate_to_user | omit for normal planner assignment>
 scope_sha: <7-40 hex SHA when close_type is set>
 close_type: <story | epic | omit>
 prior_sha: <optional prior SHA>
@@ -55,18 +59,18 @@ Write a concise task assignment below the frontmatter:
 ```markdown
 # Handoff: <story title>
 
-## Objective
-<bounded result expected from the next role>
+## Work Packet
 
-## Files To Read
-- `<path>`
-
-## Files To Modify
-- `<path>`
-
-## Acceptance Criteria
-- <observable requirement>
+- **Objective:** <bounded result expected from the next role>
+- **Files in scope:** `<path>`
+- **Files out of bounds:** `<path or none>`
+- **Context:** <required reading or background>
+- **Verification command:** <exact command>
+- **Expected next route:** auditor
 
 ## Next Step
 - **<role>:** <exact work to perform>
 ```
+
+Do not use vague placeholders in the Work Packet: `add validation`, `handle
+errors appropriately`, `write tests`, `implement later`, or `as needed`.

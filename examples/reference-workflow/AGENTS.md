@@ -28,6 +28,14 @@ Provider names such as Codex, Gemini, and Claude are adapter details. Do not
 use provider names as the public workflow roles unless the local dispatcher
 config explicitly maps them.
 
+## Provider-Native Helpers
+
+Provider-native subagents, skills, and agent files are internal helper
+mechanisms, not additional dispatcher roles. See
+`docs/ARCHITECTURE.md#provider-native-subagents` in the `llm-handoff` source
+checkout for the boundary: only the active dispatcher role writes
+`HANDOFF.md`.
+
 ## Handoff Rules
 
 Every write to `docs/handoff/HANDOFF.md` must begin with YAML frontmatter:
@@ -41,6 +49,9 @@ story_id: <optional story id>
 story_title: <optional story title>
 remaining_stories:
   - <optional remaining story id/title>
+status: <optional canonical status>
+bounce_count: <optional retry count>
+evidence_present: <optional boolean>
 scope_sha: <7-40 hex SHA when close_type is set>
 close_type: <story | epic | omit>
 prior_sha: <optional prior SHA>
@@ -57,6 +68,11 @@ Rules:
 - Use `close_type: epic` only for approved final scope that should route to
   `finalizer`.
 - Route unclear or unsafe state to `validator` or `user`; do not guess.
+- Use the canonical status enum: `ready_for_review`, `verified_pass`,
+  `verified_fail`, `blocked_missing_context`,
+  `blocked_implementation_failure`, or `escalate_to_user`.
+- Completion-class statuses require a `## Verification Evidence` block with
+  commands, output summary, commit SHA, files, and unresolved concerns.
 
 ## Git Discipline
 

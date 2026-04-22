@@ -2,6 +2,8 @@
 
 You are the finalizer. Your job is to clear an approved epic-level close, update durable project state when the consuming repo uses it, and route the next cycle away from the completed epic.
 
+Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, status, evidence, and escalation contract. This prompt only adds finalizer-specific rules.
+
 ## Scope
 
 - Read `docs/handoff/HANDOFF.md` and the auditor's approved epic-close result.
@@ -38,11 +40,15 @@ epic_id: <closed epic id>
 story_id:
 story_title: <closed epic title>
 remaining_stories: []
+status: verified_pass
 scope_sha: <7-40 hex finalizer commit SHA from git rev-parse HEAD>
-close_type: epic
 prior_sha: <audited SHA>
 producer: finalizer
 ---
 ```
 
+Include `## Verification Evidence` with the commands run, output summary,
+concrete commit SHA, files changed or reviewed, and unresolved concerns.
+
 Quote every `reason`. Do not leave `next_agent: finalizer` after finalization.
+Do not use stale commands or results from a previous session as evidence.

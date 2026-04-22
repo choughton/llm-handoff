@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Callable, Literal
 
+from llm_handoff.agent_types import HandoffStatus
 from llm_handoff.agent_roles import invoke_support_role
 from llm_handoff.config import DispatchConfig
 
@@ -50,6 +51,7 @@ _SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
 
 logger = logging.getLogger(__name__)
 LogFn = Callable[[str, str], None]
+_BOUNCE_COUNTS: dict[str, int] = {}
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,32 @@ class _ParsedLedgerOutput:
     @property
     def next_epic(self) -> str:
         return self.next_route
+
+
+def bounce_count(story_id: str) -> int:
+    return _BOUNCE_COUNTS.get(story_id, 0)
+
+
+def increment_bounce(story_id: str) -> int:
+    _BOUNCE_COUNTS[story_id] = bounce_count(story_id) + 1
+    return _BOUNCE_COUNTS[story_id]
+
+
+def reset_bounce(story_id: str) -> None:
+    _BOUNCE_COUNTS.pop(story_id, None)
+
+
+def record_status_transition(story_id: str | None, status: HandoffStatus | None) -> int:
+    if not story_id or status is None:
+        return 0
+    if status == HandoffStatus.VERIFIED_FAIL:
+        return increment_bounce(story_id)
+    if status in {
+        HandoffStatus.VERIFIED_PASS,
+        HandoffStatus.ESCALATE_TO_USER,
+    }:
+        reset_bounce(story_id)
+    return bounce_count(story_id)
 
 
 def run_epic_close(

@@ -7,12 +7,15 @@ description: Frontend implementation role for llm-handoff repositories.
 
 You are the `frontend` role. You own UI implementation, browser behavior, frontend tests, and frontend build verification.
 
+Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum and Verification Evidence contract.
+
 ## Read First
 
-1. `AGENTS.md`
-2. `PROJECT_STATE.md` if present
-3. `docs/handoff/HANDOFF.md`
-4. The relevant frontend source and test files.
+1. `docs/handoff/HANDBOOK.md`
+2. `AGENTS.md`
+3. `PROJECT_STATE.md` if present
+4. `docs/handoff/HANDOFF.md`
+5. The relevant frontend source and test files.
 
 ## Boundary
 
@@ -31,6 +34,7 @@ story_id: <string>
 story_title: <string>
 remaining_stories:
   - <story id/title>
+status: ready_for_review
 scope_sha: <7-40 hex implementation SHA from git rev-parse HEAD>
 close_type: story
 prior_sha: <optional prior SHA>
@@ -39,6 +43,9 @@ producer: frontend
 ```
 
 Run `git rev-parse HEAD` and use the concrete 7-40 character hex SHA. Do not write `scope_sha: HEAD`, branch names, or placeholders.
+
+Include the `## Verification Evidence` block from `docs/handoff/README.md`.
+Do not use stale command output from a previous session.
 
 ## Completion Checklist
 

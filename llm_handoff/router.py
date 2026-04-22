@@ -5,9 +5,10 @@ from pathlib import Path
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 import yaml
 
+from llm_handoff.agent_types import HandoffStatus
 from llm_handoff.roles import (
     DispatchRole,
     normalize_agent_label,
@@ -57,6 +58,9 @@ _ALLOWED_CLOSE_TYPES = {"story", "epic"}
 _FRONTMATTER_KNOWN_KEYS = {
     "next_agent",
     "reason",
+    "status",
+    "bounce_count",
+    "evidence_present",
     "epic_id",
     "story_id",
     "story_title",
@@ -102,6 +106,9 @@ class HandoffRouting(BaseModel):
     close_type: str | None = None
     prior_sha: str | None = None
     producer: str | None = None
+    status: str | None = None
+    bounce_count: int | None = None
+    evidence_present: bool | None = None
     epic_id: str | None = None
     story_id: str | None = None
     story_title: str | None = None
@@ -114,6 +121,7 @@ class HandoffRouting(BaseModel):
         "close_type",
         "prior_sha",
         "producer",
+        "status",
         "epic_id",
         "story_id",
         "story_title",
@@ -138,6 +146,27 @@ class HandoffRouting(BaseModel):
         if not item_text:
             return ()
         return (item_text,)
+
+    @field_validator("bounce_count", mode="before")
+    @classmethod
+    def _coerce_optional_int(cls, value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        return int(value)
+
+    @field_validator("evidence_present", mode="before")
+    @classmethod
+    def _coerce_optional_bool(cls, value: object) -> bool | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "yes", "1"}:
+            return True
+        if normalized in {"false", "no", "0"}:
+            return False
+        raise ValueError("evidence_present must be a boolean.")
 
 
 @dataclass(frozen=True)
@@ -170,7 +199,12 @@ def parse_handoff_frontmatter_text(handoff_content: str) -> HandoffRouting | Non
     if not isinstance(loaded, dict):
         raise HandoffFrontmatterError("YAML frontmatter must be a mapping.")
 
-    return HandoffRouting.model_validate(loaded)
+    try:
+        return HandoffRouting.model_validate(loaded)
+    except ValidationError as exc:
+        raise HandoffFrontmatterError(
+            "YAML frontmatter fields could not be validated."
+        ) from exc
 
 
 def repair_handoff_frontmatter_text(handoff_content: str) -> HandoffFrontmatterRepair:
@@ -434,6 +468,10 @@ def _route_from_frontmatter(frontmatter: HandoffRouting) -> RoutingDecision:
             warnings=[f"Invalid HANDOFF routing frontmatter: {errors[0]}"],
         )
 
+    status_decision = _route_from_status(frontmatter)
+    if status_decision is not None:
+        return status_decision
+
     next_agent = frontmatter.next_agent or ""
     route_name = normalize_next_agent_value(next_agent)
     if route_name is None:
@@ -466,6 +504,12 @@ def _frontmatter_route_errors(frontmatter: HandoffRouting) -> list[str]:
     if close_type is not None and close_type not in _ALLOWED_CLOSE_TYPES:
         errors.append(f"close_type `{close_type}` is not recognized.")
 
+    if frontmatter.status is not None:
+        try:
+            HandoffStatus(frontmatter.status)
+        except ValueError:
+            errors.append(f"status `{frontmatter.status}` is not recognized.")
+
     if close_type is not None:
         if not frontmatter.scope_sha:
             errors.append("scope_sha is required when close_type is set.")
@@ -485,6 +529,49 @@ def _frontmatter_route_errors(frontmatter: HandoffRouting) -> list[str]:
         errors.append(f"next_agent `{next_agent}` requires producer `auditor`.")
 
     return errors
+
+
+def _route_from_status(frontmatter: HandoffRouting) -> RoutingDecision | None:
+    if frontmatter.status is None:
+        return None
+
+    try:
+        status = HandoffStatus(frontmatter.status)
+    except ValueError:
+        return RoutingDecision(
+            route="unknown",
+            confidence="LOW",
+            source="frontmatter.status.invalid",
+            reasoning="YAML routing frontmatter status is not recognized.",
+            warnings=[
+                f"Invalid HANDOFF routing frontmatter: status `{frontmatter.status}` is not recognized."
+            ],
+        )
+
+    route_name: RouteName
+    if status == HandoffStatus.READY_FOR_REVIEW:
+        route_name = "auditor"
+    elif status == HandoffStatus.VERIFIED_PASS:
+        route_name = "finalizer" if frontmatter.close_type == "epic" else "planner"
+    elif status == HandoffStatus.VERIFIED_FAIL:
+        next_route = normalize_next_agent_value(frontmatter.next_agent)
+        route_name = next_route if next_route in {"backend", "frontend"} else "planner"
+    elif status == HandoffStatus.BLOCKED_MISSING_CONTEXT:
+        route_name = "user"
+    elif status == HandoffStatus.BLOCKED_IMPLEMENTATION_FAILURE:
+        route_name = "planner"
+    elif status == HandoffStatus.ESCALATE_TO_USER:
+        route_name = "user"
+    else:  # pragma: no cover - exhaustive for Enum, kept for type checkers.
+        route_name = "unknown"
+
+    return RoutingDecision(
+        route=route_name,
+        confidence="HIGH" if route_name != "unknown" else "LOW",
+        source=f"frontmatter.status.{status.value}",
+        reasoning=f"YAML routing status `{status.value}` routes work to {route_name}.",
+        warnings=_frontmatter_metadata_warnings(frontmatter),
+    )
 
 
 def _frontmatter_metadata_warnings(frontmatter: HandoffRouting) -> list[str]:

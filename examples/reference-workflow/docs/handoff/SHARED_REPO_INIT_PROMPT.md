@@ -4,11 +4,12 @@ Use this prompt when a fresh agent session needs to load repository context befo
 
 ## Bootstrap
 
-1. Read `AGENTS.md`.
-2. Read `PROJECT_STATE.md` if present.
-3. Read `docs/handoff/HANDOFF.md`.
-4. Read `README.md`, `CONFIGURATION.md`, and `docs/ARCHITECTURE.md` as needed.
-5. Read only the extra files needed for the active assignment.
+1. Read `docs/handoff/HANDBOOK.md`.
+2. Read `AGENTS.md`.
+3. Read `PROJECT_STATE.md` if present.
+4. Read `docs/handoff/HANDOFF.md`.
+5. Read `README.md`, `CONFIGURATION.md`, and `docs/ARCHITECTURE.md` as needed.
+6. Read only the extra files needed for the active assignment.
 
 ## State Model
 
@@ -31,6 +32,9 @@ story_id: <string>       # optional
 story_title: <string>    # optional
 remaining_stories:       # optional
   - <story id/title>
+status: <enum>           # canonical handoff status when applicable
+bounce_count: 0          # optional dispatcher-maintained retry count
+evidence_present: true   # optional validator hint for evidence-aware handoffs
 scope_sha: <git SHA>     # required when close_type is story or epic
 close_type: <enum>       # optional: story | epic
 prior_sha: <git SHA>     # optional

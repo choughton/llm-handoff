@@ -73,6 +73,13 @@ Use generic role names in public docs, examples, and config:
 Provider names such as Codex, Gemini, and Claude should appear only as adapter
 or example mappings, not as required workflow roles.
 
+## Provider-Native Helpers
+
+Provider-native subagents, skills, and agent files are internal helper
+mechanisms, not additional dispatcher roles. See
+[docs/ARCHITECTURE.md#provider-native-subagents](docs/ARCHITECTURE.md#provider-native-subagents)
+for the boundary: only the active dispatcher role writes `HANDOFF.md`.
+
 ## Editing Rules
 
 - Prefer small, reviewable changes.

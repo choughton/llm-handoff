@@ -240,6 +240,62 @@ reason: Route enum value for dispatch.
     assert decision.source == "frontmatter.next_agent"
 
 
+@pytest.mark.parametrize(
+    ("status", "next_agent", "close_type", "expected_route"),
+    [
+        ("ready_for_review", "auditor", "story", "auditor"),
+        ("verified_pass", "planner", "story", "planner"),
+        ("verified_pass", "finalizer", "epic", "finalizer"),
+        ("verified_fail", "backend", None, "backend"),
+        ("blocked_missing_context", "user", None, "user"),
+        ("blocked_implementation_failure", "planner", None, "planner"),
+        ("escalate_to_user", "user", None, "user"),
+    ],
+)
+def test_router_status_enum_routing(
+    status: str,
+    next_agent: str,
+    close_type: str | None,
+    expected_route: str,
+) -> None:
+    close_fields = ""
+    if close_type is not None:
+        close_fields = f"scope_sha: 82ce839\nclose_type: {close_type}\n"
+    producer = "auditor" if next_agent == "finalizer" else "backend"
+    handoff_content = f"""---
+next_agent: {next_agent}
+reason: Status-driven route.
+status: {status}
+{close_fields}producer: {producer}
+---
+
+# Handoff
+"""
+
+    decision = route(handoff_content)
+
+    assert decision.route == expected_route
+    assert decision.source == f"frontmatter.status.{status}"
+
+
+def test_router_fails_closed_on_invalid_status() -> None:
+    handoff_content = """---
+next_agent: auditor
+reason: Invalid status fixture.
+status: done
+producer: backend
+---
+
+# Handoff
+"""
+
+    decision = route(handoff_content)
+
+    assert decision.route == "unknown"
+    assert decision.confidence == "LOW"
+    assert "status `done` is not recognized" in decision.warnings[0]
+
+
 def test_route_normalizes_frontend_frontmatter_alias() -> None:
     handoff_content = """---
 next_agent: frontend

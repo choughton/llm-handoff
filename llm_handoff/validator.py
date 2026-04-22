@@ -7,6 +7,8 @@ import re
 import subprocess
 from typing import Literal
 
+from llm_handoff.agent_types import COMPLETION_STATUSES, HandoffStatus
+from llm_handoff.rationalization_detector import detect as detect_rationalizations
 from llm_handoff.router import (
     HandoffFrontmatterError,
     HandoffRouting,
@@ -29,6 +31,12 @@ _CHECK_LINE_RE = re.compile(
 _TASK_ASSIGNMENT_RE = re.compile(r"(?im)^#{1,6}\s+Task Assignment\b")
 _OBJECTIVE_RE = re.compile(r"(?im)^#{1,6}\s+Objective\b")
 _ACCEPTANCE_CRITERIA_RE = re.compile(r"(?im)^#{1,6}\s+Acceptance Criteria\b")
+_WORK_PACKET_RE = re.compile(r"(?im)^#{1,6}\s+Work Packet\b")
+_VERIFICATION_EVIDENCE_RE = re.compile(r"(?im)^##\s+Verification Evidence\s*$")
+_EVIDENCE_FIELD_RE = re.compile(
+    r"(?im)^-\s+\*\*(Commands run|Output summary|Commit SHA verified|Files changed or reviewed|Unresolved concerns):\*\*\s*(.*)$"
+)
+_HEADING_RE = re.compile(r"(?m)^#{1,6}\s+")
 _REPORTING_HEADER_RE = re.compile(
     r"(?im)^#{1,6}\s+.*\b(handback|handoff|audit|verdict|status|close)\b"
 )
@@ -39,6 +47,13 @@ _SUBSTANCE_RE = re.compile(
     r"(?im)\b(completed work|verification|validation|results|test suites?|execution sha|implementation sha|(?:4-check\s+)?audit gate|audit verdict|checks:)\b"
 )
 _ALLOWED_CLOSE_TYPES = {"story", "epic"}
+_REQUIRED_EVIDENCE_FIELDS = {
+    "Commands run",
+    "Output summary",
+    "Commit SHA verified",
+    "Files changed or reviewed",
+    "Unresolved concerns",
+}
 
 
 @dataclass(frozen=True)
@@ -118,6 +133,21 @@ def validate_handoff_frontmatter(
         errors.append(
             "frontmatter_close_type_invalid: "
             f"producer {producer} used unsupported close_type `{parsed.close_type}`."
+        )
+
+    if parsed.status is not None:
+        try:
+            HandoffStatus(parsed.status)
+        except ValueError:
+            errors.append(
+                "STATUS_INVALID: "
+                f"producer {producer} used unsupported status `{parsed.status}`."
+            )
+
+    if parsed.bounce_count is not None and parsed.bounce_count < 0:
+        errors.append(
+            "frontmatter_bounce_count_invalid: "
+            f"producer {producer} emitted negative bounce_count `{parsed.bounce_count}`."
         )
 
     scope_sha_syntax_valid = bool(
@@ -209,6 +239,7 @@ def validate_handoff_text(
     frontmatter_valid = False
     frontmatter_missing = False
     frontmatter_producer: str | None = None
+    frontmatter: HandoffRouting | None = None
 
     previous_route = _normalize_agent(previous_agent)
     if previous_route is None:
@@ -282,6 +313,28 @@ def validate_handoff_text(
         )
 
     errors.extend(
+        _status_contract_errors(
+            frontmatter,
+            previous_route=previous_route,
+            routing_instruction=routing_instruction,
+        )
+    )
+    errors.extend(_evidence_contract_errors(normalized_content, frontmatter))
+    warnings.extend(
+        _work_packet_contract_warnings(
+            normalized_content,
+            previous_route=previous_route,
+            routing_instruction=routing_instruction,
+        )
+    )
+    warnings.extend(
+        _rationalization_warnings(
+            normalized_content,
+            frontmatter=frontmatter,
+            previous_route=previous_route,
+        )
+    )
+    errors.extend(
         _scope_claim_errors(
             normalized_content,
             previous_route,
@@ -308,6 +361,156 @@ def validate_handoff_text(
 def _normalize_agent(agent_text: str) -> str | None:
     role, _warnings = normalize_agent_label(agent_text)
     return role
+
+
+def _status_contract_errors(
+    frontmatter: HandoffRouting | None,
+    *,
+    previous_route: str | None,
+    routing_instruction: str | None,
+) -> list[str]:
+    if frontmatter is None:
+        return []
+    if not _requires_status(previous_route, routing_instruction, frontmatter):
+        return []
+    if frontmatter.status:
+        return []
+    producer = frontmatter.producer or "unknown producer"
+    return [
+        "STATUS_MISSING: "
+        f"producer {producer} omitted required status for completion-class route `{routing_instruction}`."
+    ]
+
+
+def _requires_status(
+    previous_route: str | None,
+    routing_instruction: str | None,
+    frontmatter: HandoffRouting,
+) -> bool:
+    if frontmatter.status is not None:
+        return True
+    return frontmatter.evidence_present is not None
+
+
+def _evidence_contract_errors(
+    handoff_content: str,
+    frontmatter: HandoffRouting | None,
+) -> list[str]:
+    status = _frontmatter_status(frontmatter)
+    if status not in COMPLETION_STATUSES:
+        return []
+
+    block = _verification_evidence_block(handoff_content)
+    if block is None:
+        line_number = _frontmatter_status_line_number(handoff_content) or 1
+        return [
+            "EVIDENCE_MISSING: "
+            f"status {status.value} requires a populated Verification Evidence block (status line {line_number})."
+        ]
+
+    fields = _evidence_fields(block)
+    missing = sorted(_REQUIRED_EVIDENCE_FIELDS - set(fields))
+    empty = sorted(name for name, value in fields.items() if not value.strip())
+    if missing or empty:
+        line_number = block[0]
+        detail = ", ".join(
+            [
+                *(f"missing {name}" for name in missing),
+                *(f"empty {name}" for name in empty),
+            ]
+        )
+        return [
+            "EVIDENCE_MISSING: "
+            f"status {status.value} requires populated evidence fields at line {line_number}: {detail}."
+        ]
+
+    commit_value = fields["Commit SHA verified"].strip().strip("`")
+    if commit_value.upper() == "HEAD":
+        return [
+            "EVIDENCE_MISSING: Verification Evidence cannot use HEAD as Commit SHA verified."
+        ]
+    return []
+
+
+def _work_packet_contract_warnings(
+    handoff_content: str,
+    *,
+    previous_route: str | None,
+    routing_instruction: str | None,
+) -> list[str]:
+    if previous_route != "planner" or routing_instruction not in {
+        "backend",
+        "frontend",
+    }:
+        return []
+    if _WORK_PACKET_RE.search(handoff_content):
+        return []
+    if (
+        _OBJECTIVE_RE.search(handoff_content) is not None
+        and _ACCEPTANCE_CRITERIA_RE.search(handoff_content) is not None
+    ):
+        return []
+    return [
+        "work_packet_missing: planner handoffs to backend or frontend require a ## Work Packet section."
+    ]
+
+
+def _rationalization_warnings(
+    handoff_content: str,
+    *,
+    frontmatter: HandoffRouting | None,
+    previous_route: str | None,
+) -> list[str]:
+    status = _frontmatter_status(frontmatter)
+    if status is None:
+        return []
+    role = (
+        frontmatter.producer if frontmatter and frontmatter.producer else previous_route
+    )
+    matches = detect_rationalizations(role or "unknown", handoff_content, status)
+    if not matches:
+        return []
+    details = ", ".join(
+        f"line {match.line_number}: `{match.phrase}`" for match in matches[:3]
+    )
+    return [f"RATIONALIZATION_DETECTED: {details}"]
+
+
+def _frontmatter_status(frontmatter: HandoffRouting | None) -> HandoffStatus | None:
+    if frontmatter is None or frontmatter.status is None:
+        return None
+    try:
+        return HandoffStatus(frontmatter.status)
+    except ValueError:
+        return None
+
+
+def _frontmatter_status_line_number(handoff_content: str) -> int | None:
+    for line_number, line in enumerate(handoff_content.splitlines(), start=1):
+        if line.strip().startswith("status:"):
+            return line_number
+    return None
+
+
+def _verification_evidence_block(
+    handoff_content: str,
+) -> tuple[int, str] | None:
+    match = _VERIFICATION_EVIDENCE_RE.search(handoff_content)
+    if match is None:
+        return None
+    start = match.end()
+    next_heading = _HEADING_RE.search(handoff_content, start)
+    end = next_heading.start() if next_heading is not None else len(handoff_content)
+    line_number = handoff_content[: match.start()].count("\n") + 1
+    return line_number, handoff_content[start:end]
+
+
+def _evidence_fields(block: tuple[int, str]) -> dict[str, str]:
+    _line_number, content = block
+    return {
+        match.group(1): match.group(2).strip()
+        for match in _EVIDENCE_FIELD_RE.finditer(content)
+    }
 
 
 def _git_commit_exists(sha: str, cwd: Path | None) -> bool | None:

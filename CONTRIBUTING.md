@@ -53,6 +53,17 @@ before sending changes, and expect CI to enforce it once CI is wired.
 If a test is expected to fail because the extraction is incomplete, state that
 clearly in the PR and point to the next required implementation step.
 
+## Handling Review Feedback
+
+External review output from a human or model is advisory until checked against
+the code, tests, and repository constraints. Before implementing feedback,
+verify the finding, identify the command or source file that proves it, and
+check that the proposed fix fits the documented architecture.
+
+The runtime equivalent of this rule lives in the handoff prompts: backend and
+frontend roles must document technical contradictions instead of blindly
+patching around an invalid audit finding.
+
 ## Style
 
 - Keep code and docs generic.

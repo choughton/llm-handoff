@@ -164,6 +164,30 @@ subagent names, session-resume behavior, and timeouts.
 
 The dispatcher does not sandbox these tools and does not manage their auth.
 
+## Provider-Native Subagents
+
+Provider-native subagents are allowed only inside a single active role
+invocation. Claude subagents, Codex skills, and Gemini agents can help the
+active role read, reason, review, or execute provider-specific workflows, but
+they are not dispatcher roles.
+
+Only the active dispatcher role writes `HANDOFF.md`. Internal provider helpers
+must not independently rewrite `HANDOFF.md`, update project-state files, or
+create competing routing state. This keeps the handoff file as the mutex and
+preserves the serial dispatch contract.
+
+## Circuit Breakers
+
+The dispatcher tracks a three-fix circuit breaker per `story_id`. Each
+`verified_fail` handoff increments the story's bounce count. `verified_pass`
+and `escalate_to_user` reset it.
+
+When `bounce_count >= 3` and the next route would send the same story back to an
+implementer, the dispatcher emits `THREE_FIX_CIRCUIT_BREAKER` and routes to the
+planner for re-scoping. If that story has already gone through planner recovery
+and still routes back to implementation, the dispatcher emits
+`THREE_FIX_CIRCUIT_BREAKER_ESCALATE` and routes to `user`.
+
 ## Prompt And Agent Templates
 
 The written protocol is part of the runtime surface. The source checkout ships:

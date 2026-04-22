@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Literal
 
+from llm_handoff.agent_types import HandoffStatus
+
 
 DispatchRole = Literal[
     "planner",
@@ -122,3 +124,17 @@ def _contains_legacy_provider_label(normalized: str) -> bool:
         if legacy_label in normalized or legacy_label.replace("-", "") in compact:
             return True
     return False
+
+
+__all__ = [
+    "CANONICAL_DISPATCH_ROLES",
+    "CANONICAL_NEXT_AGENT_ROLES",
+    "CANONICAL_NEXT_AGENT_SET",
+    "DispatchRole",
+    "ExecutableRole",
+    "HandoffStatus",
+    "TerminalRole",
+    "normalize_agent_label",
+    "normalize_next_agent_value",
+    "role_display_name",
+]

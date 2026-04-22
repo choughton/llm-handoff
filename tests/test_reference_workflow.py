@@ -15,6 +15,7 @@ REQUIRED_TEMPLATE_FILES = (
     "dispatch_config.yaml",
     ".geminiignore",
     "docs/handoff/HANDOFF.md",
+    "docs/handoff/HANDBOOK.md",
     "docs/handoff/README.md",
     "docs/handoff/SHARED_REPO_INIT_PROMPT.md",
     "docs/handoff/PLANNER_INITIAL_PROMPT.md",
@@ -36,6 +37,7 @@ REQUIRED_TEMPLATE_FILES = (
 
 COPIED_TEMPLATE_FILES = (
     "docs/handoff/HANDOFF.md",
+    "docs/handoff/HANDBOOK.md",
     "docs/handoff/README.md",
     "docs/handoff/SHARED_REPO_INIT_PROMPT.md",
     "docs/handoff/PLANNER_INITIAL_PROMPT.md",
@@ -103,3 +105,14 @@ def test_reference_workflow_starter_handoff_routes_to_planner() -> None:
     assert frontmatter.producer == "user"
     assert decision.route == "planner"
     assert decision.confidence == "HIGH"
+
+
+def test_reference_workflow_planner_prompt_has_work_packet_example() -> None:
+    content = (
+        REFERENCE_WORKFLOW / "docs" / "handoff" / "PLANNER_HANDOFF_PROMPT.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Worked Example" in content
+    assert "Before (vague)" in content
+    assert "After (specific)" in content
+    assert "src/foo/bar.py" in content

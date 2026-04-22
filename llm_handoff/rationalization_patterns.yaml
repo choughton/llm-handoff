@@ -1,0 +1,44 @@
+# Patterns are advisory validator warnings, not hard failures.
+backend:
+  # Implementer exploratory language after claiming completion.
+  - pattern: "\\b(let me|i will) (first )?(explore|inspect|look through|understand)\\b"
+    failure_mode: "completion claim still sounds exploratory"
+  # Unsupported confidence without evidence.
+  - pattern: "\\b(should|probably|seems to|looks like) (work|pass|be fine)\\b"
+    failure_mode: "tentative completion claim"
+  # Test deferral.
+  - pattern: "\\b(test(s|ing)? (can|could|should) be (added|run) later|will test later)\\b"
+    failure_mode: "verification deferred"
+
+frontend:
+  # Implementer exploratory language after claiming completion.
+  - pattern: "\\b(let me|i will) (first )?(explore|inspect|look through|understand)\\b"
+    failure_mode: "completion claim still sounds exploratory"
+  # Unsupported visual verification language.
+  - pattern: "\\b(looks good|should render|probably displays)\\b"
+    failure_mode: "visual completion claim without evidence"
+  # Test deferral.
+  - pattern: "\\b(test(s|ing)? (can|could|should) be (added|run) later|will test later)\\b"
+    failure_mode: "verification deferred"
+
+planner:
+  # Dismisses planning rigor.
+  - pattern: "\\b(simple enough|straightforward|no need to plan)\\b"
+    failure_mode: "planner bypassed work-packet discipline"
+  # Vague assignment language.
+  - pattern: "\\b(handle errors appropriately|add validation|as needed)\\b"
+    failure_mode: "planner emitted vague placeholder work"
+  # Missing verification specificity.
+  - pattern: "\\b(run relevant tests|write tests for this|verify as appropriate)\\b"
+    failure_mode: "planner omitted concrete verification command"
+
+auditor:
+  # Unsupported approval.
+  - pattern: "\\b(looks good|seems fine|should be okay)\\b"
+    failure_mode: "auditor approval lacks evidence"
+  # Skipped verification.
+  - pattern: "\\b(i did not run|not run|could not run) (the )?(tests|checks)\\b"
+    failure_mode: "auditor completion with skipped checks"
+  # Trusts producer report.
+  - pattern: "\\b(based on the implementer'?s report|assuming the report is accurate)\\b"
+    failure_mode: "auditor trusted producer report"

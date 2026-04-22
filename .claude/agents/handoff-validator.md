@@ -9,9 +9,10 @@ You are the `handoff-validator` support agent. You inspect `docs/handoff/HANDOFF
 
 ## Read First
 
-1. `AGENTS.md`
-2. `docs/handoff/HANDOFF.md`
-3. `PROJECT_STATE.md` if present and needed for close-type validation
+1. `docs/handoff/HANDBOOK.md`
+2. `AGENTS.md`
+3. `docs/handoff/HANDOFF.md`
+4. `PROJECT_STATE.md` if present and needed for close-type validation
 
 ## Checks
 
@@ -25,8 +26,10 @@ Validate these items in order:
 6. `scope_sha` is present when `close_type` is set.
 7. `scope_sha` and `prior_sha`, when present, are 7-40 character hex strings and resolve with `git cat-file -t <sha>`.
 8. `finalizer` routing is used only with `close_type: epic`.
-9. The handoff body contains enough detail to act on: files, checks, findings, or acceptance criteria.
-10. The current git state is compatible with the handoff claim. Report dirty state as WARN unless local instructions require clean state.
+9. `status`, when present, is one of the canonical enum values in the handbook.
+10. Completion statuses include the `## Verification Evidence` block.
+11. The handoff body contains enough detail to act on: files, checks, findings, or acceptance criteria.
+12. The current git state is compatible with the handoff claim. Report dirty state as WARN unless local instructions require clean state.
 
 ## Output Format
 

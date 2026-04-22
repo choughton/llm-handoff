@@ -9,6 +9,7 @@ import subprocess
 import time
 from typing import Callable
 
+from llm_handoff.agent_types import HandoffStatus
 from llm_handoff.agent_roles import (
     invoke_backend_role,
     invoke_frontend_role,
@@ -17,7 +18,7 @@ from llm_handoff.agent_roles import (
 )
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig, NormalizerConfig
-from llm_handoff.ledger import run_epic_close
+from llm_handoff.ledger import bounce_count, record_status_transition, run_epic_close
 from llm_handoff.handoff_normalizer import (
     CANONICAL_NEXT_AGENT_SET,
     normalize_handoff_next_agent_text,
@@ -165,6 +166,21 @@ STALE_FINALIZER_RECOVERY_INSTRUCTION = (
     "and rewrite HANDOFF.md for the next cycle instead of repeating "
     "finalizer."
 )
+RATIONALIZATION_RECOVERY_INSTRUCTION_TEMPLATE = (
+    "The validator detected completion-claim rationalization in HANDOFF.md: "
+    "{warnings}. Do not modify source, tests, project-state files, ledger files, "
+    "or completed work. Rewrite docs/handoff/HANDOFF.md to either provide fresh "
+    "verification evidence and a dispatchable route, or route to user if the "
+    "completion claim cannot be supported. Commit exactly docs/handoff/HANDOFF.md "
+    "before finishing."
+)
+THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
+    "Story `{story_id}` has bounced between implementation and audit "
+    "{bounce_count} times. Do not continue the same implementation loop. "
+    "Re-scope the story into a smaller work packet, route to user if the scope "
+    "is unsafe, or route to the correct next role with explicit acceptance "
+    "criteria and verification evidence requirements."
+)
 
 LogFn = Callable[[str, str], None]
 _COMMIT_SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
@@ -224,6 +240,7 @@ def run_loop(
     previous_cycle: Cycle | None = None
     cycle_number = 0
     pending_planner_recovery: PendingPlannerRecovery | None = None
+    breaker_planner_seen: set[str] = set()
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
 
@@ -254,6 +271,7 @@ def run_loop(
         project_state_content = _read_optional_text(config.project_state_full_path)
         handoff_sha = _content_sha(handoff_content)
         _log_handoff_scope(handoff_content, log_fn)
+        cycle_frontmatter = _parse_frontmatter_or_none(handoff_content)
         forced_additional_instruction: str | None = None
         active_planner_recovery_kind: str | None = None
         if (
@@ -338,6 +356,52 @@ def run_loop(
             ):
                 return 0
             continue
+
+        if decision.route in {"backend", "frontend"} and cycle_frontmatter is not None:
+            story_id = cycle_frontmatter.story_id
+            if story_id and bounce_count(story_id) >= 3:
+                if story_id in breaker_planner_seen:
+                    _log(
+                        log_fn,
+                        "ERROR",
+                        "THREE_FIX_CIRCUIT_BREAKER_ESCALATE: "
+                        f"story_id={story_id} bounce_count={bounce_count(story_id)} planner recovery already attempted.",
+                    )
+                    decision = RoutingDecision(
+                        route="user",
+                        confidence="HIGH",
+                        source="three_fix_circuit_breaker_escalation",
+                        reasoning=(
+                            "The story exceeded the three-fix circuit breaker "
+                            "after planner recovery."
+                        ),
+                        warnings=[],
+                    )
+                else:
+                    breaker_planner_seen.add(story_id)
+                    count = bounce_count(story_id)
+                    _log(
+                        log_fn,
+                        "WARN",
+                        "THREE_FIX_CIRCUIT_BREAKER: "
+                        f"story_id={story_id} bounce_count={count}; routing to planner for re-scoping.",
+                    )
+                    forced_additional_instruction = (
+                        THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE.format(
+                            story_id=story_id,
+                            bounce_count=count,
+                        )
+                    )
+                    decision = RoutingDecision(
+                        route="planner",
+                        confidence="HIGH",
+                        source="three_fix_circuit_breaker",
+                        reasoning=(
+                            "The story exceeded the three-fix circuit breaker, "
+                            "so planner must re-scope before more implementation."
+                        ),
+                        warnings=[],
+                    )
 
         if decision.route == "user":
             if not _pause_until_handoff_changes(
@@ -500,6 +564,10 @@ def run_loop(
                 previous_agent,
                 prior_handoff_sha=current_cycle.handoff_sha,
             )
+            _record_post_dispatch_status_transition(
+                config=config,
+                log=log_fn,
+            )
             self_loop_kind = _self_loop_kind(validation_result)
             _log_validation(
                 validation_result,
@@ -636,6 +704,26 @@ def run_loop(
                         return 0
                     continue
                 return 1
+
+            if _has_rationalization_warning(validation_result):
+                _log(
+                    log_fn,
+                    "WARN",
+                    "Completion-claim rationalization detected; scheduling planner recovery instead of advancing.",
+                )
+                current_handoff_content = (
+                    _read_required_text(config.handoff_full_path) or ""
+                )
+                pending_planner_recovery = PendingPlannerRecovery(
+                    handoff_sha=_content_sha(current_handoff_content),
+                    additional_instruction=RATIONALIZATION_RECOVERY_INSTRUCTION_TEMPLATE.format(
+                        warnings=_format_rationalization_warnings(validation_result)
+                    ),
+                    kind="rationalization",
+                )
+                previous_cycle = current_cycle
+                consecutive_failures = 0
+                continue
 
             previous_cycle = current_cycle
             consecutive_failures = 0
@@ -1358,6 +1446,56 @@ def _log_handoff_scope(handoff_content: str, log: LogFn) -> None:
     _log(log, "INFO", f"Handoff scope: {'; '.join(parts)}")
 
 
+def _parse_frontmatter_or_none(handoff_content: str):
+    try:
+        return parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        return None
+
+
+def _record_post_dispatch_status_transition(
+    *,
+    config: DispatchConfig,
+    log: LogFn,
+) -> None:
+    handoff_content = _read_required_text(config.handoff_full_path)
+    if handoff_content is None:
+        return
+    frontmatter = _parse_frontmatter_or_none(handoff_content)
+    if frontmatter is None:
+        return
+    status = _handoff_status(frontmatter.status)
+    count = record_status_transition(frontmatter.story_id, status)
+    if status == HandoffStatus.VERIFIED_FAIL and frontmatter.story_id:
+        _log(
+            log,
+            "INFO",
+            f"Bounce count for story_id={frontmatter.story_id} is now {count}.",
+        )
+    if (
+        status
+        in {
+            HandoffStatus.VERIFIED_PASS,
+            HandoffStatus.ESCALATE_TO_USER,
+        }
+        and frontmatter.story_id
+    ):
+        _log(
+            log,
+            "INFO",
+            f"Bounce count reset for story_id={frontmatter.story_id}.",
+        )
+
+
+def _handoff_status(raw_status: str | None) -> HandoffStatus | None:
+    if raw_status is None:
+        return None
+    try:
+        return HandoffStatus(raw_status)
+    except ValueError:
+        return None
+
+
 def _handoff_story_summary(
     *,
     story_id: str | None,
@@ -1533,6 +1671,20 @@ def _should_schedule_planner_recovery(
 def _has_missing_route_error(result: ValidationResult) -> bool:
     return any(
         error.startswith("routing_instruction_missing:") for error in result.errors
+    )
+
+
+def _has_rationalization_warning(result: ValidationResult) -> bool:
+    return any(
+        warning.startswith("RATIONALIZATION_DETECTED:") for warning in result.warnings
+    )
+
+
+def _format_rationalization_warnings(result: ValidationResult) -> str:
+    return "; ".join(
+        warning
+        for warning in result.warnings
+        if warning.startswith("RATIONALIZATION_DETECTED:")
     )
 
 

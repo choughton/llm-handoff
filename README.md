@@ -68,6 +68,7 @@ are parser fixtures, not user-facing docs.
 | --- | --- |
 | [docs/handoff/README.md](docs/handoff/README.md) | Handoff directory guide and schema summary. |
 | [docs/handoff/HANDOFF.md](docs/handoff/HANDOFF.md) | Placeholder live handoff template. |
+| [docs/handoff/HANDBOOK.md](docs/handoff/HANDBOOK.md) | Shared handoff operating rules for all roles. |
 | [docs/handoff/SHARED_REPO_INIT_PROMPT.md](docs/handoff/SHARED_REPO_INIT_PROMPT.md) | Shared startup prompt for roles. |
 | [docs/handoff/PLANNER_INITIAL_PROMPT.md](docs/handoff/PLANNER_INITIAL_PROMPT.md) | First planner prompt for new workflows. |
 | [docs/handoff/PLANNER_HANDOFF_PROMPT.md](docs/handoff/PLANNER_HANDOFF_PROMPT.md) | Planner handoff prompt. |
@@ -97,6 +98,7 @@ are parser fixtures, not user-facing docs.
 | [examples/reference-workflow/PROJECT_STATE.md](examples/reference-workflow/PROJECT_STATE.md) | Target-repo durable state template. |
 | [examples/reference-workflow/docs/handoff/README.md](examples/reference-workflow/docs/handoff/README.md) | Template handoff directory guide. |
 | [examples/reference-workflow/docs/handoff/HANDOFF.md](examples/reference-workflow/docs/handoff/HANDOFF.md) | Template starter handoff. |
+| [examples/reference-workflow/docs/handoff/HANDBOOK.md](examples/reference-workflow/docs/handoff/HANDBOOK.md) | Template shared handoff handbook. |
 | [examples/reference-workflow/docs/handoff/SHARED_REPO_INIT_PROMPT.md](examples/reference-workflow/docs/handoff/SHARED_REPO_INIT_PROMPT.md) | Template shared startup prompt. |
 | [examples/reference-workflow/docs/handoff/PLANNER_INITIAL_PROMPT.md](examples/reference-workflow/docs/handoff/PLANNER_INITIAL_PROMPT.md) | Template first planner prompt. |
 | [examples/reference-workflow/docs/handoff/PLANNER_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/PLANNER_HANDOFF_PROMPT.md) | Template planner prompt. |

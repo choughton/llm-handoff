@@ -11,9 +11,10 @@ Your job is to make the routing state deterministic. You do not implement code, 
 
 ## Read First
 
-1. `AGENTS.md`
-2. `docs/handoff/HANDOFF.md`
-3. `PROJECT_STATE.md` if present and needed to distinguish story close from epic close
+1. `docs/handoff/HANDBOOK.md`
+2. `AGENTS.md`
+3. `docs/handoff/HANDOFF.md`
+4. `PROJECT_STATE.md` if present and needed to distinguish story close from epic close
 
 ## Routing Contract
 
@@ -52,6 +53,9 @@ story_id: <string if known>
 story_title: <string if known>
 remaining_stories:
   - <story id/title>
+status: <canonical status when applicable>
+bounce_count: <optional retry count>
+evidence_present: <optional boolean>
 scope_sha: <7-40 hex SHA when close_type is set>
 close_type: <story | epic | omit>
 prior_sha: <optional prior SHA>

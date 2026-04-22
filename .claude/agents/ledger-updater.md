@@ -11,10 +11,11 @@ Your job is to record the closed scope in durable project state, clear the final
 
 ## Read First
 
-1. `AGENTS.md`
-2. `docs/handoff/HANDOFF.md`
-3. `PROJECT_STATE.md` if present
-4. `git log --oneline -10`
+1. `docs/handoff/HANDBOOK.md`
+2. `AGENTS.md`
+3. `docs/handoff/HANDOFF.md`
+4. `PROJECT_STATE.md` if present
+5. `git log --oneline -10`
 
 ## Preconditions
 
@@ -41,6 +42,7 @@ Rewrite `docs/handoff/HANDOFF.md` so the next cycle does not route back to `fina
 ---
 next_agent: planner
 reason: "Scope closed; planner should select the next bounded assignment."
+status: verified_pass
 scope_sha: <finalizer commit SHA after commit>
 producer: finalizer
 ---

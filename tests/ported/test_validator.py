@@ -55,6 +55,8 @@ def _with_frontmatter(
     *,
     next_agent: str,
     reason: str = "Route test handoff.",
+    status: str | None = None,
+    evidence_present: bool | None = None,
     scope_sha: str | None = None,
     close_type: str | None = None,
     prior_sha: str | None = None,
@@ -65,6 +67,10 @@ def _with_frontmatter(
         f"next_agent: {next_agent}",
         f"reason: {reason}",
     ]
+    if status is not None:
+        frontmatter.append(f"status: {status}")
+    if evidence_present is not None:
+        frontmatter.append(f"evidence_present: {str(evidence_present).lower()}")
     if scope_sha is not None:
         frontmatter.append(f"scope_sha: {scope_sha}")
     if close_type is not None:
@@ -73,6 +79,20 @@ def _with_frontmatter(
         frontmatter.append(f"prior_sha: {prior_sha}")
     frontmatter.extend([f"producer: {producer}", "---", ""])
     return "\n".join(frontmatter) + body.lstrip()
+
+
+def _verification_evidence(
+    sha: str = "877f54d07d06d033b6b3f6dded924d170e9e2116",
+) -> str:
+    return f"""
+## Verification Evidence
+
+- **Commands run:** `python -m pytest tests -q`
+- **Output summary:** exit 0
+- **Commit SHA verified:** {sha}
+- **Files changed or reviewed:** llm_handoff/validator.py
+- **Unresolved concerns:** none
+"""
 
 
 @pytest.mark.parametrize(
@@ -217,6 +237,136 @@ def test_validate_handoff_accepts_backend_handback_with_sha_and_routing(
     assert result.warnings == []
     assert result.errors == []
     assert result.routing_instruction == "auditor"
+
+
+def test_validator_rejects_missing_evidence(tmp_path: Path) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            """# Audit Report
+
+**Agent:** auditor
+**Latest verified repo SHA:** `877f54d07d06d033b6b3f6dded924d170e9e2116`
+
+## Verdict
+APPROVED.
+""",
+            next_agent="planner",
+            reason="Audit passed; route to planner.",
+            status="verified_pass",
+            scope_sha="877f54d",
+            close_type="story",
+            producer="auditor",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "auditor", prior_handoff_sha="0" * 64)
+
+    assert result.verdict == "NO"
+    assert any("EVIDENCE_MISSING" in error for error in result.errors)
+
+
+def test_validator_accepts_evidence(tmp_path: Path) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            f"""# Audit Report
+
+**Agent:** auditor
+**Latest verified repo SHA:** `877f54d07d06d033b6b3f6dded924d170e9e2116`
+
+## Verdict
+APPROVED.
+{_verification_evidence()}
+""",
+            next_agent="planner",
+            reason="Audit passed; route to planner.",
+            status="verified_pass",
+            scope_sha="877f54d",
+            close_type="story",
+            producer="auditor",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "auditor", prior_handoff_sha="0" * 64)
+
+    assert not any("EVIDENCE_MISSING" in error for error in result.errors)
+
+
+def test_validator_rejects_invalid_status(tmp_path: Path) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            """# backend Handback
+
+**Agent:** backend
+**Latest verified repo SHA:** `877f54d`
+""",
+            next_agent="auditor",
+            reason="Backend work complete; audit requested.",
+            status="done",
+            scope_sha="877f54d",
+            close_type="story",
+            producer="backend",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert result.verdict == "NO"
+    assert any("STATUS_INVALID" in error for error in result.errors)
+
+
+def test_validator_requires_status_on_completion(tmp_path: Path) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            """# backend Handback
+
+**Agent:** backend
+**Latest verified repo SHA:** `877f54d`
+""",
+            next_agent="auditor",
+            reason="Backend work complete; audit requested.",
+            evidence_present=True,
+            scope_sha="877f54d",
+            close_type="story",
+            producer="backend",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert result.verdict == "NO"
+    assert any("STATUS_MISSING" in error for error in result.errors)
+
+
+def test_validator_emits_rationalization_warning(tmp_path: Path) -> None:
+    sha = "877f54d07d06d033b6b3f6dded924d170e9e2116"
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            f"""# backend Handback
+
+**Agent:** backend
+**Latest verified repo SHA:** `{sha}`
+
+Let me first explore the codebase before writing the fix.
+{_verification_evidence(sha)}
+""",
+            next_agent="auditor",
+            reason="Backend work complete; audit requested.",
+            status="ready_for_review",
+            scope_sha=sha,
+            close_type="story",
+            producer="backend",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert result.verdict == "WARNINGS-ONLY"
+    assert any("RATIONALIZATION_DETECTED" in warning for warning in result.warnings)
 
 
 def test_validate_handoff_rejects_scope_sha_that_does_not_exist_in_git(

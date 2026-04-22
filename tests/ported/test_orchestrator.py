@@ -9,6 +9,7 @@ import pytest
 
 from llm_handoff.agents import DispatchResult, SubagentResult
 from llm_handoff.ledger import EpicCloseResult
+import llm_handoff.ledger as ledger
 from llm_handoff.validator import ValidationResult
 
 
@@ -104,6 +105,198 @@ def _validation_result(verdict: str = "YES") -> ValidationResult:
         errors=[],
         routing_instruction="backend",
     )
+
+
+def test_orchestrator_routes_rationalization_to_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: backend
+reason: Implement the backend change.
+story_id: rationalization-story
+producer: planner
+---
+
+## Task Assignment
+
+**Agent:** backend
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    dispatches: list[str] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        path.write_text(
+            """---
+next_agent: auditor
+reason: "Backend work complete; audit requested."
+status: ready_for_review
+story_id: rationalization-story
+scope_sha: 877f54d
+close_type: story
+producer: backend
+---
+
+# Backend Handback
+
+**Agent:** backend
+
+Let me first explore the codebase before writing the fix.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    def fake_planner(path: Path, **kwargs: object) -> DispatchResult:
+        dispatches.append("planner")
+        assert (
+            "rationalization" in str(kwargs.get("additional_instruction", "")).lower()
+        )
+        path.write_text(
+            """---
+next_agent: user
+reason: "Human review required."
+producer: planner
+---
+
+## user
+
+Recovery complete.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    validation_results = [
+        ValidationResult(
+            verdict="WARNINGS-ONLY",
+            warnings=["RATIONALIZATION_DETECTED: line 13: `Let me first explore`"],
+            errors=[],
+            routing_instruction="auditor",
+        ),
+        _validation_result(),
+    ]
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: validation_results.pop(0),
+    )
+
+    exit_code = orchestrator.run_loop(config, max_cycles=2)
+
+    assert exit_code == 0
+    assert dispatches == ["backend", "planner"]
+    assert "next_agent: user" in handoff_path.read_text(encoding="utf-8")
+
+
+def test_orchestrator_three_fix_circuit_breaker(
+    tmp_path: Path,
+) -> None:
+    story_id = "circuit-story"
+    ledger.reset_bounce(story_id)
+    for _ in range(3):
+        ledger.increment_bounce(story_id)
+    repo_root, _handoff_path = _write_repo(
+        tmp_path,
+        f"""---
+next_agent: backend
+reason: Retry implementation.
+story_id: {story_id}
+producer: auditor
+---
+
+## Retry
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", "Routing instruction: planner") in log_messages
+    assert any("THREE_FIX_CIRCUIT_BREAKER" in message for _, message in log_messages)
+    ledger.reset_bounce(story_id)
+
+
+def test_orchestrator_post_planner_escalation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    story_id = "circuit-story-escalate"
+    ledger.reset_bounce(story_id)
+    for _ in range(3):
+        ledger.increment_bounce(story_id)
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        f"""---
+next_agent: backend
+reason: Retry implementation.
+story_id: {story_id}
+producer: auditor
+---
+
+## Retry
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    dispatches: list[str] = []
+    log_messages: list[tuple[str, str]] = []
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("planner")
+        path.write_text(
+            f"""---
+next_agent: backend
+reason: Planner re-scoped but still returned to implementation.
+story_id: {story_id}
+producer: planner
+---
+
+## Task Assignment
+
+**Agent:** backend
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator, "validate_handoff", lambda *a, **k: _validation_result()
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_pause_until_handoff_changes",
+        lambda *a, **k: False,
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert dispatches == ["planner"]
+    assert any(
+        "THREE_FIX_CIRCUIT_BREAKER_ESCALATE" in message for _, message in log_messages
+    )
+    assert "next_agent: backend" in handoff_path.read_text(encoding="utf-8")
+    ledger.reset_bounce(story_id)
 
 
 def test_run_loop_dispatches_only_one_agent_per_cycle(

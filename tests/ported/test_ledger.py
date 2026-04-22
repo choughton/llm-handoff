@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from llm_handoff.agent_types import HandoffStatus
 import llm_handoff.ledger as ledger
 from llm_handoff.agents import SubagentResult
 from llm_handoff import config as config_module
@@ -29,6 +30,21 @@ CHANGES MADE:
   - PROJECT_STATE.md: advanced the active epic pointer
   - docs/handoff/HANDOFF.md: routed the next cycle to planner
 """
+
+
+def test_ledger_bounce_counter() -> None:
+    story_id = "story-bounce-counter"
+    ledger.reset_bounce(story_id)
+
+    assert ledger.bounce_count(story_id) == 0
+    assert ledger.record_status_transition(story_id, HandoffStatus.VERIFIED_FAIL) == 1
+    assert ledger.record_status_transition(story_id, HandoffStatus.VERIFIED_FAIL) == 2
+    assert ledger.record_status_transition(story_id, HandoffStatus.VERIFIED_FAIL) == 3
+    assert ledger.bounce_count(story_id) == 3
+
+    ledger.record_status_transition(story_id, HandoffStatus.VERIFIED_PASS)
+
+    assert ledger.bounce_count(story_id) == 0
 
 
 def test_run_epic_close_invokes_ledger_updater_and_parses_success(
