@@ -18,7 +18,7 @@ Built for solo developers coordinating multiple agent CLIs on a single repo
 without the overhead of git worktrees, pull-request choreography, or a service
 orchestrator.
 
-![llm-handoff dispatch loop](docs/assets/llm-handoff-hero.svg)
+![llm-handoff dispatch loop](docs/assets/llm-handoff-hero.png)
 
 ## Status
 
