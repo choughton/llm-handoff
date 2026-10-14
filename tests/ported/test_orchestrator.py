@@ -4228,3 +4228,65 @@ producer: auditor
     )
     assert ledger.bounce_count(story_id) == 1
     ledger.reset_bounce(story_id)
+
+
+@pytest.mark.parametrize(
+    ("raw_next_agent", "expected"),
+    [
+        ("Backend", "backend"),
+        ("BACKEND", "backend"),
+        ('"backend "', "backend"),
+        ("'Frontend'", "frontend"),
+        ("Auditor", "auditor"),
+    ],
+)
+def test_run_loop_resolves_next_agent_variants_without_model_normalizer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_next_agent: str,
+    expected: str,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        f"""---
+next_agent: {raw_next_agent}
+reason: Route the next step.
+scope_sha: 25c45ca
+close_type: story
+producer: planner
+---
+
+## Handoff
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    log_messages: list[tuple[str, str]] = []
+
+    def fail_normalizer(freeform: str, **_kwargs: object) -> str:
+        raise AssertionError(
+            f"model normalizer must not run for deterministic value {freeform!r}"
+        )
+
+    monkeypatch.setattr(orchestrator, "normalize_next_agent", fail_normalizer)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", f"Routing instruction: {expected}") in log_messages
+    assert f"next_agent: {expected}\n" in handoff_path.read_text(encoding="utf-8")
+    assert all("invoking normalizer" not in message for _level, message in log_messages)
+    assert all("normalizer returned" not in message for _level, message in log_messages)
+    assert any(
+        message.startswith("router: next_agent ")
+        and f"resolved deterministically to '{expected}'" in message
+        for _level, message in log_messages
+    )
+    assert (
+        "INFO",
+        f"router: rewrote next_agent to deterministic output '{expected}' in HANDOFF.md.",
+    ) in log_messages

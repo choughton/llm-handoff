@@ -33,6 +33,7 @@ from llm_handoff.handoff_normalizer import (
     normalize_handoff_next_agent_text,
     normalize_next_agent,
 )
+from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
     HandoffFrontmatterError,
     RoutingDecision,
@@ -1988,23 +1989,39 @@ def _normalize_handoff_next_agent_file(
     *,
     repo_root: Path | None = None,
 ) -> str:
-    try:
-        original_next_agent = _handoff_next_agent_value(handoff_content)
-        if original_next_agent and original_next_agent not in CANONICAL_NEXT_AGENT_SET:
+    model_invoked = False
+
+    def resolve_next_agent(raw_value: str) -> str:
+        # Case, whitespace, quote, and underscore variants of a canonical
+        # role are resolved by the same deterministic normalization the
+        # validator applies; only values it cannot place reach the model.
+        nonlocal model_invoked
+        deterministic = normalize_next_agent_value(raw_value)
+        if deterministic is not None:
             _log(
                 log,
-                "WARN",
-                f"router: next_agent '{original_next_agent}' is not a deterministic enum match; invoking normalizer.",
+                "INFO",
+                f"router: next_agent '{raw_value}' resolved deterministically to '{deterministic}'; normalizer not invoked.",
             )
+            return deterministic
+        model_invoked = True
+        _log(
+            log,
+            "WARN",
+            f"router: next_agent '{raw_value}' is not a deterministic enum match; invoking normalizer.",
+        )
+        return normalize_next_agent(
+            raw_value,
+            provider=normalizer_config.provider,
+            model=normalizer_config.model,
+            timeout_ms=normalizer_config.timeout_ms,
+            repo_root=repo_root,
+        )
+
+    try:
         normalization = normalize_handoff_next_agent_text(
             handoff_content,
-            normalizer=lambda raw_value: normalize_next_agent(
-                raw_value,
-                provider=normalizer_config.provider,
-                model=normalizer_config.model,
-                timeout_ms=normalizer_config.timeout_ms,
-                repo_root=repo_root,
-            ),
+            normalizer=resolve_next_agent,
         )
     except Exception as exc:
         _log(
@@ -2028,11 +2045,12 @@ def _normalize_handoff_next_agent_file(
         return handoff_content
 
     if normalization.rewritten:
-        _log(
-            log,
-            "INFO",
-            f"router: next_agent normalizer returned '{normalization.normalized}' for '{normalization.original}'.",
-        )
+        if model_invoked:
+            _log(
+                log,
+                "INFO",
+                f"router: next_agent normalizer returned '{normalization.normalized}' for '{normalization.original}'.",
+            )
         handoff_path.write_text(normalization.content, encoding="utf-8")
         _log(
             log,
@@ -2043,23 +2061,6 @@ def _normalize_handoff_next_agent_file(
         return normalization.content
 
     return handoff_content
-
-
-def _handoff_next_agent_value(handoff_content: str) -> str | None:
-    lines = handoff_content.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return None
-
-    for line in lines[1:]:
-        if line.strip() == "---":
-            return None
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        if key.strip() == "next_agent":
-            return value.strip().strip("'\"")
-
-    return None
 
 
 def _content_sha(content: str) -> str:
