@@ -19,6 +19,10 @@ import time
 from typing import Callable, Sequence
 from uuid import uuid4
 
+from llm_handoff.agent_process import (
+    _kill_process_tree,
+    _process_group_popen_kwargs,
+)
 from llm_handoff.agent_roles import invoke_support_role
 from llm_handoff.agent_types import SubagentResult
 from llm_handoff.config import (
@@ -539,6 +543,7 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
         text=True,
         encoding="utf-8",
         errors="replace",
+        **_process_group_popen_kwargs(),
     )
     assert process.stdout is not None
     _write_run_state(
@@ -577,7 +582,9 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
                 )
                 output_tail.append(stall_line)
                 log("ERROR", stall_line)
-                process.kill()
+                # The child dispatcher owns provider CLI grandchildren; a
+                # plain kill() would orphan them mid-edit.
+                _kill_process_tree(process)
                 break
             if _should_emit_heartbeat(
                 now=now,
