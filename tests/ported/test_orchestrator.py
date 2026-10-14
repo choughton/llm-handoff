@@ -3239,7 +3239,9 @@ def test_run_loop_passes_configured_agent_provider_to_auditor_dispatch(
     assert exit_code == 0
     assert len(subagent_calls) == 1
     assert subagent_calls[0]["subagent_name"] == "auditor"
-    assert subagent_calls[0]["prompt"] == orchestrator.AUDIT_PROMPT
+    assert subagent_calls[0]["prompt"] == orchestrator.AUDIT_PROMPT_TEMPLATE.format(
+        handoff_path="docs/handoff/HANDOFF.md"
+    )
     assert subagent_calls[0]["role"] == "auditor"
     assert subagent_calls[0]["handoff_path"] == handoff_path
     assert subagent_calls[0]["agent_config"].provider == "gemini"

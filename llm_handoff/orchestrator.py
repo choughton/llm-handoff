@@ -49,29 +49,32 @@ from llm_handoff.validator import (
 )
 
 
-AUDIT_PROMPT = (
+# Prompt templates name the handoff file through {handoff_path} so the
+# configured layout (the nested default or a flat HANDOFF.md) reaches
+# every Claude-side agent; render them with _render_prompt.
+AUDIT_PROMPT_TEMPLATE = (
     "Use the auditor agent to audit the work described in "
-    "docs/handoff/HANDOFF.md. Read the repository instructions and relevant "
+    "{handoff_path}. Read the repository instructions and relevant "
     "state files before judging the diff. Run the configured verification "
     "commands when available. Return a concise audit report, then update "
-    "docs/handoff/HANDOFF.md with findings and a routing instruction for the "
+    "{handoff_path} with findings and a routing instruction for the "
     "next agent."
 )
 
-MISROUTE_PROMPT = (
-    "Use the handoff-router agent to analyze docs/handoff/HANDOFF.md. The "
+MISROUTE_PROMPT_TEMPLATE = (
+    "Use the handoff-router agent to analyze {handoff_path}. The "
     "previous routing was flagged as a potential misroute. Determine the "
     "correct agent and write a corrected routing instruction to "
-    "docs/handoff/HANDOFF.md with your reasoning."
+    "{handoff_path} with your reasoning."
 )
-HANDOFF_VALIDATOR_PROMPT = (
-    "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
+HANDOFF_VALIDATOR_PROMPT_TEMPLATE = (
+    "Use the handoff-validator agent to validate {handoff_path}. "
     "The dispatcher could not find a dispatchable routing instruction. "
     "Focus on why the handoff is not dispatchable, especially routing, SHA, "
     "ownership, and content requirements. Return ONLY the structured output format."
 )
 STALE_ROUTE_VALIDATOR_PROMPT_TEMPLATE = (
-    "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
+    "Use the handoff-validator agent to validate {handoff_path}. "
     "The dispatcher detected stale routing: HANDOFF.md still routes to "
     "{route}, and its content hash is unchanged since the previous cycle. "
     "Focus on why the prior cycle did not rewrite the handoff and what must "
@@ -79,7 +82,7 @@ STALE_ROUTE_VALIDATOR_PROMPT_TEMPLATE = (
     "structured output format."
 )
 EPIC_CLOSE_VALIDATOR_PROMPT_TEMPLATE = (
-    "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
+    "Use the handoff-validator agent to validate {handoff_path}. "
     "The dispatcher attempted finalizer, but the ledger-updater returned "
     "unparseable output: {parse_error}. "
     "Focus on whether the handoff was truly ready for epic close or should "
@@ -87,15 +90,15 @@ EPIC_CLOSE_VALIDATOR_PROMPT_TEMPLATE = (
     "structured output format."
 )
 LOW_CONFIDENCE_ROUTE_VALIDATOR_PROMPT_TEMPLATE = (
-    "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
+    "Use the handoff-validator agent to validate {handoff_path}. "
     "The dispatcher found a {confidence}-confidence routing decision to "
     "{route}: {reasoning} "
     "Focus on whether the handoff is truly dispatchable or if the routing "
     "instruction needs to be clarified before dispatch. Return ONLY the "
     "structured output format."
 )
-PLANNER_SELF_LOOP_VALIDATOR_PROMPT = (
-    "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
+PLANNER_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE = (
+    "Use the handoff-validator agent to validate {handoff_path}. "
     "The dispatcher detected a planner self-loop: the planner just finished, "
     "and the updated HANDOFF.md still routes back to the planner. "
     "Focus on why the planner routed the handoff back to itself and what must "
@@ -103,7 +106,7 @@ PLANNER_SELF_LOOP_VALIDATOR_PROMPT = (
     "structured output format."
 )
 AGENT_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE = (
-    "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
+    "Use the handoff-validator agent to validate {handoff_path}. "
     "The dispatcher detected a self-loop: {previous_agent} just finished, "
     "and the updated HANDOFF.md still routes back to the same agent. "
     "Focus on why the handoff routed work back to itself and what must "
@@ -111,7 +114,7 @@ AGENT_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE = (
     "structured output format."
 )
 POST_DISPATCH_MISSING_ROUTE_VALIDATOR_PROMPT_TEMPLATE = (
-    "Use the handoff-validator agent to validate docs/handoff/HANDOFF.md. "
+    "Use the handoff-validator agent to validate {handoff_path}. "
     "{previous_agent} just finished, but the updated HANDOFF.md is missing "
     "a dispatchable route. Focus on the route-missing failure and what must "
     "change for the dispatcher to safely continue to audit, implementation, "
@@ -125,35 +128,35 @@ POST_DISPATCH_ROUTING_RECOVERY_INSTRUCTION_TEMPLATE = (
     "or an explicit user section if the work cannot be routed safely."
 )
 POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE = (
-    "Repair only docs/handoff/HANDOFF.md from your immediately preceding "
+    "Repair only {handoff_path} from your immediately preceding "
     "handoff. Do not re-execute implementation work. Do not modify source, "
     "tests, project-state files, ledger files, or any file except "
-    "docs/handoff/HANDOFF.md. Fix only these handoff hygiene validation errors: "
+    "{handoff_path}. Fix only these handoff hygiene validation errors: "
     "{errors}. Preserve the current frontmatter next_agent, producer, scope_sha, "
     "prior_sha, close_type, epic_id, story_id, story_title, and "
     "remaining_stories unless the listed validation error explicitly names that "
-    "field. Commit exactly docs/handoff/HANDOFF.md before finishing. Failing to "
+    "field. Commit exactly {handoff_path} before finishing. Failing to "
     "edit HANDOFF.md or failing to commit the edit is a critical failure."
 )
 POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE = (
     "The producer failed one-shot HANDOFF hygiene repair after post-dispatch "
     "validation errors: {errors}. Do not modify source, tests, project-state "
     "files, ledger files, or completed work. Only rewrite "
-    "docs/handoff/HANDOFF.md to produce a dispatchable next step, or route to "
+    "{handoff_path} to produce a dispatchable next step, or route to "
     "user if unsafe. Preserve scope_sha, prior_sha, close_type, epic_id, "
     "story_id, story_title, remaining_stories, producer, and the audit/work "
     "evidence unless a listed validator error explicitly identifies that field "
-    "as invalid. Commit exactly docs/handoff/HANDOFF.md before finishing."
+    "as invalid. Commit exactly {handoff_path} before finishing."
 )
 PRE_DISPATCH_INVALID_FRONTMATTER_PLANNER_RECOVERY_TEMPLATE = (
     "The current HANDOFF.md has invalid but parseable routing frontmatter before "
     "dispatch. This is cleanup-only recovery. Do not execute implementation, "
     "audit, or scoping work yet. Do not modify source, tests, project-state "
     "files, ledger files, or completed work. Only rewrite "
-    "docs/handoff/HANDOFF.md into a valid dispatchable handoff, or route to user "
+    "{handoff_path} into a valid dispatchable handoff, or route to user "
     "if unsafe. Preserve the intended next_agent `{next_agent}` unless the "
     "handoff evidence proves that route is unsafe. Router warning: {warning}. "
-    "Commit exactly docs/handoff/HANDOFF.md before finishing."
+    "Commit exactly {handoff_path} before finishing."
 )
 PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE = (
     "The current HANDOFF.md routes to planner, but its routing frontmatter is "
@@ -165,7 +168,7 @@ PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE = (
     "unless the result is an explicit user-facing pause/escalation that cannot "
     "be assigned to backend, frontend, auditor, or finalizer. Do not modify "
     "source, tests, project-state files, ledger files, or completed work. Commit "
-    "exactly docs/handoff/HANDOFF.md before finishing."
+    "exactly {handoff_path} before finishing."
 )
 STALE_FINALIZER_RECOVERY_INSTRUCTION = (
     "The prior finalizer cycle already completed, but HANDOFF.md was not "
@@ -178,9 +181,9 @@ STALE_FINALIZER_RECOVERY_INSTRUCTION = (
 RATIONALIZATION_RECOVERY_INSTRUCTION_TEMPLATE = (
     "The validator detected completion-claim rationalization in HANDOFF.md: "
     "{warnings}. Do not modify source, tests, project-state files, ledger files, "
-    "or completed work. Rewrite docs/handoff/HANDOFF.md to either provide fresh "
+    "or completed work. Rewrite {handoff_path} to either provide fresh "
     "verification evidence and a dispatchable route, or route to user if the "
-    "completion claim cannot be supported. Commit exactly docs/handoff/HANDOFF.md "
+    "completion claim cannot be supported. Commit exactly {handoff_path} "
     "before finishing."
 )
 THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
@@ -193,6 +196,10 @@ THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
 
 LogFn = Callable[[str, str], None]
 _COMMIT_SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
+
+
+def _render_prompt(template: str, handoff_path: Path, **fields: object) -> str:
+    return template.format(handoff_path=Path(handoff_path).as_posix(), **fields)
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +335,7 @@ def run_loop(
             pre_dispatch_recovery = _pre_dispatch_invalid_frontmatter_recovery(
                 decision,
                 handoff_content,
+                handoff_path=config.handoff_path,
             )
             if pre_dispatch_recovery is not None:
                 if (
@@ -652,8 +660,10 @@ def run_loop(
                     )
                     pending_planner_recovery = PendingPlannerRecovery(
                         handoff_sha=_content_sha(current_handoff_content),
-                        additional_instruction=POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE.format(
-                            errors=_format_validation_errors(validation_result)
+                        additional_instruction=_render_prompt(
+                            POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE,
+                            config.handoff_path,
+                            errors=_format_validation_errors(validation_result),
                         ),
                         kind="handoff_hygiene",
                     )
@@ -728,8 +738,10 @@ def run_loop(
                 )
                 pending_planner_recovery = PendingPlannerRecovery(
                     handoff_sha=_content_sha(current_handoff_content),
-                    additional_instruction=RATIONALIZATION_RECOVERY_INSTRUCTION_TEMPLATE.format(
-                        warnings=_format_rationalization_warnings(validation_result)
+                    additional_instruction=_render_prompt(
+                        RATIONALIZATION_RECOVERY_INSTRUCTION_TEMPLATE,
+                        config.handoff_path,
+                        warnings=_format_rationalization_warnings(validation_result),
                     ),
                     kind="rationalization",
                 )
@@ -815,7 +827,7 @@ def _dispatch_route(
         return _dispatch_from_subagent(
             _invoke_support_callable(
                 "auditor",
-                AUDIT_PROMPT,
+                _render_prompt(AUDIT_PROMPT_TEMPLATE, config.handoff_path),
                 role="auditor",
                 handoff_path=handoff_path,
                 agent_config=config.agents["auditor"],
@@ -829,7 +841,7 @@ def _dispatch_route(
         return _dispatch_from_subagent(
             _invoke_support_callable(
                 "handoff-router",
-                MISROUTE_PROMPT,
+                _render_prompt(MISROUTE_PROMPT_TEMPLATE, config.handoff_path),
                 role="validator",
                 handoff_path=handoff_path,
                 agent_config=config.agents["validator"],
@@ -930,7 +942,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
     _log(
         log,
         "AGENT",
-        "Running one-shot producer repair for docs/handoff/HANDOFF.md only.",
+        f"Running one-shot producer repair for {config.handoff_path.as_posix()} only.",
     )
     repair_result = _dispatch_handoff_hygiene_repair(
         config=config,
@@ -1031,8 +1043,10 @@ def _dispatch_handoff_hygiene_repair(
     validation_result: ValidationResult,
     log: LogFn,
 ) -> DispatchResult | None:
-    repair_prompt = POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE.format(
-        errors=_format_validation_repair_issues(validation_result)
+    repair_prompt = _render_prompt(
+        POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE,
+        config.handoff_path,
+        errors=_format_validation_repair_issues(validation_result),
     )
     previous_agent_lower = previous_agent.lower()
     if "auditor" in previous_agent_lower and "audit" in previous_agent_lower:
@@ -1105,7 +1119,7 @@ def _handoff_repair_postcondition_error(
     )
     if changed_files != (handoff_path,):
         return (
-            "repair commit touched files outside docs/handoff/HANDOFF.md: "
+            f"repair commit touched files outside {handoff_path}: "
             f"{', '.join(changed_files) or '<none>'}"
         )
 
@@ -1350,7 +1364,7 @@ def _run_unknown_route_validator(config: DispatchConfig, log: LogFn) -> None:
     _run_validator(
         config,
         "handoff-validator",
-        HANDOFF_VALIDATOR_PROMPT,
+        _render_prompt(HANDOFF_VALIDATOR_PROMPT_TEMPLATE, config.handoff_path),
         "Handoff-validator",
         log,
     )
@@ -1386,6 +1400,8 @@ def _stale_route_recovery_decision(
 def _pre_dispatch_invalid_frontmatter_recovery(
     decision: RoutingDecision,
     handoff_content: str,
+    *,
+    handoff_path: Path,
 ) -> PreDispatchPlannerRecovery | None:
     if decision.source != "frontmatter.invalid":
         return None
@@ -1418,7 +1434,9 @@ def _pre_dispatch_invalid_frontmatter_recovery(
                 ),
                 warnings=decision.warnings,
             ),
-            additional_instruction=PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE.format(
+            additional_instruction=_render_prompt(
+                PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE,
+                handoff_path,
                 warning=warning,
             ),
         )
@@ -1435,7 +1453,9 @@ def _pre_dispatch_invalid_frontmatter_recovery(
             ),
             warnings=decision.warnings,
         ),
-        additional_instruction=PRE_DISPATCH_INVALID_FRONTMATTER_PLANNER_RECOVERY_TEMPLATE.format(
+        additional_instruction=_render_prompt(
+            PRE_DISPATCH_INVALID_FRONTMATTER_PLANNER_RECOVERY_TEMPLATE,
+            handoff_path,
             next_agent=next_agent,
             warning=warning,
         ),
@@ -1571,7 +1591,11 @@ def _run_stale_route_validator(
     _run_validator(
         config,
         "handoff-validator",
-        STALE_ROUTE_VALIDATOR_PROMPT_TEMPLATE.format(route=route),
+        _render_prompt(
+            STALE_ROUTE_VALIDATOR_PROMPT_TEMPLATE,
+            config.handoff_path,
+            route=route,
+        ),
         "Handoff-validator",
         log,
     )
@@ -1590,7 +1614,11 @@ def _run_epic_close_validator(
     _run_validator(
         config,
         "handoff-validator",
-        EPIC_CLOSE_VALIDATOR_PROMPT_TEMPLATE.format(parse_error=parse_error),
+        _render_prompt(
+            EPIC_CLOSE_VALIDATOR_PROMPT_TEMPLATE,
+            config.handoff_path,
+            parse_error=parse_error,
+        ),
         "Handoff-validator",
         log,
     )
@@ -1609,7 +1637,9 @@ def _run_low_confidence_route_validator(
     _run_validator(
         config,
         "handoff-validator",
-        LOW_CONFIDENCE_ROUTE_VALIDATOR_PROMPT_TEMPLATE.format(
+        _render_prompt(
+            LOW_CONFIDENCE_ROUTE_VALIDATOR_PROMPT_TEMPLATE,
+            config.handoff_path,
             confidence=decision.confidence,
             route=decision.route,
             reasoning=decision.reasoning,
@@ -1627,11 +1657,16 @@ def _run_self_loop_validator(
     log: LogFn,
 ) -> None:
     if self_loop_kind == "planner":
-        prompt = PLANNER_SELF_LOOP_VALIDATOR_PROMPT
+        prompt = _render_prompt(
+            PLANNER_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE,
+            config.handoff_path,
+        )
         message = "The planner produced a self-loop. Invoking the validator role..."
     else:
-        prompt = AGENT_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE.format(
-            previous_agent=previous_agent
+        prompt = _render_prompt(
+            AGENT_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE,
+            config.handoff_path,
+            previous_agent=previous_agent,
         )
         message = (
             f"{previous_agent} produced a self-loop. Invoking the validator role..."
@@ -1661,8 +1696,10 @@ def _run_post_dispatch_missing_route_validator(
     _run_validator(
         config,
         "handoff-validator",
-        POST_DISPATCH_MISSING_ROUTE_VALIDATOR_PROMPT_TEMPLATE.format(
-            previous_agent=previous_agent
+        _render_prompt(
+            POST_DISPATCH_MISSING_ROUTE_VALIDATOR_PROMPT_TEMPLATE,
+            config.handoff_path,
+            previous_agent=previous_agent,
         ),
         "Handoff-validator",
         log,

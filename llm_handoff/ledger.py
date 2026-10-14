@@ -9,19 +9,19 @@ from typing import Callable, Literal
 
 from llm_handoff.agent_types import HandoffStatus
 from llm_handoff.agent_roles import invoke_support_role
-from llm_handoff.config import DispatchConfig
+from llm_handoff.config import DEFAULT_HANDOFF_PATH, DispatchConfig
 
 
 PushStatus = Literal["PUSHED", "FAILED", "SKIPPED", "UNKNOWN"]
 
-LEDGER_UPDATER_PROMPT = (
+LEDGER_UPDATER_PROMPT_TEMPLATE = (
     "Use the finalizer or ledger-updater agent to update the project state. "
-    "Read docs/handoff/HANDOFF.md for the completed scope and validation verdict. "
+    "Read {handoff_path} for the completed scope and validation verdict. "
     "Update PROJECT_STATE.md with the completed scope, next state, and durable commit references. "
-    "Rewrite docs/handoff/HANDOFF.md so YAML frontmatter routes the next cycle "
+    "Rewrite {handoff_path} so YAML frontmatter routes the next cycle "
     "to planner for the next phase or to user if blocked; do not leave it "
     "routing to finalizer after the state update is complete. "
-    "Commit PROJECT_STATE.md and docs/handoff/HANDOFF.md atomically with a "
+    "Commit PROJECT_STATE.md and {handoff_path} atomically with a "
     "clear message and any required Co-Authored-By trailer. Do not push unless "
     "the repository instructions explicitly allow this finalizer to push. "
     "Return ONLY this exact machine-readable format, one field per line: "
@@ -37,6 +37,17 @@ LEDGER_UPDATER_PROMPT = (
     "the COMMIT SHA line. "
     "Do not return prose, explanations, markdown headings, or conversational text."
 )
+
+
+def ledger_updater_prompt(handoff_path: Path = DEFAULT_HANDOFF_PATH) -> str:
+    # The finalizer prompt names the handoff file by its configured relative
+    # path so the flat HANDOFF.md layout gets correct instructions too.
+    return LEDGER_UPDATER_PROMPT_TEMPLATE.format(
+        handoff_path=Path(handoff_path).as_posix()
+    )
+
+
+LEDGER_UPDATER_PROMPT = ledger_updater_prompt()
 
 _YES_NO_LINE_RE = r"(?im)^{label}:\s*(YES|NO)(?:\s*\((.+)\))?\s*$"
 _SCOPE_CLOSED_RE = re.compile(r"(?im)^SCOPE CLOSED:\s*(.+)\s*$")
@@ -211,7 +222,9 @@ def run_epic_close(
     log: LogFn | None = None,
 ) -> EpicCloseResult:
     kwargs = {}
+    prompt = LEDGER_UPDATER_PROMPT
     if config is not None:
+        prompt = ledger_updater_prompt(config.handoff_path)
         kwargs = {
             "role": "finalizer",
             "handoff_path": config.handoff_full_path,
@@ -220,7 +233,7 @@ def run_epic_close(
         }
     subagent_result = invoke_support_role(
         "ledger-updater",
-        LEDGER_UPDATER_PROMPT,
+        prompt,
         log=log,
         **kwargs,
     )
