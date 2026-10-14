@@ -1,0 +1,1201 @@
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+import subprocess
+import sys
+import time
+from typing import Any
+
+import pytest
+
+from llm_handoff.agents import DispatchResult, SubagentResult
+from llm_handoff.config import DispatchConfig, load_dispatch_config
+import llm_handoff.ledger as ledger
+from llm_handoff.router import parse_handoff_frontmatter_text, route
+from llm_handoff.validator import ValidationResult, validate_handoff_text
+from llm_handoff.work_claim import (
+    PreDispatchState,
+    WorkPacketError,
+    bounce_route_for,
+    build_bounce_handoff,
+    capture_pre_dispatch_state,
+    extract_work_packet_section,
+    parse_work_packet,
+    path_matches_entry,
+    verify_work_claim,
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+HANDOFF_RELATIVE_PATH = Path("docs/handoff/HANDOFF.md")
+STORY_ID = "EPIC-1-S1"
+PYTHON = sys.executable
+PASS_COMMAND = f'"{PYTHON}" -c "import sys; sys.exit(0)"'
+FAIL_COMMAND = f'"{PYTHON}" -c "import sys; print(\'verification boom\'); sys.exit(3)"'
+SLEEP_COMMAND = f'"{PYTHON}" -c "import time; time.sleep(30)"'
+
+
+# ---------------------------------------------------------------------------
+# Fixtures and helpers
+# ---------------------------------------------------------------------------
+
+
+def _git(repo_root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return completed.stdout.strip()
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def _assignment(
+    verification_command: str = PASS_COMMAND,
+    *,
+    files_in_scope: str = "src/app.py, tests/test_app.py",
+    files_out_of_bounds: str = "src/api.py",
+    producer: str = "planner",
+) -> str:
+    return f"""---
+next_agent: backend
+reason: "Implement the value change."
+epic_id: EPIC-1
+story_id: {STORY_ID}
+story_title: Change the value
+producer: {producer}
+---
+
+## Task Assignment
+
+**Agent:** backend
+
+## Work Packet
+
+- **Objective:** Set VALUE to 2.
+- **Files in scope:** {files_in_scope}
+- **Files out of bounds:** {files_out_of_bounds}
+- **Context:** Keep the module import-free.
+- **Verification command:** {verification_command}
+- **Expected next route:** auditor
+"""
+
+
+def _assignment_without_packet() -> str:
+    return f"""---
+next_agent: backend
+reason: "Implement the value change."
+epic_id: EPIC-1
+story_id: {STORY_ID}
+story_title: Change the value
+producer: planner
+---
+
+## Task Assignment
+
+**Agent:** backend
+
+Set VALUE to 2 in src/app.py.
+"""
+
+
+def _claim(
+    scope_sha: str | None,
+    *,
+    status: str = "ready_for_review",
+    producer: str = "backend",
+    next_agent: str = "auditor",
+) -> str:
+    scope_lines = ""
+    if scope_sha is not None:
+        scope_lines = f"scope_sha: {scope_sha}\nclose_type: story\n"
+    evidence_sha = scope_sha or "0123456789abcdef0123456789abcdef01234567"
+    return f"""---
+next_agent: {next_agent}
+reason: "Backend work complete; audit requested."
+epic_id: EPIC-1
+story_id: {STORY_ID}
+story_title: Change the value
+status: {status}
+{scope_lines}producer: {producer}
+---
+
+# Backend Handback
+
+**Agent:** backend
+
+## Completed Work
+
+- Set VALUE to 2 in src/app.py.
+
+## Verification Evidence
+
+- **Commands run:** `python -m pytest tests/test_app.py -q`
+- **Output summary:** exit 0
+- **Commit SHA verified:** {evidence_sha}
+- **Files changed or reviewed:** src/app.py
+- **Unresolved concerns:** none
+"""
+
+
+def _init_repo(repo_root: Path, handoff_content: str | None = None) -> str:
+    _git(repo_root, "init", "-q")
+    _git(repo_root, "config", "user.name", "llm-handoff tests")
+    _git(repo_root, "config", "user.email", "tests@example.invalid")
+    _git(repo_root, "config", "core.autocrlf", "false")
+    _write(repo_root / "src" / "app.py", "VALUE = 1\n")
+    _write(repo_root / "src" / "api.py", "API = 1\n")
+    _write(repo_root / "tests" / "test_app.py", "def test_value():\n    assert True\n")
+    _write(
+        repo_root / HANDOFF_RELATIVE_PATH,
+        handoff_content if handoff_content is not None else _assignment(),
+    )
+    _write(repo_root / "PROJECT_STATE.md", "# PROJECT STATE\n")
+    _write(repo_root / "AGENTS.md", "dispatch test fixture\n")
+    _git(repo_root, "add", "-A")
+    _git(repo_root, "commit", "-q", "-m", "initial")
+    return _git(repo_root, "rev-parse", "HEAD")
+
+
+def _commit_all(repo_root: Path, message: str) -> str:
+    _git(repo_root, "add", "-A")
+    _git(repo_root, "commit", "-q", "-m", message)
+    return _git(repo_root, "rev-parse", "HEAD")
+
+
+def _commit_paths(repo_root: Path, message: str, *paths: str) -> str:
+    _git(repo_root, "add", "--", *paths)
+    _git(repo_root, "commit", "-q", "-m", message)
+    return _git(repo_root, "rev-parse", "HEAD")
+
+
+def _verify(
+    repo_root: Path,
+    *,
+    assignment: str,
+    claim: str,
+    state: PreDispatchState,
+    timeout_seconds: int = 60,
+):
+    return verify_work_claim(
+        repo_root=repo_root,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=assignment,
+        claim_content=claim,
+        pre_dispatch_state=state,
+        verification_timeout_seconds=timeout_seconds,
+    )
+
+
+def _outcomes(result) -> dict[str, str]:
+    return {check.name: check.outcome for check in result.checks}
+
+
+def _dispatch_config(repo_root: Path, **overrides: Any) -> DispatchConfig:
+    kwargs: dict[str, Any] = {
+        "repo_root": repo_root,
+        "poll_interval_seconds": 0,
+        "max_consecutive_failures": 3,
+        "enforce_work_packet": True,
+        "work_packet_verification_timeout_seconds": 60,
+    }
+    kwargs.update(overrides)
+    return DispatchConfig(**kwargs)
+
+
+def _dispatch_result() -> DispatchResult:
+    return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+
+@pytest.fixture
+def reset_story_bounce():
+    ledger.reset_bounce(STORY_ID)
+    yield
+    ledger.reset_bounce(STORY_ID)
+
+
+# ---------------------------------------------------------------------------
+# Work Packet parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_work_packet_extracts_scope_and_command() -> None:
+    packet = parse_work_packet(
+        _assignment(
+            "python -m pytest tests/test_app.py -q",
+            files_in_scope="`src/app.py`, tests/",
+            files_out_of_bounds="src/api.py, frontend/",
+        )
+    )
+
+    assert packet.files_in_scope == ("src/app.py", "tests/")
+    assert packet.files_out_of_bounds == ("src/api.py", "frontend/")
+    assert packet.verification_commands == ("python -m pytest tests/test_app.py -q",)
+    assert packet.section_text.startswith("## Work Packet\n")
+    assert "- **Expected next route:** auditor" in packet.section_text
+
+
+def test_parse_work_packet_treats_none_as_empty_out_of_bounds() -> None:
+    packet = parse_work_packet(_assignment(files_out_of_bounds="none"))
+
+    assert packet.files_out_of_bounds == ()
+
+
+def test_parse_work_packet_supports_nested_lists_and_multiple_commands() -> None:
+    packet = parse_work_packet(
+        """---
+next_agent: backend
+reason: "Nested packet."
+producer: planner
+---
+
+## Work Packet
+
+- **Objective:** Nested lists.
+- **Files in scope:**
+  - src/app.py
+  - `tests/test_app.py`
+- **Files out of bounds**: none
+- **Context:** none
+- **Verification command:**
+  - `python -m pytest tests -q`
+  - python -m ruff check src
+- **Expected next route:** auditor
+
+## Notes
+
+Not part of the packet.
+"""
+    )
+
+    assert packet.files_in_scope == ("src/app.py", "tests/test_app.py")
+    assert packet.files_out_of_bounds == ()
+    assert packet.verification_commands == (
+        "python -m pytest tests -q",
+        "python -m ruff check src",
+    )
+    assert "## Notes" not in packet.section_text
+
+
+def test_parse_work_packet_ignores_heading_inside_code_fence() -> None:
+    content = """---
+next_agent: backend
+reason: "Fenced example first."
+producer: planner
+---
+
+Template reminder:
+
+```markdown
+## Work Packet
+
+- **Files in scope:** TEMPLATE
+```
+
+## Work Packet
+
+- **Objective:** Real packet.
+- **Files in scope:** src/app.py
+- **Files out of bounds:** none
+- **Context:** none
+- **Verification command:** python -c "pass"
+- **Expected next route:** auditor
+"""
+
+    packet = parse_work_packet(content)
+
+    assert packet.files_in_scope == ("src/app.py",)
+
+
+def test_parse_work_packet_raises_missing_by_name() -> None:
+    with pytest.raises(WorkPacketError) as exc_info:
+        parse_work_packet(_assignment_without_packet())
+
+    assert exc_info.value.prefix == "work_packet_missing"
+    assert str(exc_info.value).startswith("work_packet_missing:")
+
+
+def test_parse_work_packet_raises_unparseable_when_fields_are_unusable() -> None:
+    content = """---
+next_agent: backend
+reason: "Half a packet."
+producer: planner
+---
+
+## Work Packet
+
+- **Objective:** Half a packet.
+- **Files out of bounds:** none
+- **Verification command:** none
+"""
+
+    with pytest.raises(WorkPacketError) as exc_info:
+        parse_work_packet(content)
+
+    assert exc_info.value.prefix == "work_packet_unparseable"
+    assert "missing Files in scope" in exc_info.value.detail
+    assert "empty Verification command" in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    ("path", "entry", "expected"),
+    [
+        ("src/app.py", "src/app.py", True),
+        ("src/app.py", "src/", True),
+        ("src/app.py", "src", True),
+        ("srcx/app.py", "src", False),
+        ("src/app.py", "tests/", False),
+        ("tests/test_app.py", "tests/test_*.py", True),
+        ("tests/helpers/x.py", "tests/test_*.py", False),
+    ],
+)
+def test_path_matches_entry(path: str, entry: str, expected: bool) -> None:
+    assert path_matches_entry(path, entry) is expected
+
+
+# ---------------------------------------------------------------------------
+# verify_work_claim against a real git repository
+# ---------------------------------------------------------------------------
+
+
+def test_verify_work_claim_passes_for_in_scope_commit_at_head(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(head))
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=state
+    )
+
+    assert result.errors == ()
+    assert result.passed
+    assert result.changed_files == ("src/app.py",)
+    assert _outcomes(result) == {
+        "work_packet": "PASS",
+        "scope_sha": "PASS",
+        "diff_scope": "PASS",
+        "worktree": "PASS",
+        "verification": "PASS",
+    }
+    assert result.verification_runs[0].exit_code == 0
+
+
+def test_verify_work_claim_rejects_pre_existing_commit_as_scope_sha(
+    tmp_path: Path,
+) -> None:
+    initial = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(initial), state=state
+    )
+
+    assert result.failed_prefixes == ("scope_sha_not_head",)
+    assert any(error.startswith("scope_sha_not_head:") for error in result.errors)
+    assert _outcomes(result)["scope_sha"] == "FAIL"
+
+
+def test_verify_work_claim_rejects_short_scope_sha_that_is_not_head(
+    tmp_path: Path,
+) -> None:
+    initial = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim(initial[:7]),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("scope_sha_not_head",)
+
+
+def test_verify_work_claim_accepts_short_scope_sha_at_head(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head[:7]), state=state
+    )
+
+    assert result.passed
+
+
+def test_verify_work_claim_rejects_missing_scope_sha(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(None), state=state
+    )
+
+    assert result.failed_prefixes == ("scope_sha_not_head",)
+    assert "omitted scope_sha" in result.errors[0]
+
+
+def test_verify_work_claim_tolerates_handoff_only_commit_above_scope_sha(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    work_sha = _commit_all(tmp_path, "set value")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(work_sha))
+    head = _commit_all(tmp_path, "handoff")
+    assert head != work_sha
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(work_sha), state=state
+    )
+
+    assert result.passed
+    scope_check = next(check for check in result.checks if check.name == "scope_sha")
+    assert "HEAD~1" in scope_check.detail
+    assert result.changed_files == ("docs/handoff/HANDOFF.md", "src/app.py")
+
+
+def test_verify_work_claim_rejects_handoff_plus_source_commit_above_scope_sha(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    work_sha = _commit_all(tmp_path, "set value")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(work_sha))
+    _write(tmp_path / "src" / "app.py", "VALUE = 3\n")
+    _commit_all(tmp_path, "handoff plus more work")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(work_sha), state=state
+    )
+
+    assert result.failed_prefixes == ("scope_sha_not_head",)
+
+
+def test_verify_work_claim_rejects_out_of_bounds_change(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    head = _commit_all(tmp_path, "touch api")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=state
+    )
+
+    assert result.failed_prefixes == ("scope_violation",)
+    assert result.errors == (
+        "scope_violation: changed files listed under Files out of bounds: src/api.py.",
+    )
+
+
+def test_verify_work_claim_rejects_change_outside_files_in_scope(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "other.py", "OTHER = 1\n")
+    head = _commit_all(tmp_path, "add other")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=state
+    )
+
+    assert result.failed_prefixes == ("scope_violation",)
+    assert result.errors == (
+        "scope_violation: changed files outside Files in scope: src/other.py.",
+    )
+
+
+def test_verify_work_claim_allows_handoff_file_in_diff(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, "placeholder\n")
+    head = _commit_all(tmp_path, "work plus handoff")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=state
+    )
+
+    assert result.passed
+    assert result.changed_files == ("docs/handoff/HANDOFF.md", "src/app.py")
+
+
+def test_verify_work_claim_rejects_failing_verification_command(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, _assignment(FAIL_COMMAND))
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(FAIL_COMMAND),
+        claim=_claim(head),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("verification_failed",)
+    assert "exited 3" in result.errors[0]
+    assert len(result.verification_runs) == 1
+    assert result.verification_runs[0].exit_code == 3
+    assert "verification boom" in result.verification_runs[0].output_tail
+
+
+def test_verify_work_claim_times_out_verification_command(tmp_path: Path) -> None:
+    _init_repo(tmp_path, _assignment(SLEEP_COMMAND))
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    started = time.monotonic()
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(SLEEP_COMMAND),
+        claim=_claim(head),
+        state=state,
+        timeout_seconds=1,
+    )
+
+    assert time.monotonic() - started < 20
+    assert result.failed_prefixes == ("verification_failed",)
+    assert "timed out after 1s" in result.errors[0]
+    assert result.verification_runs[0].timed_out is True
+    assert result.verification_runs[0].exit_code is None
+
+
+def test_verify_work_claim_stops_at_first_failing_command(tmp_path: Path) -> None:
+    assignment = _assignment(FAIL_COMMAND).replace(
+        f"- **Verification command:** {FAIL_COMMAND}",
+        f"- **Verification command:**\n  - {FAIL_COMMAND}\n  - {PASS_COMMAND}",
+    )
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+
+    assert result.failed_prefixes == ("verification_failed",)
+    assert len(result.verification_runs) == 1
+
+
+def test_verify_work_claim_rejects_missing_work_packet(tmp_path: Path) -> None:
+    _init_repo(tmp_path, _assignment_without_packet())
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment_without_packet(),
+        claim=_claim(head),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("work_packet_missing",)
+    assert _outcomes(result)["diff_scope"] == "SKIP"
+    assert _outcomes(result)["verification"] == "SKIP"
+    assert result.verification_runs == ()
+    assert bounce_route_for(result, implementer="backend").next_agent == "planner"
+
+
+def test_verify_work_claim_rejects_unparseable_work_packet(tmp_path: Path) -> None:
+    assignment = _assignment(files_in_scope="none")
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+
+    assert result.failed_prefixes == ("work_packet_unparseable",)
+    assert "empty Files in scope" in result.errors[0]
+
+
+def test_verify_work_claim_rejects_new_uncommitted_changes(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "src" / "api.py", "API = 'dirty before dispatch'\n")
+    state = capture_pre_dispatch_state(tmp_path)
+    assert state.dirty_files == ("src/api.py",)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_paths(tmp_path, "set value", "src/app.py")
+    _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    assert 1\n")
+    _write(tmp_path / "src" / "api.py", "API = 'still dirty'\n")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(head))
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=state
+    )
+
+    assert result.failed_prefixes == ("uncommitted_changes",)
+    assert "outside docs/handoff/HANDOFF.md: tests/test_app.py;" in result.errors[0]
+    assert "src/api.py" not in result.errors[0]
+
+
+def test_verify_work_claim_reports_all_failed_checks_in_one_pass(
+    tmp_path: Path,
+) -> None:
+    initial = _init_repo(tmp_path, _assignment(FAIL_COMMAND))
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    _commit_all(tmp_path, "touch api")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(FAIL_COMMAND),
+        claim=_claim(initial),
+        state=state,
+    )
+
+    assert result.failed_prefixes == (
+        "scope_sha_not_head",
+        "scope_violation",
+        "verification_failed",
+    )
+
+
+def test_verify_work_claim_escalates_when_git_state_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    state = PreDispatchState(head_sha=None, dirty_files=())
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim("a" * 40),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("git_state_unavailable",)
+    assert result.verification_runs == ()
+    assert bounce_route_for(result, implementer="backend").next_agent == "user"
+    assert bounce_route_for(result, implementer="backend").status == "escalate_to_user"
+
+
+# ---------------------------------------------------------------------------
+# Bounce handoff
+# ---------------------------------------------------------------------------
+
+
+def test_build_bounce_handoff_routes_back_to_implementer_with_evidence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, _assignment(FAIL_COMMAND))
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    head = _commit_all(tmp_path, "touch api")
+    claim = _claim(head)
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(FAIL_COMMAND),
+        claim=claim,
+        state=state,
+    )
+    bounce_route = bounce_route_for(result, implementer="backend")
+
+    bounce = build_bounce_handoff(
+        claim_content=claim,
+        result=result,
+        implementer="backend",
+        route=bounce_route,
+        bounce_count=1,
+    )
+
+    frontmatter = parse_handoff_frontmatter_text(bounce)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "backend"
+    assert frontmatter.status == "verified_fail"
+    assert frontmatter.producer == "validator"
+    assert frontmatter.bounce_count == 1
+    assert frontmatter.scope_sha == head
+    assert frontmatter.story_id == STORY_ID
+    assert frontmatter.close_type == "story"
+    assert (
+        'reason: "Dispatcher verification failed: scope_violation, '
+        'verification_failed."' in bounce
+    )
+    decision = route(bounce)
+    assert decision.route == "backend"
+    assert decision.confidence == "HIGH"
+
+    body = bounce.split("---\n", 2)[2]
+    assert body.startswith("\n## Dispatcher Verification\n")
+    assert "- **Failed checks:** scope_violation, verification_failed" in body
+    assert f"- **Current HEAD:** `{head}`" in body
+    assert "- **Changed files since dispatch:** `src/api.py`" in body
+    assert "FAIL `diff_scope`" in body
+    assert "FAIL `verification`" in body
+    assert "verification boom" in body
+    assert body.index("## Dispatcher Verification") < body.index("## Work Packet")
+    assert "- **Files out of bounds:** src/api.py" in body
+    assert "## Prior Handback" in body
+    assert "### Verification Evidence" in body
+    assert "\n## Verification Evidence" not in body
+    carried = parse_work_packet(bounce)
+    assert carried.verification_commands == (FAIL_COMMAND,)
+
+
+def test_build_bounce_handoff_routes_missing_packet_to_planner(tmp_path: Path) -> None:
+    _init_repo(tmp_path, _assignment_without_packet())
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    claim = _claim(head)
+    result = _verify(
+        tmp_path,
+        assignment=_assignment_without_packet(),
+        claim=claim,
+        state=state,
+    )
+    bounce_route = bounce_route_for(result, implementer="backend")
+
+    bounce = build_bounce_handoff(
+        claim_content=claim,
+        result=result,
+        implementer="backend",
+        route=bounce_route,
+        bounce_count=1,
+    )
+
+    frontmatter = parse_handoff_frontmatter_text(bounce)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+    assert frontmatter.status == "verified_fail"
+    assert route(bounce).route == "planner"
+    assert "did not carry a usable `## Work Packet`" in bounce
+    assert extract_work_packet_section(bounce) is None
+    assert "## Prior Handback" in bounce
+
+
+# ---------------------------------------------------------------------------
+# Validator: packet required for implementer routes when enforced
+# ---------------------------------------------------------------------------
+
+
+def test_validate_handoff_text_requires_work_packet_only_when_enforced() -> None:
+    content = _assignment_without_packet()
+
+    relaxed = validate_handoff_text(content, "planner")
+    enforced = validate_handoff_text(content, "planner", require_work_packet=True)
+
+    assert not any(error.startswith("work_packet") for error in relaxed.errors)
+    assert any(
+        warning.startswith("work_packet_missing:") for warning in relaxed.warnings
+    )
+    assert enforced.verdict == "NO"
+    assert any(error.startswith("work_packet_missing:") for error in enforced.errors)
+
+
+def test_validate_handoff_text_enforced_accepts_parseable_packet() -> None:
+    result = validate_handoff_text(_assignment(), "planner", require_work_packet=True)
+
+    assert not any(error.startswith("work_packet") for error in result.errors)
+
+
+def test_validate_handoff_text_enforced_requires_packet_on_audit_fail_route() -> None:
+    content = """---
+next_agent: backend
+reason: "Defect found; fix the value."
+story_id: EPIC-1-S1
+status: verified_fail
+scope_sha: 0123456789abcdef0123456789abcdef01234567
+producer: auditor
+---
+
+# Audit Report
+
+**Agent:** auditor
+
+## Verification Evidence
+
+- **Commands run:** `python -m pytest -q`
+- **Output summary:** exit 1
+- **Commit SHA verified:** 0123456789abcdef0123456789abcdef01234567
+- **Files changed or reviewed:** src/app.py
+- **Unresolved concerns:** none
+"""
+
+    result = validate_handoff_text(content, "auditor (audit)", require_work_packet=True)
+
+    assert any(error.startswith("work_packet_missing:") for error in result.errors)
+
+
+def test_validate_handoff_text_enforced_ignores_packet_on_non_implementer_status() -> (
+    None
+):
+    content = """---
+next_agent: backend
+reason: "Story approved; backend owns the next story."
+story_id: EPIC-1-S1
+status: verified_pass
+scope_sha: 0123456789abcdef0123456789abcdef01234567
+close_type: story
+producer: auditor
+---
+
+# Audit Report
+
+**Agent:** auditor
+
+## Verification Evidence
+
+- **Commands run:** `python -m pytest -q`
+- **Output summary:** exit 0
+- **Commit SHA verified:** 0123456789abcdef0123456789abcdef01234567
+- **Files changed or reviewed:** src/app.py
+- **Unresolved concerns:** none
+"""
+
+    result = validate_handoff_text(content, "auditor (audit)", require_work_packet=True)
+
+    assert not any(error.startswith("work_packet") for error in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_config_work_claim_gate_is_off_by_default(tmp_path: Path) -> None:
+    config = DispatchConfig(repo_root=tmp_path)
+
+    assert config.enforce_work_packet is False
+    assert config.work_packet_verification_timeout_seconds == 600
+
+
+def test_load_dispatch_config_reads_work_claim_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "enforce_work_packet: true\nwork_packet_verification_timeout_seconds: 30\n",
+        encoding="utf-8",
+    )
+
+    config = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert config.enforce_work_packet is True
+    assert config.work_packet_verification_timeout_seconds == 30
+
+
+def test_dispatch_config_rejects_non_positive_verification_timeout(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="work_packet_verification_timeout_seconds"):
+        DispatchConfig(repo_root=tmp_path, work_packet_verification_timeout_seconds=0)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        REPO_ROOT / "dispatch_config.example.yaml",
+        REPO_ROOT / "examples" / "reference-workflow" / "dispatch_config.yaml",
+    ],
+)
+def test_shipped_configs_document_gate_off(config_path: Path) -> None:
+    content = config_path.read_text(encoding="utf-8")
+    config = load_dispatch_config(repo_root=config_path.parent, config_path=config_path)
+
+    assert "enforce_work_packet: false" in content
+    assert config.enforce_work_packet is False
+
+
+def test_docs_describe_work_claim_gate() -> None:
+    configuration = (REPO_ROOT / "CONFIGURATION.md").read_text(encoding="utf-8")
+    architecture = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+
+    assert "enforce_work_packet" in configuration
+    assert "work_packet_verification_timeout_seconds" in configuration
+    assert "## Work-Claim Gate" in architecture
+    assert "llm_handoff.work_claim" in architecture
+    for prefix in (
+        "scope_sha_not_head",
+        "scope_violation",
+        "verification_failed",
+        "uncommitted_changes",
+        "work_packet_missing",
+    ):
+        assert prefix in architecture
+    assert "agent-written" in architecture
+    assert "enforce_work_packet" in security
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator integration
+# ---------------------------------------------------------------------------
+
+
+def _load_orchestrator():
+    return importlib.import_module("llm_handoff.orchestrator")
+
+
+def _collecting_log(messages: list[tuple[str, str]]):
+    return lambda level, message: messages.append((level, message))
+
+
+def test_run_loop_bounces_failed_work_claim_instead_of_dispatching_auditor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path)
+    handoff_path = config.handoff_full_path
+    dispatches: list[str] = []
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        _write(tmp_path / "src" / "api.py", "API = 2\n")
+        head = _commit_all(tmp_path, "touch api")
+        path.write_text(_claim(head), encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_support(
+        subagent_name: str, prompt: str, **_kwargs: object
+    ) -> SubagentResult:
+        dispatches.append(subagent_name)
+        raise AssertionError("auditor must not be dispatched for a failed claim")
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    assert dispatches == ["backend"]
+    bounced = parse_handoff_frontmatter_text(handoff_path.read_text(encoding="utf-8"))
+    assert bounced is not None
+    assert bounced.next_agent == "backend"
+    assert bounced.status == "verified_fail"
+    assert bounced.producer == "validator"
+    assert bounced.bounce_count == 1
+    assert ledger.bounce_count(STORY_ID) == 1
+    assert "## Dispatcher Verification" in handoff_path.read_text(encoding="utf-8")
+    assert any(
+        level == "ERROR" and message.startswith("scope_violation:")
+        for level, message in messages
+    )
+    assert any(
+        message.startswith("Work-claim gate FAILED for backend")
+        for _level, message in messages
+    )
+    assert ("INFO", f"Bounce count for story_id={STORY_ID} is now 1.") in messages
+
+
+def test_run_loop_passes_work_claim_and_dispatches_auditor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path)
+    dispatches: list[str] = []
+    messages: list[tuple[str, str]] = []
+    real_validate = orchestrator.validate_handoff
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        head = _commit_all(tmp_path, "set value")
+        path.write_text(_claim(head), encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_support(
+        subagent_name: str, prompt: str, **_kwargs: object
+    ) -> SubagentResult:
+        dispatches.append(subagent_name)
+        config.handoff_full_path.write_text(
+            """---
+next_agent: planner
+reason: "Audit approved; scope next story."
+producer: auditor
+---
+
+# Audit Report
+
+**Agent:** auditor
+
+Audit complete with verification.
+""",
+            encoding="utf-8",
+        )
+        return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def validate(path: Path, previous_agent: str, **kwargs: object) -> ValidationResult:
+        if previous_agent == "backend":
+            return real_validate(path, previous_agent, **kwargs)
+        return ValidationResult(
+            verdict="YES",
+            warnings=[],
+            errors=[],
+            routing_instruction="planner",
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=2, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    assert dispatches == ["backend", "auditor"]
+    assert ledger.bounce_count(STORY_ID) == 0
+    assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+    assert any(
+        message.startswith("work-claim: verification command") and "exited 0" in message
+        for _level, message in messages
+    )
+    assert any("Work-claim gate:    ON" in message for _level, message in messages)
+
+
+def test_run_loop_leaves_claims_alone_when_gate_is_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, enforce_work_packet=False)
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "api.py", "API = 2\n")
+        head = _commit_all(tmp_path, "touch api")
+        path.write_text(_claim(head), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    unchanged = parse_handoff_frontmatter_text(
+        config.handoff_full_path.read_text(encoding="utf-8")
+    )
+    assert unchanged is not None
+    assert unchanged.next_agent == "auditor"
+    assert unchanged.status == "ready_for_review"
+    assert ledger.bounce_count(STORY_ID) == 0
+    assert not any("work-claim" in message.lower() for _level, message in messages[8:])
+    assert any("Work-claim gate:    OFF" in message for _level, message in messages)
+
+
+def test_run_loop_bounces_missing_work_packet_to_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path, _assignment_without_packet())
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path)
+    dispatches: list[str] = []
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        head = _commit_all(tmp_path, "set value")
+        path.write_text(_claim(head), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    assert dispatches == ["backend"]
+    bounced = parse_handoff_frontmatter_text(
+        config.handoff_full_path.read_text(encoding="utf-8")
+    )
+    assert bounced is not None
+    assert bounced.next_agent == "planner"
+    assert bounced.status == "verified_fail"
+    assert bounced.producer == "validator"
+    assert any(
+        level == "ERROR" and message.startswith("work_packet_missing:")
+        for level, message in messages
+    )
+
+
+def test_run_loop_gate_bounces_feed_the_three_fix_circuit_breaker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    ledger.increment_bounce(STORY_ID)
+    ledger.increment_bounce(STORY_ID)
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path)
+    dispatches: list[str] = []
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        _write(tmp_path / "src" / "api.py", "API = 2\n")
+        head = _commit_all(tmp_path, "touch api")
+        path.write_text(_claim(head), encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_planner(path: Path, **kwargs: object) -> DispatchResult:
+        dispatches.append("planner")
+        assert "three-fix" in str(kwargs.get("additional_instruction", "")).lower() or (
+            "bounced" in str(kwargs.get("additional_instruction", ""))
+        )
+        path.write_text(
+            """---
+next_agent: user
+reason: "Human review required."
+producer: planner
+---
+
+## user
+
+Re-scoping needed.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=2, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    assert dispatches == ["backend", "planner"]
+    assert ledger.bounce_count(STORY_ID) == 3
+    assert any("THREE_FIX_CIRCUIT_BREAKER" in message for _level, message in messages)

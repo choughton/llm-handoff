@@ -100,6 +100,51 @@ When `planner_api_key_env` is `false`, planner launches strip
 When `planner_api_key_env` is `true`, `GEMINI_API_KEY` is preserved, but
 `GOOGLE_API_KEY` is still stripped.
 
+## Work-Claim Gate
+
+Off by default:
+
+```yaml
+enforce_work_packet: false
+work_packet_verification_timeout_seconds: 600
+```
+
+When `enforce_work_packet` is `true`, the dispatcher verifies every
+`status: ready_for_review` handoff from `backend` or `frontend` before it
+dispatches the auditor. The checks are deterministic and run against the
+`## Work Packet` the implementer received:
+
+| Check | Error prefix | Passes when |
+| --- | --- | --- |
+| Work Packet | `work_packet_missing`, `work_packet_unparseable` | the assignment carries `Files in scope`, `Files out of bounds`, and `Verification command` |
+| `scope_sha` | `scope_sha_not_head` | `scope_sha` resolves to the current HEAD; commits above it that touch only the handoff file are tolerated |
+| Diff scope | `scope_violation` | every file changed since dispatch is inside `Files in scope` or is the handoff file, and none is under `Files out of bounds` |
+| Working tree | `uncommitted_changes` | no new uncommitted changes exist outside the handoff file |
+| Verification | `verification_failed` | the `Verification command` exits 0 within the timeout |
+
+On failure the dispatcher does not dispatch the auditor. It rewrites
+`HANDOFF.md` with `status: verified_fail`, `producer: validator`, a quoted
+`reason` naming the failed checks, and a `## Dispatcher Verification` section
+with the evidence, then routes back to the implementer. The bounce increments
+the story's bounce count, so the three-fix circuit breaker still applies. A
+missing or unusable Work Packet routes the bounce to `planner` instead, because
+the packet is the planner's artifact. Every bounce carries the original
+`## Work Packet` forward verbatim.
+
+With the gate enabled, post-dispatch validation also rejects any handoff that
+routes work to an implementer without a parseable Work Packet;
+`work_packet_missing` and `work_packet_unparseable` become errors instead of
+warnings, so the problem surfaces before an implementer session is spent.
+
+The verification command is agent-written text. The dispatcher runs it through
+the shell in `repo_root` with its own permissions. The implementer that wrote
+the claim already ran in the same repository with provider permissions
+disabled, so this adds no new exposure, but review the planner's Work Packet
+the way you review any agent-written instruction. The command is bounded by
+`work_packet_verification_timeout_seconds`; its process tree is killed on
+timeout, and the command, exit code, and a bounded output tail are written to
+the dispatch log.
+
 ## Supervised Dispatch
 
 The optional supervisor wrapper is configured through command-line options, not

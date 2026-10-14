@@ -20,6 +20,7 @@ from llm_handoff.roles import (
     normalize_next_agent_value,
 )
 from llm_handoff.text_io import read_dispatch_text
+from llm_handoff.work_claim import work_packet_errors
 
 
 ValidationVerdict = Literal["YES", "NO", "WARNINGS-ONLY"]
@@ -47,6 +48,7 @@ _SUBSTANCE_RE = re.compile(
     r"(?im)\b(completed work|verification|validation|results|test suites?|execution sha|implementation sha|(?:4-check\s+)?audit gate|audit verdict|checks:)\b"
 )
 _ALLOWED_CLOSE_TYPES = {"story", "epic"}
+_IMPLEMENTER_ROUTES = {"backend", "frontend"}
 _REQUIRED_EVIDENCE_FIELDS = {
     "Commands run",
     "Output summary",
@@ -214,6 +216,7 @@ def validate_handoff(
     previous_agent: str,
     *,
     prior_handoff_sha: str | None = None,
+    require_work_packet: bool = False,
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
     return validate_handoff_text(
@@ -221,6 +224,7 @@ def validate_handoff(
         previous_agent,
         prior_handoff_sha=prior_handoff_sha,
         git_cwd=handoff_path.parent,
+        require_work_packet=require_work_packet,
     )
 
 
@@ -230,6 +234,7 @@ def validate_handoff_text(
     *,
     prior_handoff_sha: str | None = None,
     git_cwd: Path | None = None,
+    require_work_packet: bool = False,
 ) -> ValidationResult:
     normalized_content = handoff_content.lstrip("\ufeff")
     current_handoff_sha = sha256(normalized_content.encode("utf-8")).hexdigest()
@@ -320,13 +325,23 @@ def validate_handoff_text(
         )
     )
     errors.extend(_evidence_contract_errors(normalized_content, frontmatter))
-    warnings.extend(
-        _work_packet_contract_warnings(
-            normalized_content,
-            previous_route=previous_route,
-            routing_instruction=routing_instruction,
+    if require_work_packet:
+        errors.extend(
+            _work_packet_contract_errors(
+                normalized_content,
+                frontmatter=frontmatter,
+                previous_route=previous_route,
+                routing_instruction=routing_instruction,
+            )
         )
-    )
+    else:
+        warnings.extend(
+            _work_packet_contract_warnings(
+                normalized_content,
+                previous_route=previous_route,
+                routing_instruction=routing_instruction,
+            )
+        )
     warnings.extend(
         _rationalization_warnings(
             normalized_content,
@@ -452,6 +467,32 @@ def _work_packet_contract_warnings(
         return []
     return [
         "work_packet_missing: planner handoffs to backend or frontend require a ## Work Packet section."
+    ]
+
+
+def _work_packet_contract_errors(
+    handoff_content: str,
+    *,
+    frontmatter: HandoffRouting | None,
+    previous_route: str | None,
+    routing_instruction: str | None,
+) -> list[str]:
+    # With enforce_work_packet enabled, every handoff that sends work to an
+    # implementer must carry a packet the work-claim gate can enforce later.
+    # Implementer-to-implementer routes are already rejected as self-loops.
+    # Only a plain assignment or a verified_fail actually dispatches the
+    # implementer; every other status routes elsewhere regardless of next_agent.
+    if routing_instruction not in _IMPLEMENTER_ROUTES:
+        return []
+    if previous_route is None or previous_route in _IMPLEMENTER_ROUTES:
+        return []
+    if frontmatter is not None and frontmatter.status:
+        if _frontmatter_status(frontmatter) != HandoffStatus.VERIFIED_FAIL:
+            return []
+    return [
+        f"{error} Handoffs routed to {routing_instruction} must carry a parseable "
+        "## Work Packet while enforce_work_packet is enabled."
+        for error in work_packet_errors(handoff_content)
     ]
 
 

@@ -31,6 +31,7 @@ SUBAGENT_TIMEOUT_MS = 900_000
 
 POLL_INTERVAL_SECONDS = 30
 MAX_CONSECUTIVE_FAILURES = 3
+WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS = 600
 
 GEMINI_MAX_RETRIES = 3
 GEMINI_RETRY_BASE_SECONDS = 60
@@ -226,6 +227,10 @@ class DispatchConfig(BaseModel):
     planner_resume: bool = GEMINI_RESUME_DEFAULT
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
+    enforce_work_packet: bool = False
+    work_packet_verification_timeout_seconds: int = (
+        WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS
+    )
 
     @field_validator("repo_root", mode="after")
     @classmethod
@@ -269,6 +274,15 @@ class DispatchConfig(BaseModel):
     def _validate_max_consecutive_failures(cls, value: int) -> int:
         if value < 1:
             raise ValueError("max_consecutive_failures must be at least 1.")
+        return value
+
+    @field_validator("work_packet_verification_timeout_seconds", mode="after")
+    @classmethod
+    def _validate_work_packet_verification_timeout(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError(
+                "work_packet_verification_timeout_seconds must be at least 1."
+            )
         return value
 
     @property

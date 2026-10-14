@@ -11,6 +11,14 @@ backend_resume: true
 planner_resume: true
 planner_api_key_env: false
 
+# Opt-in deterministic work-claim gate. When true, a ready_for_review handoff
+# from backend or frontend is checked against the planner's Work Packet
+# (scope_sha at HEAD, diff inside Files in scope, Verification command exits 0)
+# before the auditor is dispatched. The Verification command is agent-written
+# text executed in repo_root; see CONFIGURATION.md.
+enforce_work_packet: false
+work_packet_verification_timeout_seconds: 600
+
 agents:
   planner:
     provider: gemini

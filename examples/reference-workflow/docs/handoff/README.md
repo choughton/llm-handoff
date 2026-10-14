@@ -96,6 +96,15 @@ block with these six fields:
 
 Do not omit `Files out of bounds`, even when the value is `none`.
 
+Keep the paths concrete and the command runnable from the repository root.
+When the dispatcher runs with `enforce_work_packet: true`, it parses exactly
+these fields, diffs the implementer's commits against `Files in scope` and
+`Files out of bounds`, and runs `Verification command` itself before the
+auditor is dispatched. Every handoff that routes work to `backend` or
+`frontend` must then carry a parseable Work Packet, including `verified_fail`
+audit results, so implementer handbacks should preserve the section verbatim
+and auditors should carry it forward.
+
 ## Rules
 
 - Use canonical role values in `next_agent`; provider names are adapter examples only.

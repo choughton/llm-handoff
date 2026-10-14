@@ -27,6 +27,11 @@ After the first tagged release, supported versions will be listed here.
 - Keep `auto_push` disabled unless you explicitly want the dispatcher to publish
   commits.
 - Treat generated handoff instructions as untrusted until validated.
+- `enforce_work_packet` makes the dispatcher itself run the planner's Work
+  Packet `Verification command` through the shell in the target repository.
+  The agents already run there with provider permissions disabled, so this
+  adds no new exposure, but it is still execution of agent-written text. Leave
+  it off for repositories whose handoff files you have not reviewed.
 - If `.dispatch.lock` exists, confirm no other dispatcher is active before
   removing it manually.
 

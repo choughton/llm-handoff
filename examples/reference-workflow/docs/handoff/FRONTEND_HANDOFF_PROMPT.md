@@ -78,5 +78,7 @@ Rules:
 - Quote every `reason`.
 - Run `git rev-parse HEAD`; do not write `scope_sha: HEAD`, a branch name, or a placeholder.
 - Include changed files, verification results, screenshots if relevant, and the exact next step.
+- Preserve the assignment's `## Work Packet` section in the handback; the
+  auditor and the dispatcher's work-claim gate read it.
 - Do not use stale commands or results from a previous session as evidence.
 - If blocked, set `status: blocked_missing_context` or `status: blocked_implementation_failure`, route to `planner`, `validator`, or `user`, and explain the blocker.
