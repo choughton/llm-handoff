@@ -144,7 +144,7 @@ def test_supervisor_optional_repair_role_restarts_after_scoped_commit(
     dispatch_results = [
         supervisor.DispatchProcessResult(
             exit_code=1,
-            output_lines=("[ERROR] Post-dispatch validation failed",),
+            output_lines=("[AGENT] Post-dispatch gate FAILED for backend.",),
             elapsed_seconds=0.1,
         ),
         supervisor.DispatchProcessResult(
@@ -363,3 +363,101 @@ def test_dispatch_supervised_wrappers_use_source_python_entrypoint() -> None:
 
     assert "-m llm_handoff.supervisor @args" in ps1_text
     assert "-m llm_handoff.supervisor %*" in cmd_text
+
+
+def test_repairable_markers_match_real_orchestrator_log_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # Build the marker corpus from the orchestrator's own log lines rather
+    # than from hand-typed strings so the supervisor cannot drift away from
+    # what the dispatcher actually emits.
+    supervisor = _load_supervisor_module()
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+    from llm_handoff.agent_types import DispatchResult
+    from llm_handoff.config import DispatchConfig
+    from llm_handoff.validator import ValidationResult
+
+    repo_root = _write_repo(tmp_path)
+    config = DispatchConfig(
+        repo_root=repo_root,
+        poll_interval_seconds=0,
+        max_consecutive_failures=1,
+    )
+    lines: list[str] = []
+
+    def log(level: str, message: str) -> None:
+        lines.append(f"[{level}] {message}")
+
+    failed_validation = ValidationResult(
+        verdict="NO",
+        warnings=[],
+        errors=[
+            "scope_claim_missing: Handoff is missing an **Agent:** ownership line."
+        ],
+        routing_instruction="auditor",
+    )
+
+    # Post-dispatch gate failure and the validation verdict line.
+    orchestrator._log_validation(failed_validation, "backend", log)
+
+    # Producer repair ran but violated a post-check (HEAD did not change).
+    monkeypatch.setattr(orchestrator, "_git_head", lambda _repo_root: "a" * 40)
+    monkeypatch.setattr(orchestrator, "_git_dirty_files", lambda _repo_root: ())
+    monkeypatch.setattr(
+        orchestrator,
+        "_dispatch_handoff_hygiene_repair",
+        lambda **_kwargs: DispatchResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.0
+        ),
+    )
+    orchestrator._attempt_post_dispatch_handoff_hygiene_repair(
+        config=config,
+        validation_result=failed_validation,
+        previous_agent="backend",
+        log=log,
+    )
+
+    # No repair lane exists for the producer.
+    monkeypatch.setattr(
+        orchestrator,
+        "_dispatch_handoff_hygiene_repair",
+        lambda **_kwargs: None,
+    )
+    orchestrator._attempt_post_dispatch_handoff_hygiene_repair(
+        config=config,
+        validation_result=failed_validation,
+        previous_agent="frontend",
+        log=log,
+    )
+
+    # Consecutive failure budget exhausted.
+    orchestrator._record_failure(config, config.max_consecutive_failures, log)
+
+    for marker in supervisor._REPAIRABLE_ZERO_EXIT_MARKERS:
+        matching = tuple(line for line in lines if marker in line)
+        assert matching, f"marker {marker!r} never appears in orchestrator output"
+        assert supervisor._is_repairable_dispatch_failure(
+            supervisor.DispatchProcessResult(
+                exit_code=0,
+                output_lines=matching,
+                elapsed_seconds=0.1,
+            )
+        )
+
+    # A clean cycle must not trip the zero-exit repair path.
+    lines.clear()
+    orchestrator._log_validation(
+        ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="auditor"
+        ),
+        "backend",
+        log,
+    )
+    assert not supervisor._is_repairable_dispatch_failure(
+        supervisor.DispatchProcessResult(
+            exit_code=0,
+            output_lines=tuple(lines),
+            elapsed_seconds=0.1,
+        )
+    )

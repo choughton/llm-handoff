@@ -52,9 +52,12 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _TIMESTAMP_RE = re.compile(r"^\[[0-9T:\-]+\]\s+")
 _CYCLE_RE = re.compile(r"---\s+Cycle\s+([0-9]+)\s+---")
 _ROUTE_RE = re.compile(r"Routing instruction:\s*(.+?)\s*$")
+# Each marker must be a substring of a line the orchestrator really logs;
+# tests/test_supervisor.py builds these messages from the orchestrator's own
+# log output so the two cannot drift apart again.
 _REPAIRABLE_ZERO_EXIT_MARKERS = (
-    "Post-dispatch validation failed",
-    "Pre-dispatch validation verdict: NO",
+    "Post-dispatch gate FAILED",
+    "Handoff validation verdict: NO",
     "Producer repair failed",
     "No supported producer repair path",
     "Hit maximum consecutive failures",
