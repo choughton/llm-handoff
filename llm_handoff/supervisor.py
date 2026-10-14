@@ -647,6 +647,7 @@ def _run_repair_role(
         handoff_path=dispatch_config.handoff_full_path,
         agent_config=agent_config,
         log=log,
+        repo_root=dispatch_config.repo_root,
     )
 
 

@@ -150,6 +150,7 @@ def run_epic_close(
             "role": "finalizer",
             "handoff_path": config.handoff_full_path,
             "agent_config": config.agents["finalizer"],
+            "repo_root": config.repo_root,
         }
     subagent_result = invoke_support_role(
         "ledger-updater",

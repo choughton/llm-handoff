@@ -266,6 +266,7 @@ def run_loop(
             handoff_content,
             config.normalizer,
             log_fn,
+            repo_root=config.repo_root,
         )
 
         project_state_content = _read_optional_text(config.project_state_full_path)
@@ -526,6 +527,7 @@ def run_loop(
                     post_dispatch_handoff_content,
                     config.normalizer,
                     log_fn,
+                    repo_root=config.repo_root,
                 )
             _log_dispatch_completion(
                 handoff_path=config.handoff_full_path,
@@ -756,6 +758,7 @@ def _dispatch_route(
             use_resume=config.backend_resume_enabled,
             additional_instruction=additional_instruction,
             agent_config=config.agents["backend"],
+            repo_root=config.repo_root,
         ), "backend"
 
     if route == "planner":
@@ -772,6 +775,7 @@ def _dispatch_route(
                 current_handoff_sha=current_handoff_sha,
                 log=log,
                 agent_config=config.agents["planner"],
+                repo_root=config.repo_root,
             ),
             "planner",
         )
@@ -791,6 +795,7 @@ def _dispatch_route(
                 additional_instruction=additional_instruction,
                 log=log,
                 agent_config=config.agents["frontend"],
+                repo_root=config.repo_root,
             ),
             "frontend",
         )
@@ -805,6 +810,7 @@ def _dispatch_route(
                 handoff_path=handoff_path,
                 agent_config=config.agents["auditor"],
                 log=log,
+                repo_root=config.repo_root,
             )
         ), "auditor (audit)"
 
@@ -818,6 +824,7 @@ def _dispatch_route(
                 handoff_path=handoff_path,
                 agent_config=config.agents["validator"],
                 log=log,
+                repo_root=config.repo_root,
             )
         ), "validator"
 
@@ -1027,6 +1034,7 @@ def _dispatch_handoff_hygiene_repair(
                 handoff_path=config.handoff_full_path,
                 agent_config=config.agents["auditor"],
                 log=log,
+                repo_root=config.repo_root,
             )
         )
     if previous_agent == "backend":
@@ -1037,6 +1045,7 @@ def _dispatch_handoff_hygiene_repair(
             use_resume=config.backend_resume_enabled,
             additional_instruction=repair_prompt,
             agent_config=config.agents["backend"],
+            repo_root=config.repo_root,
         )
     if previous_agent == "frontend":
         if config.use_manual_frontend:
@@ -1049,6 +1058,7 @@ def _dispatch_handoff_hygiene_repair(
             additional_instruction=repair_prompt,
             log=log,
             agent_config=config.agents["frontend"],
+            repo_root=config.repo_root,
         )
     return None
 
@@ -1295,6 +1305,7 @@ def _run_validator(
         handoff_path=config.handoff_full_path,
         agent_config=config.agents["validator"],
         log=log,
+        repo_root=config.repo_root,
     )
     _log(log, "AGENT", f"{label} exited with code {result.exit_code}")
 
@@ -1896,6 +1907,8 @@ def _normalize_handoff_next_agent_file(
     handoff_content: str,
     normalizer_config: NormalizerConfig,
     log: LogFn,
+    *,
+    repo_root: Path | None = None,
 ) -> str:
     try:
         original_next_agent = _handoff_next_agent_value(handoff_content)
@@ -1912,6 +1925,7 @@ def _normalize_handoff_next_agent_file(
                 provider=normalizer_config.provider,
                 model=normalizer_config.model,
                 timeout_ms=normalizer_config.timeout_ms,
+                repo_root=repo_root,
             ),
         )
     except Exception as exc:

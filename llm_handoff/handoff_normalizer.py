@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from typing import Callable, Protocol
 
@@ -31,6 +32,7 @@ class NormalizerAdapter(Protocol):
         api_key: str | None = None,
         client: object | None = None,
         max_retries: int = 2,
+        repo_root: Path | None = None,
     ) -> str: ...
 
 
@@ -67,8 +69,13 @@ def normalize_next_agent(
     api_key: str | None = None,
     client: object | None = None,
     max_retries: int = 2,
+    repo_root: Path | None = None,
 ) -> str:
-    """Return a canonical next_agent enum value, or 'unknown' if no match."""
+    """Return a canonical next_agent enum value, or 'unknown' if no match.
+
+    ``repo_root`` is the target repository; CLI-backed adapters launch there
+    instead of in the dispatcher's process cwd.
+    """
 
     raw_value = freeform.strip()
     if not raw_value:
@@ -87,6 +94,7 @@ def normalize_next_agent(
         api_key=api_key,
         client=client,
         max_retries=max_retries,
+        repo_root=repo_root,
     )
 
 

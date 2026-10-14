@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from llm_handoff.normalizer_models import NormalizedNextAgent, normalizer_prompt
 
@@ -13,8 +14,10 @@ def normalize_next_agent_with_gemini(
     api_key: str | None = None,
     client: object | None = None,
     max_retries: int = 2,
+    repo_root: Path | None = None,
 ) -> str:
-    del max_retries
+    # API-only adapter: repo_root is accepted for adapter parity only.
+    del max_retries, repo_root
     resolved_client = client or _build_gemini_api_client(
         api_key=api_key,
         timeout_ms=timeout_ms,

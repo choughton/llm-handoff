@@ -21,6 +21,7 @@ def normalize_next_agent_with_claude(
     api_key: str | None = None,
     client: object | None = None,
     max_retries: int = 2,
+    repo_root: Path | None = None,
 ) -> str:
     if client is not None:
         return _normalize_next_agent_with_instructor(
@@ -48,6 +49,7 @@ def normalize_next_agent_with_claude(
         raw_value,
         model=model,
         timeout_ms=timeout_ms,
+        repo_root=repo_root,
     )
 
 
@@ -80,7 +82,11 @@ def _normalize_next_agent_with_claude_cli(
     *,
     model: str,
     timeout_ms: int,
+    repo_root: Path | None = None,
 ) -> str:
+    # Launch the CLI inside the target repo so project-level Claude settings
+    # come from the repo being dispatched, not the dispatcher's own checkout.
+    cwd = str(repo_root) if repo_root is not None else os.getcwd()
     command = [
         _resolve_command_binary(config.CLAUDE_BINARY),
         config.CLAUDE_PERMISSIONS_FLAG,
@@ -97,7 +103,7 @@ def _normalize_next_agent_with_claude_cli(
     try:
         completed = subprocess.run(
             command,
-            cwd=os.getcwd(),
+            cwd=cwd,
             env=_claude_cli_oauth_env(),
             capture_output=True,
             text=True,

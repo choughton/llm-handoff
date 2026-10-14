@@ -112,6 +112,7 @@ def test_run_epic_close_passes_configured_finalizer_agent(
         role="finalizer",
         handoff_path=dispatch_config.handoff_full_path,
         agent_config=dispatch_config.agents["finalizer"],
+        repo_root=dispatch_config.repo_root,
     )
 
 
