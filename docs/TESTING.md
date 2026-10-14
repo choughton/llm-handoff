@@ -10,11 +10,15 @@ The current repository is a pre-release scaffold. The full dispatcher test
 suite now runs as one public gate, including the ported migration coverage and
 the focused public-default tests.
 
-Current full-suite result:
+Current full-suite result on Windows:
 
 ```text
-332 passed
+436 passed
 ```
+
+One test, `test_timed_out_cmd_shim_child_is_killed_with_its_tree` in
+`tests/test_process_tree.py`, launches a real Windows `.cmd` shim process tree
+and is skipped on other platforms, where the result is `435 passed, 1 skipped`.
 
 The `tests/ported/` directory is still named as migration history, but it is
 part of the release gate. Individual tests can be moved or renamed later as the
