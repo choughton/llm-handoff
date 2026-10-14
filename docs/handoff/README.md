@@ -80,7 +80,7 @@ assumptions, and stale command output do not satisfy the contract.
 
 ## Work Packet
 
-Planner handoffs to `backend` or `frontend` should include a `## Work Packet`
+Planner handoffs to `backend` or `frontend` must include a `## Work Packet`
 block with these six fields:
 
 ```markdown
@@ -95,6 +95,17 @@ block with these six fields:
 ```
 
 Do not omit `Files out of bounds`, even when the value is `none`.
+
+The validator enforces this contract on every planner handoff that is not
+routed to `user`:
+
+- a planner handoff with no `## Work Packet` section fails with
+  `scope_claim_mismatch`;
+- a missing or empty Work Packet field is reported as
+  `acceptance_coverage_unclear`;
+- the pre-extraction `## Task Assignment` block with `Objective` and
+  `Acceptance Criteria` headings is still accepted as a legacy alias, but it
+  emits a `task_assignment_deprecated` warning.
 
 ## Rules
 

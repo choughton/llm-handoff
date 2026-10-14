@@ -4052,3 +4052,75 @@ def test_dispatch_ps1_wraps_repo_venv_python() -> None:
         "\n"
         "exit $exitCode"
     )
+
+
+def test_run_loop_accepts_shipped_planner_work_packet_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: planner
+reason: Scope the next backend story.
+producer: user
+---
+
+## Handoff
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+
+    def fake_planner(path: Path, **kwargs: object) -> DispatchResult:
+        del kwargs
+        # Exactly the body shape shipped in .gemini/agents/planner.md.
+        path.write_text(
+            """---
+next_agent: backend
+reason: "Dispatch EXAMPLE-EPIC-S1: reject empty widget names."
+epic_id: EXAMPLE-EPIC
+story_id: EXAMPLE-EPIC-S1
+story_title: Reject empty widget names
+producer: planner
+---
+
+# Handoff: Reject empty widget names
+
+## Work Packet
+
+- **Objective:** Reject empty `name` values in `create_widget`.
+- **Files in scope:** src/foo/bar.py, tests/test_bar.py
+- **Files out of bounds:** src/foo/api.py, frontend/
+- **Context:** Preserve the existing `WidgetError` contract.
+- **Verification command:** python -m pytest tests/test_bar.py -q
+- **Expected next route:** auditor
+
+## Next Step
+- **backend:** Implement the validation and route to auditor.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("AGENT", "Handoff validation verdict: WARNINGS-ONLY") in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch gate PASSED WITH WARNINGS for planner.",
+    ) in log_messages
+    assert all(
+        "scope_claim_mismatch" not in message for _level, message in log_messages
+    )
+    assert all(
+        "producer repair" not in message.lower() for _level, message in log_messages
+    )
