@@ -4124,3 +4124,105 @@ producer: planner
     assert all(
         "producer repair" not in message.lower() for _level, message in log_messages
     )
+
+
+def test_circuit_breaker_survives_dispatcher_restart(
+    tmp_path: Path,
+) -> None:
+    story_id = "restart-story"
+    ledger.reset_bounce(story_id)
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        f"""---
+next_agent: backend
+reason: "Audit found a defect; fix it."
+story_id: {story_id}
+status: verified_fail
+scope_sha: 877f54d
+close_type: story
+producer: auditor
+---
+
+# Audit Report
+
+**Agent:** auditor
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    state_path = repo_root / "logs" / "dispatch" / "bounce-counts.json"
+    first_run_messages: list[tuple[str, str]] = []
+
+    # Three audited failures in the first dispatcher process.
+    for _ in range(3):
+        orchestrator._record_post_dispatch_status_transition(
+            config=config,
+            log=lambda level, message: first_run_messages.append((level, message)),
+        )
+
+    assert ("INFO", f"Bounce count for story_id={story_id} is now 3.") in (
+        first_run_messages
+    )
+    assert state_path.exists()
+
+    # Simulate a restart (for example the supervisor relaunching after a
+    # repair): the in-memory table starts empty, the file does not.
+    ledger._BOUNCE_COUNTS.pop(story_id, None)
+    assert ledger.bounce_count(story_id) == 0
+    second_run_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: second_run_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert (
+        "INFO",
+        f"Restored bounce counts from {state_path.resolve()}: {story_id}=3",
+    ) in second_run_messages
+    assert any(
+        "THREE_FIX_CIRCUIT_BREAKER" in message for _, message in second_run_messages
+    )
+    assert ("INFO", "Routing instruction: planner") in second_run_messages
+    ledger.reset_bounce(story_id)
+
+
+def test_status_transition_warns_when_bounce_state_cannot_be_written(
+    tmp_path: Path,
+) -> None:
+    story_id = "unwritable-bounce-story"
+    ledger.reset_bounce(story_id)
+    repo_root, _handoff_path = _write_repo(
+        tmp_path,
+        f"""---
+next_agent: backend
+reason: "Audit found a defect; fix it."
+story_id: {story_id}
+status: verified_fail
+scope_sha: 877f54d
+close_type: story
+producer: auditor
+---
+
+# Audit Report
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    # A directory where the state file should be makes the atomic replace fail.
+    (repo_root / "logs" / "dispatch" / "bounce-counts.json").mkdir(parents=True)
+    log_messages: list[tuple[str, str]] = []
+
+    orchestrator._record_post_dispatch_status_transition(
+        config=config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert any(
+        level == "WARN" and message.startswith("Bounce count could not be persisted")
+        for level, message in log_messages
+    )
+    assert ledger.bounce_count(story_id) == 1
+    ledger.reset_bounce(story_id)

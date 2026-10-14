@@ -17,8 +17,17 @@ from llm_handoff.agent_roles import (
     invoke_support_role,
 )
 from llm_handoff.agent_types import DispatchResult, SubagentResult
-from llm_handoff.config import DispatchConfig, NormalizerConfig
-from llm_handoff.ledger import bounce_count, record_status_transition, run_epic_close
+from llm_handoff.config import (
+    BOUNCE_COUNT_STATE_PATH,
+    DispatchConfig,
+    NormalizerConfig,
+)
+from llm_handoff.ledger import (
+    bounce_count,
+    record_status_transition,
+    run_epic_close,
+    seed_bounce_counts,
+)
 from llm_handoff.handoff_normalizer import (
     CANONICAL_NEXT_AGENT_SET,
     normalize_handoff_next_agent_text,
@@ -232,6 +241,7 @@ def run_loop(
     log_fn = log or _default_log
 
     _log_startup_banner(config, log_fn)
+    _restore_bounce_counts(config, log_fn)
     mark_startup_complete = getattr(log_fn, "mark_startup_complete", None)
     if callable(mark_startup_complete):
         mark_startup_complete()
@@ -1476,7 +1486,23 @@ def _record_post_dispatch_status_transition(
     if frontmatter is None:
         return
     status = _handoff_status(frontmatter.status)
-    count = record_status_transition(frontmatter.story_id, status)
+    state_path = _bounce_state_path(config)
+    try:
+        count = record_status_transition(
+            frontmatter.story_id,
+            status,
+            state_path=state_path,
+        )
+    except OSError as exc:
+        # The in-memory table is updated before the file write, so the
+        # breaker still works for this process even if it cannot be made
+        # restart-safe.
+        _log(
+            log,
+            "WARN",
+            f"Bounce count could not be persisted to {state_path}: {exc}",
+        )
+        count = bounce_count(frontmatter.story_id) if frontmatter.story_id else 0
     if status == HandoffStatus.VERIFIED_FAIL and frontmatter.story_id:
         _log(
             log,
@@ -1496,6 +1522,21 @@ def _record_post_dispatch_status_transition(
             "INFO",
             f"Bounce count reset for story_id={frontmatter.story_id}.",
         )
+
+
+def _bounce_state_path(config: DispatchConfig) -> Path:
+    return (config.repo_root / BOUNCE_COUNT_STATE_PATH).resolve()
+
+
+def _restore_bounce_counts(config: DispatchConfig, log: LogFn) -> None:
+    state_path = _bounce_state_path(config)
+    restored = seed_bounce_counts(state_path)
+    if not restored:
+        return
+    summary = "; ".join(
+        f"{story_id}={count}" for story_id, count in sorted(restored.items())
+    )
+    _log(log, "INFO", f"Restored bounce counts from {state_path}: {summary}")
 
 
 def _handoff_status(raw_status: str | None) -> HandoffStatus | None:

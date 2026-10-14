@@ -32,7 +32,7 @@ story_title: <string>    # optional short active story title
 remaining_stories:       # optional remaining story IDs/titles
   - <story id/title>
 status: <enum>           # required for completion-class handoffs; see below
-bounce_count: 0          # optional dispatcher-maintained story retry count
+bounce_count: 0          # optional informational retry count; the dispatcher keeps its own in logs/dispatch/
 evidence_present: true   # optional validator hint for evidence-aware handoffs
 scope_sha: <git SHA>     # required when close_type is story or epic
 close_type: <enum>       # optional: story | epic

@@ -224,6 +224,14 @@ planner for re-scoping. If that story has already gone through planner recovery
 and still routes back to implementation, the dispatcher emits
 `THREE_FIX_CIRCUIT_BREAKER_ESCALATE` and routes to `user`.
 
+Bounce counts are persisted per `story_id` in
+`logs/dispatch/bounce-counts.json` under the target repo and reloaded when the
+dispatcher starts, so a restart (including the supervised wrapper's restart
+after a repair) does not reset the breaker. `verified_pass` and
+`escalate_to_user` remove the story from that file. The `bounce_count`
+frontmatter field is informational; the JSON file is the count the dispatcher
+acts on.
+
 ## Prompt And Agent Templates
 
 The written protocol is part of the runtime surface. The source checkout ships:

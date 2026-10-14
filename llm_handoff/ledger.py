@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
+from pathlib import Path
 import re
 from typing import Callable, Literal
 
@@ -117,26 +119,90 @@ def bounce_count(story_id: str) -> int:
     return _BOUNCE_COUNTS.get(story_id, 0)
 
 
-def increment_bounce(story_id: str) -> int:
+def increment_bounce(story_id: str, *, state_path: Path | None = None) -> int:
+    # Memory is updated before the file write so a failed write never loses
+    # the in-process count.
     _BOUNCE_COUNTS[story_id] = bounce_count(story_id) + 1
+    _persist_bounce_count(state_path, story_id, _BOUNCE_COUNTS[story_id])
     return _BOUNCE_COUNTS[story_id]
 
 
-def reset_bounce(story_id: str) -> None:
+def reset_bounce(story_id: str, *, state_path: Path | None = None) -> None:
     _BOUNCE_COUNTS.pop(story_id, None)
+    _persist_bounce_count(state_path, story_id, None)
 
 
-def record_status_transition(story_id: str | None, status: HandoffStatus | None) -> int:
+def record_status_transition(
+    story_id: str | None,
+    status: HandoffStatus | None,
+    *,
+    state_path: Path | None = None,
+) -> int:
+    """Update the story's bounce count for a post-dispatch status.
+
+    When ``state_path`` is given the change is also written to that JSON file
+    so the three-fix circuit breaker survives a dispatcher restart; an
+    ``OSError`` from that write propagates to the caller.
+    """
     if not story_id or status is None:
         return 0
     if status == HandoffStatus.VERIFIED_FAIL:
-        return increment_bounce(story_id)
+        return increment_bounce(story_id, state_path=state_path)
     if status in {
         HandoffStatus.VERIFIED_PASS,
         HandoffStatus.ESCALATE_TO_USER,
     }:
-        reset_bounce(story_id)
+        reset_bounce(story_id, state_path=state_path)
     return bounce_count(story_id)
+
+
+def seed_bounce_counts(state_path: Path) -> dict[str, int]:
+    """Load persisted bounce counts into memory and return what was loaded.
+
+    Persisted values override in-memory values for the stories they name;
+    stories only known in memory are left untouched. A missing or unreadable
+    file loads nothing.
+    """
+    persisted = _read_bounce_state(state_path)
+    _BOUNCE_COUNTS.update(persisted)
+    return dict(persisted)
+
+
+def _read_bounce_state(state_path: Path) -> dict[str, int]:
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    counts = payload.get("bounce_counts") if isinstance(payload, dict) else None
+    if not isinstance(counts, dict):
+        return {}
+    return {
+        story_id: count
+        for story_id, count in counts.items()
+        if isinstance(story_id, str)
+        and isinstance(count, int)
+        and not isinstance(count, bool)
+        and count > 0
+    }
+
+
+def _persist_bounce_count(
+    state_path: Path | None,
+    story_id: str,
+    count: int | None,
+) -> None:
+    if state_path is None:
+        return
+    counts = _read_bounce_state(state_path)
+    if count is None:
+        counts.pop(story_id, None)
+    else:
+        counts[story_id] = count
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": 1, "bounce_counts": dict(sorted(counts.items()))}
+    temporary_path = state_path.with_name(f"{state_path.name}.tmp")
+    temporary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(state_path)
 
 
 def run_epic_close(
