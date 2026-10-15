@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -295,8 +296,15 @@ def _has_linked_destination(target_root: Path, relative_path: Path) -> bool:
     current = target_root
     for part in relative_path.parts:
         current = current / part
-        if current.is_symlink() or (
-            hasattr(current, "is_junction") and current.is_junction()
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        # Windows exposes reparse attributes on Python 3.11 too; pathlib's
+        # is_junction() only exists from 3.12. Do not follow links to inspect them.
+        if stat.S_ISLNK(metadata.st_mode) or (
+            getattr(metadata, "st_file_attributes", 0)
+            & stat.FILE_ATTRIBUTE_REPARSE_POINT
         ):
             return True
     return False

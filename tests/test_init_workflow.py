@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -93,6 +95,37 @@ def test_linked_settings_parent_conflicts(tmp_path: Path, force: bool) -> None:
     assert settings.read_bytes() == b"{}"
     assert list(outside.iterdir()) == [settings]
     assert not (root / "AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_junction_settings_parent_without_pathlib_support(
+    tmp_path: Path, force: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Exercise the Python 3.11 API surface even on newer interpreters.
+    monkeypatch.delattr(Path, "is_junction", raising=False)
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    settings = outside / "settings.json"
+    settings.write_bytes(b"{}")
+    junction = root / ".claude"
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=True, capture_output=True,
+    )
+    try:
+        preview = init_reference_workflow(root, dry_run=True, force=force)
+        assert Path(".claude/settings.json") in preview.conflicts
+        with pytest.raises(InitConflictError) as error:
+            init_reference_workflow(root, force=force)
+        assert Path(".claude/settings.json") in error.value.conflicts
+        assert settings.read_bytes() == b"{}"
+        assert list(outside.iterdir()) == [settings]
+        assert not (root / "AGENTS.md").exists()
+    finally:
+        junction.rmdir()
 
 
 @pytest.mark.parametrize("force", [False, True])
