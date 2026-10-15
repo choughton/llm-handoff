@@ -3239,7 +3239,9 @@ def test_run_loop_passes_configured_agent_provider_to_auditor_dispatch(
     assert exit_code == 0
     assert len(subagent_calls) == 1
     assert subagent_calls[0]["subagent_name"] == "auditor"
-    assert subagent_calls[0]["prompt"] == orchestrator.AUDIT_PROMPT
+    assert subagent_calls[0]["prompt"] == orchestrator.AUDIT_PROMPT_TEMPLATE.format(
+        handoff_path="docs/handoff/HANDOFF.md"
+    )
     assert subagent_calls[0]["role"] == "auditor"
     assert subagent_calls[0]["handoff_path"] == handoff_path
     assert subagent_calls[0]["agent_config"].provider == "gemini"
@@ -4052,3 +4054,239 @@ def test_dispatch_ps1_wraps_repo_venv_python() -> None:
         "\n"
         "exit $exitCode"
     )
+
+
+def test_run_loop_accepts_shipped_planner_work_packet_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """---
+next_agent: planner
+reason: Scope the next backend story.
+producer: user
+---
+
+## Handoff
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+
+    def fake_planner(path: Path, **kwargs: object) -> DispatchResult:
+        del kwargs
+        # Exactly the body shape shipped in .gemini/agents/planner.md.
+        path.write_text(
+            """---
+next_agent: backend
+reason: "Dispatch EXAMPLE-EPIC-S1: reject empty widget names."
+epic_id: EXAMPLE-EPIC
+story_id: EXAMPLE-EPIC-S1
+story_title: Reject empty widget names
+producer: planner
+---
+
+# Handoff: Reject empty widget names
+
+## Work Packet
+
+- **Objective:** Reject empty `name` values in `create_widget`.
+- **Files in scope:** src/foo/bar.py, tests/test_bar.py
+- **Files out of bounds:** src/foo/api.py, frontend/
+- **Context:** Preserve the existing `WidgetError` contract.
+- **Verification command:** python -m pytest tests/test_bar.py -q
+- **Expected next route:** auditor
+
+## Next Step
+- **backend:** Implement the validation and route to auditor.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("AGENT", "Handoff validation verdict: WARNINGS-ONLY") in log_messages
+    assert (
+        "AGENT",
+        "Post-dispatch gate PASSED WITH WARNINGS for planner.",
+    ) in log_messages
+    assert all(
+        "scope_claim_mismatch" not in message for _level, message in log_messages
+    )
+    assert all(
+        "producer repair" not in message.lower() for _level, message in log_messages
+    )
+
+
+def test_circuit_breaker_survives_dispatcher_restart(
+    tmp_path: Path,
+) -> None:
+    story_id = "restart-story"
+    ledger.reset_bounce(story_id)
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        f"""---
+next_agent: backend
+reason: "Audit found a defect; fix it."
+story_id: {story_id}
+status: verified_fail
+scope_sha: 877f54d
+close_type: story
+producer: auditor
+---
+
+# Audit Report
+
+**Agent:** auditor
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    state_path = repo_root / "logs" / "dispatch" / "bounce-counts.json"
+    first_run_messages: list[tuple[str, str]] = []
+
+    # Three audited failures in the first dispatcher process.
+    for _ in range(3):
+        orchestrator._record_post_dispatch_status_transition(
+            config=config,
+            log=lambda level, message: first_run_messages.append((level, message)),
+        )
+
+    assert ("INFO", f"Bounce count for story_id={story_id} is now 3.") in (
+        first_run_messages
+    )
+    assert state_path.exists()
+
+    # Simulate a restart (for example the supervisor relaunching after a
+    # repair): the in-memory table starts empty, the file does not.
+    ledger._BOUNCE_COUNTS.pop(story_id, None)
+    assert ledger.bounce_count(story_id) == 0
+    second_run_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: second_run_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert (
+        "INFO",
+        f"Restored bounce counts from {state_path.resolve()}: {story_id}=3",
+    ) in second_run_messages
+    assert any(
+        "THREE_FIX_CIRCUIT_BREAKER" in message for _, message in second_run_messages
+    )
+    assert ("INFO", "Routing instruction: planner") in second_run_messages
+    ledger.reset_bounce(story_id)
+
+
+def test_status_transition_warns_when_bounce_state_cannot_be_written(
+    tmp_path: Path,
+) -> None:
+    story_id = "unwritable-bounce-story"
+    ledger.reset_bounce(story_id)
+    repo_root, _handoff_path = _write_repo(
+        tmp_path,
+        f"""---
+next_agent: backend
+reason: "Audit found a defect; fix it."
+story_id: {story_id}
+status: verified_fail
+scope_sha: 877f54d
+close_type: story
+producer: auditor
+---
+
+# Audit Report
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    # A directory where the state file should be makes the atomic replace fail.
+    (repo_root / "logs" / "dispatch" / "bounce-counts.json").mkdir(parents=True)
+    log_messages: list[tuple[str, str]] = []
+
+    orchestrator._record_post_dispatch_status_transition(
+        config=config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert any(
+        level == "WARN" and message.startswith("Bounce count could not be persisted")
+        for level, message in log_messages
+    )
+    assert ledger.bounce_count(story_id) == 1
+    ledger.reset_bounce(story_id)
+
+
+@pytest.mark.parametrize(
+    ("raw_next_agent", "expected"),
+    [
+        ("Backend", "backend"),
+        ("BACKEND", "backend"),
+        ('"backend "', "backend"),
+        ("'Frontend'", "frontend"),
+        ("Auditor", "auditor"),
+    ],
+)
+def test_run_loop_resolves_next_agent_variants_without_model_normalizer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_next_agent: str,
+    expected: str,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        f"""---
+next_agent: {raw_next_agent}
+reason: Route the next step.
+scope_sha: 25c45ca
+close_type: story
+producer: planner
+---
+
+## Handoff
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    log_messages: list[tuple[str, str]] = []
+
+    def fail_normalizer(freeform: str, **_kwargs: object) -> str:
+        raise AssertionError(
+            f"model normalizer must not run for deterministic value {freeform!r}"
+        )
+
+    monkeypatch.setattr(orchestrator, "normalize_next_agent", fail_normalizer)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", f"Routing instruction: {expected}") in log_messages
+    assert f"next_agent: {expected}\n" in handoff_path.read_text(encoding="utf-8")
+    assert all("invoking normalizer" not in message for _level, message in log_messages)
+    assert all("normalizer returned" not in message for _level, message in log_messages)
+    assert any(
+        message.startswith("router: next_agent ")
+        and f"resolved deterministically to '{expected}'" in message
+        for _level, message in log_messages
+    )
+    assert (
+        "INFO",
+        f"router: rewrote next_agent to deterministic output '{expected}' in HANDOFF.md.",
+    ) in log_messages

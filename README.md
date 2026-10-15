@@ -47,6 +47,7 @@ are parser fixtures, not user-facing docs.
 | [INSTALL.md](INSTALL.md) | Install paths, provider CLI checks, and first run. |
 | [CONFIGURATION.md](CONFIGURATION.md) | Supported `dispatch_config.yaml` surface. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map and design choices. |
+| [docs/SUPERVISED_DISPATCH.md](docs/SUPERVISED_DISPATCH.md) | Optional supervisor wrapper, heartbeats, incident bundles, and bounded repair role. |
 | [docs/TESTING.md](docs/TESTING.md) | Test strategy and current scaffold state. |
 | [AGENTS.md](AGENTS.md) | Instructions for coding agents working in this repo. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution scope and project boundaries. |
@@ -159,6 +160,9 @@ the target-repo initialization workflow, including macOS and Linux commands.
 For the shortest path through a first dry run, see
 [QUICKSTART.md](QUICKSTART.md). For a slower explanation of the source-checkout
 plus target-repo workflow, see [WALKTHROUGH.md](WALKTHROUGH.md).
+For long local runs that should leave a run-state file, heartbeat output, and
+incident bundles before stopping, see
+[docs/SUPERVISED_DISPATCH.md](docs/SUPERVISED_DISPATCH.md).
 
 To preview the copyable reference workflow for another repository:
 
@@ -172,6 +176,8 @@ python -m llm_handoff init path/to/your-project --template reference-workflow --
 - A file-based operating protocol centered on `HANDOFF.md`.
 - A deterministic router with validator-backed failure handling.
 - A reference workflow that users can inspect, copy, fork, or adapt.
+- An optional supervised wrapper for operator evidence, heartbeat output, and
+  bounded repair-role handoff when explicitly enabled.
 
 ## What This Is Not
 
@@ -180,6 +186,8 @@ python -m llm_handoff init path/to/your-project --template reference-workflow --
 - Not a hosted service.
 - Not a replacement for Codex, Gemini, Claude, or any other agent CLI.
 - Not self-healing. It detects, validates, and pauses.
+- Not a background supervisor service; supervised dispatch is an opt-in local
+  wrapper around the same serial dispatcher.
 - Not production-certified for arbitrary repositories.
 
 ## How It Works
@@ -219,6 +227,14 @@ validator accepts, pauses, or escalates
 
 The handoff file is the mutex and the debugger. There is no hidden queue,
 database, or dashboard required to understand the current state.
+
+For longer runs, `python -m llm_handoff.supervisor` can launch the same
+dispatcher as a child process and write operator evidence under
+`logs/dispatch/supervisor/`. The supervised wrapper is opt-in, has its own
+`dispatch-supervised.lock`, emits heartbeats every 300 seconds or on cycle and
+route boundaries, and can invoke one configured repair role only when
+`--repair-role` is set. See
+[docs/SUPERVISED_DISPATCH.md](docs/SUPERVISED_DISPATCH.md).
 
 ## Why Not LangGraph, AutoGen, Or CrewAI?
 

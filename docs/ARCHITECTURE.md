@@ -30,6 +30,9 @@ Continue, pause, or escalate
 ## Module Map
 
 - `llm_handoff.__main__`: CLI entry point.
+- `llm_handoff.supervisor`: optional operator wrapper that launches the normal
+  dispatcher as a child process, emits heartbeats, writes run state, collects
+  incident bundles, and can invoke a configured bounded repair role.
 - `llm_handoff.config`: dispatch configuration and repo-root detection.
 - `llm_handoff.init_workflow`: target-repo reference workflow initialization.
 - `llm_handoff.router`: handoff parsing and route selection.
@@ -151,6 +154,40 @@ message telling the user to confirm no other dispatcher is active before
 removing the lock. This protects the handoff file and Git state from two local
 dispatcher loops writing the same target repo at the same time.
 
+## Supervised Dispatch
+
+`llm_handoff.supervisor` is an opt-in wrapper around the normal serial
+dispatcher. It is intentionally outside the core loop: the child process still
+runs `python -m llm_handoff`, owns `.dispatch.lock`, reads `HANDOFF.md`, invokes
+one role at a time, and validates the result.
+
+The supervisor adds operator evidence around that child process:
+
+- `logs/dispatch/supervisor/current-run.json` records the latest route, child
+  pid, commit SHA, handoff SHA, dirty files, repair role, and status.
+- `logs/dispatch/supervisor/supervisor-summary.jsonl` records important events.
+- `logs/dispatch/supervisor/dispatch-supervised.lock` prevents two supervisor
+  wrappers from managing the same target repo.
+- `logs/dispatch/supervisor/incidents/` stores failure bundles with log tail,
+  handoff text, Git status, and failure packets.
+
+Heartbeats are emitted every 300 seconds by default and whenever child output
+crosses a recognized cycle or route boundary. The heartbeat is only an operator
+signal; it is not an alternate state machine.
+
+The optional repair path is disabled unless `--repair-role` is provided. When
+enabled, the supervisor writes a failure packet, invokes the configured role
+through `llm_handoff.agent_roles.invoke_support_role`, requires a new HEAD
+commit, checks that committed and uncommitted changes stay within an allowed repair
+surface, and then
+restarts the child dispatcher. If the repair is ambiguous, repeats the same
+failure fingerprint, fails to commit, or touches files outside scope, the
+supervisor stops with an incident bundle.
+
+This wrapper should not be described as broad self-healing. It is a local
+operator tool for retries, evidence capture, and optional configured-agent
+repair of dispatcher or handoff-protocol failures.
+
 ## Provider CLIs
 
 Provider CLIs are adapters, not workflow roles. A public config should map
@@ -187,6 +224,14 @@ implementer, the dispatcher emits `THREE_FIX_CIRCUIT_BREAKER` and routes to the
 planner for re-scoping. If that story has already gone through planner recovery
 and still routes back to implementation, the dispatcher emits
 `THREE_FIX_CIRCUIT_BREAKER_ESCALATE` and routes to `user`.
+
+Bounce counts are persisted per `story_id` in
+`logs/dispatch/bounce-counts.json` under the target repo and reloaded when the
+dispatcher starts, so a restart (including the supervised wrapper's restart
+after a repair) does not reset the breaker. `verified_pass` and
+`escalate_to_user` remove the story from that file. The `bounce_count`
+frontmatter field is informational; the JSON file is the count the dispatcher
+acts on.
 
 ## Prompt And Agent Templates
 

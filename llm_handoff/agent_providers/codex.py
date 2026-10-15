@@ -165,8 +165,12 @@ def invoke_codex(
     binary: str | None = None,
     skill_name: str | None = None,
     timeout_ms: int | None = None,
+    repo_root: Path | None = None,
 ) -> DispatchResult:
-    repo_root = Path.cwd()
+    # The dispatcher may run from its own source checkout against a different
+    # target repo, so the launch directory must come from the config rather
+    # than from the process cwd.
+    repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
     artifact_paths = _codex_artifact_paths(repo_root)
     _cleanup_codex_output_artifacts(artifact_paths)
     resolved_binary = binary or config.CODEX_BINARY

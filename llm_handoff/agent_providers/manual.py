@@ -12,9 +12,12 @@ def invoke_manual_frontend(
     *,
     additional_instruction: str | None = None,
     log: LogFn | None = None,
+    repo_root: Path | None = None,
 ) -> DispatchResult:
-    repo_root = Path.cwd()
-    resolved_handoff_path = _resolve_handoff_path(handoff_path, repo_root)
+    # Relative handoff paths resolve against the target repo, not the process
+    # cwd, so a dispatcher run from its own checkout names the right file.
+    resolved_repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
+    resolved_handoff_path = _resolve_handoff_path(handoff_path, resolved_repo_root)
     message = (
         "manual frontend is a manual GUI step. Complete the frontend work using "
         f"{resolved_handoff_path}, then press any key to continue dispatch."

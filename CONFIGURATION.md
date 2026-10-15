@@ -100,6 +100,21 @@ When `planner_api_key_env` is `false`, planner launches strip
 When `planner_api_key_env` is `true`, `GEMINI_API_KEY` is preserved, but
 `GOOGLE_API_KEY` is still stripped.
 
+## Supervised Dispatch
+
+The optional supervisor wrapper is configured through command-line options, not
+through `dispatch_config.yaml`. It still uses this file to resolve the normal
+dispatcher settings and, when enabled, the configured `agents.<role>` entry for
+`--repair-role`.
+
+Repair is off by default. Setting `--repair-role validator`, for example,
+invokes the existing `validator` agent config for one bounded repair attempt
+unless `--max-repair-attempts` is set explicitly.
+
+See [docs/SUPERVISED_DISPATCH.md](docs/SUPERVISED_DISPATCH.md) for the
+supervisor options, run-state files, incident bundles, heartbeat behavior, lock
+semantics, notification hook, and shell wrapper commands.
+
 ## Agent Roles
 
 Public docs and templates should use generic role names:
