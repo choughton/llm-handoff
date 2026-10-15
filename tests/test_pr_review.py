@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from llm_handoff.pr_review import (
     is_deferred_response,
+    is_follow_up_response,
     parse_gh_json_pages,
     parse_review_responses,
     read_codex_review,
@@ -261,6 +262,14 @@ def test_is_deferred_response_needs_the_marker_at_the_start() -> None:
     assert is_deferred_response("deferred : later")
     assert not is_deferred_response("Left as is: out of scope.")
     assert not is_deferred_response("Fixed; nothing deferred: see the test.")
+
+
+def test_is_follow_up_response_needs_the_marker_at_the_start() -> None:
+    assert is_follow_up_response("Follow-up: W9.10 fixes this.")
+    assert is_follow_up_response("**Follow-up:** W9.10 fixes this.")
+    assert is_follow_up_response("followup : W9.10")
+    assert not is_follow_up_response("Deferred: out of scope.")
+    assert not is_follow_up_response("Fixed here; no follow-up: needed.")
 
 
 USAGE_LIMIT_COMMENT = {

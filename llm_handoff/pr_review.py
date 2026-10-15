@@ -54,6 +54,8 @@ _RESPONSE_RE = re.compile(
 )
 # "Deferred:" or "**Deferred:**" at the start of a response.
 _DEFERRED_RE = re.compile(r"(?:\*\*|__)?deferred\s*:", re.IGNORECASE)
+# "Follow-up:" or "**Follow-up:**" at the start of a planner decision.
+_FOLLOW_UP_RE = re.compile(r"(?:\*\*|__)?follow[- ]?up\s*:", re.IGNORECASE)
 
 ReviewOutcome = Literal["clean", "findings", "timeout", "failed"]
 
@@ -264,12 +266,17 @@ def wait_for_codex_review(
         sleep(poll_seconds)
 
 
-def parse_review_responses(text: str) -> dict[int, str]:
-    """Read ``### Finding N`` entries from a ``## Review Responses`` section."""
+def parse_review_responses(
+    text: str, heading: str = "Review Responses"
+) -> dict[int, str]:
+    """Read ``### Finding N`` entries from a ``## Review Responses`` section.
+
+    ``heading`` names a different ``## `` section with the same layout.
+    """
 
     normalized = text.replace("\r\n", "\n")
     section = re.search(
-        r"(?ms)^## Review Responses[ \t]*\n(.*?)(?=^## |\Z)", normalized
+        rf"(?ms)^## {re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)", normalized
     )
     if section is None:
         return {}
@@ -289,6 +296,17 @@ def is_deferred_response(body: str) -> bool:
     """
 
     return _DEFERRED_RE.match(body) is not None
+
+
+def is_follow_up_response(body: str) -> bool:
+    """Whether a planner decision starts with the ``Follow-up:`` marker.
+
+    The planner accepts a deferred finding by naming the follow-up story that
+    will fix it, so the dispatcher can post the decision and resolve the
+    finding's review thread.
+    """
+
+    return _FOLLOW_UP_RE.match(body) is not None
 
 
 def parse_gh_json_pages(text: str) -> list[dict[str, Any]] | None:

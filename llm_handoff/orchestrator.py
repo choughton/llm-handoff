@@ -61,9 +61,9 @@ from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
     ensure_story_branch,
     publish_story,
-    save_gate_section,
     save_review_responses,
     saved_story_base,
+    settle_deferred_findings,
 )
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
@@ -93,7 +93,6 @@ from llm_handoff.work_claim import (
     carry_over_key,
     git_changed_files,
     git_dirty_files,
-    passed_verification_section,
     record_passed_verification,
     verify_work_claim,
 )
@@ -633,7 +632,6 @@ def run_loop(
                     prefix=config.publish.branch_prefix,
                     base_branch=config.publish.base_branch,
                     assignment_content=handoff_content,
-                    log_file=getattr(log_fn, "log_file_path", None),
                     implementer=current_cycle.route,
                 )
                 if branch_error is not None:
@@ -1069,6 +1067,19 @@ def run_loop(
                         config.handoff_full_path.write_text(
                             outcome.handoff, encoding="utf-8"
                         )
+                    if outcome.stop:
+                        return outcome.exit_code
+                if config.publish.mode == "pr" and current_cycle.route == "planner":
+                    # The planner may have just decided deferred review
+                    # findings that are holding a pull request open.
+                    outcome = settle_deferred_findings(
+                        repo_root=config.repo_root,
+                        remote=config.publish.remote,
+                        handoff_content=(
+                            _read_required_text(config.handoff_full_path) or ""
+                        ),
+                        log=log_fn,
+                    )
                     if outcome.stop:
                         return outcome.exit_code
 
@@ -2511,7 +2522,6 @@ def _run_work_claim_gate(
             encoding="utf-8",
         )
         if config.publish.mode != "local":
-            save_gate_section(config.repo_root, passed_verification_section(result))
             save_review_responses(config.repo_root, claim_content)
         return False
 

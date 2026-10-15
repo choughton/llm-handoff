@@ -60,12 +60,31 @@ subsection per finding: one or two sentences on what you changed, or why you
 left it. The dispatcher posts each response as the reply on that finding's
 review thread and resolves the thread.
 
-If a finding is real but you leave it unfixed for later work, start its
+If a finding is real but you leave it unfixed for later work, for example
+because the fix is outside the Work Packet's Files in scope, start its
 response with `Deferred:`, for example
 `Deferred: out of scope for this story; needs its own Work Packet.` The
 dispatcher posts that reply but leaves the thread unresolved, so the pull
-request is not merged until a person decides. Do not use `Deferred:` for a
-finding you rejected as wrong; explain why it does not hold up instead.
+request is not merged yet. Do not use `Deferred:` for a finding you rejected
+as wrong; explain why it does not hold up instead.
+
+When deferred threads are all that keep a pull request from merging, the
+dispatcher routes the handoff to the planner once per pull request. The
+planner decides each deferred finding:
+
+- Widen the scope: rewrite the Work Packet for the implementer with the same
+  `story_id`, add the files the fix needs to Files in scope, and copy the
+  findings to fix with their `### Finding N` headings. The implementer
+  answers them under `## Review Responses` as above.
+- Accept it as follow-up work: plan a follow-up story, then add a
+  `## Deferred Finding Decisions` section with a `### Finding N` subsection
+  that starts with `Follow-up:` and names that story. The dispatcher posts it
+  as the reply, resolves the thread, and merges once every thread is
+  resolved.
+- Ask the user: route to `user` with one specific question.
+
+A finding the planner neither accepts nor sends back, or one deferred again
+after the planner's pass, pauses the dispatcher for a person.
 
 ## When To Flag Uncertainty
 

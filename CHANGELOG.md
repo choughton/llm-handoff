@@ -6,6 +6,34 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The pull request and merge-commit report is now a short, readable page
+  for people, with two sections. The Summary is at most three sentences,
+  taken from the start of the Work Packet's Objective. Before, it was the
+  whole Objective with every line break removed, so numbered acceptance
+  checks ran into one long paragraph. Reviewer notes have `### Story`,
+  `### Acceptance checks` (the rest of the Objective, with its lists kept),
+  and `### Audit`. The report no longer has the Changes, Test plan, Work
+  Packet, or Token usage sections: the pull request's Files and Commits
+  tabs, `HANDOFF.md`, and the dispatch log already hold that. The
+  dispatcher no longer saves the gate result to
+  `logs/dispatch/publish/gate.md` or a log offset in the story state. A
+  story state saved by an older version still loads.
+
+- In `publish.mode: pr`, a pull request held open only by deferred review
+  findings now goes to the planner instead of pausing. The dispatcher
+  rewrites `HANDOFF.md` to route to `planner` with each deferred finding, the
+  implementer's `Deferred:` response, and the current Work Packet. The planner
+  gets one pass per pull request. It can widen the Work Packet and send the
+  findings back to the implementer on the same branch, or accept them as
+  follow-up work with a `## Deferred Finding Decisions` section whose
+  `### Finding N` entries start with `Follow-up:`. The dispatcher then posts
+  each decision as the reply, resolves the thread, and merges. It can also
+  route to `user`. The dispatcher still pauses when a finding is left
+  undecided, is deferred again after the planner's pass, or sits next to
+  another unresolved thread. Before, any deferred finding paused the merge
+  for a person, so a finding whose fix was outside the story's Files in scope
+  always stalled the loop.
+
 - Added the optional `verification_allowed_prefixes` config key. When set,
   the work-claim gate runs a Work Packet Verification command only if its
   whitespace-split words start with a listed prefix's words and it contains

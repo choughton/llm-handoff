@@ -17,9 +17,9 @@ from llm_handoff.publish import (
     build_review_bounce_handoff,
     ensure_story_branch,
     publish_story,
-    save_gate_section,
     save_review_responses,
     saved_story_base,
+    settle_deferred_findings,
     story_branch_name,
 )
 from llm_handoff.router import route
@@ -177,13 +177,12 @@ def _init(repo: Path) -> None:
     _git(repo, "commit", "-q", "-m", "initial")
 
 
-def _start_story(repo: Path, log_file: Path | None = None) -> None:
+def _start_story(repo: Path, assignment: str = ASSIGNMENT) -> None:
     error = ensure_story_branch(
         repo_root=repo,
         prefix="llm-handoff/",
         base_branch=None,
-        assignment_content=ASSIGNMENT,
-        log_file=log_file,
+        assignment_content=assignment,
     )
     assert error is None
     (repo / "src").mkdir(exist_ok=True)
@@ -211,7 +210,6 @@ def test_ensure_story_branch_creates_then_reuses_the_branch(tmp_path: Path) -> N
             prefix="llm-handoff/",
             base_branch=None,
             assignment_content=ASSIGNMENT,
-            log_file=None,
         )
         is None
     )
@@ -227,7 +225,6 @@ def test_ensure_story_branch_creates_then_reuses_the_branch(tmp_path: Path) -> N
             prefix="llm-handoff/",
             base_branch=None,
             assignment_content=ASSIGNMENT,
-            log_file=None,
         )
         is None
     )
@@ -246,7 +243,6 @@ def test_a_revised_work_packet_reaches_the_review_bounce(tmp_path: Path) -> None
                 prefix="llm-handoff/",
                 base_branch=None,
                 assignment_content=content,
-                log_file=None,
             )
             is None
         )
@@ -275,7 +271,6 @@ def test_a_revised_work_packet_reaches_the_review_bounce(tmp_path: Path) -> None
                 prefix="llm-handoff/",
                 base_branch=None,
                 assignment_content=content,
-                log_file=None,
             )
             is None
         )
@@ -294,7 +289,6 @@ def test_ensure_story_branch_refuses_to_start_from_another_story(
         prefix="llm-handoff/",
         base_branch=None,
         assignment_content=ASSIGNMENT,
-        log_file=None,
     )
 
     assert error is not None and "llm-handoff/other-story" in error
@@ -314,19 +308,7 @@ def test_saved_story_base_needs_the_same_story_on_its_branch(tmp_path: Path) -> 
 
 def test_merge_commit_mode_merges_with_a_story_report(tmp_path: Path) -> None:
     _init(tmp_path)
-    log_file = tmp_path / "logs" / "dispatch" / "run.log"
-    log_file.parent.mkdir(parents=True)
-    log_file.write_text(
-        "[t] [DEBUG] usage: Earlier provider=claude cost_usd=9.99\n", encoding="utf-8"
-    )
-    _start_story(tmp_path, log_file)
-    save_gate_section(tmp_path, "## Dispatcher Verification\n\n- **Verdict:** PASS\n")
-    with log_file.open("a", encoding="utf-8") as handle:
-        handle.write(
-            "[t] [DEBUG] usage: Claude auditor provider=claude cost_usd=0.30\n"
-            "[t] [DEBUG] usage: Codex provider=codex input_tokens=10 output_tokens=3\n"
-            "[t] [DEBUG] usage: Claude planner provider=claude cost_usd=0.15\n"
-        )
+    _start_story(tmp_path)
     _entries, log = _logs()
 
     outcome = publish_story(
@@ -344,10 +326,9 @@ def test_merge_commit_mode_merges_with_a_story_report(tmp_path: Path) -> None:
     message = _git(tmp_path, "log", "-1", "--format=%B")
     assert message.startswith("Merge W9.9: Add a widget")
     assert "Add the widget module." in message
-    assert "## Test plan" in message and "**Verdict:** PASS" in message
     assert "The widget does what the packet asked." in message
-    assert "Reported cost: $0.45" in message
-    assert "Earlier" not in message
+    for removed in ("## Test plan", "## Work Packet", "## Token usage"):
+        assert removed not in message
     assert _git(tmp_path, "log", "-1", "--format=%P").count(" ") == 1
     assert BRANCH not in _git(tmp_path, "branch", "--list")
     assert not (tmp_path / STATE_PATH).exists()
@@ -623,7 +604,12 @@ def test_codex_findings_get_one_correction_round_then_merge(
     state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
     assert state["review_rounds"] == 1
     assert state["open_findings"] == [
-        {"number": 1, "comment_id": 4279958834, "location": "src/widget.py:1"}
+        {
+            "number": 1,
+            "comment_id": 4279958834,
+            "location": "src/widget.py:1",
+            "body": "**P1 Handle a missing widget**\n\nWIDGET can be unset.",
+        }
     ]
     assert "## Review Responses" in handoff
     assert "`Deferred:`" in handoff
@@ -861,13 +847,14 @@ def test_a_finding_without_a_response_keeps_its_thread_and_blocks_the_merge(
     assert any("No review response for finding 1" in m for _l, m in entries)
 
 
-def test_a_deferred_finding_gets_a_reply_but_keeps_its_thread_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo, _remote, gh, env = _with_remote(tmp_path)
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    _start_story(repo)
+DEFERRED_RESPONSE = "**Deferred:** out of scope for this story; needs its own packet."
+
+
+def _defer_the_finding(
+    tmp_path: Path, repo: Path, gh: list[str], log
+) -> PublishOutcome:
+    """Bounce one Codex finding, then publish a fix that defers it."""
+
     first = _git(repo, "rev-parse", "HEAD")
     _set_api(
         tmp_path,
@@ -875,38 +862,68 @@ def test_a_deferred_finding_gets_a_reply_but_keeps_its_thread_open(
         review_comments=[_codex_finding(first)],
     )
     _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
-    entries, log = _logs()
     assert _publish_with_review(repo, gh, log).handoff is not None
 
     (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
-    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    _git(repo, "commit", "-q", "-am", "W9.9 Tidy the widget")
     _set_api(tmp_path, comments=[_codex_summary(_git(repo, "rev-parse", "HEAD"))])
     save_review_responses(
         repo,
-        "## Review Responses\n\n### Finding 1: `src/widget.py:1`\n"
-        "**Deferred:** out of scope for this story; needs its own packet.\n",
+        f"## Review Responses\n\n### Finding 1: `src/widget.py:1`\n{DEFERRED_RESPONSE}\n",
     )
+    return _publish_with_review(repo, gh, log)
 
-    outcome = _publish_with_review(repo, gh, log)
 
-    assert outcome.stop is True and outcome.exit_code == 0
-    assert "1 review thread(s)" in outcome.message
+def _resolve_calls(tmp_path: Path) -> list[list[str]]:
+    return [
+        call
+        for call in _gh_calls(tmp_path)
+        if call[-1] == "graphql" and any("resolveReviewThread" in a for a in call)
+    ]
+
+
+def test_a_deferred_finding_gets_a_reply_and_goes_to_the_planner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    entries, log = _logs()
+
+    outcome = _defer_the_finding(tmp_path, repo, gh, log)
+
+    assert outcome.stop is False and outcome.handoff is not None
     gh_state = _gh_state(tmp_path)
     [reply] = gh_state["replies"]
     assert reply["body"].startswith("**Deferred:** out of scope")
     assert gh_state["threads"][0]["isResolved"] is False
-    assert not any(
-        call[-1] == "graphql" and any("resolveReviewThread" in a for a in call)
-        for call in _gh_calls(tmp_path)
-    )
+    assert _resolve_calls(tmp_path) == []
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert _git(repo, "branch", "--show-current") == BRANCH
     assert any(
         level == "WARN" and "Finding 1 (src/widget.py:1) was deferred" in message
         for level, message in entries
     )
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["deferral_planner_pass"] is True
+    assert state["deferred_findings"] == []
+    assert [finding["number"] for finding in state["open_findings"]] == [1]
+    assert not any("replied" in finding for finding in state["open_findings"])
+
+    handoff = outcome.handoff
+    decision = route(handoff)
+    assert decision.route == "planner" and decision.warnings == []
+    assert "story_id: W9.9" in handoff
+    assert "### Finding 1: `src/widget.py:1`" in handoff
+    assert "WIDGET can be unset." in handoff
+    assert f"> {DEFERRED_RESPONSE}" in handoff
+    assert "## Deferred Finding Decisions" in handoff
+    assert "`Follow-up:`" in handoff
+    assert "Files in scope" in handoff and "`src/widget.py`" in handoff
 
 
-def test_a_retry_keeps_a_replied_deferred_finding_open(
+def test_a_retry_keeps_a_replied_deferred_finding_open_for_the_planner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, _remote, gh, env = _with_remote(tmp_path)
@@ -936,11 +953,264 @@ def test_a_retry_keeps_a_replied_deferred_finding_open(
 
     outcome = _publish_with_review(repo, gh, log)
 
-    assert outcome.stop is True and "1 review thread(s)" in outcome.message
+    assert outcome.stop is False and route(outcome.handoff).route == "planner"
     assert "replies" not in _gh_state(tmp_path)
     assert _gh_state(tmp_path)["threads"][0]["isResolved"] is False
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
     assert any("was deferred" in message for _level, message in entries)
+
+
+PLANNER_ACCEPTS = """---
+next_agent: backend
+reason: "W9.9 closes; its deferred finding becomes W9.10."
+epic_id: E1
+story_id: W9.10
+story_title: Guard the widget
+producer: planner
+---
+
+# Handoff: Guard the widget
+
+## Deferred Finding Decisions
+
+### Finding 1
+Follow-up: W9.10 Guard the widget fixes this with its own Work Packet.
+
+## Work Packet
+
+- **Objective:** Guard the widget.
+- **Files in scope:** `src/guard.py`
+- **Files out of bounds:** none
+- **Context:** none
+- **Verification command:** `python -c "print(1)"`
+- **Expected next route:** auditor
+"""
+
+PLANNER_WIDENS = """---
+next_agent: backend
+reason: "Widen W9.9 so the deferred finding is fixed before the merge."
+epic_id: E1
+story_id: W9.9
+story_title: Add a widget
+producer: planner
+---
+
+# Handoff: Add a widget
+
+Fix the finding below and answer it under `## Review Responses`.
+
+### Finding 1: `src/widget.py:1`
+
+WIDGET can be unset.
+
+## Work Packet
+
+- **Objective:** Add the widget module and guard it.
+- **Files in scope:** `src/widget.py`, `src/guard.py`
+- **Files out of bounds:** none
+- **Context:** none
+- **Verification command:** `python -c "print(1)"`
+- **Expected next route:** auditor
+"""
+
+
+def _settle(repo: Path, gh: list[str], log, handoff: str) -> PublishOutcome:
+    return settle_deferred_findings(
+        repo_root=repo,
+        remote="origin",
+        handoff_content=handoff,
+        log=log,
+        gh_command=gh,
+    )
+
+
+def test_a_planner_follow_up_resolves_the_thread_and_merges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    entries, log = _logs()
+    assert _defer_the_finding(tmp_path, repo, gh, log).handoff is not None
+    story_head = _git(repo, "rev-parse", "HEAD")
+
+    outcome = _settle(repo, gh, log, PLANNER_ACCEPTS)
+
+    assert outcome == PublishOutcome(), outcome.message
+    gh_state = _gh_state(tmp_path)
+    assert gh_state["threads"][0]["isResolved"] is True
+    deferred_reply, decision_reply = gh_state["replies"]
+    assert deferred_reply["body"].startswith("**Deferred:**")
+    assert decision_reply["body"].startswith("Follow-up: W9.10 Guard the widget")
+    assert "`planner` role" in decision_reply["body"]
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "HEAD") == story_head
+    assert not (repo / STATE_PATH).exists()
+    assert any("accepted finding 1" in message for _level, message in entries)
+
+
+def test_a_planner_can_widen_the_scope_and_send_the_finding_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _entries, log = _logs()
+    assert _defer_the_finding(tmp_path, repo, gh, log).handoff is not None
+
+    # The copied `### Finding 1` heading is not a decision: it is outside the
+    # `## Deferred Finding Decisions` section.
+    outcome = _settle(repo, gh, log, PLANNER_WIDENS)
+
+    assert outcome == PublishOutcome()
+    assert _resolve_calls(tmp_path) == []
+    assert len(_gh_state(tmp_path)["replies"]) == 1
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert [finding["number"] for finding in state["open_findings"]] == [1]
+    assert state["deferral_planner_pass"] is True
+
+    # The implementer fixes it on the same branch; the dispatcher answers,
+    # resolves, and merges without another review.
+    (repo / "src" / "guard.py").write_text("GUARD = True\n", encoding="utf-8")
+    _git(repo, "add", "src/guard.py")
+    _git(repo, "commit", "-q", "-m", "W9.9 Guard the widget")
+    fixed = _git(repo, "rev-parse", "HEAD")
+    save_review_responses(
+        repo,
+        "## Review Responses\n\n### Finding 1: `src/widget.py:1`\n"
+        "Guarded WIDGET in src/guard.py.\n",
+    )
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    gh_state = _gh_state(tmp_path)
+    assert gh_state["threads"][0]["isResolved"] is True
+    assert gh_state["replies"][-1]["body"].startswith("Guarded WIDGET")
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert _git(repo, "rev-parse", "HEAD") == fixed
+
+
+def test_a_second_deferral_after_the_planner_pass_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _entries, log = _logs()
+    assert _defer_the_finding(tmp_path, repo, gh, log).handoff is not None
+    assert _settle(repo, gh, log, PLANNER_WIDENS) == PublishOutcome()
+
+    (repo / "src" / "widget.py").write_text("WIDGET = 3\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Another try")
+    save_review_responses(
+        repo,
+        f"## Review Responses\n\n### Finding 1: `src/widget.py:1`\n{DEFERRED_RESPONSE}\n",
+    )
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert outcome.handoff is None
+    assert "1 review thread(s)" in outcome.message
+    assert _gh_state(tmp_path)["threads"][0]["isResolved"] is False
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_a_planner_that_decides_nothing_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    entries, log = _logs()
+    assert _defer_the_finding(tmp_path, repo, gh, log).handoff is not None
+    moved_on = PLANNER_ACCEPTS.replace(
+        "Follow-up: W9.10", "Left for later: W9.10"
+    )
+
+    outcome = _settle(repo, gh, log, moved_on)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "neither accepted nor sent back deferred finding(s) 1" in outcome.message
+    assert _gh_state(tmp_path)["threads"][0]["isResolved"] is False
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any(level == "PAUSE" for level, _message in entries)
+
+
+def test_a_planner_asking_the_user_leaves_the_pull_request_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _entries, log = _logs()
+    assert _defer_the_finding(tmp_path, repo, gh, log).handoff is not None
+    asks_user = PLANNER_WIDENS.replace("next_agent: backend", "next_agent: user")
+
+    outcome = _settle(repo, gh, log, asks_user)
+
+    assert outcome == PublishOutcome()
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert [finding["number"] for finding in state["open_findings"]] == [1]
+
+
+def test_settle_does_nothing_without_a_planner_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _entries, log = _logs()
+
+    assert _settle(repo, gh, log, PLANNER_ACCEPTS) == PublishOutcome()
+    assert _settle(tmp_path / "nowhere", gh, log, PLANNER_ACCEPTS) == PublishOutcome()
+    assert _gh_calls(tmp_path) == []
+
+
+def test_a_deferred_finding_next_to_another_open_thread_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    # T2 is a person's comment, not a Codex finding the implementer answered.
+    _set_threads(
+        tmp_path,
+        {"id": "T1", "isResolved": False, "comment_id": 4279958834},
+        {"id": "T2", "isResolved": False, "comment_id": 555},
+    )
+    _entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Tidy the widget")
+    save_review_responses(
+        repo,
+        f"## Review Responses\n\n### Finding 1: `src/widget.py:1`\n{DEFERRED_RESPONSE}\n",
+    )
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and outcome.handoff is None
+    assert "2 review thread(s)" in outcome.message
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
 
 
 def test_auto_merge_waits_for_every_review_thread_to_be_resolved(
@@ -1104,45 +1374,127 @@ def test_an_already_resolved_thread_gets_no_reply(
     assert "replies" not in _gh_state(tmp_path)
 
 
-def test_story_report_follows_the_pull_request_template(tmp_path: Path) -> None:
+def test_story_report_has_a_summary_and_reviewer_notes(tmp_path: Path) -> None:
     from llm_handoff.publish import _load_state, build_report
 
     _init(tmp_path)
     _start_story(tmp_path)
-    save_gate_section(
-        tmp_path,
-        "## Dispatcher Verification\n\n- **Verdict:** PASS\n"
-        "- **Verification command:** `python -c \"print(1)\"` (exited 0)\n",
-    )
 
-    title, body = build_report(tmp_path, _load_state(tmp_path), VERIFIED)
+    title, body = build_report(_load_state(tmp_path), VERIFIED)
 
     assert title == "W9.9: Add a widget"
     headings = [line for line in body.splitlines() if line.startswith("## ")]
-    assert headings == [
-        "## Summary",
-        "## Changes",
-        "## Reviewer notes",
-        "## Test plan",
-        "## Work Packet",
-    ]
-    template = Path(__file__).resolve().parents[1] / ".github" / "pull_request_template.md"
-    template_headings = [
-        line
-        for line in template.read_text(encoding="utf-8").splitlines()
-        if line.startswith("## ")
-    ]
-    assert headings[: len(template_headings)] == template_headings
-    assert body.split("## Changes")[0].count("Add the widget module.") == 1
-    assert "- `A` `src/widget.py`" in body
-    assert "W9.9 Add a widget" in body
-    assert "- **Audit verdict:** APPROVED" in body
+    assert headings == ["## Summary", "## Reviewer notes"]
+    # The pull request's Files and Commits tabs already list the changes.
+    assert "src/widget.py" not in body.split("## Reviewer notes")[0]
+    assert "<summary>Work Packet</summary>" not in body
+    assert "Reported cost" not in body
+    assert body.split("## Reviewer notes")[0].count("Add the widget module.") == 1
+    notes = body.split("## Reviewer notes")[1]
+    assert "### Story\n\n- **Story:** `W9.9` in epic `E1`\n" in notes
+    assert "- **Implemented by:** the `backend` role" in notes
+    assert "### Acceptance checks" not in notes
+    assert "### Audit\n\n- **Audit verdict:** APPROVED" in notes
     assert "<summary>Quality review</summary>" in body
     assert "The widget does what the packet asked." in body
-    assert "(exited 0)" in body.split("## Test plan")[1]
     assert body.rstrip().endswith(
         "Generated with [llm-handoff](https://github.com/choughton/llm-handoff)"
     )
+
+
+LONG_OBJECTIVE_ASSIGNMENT = ASSIGNMENT.replace(
+    "- **Objective:** Add the widget module.",
+    """- **Objective:** Add the widget module so callers can build widgets. It
+  replaces the inline widget code in three places. Callers keep their imports.
+  Nothing else in the public API changes. The old helper stays for one
+  release. Acceptance checks:
+  1. `src/widget.py` defines `WIDGET`, and the three callers
+     import it instead of defining their own.
+  2. The old helper still works.
+
+  Out of scope: renaming the helper.""",
+)
+
+
+def test_story_report_summary_is_three_sentences_and_keeps_the_lists(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path, assignment=LONG_OBJECTIVE_ASSIGNMENT)
+
+    _title, body = build_report(_load_state(tmp_path), VERIFIED)
+
+    summary = body.split("## Summary\n\n")[1].split("\n\n## Reviewer notes")[0]
+    assert summary == (
+        "Add the widget module so callers can build widgets. It replaces the "
+        "inline widget code in three places. Callers keep their imports."
+    )
+    notes = body.split("## Reviewer notes")[1]
+    checks = notes.split("### Acceptance checks\n\n")[1].split("### Audit")[0]
+    assert checks.startswith(
+        "Nothing else in the public API changes. The old helper stays for one "
+        "release.\n\n1. `src/widget.py` defines `WIDGET`, and the three callers\n"
+        "   import it instead of defining their own.\n2. The old helper still works.\n"
+    )
+    assert "Acceptance checks:" not in checks
+    assert "Out of scope: renaming the helper." in checks
+    assert notes.index("### Story") < notes.index("### Acceptance checks")
+    assert notes.index("### Acceptance checks") < notes.index("### Audit")
+
+
+@pytest.mark.parametrize(
+    ("objective", "summary", "details"),
+    [
+        ("", "Add a widget", ""),
+        ("One sentence only.", "One sentence only.", ""),
+        (
+            "Do this: \n- first\n- second",
+            "Add a widget",
+            "Do this:\n\n- first\n- second",
+        ),
+        (
+            "Fix it, e.g. the parser. Then test it.",
+            "Fix it, e.g. the parser. Then test it.",
+            "",
+        ),
+    ],
+)
+def test_summary_and_details_split(objective: str, summary: str, details: str) -> None:
+    from llm_handoff.publish import _summary_and_details
+
+    assert _summary_and_details(objective, "Add a widget") == (summary, details)
+
+
+def test_a_very_long_opening_sentence_is_shortened() -> None:
+    from llm_handoff.publish import _summary_and_details
+
+    summary, details = _summary_and_details(
+        "Make " + "the widget work and " * 60 + "ship it.", "Add a widget"
+    )
+
+    assert len(summary) <= 500 and summary.endswith("...")
+    assert summary.startswith("Make the widget work and")
+    assert details == ""
+
+
+def test_a_story_state_saved_by_an_older_version_still_loads(tmp_path: Path) -> None:
+    from llm_handoff.publish import _load_state
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    path = tmp_path / STATE_PATH
+    state = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(
+        json.dumps({**state, "log_path": "logs/run.log", "log_offset": 12}),
+        encoding="utf-8",
+    )
+
+    loaded = _load_state(tmp_path)
+
+    assert loaded is not None and loaded.story_id == "W9.9"
+    assert saved_story_base(tmp_path, "W9.9") == state["base_sha"]
 
 
 
@@ -1162,9 +1514,9 @@ def test_reviewer_notes_keep_the_whole_merge_decision(tmp_path: Path) -> None:
         "## Quality Review",
     )
 
-    _title, body = build_report(tmp_path, _load_state(tmp_path), handoff)
+    _title, body = build_report(_load_state(tmp_path), handoff)
 
-    notes = body.split("## Reviewer notes")[1].split("## Test plan")[0]
+    notes = body.split("## Reviewer notes")[1]
     assert "- **Merge decision:**\n  - Quality reviewer verdict: APPROVED" in notes
     assert "  - Security reviewer verdict: APPROVED" in notes
     assert "  - Block severity threshold: high" in notes
