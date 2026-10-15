@@ -212,6 +212,10 @@ class AgentConfig(BaseModel):
     env_passthrough: tuple[str, ...] = ()
     unsafe_bypass: bool = False
     allowed_tools: tuple[str, ...] | None = None
+    # Runs this role's dispatch once more after a fatal failure of the primary
+    # agent: a timeout, a rate or usage limit, a sign-in failure, or a CLI that
+    # will not launch. One level only; a fallback has no fallback of its own.
+    fallback: AgentConfig | None = None
 
     @field_validator("timeout_ms", mode="after")
     @classmethod
@@ -264,12 +268,40 @@ class AgentConfig(BaseModel):
             raise ValueError("allowed_tools only applies to claude roles.")
         return self
 
+    @model_validator(mode="after")
+    def _validate_fallback(self) -> AgentConfig:
+        fallback = self.fallback
+        if fallback is None:
+            return self
+        if fallback.fallback is not None:
+            raise ValueError(
+                "fallback must not define its own fallback; only one failover "
+                "level is supported."
+            )
+        if _launch_identity(fallback) == _launch_identity(self):
+            raise ValueError(
+                "fallback must launch a different provider, binary, or (for "
+                "claude) model than the primary agent."
+            )
+        return self
+
     @field_validator("retries", mode="after")
     @classmethod
     def _validate_retries(cls, value: int | None) -> int | None:
         if value is not None and value < 0:
             raise ValueError("retries must be non-negative when set.")
         return value
+
+
+AgentConfig.model_rebuild()
+
+
+def _launch_identity(agent_config: AgentConfig) -> tuple[object, ...]:
+    # Only the Claude adapter passes a model flag today, so a model change is
+    # a different launch for claude alone.
+    binary = agent_config.binary or _binary_name(agent_config.provider)
+    model = agent_config.model if agent_config.provider == "claude" else None
+    return (agent_config.provider, binary, model)
 
 
 class NormalizerConfig(BaseModel):
@@ -608,6 +640,15 @@ class DispatchConfig(BaseModel):
                     "no runtime adapter is registered for provider "
                     f"`{agent_config.provider}` on role `{role}`."
                 )
+            fallback = agent_config.fallback
+            if (
+                fallback is not None
+                and fallback.provider not in RUNTIME_PROVIDER_ADAPTERS
+            ):
+                raise ValueError(
+                    "no runtime adapter is registered for provider "
+                    f"`{fallback.provider}` on role `{role}` fallback."
+                )
         return value
 
     @field_validator("poll_interval_seconds", mode="after")
@@ -712,10 +753,21 @@ def _merge_agent_defaults(data: dict[str, object]) -> None:
                 else default_agents.get(role)
             )
             if isinstance(default_config, dict):
-                merged_agents[role] = {**default_config, **configured}
+                merged = {**default_config, **configured}
+                if configured.get("fallback") is not None:
+                    merged["fallback"] = _merge_fallback_defaults(
+                        role, configured["fallback"]
+                    )
+                merged_agents[role] = merged
                 continue
         merged_agents[role] = configured
     data["agents"] = merged_agents
+
+
+def _merge_fallback_defaults(role: str, fallback: object) -> object:
+    if not isinstance(fallback, dict) or fallback.get("provider") is None:
+        return fallback
+    return {**_agent_defaults_for_provider(role, fallback["provider"]), **fallback}
 
 
 def _read_config_file(repo_root: Path, config_path: Path | None) -> dict[str, object]:

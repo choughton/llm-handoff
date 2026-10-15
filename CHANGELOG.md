@@ -6,6 +6,11 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Roles accept an optional `fallback` agent. When the primary agent times
+  out, hits a rate or usage limit, is not signed in, or cannot launch, the
+  dispatcher reruns that dispatch once on the fallback. Ordinary failures and
+  runs that already rewrote the handoff do not fail over.
+
 - `init` preserves user content through managed sections in AGENTS.md and
   ignore files, merges Claude settings, and reports merge actions separately.
   Added a .gitignore template for dispatcher logs and the lock file.
