@@ -392,7 +392,7 @@ def _codex_artifact_paths(repo_root: Path) -> _CodexArtifactPaths:
         output_last_message_path=(
             repo_root / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
         ).resolve(),
-        output_schema_path=(repo_root / config.CODEX_OUTPUT_SCHEMA_PATH).resolve(),
+        output_schema_path=config.CODEX_OUTPUT_SCHEMA_PATH.resolve(),
         session_state_path=(repo_root / config.CODEX_SESSION_STATE_PATH).resolve(),
     )
 

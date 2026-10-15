@@ -103,7 +103,7 @@ DEFAULT_PROTECTED_PATHS: tuple[str, ...] = (
     ".githooks/**",
 )
 CODEX_OUTPUT_SCHEMA_PATH = (
-    Path("llm_handoff") / "schemas" / "codex_final_response.schema.json"
+    Path(__file__).resolve().parent / "schemas" / "codex_final_response.schema.json"
 )
 CODEX_OUTPUT_DIRECTORY = Path("logs") / "dispatch" / "codex"
 CODEX_OUTPUT_LAST_MESSAGE_PATH = CODEX_OUTPUT_DIRECTORY / "last-message.json"
