@@ -195,7 +195,7 @@ publish:
   wait_for_reviewers: [] # pr mode + auto_merge: [codex] waits for Codex review
   review_timeout_seconds: 1200
   review_poll_seconds: 30
-  max_review_rounds: 1
+  max_review_rounds: 1 # >1 needs Codex to review every push on its own
   codex_bot_login: chatgpt-codex-connector[bot]
 ```
 
@@ -255,6 +255,10 @@ The outcomes:
   review after the last correction round. It merges once every review thread
   is resolved. With a higher `max_review_rounds`, it waits for the review
   Codex runs on the pushed fix and can bounce again, up to that many rounds.
+  That only works when Codex is set to review every push to a pull request,
+  not just newly opened ones: the dispatcher never requests a review, so
+  without per-push reviews the wait times out and the loop stops with the
+  pull request left open.
 - No finished review within `review_timeout_seconds`, a failed review, or a
   `gh` error: the loop stops and leaves the pull request open. It never
   merges without a finished review.
