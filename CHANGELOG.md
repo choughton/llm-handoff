@@ -114,6 +114,10 @@ This project follows a simple pre-release changelog until the first public tag.
   pull request with an `@codex review` request, for up to
   `max_review_rounds` rounds. A review that does not finish within
   `review_timeout_seconds` stops the loop with the pull request left open.
+- Story pull requests and merge commits now follow the repository's pull
+  request template (`.github/pull_request_template.md`): Summary, Changes,
+  Reviewer notes, and Test plan, with the full reviews, Work Packet, and
+  token usage folded underneath.
 - In `commit_mode: dispatcher`, the planner is now told not to commit the
   handoff file, and the dispatcher enforces it: planner commits that change
   only the handoff are undone with `git reset --soft` (the handoff stays in

@@ -280,7 +280,7 @@ def test_merge_commit_mode_merges_with_a_story_report(tmp_path: Path) -> None:
     message = _git(tmp_path, "log", "-1", "--format=%B")
     assert message.startswith("Merge W9.9: Add a widget")
     assert "Add the widget module." in message
-    assert "Dispatcher Verification" in message
+    assert "## Test plan" in message and "**Verdict:** PASS" in message
     assert "The widget does what the packet asked." in message
     assert "Reported cost: $0.45" in message
     assert "Earlier" not in message
@@ -946,3 +946,70 @@ def test_an_already_resolved_thread_gets_no_reply(
 
     assert outcome == PublishOutcome()
     assert "replies" not in _gh_state(tmp_path)
+
+
+def test_story_report_follows_the_pull_request_template(tmp_path: Path) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    save_gate_section(
+        tmp_path,
+        "## Dispatcher Verification\n\n- **Verdict:** PASS\n"
+        "- **Verification command:** `python -c \"print(1)\"` (exited 0)\n",
+    )
+
+    title, body = build_report(tmp_path, _load_state(tmp_path), VERIFIED)
+
+    assert title == "W9.9: Add a widget"
+    headings = [line for line in body.splitlines() if line.startswith("## ")]
+    assert headings == [
+        "## Summary",
+        "## Changes",
+        "## Reviewer notes",
+        "## Test plan",
+        "## Work Packet",
+    ]
+    template = Path(__file__).resolve().parents[1] / ".github" / "pull_request_template.md"
+    template_headings = [
+        line
+        for line in template.read_text(encoding="utf-8").splitlines()
+        if line.startswith("## ")
+    ]
+    assert headings[: len(template_headings)] == template_headings
+    assert body.split("## Changes")[0].count("Add the widget module.") == 1
+    assert "- `A` `src/widget.py`" in body
+    assert "W9.9 Add a widget" in body
+    assert "- **Audit verdict:** APPROVED" in body
+    assert "<summary>Quality review</summary>" in body
+    assert "The widget does what the packet asked." in body
+    assert "(exited 0)" in body.split("## Test plan")[1]
+    assert body.rstrip().endswith(
+        "Generated with [llm-handoff](https://github.com/choughton/llm-handoff)"
+    )
+
+
+
+def test_reviewer_notes_keep_the_whole_merge_decision(tmp_path: Path) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    handoff = VERIFIED.replace(
+        "## Quality Review",
+        "## Merge Decision\n\n"
+        "- Quality reviewer verdict: APPROVED\n"
+        "- Security reviewer verdict: APPROVED\n"
+        "- Block severity threshold: high\n"
+        "- Blocking findings: 0\n"
+        "- Sub-threshold findings: 1\n\n"
+        "## Quality Review",
+    )
+
+    _title, body = build_report(tmp_path, _load_state(tmp_path), handoff)
+
+    notes = body.split("## Reviewer notes")[1].split("## Test plan")[0]
+    assert "- **Merge decision:**\n  - Quality reviewer verdict: APPROVED" in notes
+    assert "  - Security reviewer verdict: APPROVED" in notes
+    assert "  - Block severity threshold: high" in notes
+    assert "  - Sub-threshold findings: 1" in notes

@@ -74,15 +74,9 @@ _REPORT_BODY_LIMIT = 60000
 # review. A word joiner after `@` keeps the text readable without a mention.
 _MENTION_RE = re.compile(r"(?<![\w.])@(?=[A-Za-z0-9])")
 _WORD_JOINER = "\u2060"
+_FOOTER = "\U0001f916 Generated with [llm-handoff](https://github.com/choughton/llm-handoff)"
 _USAGE_RE = re.compile(r"\] \[DEBUG\] (usage: .+)$")
 _USAGE_FIELD_RE = re.compile(r"(\w+)=(\S+)")
-_REPORT_SECTIONS = (
-    "## Verdict",
-    "## Merge Decision",
-    "## Quality Review",
-    "## Security Review",
-    "## Security Notes",
-)
 
 
 @dataclass(frozen=True)
@@ -801,47 +795,162 @@ def _fetch_json(
 def build_report(
     repo_root: Path, state: StoryState, handoff_content: str
 ) -> tuple[str, str]:
-    """Return the PR title / merge subject and the Markdown report."""
+    """Return the PR title / merge subject and the Markdown report.
+
+    The report follows the repository's pull request template
+    (``.github/pull_request_template.md``): Summary, Changes, Reviewer notes,
+    and Test plan, with the Work Packet and token usage folded underneath.
+    """
 
     title = f"{state.story_id}: {state.story_title}".strip().rstrip(":")
+    objective = _packet_field(state.work_packet, "Objective") or state.story_title
     lines = [
+        "## Summary",
+        "",
+        objective,
+        "",
         f"Story `{state.story_id}`"
         + (f" in epic `{state.epic_id}`" if state.epic_id else "")
-        + ". Implemented, verified, and reviewed through llm-handoff; the "
-        "dispatcher committed the in-scope files and published this branch "
-        "after the work-claim gate and the audit passed.",
+        + f", implemented by the `{state.implementer}` role. The dispatcher "
+        "committed the in-scope files and published this branch after the "
+        "work-claim gate and the audit passed.",
+        "",
+        "## Changes",
+        "",
+        *_change_lines(repo_root, state.base_sha),
+        "",
+        "## Reviewer notes",
+        "",
+        *_reviewer_notes(handoff_content),
+        "## Test plan",
+        "",
+        *_test_plan(repo_root),
         "",
     ]
     if state.work_packet:
-        lines += [_demote(state.work_packet), ""]
-    gate_path = repo_root / GATE_SECTION_PATH
-    if gate_path.is_file():
-        lines += [_demote(gate_path.read_text(encoding="utf-8").strip()), ""]
-    audit = _audit_sections(handoff_content)
-    if audit:
-        lines += ["### Audit", "", _demote(audit, levels=2), ""]
+        lines += [
+            "## Work Packet",
+            "",
+            *_folded("Work Packet", _demote(_without_heading(state.work_packet), levels=2)),
+        ]
     usage = _usage_summary(state)
     if usage:
-        lines += ["### Token Usage", "", *usage, ""]
+        lines += ["## Token usage", "", *_folded(usage[0], "\n".join(usage[2:]))]
+    lines += [_FOOTER, ""]
     body = "\n".join(lines).strip() + "\n"
     if len(body) > _REPORT_BODY_LIMIT:
         body = body[:_REPORT_BODY_LIMIT] + "\n\n(report truncated)\n"
     return title, body
 
 
-def _audit_sections(handoff_content: str) -> str:
-    text = handoff_content.replace("\r\n", "\n")
-    kept: list[str] = []
-    for heading in _REPORT_SECTIONS:
-        start = text.find(f"\n{heading}\n")
-        if start == -1:
-            continue
-        start += 1
-        rest = text[start + len(heading) + 1 :]
-        match = re.search(r"(?m)^## ", rest)
-        end = len(rest) if match is None else match.start()
-        kept.append(f"{heading}\n{rest[:end]}".strip())
-    return "\n\n".join(kept)
+def _change_lines(repo_root: Path, base_sha: str) -> list[str]:
+    files = _git(repo_root, ["diff", "--name-status", f"{base_sha}..HEAD"])
+    commits = _git(repo_root, ["log", "--reverse", "--format=%h %s", f"{base_sha}..HEAD"])
+    lines = [
+        f"- `{parts[0][:1]}` `{parts[-1]}`"
+        for parts in (line.split("\t") for line in files.stdout.splitlines())
+        if len(parts) >= 2
+    ] or ["- No file changes recorded."]
+    commit_lines = [
+        f"- `{sha}` {subject}"
+        for sha, _, subject in (line.partition(" ") for line in commits.stdout.splitlines())
+        if sha
+    ]
+    if commit_lines:
+        lines += ["", "Commits:", "", *commit_lines]
+    return lines
+
+
+def _reviewer_notes(handoff_content: str) -> list[str]:
+    verdict = _first_line_of(_section(handoff_content, "## Verdict"))
+    # The fan-out audit writes a list here (both reviewer verdicts, the
+    # severity threshold, finding counts); keep all of it.
+    decision = [
+        line.strip()
+        for line in _section(handoff_content, "## Merge Decision").splitlines()
+        if line.strip()
+    ]
+    lines = []
+    if verdict:
+        lines.append(f"- **Audit verdict:** {verdict}")
+    if len(decision) == 1 and not decision[0].startswith(("- ", "* ")):
+        lines.append(f"- **Merge decision:** {decision[0]}")
+    elif decision:
+        lines.append("- **Merge decision:**")
+        lines += [
+            "  " + (line if line.startswith(("- ", "* ")) else f"- {line}")
+            for line in decision
+        ]
+    if lines:
+        lines.append("")
+    quality = _section(handoff_content, "## Quality Review")
+    if quality:
+        lines += _folded("Quality review", _demote(quality, levels=2))
+    security = "\n\n".join(
+        part
+        for part in (
+            _section(handoff_content, "## Security Review"),
+            _section(handoff_content, "## Security Notes"),
+        )
+        if part
+    )
+    if security:
+        lines += _folded("Security review", _demote(security, levels=2))
+    return lines or ["- No audit sections were recorded.", ""]
+
+
+def _test_plan(repo_root: Path) -> list[str]:
+    gate_path = repo_root / GATE_SECTION_PATH
+    if not gate_path.is_file():
+        return ["- The work-claim gate result was not recorded."]
+    return [
+        "The dispatcher re-ran the Work Packet's verification command outside "
+        "the agent sandbox before the audit:",
+        "",
+        _demote(_without_heading(gate_path.read_text(encoding="utf-8")), levels=2),
+    ]
+
+
+def _folded(summary: str, content: str) -> list[str]:
+    return [
+        "<details>",
+        f"<summary>{summary}</summary>",
+        "",
+        content.strip(),
+        "",
+        "</details>",
+        "",
+    ]
+
+
+def _section(text: str, heading: str) -> str:
+    """Return the body under ``heading`` (a ``## `` heading), without it."""
+
+    normalized = text.replace("\r\n", "\n")
+    start = normalized.find(f"\n{heading}\n")
+    if start == -1:
+        return ""
+    rest = normalized[start + len(heading) + 2 :]
+    match = re.search(r"(?m)^## ", rest)
+    return (rest if match is None else rest[: match.start()]).strip()
+
+
+def _without_heading(markdown: str) -> str:
+    return re.sub(r"\A\s*#{1,6} [^\n]*\n", "", markdown).strip()
+
+
+def _first_line_of(text: str) -> str:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _packet_field(work_packet: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^- \*\*{re.escape(name)}:\*\*[ \t]*(.*?)(?=^- \*\*|\Z)", work_packet
+    )
+    return " ".join(match.group(1).split()) if match else ""
 
 
 def _usage_summary(state: StoryState) -> list[str]:

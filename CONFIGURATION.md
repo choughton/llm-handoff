@@ -203,10 +203,12 @@ publish:
 - `merge-commit`: before an implementer's first dispatch for a story, the
   dispatcher creates `llm-handoff/<story-id>-<title>` from the base branch.
   After the audit passes, it merges that branch into the base with `--no-ff`.
-  The merge commit carries a report built from data the loop already has: the
-  Work Packet, the passing `## Dispatcher Verification` result, both reviewers'
-  verdicts, and the story's `usage:` lines with the reported cost. Nothing is
-  pushed.
+  The merge commit carries a report built from data the loop already has, in
+  the shape of `.github/pull_request_template.md`: Summary (the Work Packet
+  objective), Changes (files and commits), Reviewer notes (both reviewers'
+  verdicts, with the full reviews folded), and Test plan (the passing
+  `## Dispatcher Verification` result), followed by the Work Packet and the
+  story's `usage:` lines with the reported cost. Nothing is pushed.
 - `pr`: same story branch. After the audit passes, the dispatcher pushes it,
   opens a pull request with that report as the body (`gh pr create`), and
   with `auto_merge: true` merges it (`gh pr merge --merge --delete-branch`)
