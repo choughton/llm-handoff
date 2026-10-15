@@ -133,7 +133,8 @@ The dispatcher should name and isolate failure modes rather than guessing:
 - agent self-loop;
 - missing route after dispatch;
 - malformed validator output;
-- malformed close/finalizer output.
+- malformed close/finalizer output;
+- protected control file modified outside the Work Packet scope.
 
 When a failure mode is detected, the safe default is to pause or dispatch a
 validator role with a scoped prompt.
@@ -145,6 +146,27 @@ hash, touch only the handoff file, preserve critical frontmatter, leave dirty
 state unchanged except for the handoff, and pass validation. If that producer
 repair fails, the planner gets one cleanup-only attempt. If the planner cannot
 operationalize the handoff, the dispatcher aborts to the user.
+
+## Protected Control Files
+
+Roles read `AGENTS.md`, the handoff prompts, provider agent files, and the
+dispatch config as instructions. A role that edits those files can change what
+the next role is told to do, so the dispatcher treats them as protected.
+
+Before every dispatch (role dispatches, finalizer, validator runs, and the
+handoff repair lane) the orchestrator hashes every file that matches
+`protected_paths` and records `HEAD`. After the dispatch it compares the
+hashes and lists protected files changed in any new commits, so a change that
+was committed and then reverted on disk still counts. Nested repositories and
+worktrees inside a protected directory are skipped. The handoff file itself is
+never protected.
+
+A change is allowed when the Work Packet the role received lists the path, or
+a parent directory ending in `/`, under `Files in scope`. Any other change
+fails closed. The dispatcher logs a `protected_file_modified:` error, rewrites
+the handoff to `next_agent: user` with the changed paths and the agent's
+handoff text preserved in a fenced block, and skips post-dispatch validation
+for that cycle. It does not revert the changes; a human reviews them.
 
 ## Dispatch Lock
 

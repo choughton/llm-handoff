@@ -11,6 +11,19 @@ backend_resume: true
 planner_resume: true
 planner_api_key_env: false
 
+# Control files a role may only change when its Work Packet lists them under
+# Files in scope. Any other change routes the handoff to user. [] disables.
+protected_paths:
+  - AGENTS.md
+  - docs/handoff/HANDBOOK.md
+  - docs/handoff/*_PROMPT.md
+  - docs/handoff/README.md
+  - dispatch_config.yaml
+  - .claude/**
+  - .codex/**
+  - .gemini/**
+  - .githooks/**
+
 agents:
   planner:
     provider: gemini

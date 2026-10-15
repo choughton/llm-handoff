@@ -107,6 +107,14 @@ routed to `user`:
   `Acceptance Criteria` headings is still accepted as a legacy alias, but it
   emits a `task_assignment_deprecated` warning.
 
+`Files in scope` also controls edits to protected control files such as
+`AGENTS.md`, the handoff prompts, `dispatch_config.yaml`, and the `.claude/`,
+`.codex/`, and `.gemini/` directories. A role that changes one of these
+without the path listed under `Files in scope` fails closed: the dispatcher
+rewrites the handoff to route to `user` with a `protected_file_modified:`
+error. List the exact path, or a directory ending in `/`, when a role is
+meant to edit a control file.
+
 ## Rules
 
 - Use canonical role values in `next_agent`; provider names are adapter examples only.

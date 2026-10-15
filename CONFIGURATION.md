@@ -151,6 +151,38 @@ Codex roles previously inherited `OPENAI_API_KEY`. A Codex setup that
 authenticates with an API key instead of `codex login` now needs
 `use_api_key_env: true` on that role.
 
+## Protected Control Files
+
+Default:
+
+```yaml
+protected_paths:
+  - AGENTS.md
+  - docs/handoff/HANDBOOK.md
+  - docs/handoff/*_PROMPT.md
+  - docs/handoff/README.md
+  - dispatch_config.yaml
+  - .claude/**
+  - .codex/**
+  - .gemini/**
+  - .githooks/**
+```
+
+Patterns are relative to the repository root. `*` matches within one path
+segment and `**` matches any depth. Missing paths are ignored.
+
+Before each dispatch the dispatcher hashes the matching files. After the
+dispatch, a protected file that changed on disk or in the new commits, and
+that the role's Work Packet did not list under `Files in scope`, stops the
+loop: the handoff is rewritten to route to `user` with a
+`protected_file_modified:` error and the changed paths. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#protected-control-files).
+
+Set `protected_paths: []` to turn the check off. A config file passed with
+`--config` under another name is not protected unless you add its path. If a
+provider CLI writes its own state under one of these directories in your
+setup, narrow the pattern rather than removing the check.
+
 ## Supervised Dispatch
 
 The optional supervisor wrapper is configured through command-line options, not

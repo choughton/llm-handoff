@@ -45,6 +45,20 @@ DEFAULT_HANDOFF_PATH = Path("docs/handoff/HANDOFF.md")
 DEFAULT_PROJECT_STATE_PATH = Path("PROJECT_STATE.md")
 DEFAULT_SHARED_INIT_PROMPT_PATH = Path("docs/handoff/SHARED_REPO_INIT_PROMPT.md")
 DEFAULT_CONFIG_PATH = Path("dispatch_config.yaml")
+# Control files the roles read as instructions. A dispatch that changes one of
+# these without listing it under the Work Packet's Files in scope routes the
+# handoff to user. Patterns are repo-relative; `**` matches any depth.
+DEFAULT_PROTECTED_PATHS: tuple[str, ...] = (
+    "AGENTS.md",
+    "docs/handoff/HANDBOOK.md",
+    "docs/handoff/*_PROMPT.md",
+    "docs/handoff/README.md",
+    "dispatch_config.yaml",
+    ".claude/**",
+    ".codex/**",
+    ".gemini/**",
+    ".githooks/**",
+)
 CODEX_OUTPUT_SCHEMA_PATH = (
     Path("llm_handoff") / "schemas" / "codex_final_response.schema.json"
 )
@@ -265,6 +279,28 @@ class DispatchConfig(BaseModel):
     planner_resume: bool = GEMINI_RESUME_DEFAULT
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
+    protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
+
+    @field_validator("protected_paths", mode="after")
+    @classmethod
+    def _validate_protected_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for pattern in value:
+            candidate = pattern.strip().replace("\\", "/")
+            while candidate.startswith("./"):
+                candidate = candidate[2:]
+            if (
+                not candidate
+                or candidate.startswith("/")
+                or re.match(r"^[A-Za-z]:", candidate)
+                or ".." in candidate.split("/")
+            ):
+                raise ValueError(
+                    f"protected_paths entry `{pattern}` must be a relative path "
+                    "or glob inside the repository."
+                )
+            normalized.append(candidate)
+        return tuple(normalized)
 
     @field_validator("repo_root", mode="after")
     @classmethod

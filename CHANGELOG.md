@@ -20,6 +20,10 @@ This project follows a simple pre-release changelog until the first public tag.
   of the dispatcher's environment. Per-role `env_passthrough` adds names and
   `env_mode: inherit` restores the old copy. Codex roles need
   `use_api_key_env: true` to receive `OPENAI_API_KEY`.
+- Protected control files: a dispatch that changes `AGENTS.md`, handoff
+  prompts, the dispatch config, or provider agent directories without listing
+  them in the Work Packet now routes the handoff to `user` with a
+  `protected_file_modified:` error. Configure with `protected_paths`.
 
 ## 0.0.0
 

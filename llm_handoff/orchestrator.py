@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from hashlib import sha256
 import inspect
+import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -45,6 +48,8 @@ from llm_handoff.router import (
 from llm_handoff.text_io import read_dispatch_text
 from llm_handoff.validator import (
     ValidationResult,
+    _work_packet_block,
+    _work_packet_fields,
     parse_validation_output,
     validate_handoff,
 )
@@ -197,6 +202,8 @@ THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
 
 LogFn = Callable[[str, str], None]
 _COMMIT_SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
+PROTECTED_FILE_MODIFIED_PREFIX = "protected_file_modified:"
+_GLOB_CHARS = frozenset("*?[")
 
 
 def _render_prompt(template: str, handoff_path: Path, **fields: object) -> str:
@@ -238,6 +245,13 @@ class HandoffRepairAttempt:
     succeeded: bool
     validation_result: ValidationResult | None = None
     failure_reason: str | None = None
+    protected_violation: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedFileSnapshot:
+    head_sha: str | None
+    digests: tuple[tuple[str, str], ...]
 
 
 def run_loop(
@@ -487,7 +501,18 @@ def run_loop(
                 "DISPATCH",
                 "Dispatching auditor ledger-updater for epic close.",
             )
+            protected_before = _capture_protected_snapshot(config)
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
+            if _enforce_protected_files(
+                config=config,
+                before=protected_before,
+                role_label="finalizer",
+                handoff_content=handoff_content,
+                log=log_fn,
+            ):
+                previous_cycle = current_cycle
+                consecutive_failures = 0
+                continue
             parse_error = ledger_result.parse_error
             if parse_error:
                 _run_epic_close_validator(config, parse_error, log_fn)
@@ -515,6 +540,7 @@ def run_loop(
             previous_cycle = current_cycle
             consecutive_failures = 0
         else:
+            protected_before = _capture_protected_snapshot(config)
             dispatch_result, previous_agent = _dispatch_route(
                 current_cycle.route,
                 config,
@@ -532,6 +558,16 @@ def run_loop(
                     )
                 ),
             )
+            if _enforce_protected_files(
+                config=config,
+                before=protected_before,
+                role_label=previous_agent,
+                handoff_content=handoff_content,
+                log=log_fn,
+            ):
+                previous_cycle = current_cycle
+                consecutive_failures = 0
+                continue
             post_dispatch_handoff_content = _read_required_text(
                 config.handoff_full_path
             )
@@ -620,6 +656,10 @@ def run_loop(
                     previous_agent=previous_agent,
                     log=log_fn,
                 )
+                if repair_attempt.protected_violation:
+                    previous_cycle = current_cycle
+                    consecutive_failures = 0
+                    continue
                 if repair_attempt.succeeded and repair_attempt.validation_result:
                     validation_result = repair_attempt.validation_result
                     self_loop_kind = _self_loop_kind(validation_result)
@@ -945,12 +985,26 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         "AGENT",
         f"Running one-shot producer repair for {config.handoff_path.as_posix()} only.",
     )
+    protected_before = _capture_protected_snapshot(config)
     repair_result = _dispatch_handoff_hygiene_repair(
         config=config,
         previous_agent=previous_agent,
         validation_result=validation_result,
         log=log,
     )
+    if repair_result is not None and _enforce_protected_files(
+        config=config,
+        before=protected_before,
+        role_label=f"{previous_agent} (handoff repair)",
+        handoff_content=handoff_content,
+        log=log,
+    ):
+        return HandoffRepairAttempt(
+            attempted=True,
+            succeeded=False,
+            failure_reason="protected control file modified",
+            protected_violation=True,
+        )
     if repair_result is None:
         _log(log, "ERROR", f"No supported producer repair path for {previous_agent}.")
         return HandoffRepairAttempt(
@@ -1288,6 +1342,284 @@ def _run_git_stdout(repo_root: Path, command: list[str]) -> str | None:
     return completed.stdout.strip()
 
 
+def _capture_protected_snapshot(
+    config: DispatchConfig,
+) -> ProtectedFileSnapshot | None:
+    """Hash every protected control file before a dispatch.
+
+    Uses ``_run_git_stdout`` directly so the snapshot does not consume the
+    HEAD/diff helpers that the handoff repair postconditions rely on.
+    """
+    if not config.protected_paths:
+        return None
+    return ProtectedFileSnapshot(
+        head_sha=_run_git_stdout(config.repo_root, ["git", "rev-parse", "HEAD"]),
+        digests=_protected_file_digests(config),
+    )
+
+
+def _protected_file_digests(config: DispatchConfig) -> tuple[tuple[str, str], ...]:
+    handoff_rel = _handoff_relative_path(config)
+    digests: dict[str, str] = {}
+    for pattern in config.protected_paths:
+        for path in _protected_candidates(config.repo_root, pattern):
+            relative = path.relative_to(config.repo_root).as_posix()
+            if relative in digests or _same_repo_path(relative, handoff_rel):
+                continue
+            if not _protected_path_matches(relative, config.protected_paths):
+                continue
+            digests[relative] = _file_digest(path)
+    return tuple(sorted(digests.items()))
+
+
+def _protected_candidates(repo_root: Path, pattern: str) -> list[Path]:
+    parts = pattern.split("/")
+    literal: list[str] = []
+    for part in parts:
+        if any(char in _GLOB_CHARS for char in part):
+            break
+        literal.append(part)
+    base = repo_root.joinpath(*literal) if literal else repo_root
+    if len(literal) == len(parts):
+        return [base] if base.is_file() else []
+    if not base.is_dir():
+        return []
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        # Skip .git and nested repositories or worktrees (for example
+        # .claude/worktrees/*): they are not this repo's control files.
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name != ".git"
+            and not os.path.exists(os.path.join(dirpath, name, ".git"))
+        ]
+        files.extend(Path(dirpath, name) for name in filenames)
+    return files
+
+
+def _file_digest(path: Path) -> str:
+    try:
+        return sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "unreadable"
+
+
+def _protected_path_matches(path: str, patterns: tuple[str, ...]) -> bool:
+    path_parts = _path_match_parts(path)
+    return any(
+        _glob_parts_match(path_parts, _path_match_parts(pattern))
+        for pattern in patterns
+    )
+
+
+def _path_match_parts(path: str) -> tuple[str, ...]:
+    normalized = path.replace("\\", "/").strip("/")
+    if os.name == "nt":
+        normalized = normalized.lower()
+    return tuple(part for part in normalized.split("/") if part)
+
+
+def _glob_parts_match(
+    path_parts: tuple[str, ...], pattern_parts: tuple[str, ...]
+) -> bool:
+    if not pattern_parts:
+        return not path_parts
+    head, rest = pattern_parts[0], pattern_parts[1:]
+    if head == "**":
+        return any(
+            _glob_parts_match(path_parts[index:], rest)
+            for index in range(len(path_parts) + 1)
+        )
+    if not path_parts:
+        return False
+    return fnmatchcase(path_parts[0], head) and _glob_parts_match(path_parts[1:], rest)
+
+
+def _same_repo_path(first: str | None, second: str | None) -> bool:
+    if first is None or second is None:
+        return False
+    return _path_match_parts(first) == _path_match_parts(second)
+
+
+def _handoff_relative_path(config: DispatchConfig) -> str | None:
+    try:
+        return config.handoff_full_path.relative_to(config.repo_root).as_posix()
+    except ValueError:
+        return None
+
+
+def _protected_file_changes(
+    config: DispatchConfig,
+    before: ProtectedFileSnapshot,
+) -> tuple[str, ...]:
+    after = _capture_protected_snapshot(config)
+    if after is None:
+        return ()
+    before_digests = dict(before.digests)
+    after_digests = dict(after.digests)
+    changed = {
+        path
+        for path in before_digests.keys() | after_digests.keys()
+        if before_digests.get(path) != after_digests.get(path)
+    }
+    if before.head_sha and after.head_sha and before.head_sha != after.head_sha:
+        # A change committed and then reverted on disk still counts.
+        output = _run_git_stdout(
+            config.repo_root,
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "--no-renames",
+                f"{before.head_sha}..{after.head_sha}",
+            ],
+        )
+        handoff_rel = _handoff_relative_path(config)
+        for line in (output or "").splitlines():
+            relative = line.strip().replace("\\", "/")
+            if not relative or _same_repo_path(relative, handoff_rel):
+                continue
+            if _protected_path_matches(relative, config.protected_paths):
+                changed.add(relative)
+    return tuple(sorted(changed))
+
+
+def _work_packet_scope(handoff_content: str) -> tuple[str, ...]:
+    block = _work_packet_block(handoff_content)
+    if block is None:
+        return ()
+    value = _work_packet_fields(block).get("Files in scope", "")
+    entries: list[str] = []
+    for raw_entry in re.split(r"[,;]", value):
+        entry = raw_entry.strip().strip("`'\"").strip().replace("\\", "/")
+        while entry.startswith("./"):
+            entry = entry[2:]
+        if entry:
+            entries.append(entry)
+    return tuple(entries)
+
+
+def _is_in_work_packet_scope(path: str, scope: tuple[str, ...]) -> bool:
+    path_parts = _path_match_parts(path)
+    for entry in scope:
+        entry_parts = _path_match_parts(entry)
+        if not entry_parts:
+            continue
+        if entry.endswith("/"):
+            if path_parts[: len(entry_parts)] == entry_parts:
+                return True
+            continue
+        if _glob_parts_match(path_parts, entry_parts):
+            return True
+    return False
+
+
+def _enforce_protected_files(
+    *,
+    config: DispatchConfig,
+    before: ProtectedFileSnapshot | None,
+    role_label: str,
+    handoff_content: str,
+    log: LogFn,
+) -> bool:
+    """Fail closed when a dispatch changed protected control files.
+
+    Returns True when the handoff was rewritten to route to ``user``; the
+    caller must not run further gates or dispatches for this cycle.
+    """
+    if before is None:
+        return False
+    changed = _protected_file_changes(config, before)
+    if not changed:
+        return False
+
+    scope = _work_packet_scope(handoff_content)
+    violations = tuple(
+        path for path in changed if not _is_in_work_packet_scope(path, scope)
+    )
+    allowed = tuple(path for path in changed if path not in violations)
+    if allowed:
+        _log(
+            log,
+            "INFO",
+            "Protected file changes listed in the Work Packet Files in scope: "
+            f"{', '.join(allowed)}",
+        )
+    if not violations:
+        return False
+
+    error = (
+        f"{PROTECTED_FILE_MODIFIED_PREFIX} {role_label} changed protected control "
+        f"files outside its Work Packet scope: {', '.join(violations)}"
+    )
+    _log(log, "ERROR", error)
+    _write_protected_file_escalation(
+        config,
+        role_label=role_label,
+        violations=violations,
+        error=error,
+    )
+    _log(
+        log,
+        "ERROR",
+        f"Routed {config.handoff_path.as_posix()} to user. Review the protected "
+        "file changes before resuming dispatch.",
+    )
+    return True
+
+
+def _write_protected_file_escalation(
+    config: DispatchConfig,
+    *,
+    role_label: str,
+    violations: tuple[str, ...],
+    error: str,
+) -> None:
+    previous_content = _read_required_text(config.handoff_full_path)
+    reason = (
+        f"{PROTECTED_FILE_MODIFIED_PREFIX} {role_label} changed protected control "
+        "files outside its Work Packet scope."
+    )
+    lines = [
+        "---",
+        "next_agent: user",
+        f"reason: {json.dumps(reason)}",
+        "producer: dispatcher",
+        "status: escalate_to_user",
+        "---",
+        "",
+        "# Dispatcher Escalation: Protected Control File Modified",
+        "",
+        error,
+        "",
+        "Changed protected paths:",
+        "",
+        *[f"- `{path}`" for path in violations],
+        "",
+        "The dispatcher stopped routing work. Review these changes before "
+        "resuming. Revert them if they were not intended. If the role should "
+        "edit them, list them under **Files in scope** in the Work Packet. "
+        "Then rewrite this handoff with the next route.",
+        "",
+        "## Handoff Content After The Dispatch",
+        "",
+    ]
+    if previous_content is None:
+        lines.append("The handoff file was missing after the dispatch.")
+    else:
+        fence = "~~~~"
+        while fence in previous_content:
+            fence += "~"
+        lines.extend([f"{fence}markdown", previous_content.rstrip("\n"), fence])
+    config.handoff_full_path.parent.mkdir(parents=True, exist_ok=True)
+    config.handoff_full_path.write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 def _record_failure(
     config: DispatchConfig,
     consecutive_failures: int,
@@ -1323,6 +1655,8 @@ def _run_validator(
     label: str,
     log: LogFn,
 ) -> None:
+    handoff_content = _read_required_text(config.handoff_full_path) or ""
+    protected_before = _capture_protected_snapshot(config)
     result = _invoke_support_callable(
         subagent_name,
         prompt,
@@ -1333,6 +1667,14 @@ def _run_validator(
         repo_root=config.repo_root,
     )
     _log(log, "AGENT", f"{label} exited with code {result.exit_code}")
+    if _enforce_protected_files(
+        config=config,
+        before=protected_before,
+        role_label=f"validator ({subagent_name})",
+        handoff_content=handoff_content,
+        log=log,
+    ):
+        return
 
     if result.exit_code != 0:
         if result.stderr.strip():
@@ -1951,6 +2293,14 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         "Planner API env:    PRESERVE configured provider API key"
         if config.planner_api_key_env_enabled
         else "Planner API env:    STRIP configured provider API keys",
+    )
+    _log(
+        log,
+        "INFO",
+        f"Protected files:    ON ({len(config.protected_paths)} patterns; "
+        "out-of-scope changes route to user)"
+        if config.protected_paths
+        else "Protected files:    OFF (protected_paths is empty)",
     )
 
 
