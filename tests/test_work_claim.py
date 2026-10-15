@@ -3561,7 +3561,6 @@ def test_run_loop_puts_implementer_work_on_a_story_branch(
     assert branch.startswith("llm-handoff/epic-1-s1-")
     assert branch != base_branch
     assert _git(tmp_path, "log", "-1", "--format=%s").startswith(STORY_ID)
-    assert (tmp_path / "logs" / "dispatch" / "publish" / "gate.md").is_file()
     assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
 
 
@@ -3688,6 +3687,60 @@ def test_run_loop_writes_the_review_bounce_from_publish(
     review = published[0]["review"]
     assert review.reviewers == ("codex",) and review.max_rounds == 1
     assert config.handoff_full_path.read_text(encoding="utf-8") == bounce
+
+
+@pytest.mark.parametrize("mode", ["pr", "local"])
+def test_run_loop_settles_deferred_findings_after_a_planner_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    mode: str,
+) -> None:
+    from llm_handoff.publish import PublishOutcome
+
+    _init_repo(
+        tmp_path,
+        handoff_content=_claim(
+            "a" * 40, status="verified_pass", producer="validator", next_agent="planner"
+        ),
+    )
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path, commit_mode="dispatcher", publish={"mode": mode}
+    )
+    decided = _claim(
+        None, status="verified_fail", producer="planner", next_agent="backend"
+    )
+    settled: list[dict[str, object]] = []
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        path.write_text(decided, encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_settle(**kwargs: object) -> PublishOutcome:
+        settled.append(kwargs)
+        return PublishOutcome(stop=True, exit_code=0, message="paused")
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_args, **_kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="backend"
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "settle_deferred_findings", fake_settle)
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    assert exit_code == 0
+    if mode == "local":
+        assert settled == []
+        return
+    [call] = settled
+    assert call["handoff_content"] == decided
+    assert call["remote"] == "origin"
+    assert call["repo_root"] == config.repo_root
 
 
 @pytest.mark.parametrize("commit_mode", ["dispatcher", "agent"])
