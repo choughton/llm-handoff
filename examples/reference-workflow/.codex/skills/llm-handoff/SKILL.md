@@ -86,4 +86,5 @@ contract, document the contradiction and route with
 - Run the focused tests or checks that cover the change.
 - Commit the backend change if the repository protocol asks agents to commit locally.
 - Rewrite `docs/handoff/HANDOFF.md` with concrete files changed, checks run, blockers if any, and the next role.
+- Preserve the assignment's `## Work Packet` section in the handback; the auditor and the dispatcher's work-claim gate read it.
 - Leave `git push` to the repository's authorization rules.

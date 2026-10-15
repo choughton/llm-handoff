@@ -15,6 +15,12 @@ This project follows a simple pre-release changelog until the first public tag.
 - Added `python -m llm_handoff init` for copying the reference workflow into a
   target repository.
 - Promoted the ported dispatcher tests into the public full-suite gate.
+- Added an opt-in deterministic work-claim gate (`enforce_work_packet`) that
+  checks `ready_for_review` claims against the Work Packet before dispatching
+  the auditor and bounces failures with evidence.
+- Added configurable `scanners` to the work-claim gate (gitleaks, semgrep,
+  bandit, pip-audit, or any installed tool) with diff-scoped placeholders,
+  per-scanner timeouts, and `required` handling for missing executables.
 - Preserved Apache-2.0 licensing.
 
 ## 0.0.0

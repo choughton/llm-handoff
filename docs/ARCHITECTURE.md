@@ -24,6 +24,7 @@ Route next_agent
 Invoke provider CLI
 Capture output and logs
 Validate updated HANDOFF.md
+Verify the work claim (opt-in gate)
 Continue, pause, or escalate
 ```
 
@@ -37,6 +38,9 @@ Continue, pause, or escalate
 - `llm_handoff.init_workflow`: target-repo reference workflow initialization.
 - `llm_handoff.router`: handoff parsing and route selection.
 - `llm_handoff.validator`: post-dispatch handoff validation.
+- `llm_handoff.work_claim`: opt-in deterministic work-claim gate (Work Packet
+  parsing, `scope_sha` and diff-scope checks, verification command execution,
+  bounce handoff).
 - `llm_handoff.orchestrator`: dispatch loop and failure-mode handling.
 - `llm_handoff.agents`: compatibility facade for older tests and imports; new
   runtime code should use the layered modules directly.
@@ -133,7 +137,10 @@ The dispatcher should name and isolate failure modes rather than guessing:
 - agent self-loop;
 - missing route after dispatch;
 - malformed validator output;
-- malformed close/finalizer output.
+- malformed close/finalizer output;
+- work-claim gate failure (opt-in): missing or unparseable Work Packet,
+  `scope_sha` not at HEAD, scope violation, uncommitted changes, a failed,
+  missing, or timed-out configured scanner, or a failed verification command.
 
 When a failure mode is detected, the safe default is to pause or dispatch a
 validator role with a scoped prompt.
@@ -145,6 +152,76 @@ hash, touch only the handoff file, preserve critical frontmatter, leave dirty
 state unchanged except for the handoff, and pass validation. If that producer
 repair fails, the planner gets one cleanup-only attempt. If the planner cannot
 operationalize the handoff, the dispatcher aborts to the user.
+
+## Work-Claim Gate
+
+`validate_handoff` checks the shape of a completion claim: frontmatter fields,
+a SHA that exists, a populated evidence block. It does not check that the work
+was done. By default that judgment belongs to the auditor, which costs a full
+agent session even when the tests already fail.
+
+`enforce_work_packet: true` adds a deterministic gate in
+`llm_handoff.work_claim`. It runs right after post-dispatch validation succeeds
+for a `status: ready_for_review` handoff from `backend` or `frontend`:
+
+1. Parse the `## Work Packet` from the handoff the implementer received:
+   `Files in scope`, `Files out of bounds`, and `Verification command`. A
+   missing or unparseable packet is an error (`work_packet_missing`,
+   `work_packet_unparseable`), not a skip.
+2. Require `scope_sha` to resolve to the current HEAD of `repo_root`
+   (`scope_sha_not_head`). A pre-existing commit pasted as `scope_sha` fails.
+   Commits above `scope_sha` that touch only the handoff file are tolerated,
+   because some repository protocols commit the handoff after writing the SHA
+   into it.
+3. Diff the pre-dispatch HEAD against the current HEAD and require every
+   changed path to be inside `Files in scope` or to be the handoff file. Any
+   changed path under `Files out of bounds` is a `scope_violation`. New
+   uncommitted changes outside the handoff file are `uncommitted_changes`,
+   because the verification command runs against the working tree and the
+   claim must be reproducible from `scope_sha`.
+4. Run the configured `scanners` (for example gitleaks, semgrep, bandit, and
+   pip-audit) in config order, each through the shell in `repo_root` with its
+   own `timeout_ms`, with `{diff_range}`, `{changed_files}`,
+   `{changed_py_files}`, and `{repo_root}` substituted from the values the
+   earlier checks already computed. Scanners run only when steps 2 and 3
+   passed, and every scanner runs even after one fails so a single bounce
+   carries every finding. A non-zero exit is `scanner_failed:<name>`, a
+   timeout is `scanner_timeout:<name>`, and a missing executable is
+   `scanner_missing:<name>` for a required scanner or a WARN-level skip for an
+   optional one. A command whose placeholders cannot be filled is
+   `scanner_config_invalid:<name>`, rejected at config load. The list is
+   empty by default.
+5. Run the `Verification command` through the shell in `repo_root`, bounded
+   by `work_packet_verification_timeout_seconds`. A non-zero exit or a timeout
+   is `verification_failed`. The command, exit code, and a bounded output tail
+   go to the dispatch log, as do scanner output tails.
+
+Each check has its own error prefix so repair and recovery code can key on it.
+On any failure the dispatcher does not dispatch the auditor. It rewrites
+`HANDOFF.md` into a bounce: `status: verified_fail`, `producer: validator`, a
+quoted `reason` naming the failed checks, a `## Dispatcher Verification`
+section with the evidence, the original `## Work Packet` carried forward
+verbatim, and the implementer's handback preserved under `## Prior Handback`.
+The bounce goes through `record_status_transition`, so the three-fix circuit
+breaker counts it. Scope, SHA, worktree, scanner, and verification failures
+route back to the same implementer. A missing or unusable Work Packet routes
+to `planner`, which owns that artifact. Unreadable Git state and a scanner
+command that cannot be rendered escalate to `user`.
+
+Running the Work Packet's verification command is execution of agent-written
+text. The dispatcher already launches the implementer with provider
+permissions disabled in the same repository, so the planner and implementer
+could have run that command themselves; the gate adds no new exposure. It does
+mean the dispatcher process, not a provider CLI, runs the command, so keep
+`repo_root` pointed at a repository whose handoff files you trust (see
+`SECURITY.md`).
+
+Scanner commands sit on the other side of that boundary. They come from
+`dispatch_config.yaml`, which the operator writes, so they are trusted
+operator-authored input rather than agent-written text. The dispatcher still
+does not sandbox them: a scanner runs with the same permissions as the
+dispatcher and as the agents it launches, in the same repository, and the only
+limits are its `timeout_ms` and the process-tree kill on timeout.
 
 ## Dispatch Lock
 

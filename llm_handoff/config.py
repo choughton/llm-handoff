@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
+import string
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -31,6 +33,12 @@ SUBAGENT_TIMEOUT_MS = 900_000
 
 POLL_INTERVAL_SECONDS = 30
 MAX_CONSECUTIVE_FAILURES = 3
+WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS = 600
+SCANNER_TIMEOUT_MS = 300_000
+SCANNER_PLACEHOLDERS = frozenset(
+    {"diff_range", "changed_files", "changed_py_files", "repo_root"}
+)
+_SCANNER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 GEMINI_MAX_RETRIES = 3
 GEMINI_RETRY_BASE_SECONDS = 60
@@ -168,6 +176,74 @@ class NormalizerConfig(BaseModel):
         return value
 
 
+def scanner_command_placeholders(command: str) -> frozenset[str]:
+    """Return the placeholders a scanner command references.
+
+    Raises ``ValueError`` for an unknown placeholder, a format spec or
+    conversion, or unbalanced braces. Literal braces must be doubled.
+    """
+
+    found: set[str] = set()
+    try:
+        parsed = list(string.Formatter().parse(command))
+    except ValueError as exc:
+        raise ValueError(f"command has unbalanced braces ({exc}).") from exc
+    for _literal, field_name, format_spec, conversion in parsed:
+        if field_name is None:
+            continue
+        if field_name not in SCANNER_PLACEHOLDERS or format_spec or conversion:
+            known = ", ".join(sorted(f"{{{name}}}" for name in SCANNER_PLACEHOLDERS))
+            raise ValueError(
+                f"command references unknown placeholder `{{{field_name}}}`; "
+                f"known placeholders are {known} and literal braces must be "
+                "doubled."
+            )
+        found.add(field_name)
+    return frozenset(found)
+
+
+class ScannerConfig(BaseModel):
+    """One operator-configured scanner run by the work-claim gate.
+
+    ``command`` is operator-authored shell text, run in ``repo_root`` with the
+    placeholders from ``SCANNER_PLACEHOLDERS`` substituted.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    command: str
+    timeout_ms: int = SCANNER_TIMEOUT_MS
+    required: bool = True
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if _SCANNER_NAME_RE.fullmatch(value) is None:
+            raise ValueError(
+                "scanner name must start with a letter or digit and contain only "
+                f"letters, digits, `.`, `_`, or `-`; got `{value}`."
+            )
+        return value
+
+    @field_validator("timeout_ms", mode="after")
+    @classmethod
+    def _validate_timeout_ms(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("scanner timeout_ms must be at least 1.")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_command(self) -> ScannerConfig:
+        if not self.command.strip():
+            raise ValueError(f"scanner_config_invalid:{self.name}: command is empty.")
+        try:
+            scanner_command_placeholders(self.command)
+        except ValueError as exc:
+            raise ValueError(f"scanner_config_invalid:{self.name}: {exc}") from exc
+        return self
+
+
 def _default_agent_configs() -> dict[AgentRole, AgentConfig]:
     return {
         role: AgentConfig.model_validate(_agent_defaults_for_provider(role, provider))
@@ -229,6 +305,11 @@ class DispatchConfig(BaseModel):
     planner_resume: bool = GEMINI_RESUME_DEFAULT
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
+    enforce_work_packet: bool = False
+    work_packet_verification_timeout_seconds: int = (
+        WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS
+    )
+    scanners: tuple[ScannerConfig, ...] = ()
 
     @field_validator("repo_root", mode="after")
     @classmethod
@@ -272,6 +353,30 @@ class DispatchConfig(BaseModel):
     def _validate_max_consecutive_failures(cls, value: int) -> int:
         if value < 1:
             raise ValueError("max_consecutive_failures must be at least 1.")
+        return value
+
+    @field_validator("work_packet_verification_timeout_seconds", mode="after")
+    @classmethod
+    def _validate_work_packet_verification_timeout(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError(
+                "work_packet_verification_timeout_seconds must be at least 1."
+            )
+        return value
+
+    @field_validator("scanners", mode="after")
+    @classmethod
+    def _validate_scanners(
+        cls,
+        value: tuple[ScannerConfig, ...],
+    ) -> tuple[ScannerConfig, ...]:
+        seen: set[str] = set()
+        for scanner in value:
+            if scanner.name in seen:
+                raise ValueError(
+                    f"scanner names must be unique; `{scanner.name}` repeats."
+                )
+            seen.add(scanner.name)
         return value
 
     @property

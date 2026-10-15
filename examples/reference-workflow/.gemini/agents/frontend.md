@@ -53,3 +53,4 @@ Do not use stale command output from a previous session.
 - Run the focused frontend checks for the changed surface.
 - Commit the frontend change if the repository protocol asks agents to commit locally.
 - Rewrite `docs/handoff/HANDOFF.md` with concrete files changed, checks run, screenshots or browser verification when relevant, and the next role.
+- Preserve the assignment's `## Work Packet` section in the handback; the auditor and the dispatcher's work-claim gate read it.

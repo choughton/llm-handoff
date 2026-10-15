@@ -100,6 +100,129 @@ When `planner_api_key_env` is `false`, planner launches strip
 When `planner_api_key_env` is `true`, `GEMINI_API_KEY` is preserved, but
 `GOOGLE_API_KEY` is still stripped.
 
+## Work-Claim Gate
+
+Off by default:
+
+```yaml
+enforce_work_packet: false
+work_packet_verification_timeout_seconds: 600
+```
+
+When `enforce_work_packet` is `true`, the dispatcher verifies every
+`status: ready_for_review` handoff from `backend` or `frontend` before it
+dispatches the auditor. The checks are deterministic and run against the
+`## Work Packet` the implementer received:
+
+| Check | Error prefix | Passes when |
+| --- | --- | --- |
+| Work Packet | `work_packet_missing`, `work_packet_unparseable` | the assignment carries `Files in scope`, `Files out of bounds`, and `Verification command` |
+| `scope_sha` | `scope_sha_not_head` | `scope_sha` resolves to the current HEAD; commits above it that touch only the handoff file are tolerated |
+| Diff scope | `scope_violation` | every file changed since dispatch is inside `Files in scope` or is the handoff file, and none is under `Files out of bounds` |
+| Working tree | `uncommitted_changes` | no new uncommitted changes exist outside the handoff file |
+| Verification | `verification_failed` | the `Verification command` exits 0 within the timeout |
+
+On failure the dispatcher does not dispatch the auditor. It rewrites
+`HANDOFF.md` with `status: verified_fail`, `producer: validator`, a quoted
+`reason` naming the failed checks, and a `## Dispatcher Verification` section
+with the evidence, then routes back to the implementer. The bounce increments
+the story's bounce count, so the three-fix circuit breaker still applies. A
+missing or unusable Work Packet routes the bounce to `planner` instead, because
+the packet is the planner's artifact. Every bounce carries the original
+`## Work Packet` forward verbatim.
+
+With the gate enabled, post-dispatch validation also rejects any handoff that
+routes work to an implementer without a parseable Work Packet;
+`work_packet_missing` and `work_packet_unparseable` become errors instead of
+warnings, so the problem surfaces before an implementer session is spent.
+
+The verification command is agent-written text. The dispatcher runs it through
+the shell in `repo_root` with its own permissions. The implementer that wrote
+the claim already ran in the same repository with provider permissions
+disabled, so this adds no new exposure, but review the planner's Work Packet
+the way you review any agent-written instruction. The command is bounded by
+`work_packet_verification_timeout_seconds`; its process tree is killed on
+timeout, and the command, exit code, and a bounded output tail are written to
+the dispatch log.
+
+### Scanners
+
+The gate can also run operator-configured scanners before the verification
+command. The list is empty by default, so nothing changes until you add
+entries, and scanners only run while `enforce_work_packet` is `true`. Each
+entry names a tool the target repository has installed; `llm-handoff` does not
+bundle or install any of them.
+
+```yaml
+enforce_work_packet: true
+scanners:
+  - name: gitleaks
+    command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}
+    timeout_ms: 300000
+    required: true
+  - name: semgrep
+    command: semgrep scan --config auto --error --quiet {changed_files}
+    timeout_ms: 300000
+    required: true
+  - name: bandit
+    command: bandit -q {changed_py_files}
+    timeout_ms: 120000
+    required: true
+  - name: pip-audit
+    command: pip-audit --strict
+    timeout_ms: 300000
+    required: false
+```
+
+On gitleaks releases before 8.19 use
+`gitleaks detect --source {repo_root} --log-opts="{diff_range}"` instead of the
+`git` subcommand. `semgrep --config auto` and `pip-audit` need network access.
+
+Fields:
+
+- `name`: label used in log lines and error prefixes; letters, digits, `.`,
+  `_`, and `-`, unique within the config.
+- `command`: shell text run in `repo_root` after placeholder substitution.
+- `timeout_ms`: per-scanner bound, default `300000`; the process tree is
+  killed on timeout.
+- `required`: default `true`, so a missing executable fails the claim. With
+  `false`, a missing executable is logged at WARN level and the scanner is
+  skipped.
+
+Placeholders:
+
+| Placeholder | Value |
+| --- | --- |
+| `{diff_range}` | `<pre-dispatch HEAD>..<scope_sha>`, ready for `git log` or `git diff` options |
+| `{changed_files}` | space-separated, shell-quoted repository-relative paths changed in that range that still exist |
+| `{changed_py_files}` | the `.py` subset of `{changed_files}` |
+| `{repo_root}` | the shell-quoted absolute repository root |
+
+Scope gitleaks, semgrep, and bandit to the diff or the changed files as shown.
+Run pip-audit unscoped, because a dependency audit is not diff-shaped. Literal
+braces in a command must be doubled (`{{` and `}}`). A command that references
+an unknown placeholder fails config load with `scanner_config_invalid:<name>`.
+A scanner whose command references `{changed_files}` or `{changed_py_files}`
+is skipped with an INFO log line when that list is empty for the claim.
+
+Scanners run only after the `scope_sha`, diff-scope, and working-tree checks
+pass; there is no value in scanning out-of-bounds work. They run in config
+order before the verification command, and every scanner runs even after one
+fails, so a single bounce reports every finding:
+
+| Outcome | Error prefix | Effect |
+| --- | --- | --- |
+| non-zero exit | `scanner_failed:<name>` | claim bounces to the implementer with a bounded output tail |
+| executable not found, `required: true` | `scanner_missing:<name>` | claim bounces to the implementer |
+| executable not found, `required: false` | none | WARN log line, scanner skipped |
+| timeout | `scanner_timeout:<name>` | process tree killed, claim bounces to the implementer |
+| placeholder cannot be filled | `scanner_config_invalid:<name>` | rejected at config load; if it reaches runtime the claim escalates to `user` |
+
+Scanner commands are operator-authored configuration, so they are trusted
+operator input, unlike the Work Packet verification command, which is
+agent-written. The dispatcher does not sandbox scanners any more than it
+sandboxes agents.
+
 ## Supervised Dispatch
 
 The optional supervisor wrapper is configured through command-line options, not
