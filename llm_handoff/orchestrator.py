@@ -2834,7 +2834,7 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
                     "; waits for the "
                     + ", ".join(publish.wait_for_reviewers)
                     + f" review (up to {publish.review_timeout_seconds}s, "
-                    f"{publish.max_review_rounds} rounds)"
+                    f"{publish.max_review_rounds} correction round(s))"
                     if publish.wait_for_reviewers
                     else ""
                 )

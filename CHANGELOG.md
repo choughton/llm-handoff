@@ -110,9 +110,10 @@ This project follows a simple pre-release changelog until the first public tag.
 - Added `publish.wait_for_reviewers: [codex]` for `pr` mode with
   `auto_merge`. Before merging, the dispatcher waits for the Codex GitHub
   review of the pushed commit. No findings merges. Findings bounce to the
-  story's implementer as a `verified_fail` handoff; the fix goes to the same
-  pull request with an `@codex review` request, for up to
-  `max_review_rounds` rounds. A review that does not finish within
+  story's implementer as a `verified_fail` handoff for one correction round
+  (`max_review_rounds: 1`); the fix goes to the same pull request and merges
+  without another review once its threads are resolved. The dispatcher never
+  asks Codex for a review. A review that does not finish within
   `review_timeout_seconds` stops the loop with the pull request left open.
 - In `commit_mode: dispatcher`, the planner is now told not to commit the
   handoff file, and the dispatcher enforces it: planner commits that change

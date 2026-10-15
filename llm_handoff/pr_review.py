@@ -33,7 +33,6 @@ LogFn = Callable[[str, str], None]
 FetchFn = Callable[[str], "list[dict[str, Any]] | None"]
 
 SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
-REREVIEW_COMMENT = "@codex review"
 _STATE_MARKER_RE = re.compile(
     r"<!--\s*codex-review-state:v1\s+(\{.*?\})\s*-->", re.DOTALL
 )
@@ -61,7 +60,7 @@ class ReviewGate:
     reviewers: tuple[str, ...]
     timeout_seconds: int = 1200
     poll_seconds: int = 30
-    max_rounds: int = 3
+    max_rounds: int = 1
     codex_bot_login: str = "chatgpt-codex-connector[bot]"
 
 
