@@ -28,6 +28,7 @@ NORMALIZER_TIMEOUT_MS = 60_000
 
 AGENT_TIMEOUT_MS = 1_200_000
 SUBAGENT_TIMEOUT_MS = 900_000
+AUDIT_REVIEW_TIMEOUT_MS = 900_000
 
 POLL_INTERVAL_SECONDS = 30
 MAX_CONSECUTIVE_FAILURES = 3
@@ -77,6 +78,17 @@ AgentRole = Literal[
 ]
 ProviderName = Literal["codex", "gemini", "claude", "openai"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
+AuditReviewer = Literal["quality", "security"]
+SecurityReviewProvider = Literal["claude", "gemini", "codex"]
+BlockSeverity = Literal["critical", "high", "medium", "low"]
+DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality",)
+# Order used to pick a security reviewer vendor that differs from the
+# implementer's provider when `audit.security_provider` is not set.
+SECURITY_REVIEW_PROVIDER_PREFERENCE: tuple[SecurityReviewProvider, ...] = (
+    "claude",
+    "codex",
+    "gemini",
+)
 
 DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "planner": "gemini",
@@ -165,6 +177,51 @@ class NormalizerConfig(BaseModel):
         return value
 
 
+class AuditConfig(BaseModel):
+    """Opt-in audit fan-out settings.
+
+    The defaults keep the single-auditor path: one quality reviewer that
+    rewrites the handoff itself. Adding ``security`` to ``reviewers`` switches
+    the auditor route to a read-only fan-out where the dispatcher writes
+    ``HANDOFF.md`` from structured reviewer verdicts.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reviewers: tuple[AuditReviewer, ...] = DEFAULT_AUDIT_REVIEWERS
+    security_provider: SecurityReviewProvider | None = None
+    block_severity: BlockSeverity = "high"
+    review_timeout_ms: int = AUDIT_REVIEW_TIMEOUT_MS
+
+    @field_validator("reviewers", mode="after")
+    @classmethod
+    def _validate_reviewers(
+        cls,
+        value: tuple[AuditReviewer, ...],
+    ) -> tuple[AuditReviewer, ...]:
+        if not value:
+            raise ValueError("audit.reviewers must list at least one reviewer.")
+        if len(set(value)) != len(value):
+            raise ValueError("audit.reviewers must not repeat a reviewer.")
+        if "quality" not in value:
+            raise ValueError(
+                "audit.reviewers must include `quality`; the quality reviewer "
+                "decides the forward route."
+            )
+        return value
+
+    @field_validator("review_timeout_ms", mode="after")
+    @classmethod
+    def _validate_review_timeout_ms(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("audit.review_timeout_ms must be at least 1.")
+        return value
+
+    @property
+    def security_enabled(self) -> bool:
+        return "security" in self.reviewers
+
+
 def _default_agent_configs() -> dict[AgentRole, AgentConfig]:
     return {
         role: AgentConfig.model_validate(_agent_defaults_for_provider(role, provider))
@@ -219,6 +276,7 @@ class DispatchConfig(BaseModel):
     auto_push: bool = False
     agents: dict[AgentRole, AgentConfig] = Field(default_factory=_default_agent_configs)
     normalizer: NormalizerConfig = Field(default_factory=NormalizerConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
     dry_run: bool = False
     use_manual_frontend: bool = False
     planner_api_key_env: bool = False
