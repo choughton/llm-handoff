@@ -234,3 +234,43 @@ normalizer:
     assert seen[0].handoff_path == Path("HANDOFF.md")
     assert seen[0].project_state_path == Path("STATE.md")
     assert seen[0].normalizer.model == "claude-haiku-test"
+
+
+def test_work_claim_env_passthrough_defaults_to_empty(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path).work_claim_env_passthrough == ()
+    assert load_dispatch_config(repo_root=tmp_path).work_claim_env_passthrough == ()
+
+
+def test_load_dispatch_config_reads_work_claim_env_passthrough(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """work_claim_env_passthrough:
+  - " TOOL_CACHE_DIR "
+  - Pip_Index_Url
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.work_claim_env_passthrough == ("TOOL_CACHE_DIR", "Pip_Index_Url")
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ("", "non-empty"),
+        ("   ", "non-empty"),
+        ("BAD=NAME", "not a valid environment variable name"),
+        ("BAD NAME", "not a valid environment variable name"),
+        ("OPENAI_API_KEY", "vendor API key"),
+        ("anthropic_api_key", "vendor API key"),
+    ],
+)
+def test_work_claim_env_passthrough_rejects_invalid_entries(
+    tmp_path: Path,
+    entry: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        DispatchConfig(repo_root=tmp_path, work_claim_env_passthrough=(entry,))

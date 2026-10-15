@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: the work-claim gate's Verification command and configured
+  `scanners` now run with an allowlisted environment instead of the
+  dispatcher's full inherited environment. They receive only the base and
+  platform process variables provider CLIs also get (`PATH`, `HOME`,
+  `USERPROFILE`, `SystemRoot`, `TEMP`, `COMSPEC`, `APPDATA`, and similar)
+  plus the names listed in the new `work_claim_env_passthrough` config key.
+  Vendor API keys and `CLAUDE_*`, `CODEX_*`, and `GEMINI_*` variables never
+  reach them; a vendor API key name in `work_claim_env_passthrough` fails
+  config load, as do empty entries and invalid variable names. A
+  Verification command or scanner that relied on an inherited variable, such
+  as a proxy setting or a scanner token, now needs that name listed in
+  `work_claim_env_passthrough`.
+
 - Behavior change: the work-claim gate is now on by default
   (`enforce_work_packet` defaults to `true`, and the shipped
   `dispatch_config.example.yaml` and reference workflow config set it to

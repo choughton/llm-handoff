@@ -37,6 +37,11 @@ commit_mode: agent
 publish:
   mode: local
 work_packet_verification_timeout_seconds: 600
+# The Verification command and scanners get an allowlisted environment (PATH,
+# HOME, TEMP, and other process basics), not the dispatcher's full
+# environment. List any extra variable names they need. Vendor API keys are
+# rejected.
+# work_claim_env_passthrough: [HTTPS_PROXY, SSL_CERT_FILE]
 
 # Operator-configured scanners that the work-claim gate runs after the scope
 # checks pass and before the Work Packet verification command. They only run

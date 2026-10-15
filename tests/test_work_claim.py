@@ -22,12 +22,14 @@ import llm_handoff.ledger as ledger
 from llm_handoff.router import parse_handoff_frontmatter_text, route
 from llm_handoff.validator import ValidationResult, validate_handoff_text
 from llm_handoff.work_claim import (
+    CommandRun,
     PreDispatchState,
     ScannerContext,
     WorkPacket,
     WorkPacketError,
     bounce_route_for,
     build_bounce_handoff,
+    build_work_claim_env,
     capture_implementer_leftovers,
     capture_pre_dispatch_state,
     carry_over_key,
@@ -37,6 +39,8 @@ from llm_handoff.work_claim import (
     path_is_out_of_bounds,
     path_matches_entry,
     render_scanner_command,
+    run_scanner,
+    run_shell_command,
     shell_quote,
     verify_work_claim,
     work_packet_errors,
@@ -1705,6 +1709,170 @@ def test_empty_scanner_list_leaves_gate_unchanged(tmp_path: Path) -> None:
     assert result.passed
     assert result.scanner_runs == ()
     assert not any(check.name.startswith("scanner:") for check in result.checks)
+
+
+# ---------------------------------------------------------------------------
+# Allowlisted environment for gate shell commands
+# ---------------------------------------------------------------------------
+
+
+TEST_SECRET_ENV = "LLM_HANDOFF_TEST_SECRET"
+SECRET_ABSENT_COMMAND = (
+    f'"{PYTHON}" -c "import os; import sys; '
+    f"sys.exit(1 if '{TEST_SECRET_ENV}' in os.environ else 0)\""
+)
+SECRET_PRESENT_COMMAND = (
+    f'"{PYTHON}" -c "import os; import sys; '
+    f"sys.exit(0 if os.environ.get('{TEST_SECRET_ENV}') == 'shh' else 1)\""
+)
+SECRET_ABSENT_TOOL_BODY = (
+    "import os, sys\n"
+    f"sys.exit(1 if {TEST_SECRET_ENV!r} in os.environ else 0)\n"
+)
+
+
+def test_build_work_claim_env_keeps_only_allowlisted_and_passthrough_names() -> None:
+    environ = {
+        "PATH": "/usr/bin",
+        "SystemRoot": "C:\\Windows",
+        TEST_SECRET_ENV: "shh",
+        "OPENAI_API_KEY": "sk-test",
+        "CLAUDE_CODE_OAUTH_TOKEN": "token",
+        "Gemini_Setting": "value",
+        "Extra_Tool_Home": "/opt/tool",
+        "UNLISTED_VALUE": "nope",
+    }
+
+    env = build_work_claim_env(
+        ("extra_tool_home", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "gemini_setting"),
+        environ=environ,
+    )
+
+    assert env == {
+        "PATH": "/usr/bin",
+        "SystemRoot": "C:\\Windows",
+        "Extra_Tool_Home": "/opt/tool",
+    }
+
+
+def test_build_work_claim_env_drops_secret_without_passthrough() -> None:
+    env = build_work_claim_env(environ={"PATH": "/bin", TEST_SECRET_ENV: "shh"})
+
+    assert env == {"PATH": "/bin"}
+
+
+def test_run_shell_command_does_not_inherit_unlisted_variables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TEST_SECRET_ENV, "shh")
+
+    run = run_shell_command(SECRET_ABSENT_COMMAND, cwd=tmp_path, timeout_seconds=60)
+
+    assert run.exit_code == 0, run.output_tail
+
+
+def test_run_shell_command_passes_listed_passthrough_variables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TEST_SECRET_ENV, "shh")
+
+    run = run_shell_command(
+        SECRET_PRESENT_COMMAND,
+        cwd=tmp_path,
+        timeout_seconds=60,
+        env_passthrough=(TEST_SECRET_ENV,),
+    )
+
+    assert run.exit_code == 0, run.output_tail
+
+
+def test_run_scanner_hands_env_passthrough_to_the_runner(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "fakescan", CLEAN_TOOL_BODY)
+    calls: list[dict[str, Any]] = []
+
+    def recording_runner(command: str, **kwargs: Any) -> CommandRun:
+        calls.append({"command": command, **kwargs})
+        return CommandRun(
+            command=command,
+            exit_code=0,
+            elapsed_seconds=0.0,
+            output_tail="",
+            timeout_seconds=kwargs["timeout_seconds"],
+        )
+
+    context = ScannerContext(
+        repo_root=tmp_path,
+        diff_range="aaa..bbb",
+        changed_files=("src/app.py",),
+        changed_py_files=("src/app.py",),
+    )
+
+    scanner_run, error = run_scanner(
+        _scanner("fakescan", "fakescan {changed_files}"),
+        context,
+        runner=recording_runner,
+        env_passthrough=("EXTRA_TOOL_HOME",),
+    )
+
+    assert error is None
+    assert scanner_run.outcome == "PASS"
+    assert len(calls) == 1
+    assert calls[0]["env_passthrough"] == ("EXTRA_TOOL_HOME",)
+    assert calls[0]["cwd"] == tmp_path
+
+
+def test_verify_work_claim_runs_scanners_and_verification_without_unlisted_variables(
+    tmp_path: Path,
+    fake_bin: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TEST_SECRET_ENV, "shh")
+    _install_fake_tool(fake_bin, "envscan", SECRET_ABSENT_TOOL_BODY)
+    assignment = _assignment(SECRET_ABSENT_COMMAND)
+    state, head = _passing_claim_setup(tmp_path, assignment)
+
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [_scanner("envscan", "envscan {changed_files}")],
+        assignment=assignment,
+    )
+
+    assert result.passed, result.errors
+    assert _outcomes(result)["scanner:envscan"] == "PASS"
+    assert _outcomes(result)["verification"] == "PASS"
+
+
+def test_verify_work_claim_passes_env_passthrough_to_scanners_and_verification(
+    tmp_path: Path,
+    fake_bin: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TEST_SECRET_ENV, "shh")
+    _install_fake_tool(fake_bin, "envscan", SECRET_ABSENT_TOOL_BODY)
+    assignment = _assignment(SECRET_PRESENT_COMMAND)
+    state, head = _passing_claim_setup(tmp_path, assignment)
+
+    result = verify_work_claim(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=assignment,
+        claim_content=_claim(head),
+        pre_dispatch_state=state,
+        verification_timeout_seconds=60,
+        scanners=[_scanner("envscan", "envscan {changed_files}")],
+        env_passthrough=(TEST_SECRET_ENV,),
+    )
+
+    # The scanner sees the passed-through variable, so the absent-check fails.
+    assert result.failed_prefixes == ("scanner_failed:envscan",)
+    assert _outcomes(result)["verification"] == "PASS"
 
 
 def test_build_bounce_handoff_lists_every_failed_scanner(

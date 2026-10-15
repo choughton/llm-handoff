@@ -2498,6 +2498,7 @@ def _run_work_claim_gate(
         require_new_commit=True,
         dispatcher_commit_mode=config.commit_mode == "dispatcher",
         story_base_sha=story_base_sha,
+        env_passthrough=config.work_claim_env_passthrough,
     )
     _log_work_claim_result(result, log)
     if result.passed:
