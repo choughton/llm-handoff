@@ -863,12 +863,24 @@ def _change_lines(repo_root: Path, base_sha: str) -> list[str]:
 
 def _reviewer_notes(handoff_content: str) -> list[str]:
     verdict = _first_line_of(_section(handoff_content, "## Verdict"))
-    decision = _first_line_of(_section(handoff_content, "## Merge Decision"))
+    # The fan-out audit writes a list here (both reviewer verdicts, the
+    # severity threshold, finding counts); keep all of it.
+    decision = [
+        line.strip()
+        for line in _section(handoff_content, "## Merge Decision").splitlines()
+        if line.strip()
+    ]
     lines = []
     if verdict:
         lines.append(f"- **Audit verdict:** {verdict}")
-    if decision:
-        lines.append(f"- **Merge decision:** {decision}")
+    if len(decision) == 1 and not decision[0].startswith(("- ", "* ")):
+        lines.append(f"- **Merge decision:** {decision[0]}")
+    elif decision:
+        lines.append("- **Merge decision:**")
+        lines += [
+            "  " + (line if line.startswith(("- ", "* ")) else f"- {line}")
+            for line in decision
+        ]
     if lines:
         lines.append("")
     quality = _section(handoff_content, "## Quality Review")

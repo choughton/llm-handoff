@@ -987,3 +987,29 @@ def test_story_report_follows_the_pull_request_template(tmp_path: Path) -> None:
     assert body.rstrip().endswith(
         "Generated with [llm-handoff](https://github.com/choughton/llm-handoff)"
     )
+
+
+
+def test_reviewer_notes_keep_the_whole_merge_decision(tmp_path: Path) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    handoff = VERIFIED.replace(
+        "## Quality Review",
+        "## Merge Decision\n\n"
+        "- Quality reviewer verdict: APPROVED\n"
+        "- Security reviewer verdict: APPROVED\n"
+        "- Block severity threshold: high\n"
+        "- Blocking findings: 0\n"
+        "- Sub-threshold findings: 1\n\n"
+        "## Quality Review",
+    )
+
+    _title, body = build_report(tmp_path, _load_state(tmp_path), handoff)
+
+    notes = body.split("## Reviewer notes")[1].split("## Test plan")[0]
+    assert "- **Merge decision:**\n  - Quality reviewer verdict: APPROVED" in notes
+    assert "  - Security reviewer verdict: APPROVED" in notes
+    assert "  - Block severity threshold: high" in notes
+    assert "  - Sub-threshold findings: 1" in notes
