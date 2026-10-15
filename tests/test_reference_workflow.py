@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 from llm_handoff.config import load_dispatch_config
+from llm_handoff.init_workflow import template_files
 from llm_handoff.router import parse_handoff_frontmatter, route
 
 
@@ -230,6 +231,26 @@ def test_codex_role_skills_do_not_point_at_dispatcher_docs() -> None:
         ).read_text(encoding="utf-8")
         assert "CONFIGURATION.md" not in content, skill_name
         assert "docs/ARCHITECTURE.md" not in content, skill_name
+
+
+def test_shipped_template_files_do_not_point_at_dispatcher_docs() -> None:
+    # Scan exactly the files `llm-handoff init` ships: every template file
+    # except the top-level README.md and any bytecode caches. A target
+    # repository has neither of these docs.
+    shipped = template_files(REFERENCE_WORKFLOW)
+    assert shipped
+    assert Path("README.md") not in shipped
+
+    for shipped_path in shipped:
+        relative_path = shipped_path.as_posix()
+        content = (REFERENCE_WORKFLOW / shipped_path).read_text(encoding="utf-8")
+        assert "docs/ARCHITECTURE.md" not in content, relative_path
+        if relative_path == "dispatch_config.yaml":
+            for line in content.splitlines():
+                if "CONFIGURATION.md" in line:
+                    assert "llm-handoff's CONFIGURATION.md" in line, line
+        else:
+            assert "CONFIGURATION.md" not in content, relative_path
 
 
 def test_codex_validator_skill_covers_validation_and_routing() -> None:

@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The files `llm-handoff init` copies no longer point at llm-handoff's own
+  `CONFIGURATION.md` or `docs/ARCHITECTURE.md`, which a target repository
+  does not have. The planner, Gemini planner, and Codex backend prompts now
+  read repository-specific architecture or requirements docs referenced by
+  the handoff; the template `AGENTS.md` states the provider-native helper
+  boundary directly; the template `dispatch_config.yaml` comments say
+  `llm-handoff's CONFIGURATION.md`. The root copies of the edited prompts
+  match the templates, and a new test guards every shipped template file.
+
 - Fixed the protected-file check pausing a run when a protected file was
   listed under a Work Packet's Files in scope as a bullet list. The check
   now reads Files in scope and Files out of bounds with the same parser as
