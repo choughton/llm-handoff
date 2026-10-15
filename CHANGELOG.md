@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added an `llm-handoff doctor` subcommand that checks a checkout before a
+  run: Git, each configured role's provider CLI binary, a container runtime
+  when a Gemini CLI role runs sandboxed, and the current handoff file. It
+  prints one `PASS`, `FAIL`, or `WARN` line per check, exits `1` on any
+  error, and writes no files. The supervisor's `--doctor` mode now shares its
+  PATH lookup.
+
 - Fixed a work-claim loop that a contradictory Work Packet caused. A path
   listed under both `Files in scope` and `Files out of bounds` is now
   `work_packet_unparseable`, which routes to the planner; before, it resolved

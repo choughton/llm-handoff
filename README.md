@@ -185,6 +185,8 @@ python -m llm_handoff init path/to/your-project --template reference-workflow --
 - An opt-in security reviewer that runs next to the quality auditor on the
   same commit range.
 - A reference workflow that users can inspect, copy, fork, or adapt.
+- An `llm-handoff doctor` preflight check for Git, provider CLIs, the Gemini
+  sandbox runtime, and the handoff file; it exits `1` on any error.
 - An optional supervised wrapper for operator evidence, heartbeat output, and
   bounded repair-role handoff when explicitly enabled.
 

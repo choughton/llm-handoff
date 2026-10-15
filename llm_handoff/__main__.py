@@ -20,6 +20,7 @@ from llm_handoff.config import (
     detect_repo_root,
     load_dispatch_config,
 )
+from llm_handoff.doctor import run_doctor
 from llm_handoff.init_workflow import (
     REFERENCE_MAPPING,
     InitConflictError,
@@ -259,6 +260,27 @@ def init_command(
             typer.echo(
                 "Review conflicts; --force only overwrites non-managed files."
             )
+
+
+@app.command("doctor")
+def doctor_command(
+    repo_root: Path | None = typer.Option(
+        None,
+        "--repo-root",
+        help="Repository root to check. Defaults to the repo containing the CWD.",
+    ),
+    config_path: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Path to dispatch_config.yaml. Relative paths resolve from the repo root.",
+    ),
+) -> None:
+    """Check Git, provider CLIs, sandbox runtime, and the handoff file."""
+    _configure_stdio_encoding()
+    report = run_doctor(repo_root=repo_root, config_path=config_path)
+    for line in report.lines():
+        typer.echo(line)
+    raise typer.Exit(report.exit_code)
 
 
 @app.callback(invoke_without_command=True)

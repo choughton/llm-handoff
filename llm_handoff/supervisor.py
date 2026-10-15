@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import queue
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -36,6 +35,9 @@ from llm_handoff.config import (
     detect_repo_root,
     load_dispatch_config,
 )
+# The PATH lookup (with the Windows .cmd fallback) is shared with the
+# standalone `llm-handoff doctor` command.
+from llm_handoff.doctor import _command_available, _command_binary_name  # noqa: F401
 from llm_handoff.provider_auth import AUTH_FAILURE_MARKERS, AUTH_FAILURE_PATTERNS
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.router import route as route_handoff
@@ -1585,16 +1587,6 @@ def _write_child_output_line(raw_line: str) -> None:
         )
         sys.stdout.write(safe_line)
     sys.stdout.flush()
-
-
-def _command_binary_name(command_name: str) -> str:
-    return f"{command_name}.cmd" if os.name == "nt" else command_name
-
-
-def _command_available(command_name: str) -> bool:
-    if shutil.which(command_name) is not None:
-        return True
-    return shutil.which(_command_binary_name(command_name)) is not None
 
 
 def _default_log(level: str, message: str) -> None:
