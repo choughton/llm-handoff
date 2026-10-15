@@ -361,15 +361,21 @@ that differs from the implementer role's provider.
 
 - The security reviewer gets read-only tool permissions where the CLI supports
   them: Claude runs in `dontAsk` mode with an allow-list of read tools and
-  `git diff`/`git show`/`git log`, and edit tools denied; Gemini runs in
-  `--approval-mode plan`; the Codex fallback runs `codex exec --sandbox
-  read-only`. The Codex Security CLI has no documented write mode for scans.
+  `git diff`/`git show`/`git log`, and edit and web tools denied; Gemini runs
+  in `--approval-mode plan` inside its container sandbox; the Codex fallback
+  runs `codex exec --sandbox read-only`. The Codex Security CLI has no
+  documented write mode for scans. These restrictions apply even when the
+  provider's role sets `unsafe_bypass: true`; for Gemini that setting only
+  drops the container sandbox. Without Docker or Podman, a Gemini security
+  reviewer fails closed with `security_reviewer_failed:`.
 - The quality reviewer keeps the configured auditor permissions because it
   runs verification commands. The handoff hash check, not a sandbox, enforces
   that it does not write `HANDOFF.md`. Other file writes by the quality
   reviewer are not detected by the fan-out.
-- The existing API-key environment scrubbing still applies: Claude reviewers
-  run without `ANTHROPIC_API_KEY`, and Gemini reviewers run without
+- Every security reviewer, including both Codex paths, launches with the same
+  allowlisted environment as its provider's role (`env_mode`,
+  `env_passthrough`, and the vendor API key rule). Claude reviewers run
+  without `ANTHROPIC_API_KEY`, and Gemini reviewers run without
   `GOOGLE_API_KEY` and, unless opted in, without `GEMINI_API_KEY`.
 - Vendor security reviewers are LLM tools. They are not hardened against
   prompt injection in repository content such as source comments, docs, or

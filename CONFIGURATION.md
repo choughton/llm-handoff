@@ -525,7 +525,8 @@ Security reviewer invocation by provider:
   read and `git diff`/`git show`/`git log` tools, edit tools denied, and
   `--json-schema` structured output. The prompt asks for Claude Code's
   built-in security review restricted to the given range.
-- `gemini`: `gemini -p "/security:analyze ..."` in `--approval-mode plan`.
+- `gemini`: `gemini -p "/security:analyze ..."` in `--approval-mode plan`
+  with `--sandbox`, so it needs Docker or Podman like the Gemini roles.
   The target repository's Gemini CLI must have the security extension
   installed:
 
@@ -544,6 +545,10 @@ Security reviewer invocation by provider:
   in beta as of mid-2026 and may require plan-level or approved access; its
   JSON output shape is parsed defensively, and an unrecognized severity is
   treated as `high`.
+
+Security reviewers use the environment allowlist of the role that maps to
+their provider, and keep their read-only flags even if that role sets
+`unsafe_bypass: true`.
 
 A missing, malformed, or timed-out reviewer verdict, and any reviewer that
 changes `HANDOFF.md`, fails the audit dispatch. The dispatcher restores the
