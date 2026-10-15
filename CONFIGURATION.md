@@ -151,6 +151,116 @@ the way you review any agent-written instruction. The command is bounded by
 timeout, and the command, exit code, and a bounded output tail are written to
 the dispatch log.
 
+### Dispatcher Commits
+
+```yaml
+enforce_work_packet: true
+commit_mode: dispatcher   # agent (default) | dispatcher
+```
+
+With `commit_mode: dispatcher`, implementers (`backend`, `frontend`) never
+write to `.git`. The dispatcher adds an instruction to each implementer launch
+telling it to leave changes uncommitted, leave `scope_sha` empty, and write
+`pending-dispatcher-commit` as the evidence commit SHA. After a
+`ready_for_review` handback, and before handoff validation, the dispatcher:
+
+1. lists files changed since dispatch, skipping the handoff file and every file
+   that was already dirty before dispatch;
+2. stages only files inside the Work Packet's `Files in scope` and outside
+   `Files out of bounds`;
+3. commits exactly those paths with `git commit --no-verify --only`, under your
+   Git identity, so other staged changes and repository hooks are not involved;
+4. writes the new commit into the handoff as `scope_sha` and as the
+   `Commit SHA verified` value.
+
+Files it did not stage stay in the working tree and fail the gate's worktree
+check, which sends the claim back to the implementer. The gate also fails a
+claim whose commits since dispatch change nothing but the handoff
+(`no_changes`). This mode requires `enforce_work_packet: true`.
+
+Use it when an implementer runs in a sandbox that keeps `.git` read-only (Codex
+`workspace-write`), or simply to keep agents out of Git history.
+
+### Publishing: Story Branches And Pull Requests
+
+```yaml
+commit_mode: dispatcher
+publish:
+  mode: local            # local (default) | merge-commit | pr
+  base_branch: null      # default: the branch checked out when a story starts
+  branch_prefix: llm-handoff/
+  remote: origin         # pr mode
+  auto_merge: true       # pr mode: merge once the audit passes
+  wait_for_checks: false # pr mode: wait for the PR's CI checks before merging
+  wait_for_reviewers: [] # pr mode + auto_merge: [codex] waits for Codex review
+  review_timeout_seconds: 1200
+  review_poll_seconds: 30
+  max_review_rounds: 3
+  codex_bot_login: chatgpt-codex-connector[bot]
+```
+
+- `local`: commits stay on the branch you have checked out.
+- `merge-commit`: before an implementer's first dispatch for a story, the
+  dispatcher creates `llm-handoff/<story-id>-<title>` from the base branch.
+  After the audit passes, it merges that branch into the base with `--no-ff`.
+  The merge commit carries a report built from data the loop already has: the
+  Work Packet, the passing `## Dispatcher Verification` result, both reviewers'
+  verdicts, and the story's `usage:` lines with the reported cost. Nothing is
+  pushed.
+- `pr`: same story branch. After the audit passes, the dispatcher pushes it,
+  opens a pull request with that report as the body (`gh pr create`), and
+  with `auto_merge: true` merges it (`gh pr merge --merge --delete-branch`)
+  and continues on the updated base branch. With `auto_merge: false` the loop
+  stops after opening the pull request so you can review and merge it. With
+  `wait_for_checks: true` it waits for the pull request's checks
+  (`gh pr checks --watch`) before merging and stops if they fail; only enable
+  this when the repository has CI.
+
+#### Waiting For The Codex Pull Request Review
+
+With `wait_for_reviewers: [codex]`, `pr` mode with `auto_merge: true` waits
+for the Codex code review (the ChatGPT Codex connector for GitHub) of the
+exact commit it pushed before merging. Set this only when Codex reviews pull
+requests in the repository. The dispatcher polls the pull request with
+`gh api` every `review_poll_seconds`. It counts only activity from
+`codex_bot_login`, and only for the pushed commit's SHA:
+
+- The review is finished when the Codex summary comment's `Code Review` row
+  shows `Completed` for that commit, when Codex posts a pull request review
+  on that commit, or when Codex adds a +1 reaction after the push.
+- Inline review comments on that commit are findings.
+
+The outcomes:
+
+- No findings: the dispatcher merges the pull request as usual.
+- Findings: the pull request stays open and is not merged. The dispatcher
+  rewrites `HANDOFF.md` as a `verified_fail` bounce to the story's implementer.
+  The bounce lists each finding (file, line, text, link) and carries the Work
+  Packet. The implementer fixes the findings on the same story branch, and
+  the gate and audit run again. The dispatcher then pushes to the same pull
+  request, updates its report, comments `@codex review` to request a new
+  review, and waits again. After `max_review_rounds` rounds that still have
+  findings, the loop stops and leaves the pull request open for you.
+- No finished review within `review_timeout_seconds`, a failed review, or a
+  `gh` error: the loop stops and leaves the pull request open. It never
+  merges without a finished review.
+
+The pull request report has every `@name` mention neutralized (a word
+joiner after `@`), because GitHub treats a mention of `@codex` anywhere in
+the body, even in a code span, as a request for a Codex cloud task rather
+than a code review.
+
+Finding text comes from the pull request and is untrusted. The bounce tells
+the implementer to check each finding and to fix only what holds up inside
+the Work Packet's scope. The work-claim gate and the audit still apply to
+the fix.
+
+Agents never branch, push, or merge: the dispatcher does all of it, and only
+after the work-claim gate and both reviewers pass. `pr` mode pushes with your
+Git credentials and needs the GitHub CLI (`gh`) signed in. Both branch modes
+require `commit_mode: dispatcher`. A failed push, merge, or `gh` call stops the
+loop with the error instead of retrying.
+
 ### Scanners
 
 The gate can also run operator-configured scanners before the verification
@@ -238,7 +348,8 @@ started the dispatcher do not reach the agents.
 In the default `env_mode: allowlist`, a launch receives only:
 
 - process basics: `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`,
-  `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`;
+  `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`, and the account name (`USERNAME`,
+  `USER`, `LOGNAME`), which tools such as pytest use for per-user directories;
 - non-secret process plumbing the CLIs need to start: `COMSPEC`, `PATHEXT`,
   `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, `SHELL`;
 - the provider's own configuration variables: `CLAUDE_*` for Claude Code,
@@ -328,9 +439,28 @@ list is a guardrail, not a sandbox: `Bash(python:*)` still lets the agent run
 arbitrary Python. `git push` is not on the list.
 
 Codex keeps its `workspace-write` sandbox: writes are limited to the
-workspace and network access is off by default. The Codex native Windows
-sandbox is experimental; if Codex cannot start or cannot commit in your
-setup, check its sandbox settings before reaching for `unsafe_bypass`.
+workspace and network access is off by default. The sandbox always keeps
+`.git` read-only, even when `.git` is listed under
+`sandbox_workspace_write.writable_roots`, so a sandboxed role cannot commit on
+its own. Use `commit_mode: dispatcher` for sandboxed Codex implementers: the
+dispatcher commits the in-scope files after the role finishes. The reference
+workflow ships `.codex/rules/llm-handoff.rules`, a Codex rules file (an
+experimental Codex feature) that forbids `git push`. It does not let git
+writes run outside the sandbox: rules match command prefixes only, so an
+allow rule for `git commit` would also allow `git commit -a` or a trailing
+`--amend`. Everything the role runs stays sandboxed.
+
+Codex applies the strictest matching rule, but a project rule cannot override
+an `allow` rule in `~/.codex/rules/` that matches the full shell command (for
+example a remembered `pwsh -Command "git push origin main"` approval). Review
+your user-level rules before relying on the push ban.
+
+On Windows the sandbox runs commands as a separate local account. Read-only git
+commands may need `-c safe.directory=<repository root>`, and pytest's per-user
+temp directory is not usable from the sandbox; the work-claim gate re-runs the
+Verification command outside the sandbox. If Codex still cannot start or
+commit in your setup, check its sandbox settings before reaching for
+`unsafe_bypass`.
 
 Gemini CLI keeps `--yolo` so tool calls do not prompt, but runs inside its
 container sandbox. That needs Docker or Podman on `PATH` (macOS can use
@@ -443,6 +573,31 @@ agents:
     skill_name: llm-handoff
     resume: true
 ```
+
+### All-Claude Mapping
+
+The reference workflow ships a Claude subagent for every role, so a machine
+with only Claude Code installed can run the whole loop:
+
+| Role | Claude subagent |
+| --- | --- |
+| `planner` | `.claude/agents/planner.md` |
+| `backend` | `.claude/agents/backend.md` |
+| `frontend` | `.claude/agents/frontend.md` |
+| `auditor` | `.claude/agents/auditor.md` |
+| `validator` | `.claude/agents/handoff-validator.md` |
+| `finalizer` | `.claude/agents/ledger-updater.md` |
+
+`llm-handoff init --provider claude` writes this mapping into
+`dispatch_config.yaml`, with every role on `provider: claude` and
+`audit.security_provider: claude`. Without `--provider`, `init` writes it
+automatically when `claude` is the only provider CLI on `PATH`, and keeps the
+reference mapping otherwise. `init` prints the mapping it chose and the
+provider CLIs it found.
+
+With every role on Claude, an enabled security reviewer runs on the same
+vendor as the implementer, so it is a second read-only review rather than an
+independent one.
 
 ## Provider Fields
 

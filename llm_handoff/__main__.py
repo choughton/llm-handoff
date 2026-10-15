@@ -21,7 +21,9 @@ from llm_handoff.config import (
     load_dispatch_config,
 )
 from llm_handoff.init_workflow import (
+    REFERENCE_MAPPING,
     InitConflictError,
+    UnknownProviderError,
     UnknownTemplateError,
     init_reference_workflow,
 )
@@ -207,6 +209,15 @@ def init_command(
         "--overwrite",
         help="Overwrite existing files that differ from the template.",
     ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help=(
+            "Put every role on one provider CLI (currently: claude). "
+            "Default: claude when Claude Code is the only provider CLI on "
+            "PATH, otherwise the reference mapping."
+        ),
+    ),
 ) -> None:
     _configure_stdio_encoding()
     try:
@@ -215,8 +226,9 @@ def init_command(
             template=template,
             dry_run=dry_run,
             force=force,
+            provider=provider,
         )
-    except UnknownTemplateError as exc:
+    except (UnknownTemplateError, UnknownProviderError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
     except InitConflictError as exc:
@@ -227,6 +239,13 @@ def init_command(
 
     action = "DRY RUN" if result.dry_run else "Initialized"
     typer.echo(f"{action}: {result.template} in {result.target_root}")
+    detected = ", ".join(result.detected_providers) or "none"
+    mapping_note = (
+        "reference (mixed providers)"
+        if result.provider_mapping == REFERENCE_MAPPING
+        else f"all roles on {result.provider_mapping}"
+    )
+    typer.echo(f"Provider mapping: {mapping_note}; provider CLIs found: {detected}")
     typer.echo(f"Copy: {len(result.copied)} file(s)")
     if result.skipped:
         typer.echo(f"Skip identical: {len(result.skipped)} file(s)")

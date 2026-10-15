@@ -1,0 +1,19 @@
+# llm-handoff rules for Codex roles.
+#
+# Codex keeps .git read-only inside its workspace-write sandbox, so a
+# sandboxed role cannot stage or commit. These rules deliberately do not let
+# any git write run outside the sandbox: Codex rules match command prefixes
+# only, so an allow rule for `git add` or `git commit` would also allow
+# `git commit -a` (out-of-scope files) or a trailing `--amend` (rewriting
+# recorded commits). Use `commit_mode: dispatcher` instead: the dispatcher
+# stages and commits only the files in the Work Packet's scope.
+#
+# When several rules match, the strictest decision wins
+# (forbidden > prompt > allow).
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "forbidden",
+    justification = "llm-handoff never pushes; remote pushes are the operator's call.",
+    match = ["git push origin main"],
+)

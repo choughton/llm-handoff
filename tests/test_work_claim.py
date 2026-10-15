@@ -12,6 +12,11 @@ import pytest
 
 from llm_handoff.agents import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig, ScannerConfig, load_dispatch_config
+from llm_handoff.dispatcher_commit import (
+    PENDING_COMMIT_SHA,
+    commit_implementer_changes,
+    stamp_commit_sha,
+)
 import llm_handoff.ledger as ledger
 from llm_handoff.router import parse_handoff_frontmatter_text, route
 from llm_handoff.validator import ValidationResult, validate_handoff_text
@@ -1842,3 +1847,381 @@ def test_verify_work_claim_ignores_untouched_pre_existing_dirty_file(
     )
 
     assert result.passed, result.errors
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher commit mode
+# ---------------------------------------------------------------------------
+
+
+def _pending_claim() -> str:
+    """A ready_for_review handback written without committing anything."""
+
+    return _claim(None).replace(
+        "0123456789abcdef0123456789abcdef01234567",
+        PENDING_COMMIT_SHA,
+    )
+
+
+def _commit_files(repo_root: Path, sha: str) -> list[str]:
+    return _git(repo_root, "show", "--name-only", "--format=", sha).splitlines()
+
+
+def test_dispatcher_commit_stages_only_in_scope_changes(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    _write(tmp_path / "notes.txt", "scratch\n")
+
+    result = commit_implementer_changes(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(),
+        claim_content=_pending_claim(),
+        pre_dispatch_state=state,
+        role="backend",
+    )
+
+    assert result.error is None
+    assert result.sha == _git(tmp_path, "rev-parse", "HEAD")
+    assert result.sha != base
+    assert result.committed == ("src/app.py",)
+    assert set(result.left_uncommitted) == {"src/api.py", "notes.txt"}
+    assert _commit_files(tmp_path, result.sha) == ["src/app.py"]
+    subject = _git(tmp_path, "log", "-1", "--format=%s")
+    assert subject == f"{STORY_ID} Change the value"
+
+
+def test_dispatcher_commit_includes_new_files_under_an_in_scope_directory(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "tests" / "test_extra.py", "def test_extra():\n    pass\n")
+
+    result = commit_implementer_changes(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(files_in_scope="src/app.py, tests/"),
+        claim_content=_pending_claim(),
+        pre_dispatch_state=state,
+        role="backend",
+    )
+
+    assert result.committed == ("tests/test_extra.py",)
+
+
+def test_dispatcher_commit_never_stages_files_that_were_dirty_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 'operator edit'\n")
+    state = capture_pre_dispatch_state(tmp_path)
+
+    result = commit_implementer_changes(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(),
+        claim_content=_pending_claim(),
+        pre_dispatch_state=state,
+        role="backend",
+    )
+
+    assert result.sha is None
+    assert result.skipped_reason == "no in-scope files changed since dispatch"
+    assert "src/app.py" in _git(tmp_path, "status", "--porcelain")
+
+
+def test_dispatcher_commit_leaves_other_staged_changes_alone(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "PROJECT_STATE.md", "# PROJECT STATE\nstaged by the operator\n")
+    _git(tmp_path, "add", "PROJECT_STATE.md")
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+
+    result = commit_implementer_changes(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(),
+        claim_content=_pending_claim(),
+        pre_dispatch_state=state,
+        role="backend",
+    )
+
+    assert result.sha is not None
+    assert _commit_files(tmp_path, result.sha) == ["src/app.py"]
+    assert "M  PROJECT_STATE.md" in _git(tmp_path, "status", "--porcelain")
+
+
+def test_dispatcher_commit_skips_handbacks_that_are_not_ready_for_review(
+    tmp_path: Path,
+) -> None:
+    base = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+
+    result = commit_implementer_changes(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(),
+        claim_content=_claim(None, status="blocked_implementation_failure"),
+        pre_dispatch_state=state,
+        role="backend",
+    )
+
+    assert result.sha is None
+    assert "blocked_implementation_failure" in (result.skipped_reason or "")
+    assert _git(tmp_path, "rev-parse", "HEAD") == base
+
+
+def test_stamp_commit_sha_fills_scope_sha_and_evidence() -> None:
+    sha = "a" * 40
+
+    stamped = stamp_commit_sha(_pending_claim(), sha)
+
+    frontmatter = parse_handoff_frontmatter_text(stamped)
+    assert frontmatter is not None
+    assert frontmatter.scope_sha == sha
+    assert f"- **Commit SHA verified:** {sha}" in stamped
+    assert PENDING_COMMIT_SHA not in stamped
+
+
+def test_stamp_commit_sha_replaces_an_existing_scope_sha() -> None:
+    stamped = stamp_commit_sha(_claim("b" * 40), "c" * 40)
+
+    frontmatter = parse_handoff_frontmatter_text(stamped)
+    assert frontmatter is not None
+    assert frontmatter.scope_sha == "c" * 40
+    assert stamped.count("scope_sha:") == 1
+
+
+def test_work_claim_require_new_commit_rejects_an_empty_claim(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+
+    result = verify_work_claim(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(),
+        claim_content=_claim(base),
+        pre_dispatch_state=state,
+        verification_timeout_seconds=60,
+        require_new_commit=True,
+    )
+
+    assert not result.passed
+    assert "no_changes" in result.failed_prefixes
+    assert bounce_route_for(result, implementer="backend").next_agent == "backend"
+
+
+def test_dispatcher_commit_mode_requires_the_work_claim_gate(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires enforce_work_packet"):
+        DispatchConfig(
+            repo_root=tmp_path,
+            enforce_work_packet=False,
+            commit_mode="dispatcher",
+        )
+
+
+def test_run_loop_commits_for_the_implementer_in_dispatcher_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    base = _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    instructions: list[object] = []
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **kwargs: object) -> DispatchResult:
+        instructions.append(kwargs.get("additional_instruction"))
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    assert head != base
+    assert _commit_files(tmp_path, head) == ["src/app.py"]
+    handoff = config.handoff_full_path.read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(handoff)
+    assert frontmatter is not None
+    assert frontmatter.scope_sha == head
+    assert f"- **Commit SHA verified:** {head}" in handoff
+    assert instructions and "Dispatcher commit mode is on" in str(instructions[0])
+    assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+
+
+def test_run_loop_bounces_out_of_scope_leftovers_in_dispatcher_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        _write(tmp_path / "src" / "api.py", "API = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    bounced = parse_handoff_frontmatter_text(
+        config.handoff_full_path.read_text(encoding="utf-8")
+    )
+    assert bounced is not None
+    assert bounced.next_agent == "backend"
+    assert bounced.status == "verified_fail"
+    assert any(
+        level == "WARN" and "src/api.py" in message for level, message in messages
+    )
+    assert any(
+        level == "ERROR" and message.startswith("uncommitted_changes:")
+        for level, message in messages
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recording a passed gate for the auditor
+# ---------------------------------------------------------------------------
+
+
+def test_passed_gate_is_recorded_in_the_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    handoff = config.handoff_full_path.read_text(encoding="utf-8")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    assert handoff.count("## Dispatcher Verification") == 1
+    assert "- **Verdict:** PASS" in handoff
+    assert f"- **Verified commit:** `{head}`" in handoff
+    assert "- **Verification command:** " in handoff
+    assert route(handoff).route == "auditor"
+
+
+def test_record_passed_verification_replaces_an_earlier_section() -> None:
+    from llm_handoff.work_claim import WorkClaimResult, record_passed_verification
+
+    earlier = _claim("a" * 40) + "\n## Dispatcher Verification\n\nold FAIL text\n"
+    result = WorkClaimResult(
+        checks=(),
+        errors=(),
+        pre_dispatch_head="b" * 40,
+        head_sha="a" * 40,
+        scope_sha="a" * 40,
+        changed_files=("src/app.py",),
+        verification_runs=(),
+        work_packet=None,
+        work_packet_text=None,
+    )
+
+    updated = record_passed_verification(earlier, result)
+
+    assert updated.count("## Dispatcher Verification") == 1
+    assert "old FAIL text" not in updated
+    assert "- **Verdict:** PASS" in updated
+
+
+def test_run_loop_puts_implementer_work_on_a_story_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    base_branch = _git(tmp_path, "branch", "--show-current")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path, commit_mode="dispatcher", publish={"mode": "merge-commit"}
+    )
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    branch = _git(tmp_path, "branch", "--show-current")
+    assert branch.startswith("llm-handoff/epic-1-s1-")
+    assert branch != base_branch
+    assert _git(tmp_path, "log", "-1", "--format=%s").startswith(STORY_ID)
+    assert (tmp_path / "logs" / "dispatch" / "publish" / "gate.md").is_file()
+    assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+
+
+def test_run_loop_writes_the_review_bounce_from_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    from llm_handoff.publish import PublishOutcome
+
+    _init_repo(tmp_path, handoff_content=_claim("a" * 40))
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path,
+        commit_mode="dispatcher",
+        publish={"mode": "pr", "wait_for_reviewers": ["codex"]},
+    )
+    bounce = _claim(None, status="verified_fail", producer="validator", next_agent="backend")
+    published: list[dict[str, object]] = []
+
+    def fake_support(subagent_name: str, prompt: str, **_kwargs: object) -> SubagentResult:
+        config.handoff_full_path.write_text(
+            _claim(None, status="verified_pass", producer="auditor", next_agent="planner"),
+            encoding="utf-8",
+        )
+        return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def fake_publish(**kwargs: object) -> PublishOutcome:
+        published.append(kwargs)
+        return PublishOutcome(handoff=bounce)
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_args, **_kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="planner"
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "publish_story", fake_publish)
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    assert exit_code == 0
+    assert len(published) == 1
+    review = published[0]["review"]
+    assert review.reviewers == ("codex",) and review.max_rounds == 3
+    assert config.handoff_full_path.read_text(encoding="utf-8") == bounce

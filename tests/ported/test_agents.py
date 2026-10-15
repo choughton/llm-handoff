@@ -334,8 +334,9 @@ def test_gemini_stream_json_monitor_parses_valid_events() -> None:
     )
     assert "Gemini planner: I will now read the handoff." in messages
     assert "Gemini planner: Reading docs/handoff/HANDOFF.md" in messages
+    assert "Gemini planner: Gemini result (status=success)" in messages
     assert (
-        "Gemini planner: Gemini result (status=success, tokens=12 input / 4 output tokens)"
+        "usage: Gemini planner provider=gemini input_tokens=12 output_tokens=4"
         in messages
     )
 
@@ -1357,8 +1358,9 @@ def test_run_codex_json_command_streams_agent_progress_and_suppresses_command_ou
     assert "git status --short --branch" in log_mock.call_args_list[3].args[1]
     assert "HANDOFF.md" not in log_mock.call_args_list[3].args[1]
     assert log_mock.call_args_list[4] == call(
-        "INFO",
-        "Codex: turn completed (tokens=10/3, cached=2)",
+        "DEBUG",
+        "usage: Codex provider=codex input_tokens=10 output_tokens=3 "
+        "cached_input_tokens=2",
     )
 
 

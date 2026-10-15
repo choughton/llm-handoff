@@ -19,16 +19,21 @@ INSTRUCTION_DOCS = [
     "SHARED_REPO_INIT_PROMPT.md",
 ]
 AGENT_INSTRUCTION_DOCS = [
+    ".claude/agents/backend.md",
+    ".claude/agents/frontend.md",
+    ".claude/agents/planner.md",
     ".codex/skills/llm-handoff/SKILL.md",
     ".gemini/agents/frontend.md",
     ".gemini/agents/planner.md",
 ]
 PLANNER_INSTRUCTION_DOCS = [
+    ".claude/agents/planner.md",
     ".gemini/agents/planner.md",
     "docs/handoff/PLANNER_INITIAL_PROMPT.md",
     "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
 ]
 FRONTEND_INSTRUCTION_DOCS = [
+    ".claude/agents/frontend.md",
     ".gemini/agents/frontend.md",
     "docs/handoff/FRONTEND_HANDOFF_PROMPT.md",
 ]

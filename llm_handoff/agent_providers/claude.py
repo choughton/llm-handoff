@@ -14,6 +14,7 @@ from llm_handoff.agent_process import (
     _run_logged_agent_command,
 )
 from llm_handoff.agent_types import LogFn, SubagentResult, _ProcessResult
+from llm_handoff.usage_log import format_usage_line, usage_fields_from_claude_result
 
 
 @dataclass
@@ -24,6 +25,7 @@ class _ClaudeStreamJsonMonitor:
     assistant_chunks: list[str] = field(default_factory=list)
     _assistant_line_buffer: str = ""
     final_result_text: str | None = None
+    model: str | None = None
 
     def consume_stdout(self, chunk: str) -> None:
         if not chunk:
@@ -80,7 +82,11 @@ class _ClaudeStreamJsonMonitor:
             self._handle_result_event(event)
 
     def _handle_system_event(self, event: dict[str, object]) -> None:
-        if self.log is None or event.get("subtype") != "init":
+        if event.get("subtype") != "init":
+            return
+        if isinstance(event.get("model"), str):
+            self.model = str(event["model"])
+        if self.log is None:
             return
 
         session_id = str(event.get("session_id", "unknown"))
@@ -142,19 +148,18 @@ class _ClaudeStreamJsonMonitor:
             return
 
         stop_reason = str(event.get("stop_reason", "unknown"))
-        usage = event.get("usage")
-        input_tokens = _coerce_claude_usage_value(usage, "input_tokens")
-        output_tokens = _coerce_claude_usage_value(usage, "output_tokens")
-        cost = event.get("total_cost_usd")
-
-        summary_parts = [f"stop={stop_reason}"]
-        if input_tokens is not None and output_tokens is not None:
-            summary_parts.append(f"tokens={input_tokens}/{output_tokens}")
-        if cost is not None:
-            summary_parts.append(f"cost_usd={cost}")
         self.log(
             "AGENT",
-            f"{self.agent_name}: Claude result ({', '.join(summary_parts)})",
+            f"{self.agent_name}: Claude result (stop={stop_reason})",
+        )
+        # Token usage and cost go to the log file only (DEBUG).
+        self.log(
+            "DEBUG",
+            format_usage_line(
+                self.agent_name,
+                "claude",
+                {"model": self.model, **usage_fields_from_claude_result(event)},
+            ),
         )
 
     def _handle_tool_use(self, item: dict[str, object]) -> None:

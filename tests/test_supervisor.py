@@ -3,7 +3,9 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -627,9 +629,11 @@ def test_supervisor_shares_repo_root_and_config_with_child_and_repair(
     assert config.dispatch_args == ("--dry-run",)
 
     popen_commands: list[list[str]] = []
+    popen_options: list[dict[str, Any]] = []
 
     def fake_popen(command: list[str], **_kwargs: Any) -> _ExitedChild:
         popen_commands.append(list(command))
+        popen_options.append(_kwargs)
         return _ExitedChild()
 
     monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
@@ -644,9 +648,12 @@ def test_supervisor_shares_repo_root_and_config_with_child_and_repair(
     result = supervisor._run_dispatch_child(config, lambda level, message: None)
 
     assert result.exit_code == 0
+    assert popen_options[0]["cwd"] == config.repo_root
+    assert popen_options[0]["env"] == supervisor._child_dispatch_env()
     assert popen_commands == [
         [
             sys.executable,
+            "-P",
             "-m",
             "llm_handoff",
             "--repo-root",
@@ -677,6 +684,71 @@ def test_supervisor_shares_repo_root_and_config_with_child_and_repair(
 
     assert len(repair_calls) == 1
     assert repair_calls[0]["agent_config"].binary == "claude-alt"
+
+
+@pytest.mark.parametrize("existing", [None, "", "existing-import-root"])
+def test_child_env_preserves_source_import_and_parent_environment(
+    monkeypatch, existing: str | None,
+) -> None:
+    supervisor = _load_supervisor_module()
+    if existing is None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONPATH", existing)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("DISPATCH_TEST_VALUE", "preserved")
+    before = dict(os.environ)
+
+    env = supervisor._child_dispatch_env()
+
+    root = str(Path(supervisor.__file__).resolve().parent.parent)
+    assert env["PYTHONPATH"] == root + (os.pathsep + existing if existing else "")
+    assert env["OPENAI_API_KEY"] == "test-key"
+    assert env["DISPATCH_TEST_VALUE"] == "preserved"
+    assert os.environ == before
+    assert env is not os.environ
+
+
+@pytest.mark.parametrize("directory", ["site-packages", "dist-packages"])
+@pytest.mark.parametrize("existing", [None, "existing-import-root"])
+def test_child_env_does_not_inject_installed_package(
+    tmp_path: Path, monkeypatch, directory: str, existing: str | None,
+) -> None:
+    supervisor = _load_supervisor_module()
+    monkeypatch.setattr(
+        supervisor.llm_handoff, "__file__",
+        str(tmp_path / directory / "llm_handoff" / "__init__.py"),
+    )
+    if existing is None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONPATH", existing)
+
+    assert supervisor._child_dispatch_env() == dict(os.environ)
+
+
+def test_child_import_ignores_target_decoy(tmp_path: Path, monkeypatch) -> None:
+    supervisor = _load_supervisor_module()
+    decoy = tmp_path / "llm_handoff"
+    decoy.mkdir()
+    (decoy / "__init__.py").write_text(
+        "raise RuntimeError('target package imported')\n", encoding="ascii",
+    )
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    result = subprocess.run(
+        [sys.executable, "-P", "-c",
+         "import llm_handoff; "
+         "print(llm_handoff.__file__ or "
+         "next(iter(llm_handoff.__spec__.submodule_search_locations)))"],
+        cwd=tmp_path, env=supervisor._child_dispatch_env(),
+        capture_output=True, text=True, check=True,
+    )
+    resolved = Path(result.stdout.strip()).resolve()
+    package_file = supervisor.llm_handoff.__file__
+    expected = (Path(package_file) if package_file
+                else Path(supervisor.__file__).parent)
+    assert resolved == expected.resolve()
+    assert not resolved.is_relative_to(tmp_path)
 
 
 def test_supervisor_rejects_conflicting_shared_options(tmp_path: Path) -> None:

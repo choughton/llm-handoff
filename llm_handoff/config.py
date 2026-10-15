@@ -103,7 +103,7 @@ DEFAULT_PROTECTED_PATHS: tuple[str, ...] = (
     ".githooks/**",
 )
 CODEX_OUTPUT_SCHEMA_PATH = (
-    Path("llm_handoff") / "schemas" / "codex_final_response.schema.json"
+    Path(__file__).resolve().parent / "schemas" / "codex_final_response.schema.json"
 )
 CODEX_OUTPUT_DIRECTORY = Path("logs") / "dispatch" / "codex"
 CODEX_OUTPUT_LAST_MESSAGE_PATH = CODEX_OUTPUT_DIRECTORY / "last-message.json"
@@ -142,6 +142,16 @@ UnknownNormalizerPolicy = Literal["fail_closed"]
 AuditReviewer = Literal["quality", "security"]
 SecurityReviewProvider = Literal["claude", "gemini", "codex"]
 BlockSeverity = Literal["critical", "high", "medium", "low"]
+# Who commits an implementer's work: the agent itself, or the dispatcher after
+# checking every changed file against the Work Packet's scope.
+CommitMode = Literal["agent", "dispatcher"]
+# What happens to audited work: stay local, merge a story branch with a report
+# commit, or push it and open a pull request.
+PublishMode = Literal["local", "merge-commit", "pr"]
+# GitHub pull request reviewers whose review of the head commit must finish,
+# without findings, before the dispatcher merges a story's pull request.
+PublishReviewer = Literal["codex"]
+DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality",)
 # Order used to pick a security reviewer vendor that differs from the
 # implementer's provider when `audit.security_provider` is not set.
@@ -298,6 +308,53 @@ class NormalizerConfig(BaseModel):
     def _validate_timeout_ms(cls, value: int) -> int:
         if value < 1:
             raise ValueError("normalizer timeout_ms must be at least 1.")
+        return value
+
+
+class PublishConfig(BaseModel):
+    """Per-story branches and how audited work reaches the base branch."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: PublishMode = "local"
+    base_branch: str | None = None
+    branch_prefix: str = "llm-handoff/"
+    remote: str = "origin"
+    auto_merge: bool = True
+    wait_for_checks: bool = False
+    wait_for_reviewers: tuple[PublishReviewer, ...] = ()
+    review_timeout_seconds: int = 1200
+    review_poll_seconds: int = 30
+    max_review_rounds: int = 3
+    codex_bot_login: str = DEFAULT_CODEX_BOT_LOGIN
+
+    @model_validator(mode="after")
+    def _validate_reviewers(self) -> PublishConfig:
+        if not self.wait_for_reviewers:
+            return self
+        if self.mode != "pr" or not self.auto_merge:
+            raise ValueError(
+                "publish.wait_for_reviewers only applies to `mode: pr` with "
+                "`auto_merge: true`; without auto-merge the operator reviews "
+                "and merges the pull request."
+            )
+        if len(set(self.wait_for_reviewers)) != len(self.wait_for_reviewers):
+            raise ValueError("publish.wait_for_reviewers must not repeat a reviewer.")
+        for name in ("review_timeout_seconds", "review_poll_seconds", "max_review_rounds"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"publish.{name} must be at least 1.")
+        if not self.codex_bot_login.strip():
+            raise ValueError("publish.codex_bot_login must not be empty.")
+        return self
+
+    @field_validator("branch_prefix", mode="after")
+    @classmethod
+    def _validate_branch_prefix(cls, value: str) -> str:
+        if not value or any(char.isspace() for char in value) or ".." in value:
+            raise ValueError(
+                "publish.branch_prefix must be a non-empty branch-name prefix "
+                "without spaces or `..`."
+            )
         return value
 
 
@@ -481,6 +538,23 @@ class DispatchConfig(BaseModel):
     )
     scanners: tuple[ScannerConfig, ...] = ()
     protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
+    commit_mode: CommitMode = "agent"
+    publish: PublishConfig = PublishConfig()
+
+    @model_validator(mode="after")
+    def _validate_commit_mode(self) -> DispatchConfig:
+        if self.commit_mode == "dispatcher" and not self.enforce_work_packet:
+            raise ValueError(
+                "commit_mode: dispatcher requires enforce_work_packet: true; the "
+                "dispatcher only commits files the Work Packet puts in scope, "
+                "and the work-claim gate checks what it committed."
+            )
+        if self.publish.mode != "local" and self.commit_mode != "dispatcher":
+            raise ValueError(
+                f"publish.mode: {self.publish.mode} requires commit_mode: "
+                "dispatcher; the dispatcher owns the story branch and its commits."
+            )
+        return self
 
     @field_validator("protected_paths", mode="after")
     @classmethod

@@ -58,6 +58,7 @@ SCANNER_FAILED_PREFIX = "scanner_failed"
 SCANNER_MISSING_PREFIX = "scanner_missing"
 SCANNER_TIMEOUT_PREFIX = "scanner_timeout"
 SCANNER_CONFIG_INVALID_PREFIX = "scanner_config_invalid"
+NO_CHANGES_PREFIX = "no_changes"
 
 WORK_PACKET_ERROR_PREFIXES = frozenset(
     {WORK_PACKET_MISSING_PREFIX, WORK_PACKET_UNPARSEABLE_PREFIX}
@@ -76,6 +77,7 @@ WORK_CLAIM_ERROR_PREFIXES = frozenset(
         SCANNER_MISSING_PREFIX,
         SCANNER_TIMEOUT_PREFIX,
         SCANNER_CONFIG_INVALID_PREFIX,
+        NO_CHANGES_PREFIX,
     }
 )
 # POSIX sh and cmd.exe exit codes for "command not found".
@@ -892,6 +894,7 @@ def verify_work_claim(
     pre_dispatch_state: PreDispatchState,
     verification_timeout_seconds: int,
     scanners: Sequence[ScannerConfig] = (),
+    require_new_commit: bool = False,
 ) -> WorkClaimResult:
     """Check an implementer's ``ready_for_review`` claim against the packet.
 
@@ -899,6 +902,8 @@ def verify_work_claim(
     the Work Packet); ``claim_content`` is the handoff it wrote back.
     ``scanners`` run in order after the scope checks pass and before the
     verification command; every scanner runs even when an earlier one fails.
+    ``require_new_commit`` fails a claim whose commits since dispatch change
+    no file other than the handoff (``no_changes``).
     """
 
     handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
@@ -987,6 +992,16 @@ def verify_work_claim(
         )
         checks.append(diff_check)
         errors.extend(diff_errors)
+
+    if require_new_commit and not any(
+        path != handoff_rel_path for path in changed_files
+    ):
+        detail = (
+            "no file other than the handoff changed in commits since dispatch "
+            f"({_short(pre_dispatch_head)}..{_short(head_sha)})."
+        )
+        checks.append(WorkClaimCheck("new_commit", "FAIL", detail))
+        errors.append(f"{NO_CHANGES_PREFIX}: {detail}")
 
     worktree_check, worktree_error = _worktree_check(
         repo_root,
@@ -1401,6 +1416,52 @@ def _dispatcher_verification_section(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def record_passed_verification(claim_content: str, result: WorkClaimResult) -> str:
+    """Return the claim with a passing ``## Dispatcher Verification`` section.
+
+    The auditor reads it to learn that the Work Packet's Verification command
+    already passed on the claimed commit, so it does not run it again. An
+    existing section (from an earlier bounce) is replaced.
+    """
+
+    section = passed_verification_section(result)
+    normalized = claim_content.replace("\r\n", "\n")
+    start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
+    if start == -1:
+        return normalized.rstrip("\n") + "\n\n" + section
+    start += 1
+    next_heading = re.search(r"(?m)^## ", normalized[start + 1 :])
+    end = len(normalized) if next_heading is None else start + 1 + next_heading.start()
+    return normalized[:start] + section + ("\n" if end < len(normalized) else "") + normalized[end:]
+
+
+def passed_verification_section(result: WorkClaimResult) -> str:
+    """The passing ``## Dispatcher Verification`` section for a claim."""
+
+    lines = [DISPATCHER_VERIFICATION_HEADING, ""]
+    lines.append(
+        "The dispatcher verified this `ready_for_review` claim before "
+        "dispatching the auditor, and every check passed. The Verification "
+        "command below already ran on the verified commit, outside any agent "
+        "sandbox; the auditor does not need to run it again."
+    )
+    lines.append("")
+    lines.append("- **Verdict:** PASS")
+    verified = result.head_sha or result.scope_sha or "unknown"
+    lines.append(f"- **Verified commit:** `{verified}`")
+    lines.append(f"- **Pre-dispatch HEAD:** `{result.pre_dispatch_head or 'unknown'}`")
+    changed = ", ".join(f"`{path}`" for path in result.changed_files) or "none"
+    lines.append(f"- **Changed files since dispatch:** {changed}")
+    lines.append("- **Checks:**")
+    for check in result.checks:
+        lines.append(f"  - {check.outcome} `{check.name}`: {check.detail}")
+    for run in result.verification_runs:
+        lines.append(
+            f"- **Verification command:** `{run.command}` ({run.describe_outcome()})"
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _split_frontmatter(content: str) -> tuple[dict[str, object] | None, str]:
     normalized = content.lstrip("﻿").replace("\r\n", "\n")
     lines = normalized.split("\n")
@@ -1479,6 +1540,8 @@ __all__ = [
     "bounce_reason",
     "bounce_route_for",
     "build_bounce_handoff",
+    "passed_verification_section",
+    "record_passed_verification",
     "capture_pre_dispatch_state",
     "extract_work_packet_section",
     "parse_work_packet",

@@ -72,6 +72,33 @@ Run `git rev-parse HEAD` and use the concrete 7-40 character hex SHA. Do not wri
 Include the `## Verification Evidence` block from `docs/handoff/README.md`.
 Do not use stale command output from a previous session.
 
+## Git Inside The Sandbox
+
+If the dispatcher's instruction says dispatcher commit mode is on, do not
+stage or commit at all: leave your changes in the working tree, leave
+`scope_sha` empty, and write `pending-dispatcher-commit` as the
+`Commit SHA verified` value. The dispatcher commits the in-scope files for you.
+
+Otherwise, Codex keeps `.git` read-only inside its sandbox, so `git add` and
+`git commit` fail there. The repository's `.codex/rules/llm-handoff.rules`
+does not let git writes out of the sandbox, and it forbids `git push`. If you
+are sandboxed and the protocol asks you to commit, do not work around the
+sandbox: leave the changes uncommitted and hand back as
+`status: blocked_implementation_failure` explaining that the operator should
+enable `commit_mode: dispatcher`.
+
+Read-only git commands (`status`, `diff`, `log`, `rev-parse`) stay in the
+sandbox. On Windows the sandbox runs as a separate account, so add
+`-c safe.directory=<repository root>` to those if git reports dubious
+ownership.
+
+If a test needs temporary directories the sandbox cannot create (for example
+pytest's `tmp_path` on Windows), do not move them into the repository. Run
+what you can, record the sandbox error under `Unresolved concerns`, and hand
+back as `ready_for_review` once the change is committed: the dispatcher's
+work-claim gate re-runs the Work Packet's Verification command outside the
+sandbox before any audit.
+
 ## Handling Audit Feedback
 
 Before acting on auditor feedback, verify the finding against the changed files,
@@ -84,7 +111,7 @@ contract, document the contradiction and route with
 
 - Verify the requested backend scope is complete.
 - Run the focused tests or checks that cover the change.
-- Commit the backend change if the repository protocol asks agents to commit locally.
+- Commit the backend change only if the repository protocol asks agents to commit locally and you are not sandboxed; in dispatcher commit mode, leave it uncommitted.
 - Rewrite `docs/handoff/HANDOFF.md` with concrete files changed, checks run, blockers if any, and the next role.
 - Preserve the assignment's `## Work Packet` section in the handback; the auditor and the dispatcher's work-claim gate read it.
-- Leave `git push` to the repository's authorization rules.
+- Never run `git push`; remote pushes are the operator's call.

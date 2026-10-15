@@ -28,11 +28,15 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Callable, Literal, Mapping
+from typing import Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from llm_handoff import config as config_module
+from llm_handoff.usage_log import (
+    format_usage_line,
+    usage_fields_from_claude_result,
+)
 from llm_handoff.agent_process import _run_logged_agent_command
 from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_providers.claude import (
@@ -128,8 +132,10 @@ _FINDING_JSON_SCHEMA: dict[str, object] = {
         "recommendation": {"type": "string"},
     },
 }
+# No "$schema" key: Claude Code's --json-schema validator rejects the draft
+# 2020-12 meta-schema reference ("no schema with key or ref"), which made the
+# Claude security reviewer fail at launch.
 SECURITY_VERDICT_JSON_SCHEMA: dict[str, object] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "additionalProperties": False,
     "required": ["verdict", "summary", "findings"],
@@ -193,7 +199,12 @@ GEMINI_SECURITY_REVIEW_SUFFIX = (
 QUALITY_FAN_OUT_PROMPT_TEMPLATE = (
     "Use the auditor agent to audit the work described in {handoff_path}. Read "
     "the repository instructions and relevant state files before judging the "
-    "diff. Run the configured verification commands when available. This audit "
+    "diff. If {handoff_path} has a `## Dispatcher Verification` section with "
+    "`Verdict: PASS` for {head_sha}, the dispatcher already ran the Work "
+    "Packet's Verification command on that commit outside any sandbox: do not "
+    "run it again. Otherwise run it. Run any other check only when the diff "
+    "needs evidence the dispatcher did not produce, and keep it narrow (a "
+    "single test file, not the whole suite). This audit "
     "runs in read-only fan-out mode: a separate security reviewer is running "
     "concurrently on the same commit range {range_text}, and the dispatcher, "
     "not you, writes {handoff_path}. Judge the committed changes in "
@@ -1184,6 +1195,33 @@ def _run_quality_reviewer(
     )
 
 
+def _log_claude_json_usage(
+    agent_name: str,
+    stdout: str,
+    command: Sequence[str],
+    log: LogFn | None,
+) -> None:
+    """Log a ``--output-format json`` Claude run's usage to the log file only."""
+
+    if log is None:
+        return
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(envelope, dict):
+        return
+    fields = usage_fields_from_claude_result(envelope)
+    if not fields:
+        return
+    model = None
+    if "--model" in command:
+        index = list(command).index("--model")
+        if index + 1 < len(command):
+            model = command[index + 1]
+    log("DEBUG", format_usage_line(agent_name, "claude", {"model": model, **fields}))
+
+
 def _run_security_reviewer(
     plan: SecurityReviewerPlan,
     *,
@@ -1271,6 +1309,8 @@ def _run_security_reviewer(
         stderr = process_result.stderr
         exit_code = process_result.exit_code
         verdict_text = stdout
+        if plan.kind == "claude":
+            _log_claude_json_usage(agent_name, stdout, plan.command, log)
     elapsed = time.monotonic() - start
     after_sha = _handoff_sha(handoff_path)
 

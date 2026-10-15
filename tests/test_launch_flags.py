@@ -175,6 +175,25 @@ def test_allowed_tools_rejects_commas() -> None:
 # Codex
 
 
+def test_codex_launch_uses_package_schema_for_external_repo(tmp_path: Path) -> None:
+    assert not (tmp_path / "llm_handoff").exists()
+    paths = codex._codex_artifact_paths(tmp_path)
+    command = codex._build_codex_exec_command("implement", artifact_paths=paths)
+
+    assert command.count("--output-schema") == 1
+    schema_path = Path(command[command.index("--output-schema") + 1])
+    assert schema_path.is_absolute()
+    assert schema_path.is_file()
+    assert schema_path.is_relative_to(Path(config.__file__).resolve().parent)
+    assert not schema_path.is_relative_to(tmp_path.resolve())
+    assert paths.output_directory == (tmp_path / "logs/dispatch/codex").resolve()
+    assert paths.output_last_message_path == paths.output_directory / "last-message.json"
+    assert paths.session_state_path == paths.output_directory / "session.json"
+    assert command[command.index("--output-last-message") + 1] == str(
+        paths.output_last_message_path
+    )
+
+
 def test_codex_default_launch_uses_workspace_sandbox(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

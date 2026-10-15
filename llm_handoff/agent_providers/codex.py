@@ -16,6 +16,7 @@ from llm_handoff.agent_streams import (
     _filter_codex_json_stderr_line,
 )
 from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
+from llm_handoff.usage_log import format_usage_line, usage_fields_from_codex_turn
 
 
 @dataclass(frozen=True)
@@ -98,23 +99,12 @@ class _CodexJsonMonitor:
             return
 
         if event_type == "turn.completed":
-            usage = event.get("usage")
-            if not isinstance(usage, dict):
-                return
-            input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            cached_input_tokens = usage.get("cached_input_tokens")
-            if (
-                self.log is not None
-                and isinstance(input_tokens, int)
-                and isinstance(output_tokens, int)
-            ):
-                cached_suffix = ""
-                if isinstance(cached_input_tokens, int):
-                    cached_suffix = f", cached={cached_input_tokens}"
+            fields = usage_fields_from_codex_turn(event)
+            if self.log is not None and fields:
+                # Codex reports tokens but no price. Log file only (DEBUG).
                 self.log(
-                    "INFO",
-                    f"{self.agent_name}: turn completed (tokens={input_tokens}/{output_tokens}{cached_suffix})",
+                    "DEBUG",
+                    format_usage_line(self.agent_name, "codex", fields),
                 )
 
     def _handle_item(self, event_type: str, item: dict[str, object]) -> None:
@@ -402,7 +392,7 @@ def _codex_artifact_paths(repo_root: Path) -> _CodexArtifactPaths:
         output_last_message_path=(
             repo_root / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
         ).resolve(),
-        output_schema_path=(repo_root / config.CODEX_OUTPUT_SCHEMA_PATH).resolve(),
+        output_schema_path=config.CODEX_OUTPUT_SCHEMA_PATH.resolve(),
         session_state_path=(repo_root / config.CODEX_SESSION_STATE_PATH).resolve(),
     )
 

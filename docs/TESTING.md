@@ -30,6 +30,16 @@ suite is reorganized.
 python -m pytest tests -q
 ```
 
+`pytest.ini` runs the suite on 8 `pytest-xdist` workers, which keeps a full
+run well under a minute. Run serially with `-n 0` when debugging a single test
+or reading its output with `-s`.
+
+Tests must never launch a real provider CLI (`claude`, `codex`, `gemini`,
+`agy`): that is slow, spends the developer's tokens, and depends on their
+sign-in. An autouse fixture in `tests/conftest.py` fails any test that tries.
+Stub the agent call instead (for example `orchestrator.invoke_support_role`),
+or put a fake executable under the test's temporary directory.
+
 ## Local Hooks
 
 The repo includes a light pre-commit configuration for whitespace, YAML/TOML

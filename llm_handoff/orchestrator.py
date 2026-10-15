@@ -46,6 +46,14 @@ from llm_handoff.handoff_normalizer import (
     normalize_handoff_next_agent_text,
     normalize_next_agent,
 )
+from llm_handoff.dispatcher_commit import (
+    COMMIT_MODE_INSTRUCTION,
+    commit_implementer_changes,
+    stamp_commit_sha,
+)
+from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
+from llm_handoff.pr_review import ReviewGate
+from llm_handoff.publish import ensure_story_branch, publish_story, save_gate_section
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
     HandoffFrontmatterError,
@@ -69,6 +77,8 @@ from llm_handoff.work_claim import (
     bounce_route_for,
     build_bounce_handoff,
     capture_pre_dispatch_state,
+    passed_verification_section,
+    record_passed_verification,
     verify_work_claim,
 )
 
@@ -545,6 +555,15 @@ def run_loop(
                 previous_cycle = current_cycle
                 consecutive_failures = 0
                 continue
+            if _stop_on_auth_failure(
+                config,
+                role="finalizer",
+                exit_code=int(getattr(ledger_result, "subagent_exit_code", 0)),
+                stdout=ledger_result.stdout,
+                stderr=ledger_result.stderr,
+                log=log_fn,
+            ):
+                return 1
             parse_error = ledger_result.parse_error
             if parse_error:
                 _run_epic_close_validator(config, parse_error, log_fn)
@@ -572,6 +591,21 @@ def run_loop(
             previous_cycle = current_cycle
             consecutive_failures = 0
         else:
+            if (
+                config.publish.mode != "local"
+                and current_cycle.route in {"backend", "frontend"}
+            ):
+                branch_error = ensure_story_branch(
+                    repo_root=config.repo_root,
+                    prefix=config.publish.branch_prefix,
+                    base_branch=config.publish.base_branch,
+                    assignment_content=handoff_content,
+                    log_file=getattr(log_fn, "log_file_path", None),
+                    implementer=current_cycle.route,
+                )
+                if branch_error is not None:
+                    _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
+                    return 1
             pre_dispatch_state: PreDispatchState | None = None
             if _work_claim_gate_applies(config, current_cycle.route):
                 pre_dispatch_state = capture_pre_dispatch_state(config.repo_root)
@@ -652,6 +686,15 @@ def run_loop(
                         planner_session_id = dispatch_result.session_id
                     if planner_session_id:
                         planner_previous_handoff_sha = current_cycle.handoff_sha
+            if _stop_on_auth_failure(
+                config,
+                role=current_cycle.route,
+                exit_code=dispatch_result.exit_code,
+                stdout=dispatch_result.stdout,
+                stderr=dispatch_result.stderr,
+                log=log_fn,
+            ):
+                return 1
             if dispatch_result.exit_code != 0:
                 consecutive_failures = _record_failure(
                     config,
@@ -662,6 +705,13 @@ def run_loop(
                     return 1
                 continue
 
+            _commit_for_implementer(
+                config=config,
+                route=current_cycle.route,
+                assignment_content=handoff_content,
+                pre_dispatch_state=pre_dispatch_state,
+                log=log_fn,
+            )
             _log(
                 log_fn,
                 "AGENT",
@@ -862,12 +912,47 @@ def run_loop(
             else:
                 previous_cycle = current_cycle
                 consecutive_failures = 0
+                if (
+                    config.publish.mode != "local"
+                    and current_cycle.route == "auditor"
+                ):
+                    outcome = publish_story(
+                        repo_root=config.repo_root,
+                        mode=config.publish.mode,
+                        remote=config.publish.remote,
+                        auto_merge=config.publish.auto_merge,
+                        wait_for_checks=config.publish.wait_for_checks,
+                        handoff_content=(
+                            _read_required_text(config.handoff_full_path) or ""
+                        ),
+                        log=log_fn,
+                        review=_review_gate(config),
+                    )
+                    if outcome.handoff is not None:
+                        config.handoff_full_path.write_text(
+                            outcome.handoff, encoding="utf-8"
+                        )
+                    if outcome.stop:
+                        return outcome.exit_code
 
         if max_cycles is not None and cycle_number >= max_cycles:
             return 0
 
         _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
         _log(log_fn, "INFO", "")
+
+
+def _review_gate(config: DispatchConfig) -> ReviewGate | None:
+    publish = config.publish
+    if not publish.wait_for_reviewers:
+        return None
+    return ReviewGate(
+        reviewers=publish.wait_for_reviewers,
+        timeout_seconds=publish.review_timeout_seconds,
+        poll_seconds=publish.review_poll_seconds,
+        max_rounds=publish.max_review_rounds,
+        codex_bot_login=publish.codex_bot_login,
+    )
 
 
 def _dispatch_route(
@@ -890,7 +975,9 @@ def _dispatch_route(
             handoff_path,
             log=log,
             use_resume=config.backend_resume_enabled,
-            additional_instruction=additional_instruction,
+            additional_instruction=_with_commit_mode_instruction(
+                config, additional_instruction
+            ),
             agent_config=config.agents["backend"],
             repo_root=config.repo_root,
         ), "backend"
@@ -926,7 +1013,9 @@ def _dispatch_route(
                 handoff_path,
                 use_manual_frontend=config.use_manual_frontend,
                 use_api_key_env=config.planner_api_key_env_enabled,
-                additional_instruction=additional_instruction,
+                additional_instruction=_with_commit_mode_instruction(
+                    config, additional_instruction
+                ),
                 log=log,
                 agent_config=config.agents["frontend"],
                 repo_root=config.repo_root,
@@ -1744,6 +1833,37 @@ def _write_protected_file_escalation(
     )
 
 
+def _stop_on_auth_failure(
+    config: DispatchConfig,
+    *,
+    role: str,
+    exit_code: int,
+    stdout: str | None,
+    stderr: str | None,
+    log: LogFn,
+) -> bool:
+    """Log how to sign in and return True when a failed run was a sign-in failure.
+
+    A provider CLI that is not signed in fails every retry the same way, so
+    the loop stops instead of spending its failure budget.
+    """
+
+    if exit_code == 0:
+        return False
+    detail = find_auth_failure(stdout, stderr)
+    if detail is None:
+        return False
+    agent_config = config.agents.get(role)  # type: ignore[call-overload]
+    for message in auth_failure_messages(
+        role=role,
+        provider=agent_config.provider if agent_config is not None else None,
+        binary=agent_config.binary if agent_config is not None else None,
+        detail=detail,
+    ):
+        _log(log, "ERROR", message)
+    return True
+
+
 def _record_failure(
     config: DispatchConfig,
     consecutive_failures: int,
@@ -1965,6 +2085,79 @@ def _work_claim_gate_applies(config: DispatchConfig, route: RouteName) -> bool:
     return config.enforce_work_packet and route in {"backend", "frontend"}
 
 
+def _with_commit_mode_instruction(
+    config: DispatchConfig,
+    additional_instruction: str | None,
+) -> str | None:
+    """Tell implementers not to touch ``.git`` when the dispatcher commits."""
+
+    if config.commit_mode != "dispatcher":
+        return additional_instruction
+    if additional_instruction and additional_instruction.strip():
+        return "\n\n".join((COMMIT_MODE_INSTRUCTION, additional_instruction.strip()))
+    return COMMIT_MODE_INSTRUCTION
+
+
+def _commit_for_implementer(
+    *,
+    config: DispatchConfig,
+    route: RouteName,
+    assignment_content: str,
+    pre_dispatch_state: PreDispatchState | None,
+    log: LogFn,
+) -> None:
+    """Commit an implementer's in-scope changes in ``dispatcher`` commit mode.
+
+    Runs before handoff validation so the recorded ``scope_sha`` and evidence
+    SHA are real. Anything left uncommitted is reported by the work-claim gate.
+    """
+
+    if (
+        config.commit_mode != "dispatcher"
+        or route not in {"backend", "frontend"}
+        or pre_dispatch_state is None
+    ):
+        return
+    claim_content = _read_required_text(config.handoff_full_path)
+    if claim_content is None:
+        return
+    result = commit_implementer_changes(
+        repo_root=config.repo_root,
+        handoff_path=config.handoff_path,
+        assignment_content=assignment_content,
+        claim_content=claim_content,
+        pre_dispatch_state=pre_dispatch_state,
+        role=route,
+    )
+    if result.error is not None:
+        _log(log, "ERROR", f"Dispatcher commit for {route} failed: {result.error}.")
+    elif result.sha is None:
+        _log(
+            log,
+            "INFO",
+            f"Dispatcher commit for {route} skipped: {result.skipped_reason}.",
+        )
+    else:
+        config.handoff_full_path.write_text(
+            stamp_commit_sha(claim_content, result.sha),
+            encoding="utf-8",
+        )
+        _log(
+            log,
+            "AGENT",
+            f"Dispatcher committed {len(result.committed)} in-scope file(s) for "
+            f"{route} as {result.sha[:12]}: {', '.join(result.committed)}.",
+        )
+    if result.left_uncommitted:
+        _log(
+            log,
+            "WARN",
+            "Left uncommitted (outside Files in scope or out of bounds): "
+            f"{', '.join(result.left_uncommitted)}. The work-claim gate will "
+            "report them.",
+        )
+
+
 def _run_work_claim_gate(
     *,
     config: DispatchConfig,
@@ -2001,10 +2194,18 @@ def _run_work_claim_gate(
         pre_dispatch_state=pre_dispatch_state,
         verification_timeout_seconds=config.work_packet_verification_timeout_seconds,
         scanners=config.scanners,
+        require_new_commit=config.commit_mode == "dispatcher",
     )
     _log_work_claim_result(result, log)
     if result.passed:
         _log(log, "AGENT", f"Work-claim gate PASSED for {previous_agent}.")
+        # Record the pass so the auditor does not re-run the verification.
+        config.handoff_full_path.write_text(
+            record_passed_verification(claim_content, result),
+            encoding="utf-8",
+        )
+        if config.publish.mode != "local":
+            save_gate_section(config.repo_root, passed_verification_section(result))
         return False
 
     for error in result.errors:
@@ -2575,6 +2776,28 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         if config.protected_paths
         else "Protected files:    OFF (protected_paths is empty)",
     )
+    publish = config.publish
+    if publish.mode == "local":
+        _log(log, "INFO", "Publish:            local (commits stay on the current branch)")
+    else:
+        detail = f"story branches {publish.branch_prefix}*"
+        if publish.mode == "pr":
+            detail += (
+                f"; push to {publish.remote} and open a PR after the audit passes; "
+                + ("auto-merge" if publish.auto_merge else "operator merges")
+                + ("; waits for PR checks" if publish.wait_for_checks else "")
+                + (
+                    "; waits for the "
+                    + ", ".join(publish.wait_for_reviewers)
+                    + f" review (up to {publish.review_timeout_seconds}s, "
+                    f"{publish.max_review_rounds} rounds)"
+                    if publish.wait_for_reviewers
+                    else ""
+                )
+            )
+        else:
+            detail += "; merge with a report commit after the audit passes"
+        _log(log, "INFO", f"Publish:            {publish.mode} ({detail})")
 
 
 def _dispatched_roles(config: DispatchConfig) -> list[str]:

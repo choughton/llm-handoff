@@ -21,6 +21,7 @@ from uuid import uuid4
 
 import yaml
 
+import llm_handoff
 from llm_handoff.agent_process import (
     _kill_process_tree,
     _process_group_popen_kwargs,
@@ -34,6 +35,7 @@ from llm_handoff.config import (
     detect_repo_root,
     load_dispatch_config,
 )
+from llm_handoff.provider_auth import AUTH_FAILURE_MARKERS, AUTH_FAILURE_PATTERNS
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.router import route as route_handoff
 from llm_handoff.text_io import read_dispatch_text
@@ -68,16 +70,9 @@ _REPAIRABLE_ZERO_EXIT_MARKERS = (
     "No supported producer repair path",
     "Hit maximum consecutive failures",
 )
-_AUTH_FAILURE_MARKERS = (
-    "Invalid API key",
-    "authentication failed",
-    "not authenticated",
-    "401 Unauthorized",
-)
-_AUTH_FAILURE_PATTERNS = (
-    re.compile(r"\bplease\s+run\b.*\bauth\s+login\b", re.IGNORECASE),
-    re.compile(r"\brun\b.*\bauth\s+login\b.*\bto\s+authenticate\b", re.IGNORECASE),
-)
+# Shared with the orchestrator, which stops on the same sign-in failures.
+_AUTH_FAILURE_MARKERS = AUTH_FAILURE_MARKERS
+_AUTH_FAILURE_PATTERNS = AUTH_FAILURE_PATTERNS
 _TRANSIENT_FAILURE_MARKERS = (
     "session not found",
     "deadline_exceeded",
@@ -598,9 +593,26 @@ def _stop_with_incident(
     return result.exit_code or 1
 
 
+def _child_dispatch_env() -> dict[str, str]:
+    env = os.environ.copy()
+    # The source tree currently uses a namespace package with no __file__.
+    # Anchor that case to this loaded module, not another namespace portion.
+    package_file = llm_handoff.__file__ or __file__
+    package_parent = Path(package_file).resolve().parent.parent
+    # Installed packages are already discoverable without cwd on sys.path.
+    # Source checkouts (including editable installs) need their import root.
+    if package_parent.name.lower() not in {"site-packages", "dist-packages"}:
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(package_parent)
+        if existing:
+            env["PYTHONPATH"] += os.pathsep + existing
+    return env
+
+
 def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcessResult:
     command = [
         sys.executable,
+        "-P",
         "-m",
         "llm_handoff",
         *_child_dispatch_options(config),
@@ -612,6 +624,7 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
     process = subprocess.Popen(
         command,
         cwd=config.repo_root,
+        env=_child_dispatch_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
