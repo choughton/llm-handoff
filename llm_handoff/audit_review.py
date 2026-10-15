@@ -1341,10 +1341,24 @@ def _run_security_reviewer(
             env=plan.env,
             log=None,
         )
-        if (
-            precheck.exit_code != 0
-            or GEMINI_SECURITY_EXTENSION_NAME not in precheck.stdout.lower()
-        ):
+        extension_state = (
+            gemini_extension_state(precheck.stdout)
+            if precheck.exit_code == 0
+            else "missing"
+        )
+        if extension_state != "active":
+            if extension_state == "inactive":
+                precheck_error = (
+                    "security_extension_missing: " + _gemini_extension_inactive_detail()
+                )
+            else:
+                precheck_error = (
+                    "security_extension_missing: the Gemini CLI security "
+                    "extension is not installed in this repository's Gemini "
+                    "CLI; install it with `gemini extensions install "
+                    f"{GEMINI_SECURITY_EXTENSION_URL}` or set "
+                    "audit.security_provider to another vendor."
+                )
             return _ReviewerOutcome(
                 run=ReviewerRun(
                     name="security",
@@ -1354,13 +1368,7 @@ def _run_security_reviewer(
                     elapsed_seconds=time.monotonic() - start,
                     stdout=precheck.stdout,
                     stderr=precheck.stderr,
-                    error=(
-                        "security_extension_missing: the Gemini CLI security "
-                        "extension is not installed in this repository's Gemini "
-                        "CLI; install it with `gemini extensions install "
-                        f"{GEMINI_SECURITY_EXTENSION_URL}` or set "
-                        "audit.security_provider to another vendor."
-                    ),
+                    error=precheck_error,
                 ),
                 handoff_sha_after=_handoff_sha(handoff_path),
             )
@@ -1609,6 +1617,71 @@ def _gemini_reviewer_env(
     )
 
 
+GeminiExtensionState = Literal["active", "inactive", "missing"]
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# Status markers that `gemini extensions list` prints before an extension name.
+_GEMINI_EXTENSION_ACTIVE_MARKERS = frozenset({"✓", "✔"})
+_GEMINI_EXTENSION_INACTIVE_MARKERS = frozenset({"✗", "✘"})
+_GEMINI_EXTENSION_ENABLED_RE = re.compile(
+    r"^enabled(?:\s*\((?P<scope>[^)]*)\))?\s*:\s*(?P<value>\S+)",
+    re.IGNORECASE,
+)
+
+
+def gemini_extension_state(
+    stdout: str,
+    name: str = GEMINI_SECURITY_EXTENSION_NAME,
+) -> GeminiExtensionState:
+    """Classify one extension in `gemini extensions list` output.
+
+    The CLI lists every installed extension, disabled ones included, so a name
+    match alone does not prove the extension is usable. The entry for ``name``
+    is its header line (optional status marker, the exact name, an optional
+    ``(version)``) plus the indented detail lines that follow it. The entry is
+    inactive when the marker is a cross, when ``Enabled (Workspace)`` is false,
+    or, without a workspace line, when any ``Enabled`` line is false. An entry
+    that carries no status information at all is treated as active.
+    """
+    target = name.lower()
+    lines = _ANSI_ESCAPE_RE.sub("", stdout).splitlines()
+    for index, raw_line in enumerate(lines):
+        tokens = raw_line.strip().split()
+        if not tokens:
+            continue
+        marker = ""
+        if tokens[0] in _GEMINI_EXTENSION_ACTIVE_MARKERS | _GEMINI_EXTENSION_INACTIVE_MARKERS:
+            marker = tokens[0]
+            tokens = tokens[1:]
+        if not tokens or tokens[0].lower() != target:
+            continue
+        if marker in _GEMINI_EXTENSION_INACTIVE_MARKERS:
+            return "inactive"
+        enabled_values: dict[str, str] = {}
+        for detail in lines[index + 1 :]:
+            if not detail.strip() or not detail[:1].isspace():
+                break
+            match = _GEMINI_EXTENSION_ENABLED_RE.match(detail.strip())
+            if match is not None:
+                scope = (match.group("scope") or "").strip().lower()
+                enabled_values[scope] = match.group("value").lower()
+        if "workspace" in enabled_values:
+            return "active" if enabled_values["workspace"] == "true" else "inactive"
+        if any(value == "false" for value in enabled_values.values()):
+            return "inactive"
+        return "active"
+    return "missing"
+
+
+def _gemini_extension_inactive_detail() -> str:
+    return (
+        f"the Gemini CLI security extension ({GEMINI_SECURITY_EXTENSION_NAME}) is "
+        "installed but disabled for this repository; enable it with `gemini "
+        f"extensions enable {GEMINI_SECURITY_EXTENSION_NAME}` or set "
+        "audit.security_provider to another vendor."
+    )
+
+
 def _gemini_extension_missing_error(config: DispatchConfig) -> str | None:
     """Return an error when the Gemini CLI security extension is not installed."""
     provider_config = _provider_agent_config(config, "gemini")
@@ -1627,8 +1700,14 @@ def _gemini_extension_missing_error(config: DispatchConfig) -> str | None:
             f"security_reviewer_failed: could not run `{binary} extensions "
             f"list` to check the Gemini CLI security extension: {exc}"
         )
-    if result.exit_code == 0 and GEMINI_SECURITY_EXTENSION_NAME in result.stdout.lower():
+    state = gemini_extension_state(result.stdout) if result.exit_code == 0 else "missing"
+    if state == "active":
         return None
+    if state == "inactive":
+        return (
+            "security_reviewer_failed: security_extension_missing: "
+            + _gemini_extension_inactive_detail()
+        )
     return (
         "security_reviewer_failed: security_extension_missing: the Gemini CLI "
         f"security extension ({GEMINI_SECURITY_EXTENSION_NAME}) is not installed "

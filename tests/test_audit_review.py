@@ -1996,6 +1996,134 @@ def test_startup_check_fails_when_gemini_security_extension_is_missing(
     assert audit_review.GEMINI_SECURITY_EXTENSION_URL in error
 
 
+_GEMINI_EXTENSION_ENTRY = (
+    "{marker} gemini-cli-security (0.3.0)\n"
+    " Path: /home/user/.gemini/extensions/gemini-cli-security\n"
+    " Source: https://github.com/gemini-cli-extensions/security (Type: git)\n"
+    " Enabled (User): {user}\n"
+    " Enabled (Workspace): {workspace}\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        ("gemini-cli-security (0.3.0)\n", "active"),
+        (
+            _GEMINI_EXTENSION_ENTRY.format(
+                marker="✓", user="true", workspace="true"
+            ),
+            "active",
+        ),
+        (
+            _GEMINI_EXTENSION_ENTRY.format(
+                marker="✓", user="false", workspace="true"
+            ),
+            "active",
+        ),
+        (
+            "\x1b[32m✓\x1b[39m gemini-cli-security (0.3.0)\n"
+            " Enabled (Workspace): true\n",
+            "active",
+        ),
+        (
+            _GEMINI_EXTENSION_ENTRY.format(
+                marker="✗", user="false", workspace="false"
+            ),
+            "inactive",
+        ),
+        (
+            _GEMINI_EXTENSION_ENTRY.format(
+                marker="✓", user="true", workspace="false"
+            ),
+            "inactive",
+        ),
+        ("gemini-cli-security (0.3.0)\n Enabled: false\n", "inactive"),
+        ("✗ gemini-cli-security (0.3.0)\n", "inactive"),
+        (
+            "✓ other-extension (1.0.0)\n"
+            " Path: /home/user/.gemini/extensions/gemini-cli-security\n"
+            " Enabled (Workspace): true\n",
+            "missing",
+        ),
+        ("✓ gemini-cli-security-fork (1.0.0)\n", "missing"),
+        ("No extensions installed.\n", "missing"),
+        ("", "missing"),
+    ],
+)
+def test_gemini_extension_state_parses_the_matching_entry(
+    stdout: str,
+    expected: str,
+) -> None:
+    assert audit_review.gemini_extension_state(stdout) == expected
+
+
+def test_gemini_extension_state_reads_only_the_matching_entry() -> None:
+    stdout = (
+        _GEMINI_EXTENSION_ENTRY.format(marker="✓", user="true", workspace="true")
+        + "\n"
+        + "✗ other-extension (1.0.0)\n"
+        + " Enabled (User): false\n"
+        + " Enabled (Workspace): false\n"
+    )
+
+    assert audit_review.gemini_extension_state(stdout) == "active"
+
+
+def test_startup_check_fails_when_gemini_security_extension_is_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _gemini_extensions_list(
+        monkeypatch,
+        _GEMINI_EXTENSION_ENTRY.format(
+            marker="✗", user="false", workspace="false"
+        ),
+    )
+    config = _fan_out_config(tmp_path, security_provider="gemini")
+
+    error = audit_review.security_reviewer_startup_error(config)
+
+    assert error is not None
+    assert error.startswith("security_reviewer_failed:")
+    assert "security_extension_missing" in error
+    assert "installed but disabled" in error
+    assert "gemini extensions enable gemini-cli-security" in error
+
+
+def test_fan_out_fails_closed_when_gemini_extension_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    commands: list[list[str]] = []
+
+    def fake_runner(_name: str, command: list[str], **_kwargs: Any) -> _ProcessResult:
+        commands.append(command)
+        return _process(
+            _GEMINI_EXTENSION_ENTRY.format(
+                marker="✓", user="true", workspace="false"
+            )
+        )
+
+    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_runner)
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo, security_provider="gemini"),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert "security_extension_missing:" in result.stderr
+    assert "installed but disabled" in result.stderr
+    assert commands == [[config_module.GEMINI_BINARY, "extensions", "list"]]
+    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
+        encoding="utf-8"
+    ) == handoff
+
+
 def test_run_loop_refuses_to_start_when_gemini_security_extension_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

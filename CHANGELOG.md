@@ -20,7 +20,9 @@ This project follows a simple pre-release changelog until the first public tag.
   At startup, before any agent launches, `run` now checks the reviewer for
   both `backend` and `frontend`, configured or automatic: its CLI must be on
   `PATH`, and a Gemini reviewer also needs its sandbox runtime and the Gemini
-  CLI security extension. A failed check stops the run with a
+  CLI security extension installed and enabled for the repository (an
+  extension that `gemini extensions list` shows as disabled fails the
+  check). A failed check stops the run with a
   `security_reviewer_failed:` error. Before, only a configured Gemini
   reviewer's sandbox was checked, and the automatic choice did not check
   what was installed. Reviewer errors during an audit still fail closed.

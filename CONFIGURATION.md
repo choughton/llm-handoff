@@ -917,7 +917,9 @@ Security reviewer invocation by provider:
 
   The dispatcher checks `gemini extensions list` at startup and again before
   each review, and fails closed with `security_extension_missing:` when the
-  extension is absent. The extension
+  extension is absent or listed as disabled for the repository (a cross
+  marker, or `Enabled (Workspace): false`). Enable a disabled extension with
+  `gemini extensions enable gemini-cli-security`. The extension
   documents its analyze command as interactive-first, so headless results
   depend on the installed extension version.
 - `codex`: when `codex-security` is on `PATH` and `scope_sha` is the
