@@ -339,6 +339,7 @@ def run_loop(
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
     implementer_base_sha: str | None = None
+    implementer_base_story_key: str | None = None
     implementer_leftovers: ImplementerLeftovers | None = None
 
     while True:
@@ -651,12 +652,20 @@ def run_loop(
                 "frontend",
             }:
                 # The audit fan-out reviews pre-dispatch HEAD..scope_sha, so
-                # remember where the implementer started.
-                implementer_base_sha = (
-                    pre_dispatch_state.head_sha
-                    if pre_dispatch_state is not None
-                    else _git_head(config.repo_root)
-                )
+                # remember where the implementer started. A retry of the same
+                # story keeps the first dispatch's base so the audit still
+                # covers commits from earlier, bounced attempts.
+                if (
+                    implementer_base_sha is None
+                    or story_key is None
+                    or story_key != implementer_base_story_key
+                ):
+                    implementer_base_sha = (
+                        pre_dispatch_state.head_sha
+                        if pre_dispatch_state is not None
+                        else _git_head(config.repo_root)
+                    )
+                    implementer_base_story_key = story_key
             planner_git_before = (
                 git_position(config.repo_root)
                 if current_cycle.route == "planner"
@@ -867,6 +876,8 @@ def run_loop(
                             pre_dispatch_state=pre_dispatch_state,
                             log=log_fn,
                         )
+                        if _accepted_approval(config):
+                            implementer_base_sha = None
                         previous_cycle = current_cycle
                         consecutive_failures = 0
                         if max_cycles is not None and cycle_number >= max_cycles:
@@ -987,6 +998,10 @@ def run_loop(
             else:
                 previous_cycle = current_cycle
                 consecutive_failures = 0
+                if _accepted_approval(config):
+                    # The story is approved; its next implementer dispatch
+                    # starts a new audit range.
+                    implementer_base_sha = None
                 if (
                     config.publish.mode != "local"
                     and current_cycle.route == "auditor"
@@ -2446,6 +2461,23 @@ def _record_post_dispatch_status_transition(
             "INFO",
             f"Bounce count reset for story_id={frontmatter.story_id}.",
         )
+
+
+def _accepted_approval(config: DispatchConfig) -> bool:
+    """Return whether the handoff the dispatcher just accepted approves the story.
+
+    Called only after validation, the work-claim gate, and recovery checks let
+    the handoff stand, so a rejected ``verified_pass`` keeps the audit base.
+    """
+
+    handoff_content = _read_required_text(config.handoff_full_path)
+    if handoff_content is None:
+        return False
+    frontmatter = _parse_frontmatter_or_none(handoff_content)
+    return (
+        frontmatter is not None
+        and _handoff_status(frontmatter.status) == HandoffStatus.VERIFIED_PASS
+    )
 
 
 def _bounce_state_path(config: DispatchConfig) -> Path:

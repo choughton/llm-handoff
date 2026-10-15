@@ -2745,3 +2745,146 @@ def test_planner_commits_are_left_alone_in_agent_commit_mode(
 
     assert exit_code == 0
     assert _git(tmp_path, "log", "-1", "--format=%s") == "Dispatch S1 to backend"
+
+
+# ---------------------------------------------------------------------------
+# Audit fan-out range across bounces
+# ---------------------------------------------------------------------------
+
+
+MARKER_COMMAND = (
+    f'"{PYTHON}" -c "import sys; '
+    "sys.exit(0 if 'fixed' in open('tests/test_app.py').read() else 4)\""
+)
+
+
+def _audit_range_harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    backend_work,
+    planner_handoff: str | None = None,
+    audit_warnings: list[list[str]] | None = None,
+) -> tuple[DispatchConfig, list[str], list[str | None]]:
+    """Run real-git cycles with the fan-out replaced by a base-SHA recorder."""
+
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path,
+        commit_mode="dispatcher",
+        audit={"reviewers": ["quality", "security"]},
+    )
+    backend_heads: list[str] = []
+    audit_bases: list[str | None] = []
+    real_validate = orchestrator.validate_handoff
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        backend_heads.append(_git(tmp_path, "rev-parse", "HEAD"))
+        backend_work(len(backend_heads))
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_fan_out(_config: DispatchConfig, *, context, **_kwargs: object):
+        audit_bases.append(context.implementer_base_sha)
+        config.handoff_full_path.write_text(
+            _claim(None, status="verified_pass", producer="auditor", next_agent="planner"),
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        assert planner_handoff is not None
+        path.write_text(planner_handoff, encoding="utf-8")
+        return _dispatch_result()
+
+    def validate(path: Path, previous_agent: str, **kwargs: object) -> ValidationResult:
+        if previous_agent == "backend":
+            return real_validate(path, previous_agent, **kwargs)
+        warnings: list[str] = []
+        if previous_agent.startswith("auditor") and audit_warnings:
+            warnings = audit_warnings.pop(0)
+        return ValidationResult(
+            verdict="YES", warnings=warnings, errors=[], routing_instruction="planner"
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(orchestrator, "run_audit_fan_out", fake_fan_out)
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+    return config, backend_heads, audit_bases
+
+
+def test_audit_range_spans_every_attempt_after_a_gate_bounce(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    base = _init_repo(tmp_path, _assignment(MARKER_COMMAND))
+
+    def backend_work(attempt: int) -> None:
+        if attempt == 1:
+            # Committed by the dispatcher, then bounced by the failing check.
+            _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        else:
+            _write(tmp_path / "tests" / "test_app.py", "# fixed\n")
+
+    config, backend_heads, audit_bases = _audit_range_harness(
+        tmp_path, monkeypatch, backend_work=backend_work
+    )
+
+    _load_orchestrator().run_loop(config, max_cycles=3, log=_collecting_log([]))
+
+    assert len(backend_heads) == 2
+    assert backend_heads[0] == base
+    assert backend_heads[1] != base, "the first attempt was not committed"
+    assert audit_bases == [base]
+
+
+def test_audit_range_restarts_after_the_story_is_approved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+
+    def backend_work(attempt: int) -> None:
+        _write(tmp_path / "src" / "app.py", f"VALUE = {attempt + 1}\n")
+
+    config, backend_heads, audit_bases = _audit_range_harness(
+        tmp_path,
+        monkeypatch,
+        backend_work=backend_work,
+        planner_handoff=_assignment(),
+    )
+
+    _load_orchestrator().run_loop(config, max_cycles=5, log=_collecting_log([]))
+
+    assert len(backend_heads) == 2
+    assert audit_bases == backend_heads
+
+
+def test_audit_range_survives_a_rejected_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    base = _init_repo(tmp_path)
+
+    def backend_work(attempt: int) -> None:
+        _write(tmp_path / "src" / "app.py", f"VALUE = {attempt + 1}\n")
+
+    config, backend_heads, audit_bases = _audit_range_harness(
+        tmp_path,
+        monkeypatch,
+        backend_work=backend_work,
+        planner_handoff=_assignment(),
+        # The first verified_pass is a rationalized claim, so the dispatcher
+        # sends the story back through the planner instead of accepting it.
+        audit_warnings=[["RATIONALIZATION_DETECTED: claimed done without proof"]],
+    )
+
+    _load_orchestrator().run_loop(config, max_cycles=5, log=_collecting_log([]))
+
+    assert len(backend_heads) == 2
+    assert backend_heads[1] != base
+    assert audit_bases == [base, base]

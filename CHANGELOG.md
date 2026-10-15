@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The audit fan-out range now starts at the story's first implementer
+  dispatch. A retry after a work-claim or audit bounce no longer moves the
+  base to the earlier attempt's commit, so the reviewers see every attempt.
+  The base resets when the story changes (its `story_id`, or its Work Packet
+  when there is no `story_id`) or the dispatcher accepts the story's
+  approval; a `verified_pass` that fails validation or recovery keeps it.
+
 - `init` preserves user content through managed sections in AGENTS.md and
   ignore files, merges Claude settings, and reports merge actions separately.
   Added a .gitignore template for dispatcher logs and the lock file.
