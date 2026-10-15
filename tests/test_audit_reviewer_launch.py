@@ -142,6 +142,8 @@ def test_claude_reviewer_stays_read_only_and_denies_web_tools(tmp_path: Path) ->
     assert command[command.index("--permission-mode") + 1] == "dontAsk"
     disallowed = set(command[command.index("--disallowedTools") + 1 :])
     assert {"Edit", "Write", "WebFetch", "WebSearch"} <= disallowed
+    assert command[command.index("--tools") + 1] == "Read,Grep,Glob,Bash"
+    assert "--strict-mcp-config" in command
 
 
 def test_codex_reviewer_stays_read_only_even_with_unsafe_bypass(

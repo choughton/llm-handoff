@@ -291,10 +291,14 @@ def claude_permission_args(
 ) -> list[str]:
     """Return the Claude Code permission arguments for one role launch.
 
-    The default runs in ``dontAsk`` mode: tools outside ``allowed_tools`` are
-    denied instead of prompting, and web tools are always denied.
-    ``unsafe_bypass`` restores the previous ``--dangerously-skip-permissions``
-    launch (or the role's ``permissions_flag``).
+    The default runs in ``dontAsk`` mode. ``--tools`` limits the built-in
+    tools that exist at all to the base names in ``allowed_tools`` (so user
+    or project settings cannot approve anything else), ``--strict-mcp-config``
+    loads no MCP servers unless the list names an ``mcp__`` tool,
+    ``--allowedTools`` pre-approves the listed rules, and web tools are always
+    denied. ``unsafe_bypass`` restores the previous
+    ``--dangerously-skip-permissions`` launch (or the role's
+    ``permissions_flag``).
     """
     if agent_config.unsafe_bypass:
         return [
@@ -307,10 +311,35 @@ def claude_permission_args(
         if agent_config.allowed_tools is None
         else agent_config.allowed_tools
     )
-    args = ["--permission-mode", config.CLAUDE_PERMISSION_MODE]
+    args = [
+        "--permission-mode",
+        config.CLAUDE_PERMISSION_MODE,
+        *claude_tool_restriction_args(allowed_tools),
+    ]
     if allowed_tools:
         args.extend(["--allowedTools", ",".join(allowed_tools)])
     args.extend(["--disallowedTools", ",".join(config.CLAUDE_DISALLOWED_TOOLS)])
+    return args
+
+
+def claude_tool_restriction_args(allowed_tools: tuple[str, ...]) -> list[str]:
+    """Return ``--tools`` (and ``--strict-mcp-config``) for an allowlist.
+
+    ``--allowedTools`` only pre-approves rules; tools approved elsewhere in
+    settings would still run. ``--tools`` restricts which built-in tools are
+    available, and an empty value disables them all.
+    """
+    built_in: list[str] = []
+    uses_mcp = False
+    for rule in allowed_tools:
+        name = rule.split("(", 1)[0].strip()
+        if name.startswith("mcp__"):
+            uses_mcp = True
+        elif name and name not in built_in:
+            built_in.append(name)
+    args = ["--tools", ",".join(built_in)]
+    if not uses_mcp:
+        args.append("--strict-mcp-config")
     return args
 
 

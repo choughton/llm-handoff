@@ -35,7 +35,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from llm_handoff import config as config_module
 from llm_handoff.agent_process import _run_logged_agent_command
 from llm_handoff.agent_providers import gemini as gemini_provider
-from llm_handoff.agent_providers.claude import _build_claude_env
+from llm_handoff.agent_providers.claude import (
+    _build_claude_env,
+    claude_tool_restriction_args,
+)
 from llm_handoff.agent_providers.codex import _build_codex_env, _run_codex_json_command
 from llm_handoff.agent_providers.gemini import _build_gemini_env
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
@@ -781,6 +784,7 @@ def build_security_reviewer_plan(
             binary,
             "--permission-mode",
             "dontAsk",
+            *claude_tool_restriction_args(CLAUDE_SECURITY_ALLOWED_TOOLS),
             "--allowedTools",
             *CLAUDE_SECURITY_ALLOWED_TOOLS,
             "--disallowedTools",

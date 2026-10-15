@@ -36,9 +36,12 @@ def test_claude_default_launch_uses_dont_ask_with_allowlist(
 
     command = recorder.commands[0]
     assert "--dangerously-skip-permissions" not in command
-    assert command[1:7] == [
+    assert command[1:10] == [
         "--permission-mode",
         "dontAsk",
+        "--tools",
+        "Read,Edit,Write,Grep,Glob,Agent,Bash",
+        "--strict-mcp-config",
         "--allowedTools",
         ",".join(config.CLAUDE_DEFAULT_ALLOWED_TOOLS),
         "--disallowedTools",
@@ -77,11 +80,34 @@ def test_claude_role_allowed_tools_override_reaches_command() -> None:
     assert args == [
         "--permission-mode",
         "dontAsk",
+        "--tools",
+        "Read,Bash",
+        "--strict-mcp-config",
         "--allowedTools",
         "Read,Bash(git diff:*)",
         "--disallowedTools",
         "WebFetch,WebSearch",
     ]
+
+
+def test_claude_tools_flag_limits_availability_not_just_approval() -> None:
+    # --allowedTools only pre-approves; settings could approve other tools.
+    # --tools removes every built-in tool outside the role's allowlist.
+    args = claude.claude_permission_args(
+        AgentConfig(provider="claude", allowed_tools=("Grep", "Bash(git log:*)"))
+    )
+
+    assert args[args.index("--tools") + 1] == "Grep,Bash"
+    assert "--strict-mcp-config" in args
+
+
+def test_claude_mcp_rule_in_allowlist_keeps_mcp_servers_loadable() -> None:
+    args = claude.claude_permission_args(
+        AgentConfig(provider="claude", allowed_tools=("Read", "mcp__docs__search"))
+    )
+
+    assert args[args.index("--tools") + 1] == "Read"
+    assert "--strict-mcp-config" not in args
 
 
 def test_claude_empty_allowed_tools_omits_allowlist_flag() -> None:
@@ -90,7 +116,13 @@ def test_claude_empty_allowed_tools_omits_allowlist_flag() -> None:
     )
 
     assert "--allowedTools" not in args
-    assert args[:2] == ["--permission-mode", "dontAsk"]
+    assert args[:5] == [
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+    ]
 
 
 def test_claude_unsafe_bypass_restores_previous_flag_in_both_launch_paths(

@@ -149,9 +149,13 @@ def test_normalize_next_agent_uses_claude_cli_oauth_without_sdk_credentials(
     assert "--bare" not in command
     assert "--dangerously-skip-permissions" not in command
     assert "--allowedTools" not in command
-    assert command[1:5] == [
+    # No built-in tools, no MCP servers: the prompt carries raw handoff text.
+    assert command[1:8] == [
         "--permission-mode",
         "dontAsk",
+        "--tools",
+        "",
+        "--strict-mcp-config",
         "--disallowedTools",
         "WebFetch,WebSearch",
     ]

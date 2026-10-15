@@ -288,12 +288,17 @@ The startup banner prints one `Launch <role>:` line per role and a
 
 | Provider | Default launch | `unsafe_bypass: true` |
 | --- | --- | --- |
-| Claude Code | `--permission-mode dontAsk --allowedTools <allowed_tools> --disallowedTools WebFetch,WebSearch` | `--dangerously-skip-permissions` |
+| Claude Code | `--permission-mode dontAsk --tools <tool names> --strict-mcp-config --allowedTools <allowed_tools> --disallowedTools WebFetch,WebSearch` | `--dangerously-skip-permissions` |
 | Codex | `--sandbox workspace-write --ask-for-approval never` | `--yolo` |
 | Gemini CLI | `--yolo --sandbox` | `--yolo --sandbox=false` |
 
 Claude Code in `dontAsk` mode denies any tool call that `allowed_tools` does
-not allow instead of prompting. The default list is:
+not allow instead of prompting. `--allowedTools` only pre-approves rules, so
+the launch also passes `--tools` with the base tool names from the list
+(`Read`, `Bash`, and so on). Built-in tools outside the list are then not
+available at all, even if user or project settings approve them.
+`--strict-mcp-config` loads no MCP servers unless `allowed_tools` names an
+`mcp__` tool. The default list is:
 
 ```yaml
 allowed_tools:
