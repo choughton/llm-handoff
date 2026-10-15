@@ -1722,3 +1722,54 @@ def test_validate_handoff_work_packet_satisfies_scope_claim_for_any_planner_rout
 
     assert result.errors == []
     assert result.routing_instruction == "auditor"
+
+
+@pytest.mark.parametrize(
+    "commit_value",
+    [
+        "pending-dispatcher-commit (nothing to commit)",
+        "`pending-dispatcher-commit` - nothing staged yet",
+    ],
+)
+def test_dispatcher_mode_pending_marker_may_carry_a_note(
+    tmp_path: Path,
+    commit_value: str,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(
+            status="blocked_missing_context",
+            next_agent="user",
+            commit_value=commit_value,
+        ),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        "backend",
+        prior_handoff_sha="0" * 64,
+        dispatcher_commit_mode=True,
+    )
+
+    assert not any(error.startswith("sha_missing") for error in result.errors)
+    assert any(warning.startswith("sha_pending") for warning in result.warnings)
+
+
+def test_dispatcher_mode_marker_lookalike_still_requires_sha(tmp_path: Path) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(
+            status="blocked_missing_context",
+            next_agent="user",
+            commit_value="pending-dispatcher-commitment",
+        ),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        "backend",
+        prior_handoff_sha="0" * 64,
+        dispatcher_commit_mode=True,
+    )
+
+    assert "sha_missing: Handoff is missing a git commit SHA." in result.errors

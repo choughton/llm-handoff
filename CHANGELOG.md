@@ -134,6 +134,10 @@ This project follows a simple pre-release changelog until the first public tag.
   request template (`.github/pull_request_template.md`): Summary, Changes,
   Reviewer notes, and Test plan, with the full reviews, Work Packet, and
   token usage folded underneath.
+- A blocked implementer handback in dispatcher commit mode may now add a
+  note after the `pending-dispatcher-commit` marker (for example
+  `pending-dispatcher-commit (nothing to commit)`); it still gets the
+  `sha_pending` warning instead of the `sha_missing` error.
 - When Codex runs out of code review usage, the review gate now says so
   when it stops: the bot's usage-limit comment on the pull request marks the
   review as failed (even before the summary flips to Failed), and the pause
