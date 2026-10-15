@@ -104,6 +104,15 @@ _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _PATH_TOKEN_RE = re.compile(r"`([^`]+)`|\"([^\"]+)\"|'([^']+)'|([^\s,;`\"']+)")
 _NONE_VALUES = frozenset({"none", "(none)", "none.", "n/a", "na", "-", "--"})
 _GLOB_CHARS = frozenset("*?[")
+# Prose such as "every file in `pkg/` other than `pkg/mod.py`" names
+# exceptions after these phrases; they are not out-of-bounds entries.
+_EXCEPTION_PHRASE_RE = re.compile(
+    r"\b(?:other\s+than|except(?:\s+for)?|excluding|apart\s+from|but\s+not)\b",
+    re.IGNORECASE,
+)
+_BACKTICK_SPAN_RE = re.compile(r"`[^`]*`")
+_PROSE_PATH_CHARS = frozenset("/.*?[")
+_WRAPPED_PATH_FIELDS = frozenset({"files_in_scope", "files_out_of_bounds"})
 
 _FIELD_ALIASES = {
     "objective": "objective",
@@ -146,6 +155,23 @@ class PreDispatchState:
     # Working-tree content fingerprint of each pre-existing dirty file, so the
     # gate can tell when an implementer altered one further without committing.
     dirty_fingerprints: tuple[tuple[str, str], ...] = ()
+    # Dirty files the previous implementer dispatch for the same story left
+    # behind, unchanged since. They are that story's work, not operator edits,
+    # so they are not in ``dirty_files``: the commit step may stage them and the
+    # gate requires them in ``scope_sha``.
+    carried_over: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ImplementerLeftovers:
+    """Files an implementer dispatch left uncommitted, with their fingerprints.
+
+    The dispatcher keeps this in memory between cycles. It does not survive a
+    dispatcher restart; after one, leftovers count as operator edits again.
+    """
+
+    story_id: str | None
+    fingerprints: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -272,7 +298,9 @@ def parse_work_packet(handoff_content: str) -> WorkPacket:
 
     fields = _parse_packet_fields(section)
     files_in_scope = _split_path_list(fields.get("files_in_scope", []))
-    files_out_of_bounds = _split_path_list(fields.get("files_out_of_bounds", []))
+    files_out_of_bounds = _split_path_list(
+        fields.get("files_out_of_bounds", []), drop_exceptions=True
+    )
     verification_commands = _split_commands(fields.get("verification_command", []))
 
     problems: list[str] = []
@@ -363,26 +391,68 @@ def _parse_packet_fields(section: str) -> dict[str, list[str]]:
             continue
         if _FENCE_RE.match(line):
             continue
-        continuation = _LIST_MARKER_RE.sub("", line.strip(), count=1).strip()
-        if continuation:
-            fields[current].append(continuation)
+        stripped = line.strip()
+        continuation = _LIST_MARKER_RE.sub("", stripped, count=1).strip()
+        if not continuation:
+            continue
+        values = fields[current]
+        if current in _WRAPPED_PATH_FIELDS and values and continuation == stripped:
+            # A wrapped line without a list marker continues the previous
+            # value, so prose such as "other than" stays with its path.
+            values[-1] = f"{values[-1]} {continuation}"
+        else:
+            values.append(continuation)
     return fields
 
 
-def _split_path_list(values: list[str]) -> tuple[str, ...]:
+def _split_path_list(
+    values: list[str], *, drop_exceptions: bool = False
+) -> tuple[str, ...]:
     """Split Work Packet path values into entries.
 
     Quoted entries such as `` `src/my file.py` `` are kept whole; bare entries
-    are separated by commas, semicolons, or whitespace.
+    are separated by commas, semicolons, or whitespace. A value that uses
+    backticks or an exception phrase is read as prose, such as "every file in
+    `pkg/` other than `pkg/mod.py`": there, a bare word counts only when it
+    looks like a path (it has a ``/``, a ``.``, or a glob character), so words
+    such as "every file in" never become entries. With ``drop_exceptions``,
+    entries after an exception phrase ("other than", "except", "excluding",
+    "apart from", "but not") are dropped up to the next comma or semicolon,
+    because the prose excludes them.
     """
 
     paths: list[str] = []
     for raw_value in values:
+        unquoted = _BACKTICK_SPAN_RE.sub(
+            lambda span: " " * len(span.group(0)), raw_value
+        )
+        prose = unquoted != raw_value or (
+            _EXCEPTION_PHRASE_RE.search(unquoted) is not None
+        )
+        excluded: list[tuple[int, int]] = []
+        if drop_exceptions:
+            clause_start = 0
+            for clause_end in [
+                *(sep.start() for sep in re.finditer(r"[,;]", unquoted)),
+                len(unquoted),
+            ]:
+                exception = _EXCEPTION_PHRASE_RE.search(
+                    unquoted, clause_start, clause_end
+                )
+                if exception is not None:
+                    excluded.append((exception.start(), clause_end))
+                clause_start = clause_end + 1
         for match in _PATH_TOKEN_RE.finditer(raw_value):
+            if any(start <= match.start() < end for start, end in excluded):
+                continue
             quoted = next(
                 (group for group in match.groups()[:3] if group is not None), None
             )
             part = quoted.strip() if quoted is not None else match.group(4)
+            if prose and quoted is None:
+                part = part.lstrip("(").rstrip(").:")
+                if not any(char in _PROSE_PATH_CHARS for char in part):
+                    continue
             if part and part.lower() not in _NONE_VALUES:
                 paths.append(normalize_repo_path(part))
     return tuple(dict.fromkeys(path for path in paths if path))
@@ -431,20 +501,114 @@ def _matches_any(path: str, entries: tuple[str, ...]) -> bool:
     return any(path_matches_entry(path, entry) for entry in entries)
 
 
+def _entry_specificity(path: str, entry: str) -> tuple[int, int] | None:
+    """Rank how narrowly ``entry`` names ``path``; None when it does not match.
+
+    An exact file entry outranks a directory or glob; among those, the longer
+    entry is narrower.
+    """
+
+    if not path_matches_entry(path, entry):
+        return None
+    if path == entry:
+        return (2, len(entry))
+    literal = "".join(char for char in entry if char not in _GLOB_CHARS)
+    return (1, len(literal))
+
+
+def _best_specificity(path: str, entries: tuple[str, ...]) -> tuple[int, int] | None:
+    ranks = [
+        rank
+        for rank in (_entry_specificity(path, entry) for entry in entries)
+        if rank is not None
+    ]
+    return max(ranks) if ranks else None
+
+
+def path_is_out_of_bounds(path: str, packet: WorkPacket) -> bool:
+    """True when ``Files out of bounds`` covers ``path``.
+
+    The narrowest matching entry decides, so ``Files in scope:
+    pkg/mod.py`` with ``Files out of bounds: pkg/`` puts ``pkg/mod.py`` in
+    scope and every other file under ``pkg/`` out of bounds. When the two
+    lists name a path equally narrowly, out of bounds wins.
+    """
+
+    out_of_bounds = _best_specificity(path, packet.files_out_of_bounds)
+    if out_of_bounds is None:
+        return False
+    in_scope = _best_specificity(path, packet.files_in_scope)
+    return in_scope is None or out_of_bounds >= in_scope
+
+
+def path_is_in_scope(path: str, packet: WorkPacket) -> bool:
+    """True when ``Files in scope`` covers ``path`` and it is not out of bounds."""
+
+    return _matches_any(path, packet.files_in_scope) and not path_is_out_of_bounds(
+        path, packet
+    )
+
+
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
 
 
-def capture_pre_dispatch_state(repo_root: Path) -> PreDispatchState:
-    """Record HEAD, dirty files, and their content before an implementer dispatch."""
+def capture_pre_dispatch_state(
+    repo_root: Path,
+    *,
+    leftovers: ImplementerLeftovers | None = None,
+    story_id: str | None = None,
+) -> PreDispatchState:
+    """Record HEAD, dirty files, and their content before an implementer dispatch.
+
+    Files in ``leftovers`` from an earlier dispatch for the same ``story_id``
+    whose content has not changed since are carried over as implementer work
+    instead of being recorded as pre-existing dirty files.
+    """
 
     dirty_files = git_dirty_files(repo_root) or ()
+    fingerprints = {
+        path: working_tree_fingerprint(repo_root, path) for path in dirty_files
+    }
+    carried: tuple[str, ...] = ()
+    if leftovers is not None and story_id and leftovers.story_id == story_id:
+        carried = tuple(
+            sorted(
+                path
+                for path, fingerprint in leftovers.fingerprints
+                if fingerprints.get(path) == fingerprint
+            )
+        )
+    dirty_files = tuple(path for path in dirty_files if path not in carried)
     return PreDispatchState(
         head_sha=git_head(repo_root),
         dirty_files=dirty_files,
-        dirty_fingerprints=tuple(
-            (path, working_tree_fingerprint(repo_root, path)) for path in dirty_files
+        dirty_fingerprints=tuple((path, fingerprints[path]) for path in dirty_files),
+        carried_over=carried,
+    )
+
+
+def capture_implementer_leftovers(
+    repo_root: Path,
+    *,
+    handoff_path: Path,
+    pre_dispatch_state: PreDispatchState,
+    story_id: str | None,
+) -> ImplementerLeftovers:
+    """Record what an implementer dispatch left uncommitted, minus operator edits."""
+
+    handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
+    operator_dirty = set(pre_dispatch_state.dirty_files)
+    leftover_paths = tuple(
+        path
+        for path in git_dirty_files(repo_root) or ()
+        if path != handoff_rel_path and path not in operator_dirty
+    )
+    return ImplementerLeftovers(
+        story_id=story_id,
+        fingerprints=tuple(
+            (path, working_tree_fingerprint(repo_root, path)) for path in leftover_paths
         ),
     )
 
@@ -1145,13 +1309,12 @@ def _diff_scope_check(
 ) -> tuple[WorkClaimCheck, list[str]]:
     candidates = tuple(path for path in changed_files if path != handoff_rel_path)
     out_of_bounds_hits = tuple(
-        path for path in candidates if _matches_any(path, packet.files_out_of_bounds)
+        path for path in candidates if path_is_out_of_bounds(path, packet)
     )
     unlisted = tuple(
         path
         for path in candidates
-        if path not in out_of_bounds_hits
-        and not _matches_any(path, packet.files_in_scope)
+        if path not in out_of_bounds_hits and not path_is_in_scope(path, packet)
     )
     errors: list[str] = []
     if out_of_bounds_hits:
@@ -1527,6 +1690,7 @@ __all__ = [
     "WORK_PACKET_ERROR_PREFIXES",
     "BounceRoute",
     "CommandRun",
+    "ImplementerLeftovers",
     "PreDispatchState",
     "RenderedScannerCommand",
     "ScannerCommandError",
@@ -1542,9 +1706,12 @@ __all__ = [
     "build_bounce_handoff",
     "passed_verification_section",
     "record_passed_verification",
+    "capture_implementer_leftovers",
     "capture_pre_dispatch_state",
     "extract_work_packet_section",
     "parse_work_packet",
+    "path_is_in_scope",
+    "path_is_out_of_bounds",
     "path_matches_entry",
     "render_scanner_command",
     "run_scanner",
