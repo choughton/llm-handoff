@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Fixed a work-claim loop that a contradictory Work Packet caused. A path
+  listed under both `Files in scope` and `Files out of bounds` is now
+  `work_packet_unparseable`, which routes to the planner; before, it resolved
+  to out of bounds, the dispatcher would not commit it, and the gate told the
+  implementer to commit it until the circuit breaker tripped. A new uncommitted
+  change to a file the packet does not allow is now a `scope_violation` that
+  says to revert it. With `commit_mode: dispatcher` the bounce no longer asks
+  the implementer to commit, and when the dispatcher committed nothing, the
+  dispatcher skips the handoff repair for the missing SHA and lets the gate
+  report the claim.
+
 - The default Claude model for roles with no `model` set is now
   `claude-opus-5-5`, and the default Claude normalizer model is
   `claude-haiku-5-5`. The `init` template, example configs, and

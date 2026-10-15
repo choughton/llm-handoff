@@ -49,6 +49,7 @@ from llm_handoff.handoff_normalizer import (
 )
 from llm_handoff.dispatcher_commit import (
     COMMIT_MODE_INSTRUCTION,
+    DispatcherCommitResult,
     PLANNER_COMMIT_MODE_INSTRUCTION,
     commit_implementer_changes,
     git_position,
@@ -789,7 +790,7 @@ def run_loop(
                     return 1
                 continue
 
-            _commit_for_implementer(
+            commit_result = _commit_for_implementer(
                 config=config,
                 route=current_cycle.route,
                 assignment_content=handoff_content,
@@ -823,7 +824,22 @@ def run_loop(
                     else None
                 ),
             )
-            if validation_result.verdict == "NO":
+            if validation_result.verdict == "NO" and _scope_sha_missing_for_gate(
+                config=config,
+                route=current_cycle.route,
+                commit_result=commit_result,
+                validation_result=validation_result,
+            ):
+                # A repair agent could only point scope_sha at a commit the
+                # implementer did not make; the gate reports the real failure.
+                _log(
+                    log_fn,
+                    "AGENT",
+                    f"The dispatcher committed nothing for {previous_agent}, so "
+                    "scope_sha stays empty; skipping the handoff repair and "
+                    "letting the work-claim gate report the claim.",
+                )
+            elif validation_result.verdict == "NO":
                 if active_planner_recovery_kind == "handoff_hygiene":
                     _log(
                         log_fn,
@@ -2279,11 +2295,12 @@ def _commit_for_implementer(
     assignment_content: str,
     pre_dispatch_state: PreDispatchState | None,
     log: LogFn,
-) -> None:
+) -> DispatcherCommitResult | None:
     """Commit an implementer's in-scope changes in ``dispatcher`` commit mode.
 
     Runs before handoff validation so the recorded ``scope_sha`` and evidence
     SHA are real. Anything left uncommitted is reported by the work-claim gate.
+    Returns None when the commit step does not apply.
     """
 
     if (
@@ -2291,10 +2308,10 @@ def _commit_for_implementer(
         or route not in {"backend", "frontend"}
         or pre_dispatch_state is None
     ):
-        return
+        return None
     claim_content = _read_required_text(config.handoff_full_path)
     if claim_content is None:
-        return
+        return None
     result = commit_implementer_changes(
         repo_root=config.repo_root,
         handoff_path=config.handoff_path,
@@ -2330,6 +2347,40 @@ def _commit_for_implementer(
             f"{', '.join(result.left_uncommitted)}. The work-claim gate will "
             "report them.",
         )
+    return result
+
+
+def _scope_sha_missing_for_gate(
+    *,
+    config: DispatchConfig,
+    route: RouteName,
+    commit_result: DispatcherCommitResult | None,
+    validation_result: ValidationResult,
+) -> bool:
+    """True when every validation error is a missing SHA that the dispatcher
+    left out because it committed nothing for a claim the work-claim gate is
+    about to check."""
+
+    if (
+        commit_result is None
+        or commit_result.sha is not None
+        or commit_result.error is not None
+        or not _work_claim_gate_applies(config, route)
+    ):
+        return False
+    if not validation_result.errors or not all(
+        error.startswith(("frontmatter_scope_sha_missing:", "sha_missing:"))
+        for error in validation_result.errors
+    ):
+        return False
+    claim_content = _read_required_text(config.handoff_full_path)
+    frontmatter = (
+        _parse_frontmatter_or_none(claim_content) if claim_content else None
+    )
+    return (
+        frontmatter is not None
+        and _handoff_status(frontmatter.status) == HandoffStatus.READY_FOR_REVIEW
+    )
 
 
 def _run_work_claim_gate(
@@ -2369,6 +2420,7 @@ def _run_work_claim_gate(
         verification_timeout_seconds=config.work_packet_verification_timeout_seconds,
         scanners=config.scanners,
         require_new_commit=config.commit_mode == "dispatcher",
+        dispatcher_commit_mode=config.commit_mode == "dispatcher",
     )
     _log_work_claim_result(result, log)
     if result.passed:

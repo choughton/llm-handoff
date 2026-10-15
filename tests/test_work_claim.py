@@ -23,6 +23,7 @@ from llm_handoff.validator import ValidationResult, validate_handoff_text
 from llm_handoff.work_claim import (
     PreDispatchState,
     ScannerContext,
+    WorkPacket,
     WorkPacketError,
     bounce_route_for,
     build_bounce_handoff,
@@ -37,6 +38,7 @@ from llm_handoff.work_claim import (
     render_scanner_command,
     shell_quote,
     verify_work_claim,
+    work_packet_errors,
 )
 
 
@@ -2029,12 +2031,53 @@ def test_path_is_out_of_bounds_lets_the_narrowest_entry_decide() -> None:
 
 
 def test_path_is_out_of_bounds_wins_a_tie() -> None:
-    packet = parse_work_packet(
-        _assignment(files_in_scope="src/app.py", files_out_of_bounds="src/app.py")
+    # parse_work_packet rejects an entry listed in both fields, so build the
+    # packet directly to pin the tie rule itself.
+    packet = WorkPacket(
+        files_in_scope=("src/app.py",),
+        files_out_of_bounds=("src/app.py",),
+        verification_commands=(PASS_COMMAND,),
+        section_text="",
     )
 
     assert path_is_out_of_bounds("src/app.py", packet)
     assert not path_is_in_scope("src/app.py", packet)
+
+
+def test_parse_work_packet_rejects_a_path_in_both_lists() -> None:
+    # Replays the W1.6 self-host loop: the planner limited edits within a file
+    # by listing it under both fields, so the file resolved to out of bounds.
+    assignment = _assignment(
+        files_in_scope="`src/app.py` (only the VALUE constant), `tests/test_app.py`",
+        files_out_of_bounds="`src/api.py`, `src/app.py` beyond the VALUE constant",
+    )
+
+    with pytest.raises(WorkPacketError) as exc_info:
+        parse_work_packet(assignment)
+
+    assert exc_info.value.prefix == "work_packet_unparseable"
+    assert (
+        "listed under both Files in scope and Files out of bounds: `src/app.py`"
+        in exc_info.value.detail
+    )
+    assert work_packet_errors(assignment)
+
+
+def test_verify_work_claim_routes_a_path_in_both_lists_to_the_planner(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment(
+        files_in_scope="src/app.py", files_out_of_bounds="src/app.py"
+    )
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+
+    assert result.failed_prefixes == ("work_packet_unparseable",)
+    assert bounce_route_for(result, implementer="backend").next_agent == "planner"
 
 
 def test_dispatcher_commit_includes_in_scope_files_inside_out_of_bounds_directories(
@@ -2067,8 +2110,8 @@ def test_dispatcher_commit_includes_in_scope_files_inside_out_of_bounds_director
         claim=_claim(result.sha),
         state=state,
     )
-    assert verify.failed_prefixes == ("uncommitted_changes",)
-    assert "src/api.py" in verify.errors[0]
+    assert verify.failed_prefixes == ("scope_violation",)
+    assert "src/api.py (listed under Files out of bounds)" in verify.errors[0]
 
 
 def test_dispatcher_commit_commits_work_the_previous_story_dispatch_left_behind(
@@ -2303,9 +2346,133 @@ def test_run_loop_bounces_out_of_scope_leftovers_in_dispatcher_mode(
         level == "WARN" and "src/api.py" in message for level, message in messages
     )
     assert any(
-        level == "ERROR" and message.startswith("uncommitted_changes:")
+        level == "ERROR"
+        and message.startswith("scope_violation:")
+        and "src/api.py (listed under Files out of bounds)" in message
         for level, message in messages
     )
+    assert not any("commit them" in message for _level, message in messages)
+
+
+def _empty_scope_sha_claim() -> str:
+    """A dispatcher-mode handback whose scope_sha the dispatcher never filled."""
+
+    return _pending_claim().replace(
+        "producer: backend", "scope_sha:\nclose_type: story\nproducer: backend"
+    )
+
+
+def test_verify_work_claim_reports_an_uncommitted_out_of_bounds_file_as_scope(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_paths(tmp_path, "set value", "src/app.py")
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    _write(tmp_path / "PROJECT_STATE.md", "# edited\n")
+
+    result = _verify(tmp_path, assignment=_assignment(), claim=_claim(head), state=state)
+
+    assert result.failed_prefixes == ("scope_violation",)
+    assert _outcomes(result)["worktree"] == "FAIL"
+    assert "PROJECT_STATE.md (outside Files in scope)" in result.errors[0]
+    assert "src/api.py (listed under Files out of bounds)" in result.errors[0]
+    assert "revert them" in result.errors[0]
+    assert "commit them" not in result.errors[0]
+
+
+def test_work_claim_in_dispatcher_mode_never_asks_for_a_commit(
+    tmp_path: Path,
+) -> None:
+    # The W1.6 retries: the only change was out of bounds, so the dispatcher
+    # committed nothing and left scope_sha empty.
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    claim = _empty_scope_sha_claim()
+
+    result = verify_work_claim(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(),
+        claim_content=claim,
+        pre_dispatch_state=state,
+        verification_timeout_seconds=60,
+        require_new_commit=True,
+        dispatcher_commit_mode=True,
+    )
+
+    assert result.failed_prefixes == ("no_changes", "scope_violation")
+    assert _outcomes(result)["scope_sha"] == "SKIP"
+    bounce = build_bounce_handoff(
+        claim_content=claim,
+        result=result,
+        implementer="backend",
+        route=bounce_route_for(result, implementer="backend"),
+        bounce_count=1,
+    )
+    assert "leave the fix uncommitted with `scope_sha` empty" in bounce
+    assert "commit the fix" not in bounce
+    assert "commit them" not in bounce
+
+
+def test_work_claim_in_dispatcher_mode_still_requires_scope_sha_for_agent_commits(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _commit_all(tmp_path, "agent committed despite dispatcher mode")
+
+    result = verify_work_claim(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(),
+        claim_content=_empty_scope_sha_claim(),
+        pre_dispatch_state=state,
+        verification_timeout_seconds=60,
+        require_new_commit=True,
+        dispatcher_commit_mode=True,
+    )
+
+    assert _outcomes(result)["scope_sha"] == "FAIL"
+    assert "scope_sha_not_head" in result.failed_prefixes
+
+
+def test_run_loop_skips_handoff_repair_when_the_dispatcher_committed_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    base = _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    dispatches: list[str] = []
+
+    def fake_backend(path: Path, **kwargs: object) -> DispatchResult:
+        dispatches.append(str(kwargs.get("additional_instruction") or ""))
+        _write(tmp_path / "src" / "api.py", "API = 2\n")
+        path.write_text(_empty_scope_sha_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert len(dispatches) == 1, "the handoff repair should not be dispatched"
+    assert _git(tmp_path, "rev-parse", "HEAD") == base
+    assert any(
+        level == "AGENT" and "skipping the handoff repair" in message
+        for level, message in messages
+    )
+    handoff = config.handoff_full_path.read_text(encoding="utf-8")
+    bounced = parse_handoff_frontmatter_text(handoff)
+    assert bounced is not None
+    assert bounced.next_agent == "backend"
+    assert bounced.status == "verified_fail"
+    assert "- **Failed checks:** no_changes, scope_violation" in handoff
 
 
 REASON_LINE = 'reason: "Backend work complete; audit requested."\n'
