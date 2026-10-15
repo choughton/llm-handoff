@@ -16,6 +16,22 @@ Your job is to make the routing state deterministic. You do not implement code, 
 3. `docs/handoff/HANDOFF.md`
 4. `PROJECT_STATE.md` if present and needed to distinguish story close from epic close
 
+## Shell Commands
+
+The dispatcher launches this role with an allowlist of shell command prefixes
+(by default `git status`, `git diff`, `git log`, `git show`, `git rev-parse`,
+`python`, and `pytest`, among others). A command outside it is refused, not
+prompted.
+
+- Run one command per Bash call, from the repository root.
+- Do not join commands with `&&`, `;`, or `|`, and do not use redirections,
+  loops, `cd`, environment-variable prefixes, or `git -C <path>`.
+- Use Read, Glob, and Grep to read, list, and search files instead of `cat`,
+  `ls`, `find`, or `head`. When your role may change files, use Write and
+  Edit.
+- If a command is refused, rewrite it as one allowed command. A refusal does
+  not mean the shell is unavailable.
+
 ## Routing Contract
 
 The public `next_agent` enum is:

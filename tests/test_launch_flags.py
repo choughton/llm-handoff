@@ -87,6 +87,8 @@ def test_claude_role_allowed_tools_override_reaches_command() -> None:
         "Read,Bash(git diff:*)",
         "--disallowedTools",
         "WebFetch,WebSearch",
+        "--append-system-prompt",
+        claude.claude_shell_guidance(("Read", "Bash(git diff:*)")),
     ]
 
 
@@ -446,3 +448,128 @@ def test_example_config_loads_with_safe_defaults() -> None:
     )
 
     assert not any(agent.unsafe_bypass for agent in loaded.agents.values())
+
+
+def test_claude_shell_guidance_lists_the_allowed_prefixes() -> None:
+    guidance = claude.claude_shell_guidance(
+        ("Read", "Bash(git diff:*)", "Bash(git log *)", "Bash(python:*)")
+    )
+
+    assert guidance is not None
+    assert "`git diff`, `git log`, `python`" in guidance
+    assert "one command per Bash call" in guidance
+    assert "`git -C <path>`" in guidance
+    assert claude.claude_shell_guidance(("Read", "Grep")) is None
+
+
+def test_claude_launch_without_bash_gets_no_shell_guidance() -> None:
+    args = claude.claude_permission_args(
+        AgentConfig(provider="claude", allowed_tools=("Read", "Grep"))
+    )
+
+    assert "--append-system-prompt" not in args
+
+
+def test_claude_role_files_explain_the_shell_allowlist() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for agents_dir in (
+        root / ".claude" / "agents",
+        root / "examples" / "reference-workflow" / ".claude" / "agents",
+    ):
+        for role_file in sorted(agents_dir.glob("*.md")):
+            text = role_file.read_text(encoding="utf-8")
+            assert "## Shell Commands" in text, role_file
+            assert "one command per Bash call" in text, role_file
+
+
+
+def _stream_tool_call(command: str, result_text: str, *, is_error: bool) -> str:
+    import json
+
+    use = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "Bash",
+                    "input": {"command": command},
+                }
+            ]
+        },
+    }
+    result = {
+        "type": "user",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "is_error": is_error,
+                    "content": result_text,
+                }
+            ]
+        },
+    }
+    return json.dumps(use) + "\n" + json.dumps(result) + "\n"
+
+
+def test_a_refused_command_logs_a_short_warning_not_an_error() -> None:
+    logs: list[tuple[str, str]] = []
+    monitor = claude._ClaudeStreamJsonMonitor(
+        agent_name="Claude backend",
+        log=lambda level, message: logs.append((level, message)),
+    )
+    command = "find logs -type f && git status --porcelain && " + "cat x && " * 40
+
+    monitor.consume_stdout(
+        _stream_tool_call(
+            command,
+            "Permission to use Bash has been denied because Claude Code is "
+            "running in don't ask mode. IMPORTANT: You *may* attempt ...",
+            is_error=True,
+        )
+    )
+
+    levels = [level for level, _message in logs]
+    assert "ERROR" not in levels
+    [warning] = [message for level, message in logs if level == "WARN"]
+    assert warning.startswith("Claude backend: refused by the permission rules: ")
+    assert warning.endswith("...")
+    assert len(warning) < 260
+    assert "IMPORTANT" not in warning
+
+
+def test_other_tool_failures_still_log_errors() -> None:
+    logs: list[tuple[str, str]] = []
+    monitor = claude._ClaudeStreamJsonMonitor(
+        agent_name="Claude backend",
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    monitor.consume_stdout(
+        _stream_tool_call("python -m ruff check x.py", "Exit code 1", is_error=True)
+    )
+
+    assert any(
+        level == "ERROR" and "failed: Exit code 1" in message for level, message in logs
+    )
+
+
+def test_claude_shell_guidance_lists_exact_bash_rules() -> None:
+    guidance = claude.claude_shell_guidance(("Bash(npm run build)", "Bash(git log:*)"))
+
+    assert guidance is not None
+    assert "by prefix: `git log`" in guidance
+    assert "as exact commands: `npm run build`" in guidance
+    assert claude.claude_shell_guidance(("Bash(make test)",)) is not None
+
+
+def test_claude_shell_guidance_only_recommends_available_file_tools() -> None:
+    guidance = claude.claude_shell_guidance(("Grep", "Bash(git log:*)"))
+
+    assert guidance is not None
+    assert "Use the Grep tool instead of" in guidance
+    for missing in ("Read", "Glob", "Write", "Edit"):
+        assert f"{missing} " not in guidance and f"{missing}," not in guidance

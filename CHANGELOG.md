@@ -134,6 +134,11 @@ This project follows a simple pre-release changelog until the first public tag.
   request template (`.github/pull_request_template.md`): Summary, Changes,
   Reviewer notes, and Test plan, with the full reviews, Work Packet, and
   token usage folded underneath.
+- Claude roles are told their shell allowlist up front (one command per
+  call, no chaining, `git -C`, or `cat`/`find`; use file tools instead),
+  through `--append-system-prompt` and a Shell Commands section in each role
+  file, so subagents see it too. A command the allowlist refuses is logged as
+  a one-line WARN instead of a red ERROR carrying the full refusal text.
 - A blocked implementer handback in dispatcher commit mode may now add a
   note after the `pending-dispatcher-commit` marker (for example
   `pending-dispatcher-commit (nothing to commit)`); it still gets the
