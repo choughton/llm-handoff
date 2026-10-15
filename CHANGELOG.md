@@ -134,6 +134,10 @@ This project follows a simple pre-release changelog until the first public tag.
   request template (`.github/pull_request_template.md`): Summary, Changes,
   Reviewer notes, and Test plan, with the full reviews, Work Packet, and
   token usage folded underneath.
+- When Codex runs out of code review usage, the review gate now says so
+  when it stops: the bot's usage-limit comment on the pull request marks the
+  review as failed (even before the summary flips to Failed), and the pause
+  message names the limit. The pull request is still left open, never merged.
 - In `commit_mode: dispatcher`, the planner is now told not to commit the
   handoff file, and the dispatcher enforces it: planner commits that change
   only the handoff are undone with `git reset --soft` (the handoff stays in

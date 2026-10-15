@@ -46,6 +46,9 @@ _BADGE_RE = re.compile(r"!\[(\w+) Badge\]\([^)]*\)")
 _FEEDBACK_LINE_RE = re.compile(r"(?m)^Useful\? React with .*$")
 _DETAILS_RE = re.compile(r"<details>.*?</details>", re.DOTALL)
 _FINDING_BODY_LIMIT = 4000
+# Posted by the Codex bot, next to a failed summary, when the account is out
+# of code review usage.
+_USAGE_LIMIT_RE = re.compile(r"usage limits? for code reviews", re.IGNORECASE)
 _RESPONSE_RE = re.compile(
     r"(?ms)^### Finding (\d+)\b[^\n]*\n(.*?)(?=^### |\Z)"
 )
@@ -154,12 +157,26 @@ def read_codex_review(
         for reaction in reactions
     )
 
-    if summary_status == "failed":
+    # Codex posts this a few seconds after marking the review failed, so
+    # either signal alone ends the wait.
+    usage_limited = any(
+        by_bot(comment)
+        and _USAGE_LIMIT_RE.search(comment.get("body") or "")
+        and _parse_time(comment.get("created_at")) >= requested_at
+        for comment in issue_comments
+    )
+    if summary_status == "failed" or usage_limited:
         return CodexReviewState(
             completed=True,
             failed=True,
             findings=tuple(findings),
-            detail="Codex reported the review of this commit as failed",
+            detail=(
+                "Codex reached its usage limit for code reviews, so the review "
+                f"of {head[:12]} failed (add credits or wait for the limit to "
+                "reset, then review the pull request yourself)"
+                if usage_limited
+                else "Codex reported the review of this commit as failed"
+            ),
         )
     if unresolved and not findings:
         findings = [
