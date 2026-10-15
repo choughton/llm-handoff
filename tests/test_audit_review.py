@@ -1721,3 +1721,12 @@ def test_startup_check_is_off_when_security_review_is_disabled(
     )
 
     assert audit_review.security_reviewer_startup_error(config) is None
+
+
+def test_quality_prompt_skips_a_verification_the_dispatcher_already_passed() -> None:
+    template = audit_review.QUALITY_FAN_OUT_PROMPT_TEMPLATE
+
+    assert "## Dispatcher Verification" in template
+    assert "Verdict: PASS" in template
+    assert "do not run it again" in template
+    assert "Run the configured verification commands when available" not in template

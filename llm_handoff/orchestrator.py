@@ -75,6 +75,7 @@ from llm_handoff.work_claim import (
     bounce_route_for,
     build_bounce_handoff,
     capture_pre_dispatch_state,
+    record_passed_verification,
     verify_work_claim,
 )
 
@@ -2145,6 +2146,11 @@ def _run_work_claim_gate(
     _log_work_claim_result(result, log)
     if result.passed:
         _log(log, "AGENT", f"Work-claim gate PASSED for {previous_agent}.")
+        # Record the pass so the auditor does not re-run the verification.
+        config.handoff_full_path.write_text(
+            record_passed_verification(claim_content, result),
+            encoding="utf-8",
+        )
         return False
 
     for error in result.errors:

@@ -199,7 +199,12 @@ GEMINI_SECURITY_REVIEW_SUFFIX = (
 QUALITY_FAN_OUT_PROMPT_TEMPLATE = (
     "Use the auditor agent to audit the work described in {handoff_path}. Read "
     "the repository instructions and relevant state files before judging the "
-    "diff. Run the configured verification commands when available. This audit "
+    "diff. If {handoff_path} has a `## Dispatcher Verification` section with "
+    "`Verdict: PASS` for {head_sha}, the dispatcher already ran the Work "
+    "Packet's Verification command on that commit outside any sandbox: do not "
+    "run it again. Otherwise run it. Run any other check only when the diff "
+    "needs evidence the dispatcher did not produce, and keep it narrow (a "
+    "single test file, not the whole suite). This audit "
     "runs in read-only fan-out mode: a separate security reviewer is running "
     "concurrently on the same commit range {range_text}, and the dispatcher, "
     "not you, writes {handoff_path}. Judge the committed changes in "

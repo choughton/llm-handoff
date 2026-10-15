@@ -1416,6 +1416,47 @@ def _dispatcher_verification_section(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def record_passed_verification(claim_content: str, result: WorkClaimResult) -> str:
+    """Return the claim with a passing ``## Dispatcher Verification`` section.
+
+    The auditor reads it to learn that the Work Packet's Verification command
+    already passed on the claimed commit, so it does not run it again. An
+    existing section (from an earlier bounce) is replaced.
+    """
+
+    lines = [DISPATCHER_VERIFICATION_HEADING, ""]
+    lines.append(
+        "The dispatcher verified this `ready_for_review` claim before "
+        "dispatching the auditor, and every check passed. The Verification "
+        "command below already ran on the verified commit, outside any agent "
+        "sandbox; the auditor does not need to run it again."
+    )
+    lines.append("")
+    lines.append("- **Verdict:** PASS")
+    verified = result.head_sha or result.scope_sha or "unknown"
+    lines.append(f"- **Verified commit:** `{verified}`")
+    lines.append(f"- **Pre-dispatch HEAD:** `{result.pre_dispatch_head or 'unknown'}`")
+    changed = ", ".join(f"`{path}`" for path in result.changed_files) or "none"
+    lines.append(f"- **Changed files since dispatch:** {changed}")
+    lines.append("- **Checks:**")
+    for check in result.checks:
+        lines.append(f"  - {check.outcome} `{check.name}`: {check.detail}")
+    for run in result.verification_runs:
+        lines.append(
+            f"- **Verification command:** `{run.command}` ({run.describe_outcome()})"
+        )
+    section = "\n".join(lines).rstrip() + "\n"
+
+    normalized = claim_content.replace("\r\n", "\n")
+    start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
+    if start == -1:
+        return normalized.rstrip("\n") + "\n\n" + section
+    start += 1
+    next_heading = re.search(r"(?m)^## ", normalized[start + 1 :])
+    end = len(normalized) if next_heading is None else start + 1 + next_heading.start()
+    return normalized[:start] + section + ("\n" if end < len(normalized) else "") + normalized[end:]
+
+
 def _split_frontmatter(content: str) -> tuple[dict[str, object] | None, str]:
     normalized = content.lstrip("﻿").replace("\r\n", "\n")
     lines = normalized.split("\n")
@@ -1494,6 +1535,7 @@ __all__ = [
     "bounce_reason",
     "bounce_route_for",
     "build_bounce_handoff",
+    "record_passed_verification",
     "capture_pre_dispatch_state",
     "extract_work_packet_section",
     "parse_work_packet",

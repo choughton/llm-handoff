@@ -27,6 +27,8 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 - Verify the handoff claim against the actual diff.
 - Check that the changed files stay inside the assigned role boundary.
 - Run the focused checks that are practical for the changed surface and documented by the repo.
+- If `docs/handoff/HANDOFF.md` has a `## Dispatcher Verification` section with `Verdict: PASS` for the claimed SHA, the dispatcher already ran the Work Packet's Verification command on that commit. Do not run it again; run other checks only when the diff needs evidence the dispatcher did not produce, and keep them narrow.
+- Run git from the repository root without `-C`; `git -C <path> ...` does not match the allowed git commands.
 - Treat skipped tests, uncommitted work, unresolved conflicts, missing SHAs, and ambiguous ownership as blockers unless the handoff explains why they are intentional.
 - Do not commit, push, amend, or write implementation fixes.
 - Do not edit `PROJECT_STATE.md`; the finalizer owns durable state updates unless local instructions say otherwise.

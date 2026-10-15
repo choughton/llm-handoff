@@ -2093,3 +2093,58 @@ def test_run_loop_bounces_out_of_scope_leftovers_in_dispatcher_mode(
         level == "ERROR" and message.startswith("uncommitted_changes:")
         for level, message in messages
     )
+
+
+# ---------------------------------------------------------------------------
+# Recording a passed gate for the auditor
+# ---------------------------------------------------------------------------
+
+
+def test_passed_gate_is_recorded_in_the_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    handoff = config.handoff_full_path.read_text(encoding="utf-8")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    assert handoff.count("## Dispatcher Verification") == 1
+    assert "- **Verdict:** PASS" in handoff
+    assert f"- **Verified commit:** `{head}`" in handoff
+    assert "- **Verification command:** " in handoff
+    assert route(handoff).route == "auditor"
+
+
+def test_record_passed_verification_replaces_an_earlier_section() -> None:
+    from llm_handoff.work_claim import WorkClaimResult, record_passed_verification
+
+    earlier = _claim("a" * 40) + "\n## Dispatcher Verification\n\nold FAIL text\n"
+    result = WorkClaimResult(
+        checks=(),
+        errors=(),
+        pre_dispatch_head="b" * 40,
+        head_sha="a" * 40,
+        scope_sha="a" * 40,
+        changed_files=("src/app.py",),
+        verification_runs=(),
+        work_packet=None,
+        work_packet_text=None,
+    )
+
+    updated = record_passed_verification(earlier, result)
+
+    assert updated.count("## Dispatcher Verification") == 1
+    assert "old FAIL text" not in updated
+    assert "- **Verdict:** PASS" in updated

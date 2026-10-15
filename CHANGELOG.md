@@ -90,6 +90,14 @@ This project follows a simple pre-release changelog until the first public tag.
   (status=...)` line.
 - The security reviewer's verdict schema no longer carries a `$schema` key,
   which Claude Code's `--json-schema` rejected at launch.
+- The test suite runs on 8 `pytest-xdist` workers (about 28s instead of about
+  158s). Four protected-file tests had been launching the real `claude` CLI
+  for the validator role; they now stub it, and an autouse fixture fails any
+  test that tries to launch a real provider CLI.
+- A passing work-claim gate now writes a `## Dispatcher Verification` section
+  (verdict, verified commit, checks, verification command) into the handoff.
+  The auditor and the fan-out quality reviewer are told not to re-run a
+  Verification command the dispatcher already passed on that commit.
 
 ## 0.0.0
 
