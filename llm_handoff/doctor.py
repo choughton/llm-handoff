@@ -3,7 +3,9 @@
 The doctor command checks a checkout before the dispatcher runs: Git, the
 provider CLI binaries the configured roles launch, the container runtime
 Gemini CLI roles need for their sandbox, whether the configured next-agent
-normalizer has an API key or CLI to run with, and the current handoff file. It
+normalizer has an API key or CLI to run with, whether the audit runs the
+security reviewer (with the opt-out reason when it does not), and the current
+handoff file. It
 does not start a dispatch, call a provider, contact the network, or write any
 files.
 
@@ -121,6 +123,7 @@ def run_doctor(
         _check_role_binaries(dispatch_config, resolved_root, checks)
         _check_container_runtime(dispatch_config, checks)
         _check_normalizer(dispatch_config, resolved_root, checks)
+        _check_security_review(dispatch_config, checks)
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
     else:
@@ -391,6 +394,36 @@ def _check_normalizer(
             "FAIL",
             "normalizer",
             f"provider {provider} cannot run: {_describe_missing(missing)}",
+        )
+    )
+
+
+def _check_security_review(
+    dispatch_config: DispatchConfig,
+    checks: list[DoctorCheck],
+) -> None:
+    """Report whether the audit runs the security reviewer.
+
+    The dispatcher checks that the reviewer CLI can launch at startup; the
+    doctor only reports the setting, and the opt-out reason when it is off.
+    """
+    audit = dispatch_config.audit
+    if not audit.security_enabled:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                "security review",
+                "the security reviewer is off (audit.reviewers: [quality]); "
+                f"opt-out reason: {audit.security_opt_out_reason}",
+            )
+        )
+        return
+    checks.append(
+        DoctorCheck(
+            "PASS",
+            "security review",
+            "the security reviewer is on (security provider: "
+            f"{audit.security_provider or 'auto'})",
         )
     )
 

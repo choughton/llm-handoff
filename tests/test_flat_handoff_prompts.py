@@ -46,6 +46,12 @@ producer: backend
         repo_root=repo_root,
         handoff_path=Path("HANDOFF.md"),
         poll_interval_seconds=0,
+        # These prompts are the single-auditor route's; the security reviewer
+        # fan-out is covered in tests/test_audit_review.py.
+        audit={
+            "reviewers": ["quality"],
+            "security_opt_out_reason": "Tests cover the single-auditor route.",
+        },
         **kwargs,
     )
 

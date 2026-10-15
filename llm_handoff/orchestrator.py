@@ -326,10 +326,13 @@ def run_loop(
                 gemini_provider.gemini_sandbox_unavailable_message(role),
             )
         return 1
-    reviewer_launch_error = security_reviewer_startup_error(config)
-    if reviewer_launch_error is not None and not config.dry_run:
-        _log(log_fn, "ERROR", reviewer_launch_error)
-        return 1
+    if not config.dry_run:
+        # Stops the run before any agent launches when the security reviewer
+        # (configured or chosen automatically) cannot launch.
+        reviewer_launch_error = security_reviewer_startup_error(config, log=log_fn)
+        if reviewer_launch_error is not None:
+            _log(log_fn, "ERROR", reviewer_launch_error)
+            return 1
     _restore_bounce_counts(config, log_fn)
     mark_startup_complete = getattr(log_fn, "mark_startup_complete", None)
     if callable(mark_startup_complete):
@@ -3084,6 +3087,14 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
             "Audit reviewers:    quality + security (read-only fan-out; "
             f"security provider: {config.audit.security_provider or 'auto'}; "
             f"block severity: {config.audit.block_severity})",
+        )
+    else:
+        _log(
+            log,
+            "WARN",
+            "Audit reviewers:    quality only; the security reviewer is OFF "
+            "(audit.security_opt_out_reason: "
+            f"{config.audit.security_opt_out_reason})",
         )
     _log_launch_posture(config, log)
     _log(

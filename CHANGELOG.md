@@ -6,6 +6,29 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: the audit now runs the security reviewer next to the
+  quality reviewer by default (`audit.reviewers` defaults to
+  `[quality, security]`). Opting out takes `audit.reviewers: [quality]` plus a
+  non-empty `audit.security_opt_out_reason`; a config that leaves out
+  `security` without a reason no longer loads, and a reason set while
+  `security` is listed is rejected. When security is opted out, every
+  dispatcher start logs a WARN with the reason and `llm-handoff doctor`
+  prints `WARN security review:` with it. With `audit.security_provider`
+  unset, the reviewer is now the first of `claude`, `codex`, `gemini` whose
+  CLI is on `PATH` and that differs from the implementer's provider, then the
+  implementer's own vendor with a WARN that the review is not independent.
+  At startup, before any agent launches, `run` now checks the reviewer for
+  both `backend` and `frontend`, configured or automatic: its CLI must be on
+  `PATH`, and a Gemini reviewer also needs its sandbox runtime and the Gemini
+  CLI security extension installed and enabled for the repository (an
+  extension that `gemini extensions list` shows as disabled fails the
+  check). A failed check stops the run with a
+  `security_reviewer_failed:` error. Before, only a configured Gemini
+  reviewer's sandbox was checked, and the automatic choice did not check
+  what was installed. Reviewer errors during an audit still fail closed.
+  Configs that relied on the old quality-only default must either install a
+  reviewer CLI or opt out with a reason.
+
 - `llm-handoff init` now prints candidate build and verification commands it
   finds in the target repository (CI workflow `run:` steps, `package.json`
   scripts, pytest in `pyproject.toml`, `Makefile` test targets, Cargo, and

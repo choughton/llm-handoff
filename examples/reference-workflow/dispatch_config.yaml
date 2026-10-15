@@ -82,11 +82,17 @@ normalizer:
   # The model above is a Claude model. When you change the provider, change
   # or remove `model` too; omitting it selects that provider's default.
 
-# Optional audit fan-out. The defaults keep the single quality auditor.
-# Add `security` to run a read-only security reviewer next to it; the
-# dispatcher then writes HANDOFF.md from both structured verdicts.
+# Audit fan-out. By default a read-only security reviewer runs next to the
+# quality reviewer, and the dispatcher writes HANDOFF.md from both structured
+# verdicts. With security_provider unset, the dispatcher picks the first
+# installed CLI (claude, codex, gemini) that differs from the implementer's
+# provider, else the implementer's own vendor with a warning. A reviewer that
+# cannot launch stops the dispatcher at startup. To opt out, set
+#   reviewers: [quality]
+#   security_opt_out_reason: "<why this repository skips security review>"
+# Every dispatcher start and `llm-handoff doctor` warn with that reason.
 audit:
-  reviewers: [quality]
+  reviewers: [quality, security]
   # security_provider: claude   # claude | gemini | codex; unset = auto
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000
