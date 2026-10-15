@@ -461,3 +461,113 @@ def test_repairable_markers_match_real_orchestrator_log_output(
             elapsed_seconds=0.1,
         )
     )
+
+
+FLAT_HANDOFF_CONTENT = """---
+next_agent: planner
+reason: Scope the next task.
+producer: user
+---
+
+# Flat Handoff
+
+Plan the next bounded task.
+"""
+
+
+def _write_flat_repo(tmp_path: Path) -> Path:
+    # CONFIGURATION.md's supported flat layout: HANDOFF.md at the repo root and
+    # no docs/handoff directory at all.
+    repo_root = tmp_path
+    (repo_root / ".git").mkdir()
+    (repo_root / "HANDOFF.md").write_text(FLAT_HANDOFF_CONTENT, encoding="utf-8")
+    (repo_root / "AGENTS.md").write_text("repo instructions\n", encoding="utf-8")
+    (repo_root / "dispatch_config.yaml").write_text(
+        "handoff_path: HANDOFF.md\n",
+        encoding="utf-8",
+    )
+    return repo_root
+
+
+def test_supervisor_honors_flat_handoff_path_from_dispatch_config(
+    tmp_path: Path,
+) -> None:
+    from hashlib import sha256
+
+    supervisor = _load_supervisor_module()
+    repo_root = _write_flat_repo(tmp_path)
+    flat_handoff = (repo_root / "HANDOFF.md").resolve()
+    config = supervisor.SupervisorConfig(
+        repo_root=repo_root,
+        config_path=Path("dispatch_config.yaml"),
+        doctor=True,
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = supervisor.run_supervised_dispatch(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+        dispatch_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("doctor mode must not dispatch"),
+        ),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", f"Handoff path:       {flat_handoff}") in log_messages
+    state = json.loads(config.run_state_path_full_path.read_text(encoding="utf-8"))
+    assert state["status"] == "doctor_passed"
+    assert state["route"] == "planner"
+    assert state["handoff_sha"] == sha256(flat_handoff.read_bytes()).hexdigest()
+    assert supervisor._current_route(config) == "planner"
+
+    snapshot = supervisor._default_snapshot_reader(config)(repo_root)
+    assert snapshot.handoff_sha == state["handoff_sha"]
+    packet_path = supervisor._write_failure_packet(
+        config,
+        _dispatch_result(exit_code=1),
+        fingerprint="f" * 40,
+        snapshot=snapshot,
+    )
+    assert json.loads(packet_path.read_text(encoding="utf-8"))["handoff_path"] == (
+        str(flat_handoff)
+    )
+    incident_path = supervisor._write_incident_bundle(
+        config,
+        _dispatch_result(exit_code=1),
+        fingerprint="f" * 40,
+        reason="test",
+        snapshot=snapshot,
+    )
+    assert (incident_path / "handoff-current.md").read_text(encoding="utf-8") == (
+        FLAT_HANDOFF_CONTENT
+    )
+
+
+def test_supervisor_preflight_reports_unloadable_dispatch_config(
+    tmp_path: Path,
+) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    (repo_root / "dispatch_config.yaml").write_text(
+        "handoff_path: [\n",
+        encoding="utf-8",
+    )
+    config = supervisor.SupervisorConfig(repo_root=repo_root, doctor=True)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = supervisor.run_supervised_dispatch(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+        dispatch_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("doctor mode must not dispatch"),
+        ),
+    )
+
+    assert exit_code == 1
+    state = json.loads(config.run_state_path_full_path.read_text(encoding="utf-8"))
+    assert state["status"] == "doctor_failed"
+    assert any(
+        level == "ERROR"
+        and message.startswith("Preflight error: dispatch config could not be loaded")
+        for level, message in log_messages
+    )

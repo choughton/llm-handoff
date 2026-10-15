@@ -19,6 +19,8 @@ import time
 from typing import Callable, Sequence
 from uuid import uuid4
 
+import yaml
+
 from llm_handoff.agent_process import (
     _kill_process_tree,
     _process_group_popen_kwargs,
@@ -282,7 +284,7 @@ def _run_supervised_dispatch_locked(
 ) -> int:
     dispatch_fn = dispatch_runner or _run_dispatch_child
     repair_fn = repair_runner or _run_repair_role
-    snapshot_fn = snapshot_reader or _repo_snapshot
+    snapshot_fn = snapshot_reader or _default_snapshot_reader(config)
     seen_fingerprints: set[str] = set()
     repair_attempts = 0
     transient_retries = 0
@@ -550,7 +552,10 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
         config,
         status="child_running",
         route=_current_route(config),
-        snapshot=_repo_snapshot(config.repo_root),
+        snapshot=_repo_snapshot(
+            config.repo_root,
+            handoff_path=_dispatch_handoff_path(config),
+        ),
         repair_attempts=0,
         last_event="child_started",
         child_pid=process.pid,
@@ -709,12 +714,18 @@ def _run_preflight(
     check_lock: bool = False,
     strict_handoff: bool = True,
 ) -> PreflightResult:
-    snapshot = _repo_snapshot(config.repo_root)
     errors: list[str] = []
     warnings: list[str] = []
     route: str | None = None
     agents_path = config.repo_root / "AGENTS.md"
-    handoff_path = config.repo_root / DEFAULT_HANDOFF_PATH
+    # The child dispatcher reads handoff_path from dispatch_config.yaml, so
+    # preflight must check the same file (for example a flat HANDOFF.md).
+    try:
+        handoff_path = _load_dispatch_handoff_path(config)
+    except _DISPATCH_CONFIG_ERRORS as exc:
+        errors.append(f"dispatch config could not be loaded: {exc}")
+        handoff_path = (config.repo_root / DEFAULT_HANDOFF_PATH).resolve()
+    snapshot = _repo_snapshot(config.repo_root, handoff_path=handoff_path)
 
     if not agents_path.exists():
         warnings.append(f"missing AGENTS.md at {agents_path}")
@@ -821,9 +832,37 @@ def _log_preflight(preflight: PreflightResult, log: LogFn) -> None:
         log("ERROR", f"Preflight error: {error}")
 
 
+_DISPATCH_CONFIG_ERRORS = (OSError, ValueError, yaml.YAMLError)
+
+
+def _load_dispatch_handoff_path(config: SupervisorConfig) -> Path:
+    dispatch_config = load_dispatch_config(
+        repo_root=config.repo_root,
+        config_path=config.config_path_full_path,
+    )
+    return dispatch_config.handoff_full_path
+
+
+def _dispatch_handoff_path(config: SupervisorConfig) -> Path:
+    """Return the handoff file the child dispatcher will use.
+
+    Falls back to the default layout when dispatch_config.yaml cannot be
+    loaded; preflight reports that failure as an error separately.
+    """
+    try:
+        return _load_dispatch_handoff_path(config)
+    except _DISPATCH_CONFIG_ERRORS:
+        return (config.repo_root / DEFAULT_HANDOFF_PATH).resolve()
+
+
+def _default_snapshot_reader(config: SupervisorConfig) -> SnapshotReader:
+    handoff_path = _dispatch_handoff_path(config)
+    return lambda repo_root: _repo_snapshot(repo_root, handoff_path=handoff_path)
+
+
 def _current_route(config: SupervisorConfig) -> str | None:
     try:
-        content = read_dispatch_text(config.repo_root / DEFAULT_HANDOFF_PATH)
+        content = read_dispatch_text(_dispatch_handoff_path(config))
     except OSError:
         return None
     decision = route_handoff(content)
@@ -908,7 +947,7 @@ def _write_incident_bundle(
         "\n".join(result.output_lines) + ("\n" if result.output_lines else ""),
         encoding="utf-8",
     )
-    handoff_path = config.repo_root / DEFAULT_HANDOFF_PATH
+    handoff_path = _dispatch_handoff_path(config)
     if handoff_path.exists():
         (incident_path / "handoff-current.md").write_text(
             handoff_path.read_text(encoding="utf-8"),
@@ -1132,6 +1171,7 @@ def _log_supervisor_startup(config: SupervisorConfig, log: LogFn) -> None:
     log("INFO", "  Operator wrapper, optional bounded repair role")
     log("INFO", "================================================")
     log("INFO", f"Repo root:          {config.repo_root}")
+    log("INFO", f"Handoff path:       {_dispatch_handoff_path(config)}")
     log("INFO", f"Dispatcher args:    {dispatch_args}")
     log("INFO", f"Repair role:        {repair_role}")
     log(
@@ -1363,7 +1403,7 @@ def _write_failure_packet(
         "fingerprint": fingerprint,
         "head_sha": snapshot.head_sha,
         "dirty_files": list(snapshot.dirty_files),
-        "handoff_path": str((config.repo_root / DEFAULT_HANDOFF_PATH).resolve()),
+        "handoff_path": str(_dispatch_handoff_path(config)),
         "handoff_sha": snapshot.handoff_sha,
         "log_tail": list(result.output_lines[-config.tail_lines :]),
     }
@@ -1371,11 +1411,18 @@ def _write_failure_packet(
     return packet_path
 
 
-def _repo_snapshot(repo_root: Path) -> RepoSnapshot:
+def _repo_snapshot(
+    repo_root: Path,
+    *,
+    handoff_path: Path | None = None,
+) -> RepoSnapshot:
+    resolved_handoff_path = (
+        handoff_path if handoff_path is not None else repo_root / DEFAULT_HANDOFF_PATH
+    )
     return RepoSnapshot(
         head_sha=_git_stdout(repo_root, ["git", "rev-parse", "HEAD"]),
         dirty_files=_git_dirty_files(repo_root),
-        handoff_sha=_file_sha(repo_root / DEFAULT_HANDOFF_PATH),
+        handoff_sha=_file_sha(resolved_handoff_path),
     )
 
 

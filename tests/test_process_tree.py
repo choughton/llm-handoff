@@ -260,7 +260,7 @@ def test_supervisor_stall_kills_dispatch_child_tree(
     monkeypatch.setattr(
         supervisor,
         "_repo_snapshot",
-        lambda _repo_root: supervisor.RepoSnapshot(
+        lambda _repo_root, **_kwargs: supervisor.RepoSnapshot(
             head_sha=None, dirty_files=(), handoff_sha=None
         ),
     )
