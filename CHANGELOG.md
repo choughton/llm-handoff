@@ -9,7 +9,8 @@ This project follows a simple pre-release changelog until the first public tag.
 - Roles accept an optional `fallback` agent. When the primary agent times
   out, hits a rate or usage limit, is not signed in, or cannot launch, the
   dispatcher reruns that dispatch once on the fallback. Ordinary failures and
-  runs that already rewrote the handoff do not fail over.
+  runs that already rewrote the handoff or changed a protected control file
+  do not fail over.
 
 - The audit fan-out range now starts at the story's first implementer
   dispatch. A retry after a work-claim or audit bounce no longer moves the

@@ -16,6 +16,9 @@ from llm_handoff.provider_auth import auth_fix_instructions
 
 
 _Result = TypeVar("_Result", DispatchResult, SubagentResult)
+# Called after a fatal primary failure, before the fallback starts. Returns
+# why the fallback must not run, or None to let it run.
+FailoverGuard = Callable[[], str | None]
 
 
 def invoke_role(
@@ -34,6 +37,7 @@ def invoke_role(
     support_prompt: str | None = None,
     subagent_name: str | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> DispatchResult:
     # ``repo_root`` is the target repository the provider CLI must launch in.
     # ``None`` falls back to the process cwd for callers that already run
@@ -71,6 +75,7 @@ def invoke_role(
         agent_config=agent_config,
         handoff_path=handoff_path,
         repo_root=repo_root,
+        failover_guard=failover_guard,
         log=log,
     )
 
@@ -173,6 +178,7 @@ def invoke_backend_role(
     additional_instruction: str | None = None,
     agent_config: AgentConfig | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "backend",
@@ -182,6 +188,7 @@ def invoke_backend_role(
         use_resume=use_resume,
         additional_instruction=additional_instruction,
         repo_root=repo_root,
+        failover_guard=failover_guard,
     )
 
 
@@ -197,6 +204,7 @@ def invoke_planner_role(
     log: LogFn | None = None,
     agent_config: AgentConfig | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "planner",
@@ -210,6 +218,7 @@ def invoke_planner_role(
         current_handoff_sha=current_handoff_sha,
         log=log,
         repo_root=repo_root,
+        failover_guard=failover_guard,
     )
 
 
@@ -222,6 +231,7 @@ def invoke_frontend_role(
     log: LogFn | None = None,
     agent_config: AgentConfig | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "frontend",
@@ -232,6 +242,7 @@ def invoke_frontend_role(
         additional_instruction=additional_instruction,
         log=log,
         repo_root=repo_root,
+        failover_guard=failover_guard,
     )
 
 
@@ -244,6 +255,7 @@ def invoke_support_role(
     agent_config: AgentConfig | None = None,
     log: LogFn | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> SubagentResult:
     resolved_role = role or "validator"
     if agent_config is None:
@@ -273,6 +285,7 @@ def invoke_support_role(
         agent_config=agent_config,
         handoff_path=resolved_handoff_path,
         repo_root=repo_root,
+        failover_guard=failover_guard,
         log=log,
     )
 
@@ -336,12 +349,14 @@ def _run_with_failover(
     handoff_path: Path,
     repo_root: Path | None,
     log: LogFn | None,
+    failover_guard: FailoverGuard | None = None,
 ) -> _Result:
     """Run the primary agent, then the fallback once after a fatal failure.
 
     The fallback is skipped when the primary rewrote the handoff before it
-    failed: the role already handed off, so the dispatcher must route the new
-    handoff instead of running the same role again.
+    failed, because running the role again could repeat a finished handoff,
+    and when ``failover_guard`` reports a reason, such as a changed protected
+    control file the fallback would otherwise read as instructions.
     """
 
     fallback = agent_config.fallback
@@ -361,13 +376,21 @@ def _run_with_failover(
 
     primary_label = _describe_agent(agent_config)
     fallback_label = _describe_agent(fallback)
+    blocked = None
     if _read_handoff_bytes(handoff_file) != handoff_before:
+        blocked = (
+            f"it had already rewritten {handoff_file.name}, so running the role "
+            "again could repeat a finished handoff"
+        )
+    elif failover_guard is not None:
+        blocked = failover_guard()
+    if blocked is not None:
         _emit(
             log,
             "WARN",
             f"{role} ({primary_label}) failed: {FAILOVER_REASON_TEXT[reason]}, "
-            f"but it had already rewritten {handoff_file.name}. Not failing "
-            f"over to {fallback_label}; the dispatcher routes the new handoff.",
+            f"but {blocked}. Not failing over to {fallback_label}; this counts "
+            "as a normal failure for the role.",
         )
         return primary
 

@@ -676,10 +676,19 @@ work at all:
 | Timeout | The process ran past the role's `timeout_ms` and was killed. |
 
 Any other non-zero exit is the agent's own failure: the fallback does not run
-and the failure counts toward `max_consecutive_failures` as before. The
-dispatcher also skips the fallback when the primary rewrote `HANDOFF.md`
-before it failed, because the role already handed off and the next cycle
-routes the new handoff.
+and the failure counts toward `max_consecutive_failures` as before.
+
+The dispatcher also skips the fallback when the primary failed after it:
+
+- rewrote `HANDOFF.md`, because running the role again could repeat a
+  finished handoff; or
+- changed a file under `protected_paths`, because the fallback would read the
+  changed file as instructions. The protected-file gate then handles the
+  change as usual.
+
+In both cases the run counts as a normal failure, exactly as it would without
+a fallback. The next cycle reads the new handoff unless that failure stops the
+loop, for example a sign-in failure or `max_consecutive_failures` reached.
 
 Rules and limits:
 
