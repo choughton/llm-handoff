@@ -668,9 +668,9 @@ automatically when `claude` is the only provider CLI on `PATH`, and keeps the
 reference mapping otherwise. `init` prints the mapping it chose and the
 provider CLIs it found.
 
-With every role on Claude, an enabled security reviewer runs on the same
-vendor as the implementer, so it is a second read-only review rather than an
-independent one.
+With every role on Claude, the security reviewer runs on the same vendor as
+the implementer, so it is a second read-only review rather than an
+independent one, and each dispatcher start logs a warning saying so.
 
 ### Fallback Agents
 
@@ -820,13 +820,13 @@ Gemini-specific fields:
 
 ## Audit Fan-Out
 
-The auditor route can optionally run a security reviewer next to the normal
-quality reviewer. The feature is off by default; the defaults below keep the
-single-auditor path exactly as it was.
+The auditor route runs a read-only security reviewer next to the quality
+reviewer by default. Turning it off is an explicit opt-out that needs a
+written reason.
 
 ```yaml
 audit:
-  reviewers: [quality]          # add `security` to enable the fan-out
+  reviewers: [quality, security]  # the default
   security_provider: null       # claude | gemini | codex; null = auto
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000
@@ -834,10 +834,45 @@ audit:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `audit.reviewers` | `[quality]` | Reviewers on the auditor route. Must include `quality`. Supported values are `quality` and `security`. |
-| `audit.security_provider` | auto | CLI used for the security reviewer. When unset, the first of `claude`, `codex`, `gemini` that differs from the implementer role's provider. |
+| `audit.reviewers` | `[quality, security]` | Reviewers on the auditor route. Must include `quality`. Supported values are `quality` and `security`. Leaving out `security` needs `audit.security_opt_out_reason`. |
+| `audit.security_opt_out_reason` | unset | Required, non-empty text when `audit.reviewers` leaves out `security`; rejected while `security` is listed. |
+| `audit.security_provider` | auto | CLI used for the security reviewer. When unset, see the automatic choice below. |
 | `audit.block_severity` | `high` | A finding at or above this severity routes the story back to the implementer. |
 | `audit.review_timeout_ms` | `900000` | Process timeout for each reviewer in fan-out mode. |
+
+To opt out of the security reviewer:
+
+```yaml
+audit:
+  reviewers: [quality]
+  security_opt_out_reason: "Local prototype; no secrets or user data."
+```
+
+A config that leaves out `security` without a reason fails to load with a
+validation error that names `security_opt_out_reason`. When security is
+opted out, every dispatcher start logs a `WARN` line with the reason, and
+`llm-handoff doctor` prints `WARN security review:` with it. The auditor
+route then uses the single-auditor path, which writes `HANDOFF.md` itself.
+
+With `audit.security_provider` unset, the dispatcher picks the security
+reviewer for each implementer role (`backend` and `frontend`) in this order:
+
+1. the first of `claude`, `codex`, `gemini` whose CLI is on `PATH` and that
+   differs from the implementer role's provider;
+2. otherwise the implementer's own vendor when its CLI is on `PATH`, with a
+   `WARN` that the review is not independent;
+3. otherwise `run` refuses to start with an error that begins
+   `security_reviewer_failed:`.
+
+The CLI lookup is the one `llm-handoff doctor` uses for role binaries, and the
+binary is the one configured for the first role that uses that provider.
+
+At startup, before any agent launches, `run` checks the security reviewer for
+each implementer role, whether configured or chosen automatically: its CLI
+must be on `PATH`, and a Gemini reviewer also needs a sandbox runtime (unless
+the Gemini role sets `unsafe_bypass: true`) and the Gemini CLI security
+extension. A failed check stops the run with a `security_reviewer_failed:`
+error. `--dry-run` skips this check.
 
 With `security` enabled, the auditor route works differently:
 
@@ -870,9 +905,9 @@ Security reviewer invocation by provider:
 - `gemini`: `gemini -p "/security:analyze ..."` in `--approval-mode plan`
   with `--sandbox`, so it needs Docker or Podman like the Gemini roles. Plan
   mode is not enough by itself: headless Gemini CLI auto-approves
-  `exit_plan_mode` and then continues in YOLO mode. With
-  `audit.security_provider: gemini`, `run` refuses to start when no sandbox
-  runtime is found, instead of failing at the first audit.
+  `exit_plan_mode` and then continues in YOLO mode. When Gemini is the
+  security reviewer, `run` refuses to start when no sandbox runtime is found,
+  instead of failing at the first audit.
   The target repository's Gemini CLI must have the security extension
   installed:
 
@@ -880,8 +915,9 @@ Security reviewer invocation by provider:
   gemini extensions install https://github.com/gemini-cli-extensions/security
   ```
 
-  The dispatcher checks `gemini extensions list` first and fails closed with
-  `security_extension_missing:` when the extension is absent. The extension
+  The dispatcher checks `gemini extensions list` at startup and again before
+  each review, and fails closed with `security_extension_missing:` when the
+  extension is absent. The extension
   documents its analyze command as interactive-first, so headless results
   depend on the installed extension version.
 - `codex`: when `codex-security` is on `PATH` and `scope_sha` is the
@@ -896,8 +932,9 @@ Security reviewers use the environment allowlist of the role that maps to
 their provider, and keep their read-only flags even if that role sets
 `unsafe_bypass: true`.
 
-A missing, malformed, or timed-out reviewer verdict, and any reviewer that
-changes `HANDOFF.md`, fails the audit dispatch. The dispatcher restores the
+A missing, malformed, or timed-out reviewer verdict, a security reviewer CLI
+that is no longer installed, and any reviewer that changes `HANDOFF.md`,
+fails the audit dispatch. The dispatcher restores the
 pre-review handoff and counts the cycle as a dispatch failure.
 
 ## Next-Agent Normalizer

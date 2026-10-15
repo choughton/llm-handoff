@@ -43,6 +43,12 @@ def _dispatch_config(
         "planner_resume": planner_resume,
         "poll_interval_seconds": poll_interval_seconds,
         "max_consecutive_failures": max_consecutive_failures,
+        # These tests cover the single-auditor route; the security reviewer
+        # fan-out is covered in tests/test_audit_review.py.
+        "audit": {
+            "reviewers": ["quality"],
+            "security_opt_out_reason": "Tests cover the single-auditor route.",
+        },
     }
     if agents is not None:
         kwargs["agents"] = agents

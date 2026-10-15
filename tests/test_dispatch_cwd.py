@@ -97,7 +97,15 @@ def test_dispatch_route_launches_provider_cli_in_config_repo_root(
     dispatcher_checkout, target_repo = _two_repos(tmp_path)
     monkeypatch.chdir(dispatcher_checkout)
     popen_calls = _capture_popen(monkeypatch)
-    config = config_module.DispatchConfig(repo_root=target_repo)
+    config = config_module.DispatchConfig(
+        repo_root=target_repo,
+        # The auditor route here is the single auditor launch; the security
+        # reviewer fan-out is covered in tests/test_audit_review.py.
+        audit={
+            "reviewers": ["quality"],
+            "security_opt_out_reason": "Tests cover the single-auditor route.",
+        },
+    )
     assert config.agents[route].provider == expected_provider
     assert Path.cwd().resolve() != config.repo_root
 

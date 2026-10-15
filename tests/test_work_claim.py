@@ -221,6 +221,12 @@ def _dispatch_config(repo_root: Path, **overrides: Any) -> DispatchConfig:
         "max_consecutive_failures": 3,
         "enforce_work_packet": True,
         "work_packet_verification_timeout_seconds": 60,
+        # These tests stub the single auditor; the security reviewer fan-out
+        # is covered in tests/test_audit_review.py.
+        "audit": {
+            "reviewers": ["quality"],
+            "security_opt_out_reason": "Tests cover the single-auditor route.",
+        },
     }
     kwargs.update(overrides)
     return DispatchConfig(**kwargs)

@@ -8,6 +8,7 @@ import tempfile
 import pytest
 
 import llm_handoff.agents as agents_facade
+from llm_handoff import audit_review
 from llm_handoff.agent_providers import gemini as gemini_provider
 
 
@@ -64,6 +65,19 @@ def _resync_agent_facade() -> None:
     agents_facade._sync_codex()
     agents_facade._sync_claude()
     agents_facade._sync_manual()
+
+
+@pytest.fixture(autouse=True)
+def _security_reviewer_cli_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The security reviewer is on by default, and the dispatcher stops at
+    # startup when no reviewer CLI is on PATH. Tests run on machines without
+    # the provider CLIs, so pretend each one is installed; tests of the
+    # PATH lookup and the startup failure override this.
+    monkeypatch.setattr(
+        audit_review,
+        "_reviewer_cli_available",
+        lambda _config, _provider: True,
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -356,6 +356,65 @@ def test_doctor_warns_when_handoff_is_missing(
     assert "WARN handoff: no handoff file at" in output
 
 
+def test_doctor_reports_security_reviewer_on_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert (
+        "PASS security review: the security reviewer is on (security provider: auto)"
+        in output
+    )
+    assert "WARN security review:" not in output
+
+
+def test_doctor_warns_with_the_security_opt_out_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "audit:\n"
+        + "  reviewers: [quality]\n"
+        + '  security_opt_out_reason: "Local prototype with no user data."\n',
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    warn_lines = [
+        line for line in output.splitlines() if line.startswith("WARN security review:")
+    ]
+    assert len(warn_lines) == 1
+    assert "security reviewer is off" in warn_lines[0]
+    assert "Local prototype with no user data." in warn_lines[0]
+
+
+def test_doctor_fails_on_security_opt_out_without_a_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + "audit:\n  reviewers: [quality]\n",
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert "FAIL config: dispatch config could not be loaded" in output
+    assert "security_opt_out_reason" in output
+
+
 def test_doctor_warns_on_dirty_tree_and_falls_back_to_default_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

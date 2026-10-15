@@ -154,9 +154,12 @@ PublishMode = Literal["local", "merge-commit", "pr"]
 # without findings, before the dispatcher merges a story's pull request.
 PublishReviewer = Literal["codex"]
 DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
-DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality",)
-# Order used to pick a security reviewer vendor that differs from the
-# implementer's provider when `audit.security_provider` is not set.
+# The security reviewer runs by default. Leaving it out of `audit.reviewers`
+# also needs a non-empty `audit.security_opt_out_reason`.
+DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality", "security")
+# Order used to pick a security reviewer vendor when `audit.security_provider`
+# is not set: the first vendor whose CLI is on PATH and that differs from the
+# implementer's provider, else the implementer's own vendor.
 SECURITY_REVIEW_PROVIDER_PREFERENCE: tuple[SecurityReviewProvider, ...] = (
     "claude",
     "codex",
@@ -407,20 +410,47 @@ class PublishConfig(BaseModel):
 
 
 class AuditConfig(BaseModel):
-    """Opt-in audit fan-out settings.
+    """Audit fan-out settings.
 
-    The defaults keep the single-auditor path: one quality reviewer that
-    rewrites the handoff itself. Adding ``security`` to ``reviewers`` switches
-    the auditor route to a read-only fan-out where the dispatcher writes
-    ``HANDOFF.md`` from structured reviewer verdicts.
+    By default the auditor route runs a read-only fan-out: a quality reviewer
+    and a security reviewer, with the dispatcher writing ``HANDOFF.md`` from
+    their structured verdicts. Setting ``reviewers: [quality]`` opts out of
+    the security reviewer and restores the single-auditor path; it requires a
+    non-empty ``security_opt_out_reason``, which every dispatcher start logs
+    as a warning.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     reviewers: tuple[AuditReviewer, ...] = DEFAULT_AUDIT_REVIEWERS
     security_provider: SecurityReviewProvider | None = None
+    security_opt_out_reason: str | None = None
     block_severity: BlockSeverity = "high"
     review_timeout_ms: int = AUDIT_REVIEW_TIMEOUT_MS
+
+    @field_validator("security_opt_out_reason", mode="after")
+    @classmethod
+    def _strip_security_opt_out_reason(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def _validate_security_opt_out(self) -> AuditConfig:
+        reason = self.security_opt_out_reason
+        if self.security_enabled:
+            if reason is not None:
+                raise ValueError(
+                    "audit.security_opt_out_reason only applies when "
+                    "audit.reviewers leaves out `security`; remove it or remove "
+                    "`security` from audit.reviewers."
+                )
+            return self
+        if not reason:
+            raise ValueError(
+                "audit.reviewers leaves out `security`, so "
+                "audit.security_opt_out_reason must give a non-empty reason for "
+                "turning the security reviewer off."
+            )
+        return self
 
     @field_validator("reviewers", mode="after")
     @classmethod

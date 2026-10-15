@@ -31,6 +31,8 @@ from llm_handoff.validator import validate_handoff_text
 
 STORY_ID = "AUDIT-S1"
 NL = chr(10)
+# Captured at import, before the conftest fixture stubs the lookup per test.
+REAL_REVIEWER_CLI_AVAILABLE = audit_review._reviewer_cli_available
 ORIGINAL_AUDIT_PROMPT_TEMPLATE = (
     "Use the auditor agent to audit the work described in "
     "{handoff_path}. Read the repository instructions and relevant "
@@ -260,14 +262,70 @@ def _reset_bounces():
 # --------------------------------------------------------------------------
 
 
-def test_audit_config_defaults_preserve_single_auditor(tmp_path: Path) -> None:
+OPT_OUT_REASON = "Throwaway prototype; no secrets or user data."
+QUALITY_ONLY_AUDIT: dict[str, Any] = {
+    "reviewers": ["quality"],
+    "security_opt_out_reason": OPT_OUT_REASON,
+}
+
+
+def test_audit_config_defaults_run_quality_and_security(tmp_path: Path) -> None:
+    loaded = load_dispatch_config(repo_root=tmp_path)
+
+    assert config_module.DEFAULT_AUDIT_REVIEWERS == ("quality", "security")
+    assert loaded.audit.reviewers == ("quality", "security")
+    assert loaded.audit.security_provider is None
+    assert loaded.audit.security_opt_out_reason is None
+    assert loaded.audit.block_severity == "high"
+    assert loaded.audit.review_timeout_ms == 900_000
+    assert loaded.audit.security_enabled is True
+
+
+@pytest.mark.parametrize(
+    "audit_yaml",
+    [
+        "reviewers: [quality]",
+        "reviewers: [quality]\n  security_opt_out_reason: ''",
+        "reviewers: [quality]\n  security_opt_out_reason: '   '",
+    ],
+)
+def test_audit_config_rejects_security_opt_out_without_a_reason(
+    tmp_path: Path,
+    audit_yaml: str,
+) -> None:
+    (tmp_path / "dispatch_config.yaml").write_text(
+        f"audit:\n  {audit_yaml}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="security_opt_out_reason"):
+        load_dispatch_config(repo_root=tmp_path)
+
+
+def test_audit_config_rejects_opt_out_reason_while_security_is_on(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "dispatch_config.yaml").write_text(
+        "audit:\n  reviewers: [quality, security]\n"
+        "  security_opt_out_reason: not needed\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="security_opt_out_reason"):
+        load_dispatch_config(repo_root=tmp_path)
+
+
+def test_audit_config_loads_security_opt_out_with_a_reason(tmp_path: Path) -> None:
+    (tmp_path / "dispatch_config.yaml").write_text(
+        f'audit:\n  reviewers: [quality]\n  security_opt_out_reason: "  {OPT_OUT_REASON} "\n',
+        encoding="utf-8",
+    )
+
     loaded = load_dispatch_config(repo_root=tmp_path)
 
     assert loaded.audit.reviewers == ("quality",)
-    assert loaded.audit.security_provider is None
-    assert loaded.audit.block_severity == "high"
-    assert loaded.audit.review_timeout_ms == 900_000
     assert loaded.audit.security_enabled is False
+    assert loaded.audit.security_opt_out_reason == OPT_OUT_REASON
 
 
 def test_audit_config_loads_from_yaml(tmp_path: Path) -> None:
@@ -357,16 +415,206 @@ def test_configured_security_provider_wins(tmp_path: Path) -> None:
     )
 
 
+def _installed_clis(monkeypatch: pytest.MonkeyPatch, *providers: str) -> None:
+    """Use the real reviewer PATH lookup with only ``providers`` on PATH."""
+    monkeypatch.setattr(
+        audit_review, "_reviewer_cli_available", REAL_REVIEWER_CLI_AVAILABLE
+    )
+
+    def fake_which(name: str, *_args: Any, **_kwargs: Any) -> str | None:
+        stem = Path(name).name.split(".", 1)[0]
+        return f"/usr/bin/{name}" if stem in providers else None
+
+    monkeypatch.setattr(audit_review.shutil, "which", fake_which)
+
+
+def _auto_config(tmp_path: Path, **overrides: dict[str, Any]) -> DispatchConfig:
+    return _fan_out_config(
+        tmp_path,
+        security_provider=None,
+        agents=_default_agents(**overrides),
+    )
+
+
+def test_auto_security_provider_skips_a_vendor_whose_cli_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # claude is first in the preference order but not installed; codex is
+    # the implementer's vendor, so gemini is the independent reviewer.
+    _installed_clis(monkeypatch, "codex", "gemini")
+    config = _auto_config(tmp_path)
+    log = _Recorder()
+
+    provider = audit_review.resolve_security_provider(
+        config, implementer_role="backend", log=log
+    )
+
+    assert provider == ("gemini", "auto")
+    assert not [message for level, message in log.messages if level == "WARN"]
+
+
+def test_auto_security_provider_falls_back_to_the_implementer_vendor_with_a_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _installed_clis(monkeypatch, "codex")
+    config = _auto_config(tmp_path)
+    log = _Recorder()
+
+    provider = audit_review.resolve_security_provider(
+        config, implementer_role="backend", log=log
+    )
+
+    assert provider == ("codex", "auto, same vendor")
+    warnings = [message for level, message in log.messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert "not independent" in warnings[0]
+
+
+def test_auto_security_provider_raises_when_no_reviewer_cli_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _installed_clis(monkeypatch)
+    config = _auto_config(tmp_path)
+
+    with pytest.raises(audit_review.SecurityReviewerUnavailable) as excinfo:
+        audit_review.resolve_security_provider(config, implementer_role="backend")
+
+    assert str(excinfo.value).startswith("security_reviewer_failed:")
+    assert "security_opt_out_reason" in str(excinfo.value)
+
+
+def test_startup_fails_before_any_agent_when_no_reviewer_cli_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _base = _init_repo(tmp_path)
+    _write_handoff(repo, _backend_handoff("a" * 40))
+    _installed_clis(monkeypatch)
+    config = DispatchConfig(repo_root=repo, poll_interval_seconds=0)
+
+    def fail_launch(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("no agent may launch when the reviewer cannot")
+
+    for name in (
+        "invoke_support_role",
+        "invoke_backend_role",
+        "invoke_frontend_role",
+        "invoke_planner_role",
+    ):
+        monkeypatch.setattr(orchestrator, name, fail_launch)
+    log = _Recorder()
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=log)
+
+    assert exit_code == 1
+    errors = [message for level, message in log.messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].startswith("security_reviewer_failed:")
+    assert "--- Cycle" not in log.text()
+
+
+def test_startup_check_covers_each_implementer_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # backend (codex) gets claude; frontend (claude) gets codex. Only claude
+    # is installed, so the frontend's reviewer falls back to claude with a
+    # warning and the check passes.
+    _installed_clis(monkeypatch, "claude")
+    config = _auto_config(tmp_path, frontend={"provider": "claude"})
+    log = _Recorder()
+
+    assert audit_review.security_reviewer_startup_error(config, log=log) is None
+    warnings = [message for level, message in log.messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert "frontend implementer" in warnings[0]
+    assert "not independent" in warnings[0]
+
+
+@pytest.mark.parametrize("security_provider", ["claude", "codex", "gemini"])
+def test_startup_check_fails_when_the_configured_reviewer_cli_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    security_provider: str,
+) -> None:
+    others = [name for name in ("claude", "codex", "gemini") if name != security_provider]
+    _installed_clis(monkeypatch, *others)
+    config = _fan_out_config(tmp_path, security_provider=security_provider)
+
+    error = audit_review.security_reviewer_startup_error(config)
+
+    assert error is not None
+    assert error.startswith("security_reviewer_failed:")
+    assert f"the {security_provider} security reviewer CLI" in error
+
+
+def test_fan_out_fails_closed_when_no_reviewer_cli_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _base = _init_repo(tmp_path)
+    head = _commit_file(repo, "src/app.py", "print('hi')\n", "feature")
+    handoff = _backend_handoff(head)
+    _write_handoff(repo, handoff)
+    _installed_clis(monkeypatch)
+    config = _fan_out_config(repo, security_provider=None)
+
+    result, _log = _run_fan_out(
+        config, handoff, quality_stdout=json.dumps(_quality_payload())
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("security_reviewer_failed:")
+    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
+        encoding="utf-8"
+    ) == handoff
+
+
 # --------------------------------------------------------------------------
-# default path stays byte-for-byte unchanged
+# default runs both reviewers; the opt-out path stays byte-for-byte unchanged
 # --------------------------------------------------------------------------
 
 
-def test_default_config_dispatches_original_single_auditor(
+def test_default_config_dispatches_quality_and_security_fan_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = DispatchConfig(repo_root=tmp_path)
+    fan_out_calls: list[DispatchConfig] = []
+
+    def fake_fan_out(config_arg: DispatchConfig, **_kwargs: Any) -> DispatchResult:
+        fan_out_calls.append(config_arg)
+        return DispatchResult(
+            stdout="audit fan-out passed", stderr="", exit_code=0, elapsed_seconds=0.0
+        )
+
+    def fail_support(*_args: Any, **_kwargs: Any) -> SubagentResult:
+        raise AssertionError("the default config must not run the single auditor")
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fail_support)
+    monkeypatch.setattr(orchestrator, "run_audit_fan_out", fake_fan_out)
+    log = _Recorder()
+
+    result, label = orchestrator._dispatch_route("auditor", config, log)
+
+    assert config.audit.reviewers == ("quality", "security")
+    assert label == "auditor (audit)"
+    assert result.stdout == "audit fan-out passed"
+    assert fan_out_calls == [config]
+    assert (
+        "DISPATCH",
+        "Dispatching audit fan-out (quality + security reviewers).",
+    ) in log.messages
+
+
+def test_opted_out_config_dispatches_original_single_auditor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = DispatchConfig(repo_root=tmp_path, audit=QUALITY_ONLY_AUDIT)
     calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
     def fake_support(*args: Any, **kwargs: Any) -> SubagentResult:
@@ -374,7 +622,7 @@ def test_default_config_dispatches_original_single_auditor(
         return _subagent("audit report")
 
     def fail_fan_out(*_args: Any, **_kwargs: Any) -> DispatchResult:
-        raise AssertionError("fan-out must not run with the default config")
+        raise AssertionError("fan-out must not run when security is opted out")
 
     monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
     monkeypatch.setattr(orchestrator, "run_audit_fan_out", fail_fan_out)
@@ -400,14 +648,16 @@ def test_default_config_dispatches_original_single_auditor(
     assert log.messages == [("DISPATCH", "Dispatching auditor for audit.")]
 
 
-def test_default_config_run_loop_skips_fan_out_bookkeeping(
+def test_opted_out_run_loop_skips_fan_out_bookkeeping_and_warns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, _base = _init_repo(tmp_path)
     head = _commit_file(repo, "src/app.py", "print('hi')\n", "feature")
     _write_handoff(repo, _backend_handoff(head))
-    config = DispatchConfig(repo_root=repo, poll_interval_seconds=0)
+    config = DispatchConfig(
+        repo_root=repo, poll_interval_seconds=0, audit=QUALITY_ONLY_AUDIT
+    )
     prompts: list[str] = []
 
     def fake_support(name: str, prompt: str, **_kwargs: Any) -> SubagentResult:
@@ -415,17 +665,38 @@ def test_default_config_run_loop_skips_fan_out_bookkeeping(
         return _subagent("")
 
     def fail_git_head(_repo_root: Path) -> str:
-        raise AssertionError("default config must not capture the implementer base")
+        raise AssertionError("opted-out config must not capture the implementer base")
+
+    def fail_startup_check(*_args: Any, **_kwargs: Any) -> str | None:
+        raise AssertionError("opted-out config must not check a security reviewer")
 
     monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
     monkeypatch.setattr(orchestrator, "_git_head", fail_git_head)
+    monkeypatch.setattr(audit_review, "_reviewer_cli_available", fail_startup_check)
     log = _Recorder()
 
     orchestrator.run_loop(config, max_cycles=1, log=log)
 
     assert prompts[0] == ORIGINAL_AUDIT_PROMPT
-    assert "Audit reviewers:" not in log.text()
+    assert "quality + security" not in log.text()
+    warnings = [message for level, message in log.messages if level == "WARN"]
+    assert any(
+        "security reviewer is OFF" in message and OPT_OUT_REASON in message
+        for message in warnings
+    ), warnings
     assert not (repo / "logs" / "dispatch" / "audit").exists()
+
+
+def test_opted_out_dry_run_start_logs_the_reason(tmp_path: Path) -> None:
+    config = DispatchConfig(repo_root=tmp_path, dry_run=True, audit=QUALITY_ONLY_AUDIT)
+    log = _Recorder()
+
+    orchestrator._log_startup_banner(config, log)
+
+    assert any(
+        level == "WARN" and OPT_OUT_REASON in message
+        for level, message in log.messages
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1668,11 +1939,29 @@ def test_run_loop_refuses_to_start_when_gemini_reviewer_has_no_sandbox(
     assert "unsafe_bypass" not in errors[0]
 
 
+def _gemini_extensions_list(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    exit_code: int = 0,
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_run(_agent_name: str, command: list[str], **_kwargs: Any) -> _ProcessResult:
+        calls.append(command)
+        return _process(stdout, exit_code=exit_code)
+
+    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_run)
+    return calls
+
+
 def test_startup_check_follows_gemini_role_unsafe_bypass(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _no_gemini_sandbox(monkeypatch)
+    calls = _gemini_extensions_list(
+        monkeypatch, f"{audit_review.GEMINI_SECURITY_EXTENSION_NAME} (0.3.0)\n"
+    )
     config = _fan_out_config(
         tmp_path,
         security_provider="gemini",
@@ -1683,6 +1972,48 @@ def test_startup_check_follows_gemini_role_unsafe_bypass(
     )
 
     assert audit_review.security_reviewer_startup_error(config) is None
+    assert [command[1:] for command in calls] == [["extensions", "list"]]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "exit_code"),
+    [("some-other-extension (1.0.0)\n", 0), ("", 1)],
+)
+def test_startup_check_fails_when_gemini_security_extension_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    exit_code: int,
+) -> None:
+    _gemini_extensions_list(monkeypatch, stdout, exit_code=exit_code)
+    config = _fan_out_config(tmp_path, security_provider="gemini")
+
+    error = audit_review.security_reviewer_startup_error(config)
+
+    assert error is not None
+    assert error.startswith("security_reviewer_failed:")
+    assert "security_extension_missing" in error
+    assert audit_review.GEMINI_SECURITY_EXTENSION_URL in error
+
+
+def test_run_loop_refuses_to_start_when_gemini_security_extension_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _gemini_extensions_list(monkeypatch, "")
+    config = _fan_out_config(
+        tmp_path,
+        security_provider="gemini",
+        agents=_agents_without_gemini(),
+    )
+    log = _Recorder()
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=log)
+
+    assert exit_code == 1
+    errors = [message for level, message in log.messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "security_extension_missing" in errors[0]
 
 
 def test_startup_check_names_gemini_role_bypass(
@@ -1715,9 +2046,10 @@ def test_startup_check_is_off_when_security_review_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _no_gemini_sandbox(monkeypatch)
+    _installed_clis(monkeypatch)
     config = DispatchConfig(
         repo_root=tmp_path,
-        audit={"reviewers": ["quality"], "security_provider": "gemini"},
+        audit={**QUALITY_ONLY_AUDIT, "security_provider": "gemini"},
     )
 
     assert audit_review.security_reviewer_startup_error(config) is None

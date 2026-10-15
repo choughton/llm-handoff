@@ -1,6 +1,7 @@
-"""Opt-in audit fan-out: a quality reviewer plus a security reviewer.
+"""Audit fan-out: a quality reviewer plus a security reviewer.
 
-When ``audit.reviewers`` contains ``security``, the auditor route no longer
+When ``audit.reviewers`` contains ``security`` (the default), the auditor
+route no longer
 lets one LLM both judge the work and rewrite ``HANDOFF.md``. Instead the
 dispatcher:
 
@@ -33,6 +34,7 @@ from typing import Callable, Literal, Mapping, Sequence
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from llm_handoff import config as config_module
+from llm_handoff import doctor as doctor_module
 from llm_handoff.usage_log import (
     format_usage_line,
     usage_fields_from_claude_result,
@@ -106,6 +108,7 @@ _SECURITY_PROVIDER_ROLE_ORDER: tuple[AgentRole, ...] = (
     "backend",
     "frontend",
 )
+_IMPLEMENTER_ROLES: tuple[AgentRole, ...] = ("backend", "frontend")
 _MAX_LOG_DIRECTORY_ATTEMPTS = 100
 _MAX_EVIDENCE_FILES = 40
 _MAX_REASON_LENGTH = 190
@@ -476,19 +479,16 @@ def run_audit_fan_out(
         )
 
     implementer_role = _implementer_role(frontmatter, log)
-    security_provider, provider_origin = resolve_security_provider(
-        config,
-        implementer_role=implementer_role,
-    )
-    quality_provider = config.agents["auditor"].provider
-    if security_provider == config.agents[implementer_role].provider:
-        _log(
-            log,
-            "WARN",
-            f"Security reviewer provider `{security_provider}` matches the "
-            f"{implementer_role} implementer provider; a different vendor is "
-            "preferred.",
+    try:
+        security_provider, provider_origin = resolve_security_provider(
+            config,
+            implementer_role=implementer_role,
+            log=log,
         )
+    except SecurityReviewerUnavailable as exc:
+        # Fail closed (F27): no security reviewer means no audit verdict.
+        return _failed_dispatch(str(exc), start_time, log)
+    quality_provider = config.agents["auditor"].provider
 
     try:
         log_dir = _create_audit_log_directory(config.repo_root, context.cycle_number)
@@ -643,19 +643,94 @@ def run_audit_fan_out(
     )
 
 
+class SecurityReviewerUnavailable(ValueError):
+    """No security reviewer CLI can launch; the message starts with
+    ``security_reviewer_failed:``."""
+
+
+_SECURITY_PROVIDER_DEFAULT_BINARIES: dict[str, str] = {
+    "claude": config_module.CLAUDE_BINARY,
+    "codex": config_module.CODEX_BINARY,
+    "gemini": config_module.GEMINI_BINARY,
+}
+_SECURITY_REVIEWER_REMEDY = (
+    "install a reviewer CLI, set audit.security_provider to an installed "
+    "vendor, or opt out with `audit.reviewers: [quality]` and a non-empty "
+    "audit.security_opt_out_reason."
+)
+
+
+def security_reviewer_binary(config: DispatchConfig, provider: str) -> str:
+    """Return the binary the security reviewer for ``provider`` launches."""
+    provider_config = _provider_agent_config(config, provider)
+    if provider_config is not None and provider_config.binary:
+        return provider_config.binary
+    return _SECURITY_PROVIDER_DEFAULT_BINARIES[provider]
+
+
+def _reviewer_cli_available(config: DispatchConfig, provider: str) -> bool:
+    # The same PATH lookup `llm-handoff doctor` uses for role binaries,
+    # including the Windows `.cmd` shim fallback and repo-relative paths.
+    return doctor_module._role_binary_available(
+        security_reviewer_binary(config, provider),
+        config.repo_root,
+    )
+
+
 def resolve_security_provider(
     config: DispatchConfig,
     *,
     implementer_role: AgentRole,
+    log: LogFn | None = None,
 ) -> tuple[str, str]:
+    """Pick the security reviewer vendor for ``implementer_role``'s work.
+
+    A configured ``audit.security_provider`` wins. Otherwise the first vendor
+    in ``SECURITY_REVIEW_PROVIDER_PREFERENCE`` whose CLI is on PATH and that
+    differs from the implementer's provider is chosen; failing that, the
+    implementer's own vendor when its CLI is on PATH. A reviewer from the
+    implementer's vendor logs a WARN because the review is not independent.
+    Raises ``SecurityReviewerUnavailable`` when no reviewer CLI is installed.
+    """
+    implementer_provider = config.agents[implementer_role].provider
     configured = config.audit.security_provider
     if configured is not None:
-        return configured, "configured"
-    implementer_provider = config.agents[implementer_role].provider
-    for provider in config_module.SECURITY_REVIEW_PROVIDER_PREFERENCE:
-        if provider != implementer_provider:
+        provider, origin = configured, "configured"
+    else:
+        provider, origin = _auto_security_provider(config, implementer_provider)
+    if provider == implementer_provider:
+        _log(
+            log,
+            "WARN",
+            f"Security reviewer provider `{provider}` ({origin}) matches the "
+            f"{implementer_role} implementer provider; the security review is "
+            "not independent. A different vendor is preferred.",
+        )
+    return provider, origin
+
+
+def _auto_security_provider(
+    config: DispatchConfig,
+    implementer_provider: str,
+) -> tuple[str, str]:
+    preference = config_module.SECURITY_REVIEW_PROVIDER_PREFERENCE
+    for provider in preference:
+        if provider != implementer_provider and _reviewer_cli_available(
+            config, provider
+        ):
             return provider, "auto"
-    return config_module.SECURITY_REVIEW_PROVIDER_PREFERENCE[0], "auto"
+    if implementer_provider in preference and _reviewer_cli_available(
+        config, implementer_provider
+    ):
+        return implementer_provider, "auto, same vendor"
+    looked_for = ", ".join(
+        f"{provider} (`{security_reviewer_binary(config, provider)}`)"
+        for provider in preference
+    )
+    raise SecurityReviewerUnavailable(
+        "security_reviewer_failed: no security reviewer CLI was found on PATH "
+        f"(looked for {looked_for}); {_SECURITY_REVIEWER_REMEDY}"
+    )
 
 
 def compute_review_scope(
@@ -821,12 +896,6 @@ def build_security_reviewer_plan(
         binary = (provider_config.binary if provider_config else None) or (
             config_module.GEMINI_BINARY
         )
-        use_api_key_env = (
-            provider_config.use_api_key_env
-            if provider_config is not None
-            and provider_config.use_api_key_env is not None
-            else config.planner_api_key_env_enabled
-        )
         unsafe_bypass = bool(
             provider_config is not None and provider_config.unsafe_bypass
         )
@@ -848,10 +917,7 @@ def build_security_reviewer_plan(
             provider=provider,
             kind="gemini",
             command=tuple(command),
-            env=_build_gemini_env(
-                use_api_key_env=use_api_key_env,
-                agent_config=provider_config,
-            ),
+            env=_gemini_reviewer_env(config, provider_config),
             precheck_command=(binary, "extensions", "list"),
             preflight_error=preflight_error,
         )
@@ -1528,21 +1594,104 @@ def _gemini_reviewer_sandbox_error(config: DispatchConfig) -> str:
     )
 
 
-def security_reviewer_startup_error(config: DispatchConfig) -> str | None:
-    """Return the launch error a configured Gemini security reviewer will hit.
+def _gemini_reviewer_env(
+    config: DispatchConfig,
+    provider_config: AgentConfig | None,
+) -> dict[str, str]:
+    use_api_key_env = (
+        provider_config.use_api_key_env
+        if provider_config is not None and provider_config.use_api_key_env is not None
+        else config.planner_api_key_env_enabled
+    )
+    return _build_gemini_env(
+        use_api_key_env=use_api_key_env,
+        agent_config=provider_config,
+    )
 
-    Checked once at startup so a missing sandbox runtime stops the loop
-    before an implementer cycle runs. Automatic provider selection prefers
-    claude and codex, so only a configured ``gemini`` provider is checked.
-    """
-    if not config.audit.security_enabled or config.audit.security_provider != "gemini":
+
+def _gemini_extension_missing_error(config: DispatchConfig) -> str | None:
+    """Return an error when the Gemini CLI security extension is not installed."""
+    provider_config = _provider_agent_config(config, "gemini")
+    binary = security_reviewer_binary(config, "gemini")
+    try:
+        result = _run_logged_agent_command(
+            "Security reviewer (gemini) extension check",
+            [binary, "extensions", "list"],
+            cwd=config.repo_root,
+            timeout_ms=EXTENSION_CHECK_TIMEOUT_MS,
+            env=_gemini_reviewer_env(config, provider_config),
+            log=None,
+        )
+    except OSError as exc:
+        return (
+            f"security_reviewer_failed: could not run `{binary} extensions "
+            f"list` to check the Gemini CLI security extension: {exc}"
+        )
+    if result.exit_code == 0 and GEMINI_SECURITY_EXTENSION_NAME in result.stdout.lower():
+        return None
+    return (
+        "security_reviewer_failed: security_extension_missing: the Gemini CLI "
+        f"security extension ({GEMINI_SECURITY_EXTENSION_NAME}) is not installed "
+        "in this repository's Gemini CLI; install it with `gemini extensions "
+        f"install {GEMINI_SECURITY_EXTENSION_URL}` or set "
+        "audit.security_provider to another vendor."
+    )
+
+
+def _security_provider_launch_error(
+    config: DispatchConfig,
+    provider: str,
+) -> str | None:
+    if not _reviewer_cli_available(config, provider):
+        binary = security_reviewer_binary(config, provider)
+        return (
+            f"security_reviewer_failed: the {provider} security reviewer CLI "
+            f"`{binary}` was not found on PATH; {_SECURITY_REVIEWER_REMEDY}"
+        )
+    if provider != "gemini":
         return None
     provider_config = _provider_agent_config(config, "gemini")
-    if provider_config is not None and provider_config.unsafe_bypass:
+    # unsafe_bypass launches Gemini CLI with --sandbox=false, so no container
+    # runtime is needed; the extension is still required.
+    unsafe_bypass = provider_config is not None and provider_config.unsafe_bypass
+    if not unsafe_bypass and gemini_provider.detect_gemini_sandbox_runtime() is None:
+        return _gemini_reviewer_sandbox_error(config)
+    return _gemini_extension_missing_error(config)
+
+
+def security_reviewer_startup_error(
+    config: DispatchConfig,
+    *,
+    log: LogFn | None = None,
+) -> str | None:
+    """Return the launch error the security reviewer will hit, if any.
+
+    Checked once at startup so a reviewer that cannot launch stops the loop
+    before an implementer cycle runs. Every provider is covered, configured
+    or chosen automatically, for each implementer role: the binary must be
+    on PATH, and a Gemini reviewer also needs its sandbox runtime (unless
+    the Gemini role sets ``unsafe_bypass``) and the security extension.
+    The returned message starts with ``security_reviewer_failed:``.
+    """
+    if not config.audit.security_enabled:
         return None
-    if gemini_provider.detect_gemini_sandbox_runtime() is not None:
-        return None
-    return _gemini_reviewer_sandbox_error(config)
+    checked: set[str] = set()
+    for implementer_role in _IMPLEMENTER_ROLES:
+        try:
+            provider, _origin = resolve_security_provider(
+                config,
+                implementer_role=implementer_role,
+                log=log,
+            )
+        except SecurityReviewerUnavailable as exc:
+            return str(exc)
+        if provider in checked:
+            continue
+        checked.add(provider)
+        error = _security_provider_launch_error(config, provider)
+        if error is not None:
+            return error
+    return None
 
 
 def _implementer_role(frontmatter: HandoffRouting | None, log: LogFn) -> AgentRole:
@@ -1797,6 +1946,7 @@ __all__ = [
     "ReviewerRun",
     "SECURITY_VERDICT_JSON_SCHEMA",
     "SecurityReviewerPlan",
+    "SecurityReviewerUnavailable",
     "build_quality_fan_out_prompt",
     "build_security_review_prompt",
     "build_security_reviewer_plan",
@@ -1810,6 +1960,8 @@ __all__ = [
     "render_audit_handoff",
     "resolve_security_provider",
     "run_audit_fan_out",
+    "security_reviewer_binary",
+    "security_reviewer_startup_error",
 ]
 
 
