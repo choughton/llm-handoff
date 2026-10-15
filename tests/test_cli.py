@@ -125,6 +125,41 @@ def test_init_dry_run_lists_candidate_commands(tmp_path: Path, capsys) -> None:
     assert not (tmp_path / "AGENTS.md").exists()
 
 
+def test_init_escapes_control_and_surrogate_characters_in_candidates(
+    tmp_path: Path, capsys
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts": {"a\\u001b]0;spoof\\u0007b": "x", '
+        '"c\\u202ed": "x", "test\\ud800": "x"}}',
+        encoding="utf-8",
+    )
+
+    assert main_module.main(["init", str(tmp_path), "--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    output.encode("utf-8")  # strict: a lone surrogate would raise here
+    assert "\x1b" not in output
+    assert "\x07" not in output
+    assert "‮" not in output
+    lines = output.splitlines()
+    assert "  - npm run a\\x1b]0;spoof\\x07b  (from package.json)" in lines
+    assert "  - npm run c\\u202ed  (from package.json)" in lines
+    assert "  - npm run test\\ud800  (from package.json)" in lines
+
+
+def test_init_escapes_control_characters_in_verification_command(
+    tmp_path: Path, capsys
+) -> None:
+    exit_code = main_module.main(
+        ["init", str(tmp_path), "--verification-command", "npm test\x1b[2J"]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "\x1b" not in output
+    assert "Verification command: npm test\\x1b[2J; allowed_tools adds" in output
+
+
 def test_init_reports_when_no_candidates_are_found(tmp_path: Path, capsys) -> None:
     assert main_module.main(["init", str(tmp_path), "--dry-run"]) == 0
 

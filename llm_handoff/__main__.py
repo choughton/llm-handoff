@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 from typing import Sequence
+import unicodedata
 
 import click
 import typer
@@ -246,7 +247,7 @@ def init_command(
         UnknownProviderError,
         InvalidVerificationCommandError,
     ) as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(_terminal_safe(str(exc)), err=True)
         raise typer.Exit(2) from exc
     except InitConflictError as exc:
         typer.echo("Initialization aborted: target files already exist.", err=True)
@@ -279,20 +280,41 @@ def init_command(
     _echo_candidates(result.candidates, result.verification_command)
 
 
+_UNSAFE_TERMINAL_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+
+
+def _terminal_safe(text: str) -> str:
+    """Escape control, format, and surrogate characters for terminal output.
+
+    Detected candidates come from files in the target repository, which may be
+    untrusted. ANSI/OSC sequences or bidi overrides could spoof the output, and
+    a lone surrogate raises UnicodeEncodeError on a strict UTF-8 stream.
+    """
+    return "".join(
+        ch.encode("unicode_escape").decode("ascii")
+        if unicodedata.category(ch) in _UNSAFE_TERMINAL_CATEGORIES
+        else ch
+        for ch in text
+    )
+
+
 def _echo_candidates(
     candidates: tuple[Candidate, ...], verification_command: str | None
 ) -> None:
     if candidates:
         typer.echo(f"Candidate commands: {len(candidates)}")
         for candidate in candidates:
-            typer.echo(f"  - {candidate.command}  (from {candidate.source})")
+            command = _terminal_safe(candidate.command)
+            source = _terminal_safe(candidate.source)
+            typer.echo(f"  - {command}  (from {source})")
     else:
         typer.echo("Candidate commands: none found")
     if verification_command is not None:
         executable = verification_executable(verification_command)
         typer.echo(
-            f"Verification command: {verification_command}; "
-            f"allowed_tools adds Bash({executable}:*) for claude roles"
+            f"Verification command: {_terminal_safe(verification_command)}; "
+            f"allowed_tools adds Bash({_terminal_safe(executable)}:*) "
+            "for claude roles"
         )
     elif candidates:
         typer.echo(
