@@ -251,7 +251,7 @@ security reviewer is independent of both.
 
 | Gate | Setting | What it adds | Details |
 | --- | --- | --- | --- |
-| Work-claim gate | `enforce_work_packet: true` | Before any audit, checks that `scope_sha` is HEAD, the diff stays inside the Work Packet's `Files in scope`, the tree is clean, and the Work Packet's verification command exits 0 | [Work-Claim Gate](CONFIGURATION.md#work-claim-gate) |
+| Work-claim gate | `enforce_work_packet: true` | For `ready_for_review` handoffs from `backend` or `frontend`, checks before the auditor runs that `scope_sha` is HEAD, the diff stays inside the Work Packet's `Files in scope`, the tree is clean, and the Work Packet's verification command exits 0. Handoffs routed to the auditor by other roles are not checked | [Work-Claim Gate](CONFIGURATION.md#work-claim-gate) |
 | Scanners | a `scanners:` list | Runs tools the target repo installs, such as gitleaks, semgrep, bandit, or pip-audit, inside the work-claim gate | [Scanners](CONFIGURATION.md#scanners) |
 | Security reviewer | `audit.reviewers: [quality, security]` | Runs a read-only security reviewer concurrently with the quality auditor on the same commit range | [Audit Fan-Out](CONFIGURATION.md#audit-fan-out) |
 
@@ -270,9 +270,18 @@ audit:
   reviewers: [quality, security]
 ```
 
-A failed check does not advance the loop. The dispatcher rewrites the handoff
-as `status: verified_fail` with the evidence and routes it back to the
-implementer, and the three-fix circuit breaker still applies.
+A failed check does not advance the loop. Where it goes depends on the
+failure:
+
+- A failed scope, tree, scanner, or verification check, or a blocking
+  security finding, rewrites the handoff as `status: verified_fail` with the
+  evidence and routes it back to the implementer. These bounces count toward
+  the three-fix circuit breaker.
+- A missing or unusable Work Packet routes to `planner`, which owns the
+  packet.
+- A scanner command whose placeholders cannot be filled escalates to `user`.
+- A missing, malformed, or timed-out reviewer verdict restores the pre-review
+  handoff and counts as a dispatch failure.
 
 Notes before enabling:
 
