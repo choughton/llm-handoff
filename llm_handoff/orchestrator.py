@@ -46,6 +46,7 @@ from llm_handoff.handoff_normalizer import (
     normalize_handoff_next_agent_text,
     normalize_next_agent,
 )
+from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
     HandoffFrontmatterError,
@@ -545,6 +546,15 @@ def run_loop(
                 previous_cycle = current_cycle
                 consecutive_failures = 0
                 continue
+            if _stop_on_auth_failure(
+                config,
+                role="finalizer",
+                exit_code=int(getattr(ledger_result, "subagent_exit_code", 0)),
+                stdout=ledger_result.stdout,
+                stderr=ledger_result.stderr,
+                log=log_fn,
+            ):
+                return 1
             parse_error = ledger_result.parse_error
             if parse_error:
                 _run_epic_close_validator(config, parse_error, log_fn)
@@ -652,6 +662,15 @@ def run_loop(
                         planner_session_id = dispatch_result.session_id
                     if planner_session_id:
                         planner_previous_handoff_sha = current_cycle.handoff_sha
+            if _stop_on_auth_failure(
+                config,
+                role=current_cycle.route,
+                exit_code=dispatch_result.exit_code,
+                stdout=dispatch_result.stdout,
+                stderr=dispatch_result.stderr,
+                log=log_fn,
+            ):
+                return 1
             if dispatch_result.exit_code != 0:
                 consecutive_failures = _record_failure(
                     config,
@@ -1742,6 +1761,37 @@ def _write_protected_file_escalation(
         encoding="utf-8",
         newline="\n",
     )
+
+
+def _stop_on_auth_failure(
+    config: DispatchConfig,
+    *,
+    role: str,
+    exit_code: int,
+    stdout: str | None,
+    stderr: str | None,
+    log: LogFn,
+) -> bool:
+    """Log how to sign in and return True when a failed run was a sign-in failure.
+
+    A provider CLI that is not signed in fails every retry the same way, so
+    the loop stops instead of spending its failure budget.
+    """
+
+    if exit_code == 0:
+        return False
+    detail = find_auth_failure(stdout, stderr)
+    if detail is None:
+        return False
+    agent_config = config.agents.get(role)  # type: ignore[call-overload]
+    for message in auth_failure_messages(
+        role=role,
+        provider=agent_config.provider if agent_config is not None else None,
+        binary=agent_config.binary if agent_config is not None else None,
+        detail=detail,
+    ):
+        _log(log, "ERROR", message)
+    return True
 
 
 def _record_failure(

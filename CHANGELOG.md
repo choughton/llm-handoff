@@ -59,6 +59,10 @@ This project follows a simple pre-release changelog until the first public tag.
   `frontend`, so every role can run on Claude Code alone.
   `init --provider claude` writes an all-Claude mapping, and `init` picks it
   automatically when `claude` is the only provider CLI on `PATH`.
+- When a provider CLI fails because it is not signed in (for example Claude
+  Code's "OAuth session expired"), the dispatcher now stops at once and logs
+  the sign-in steps for that CLI, instead of retrying until the failure limit.
+  The supervisor recognizes the same sign-in failures.
 
 ## 0.0.0
 
