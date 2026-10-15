@@ -1,32 +1,16 @@
 ---
-next_agent: planner
-reason: "Phase 0 self-hosting bootstrap: scope W0.1 for the backend role."
+next_agent: backend
+reason: "Dispatch W0.1 to backend: decouple the live handoff from template parity so pytest passes while the root HANDOFF.md holds live dispatch state."
 epic_id: SELFHOST-P0
 story_id: W0.1
 story_title: Decouple the live handoff from template parity
 status:
-producer: user
+producer: planner
 ---
 
-# Handoff: Phase 0 self-hosting bootstrap
+# Handoff: Decouple the live handoff from template parity
 
-## Current State
-
-llm-handoff is now developed with its own dispatch loop. A pinned dispatcher
-(a separate clone, detached at `352927d`) runs against this checkout on branch
-`selfhost/phase-1`, with every role on Claude, the work-claim gate on, and the
-security reviewer on.
-
-This first assignment proves that arrangement. While this file holds live
-dispatch state, `tests/test_reference_workflow.py` fails, because it requires
-the root `docs/handoff/HANDOFF.md` to match the template byte for byte. W0.1
-fixes that.
-
-## Requested Assignment
-
-Write a planner assignment that routes W0.1 to `backend` with this Work
-Packet. Copy it as written unless you find a concrete problem with it; if you
-do, route to `user` and name the problem.
+## Work Packet
 
 - **Objective:** `python -m pytest tests -q` passes when the root
   `docs/handoff/HANDOFF.md` holds live dispatch state, while the template
@@ -43,6 +27,12 @@ do, route to `user` and name the problem.
   `COPIED_TEMPLATE_FILES` must still match its template copy.
 - **Verification command:** `python -m pytest tests -q`
 - **Expected next route:** auditor
+
+## Next Step
+
+- **backend:** Make the single-line edit to `COPIED_TEMPLATE_FILES` described
+  above, run `python -m pytest tests -q`, commit locally, then hand back with
+  `## Verification Evidence` and `next_agent: auditor`.
 
 ## Rules For This Run
 
