@@ -1804,3 +1804,300 @@ def test_dispatcher_mode_marker_lookalike_still_requires_sha(tmp_path: Path) -> 
     )
 
     assert "sha_missing: Handoff is missing a git commit SHA." in result.errors
+
+
+# ---------------------------------------------------------------------------
+# W1.11: completion claims checked against Git
+# ---------------------------------------------------------------------------
+
+
+def _completion_handoff(
+    *,
+    producer: str = "backend",
+    status: str = "ready_for_review",
+    next_agent: str = "auditor",
+    scope_sha: str | None = None,
+    close_type: str | None = None,
+    evidence_value: str = "pending-dispatcher-commit",
+    body_sha_line: str = "",
+) -> str:
+    return _with_frontmatter(
+        f"""# {producer} Handback
+
+**Agent:** {producer}
+{body_sha_line}
+## Completed Work
+
+- Completed the scoped change.
+{_verification_evidence(evidence_value)}""",
+        next_agent=next_agent,
+        reason="Completion claim for W1.11 tests.",
+        status=status,
+        scope_sha=scope_sha,
+        close_type=close_type,
+        producer=producer,
+    )
+
+
+def _errors_with_prefix(result, prefix: str) -> list[str]:
+    return [error for error in result.errors if error.startswith(prefix)]
+
+
+@pytest.mark.parametrize("implementer", ["backend", "frontend"])
+@pytest.mark.parametrize("dispatcher_commit_mode", [False, True])
+def test_implementer_ready_for_review_requires_scope_sha(
+    tmp_path: Path,
+    implementer: str,
+    dispatcher_commit_mode: bool,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(
+            producer=implementer,
+            evidence_value="877f54d07d06d033b6b3f6dded924d170e9e2116",
+        ),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        implementer,
+        prior_handoff_sha="0" * 64,
+        dispatcher_commit_mode=dispatcher_commit_mode,
+    )
+
+    assert result.verdict == "NO"
+    missing = _errors_with_prefix(result, "frontmatter_scope_sha_missing:")
+    assert len(missing) == 1
+    assert "ready_for_review" in missing[0]
+
+
+def test_implementer_ready_for_review_with_scope_sha_passes_the_scope_sha_rule(
+    tmp_path: Path,
+) -> None:
+    sha = "877f54d07d06d033b6b3f6dded924d170e9e2116"
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(scope_sha=sha, evidence_value=sha),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert not _errors_with_prefix(result, "frontmatter_scope_sha_missing:")
+
+
+def test_implementer_ready_for_review_with_close_type_reports_scope_sha_once(
+    tmp_path: Path,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(
+            close_type="story",
+            evidence_value="877f54d07d06d033b6b3f6dded924d170e9e2116",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert len(_errors_with_prefix(result, "frontmatter_scope_sha_missing:")) == 1
+
+
+@pytest.mark.parametrize(
+    ("producer", "status", "next_agent"),
+    [
+        ("auditor", "verified_pass", "planner"),
+        ("auditor", "verified_fail", "backend"),
+        ("backend", "blocked_missing_context", "user"),
+    ],
+)
+def test_scope_sha_rule_is_limited_to_implementer_ready_for_review(
+    tmp_path: Path,
+    producer: str,
+    status: str,
+    next_agent: str,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(
+            producer=producer,
+            status=status,
+            next_agent=next_agent,
+            evidence_value="877f54d07d06d033b6b3f6dded924d170e9e2116",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, producer, prior_handoff_sha="0" * 64)
+
+    assert not _errors_with_prefix(result, "frontmatter_scope_sha_missing:")
+
+
+@pytest.mark.parametrize(
+    ("producer", "status", "next_agent"),
+    [
+        ("backend", "ready_for_review", "auditor"),
+        ("auditor", "verified_pass", "planner"),
+        ("auditor", "verified_fail", "backend"),
+    ],
+)
+def test_evidence_sha_that_is_not_a_commit_fails_in_a_git_repo(
+    tmp_path: Path,
+    producer: str,
+    status: str,
+    next_agent: str,
+) -> None:
+    head_sha = _init_git_repo(tmp_path)
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(
+            producer=producer,
+            status=status,
+            next_agent=next_agent,
+            scope_sha=head_sha,
+            evidence_value="f" * 40,
+        ),
+    )
+
+    result = validate_handoff(handoff_path, producer, prior_handoff_sha="0" * 64)
+
+    assert result.verdict == "NO"
+    unknown = _errors_with_prefix(result, "evidence_sha_unknown:")
+    assert len(unknown) == 1
+    assert "f" * 40 in unknown[0]
+
+
+@pytest.mark.parametrize(
+    "evidence_template",
+    ["{sha}", "`{sha}`", "{short} (implementation commit)"],
+)
+def test_evidence_sha_that_resolves_to_a_commit_passes(
+    tmp_path: Path,
+    evidence_template: str,
+) -> None:
+    head_sha = _init_git_repo(tmp_path)
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(
+            scope_sha=head_sha,
+            evidence_value=evidence_template.format(sha=head_sha, short=head_sha[:7]),
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert not _errors_with_prefix(result, "evidence_sha_unknown:")
+    assert not _errors_with_prefix(result, "sha_missing:")
+
+
+def test_evidence_value_without_a_sha_fails_in_a_git_repo(tmp_path: Path) -> None:
+    head_sha = _init_git_repo(tmp_path)
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(scope_sha=head_sha, evidence_value="n/a"),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert len(_errors_with_prefix(result, "evidence_sha_unknown:")) == 1
+
+
+def test_evidence_sha_is_not_checked_outside_a_git_repo(tmp_path: Path) -> None:
+    fake_sha = "f" * 40
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(scope_sha=fake_sha, evidence_value=fake_sha),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert not _errors_with_prefix(result, "evidence_sha_unknown:")
+    assert not _errors_with_prefix(result, "sha_missing:")
+
+
+def test_pending_marker_evidence_is_exempt_in_dispatcher_commit_mode(
+    tmp_path: Path,
+) -> None:
+    head_sha = _init_git_repo(tmp_path)
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(
+            evidence_value="pending-dispatcher-commit (nothing to commit)",
+            body_sha_line=f"**Base:** `{head_sha}`\n",
+        ),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        "backend",
+        prior_handoff_sha="0" * 64,
+        dispatcher_commit_mode=True,
+    )
+
+    assert not _errors_with_prefix(result, "evidence_sha_unknown:")
+    # The dispatcher committed nothing, so every remaining error is one the
+    # orchestrator lets the work-claim gate report instead of repairing.
+    assert result.errors
+    assert all(
+        error.startswith(("frontmatter_scope_sha_missing:", "sha_missing:"))
+        for error in result.errors
+    )
+
+
+def test_pending_marker_evidence_fails_outside_dispatcher_commit_mode(
+    tmp_path: Path,
+) -> None:
+    head_sha = _init_git_repo(tmp_path)
+    handoff_path = _write_handoff(
+        tmp_path,
+        _completion_handoff(scope_sha=head_sha),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert len(_errors_with_prefix(result, "evidence_sha_unknown:")) == 1
+
+
+def test_sha_missing_ignores_hex_tokens_that_are_not_commits(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    fake_sha = "f" * 40
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(
+            status="blocked_implementation_failure",
+            next_agent="user",
+            commit_value=fake_sha,
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert "sha_missing: Handoff is missing a git commit SHA." in result.errors
+
+
+def test_sha_missing_accepts_a_hex_token_that_is_a_commit(tmp_path: Path) -> None:
+    head_sha = _init_git_repo(tmp_path)
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(
+            status="blocked_implementation_failure",
+            next_agent="user",
+            commit_value=f"{'f' * 40} (claimed), {head_sha} (HEAD)",
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert not _errors_with_prefix(result, "sha_missing:")
+
+
+def test_sha_missing_counts_any_hex_token_outside_a_git_repo(tmp_path: Path) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(
+            status="blocked_implementation_failure",
+            next_agent="user",
+            commit_value="f" * 40,
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert not _errors_with_prefix(result, "sha_missing:")

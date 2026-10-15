@@ -25,7 +25,7 @@ from llm_handoff.roles import (
     normalize_next_agent_value,
 )
 from llm_handoff.text_io import read_dispatch_text
-from llm_handoff.work_claim import work_packet_errors
+from llm_handoff.work_claim import evidence_sha_token, work_packet_errors
 
 
 ValidationVerdict = Literal["YES", "NO", "WARNINGS-ONLY"]
@@ -313,6 +313,12 @@ def validate_handoff_text(
             routing_instruction = frontmatter_result.routing_instruction
             frontmatter_valid = not frontmatter_result.errors
             frontmatter_producer = frontmatter.producer
+            errors.extend(
+                _implementer_scope_sha_errors(
+                    frontmatter,
+                    previous_route=previous_route,
+                )
+            )
 
     routing_decision = route_handoff(normalized_content)
     if frontmatter_missing:
@@ -339,7 +345,7 @@ def validate_handoff_text(
                 f"agent_self_loop: {previous_route} handoff routes work back to {routing_instruction}, which would immediately re-dispatch the same agent. Route to a different agent or explicit pause state instead."
             )
 
-    commit_shas = _COMMIT_SHA_RE.findall(normalized_content)
+    commit_shas = _commit_sha_tokens(normalized_content, git_cwd)
     if _requires_commit_sha(previous_route):
         if not commit_shas:
             if dispatcher_commit_mode and _is_blocked_pending_commit_handback(
@@ -365,7 +371,14 @@ def validate_handoff_text(
             routing_instruction=routing_instruction,
         )
     )
-    errors.extend(_evidence_contract_errors(normalized_content, frontmatter))
+    errors.extend(
+        _evidence_contract_errors(
+            normalized_content,
+            frontmatter,
+            git_cwd=git_cwd,
+            dispatcher_commit_mode=dispatcher_commit_mode,
+        )
+    )
     if require_work_packet:
         errors.extend(
             _work_packet_contract_errors(
@@ -448,9 +461,41 @@ def _requires_status(
     return frontmatter.evidence_present is not None
 
 
+def _implementer_scope_sha_errors(
+    frontmatter: HandoffRouting,
+    *,
+    previous_route: str | None,
+) -> list[str]:
+    # An implementer's completion claim must name the commit it claims. The
+    # close_type rule in validate_handoff_frontmatter already reports the
+    # same prefix when close_type is set, so skip that case to avoid a
+    # duplicate. In dispatcher commit mode the dispatcher fills scope_sha
+    # before validation; it stays empty only when nothing was committed, and
+    # the orchestrator then lets the work-claim gate report no_changes.
+    if _frontmatter_status(frontmatter) != HandoffStatus.READY_FOR_REVIEW:
+        return []
+    if frontmatter.scope_sha or frontmatter.close_type is not None:
+        return []
+    producer_route = normalize_next_agent_value(frontmatter.producer)
+    if (
+        previous_route not in _IMPLEMENTER_ROUTES
+        and producer_route not in _IMPLEMENTER_ROUTES
+    ):
+        return []
+    producer = frontmatter.producer or "unknown producer"
+    return [
+        "frontmatter_scope_sha_missing: "
+        f"producer {producer} omitted scope_sha on a ready_for_review handback; "
+        "an implementer claim must name the commit that holds the work."
+    ]
+
+
 def _evidence_contract_errors(
     handoff_content: str,
     frontmatter: HandoffRouting | None,
+    *,
+    git_cwd: Path | None = None,
+    dispatcher_commit_mode: bool = False,
 ) -> list[str]:
     status = _frontmatter_status(frontmatter)
     if status not in COMPLETION_STATUSES:
@@ -480,10 +525,30 @@ def _evidence_contract_errors(
             f"status {status.value} requires populated evidence fields at line {line_number}: {detail}."
         ]
 
-    commit_value = fields["Commit SHA verified"].strip().strip("`")
+    raw_commit_value = fields["Commit SHA verified"].strip()
+    commit_value = raw_commit_value.strip("`")
     if commit_value.upper() == "HEAD":
         return [
             "EVIDENCE_MISSING: Verification Evidence cannot use HEAD as Commit SHA verified."
+        ]
+    if dispatcher_commit_mode and _PENDING_COMMIT_RE.match(raw_commit_value):
+        # The dispatcher replaces the marker when it commits; when it commits
+        # nothing, the work-claim gate reports no_changes instead.
+        return []
+    token = evidence_sha_token(commit_value)
+    if token is None:
+        if not _git_repo_available(git_cwd):
+            return []
+        return [
+            "evidence_sha_unknown: "
+            f"Commit SHA verified `{_clip(commit_value)}` names no commit SHA; "
+            "write the 7-40 character SHA of the verified commit."
+        ]
+    if _git_commit_exists(token, git_cwd) is False:
+        return [
+            "evidence_sha_unknown: "
+            f"Commit SHA verified `{token}` does not resolve to a commit in this "
+            "repository."
         ]
     return []
 
@@ -645,16 +710,19 @@ def _work_packet_coverage_warnings(block: tuple[int, str]) -> list[str]:
     return warnings
 
 
-def _git_commit_exists(sha: str, cwd: Path | None) -> bool | None:
+def _git_repo_available(cwd: Path | None) -> bool:
     if cwd is None:
-        return None
-
+        return False
     rev_parse = subprocess.run(
         ["git", "-C", str(cwd), "rev-parse", "--is-inside-work-tree"],
         capture_output=True,
         text=True,
     )
-    if rev_parse.returncode != 0:
+    return rev_parse.returncode == 0
+
+
+def _git_commit_exists(sha: str, cwd: Path | None) -> bool | None:
+    if not _git_repo_available(cwd):
         return None
 
     completed = subprocess.run(
@@ -663,6 +731,40 @@ def _git_commit_exists(sha: str, cwd: Path | None) -> bool | None:
         text=True,
     )
     return completed.returncode == 0
+
+
+def _commit_sha_tokens(handoff_content: str, cwd: Path | None) -> list[str]:
+    """Return the hex tokens in the handoff that name commits.
+
+    Outside a git repository every 7-40 character hex token counts, because
+    there is nothing to resolve them against.
+    """
+
+    tokens = list(dict.fromkeys(_COMMIT_SHA_RE.findall(handoff_content)))
+    if not tokens or not _git_repo_available(cwd):
+        return tokens
+    completed = subprocess.run(
+        ["git", "-C", str(cwd), "cat-file", "--batch-check"],
+        input="".join(f"{token}^{{commit}}\n" for token in tokens),
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return tokens
+    lines = completed.stdout.splitlines()
+    if len(lines) != len(tokens):
+        return tokens
+    # A resolved object prints "<sha> commit <size>"; anything else (missing,
+    # ambiguous, or a non-commit) does not name a commit.
+    return [
+        token
+        for token, line in zip(tokens, lines)
+        if line.split(" ")[1:2] == ["commit"]
+    ]
+
+
+def _clip(value: str, limit: int = 80) -> str:
+    return value if len(value) <= limit else value[: limit - 3] + "..."
 
 
 def _requires_commit_sha(previous_route: str | None) -> bool:

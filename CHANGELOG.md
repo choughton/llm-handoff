@@ -6,6 +6,25 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: completion claims are now checked against Git.
+  Post-dispatch validation fails a `ready_for_review` handback from `backend`
+  or `frontend` that has no frontmatter `scope_sha`
+  (`frontmatter_scope_sha_missing:`); before, only `close_type` required it.
+  When status is `ready_for_review`, `verified_pass`, or `verified_fail`, a
+  Verification Evidence `Commit SHA verified` value that does not name a
+  commit in the repository fails `evidence_sha_unknown:`. In dispatcher commit
+  mode the `pending-dispatcher-commit` marker is exempt. The `sha_missing`
+  check now counts only hex tokens that resolve to commits. Outside a Git
+  repository neither check resolves anything: `evidence_sha_unknown` is not
+  reported and `sha_missing` counts any hex token, as before. The work-claim
+  gate adds `evidence_sha_mismatch`, which fails a claim whose
+  `Commit SHA verified` does not resolve to the same commit as `scope_sha` or
+  to a handoff-only commit above it, and it now applies `no_changes` in both
+  commit modes, not only in dispatcher commit mode: a claim whose commits
+  since dispatch change no file other than the handoff fails. Both gate
+  failures bounce to the implementer as `verified_fail`. The HANDBOOK now says
+  verification-only work belongs with the auditor.
+
 - Behavior change: the audit now runs the security reviewer next to the
   quality reviewer by default (`audit.reviewers` defaults to
   `[quality, security]`). Opting out takes `audit.reviewers: [quality]` plus a

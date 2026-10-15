@@ -6,8 +6,13 @@ planner's ``## Work Packet`` before it spends an auditor session:
 
 - the packet must parse (``work_packet_missing`` / ``work_packet_unparseable``);
 - ``scope_sha`` must be the current HEAD (``scope_sha_not_head``);
+- the Verification Evidence ``Commit SHA verified`` value must resolve to
+  ``scope_sha`` or to a handoff-only commit above it
+  (``evidence_sha_mismatch``);
 - every file changed since dispatch must stay inside ``Files in scope`` and
   outside ``Files out of bounds`` (``scope_violation``);
+- some file other than the handoff must have changed in commits since
+  dispatch (``no_changes``);
 - the working tree must not hold new uncommitted changes
   (``uncommitted_changes``);
 - configured scanners must exit 0 (``scanner_failed:<name>``,
@@ -59,6 +64,7 @@ SCANNER_MISSING_PREFIX = "scanner_missing"
 SCANNER_TIMEOUT_PREFIX = "scanner_timeout"
 SCANNER_CONFIG_INVALID_PREFIX = "scanner_config_invalid"
 NO_CHANGES_PREFIX = "no_changes"
+EVIDENCE_SHA_MISMATCH_PREFIX = "evidence_sha_mismatch"
 
 WORK_PACKET_ERROR_PREFIXES = frozenset(
     {WORK_PACKET_MISSING_PREFIX, WORK_PACKET_UNPARSEABLE_PREFIX}
@@ -78,6 +84,7 @@ WORK_CLAIM_ERROR_PREFIXES = frozenset(
         SCANNER_TIMEOUT_PREFIX,
         SCANNER_CONFIG_INVALID_PREFIX,
         NO_CHANGES_PREFIX,
+        EVIDENCE_SHA_MISMATCH_PREFIX,
     }
 )
 # POSIX sh and cmd.exe exit codes for "command not found".
@@ -116,6 +123,17 @@ _WRAPPED_PATH_FIELDS = frozenset({"files_in_scope", "files_out_of_bounds"})
 # A Verification command line that is only a connective joins two commands in
 # prose; it is not a command.
 _PROSE_COMMAND_RE = re.compile(r"(?i)^(?:and|or|then|plus|also)[,.;:]?$")
+# Only the top-level ``## Verification Evidence`` section counts; a bounce
+# demotes the headings of older handbacks under ``## Prior Handback``.
+_VERIFICATION_EVIDENCE_HEADING_RE = re.compile(
+    r"(?im)^##[ \t]+Verification Evidence[ \t]*$"
+)
+_ANY_HEADING_RE = re.compile(r"(?m)^#{1,6}[ \t]+")
+_EVIDENCE_COMMIT_FIELD_RE = re.compile(
+    r"(?im)^-[ \t]+\*\*Commit SHA verified:\*\*[ \t]*(.*)$"
+)
+_SHA_TOKEN_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
+_EVIDENCE_VALUE_DETAIL_CHARS = 80
 
 _FIELD_ALIASES = {
     "objective": "objective",
@@ -809,6 +827,36 @@ def head_equivalent_commits(
     return tuple(commits)
 
 
+def evidence_commit_value(handoff_content: str) -> str | None:
+    """Return the ``Commit SHA verified`` value from ``## Verification Evidence``.
+
+    None means the section or the field is missing. Fenced code is not
+    special-cased; the field is a single bullet line.
+    """
+
+    normalized = handoff_content.lstrip("﻿").replace("\r\n", "\n")
+    heading = _VERIFICATION_EVIDENCE_HEADING_RE.search(normalized)
+    if heading is None:
+        return None
+    next_heading = _ANY_HEADING_RE.search(normalized, heading.end())
+    end = next_heading.start() if next_heading is not None else len(normalized)
+    field = _EVIDENCE_COMMIT_FIELD_RE.search(normalized, heading.end(), end)
+    if field is None:
+        return None
+    return field.group(1).strip()
+
+
+def evidence_sha_token(value: str) -> str | None:
+    """Return the first 7-40 character hex token in an evidence value.
+
+    Agents often annotate the SHA, as in ``abc1234 (implementation commit)``,
+    so the first hex token is the SHA the claim names.
+    """
+
+    match = _SHA_TOKEN_RE.search(value)
+    return match.group(0) if match is not None else None
+
+
 # ---------------------------------------------------------------------------
 # Verification command execution
 # ---------------------------------------------------------------------------
@@ -1237,6 +1285,19 @@ def verify_work_claim(
     if scope_error is not None:
         errors.append(scope_error)
 
+    if resolved_scope_sha is not None:
+        evidence_check, evidence_error = _evidence_sha_check(
+            repo_root,
+            claim_content=claim_content,
+            scope_sha=scope_sha or resolved_scope_sha,
+            resolved_scope_sha=resolved_scope_sha,
+            handoff_rel_path=handoff_rel_path,
+        )
+        if evidence_check is not None:
+            checks.append(evidence_check)
+        if evidence_error is not None:
+            errors.append(evidence_error)
+
     if changed_files is None:
         detail = (
             f"git diff {_short(pre_dispatch_head)}..{_short(head_sha)} failed; "
@@ -1441,6 +1502,61 @@ def _scope_sha_check(
     return WorkClaimCheck("scope_sha", "PASS", detail), None, resolved
 
 
+def _evidence_sha_check(
+    repo_root: Path,
+    *,
+    claim_content: str,
+    scope_sha: str,
+    resolved_scope_sha: str,
+    handoff_rel_path: str,
+) -> tuple[WorkClaimCheck | None, str | None]:
+    """Check that the evidence names the same commit as ``scope_sha``.
+
+    The evidence may also name a commit above ``scope_sha`` when every commit
+    in between touches only the handoff, the same allowance the scope_sha
+    check makes for HEAD. Like ``new_commit``, the check is recorded only when
+    it fails.
+    """
+
+    value = evidence_commit_value(claim_content)
+    remedy = (
+        f"Commit SHA verified must name scope_sha `{scope_sha}` "
+        f"({_short(resolved_scope_sha)})."
+    )
+    if not value:
+        detail = (
+            "the claim has no Commit SHA verified value under "
+            f"## Verification Evidence; {remedy}"
+        )
+    else:
+        shown = value
+        if len(shown) > _EVIDENCE_VALUE_DETAIL_CHARS:
+            shown = shown[: _EVIDENCE_VALUE_DETAIL_CHARS - 3] + "..."
+        token = evidence_sha_token(value)
+        resolved = git_resolve_commit(repo_root, token) if token else None
+        if token is None:
+            detail = f"Commit SHA verified `{shown}` names no commit SHA; {remedy}"
+        elif resolved is None:
+            detail = (
+                f"Commit SHA verified `{token}` does not resolve to a commit; "
+                f"{remedy}"
+            )
+        elif resolved_scope_sha in head_equivalent_commits(
+            repo_root, resolved, handoff_rel_path
+        ):
+            return None, None
+        else:
+            detail = (
+                f"Commit SHA verified `{token}` resolves to {_short(resolved)}, "
+                f"but scope_sha resolves to {_short(resolved_scope_sha)}; the "
+                "evidence must name the commit the claim points at."
+            )
+    return (
+        WorkClaimCheck("evidence_sha", "FAIL", detail),
+        f"{EVIDENCE_SHA_MISMATCH_PREFIX}: {detail}",
+    )
+
+
 def _diff_scope_check(
     packet: WorkPacket,
     changed_files: tuple[str, ...],
@@ -1606,8 +1722,8 @@ def _verification_check(
 def bounce_route_for(result: WorkClaimResult, *, implementer: str) -> BounceRoute:
     """Decide who receives a failed claim.
 
-    Scope, SHA, worktree, scanner, and verification failures go back to the
-    implementer as ``verified_fail``. A missing or unusable Work Packet is the
+    Scope, SHA, evidence SHA, no-change, worktree, scanner, and verification
+    failures go back to the implementer as ``verified_fail``. A missing or unusable Work Packet is the
     planner's artifact, so that bounce routes to ``planner``. So does a
     Verification command that failed again, as the only failed check, on a
     claim that committed nothing since the previous bounce: the implementer
@@ -1912,6 +2028,8 @@ __all__ = [
     "capture_implementer_leftovers",
     "carry_over_key",
     "capture_pre_dispatch_state",
+    "evidence_commit_value",
+    "evidence_sha_token",
     "extract_work_packet_section",
     "parse_work_packet",
     "path_is_in_scope",
