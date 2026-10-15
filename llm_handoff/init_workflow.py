@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import shutil
 import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+
+import yaml
+
+from llm_handoff.config import CLAUDE_DEFAULT_ALLOWED_TOOLS
+from llm_handoff.stack_detect import Candidate, detect_candidates
 
 REFERENCE_TEMPLATE = "reference-workflow"
 _PACKAGE_NAME = "llm_handoff"
@@ -137,6 +144,12 @@ _CLAUDE_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available.\n"
     "  security_provider: claude\n"
 )
+# The executable of a confirmed verification command becomes one
+# `Bash(<exe>:*)` rule, so it must be a bare program name: no path separators,
+# shell operators, quotes, or whitespace.
+_EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_AGENT_ROLE_RE = re.compile(r"^  ([A-Za-z_][A-Za-z0-9_-]*):\s*$")
+_AGENT_FIELD_RE = re.compile(r"^    (provider|binary):\s*(\S+)\s*$")
 
 
 @dataclass(frozen=True)
@@ -151,6 +164,8 @@ class InitResult:
     provider_mapping: str = REFERENCE_MAPPING
     detected_providers: tuple[str, ...] = ()
     merged: tuple[Path, ...] = ()
+    candidates: tuple[Candidate, ...] = ()
+    verification_command: str | None = None
 
 
 class InitWorkflowError(RuntimeError):
@@ -172,6 +187,16 @@ class UnknownProviderError(InitWorkflowError):
             f"Available mappings: {', '.join(PROVIDER_MAPPINGS)}."
         )
         self.provider = provider
+
+
+class InvalidVerificationCommandError(InitWorkflowError):
+    def __init__(self, command: str, token: str | None, detail: str) -> None:
+        super().__init__(
+            f"Invalid --verification-command {command!r}: {detail} "
+            f"(rejected token: {token!r})."
+        )
+        self.command = command
+        self.token = token
 
 
 class InitConflictError(InitWorkflowError):
@@ -243,11 +268,134 @@ def render_config(template_text: str, mapping: str) -> str:
     )
 
 
-def _source_bytes(relative_path: Path, mapping: str) -> bytes:
+def verification_executable(command: str) -> str:
+    """Return the executable of a confirmed verification command.
+
+    Raises InvalidVerificationCommandError for an empty command, a command
+    `shlex` cannot split, or a first token that is not a bare program name.
+    """
+
+    try:
+        tokens = shlex.split(command)
+    except ValueError as exc:
+        raise InvalidVerificationCommandError(
+            command, command, f"cannot split the command ({exc})"
+        ) from exc
+    if not tokens:
+        raise InvalidVerificationCommandError(command, command, "the command is empty")
+    executable = tokens[0]
+    if not _EXECUTABLE_RE.fullmatch(executable):
+        raise InvalidVerificationCommandError(
+            command,
+            executable,
+            "the executable must be a bare program name matching "
+            f"{_EXECUTABLE_RE.pattern} (no path separators or shell operators)",
+        )
+    return executable
+
+
+def verification_allowed_tools(executable: str) -> tuple[str, ...]:
+    """Return the Claude allowed_tools list that also allows ``executable``."""
+
+    rule = f"Bash({executable}:*)"
+    if rule in CLAUDE_DEFAULT_ALLOWED_TOOLS:
+        return CLAUDE_DEFAULT_ALLOWED_TOOLS
+    return (*CLAUDE_DEFAULT_ALLOWED_TOOLS, rule)
+
+
+def _line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    return ""
+
+
+def add_verification_allowed_tools(config_text: str, executable: str) -> str:
+    """Give every claude role in the `agents:` block an allowed_tools list.
+
+    The list is inserted after each claude role's `binary:` line. Lines
+    outside the `agents:` block and non-claude roles are left unchanged.
+    """
+
+    tools = verification_allowed_tools(executable)
+    output: list[str] = []
+    in_agents = False
+    provider: str | None = None
+    inserted: set[str] = set()
+    role: str | None = None
+    for line in config_text.splitlines(keepends=True):
+        output.append(line)
+        body = line.rstrip("\r\n")
+        if not in_agents:
+            if body.rstrip() == "agents:":
+                in_agents = True
+            continue
+        if body.strip() and body[0] not in " \t#":
+            in_agents = False
+            continue
+        role_match = _AGENT_ROLE_RE.match(body)
+        if role_match:
+            role = role_match.group(1)
+            provider = None
+            continue
+        field_match = _AGENT_FIELD_RE.match(body)
+        if field_match is None or role is None:
+            continue
+        key, value = field_match.groups()
+        if key == "provider":
+            provider = value
+        elif provider == "claude" and role not in inserted:
+            newline = _line_ending(line) or "\n"
+            if not _line_ending(line):
+                output[-1] = line + newline
+            output.append(f"    allowed_tools:{newline}")
+            output.extend(f"      - {rule}{newline}" for rule in tools)
+            inserted.add(role)
+    rendered = "".join(output)
+    _check_allowed_tools(rendered, tools)
+    return rendered
+
+
+def _check_allowed_tools(rendered: str, tools: tuple[str, ...]) -> None:
+    try:
+        data = yaml.safe_load(rendered)
+    except yaml.YAMLError as exc:
+        raise InitWorkflowError(
+            "Rendered dispatch_config.yaml is not valid YAML."
+        ) from exc
+    agents = data.get("agents") if isinstance(data, dict) else None
+    if not isinstance(agents, dict):
+        raise InitWorkflowError("Template dispatch_config.yaml has no agents block.")
+    for name, agent in agents.items():
+        if not isinstance(agent, dict):
+            continue
+        expected = list(tools) if agent.get("provider") == "claude" else None
+        if agent.get("allowed_tools") != expected:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has the expected "
+                f"provider/binary lines for role {name!r}; cannot add "
+                "allowed_tools for the verification command."
+            )
+
+
+def _config_is_rendered(mapping: str, executable: str | None) -> bool:
+    return mapping != REFERENCE_MAPPING or executable is not None
+
+
+def _source_bytes(
+    relative_path: Path, mapping: str, executable: str | None = None
+) -> bytes:
     source_path = _TEMPLATE_ROOT / relative_path
-    if relative_path == _CONFIG_PATH and mapping != REFERENCE_MAPPING:
-        text = source_path.read_text(encoding="utf-8")
-        return render_config(text, mapping).encode("utf-8")
+    if relative_path == _CONFIG_PATH and _config_is_rendered(mapping, executable):
+        if mapping == REFERENCE_MAPPING:
+            # Keep the template's bytes, line endings included.
+            text = source_path.read_bytes().decode("utf-8")
+        else:
+            text = render_config(source_path.read_text(encoding="utf-8"), mapping)
+        if executable is not None:
+            text = add_verification_allowed_tools(text, executable)
+        return text.encode("utf-8")
     return source_path.read_bytes()
 
 
@@ -361,18 +509,27 @@ def init_reference_workflow(
     force: bool = False,
     provider: str | None = None,
     available_providers: Iterable[str] | None = None,
+    verification_command: str | None = None,
 ) -> InitResult:
     if template != REFERENCE_TEMPLATE:
         raise UnknownTemplateError(template)
     if not _TEMPLATE_ROOT.is_dir():
         raise InitWorkflowError(f"Template directory not found: {_TEMPLATE_ROOT}")
 
+    executable = (
+        None
+        if verification_command is None
+        else verification_executable(verification_command)
+    )
     detected = tuple(
         detect_provider_clis() if available_providers is None else available_providers
     )
     mapping = resolve_provider_mapping(provider, detected)
 
     target_root = target_root.expanduser().resolve()
+    # Detect before anything is copied, so the template never shows up as a
+    # candidate source.
+    candidates = detect_candidates(target_root)
     copied: list[Path] = []
     skipped: list[Path] = []
     conflicts: list[Path] = []
@@ -381,7 +538,7 @@ def init_reference_workflow(
 
     for relative_path in template_files():
         target_path = target_root / relative_path
-        source = _source_bytes(relative_path, mapping)
+        source = _source_bytes(relative_path, mapping, executable)
         managed = relative_path in _TEXT_MARKERS or relative_path == _SETTINGS_PATH
         if _has_linked_destination(target_root, relative_path) or target_path.is_dir():
             conflicts.append(relative_path)
@@ -412,7 +569,7 @@ def init_reference_workflow(
         if force:
             copied.append(relative_path)
             continue
-        if target_path.read_bytes() == _source_bytes(relative_path, mapping):
+        if target_path.read_bytes() == source:
             skipped.append(relative_path)
             continue
         conflicts.append(relative_path)
@@ -428,6 +585,8 @@ def init_reference_workflow(
         provider_mapping=mapping,
         detected_providers=detected,
         merged=tuple(merged),
+        candidates=candidates,
+        verification_command=verification_command,
     )
 
     if conflicts and not dry_run:
@@ -442,8 +601,8 @@ def init_reference_workflow(
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if relative_path in planned:
             target_path.write_bytes(planned[relative_path])
-        elif relative_path == _CONFIG_PATH and mapping != REFERENCE_MAPPING:
-            target_path.write_bytes(_source_bytes(relative_path, mapping))
+        elif relative_path == _CONFIG_PATH and _config_is_rendered(mapping, executable):
+            target_path.write_bytes(_source_bytes(relative_path, mapping, executable))
         else:
             shutil.copy2(source_path, target_path)
 

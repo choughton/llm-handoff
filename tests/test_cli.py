@@ -100,6 +100,74 @@ def test_init_command_provider_claude_writes_all_claude_mapping(
     assert "provider: codex" not in text
 
 
+def _node_fixture(root: Path) -> None:
+    (root / "package.json").write_text(
+        '{"scripts": {"test": "jest", "build": "tsc"}}', encoding="utf-8"
+    )
+
+
+def test_init_dry_run_lists_candidate_commands(tmp_path: Path, capsys) -> None:
+    _node_fixture(tmp_path)
+
+    assert main_module.main(["init", str(tmp_path), "--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    lines = output.splitlines()
+    assert "Candidate commands: 2" in lines
+    assert "  - npm run test  (from package.json)" in lines
+    assert "  - npm run build  (from package.json)" in lines
+    no_command = (
+        "No verification command selected; rerun with "
+        '--verification-command "<cmd>" to allow its executable.'
+    )
+    assert no_command in lines
+    assert lines.index(no_command) > lines.index("Candidate commands: 2")
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_init_reports_when_no_candidates_are_found(tmp_path: Path, capsys) -> None:
+    assert main_module.main(["init", str(tmp_path), "--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Candidate commands: none found" in output
+    assert "No verification command selected" not in output
+
+
+def test_init_verification_command_adds_the_executable(
+    tmp_path: Path, capsys
+) -> None:
+    _node_fixture(tmp_path)
+
+    exit_code = main_module.main(
+        ["init", str(tmp_path), "--verification-command", "npm test"]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert (
+        "Verification command: npm test; allowed_tools adds Bash(npm:*) "
+        "for claude roles"
+    ) in output
+    assert "No verification command selected" not in output
+    assert "Bash(npm:*)" in (tmp_path / "dispatch_config.yaml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_init_rejects_an_invalid_verification_command(
+    tmp_path: Path, capsys
+) -> None:
+    exit_code = main_module.main(
+        ["init", str(tmp_path), "--verification-command", "./x.sh"]
+    )
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "./x.sh" in captured.err
+    assert "Invalid --verification-command" in captured.err
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
 def test_init_command_rejects_unknown_provider(tmp_path: Path, capsys) -> None:
     exit_code = main_module.main(["init", str(tmp_path), "--provider", "openai"])
 

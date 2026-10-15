@@ -24,11 +24,14 @@ from llm_handoff.doctor import run_doctor
 from llm_handoff.init_workflow import (
     REFERENCE_MAPPING,
     InitConflictError,
+    InvalidVerificationCommandError,
     UnknownProviderError,
     UnknownTemplateError,
     init_reference_workflow,
+    verification_executable,
 )
 from llm_handoff.logging_util import DispatchLogger
+from llm_handoff.stack_detect import Candidate
 from llm_handoff.orchestrator import run_loop
 
 _WINDOWS = os.name == "nt"
@@ -219,6 +222,14 @@ def init_command(
             "PATH, otherwise the reference mapping."
         ),
     ),
+    verification_command: str | None = typer.Option(
+        None,
+        "--verification-command",
+        help=(
+            "Confirmed verification command; its executable is added to "
+            "Claude roles' allowed_tools."
+        ),
+    ),
 ) -> None:
     _configure_stdio_encoding()
     try:
@@ -228,8 +239,13 @@ def init_command(
             dry_run=dry_run,
             force=force,
             provider=provider,
+            verification_command=verification_command,
         )
-    except (UnknownTemplateError, UnknownProviderError) as exc:
+    except (
+        UnknownTemplateError,
+        UnknownProviderError,
+        InvalidVerificationCommandError,
+    ) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
     except InitConflictError as exc:
@@ -260,6 +276,29 @@ def init_command(
             typer.echo(
                 "Review conflicts; --force only overwrites non-managed files."
             )
+    _echo_candidates(result.candidates, result.verification_command)
+
+
+def _echo_candidates(
+    candidates: tuple[Candidate, ...], verification_command: str | None
+) -> None:
+    if candidates:
+        typer.echo(f"Candidate commands: {len(candidates)}")
+        for candidate in candidates:
+            typer.echo(f"  - {candidate.command}  (from {candidate.source})")
+    else:
+        typer.echo("Candidate commands: none found")
+    if verification_command is not None:
+        executable = verification_executable(verification_command)
+        typer.echo(
+            f"Verification command: {verification_command}; "
+            f"allowed_tools adds Bash({executable}:*) for claude roles"
+        )
+    elif candidates:
+        typer.echo(
+            "No verification command selected; rerun with "
+            '--verification-command "<cmd>" to allow its executable.'
+        )
 
 
 @app.command("doctor")

@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff init` now prints candidate build and verification commands it
+  finds in the target repository (CI workflow `run:` steps, `package.json`
+  scripts, pytest in `pyproject.toml`, `Makefile` test targets, Cargo, and
+  Go), each with its source file. It runs none of them. The new
+  `--verification-command "<cmd>"` option confirms one: its executable must be
+  a bare program name, and `init` adds `Bash(<executable>:*)` to the
+  `allowed_tools` of every Claude role in `dispatch_config.yaml`. Without the
+  option the written config is unchanged.
+
 - The work-claim gate's story base now survives a dispatcher restart in the
   `merge-commit` and `pr` publish modes. The base was kept only in memory, so
   after a restart mid-story it became the current HEAD. A re-claim with nothing
