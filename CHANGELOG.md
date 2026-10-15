@@ -55,6 +55,10 @@ This project follows a simple pre-release changelog until the first public tag.
   auto-approves `exit_plan_mode` and continues in YOLO mode. With
   `audit.security_provider: gemini`, `run` refuses to start without Docker or
   Podman unless the Gemini role sets `unsafe_bypass: true`.
+- The reference workflow ships Claude subagents for `planner`, `backend`, and
+  `frontend`, so every role can run on Claude Code alone.
+  `init --provider claude` writes an all-Claude mapping, and `init` picks it
+  automatically when `claude` is the only provider CLI on `PATH`.
 
 ## 0.0.0
 

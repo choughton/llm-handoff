@@ -59,3 +59,25 @@ def test_init_command_reports_conflicts(
     captured = capsys.readouterr()
     assert "Initialization aborted" in captured.err
     assert "AGENTS.md" in captured.err
+
+
+def test_init_command_provider_claude_writes_all_claude_mapping(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    exit_code = main_module.main(["init", str(tmp_path), "--provider", "claude"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Provider mapping: all roles on claude" in output
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "provider: gemini" not in text
+    assert "provider: codex" not in text
+
+
+def test_init_command_rejects_unknown_provider(tmp_path: Path, capsys) -> None:
+    exit_code = main_module.main(["init", str(tmp_path), "--provider", "openai"])
+
+    assert exit_code == 2
+    assert "Unknown provider mapping" in capsys.readouterr().err
+    assert not (tmp_path / "AGENTS.md").exists()

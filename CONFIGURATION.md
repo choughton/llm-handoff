@@ -444,6 +444,31 @@ agents:
     resume: true
 ```
 
+### All-Claude Mapping
+
+The reference workflow ships a Claude subagent for every role, so a machine
+with only Claude Code installed can run the whole loop:
+
+| Role | Claude subagent |
+| --- | --- |
+| `planner` | `.claude/agents/planner.md` |
+| `backend` | `.claude/agents/backend.md` |
+| `frontend` | `.claude/agents/frontend.md` |
+| `auditor` | `.claude/agents/auditor.md` |
+| `validator` | `.claude/agents/handoff-validator.md` |
+| `finalizer` | `.claude/agents/ledger-updater.md` |
+
+`llm-handoff init --provider claude` writes this mapping into
+`dispatch_config.yaml`, with every role on `provider: claude` and
+`audit.security_provider: claude`. Without `--provider`, `init` writes it
+automatically when `claude` is the only provider CLI on `PATH`, and keeps the
+reference mapping otherwise. `init` prints the mapping it chose and the
+provider CLIs it found.
+
+With every role on Claude, an enabled security reviewer runs on the same
+vendor as the implementer, so it is a second read-only review rather than an
+independent one.
+
 ## Provider Fields
 
 Common fields:
