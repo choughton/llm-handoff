@@ -875,6 +875,9 @@ def _wait_for_reviewers(
     )
     if error is not None:
         return _stop(log, error)
+    # Answering saved the findings it deferred; a later save in this round
+    # must keep them.
+    state = _load_state(repo_root) or state
     if state.review_rounds >= review.max_rounds:
         # The correction rounds are used up. Each Codex review of a fix finds
         # new edge cases, so the dispatcher does not wait for another one: it

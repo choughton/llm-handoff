@@ -1024,6 +1024,71 @@ def _settle(repo: Path, gh: list[str], log, handoff: str) -> PublishOutcome:
     )
 
 
+def test_a_deferral_survives_the_next_review_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    two_rounds = ReviewGate(reviewers=("codex",), timeout_seconds=600, max_rounds=2)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    _entries, log = _logs()
+    assert _publish_with_review(repo, gh, log, gate=two_rounds).handoff is not None
+
+    # Round 1: the implementer defers finding 1, and Codex's review of the
+    # new commit reports a different finding.
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Tidy the widget")
+    second = _git(repo, "rev-parse", "HEAD")
+    new_finding = {
+        **_codex_finding(second),
+        "id": 5000,
+        "body": "**P2 Name the widget**\n\nWIDGET needs a docstring.",
+    }
+    _set_api(
+        tmp_path, comments=[_codex_summary(second)], review_comments=[new_finding]
+    )
+    _set_threads(
+        tmp_path,
+        {"id": "T1", "isResolved": False, "comment_id": 4279958834},
+        {"id": "T2", "isResolved": False, "comment_id": 5000},
+    )
+    save_review_responses(
+        repo,
+        f"## Review Responses\n\n### Finding 1: `src/widget.py:1`\n{DEFERRED_RESPONSE}\n",
+    )
+
+    outcome = _publish_with_review(repo, gh, log, gate=two_rounds)
+
+    assert outcome.handoff is not None and "WIDGET needs a docstring." in outcome.handoff
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["review_rounds"] == 2
+    assert [f["comment_id"] for f in state["open_findings"]] == [5000]
+    assert [f["comment_id"] for f in state["deferred_findings"]] == [4279958834]
+
+    # Round 2: the implementer fixes the new finding. Only the deferred
+    # thread is left, so the planner gets it instead of a pause.
+    (repo / "src" / "widget.py").write_text('"""Widget."""\nWIDGET = 2\n', encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Name the widget")
+    save_review_responses(
+        repo,
+        "## Review Responses\n\n### Finding 1: `src/widget.py:1`\nAdded a docstring.\n",
+    )
+
+    outcome = _publish_with_review(repo, gh, log, gate=two_rounds)
+
+    assert outcome.stop is False and route(outcome.handoff).route == "planner"
+    assert "WIDGET can be unset." in outcome.handoff
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
 def test_a_planner_follow_up_resolves_the_thread_and_merges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
