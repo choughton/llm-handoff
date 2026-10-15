@@ -87,9 +87,15 @@ def _normalize_next_agent_with_claude_cli(
     # Launch the CLI inside the target repo so project-level Claude settings
     # come from the repo being dispatched, not the dispatcher's own checkout.
     cwd = str(repo_root) if repo_root is not None else os.getcwd()
+    # The prompt carries raw next_agent text from HANDOFF.md and the call
+    # needs no tools, so deny every tool instead of bypassing permissions.
+    from llm_handoff.agent_providers.claude import claude_permission_args
+
     command = [
         _resolve_command_binary(config.CLAUDE_BINARY),
-        config.CLAUDE_PERMISSIONS_FLAG,
+        *claude_permission_args(
+            config.AgentConfig(provider="claude", allowed_tools=())
+        ),
         "--model",
         model,
         "--output-format",

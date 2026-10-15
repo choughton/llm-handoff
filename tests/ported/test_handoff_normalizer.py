@@ -147,6 +147,14 @@ def test_normalize_next_agent_uses_claude_cli_oauth_without_sdk_credentials(
     assert "claude-haiku-4-5" in command
     assert "--json-schema" in command
     assert "--bare" not in command
+    assert "--dangerously-skip-permissions" not in command
+    assert "--allowedTools" not in command
+    assert command[1:5] == [
+        "--permission-mode",
+        "dontAsk",
+        "--disallowedTools",
+        "WebFetch,WebSearch",
+    ]
     assert isinstance(kwargs["env"], dict)
     assert "ANTHROPIC_API_KEY" not in kwargs["env"]
     assert "ANTHROPIC_AUTH_TOKEN" not in kwargs["env"]
