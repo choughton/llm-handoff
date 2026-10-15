@@ -139,6 +139,10 @@ This project follows a simple pre-release changelog until the first public tag.
   through `--append-system-prompt` and a Shell Commands section in each role
   file, so subagents see it too. A command the allowlist refuses is logged as
   a one-line WARN instead of a red ERROR carrying the full refusal text.
+- A blocked implementer handback in dispatcher commit mode may now add a
+  note after the `pending-dispatcher-commit` marker (for example
+  `pending-dispatcher-commit (nothing to commit)`); it still gets the
+  `sha_pending` warning instead of the `sha_missing` error.
 - When Codex runs out of code review usage, the review gate now says so
   when it stops: the bot's usage-limit comment on the pull request marks the
   review as failed (even before the summary flips to Failed), and the pause
