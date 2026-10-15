@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Fixed a work-claim loop that prose in a Work Packet caused. A
+  `Verification command` line that is only a connective (`and`, `or`, `then`,
+  `plus`, `also`) or that ends in `:` is now `work_packet_unparseable`, so the
+  planner's post-dispatch validation rejects it. Before, the gate ran it as a
+  command. A claim whose Verification command fails again with the same command
+  as the previous bounce, with no other failed check and no new commit changing
+  a file other than the handoff, now bounces to the planner instead of the
+  implementer. The gate runs the packet from the assignment, so the
+  implementer could not fix it.
+
 - A pull request review response that starts with `Deferred:` now keeps its
   finding's review thread open. The dispatcher still posts the reply, logs a
   `WARN` naming the deferred finding, and does not resolve the thread, so the

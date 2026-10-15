@@ -2087,6 +2087,181 @@ def test_verify_work_claim_routes_a_path_in_both_lists_to_the_planner(
     assert bounce_route_for(result, implementer="backend").next_agent == "planner"
 
 
+@pytest.mark.parametrize(
+    ("command_lines", "prose"),
+    [
+        # Replays the W1.7d self-host loop: a bare `and` between two commands.
+        (
+            (
+                "\n  `python -m pytest tests/test_app.py -q`\n  and\n"
+                "  `python -m pytest tests -q`"
+            ),
+            "`and`",
+        ),
+        ("\n  - python -m pytest -q\n  - Then,\n  - ruff check .", "`Then,`"),
+        (
+            "Run both of these:\n  - python -m pytest -q\n  - ruff check .",
+            "`Run both of these:`",
+        ),
+    ],
+)
+def test_parse_work_packet_rejects_prose_lines_in_verification_command(
+    command_lines: str, prose: str
+) -> None:
+    assignment = _assignment(command_lines)
+
+    with pytest.raises(WorkPacketError) as exc_info:
+        parse_work_packet(assignment)
+
+    assert exc_info.value.prefix == "work_packet_unparseable"
+    assert (
+        f"Verification command has lines that are not commands: {prose}"
+        in exc_info.value.detail
+    )
+    # The planner's post-dispatch gate reads the same parser.
+    validation = validate_handoff_text(assignment, "planner", require_work_packet=True)
+    assert validation.verdict == "NO"
+    assert any(
+        error.startswith("work_packet_unparseable:") and prose in error
+        for error in validation.errors
+    )
+
+
+def test_parse_work_packet_keeps_commands_that_contain_connectives() -> None:
+    packet = parse_work_packet(
+        _assignment(
+            '\n  - python -m pytest -k "parse and not slow" -q\n'
+            "  - git diff --check && echo or"
+        )
+    )
+
+    assert packet.verification_commands == (
+        'python -m pytest -k "parse and not slow" -q',
+        "git diff --check && echo or",
+    )
+
+
+def _bounce_for(tmp_path: Path, claim: str, result) -> str:
+    bounce = build_bounce_handoff(
+        claim_content=claim,
+        result=result,
+        implementer="backend",
+        route=bounce_route_for(result, implementer="backend"),
+        bounce_count=1,
+    )
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, bounce)
+    return bounce
+
+
+def test_verify_work_claim_routes_a_repeated_verification_failure_to_the_planner(
+    tmp_path: Path,
+) -> None:
+    # Replays the W1.7d self-host loop: the implementer could only rewrite its
+    # copy of the packet in the handoff, so the same command failed again.
+    assignment = _assignment(FAIL_COMMAND)
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    first = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+    assert first.repeated_verification_failure is False
+    assert bounce_route_for(first, implementer="backend").next_agent == "backend"
+    bounce = _bounce_for(tmp_path, _claim(head), first)
+
+    retry_state = capture_pre_dispatch_state(tmp_path)
+    claim = _claim(head)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, claim)
+    second = _verify(tmp_path, assignment=bounce, claim=claim, state=retry_state)
+
+    assert second.failed_prefixes == ("verification_failed",)
+    assert second.repeated_verification_failure is True
+    bounce_route = bounce_route_for(second, implementer="backend")
+    assert bounce_route.next_agent == "planner"
+    assert bounce_route.status == "verified_fail"
+    second_bounce = build_bounce_handoff(
+        claim_content=claim,
+        result=second,
+        implementer="backend",
+        route=bounce_route,
+        bounce_count=2,
+    )
+    assert route(second_bounce).route == "planner"
+    assert f"The Verification command `{FAIL_COMMAND}` failed again" in second_bounce
+    assert "did not carry a usable `## Work Packet`" not in second_bounce
+    assert parse_work_packet(second_bounce).verification_commands == (FAIL_COMMAND,)
+
+
+def test_verify_work_claim_returns_a_repeated_failure_with_new_work_to_the_implementer(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment(FAIL_COMMAND)
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    first = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+    bounce = _bounce_for(tmp_path, _claim(head), first)
+
+    retry_state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 3\n")
+    retry_head = _commit_paths(tmp_path, "try again", "src/app.py")
+    second = _verify(
+        tmp_path, assignment=bounce, claim=_claim(retry_head), state=retry_state
+    )
+
+    assert second.failed_prefixes == ("verification_failed",)
+    assert second.repeated_verification_failure is False
+    assert bounce_route_for(second, implementer="backend").next_agent == "backend"
+
+
+def test_verify_work_claim_returns_a_repeated_failure_with_uncommitted_work_to_the_implementer(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment(FAIL_COMMAND)
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    first = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+    bounce = _bounce_for(tmp_path, _claim(head), first)
+
+    retry_state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 3\n")
+    claim = _claim(head)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, claim)
+    second = _verify(tmp_path, assignment=bounce, claim=claim, state=retry_state)
+
+    assert second.failed_prefixes == ("uncommitted_changes", "verification_failed")
+    assert second.repeated_verification_failure is False
+    assert bounce_route_for(second, implementer="backend").next_agent == "backend"
+
+
+def test_verify_work_claim_returns_a_different_failing_command_to_the_implementer(
+    tmp_path: Path,
+) -> None:
+    other_fail = FAIL_COMMAND.replace("sys.exit(3)", "sys.exit(4)")
+    assignment = _assignment(FAIL_COMMAND)
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    first = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+    bounce = _bounce_for(tmp_path, _claim(head), first).replace(
+        f"- **Verification command:** {FAIL_COMMAND}",
+        f"- **Verification command:** {other_fail}",
+    )
+    assert parse_work_packet(bounce).verification_commands == (other_fail,)
+
+    retry_state = capture_pre_dispatch_state(tmp_path)
+    claim = _claim(head)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, claim)
+    second = _verify(tmp_path, assignment=bounce, claim=claim, state=retry_state)
+
+    assert second.failed_prefixes == ("verification_failed",)
+    assert second.repeated_verification_failure is False
+    assert bounce_route_for(second, implementer="backend").next_agent == "backend"
+
+
 def test_dispatcher_commit_includes_in_scope_files_inside_out_of_bounds_directories(
     tmp_path: Path,
 ) -> None:
