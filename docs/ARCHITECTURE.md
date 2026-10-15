@@ -239,7 +239,7 @@ Before every dispatch (role dispatches, finalizer, validator runs, and the
 handoff repair lane) the orchestrator hashes every file that matches
 `protected_paths` and records `HEAD`. After the dispatch it compares the
 hashes and lists protected files changed in any new commits, so a change that
-was committed and then reverted on disk still counts. Nested repositories and
+was committed and then reverted, on disk or by a later commit, still counts. Nested repositories and
 worktrees inside a protected directory are skipped. The handoff file itself is
 never protected.
 

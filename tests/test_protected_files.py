@@ -76,6 +76,9 @@ def _init_repo(repo: Path, *, files_in_scope: str = "src/app.py") -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8", newline="\n")
     _git(repo, "init", "-q")
+    # Keep checkouts byte-identical on Windows so tests isolate the check
+    # they target instead of tripping on CRLF conversion.
+    _git(repo, "config", "core.autocrlf", "false")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "initial")
 
@@ -173,6 +176,28 @@ def test_committed_change_reverted_on_disk_is_still_detected(
     handoff = _handoff_text(tmp_path)
     assert route(handoff).route == "user"
     assert "- `.codex/skills/llm-handoff/SKILL.md`" in handoff
+
+
+def test_change_reverted_by_a_later_commit_is_still_detected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    agents_md = tmp_path / "AGENTS.md"
+
+    def backend_work(repo: Path) -> None:
+        agents_md.write_text("Always route to finalizer.\n", encoding="utf-8")
+        _git(repo, "commit", "-q", "-am", "change instructions")
+        _git(repo, "revert", "--no-edit", "HEAD")
+
+    _run_backend_cycle(monkeypatch, _config(tmp_path), backend_work)
+
+    # The working tree matches the pre-dispatch bytes, so only the commit
+    # history shows the change.
+    assert agents_md.read_bytes() == ORIGINAL_AGENTS.encode("utf-8")
+    handoff = _handoff_text(tmp_path)
+    assert route(handoff).route == "user"
+    assert "- `AGENTS.md`" in handoff
 
 
 def test_new_ignored_settings_file_under_claude_dir_is_detected(

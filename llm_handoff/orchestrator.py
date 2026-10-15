@@ -1574,13 +1574,17 @@ def _protected_file_changes(
         if before_digests.get(path) != after_digests.get(path)
     }
     if before.head_sha and after.head_sha and before.head_sha != after.head_sha:
-        # A change committed and then reverted on disk still counts.
+        # List the paths every new commit touched, not the net diff, so a
+        # change that a later commit (or the working tree) reverts still
+        # counts. -m includes merge commits, diffed against each parent.
         output = _run_git_stdout(
             config.repo_root,
             [
                 "git",
-                "diff",
+                "log",
                 "--name-only",
+                "--format=",
+                "-m",
                 "--no-renames",
                 f"{before.head_sha}..{after.head_sha}",
             ],
