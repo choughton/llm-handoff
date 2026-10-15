@@ -651,6 +651,84 @@ def test_doctor_fails_outside_git_repository(
         check.status == "FAIL" and check.name == "git repository"
         for check in report.checks
     )
+    assert not any(check.name == "git history" for check in report.checks)
+    assert "git history" not in "\n".join(report.lines())
+
+
+def _git_history_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if " git history:" in line]
+
+
+def test_doctor_warns_on_a_repository_with_no_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, commit=False)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _git_history_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith("WARN git history:")
+    assert "no commits" in lines[0]
+    assert "commit before the first dispatcher run" in lines[0]
+
+
+def test_doctor_warns_on_a_repository_with_one_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _git_history_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith("WARN git history:")
+    assert "one commit" in lines[0]
+    assert "audit review base" in lines[0]
+
+
+def test_doctor_passes_git_history_with_two_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "second")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _git_history_lines(output) == [
+        "PASS git history: repository has at least two commits"
+    ]
+
+
+def test_doctor_warns_when_commits_cannot_be_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_run_git = doctor._run_git
+
+    def fake_run_git(
+        repo_root: Path, *args: str
+    ) -> subprocess.CompletedProcess[str] | None:
+        if args[:1] == ("rev-list",):
+            return None
+        return real_run_git(repo_root, *args)
+
+    repo = _make_repo(tmp_path, NO_GEMINI)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    monkeypatch.setattr(doctor, "_run_git", fake_run_git)
+
+    report = doctor.run_doctor(repo_root=repo)
+
+    history = [check for check in report.checks if check.name == "git history"]
+    assert [(check.status, check.message) for check in history] == [
+        ("WARN", "could not count commits")
+    ]
+    assert report.exit_code == 0
 
 
 def test_doctor_reports_unloadable_explicit_config(

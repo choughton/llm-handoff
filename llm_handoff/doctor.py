@@ -1,6 +1,7 @@
 """Standalone preflight checks for `llm-handoff doctor`.
 
 The doctor command checks a checkout before the dispatcher runs: Git, the
+commit count (audits need a parent commit for the default review base), the
 provider CLI binaries the configured roles launch, the container runtime
 Gemini CLI roles need for their sandbox, whether the configured next-agent
 normalizer has an API key or CLI to run with, whether the audit runs the
@@ -211,6 +212,7 @@ def _check_git_repository(repo_root: Path, checks: list[DoctorCheck]) -> None:
             f"inside Git work tree {toplevel.stdout.strip()}",
         )
     )
+    _check_git_history(repo_root, checks)
 
     # --no-optional-locks keeps `git status` from refreshing the index, so the
     # doctor does not write into .git.
@@ -231,6 +233,59 @@ def _check_git_repository(repo_root: Path, checks: list[DoctorCheck]) -> None:
         )
     else:
         checks.append(DoctorCheck("PASS", "git working tree", "working tree is clean"))
+
+
+def _check_git_history(repo_root: Path, checks: list[DoctorCheck]) -> None:
+    """Warn when the repository has fewer than two commits.
+
+    Audit fan-out reviews ``<head>~1..<head>`` when no explicit base is given,
+    and that parent does not exist in a repository with one commit. The
+    check only reads history with ``rev-list``; it never writes into .git.
+    """
+    result = _run_git(repo_root, "rev-list", "--count", "--max-count=2", "HEAD")
+    if result is None:
+        checks.append(DoctorCheck("WARN", "git history", "could not count commits"))
+        return
+    if result.returncode != 0:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                "git history",
+                "repository has no commits yet; commit before the first "
+                "dispatcher run",
+            )
+        )
+        return
+    try:
+        count = int(result.stdout.strip())
+    except ValueError:
+        checks.append(DoctorCheck("WARN", "git history", "could not count commits"))
+        return
+    if count >= 2:
+        checks.append(
+            DoctorCheck(
+                "PASS", "git history", "repository has at least two commits"
+            )
+        )
+    elif count == 1:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                "git history",
+                "repository has one commit; the audit review base defaults to "
+                "the parent of the reviewed commit, so audits need a second "
+                "commit (or an explicit base) first",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                "git history",
+                "repository has no commits yet; commit before the first "
+                "dispatcher run",
+            )
+        )
 
 
 def _run_git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str] | None:

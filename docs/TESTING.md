@@ -13,7 +13,7 @@ the focused public-default tests.
 Current full-suite result on Windows:
 
 ```text
-736 passed
+1344 passed, 18 skipped
 ```
 
 One test, `test_timed_out_cmd_shim_child_is_killed_with_its_tree` in
@@ -39,6 +39,30 @@ Tests must never launch a real provider CLI (`claude`, `codex`, `gemini`,
 sign-in. An autouse fixture in `tests/conftest.py` fails any test that tries.
 Stub the agent call instead (for example `orchestrator.invoke_support_role`),
 or put a fake executable under the test's temporary directory.
+
+## Integration Tests
+
+`tests/integration/` checks that the installed command works on repositories
+unrelated to `llm-handoff`. Each test builds the wheel and installs it into a
+temporary directory, offline (`--no-index`, `--no-build-isolation`, so
+`hatchling` from `requirements-dev.txt` must be installed). It then runs
+`python -P -m llm_handoff` from a directory outside the checkout against a
+throwaway Node repository (existing `AGENTS.md` and `.claude/settings.json`)
+and a throwaway Go repository with one commit.
+
+Each repository is run twice, once with only a fake `claude` and once with
+only a fake `codex` on a controlled `PATH`. The fakes print a version and
+exit, so no real provider CLI or network is used. The tests check that
+`init` writes the single-provider mapping, keeps existing content, and is
+idempotent; that `doctor` and `--dry-run` pass; and that nothing outside
+`init`'s writes changes.
+
+The tests carry the `integration` marker and also run in the full gate. Run
+them alone with:
+
+```bash
+python -m pytest tests/integration -q -m integration
+```
 
 ## Local Hooks
 
