@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
+import queue
 import sys
 import time
 from typing import Any
@@ -60,6 +62,50 @@ def test_idle_timeout_resets_while_the_process_keeps_writing(
     assert result.exit_code == 0
     assert result.stdout.splitlines() == [f"line {i}" for i in range(8)]
     assert "timed out" not in result.stderr
+
+
+def test_idle_timeout_counts_output_written_without_a_newline(
+    tmp_path: Path,
+) -> None:
+    # Token streams and progress output flush partial lines; they are
+    # activity even though no complete line arrives for about 2 seconds.
+    result = agent_process._run_command_streaming(
+        _python_command(
+            "import sys, time\n"
+            "for i in range(8):\n"
+            "    sys.stdout.write(f'tok{i} ')\n"
+            "    sys.stdout.flush()\n"
+            "    time.sleep(0.25)\n"
+        ),
+        cwd=tmp_path,
+        timeout_ms=60_000,
+        idle_timeout_ms=1_000,
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "".join(f"tok{i} " for i in range(8))
+    assert "timed out" not in result.stderr
+
+
+def test_reader_queues_the_same_lines_as_text_mode_readline() -> None:
+    data = "one\r\ntwo\rthree\nnon-ascii é\npartial".encode("utf-8")
+    expected = list(
+        iter(io.TextIOWrapper(io.BytesIO(data), encoding="utf-8").readline, "")
+    )
+    stream_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+    agent_process._read_process_stream(
+        io.TextIOWrapper(
+            io.BufferedReader(io.BytesIO(data)),
+            encoding="utf-8",
+            errors="replace",
+        ),
+        "stdout",
+        stream_queue,
+    )
+
+    chunks = [chunk for _, chunk in stream_queue.queue if chunk is not None]
+    assert chunks == expected == ["one\n", "two\n", "three\n", "non-ascii é\n", "partial"]
 
 
 def test_without_idle_timeout_a_silent_process_runs_to_completion(
