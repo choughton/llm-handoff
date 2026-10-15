@@ -139,8 +139,8 @@ The dispatcher should name and isolate failure modes rather than guessing:
 - malformed validator output;
 - malformed close/finalizer output;
 - work-claim gate failure (opt-in): missing or unparseable Work Packet,
-  `scope_sha` not at HEAD, scope violation, uncommitted changes, or a failed
-  verification command.
+  `scope_sha` not at HEAD, scope violation, uncommitted changes, a failed,
+  missing, or timed-out configured scanner, or a failed verification command.
 
 When a failure mode is detected, the safe default is to pause or dispatch a
 validator role with a scoped prompt.
@@ -179,10 +179,22 @@ for a `status: ready_for_review` handoff from `backend` or `frontend`:
    uncommitted changes outside the handoff file are `uncommitted_changes`,
    because the verification command runs against the working tree and the
    claim must be reproducible from `scope_sha`.
-4. Run the `Verification command` through the shell in `repo_root`, bounded
+4. Run the configured `scanners` (for example gitleaks, semgrep, bandit, and
+   pip-audit) in config order, each through the shell in `repo_root` with its
+   own `timeout_ms`, with `{diff_range}`, `{changed_files}`,
+   `{changed_py_files}`, and `{repo_root}` substituted from the values the
+   earlier checks already computed. Scanners run only when steps 2 and 3
+   passed, and every scanner runs even after one fails so a single bounce
+   carries every finding. A non-zero exit is `scanner_failed:<name>`, a
+   timeout is `scanner_timeout:<name>`, and a missing executable is
+   `scanner_missing:<name>` for a required scanner or a WARN-level skip for an
+   optional one. A command whose placeholders cannot be filled is
+   `scanner_config_invalid:<name>`, rejected at config load. The list is
+   empty by default.
+5. Run the `Verification command` through the shell in `repo_root`, bounded
    by `work_packet_verification_timeout_seconds`. A non-zero exit or a timeout
    is `verification_failed`. The command, exit code, and a bounded output tail
-   go to the dispatch log.
+   go to the dispatch log, as do scanner output tails.
 
 Each check has its own error prefix so repair and recovery code can key on it.
 On any failure the dispatcher does not dispatch the auditor. It rewrites
@@ -191,9 +203,10 @@ quoted `reason` naming the failed checks, a `## Dispatcher Verification`
 section with the evidence, the original `## Work Packet` carried forward
 verbatim, and the implementer's handback preserved under `## Prior Handback`.
 The bounce goes through `record_status_transition`, so the three-fix circuit
-breaker counts it. Scope, SHA, worktree, and verification failures route back
-to the same implementer. A missing or unusable Work Packet routes to `planner`,
-which owns that artifact. Unreadable Git state escalates to `user`.
+breaker counts it. Scope, SHA, worktree, scanner, and verification failures
+route back to the same implementer. A missing or unusable Work Packet routes
+to `planner`, which owns that artifact. Unreadable Git state and a scanner
+command that cannot be rendered escalate to `user`.
 
 Running the Work Packet's verification command is execution of agent-written
 text. The dispatcher already launches the implementer with provider
@@ -202,6 +215,13 @@ could have run that command themselves; the gate adds no new exposure. It does
 mean the dispatcher process, not a provider CLI, runs the command, so keep
 `repo_root` pointed at a repository whose handoff files you trust (see
 `SECURITY.md`).
+
+Scanner commands sit on the other side of that boundary. They come from
+`dispatch_config.yaml`, which the operator writes, so they are trusted
+operator-authored input rather than agent-written text. The dispatcher still
+does not sandbox them: a scanner runs with the same permissions as the
+dispatcher and as the agents it launches, in the same repository, and the only
+limits are its `timeout_ms` and the process-tree kill on timeout.
 
 ## Dispatch Lock
 

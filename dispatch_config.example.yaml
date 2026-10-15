@@ -19,6 +19,32 @@ planner_api_key_env: false
 enforce_work_packet: false
 work_packet_verification_timeout_seconds: 600
 
+# Operator-configured scanners that the work-claim gate runs after the scope
+# checks pass and before the Work Packet verification command. They only run
+# while enforce_work_packet is true. Each tool must already be installed in the
+# target repository's environment; llm-handoff does not bundle them.
+# Placeholders: {diff_range} = <pre-dispatch HEAD>..<scope_sha>,
+# {changed_files} and {changed_py_files} = shell-quoted changed paths,
+# {repo_root} = shell-quoted repository root. Double literal braces.
+scanners:
+  - name: gitleaks
+    command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}
+    timeout_ms: 300000
+    required: true
+  - name: semgrep
+    command: semgrep scan --config auto --error --quiet {changed_files}
+    timeout_ms: 300000
+    required: true
+  - name: bandit
+    command: bandit -q {changed_py_files}
+    timeout_ms: 120000
+    required: true
+  - name: pip-audit
+    # Dependency audits are not diff-shaped, so this one runs unscoped.
+    command: pip-audit --strict
+    timeout_ms: 300000
+    required: false
+
 agents:
   planner:
     provider: gemini

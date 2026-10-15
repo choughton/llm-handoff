@@ -1525,6 +1525,7 @@ def _run_work_claim_gate(
         claim_content=claim_content,
         pre_dispatch_state=pre_dispatch_state,
         verification_timeout_seconds=config.work_packet_verification_timeout_seconds,
+        scanners=config.scanners,
     )
     _log_work_claim_result(result, log)
     if result.passed:
@@ -1579,6 +1580,17 @@ def _log_work_claim_result(result: WorkClaimResult, log: LogFn) -> None:
     )
     for check in result.checks:
         _log(log, "INFO", f"work-claim: {check.outcome} {check.name}: {check.detail}")
+    for scanner_run in result.scanner_runs:
+        if scanner_run.missing and not scanner_run.required:
+            _log(
+                log,
+                "WARN",
+                f"work-claim: optional scanner {scanner_run.name} skipped: "
+                f"{scanner_run.detail}",
+            )
+        if scanner_run.run is not None:
+            for line in scanner_run.run.output_tail_lines():
+                _log(log, "INFO", f"work-claim | {scanner_run.name} | {line}")
     for run in result.verification_runs:
         _log(
             log,
@@ -1981,6 +1993,17 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         if config.enforce_work_packet
         else "Work-claim gate:    OFF (enforce_work_packet: false)",
     )
+    if config.scanners:
+        scanner_names = ", ".join(scanner.name for scanner in config.scanners)
+        if config.enforce_work_packet:
+            _log(log, "INFO", f"Scanners:           {scanner_names}")
+        else:
+            _log(
+                log,
+                "WARN",
+                f"Scanners configured ({scanner_names}) but enforce_work_packet is "
+                "false; they will not run.",
+            )
     _log(log, "INFO", "Finalizer route:    ON")
     _log(log, "INFO", "Chaining:           NONE (single dispatch per cycle)")
     _log(log, "INFO", f"Frontend agent:     {frontend_mode}")

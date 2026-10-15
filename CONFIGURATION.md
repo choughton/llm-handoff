@@ -145,6 +145,84 @@ the way you review any agent-written instruction. The command is bounded by
 timeout, and the command, exit code, and a bounded output tail are written to
 the dispatch log.
 
+### Scanners
+
+The gate can also run operator-configured scanners before the verification
+command. The list is empty by default, so nothing changes until you add
+entries, and scanners only run while `enforce_work_packet` is `true`. Each
+entry names a tool the target repository has installed; `llm-handoff` does not
+bundle or install any of them.
+
+```yaml
+enforce_work_packet: true
+scanners:
+  - name: gitleaks
+    command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}
+    timeout_ms: 300000
+    required: true
+  - name: semgrep
+    command: semgrep scan --config auto --error --quiet {changed_files}
+    timeout_ms: 300000
+    required: true
+  - name: bandit
+    command: bandit -q {changed_py_files}
+    timeout_ms: 120000
+    required: true
+  - name: pip-audit
+    command: pip-audit --strict
+    timeout_ms: 300000
+    required: false
+```
+
+On gitleaks releases before 8.19 use
+`gitleaks detect --source {repo_root} --log-opts="{diff_range}"` instead of the
+`git` subcommand. `semgrep --config auto` and `pip-audit` need network access.
+
+Fields:
+
+- `name`: label used in log lines and error prefixes; letters, digits, `.`,
+  `_`, and `-`, unique within the config.
+- `command`: shell text run in `repo_root` after placeholder substitution.
+- `timeout_ms`: per-scanner bound, default `300000`; the process tree is
+  killed on timeout.
+- `required`: default `true`, so a missing executable fails the claim. With
+  `false`, a missing executable is logged at WARN level and the scanner is
+  skipped.
+
+Placeholders:
+
+| Placeholder | Value |
+| --- | --- |
+| `{diff_range}` | `<pre-dispatch HEAD>..<scope_sha>`, ready for `git log` or `git diff` options |
+| `{changed_files}` | space-separated, shell-quoted repository-relative paths changed in that range that still exist |
+| `{changed_py_files}` | the `.py` subset of `{changed_files}` |
+| `{repo_root}` | the shell-quoted absolute repository root |
+
+Scope gitleaks, semgrep, and bandit to the diff or the changed files as shown.
+Run pip-audit unscoped, because a dependency audit is not diff-shaped. Literal
+braces in a command must be doubled (`{{` and `}}`). A command that references
+an unknown placeholder fails config load with `scanner_config_invalid:<name>`.
+A scanner whose command references `{changed_files}` or `{changed_py_files}`
+is skipped with an INFO log line when that list is empty for the claim.
+
+Scanners run only after the `scope_sha`, diff-scope, and working-tree checks
+pass; there is no value in scanning out-of-bounds work. They run in config
+order before the verification command, and every scanner runs even after one
+fails, so a single bounce reports every finding:
+
+| Outcome | Error prefix | Effect |
+| --- | --- | --- |
+| non-zero exit | `scanner_failed:<name>` | claim bounces to the implementer with a bounded output tail |
+| executable not found, `required: true` | `scanner_missing:<name>` | claim bounces to the implementer |
+| executable not found, `required: false` | none | WARN log line, scanner skipped |
+| timeout | `scanner_timeout:<name>` | process tree killed, claim bounces to the implementer |
+| placeholder cannot be filled | `scanner_config_invalid:<name>` | rejected at config load; if it reaches runtime the claim escalates to `user` |
+
+Scanner commands are operator-authored configuration, so they are trusted
+operator input, unlike the Work Packet verification command, which is
+agent-written. The dispatcher does not sandbox scanners any more than it
+sandboxes agents.
+
 ## Supervised Dispatch
 
 The optional supervisor wrapper is configured through command-line options, not

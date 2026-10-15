@@ -15,6 +15,10 @@ auto_push: false
 # text executed in repo_root; see CONFIGURATION.md.
 enforce_work_packet: false
 work_packet_verification_timeout_seconds: 600
+# Optional scanners for the work-claim gate (gitleaks, semgrep, bandit,
+# pip-audit, or any tool the target repo installs). See CONFIGURATION.md for
+# the copyable example and the placeholder list.
+scanners: []
 
 agents:
   planner:

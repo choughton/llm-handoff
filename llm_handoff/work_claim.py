@@ -10,21 +10,27 @@ planner's ``## Work Packet`` before it spends an auditor session:
   outside ``Files out of bounds`` (``scope_violation``);
 - the working tree must not hold new uncommitted changes
   (``uncommitted_changes``);
+- configured scanners must exit 0 (``scanner_failed:<name>``,
+  ``scanner_missing:<name>``, ``scanner_timeout:<name>``);
 - the ``Verification command`` must exit 0 (``verification_failed``).
 
 Each failed check is a distinct error prefix so the orchestrator and recovery
 machinery can key on it. Running the verification command executes text the
-planner wrote; see ``docs/ARCHITECTURE.md`` for the trust boundary.
+planner wrote; scanner commands are operator-authored config. See
+``docs/ARCHITECTURE.md`` for the trust boundary.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import fnmatch
 import json
 import os
 from pathlib import Path
 import re
+import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -32,6 +38,7 @@ from typing import Literal
 
 import yaml
 
+from llm_handoff.config import ScannerConfig, scanner_command_placeholders
 from llm_handoff.router import (
     HandoffFrontmatterError,
     HandoffRouting,
@@ -46,10 +53,15 @@ SCOPE_VIOLATION_PREFIX = "scope_violation"
 UNCOMMITTED_CHANGES_PREFIX = "uncommitted_changes"
 VERIFICATION_FAILED_PREFIX = "verification_failed"
 GIT_STATE_UNAVAILABLE_PREFIX = "git_state_unavailable"
+SCANNER_FAILED_PREFIX = "scanner_failed"
+SCANNER_MISSING_PREFIX = "scanner_missing"
+SCANNER_TIMEOUT_PREFIX = "scanner_timeout"
+SCANNER_CONFIG_INVALID_PREFIX = "scanner_config_invalid"
 
 WORK_PACKET_ERROR_PREFIXES = frozenset(
     {WORK_PACKET_MISSING_PREFIX, WORK_PACKET_UNPARSEABLE_PREFIX}
 )
+# Scanner prefixes carry the scanner name after a colon: ``scanner_failed:<name>``.
 WORK_CLAIM_ERROR_PREFIXES = frozenset(
     {
         WORK_PACKET_MISSING_PREFIX,
@@ -59,8 +71,15 @@ WORK_CLAIM_ERROR_PREFIXES = frozenset(
         UNCOMMITTED_CHANGES_PREFIX,
         VERIFICATION_FAILED_PREFIX,
         GIT_STATE_UNAVAILABLE_PREFIX,
+        SCANNER_FAILED_PREFIX,
+        SCANNER_MISSING_PREFIX,
+        SCANNER_TIMEOUT_PREFIX,
+        SCANNER_CONFIG_INVALID_PREFIX,
     }
 )
+# POSIX sh and cmd.exe exit codes for "command not found".
+_MISSING_EXECUTABLE_EXIT_CODES = frozenset({127, 9009})
+_SHELL_SYNTAX_CHARS = frozenset("=&|;<>$()`")
 
 DISPATCHER_VERIFICATION_HEADING = "## Dispatcher Verification"
 WORK_PACKET_HEADING = "## Work Packet"
@@ -121,12 +140,14 @@ class PreDispatchState:
 
 
 @dataclass(frozen=True)
-class VerificationRun:
+class CommandRun:
+    """One shell command run by the gate: a verification command or a scanner."""
+
     command: str
     exit_code: int | None
     elapsed_seconds: float
     output_tail: str
-    timeout_seconds: int
+    timeout_seconds: float
     timed_out: bool = False
     failure_detail: str | None = None
 
@@ -140,7 +161,7 @@ class VerificationRun:
         if self.failure_detail is not None:
             return self.failure_detail
         if self.timed_out:
-            return f"timed out after {self.timeout_seconds}s"
+            return f"timed out after {self.timeout_seconds:g}s"
         return f"exited {self.exit_code} after {self.elapsed_seconds:.1f}s"
 
     def output_tail_lines(
@@ -151,6 +172,41 @@ class VerificationRun:
             line.rstrip() for line in self.output_tail.splitlines() if line.strip()
         ]
         return lines[-limit:]
+
+
+VerificationRun = CommandRun
+
+
+@dataclass(frozen=True)
+class ScannerContext:
+    """Values available to scanner command placeholders for one claim."""
+
+    repo_root: Path
+    diff_range: str
+    changed_files: tuple[str, ...]
+    changed_py_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RenderedScannerCommand:
+    command: str | None
+    empty_placeholder: str | None = None
+
+
+class ScannerCommandError(ValueError):
+    """Raised when a scanner command cannot be rendered for this claim."""
+
+
+@dataclass(frozen=True)
+class ScannerRun:
+    name: str
+    command: str
+    outcome: CheckOutcome
+    detail: str
+    run: CommandRun | None = None
+    required: bool = True
+    missing: bool = False
+    skipped: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,9 +224,10 @@ class WorkClaimResult:
     head_sha: str | None
     scope_sha: str | None
     changed_files: tuple[str, ...]
-    verification_runs: tuple[VerificationRun, ...]
+    verification_runs: tuple[CommandRun, ...]
     work_packet: WorkPacket | None
     work_packet_text: str | None
+    scanner_runs: tuple[ScannerRun, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -178,7 +235,9 @@ class WorkClaimResult:
 
     @property
     def failed_prefixes(self) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(error.split(":", 1)[0] for error in self.errors))
+        # Errors are ``<prefix>: <detail>``; scanner prefixes embed the scanner
+        # name (``scanner_failed:<name>``), so split on the first ": ".
+        return tuple(dict.fromkeys(error.split(": ", 1)[0] for error in self.errors))
 
 
 @dataclass(frozen=True)
@@ -491,18 +550,18 @@ def head_equivalent_commits(
 # ---------------------------------------------------------------------------
 
 
-def run_verification_command(
+def run_shell_command(
     command: str,
     *,
     cwd: Path,
-    timeout_seconds: int,
-) -> VerificationRun:
-    """Run one Work Packet verification command through the shell.
+    timeout_seconds: float,
+) -> CommandRun:
+    """Run one command through the shell in ``cwd`` with a bounded timeout.
 
-    This executes agent-written text in the target repository. The implementer
-    that produced the claim already ran there with provider permissions
-    disabled, so the gate adds no new exposure, but the command is still
-    bounded by ``timeout_seconds`` and its process tree is killed on timeout.
+    The Work Packet verification command is agent-written text; scanner
+    commands are operator-authored config. Either way the command runs in the
+    target repository with the dispatcher's own permissions, bounded by
+    ``timeout_seconds``, and its process tree is killed on timeout.
     """
 
     started = time.monotonic()
@@ -521,7 +580,7 @@ def run_verification_command(
     try:
         process = subprocess.Popen(command, **popen_kwargs)  # type: ignore[call-overload]
     except OSError as exc:
-        return VerificationRun(
+        return CommandRun(
             command=command,
             exit_code=None,
             elapsed_seconds=time.monotonic() - started,
@@ -541,7 +600,7 @@ def run_verification_command(
             output, _ = process.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             output = ""
-    return VerificationRun(
+    return CommandRun(
         command=command,
         exit_code=None if timed_out else process.returncode,
         elapsed_seconds=time.monotonic() - started,
@@ -549,6 +608,9 @@ def run_verification_command(
         timeout_seconds=timeout_seconds,
         timed_out=timed_out,
     )
+
+
+run_verification_command = run_shell_command
 
 
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
@@ -578,6 +640,238 @@ def _output_tail(output: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Scanners
+# ---------------------------------------------------------------------------
+
+
+def shell_quote(value: str) -> str:
+    """Quote one argument for the platform shell used by ``run_shell_command``."""
+
+    if os.name == "nt":
+        return '"' + value.replace('"', '""') + '"'
+    return shlex.quote(value)
+
+
+def render_scanner_command(
+    command: str,
+    context: ScannerContext,
+) -> RenderedScannerCommand:
+    """Substitute scanner placeholders for one claim.
+
+    Returns a command of ``None`` when the command references
+    ``{changed_files}`` or ``{changed_py_files}`` and that list is empty, so the
+    caller can skip the scanner instead of running it on nothing. Raises
+    :class:`ScannerCommandError` for placeholders that cannot be filled.
+    """
+
+    try:
+        placeholders = scanner_command_placeholders(command)
+    except ValueError as exc:
+        raise ScannerCommandError(str(exc)) from exc
+
+    lists = {
+        "changed_files": context.changed_files,
+        "changed_py_files": context.changed_py_files,
+    }
+    for name, paths in lists.items():
+        if name in placeholders and not paths:
+            return RenderedScannerCommand(command=None, empty_placeholder=name)
+
+    values = {
+        "diff_range": context.diff_range,
+        "changed_files": " ".join(shell_quote(path) for path in context.changed_files),
+        "changed_py_files": " ".join(
+            shell_quote(path) for path in context.changed_py_files
+        ),
+        "repo_root": shell_quote(str(context.repo_root)),
+    }
+    try:
+        rendered = command.format(**values)
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ScannerCommandError(f"command could not be rendered: {exc}") from exc
+    return RenderedScannerCommand(command=rendered)
+
+
+def run_scanner(
+    scanner: ScannerConfig,
+    context: ScannerContext | None,
+    *,
+    runner: Callable[..., CommandRun] = run_shell_command,
+) -> tuple[ScannerRun, str | None]:
+    """Run one configured scanner and return its record plus any gate error.
+
+    ``context`` is ``None`` when the scope checks did not pass; the scanner is
+    then recorded as skipped. A non-zero exit is ``scanner_failed:<name>``, a
+    timeout is ``scanner_timeout:<name>``, and a missing executable is
+    ``scanner_missing:<name>`` when the scanner is required or a skip when it
+    is optional.
+    """
+
+    name = scanner.name
+    if context is None:
+        return (
+            ScannerRun(
+                name=name,
+                command=scanner.command,
+                outcome="SKIP",
+                detail="not run; the scope checks did not pass.",
+                required=scanner.required,
+            ),
+            None,
+        )
+
+    try:
+        rendered = render_scanner_command(scanner.command, context)
+    except ScannerCommandError as exc:
+        detail = str(exc)
+        return (
+            ScannerRun(
+                name=name,
+                command=scanner.command,
+                outcome="FAIL",
+                detail=detail,
+                required=scanner.required,
+            ),
+            f"{SCANNER_CONFIG_INVALID_PREFIX}:{name}: {detail}",
+        )
+    if rendered.command is None:
+        return (
+            ScannerRun(
+                name=name,
+                command=scanner.command,
+                outcome="SKIP",
+                detail=(
+                    f"skipped; {{{rendered.empty_placeholder}}} is empty for this "
+                    "claim."
+                ),
+                required=scanner.required,
+                skipped=True,
+            ),
+            None,
+        )
+
+    executable = _command_executable(rendered.command)
+    if executable is not None and shutil.which(executable) is None:
+        return _missing_scanner(scanner, rendered.command, executable)
+
+    run = runner(
+        rendered.command,
+        cwd=context.repo_root,
+        timeout_seconds=scanner.timeout_ms / 1000,
+    )
+    detail = f"`{run.command}` {run.describe_outcome()}."
+    if run.timed_out:
+        return (
+            ScannerRun(
+                name=name,
+                command=run.command,
+                outcome="FAIL",
+                detail=detail,
+                run=run,
+                required=scanner.required,
+            ),
+            f"{SCANNER_TIMEOUT_PREFIX}:{name}: {detail}",
+        )
+    if executable is None and run.exit_code in _MISSING_EXECUTABLE_EXIT_CODES:
+        return _missing_scanner(scanner, run.command, run.command.split()[0], run=run)
+    if not run.succeeded:
+        return (
+            ScannerRun(
+                name=name,
+                command=run.command,
+                outcome="FAIL",
+                detail=detail,
+                run=run,
+                required=scanner.required,
+            ),
+            f"{SCANNER_FAILED_PREFIX}:{name}: {detail}",
+        )
+    return (
+        ScannerRun(
+            name=name,
+            command=run.command,
+            outcome="PASS",
+            detail=detail,
+            run=run,
+            required=scanner.required,
+        ),
+        None,
+    )
+
+
+def _missing_scanner(
+    scanner: ScannerConfig,
+    command: str,
+    executable: str,
+    *,
+    run: CommandRun | None = None,
+) -> tuple[ScannerRun, str | None]:
+    detail = (
+        f"executable `{executable}` was not found on PATH; install it or set "
+        "required: false."
+    )
+    if scanner.required:
+        return (
+            ScannerRun(
+                name=scanner.name,
+                command=command,
+                outcome="FAIL",
+                detail=detail,
+                run=run,
+                required=True,
+                missing=True,
+            ),
+            f"{SCANNER_MISSING_PREFIX}:{scanner.name}: {detail}",
+        )
+    return (
+        ScannerRun(
+            name=scanner.name,
+            command=command,
+            outcome="SKIP",
+            detail="skipped; " + detail,
+            run=run,
+            required=False,
+            missing=True,
+        ),
+        None,
+    )
+
+
+def _command_executable(command: str) -> str | None:
+    """Return the leading program of a shell command when it is a plain token."""
+
+    stripped = command.lstrip()
+    if not stripped:
+        return None
+    if stripped[0] in "\"'":
+        end = stripped.find(stripped[0], 1)
+        if end == -1:
+            return None
+        token = stripped[1:end]
+    else:
+        token = stripped.split(None, 1)[0]
+    if not token or any(char in _SHELL_SYNTAX_CHARS for char in token):
+        return None
+    return token
+
+
+def _scanner_context(
+    *,
+    repo_root: Path,
+    pre_dispatch_head: str,
+    scope_sha: str,
+    changed_files: tuple[str, ...],
+) -> ScannerContext:
+    existing = tuple(path for path in changed_files if (repo_root / path).is_file())
+    return ScannerContext(
+        repo_root=repo_root,
+        diff_range=f"{pre_dispatch_head}..{scope_sha}",
+        changed_files=existing,
+        changed_py_files=tuple(path for path in existing if path.endswith(".py")),
+    )
+
+
+# ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
 
@@ -590,11 +884,14 @@ def verify_work_claim(
     claim_content: str,
     pre_dispatch_state: PreDispatchState,
     verification_timeout_seconds: int,
+    scanners: Sequence[ScannerConfig] = (),
 ) -> WorkClaimResult:
     """Check an implementer's ``ready_for_review`` claim against the packet.
 
     ``assignment_content`` is the handoff the implementer received (it holds
     the Work Packet); ``claim_content`` is the handoff it wrote back.
+    ``scanners`` run in order after the scope checks pass and before the
+    verification command; every scanner runs even when an earlier one fails.
     """
 
     handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
@@ -647,7 +944,7 @@ def verify_work_claim(
             )
         )
 
-    scope_check, scope_error = _scope_sha_check(
+    scope_check, scope_error, resolved_scope_sha = _scope_sha_check(
         repo_root,
         scope_sha=scope_sha,
         producer=producer,
@@ -693,7 +990,41 @@ def verify_work_claim(
     if worktree_error is not None:
         errors.append(worktree_error)
 
-    verification_runs: list[VerificationRun] = []
+    scanner_runs: list[ScannerRun] = []
+    if scanners:
+        scope_checks_passed = (
+            scope_error is None
+            and worktree_error is None
+            and resolved_scope_sha is not None
+            and any(
+                check.name == "diff_scope" and check.outcome == "PASS"
+                for check in checks
+            )
+        )
+        context = (
+            _scanner_context(
+                repo_root=repo_root,
+                pre_dispatch_head=pre_dispatch_head,
+                scope_sha=resolved_scope_sha,
+                changed_files=changed_files,
+            )
+            if scope_checks_passed and resolved_scope_sha is not None
+            else None
+        )
+        for scanner in scanners:
+            scanner_run, scanner_error = run_scanner(scanner, context)
+            scanner_runs.append(scanner_run)
+            checks.append(
+                WorkClaimCheck(
+                    f"scanner:{scanner.name}",
+                    scanner_run.outcome,
+                    scanner_run.detail,
+                )
+            )
+            if scanner_error is not None:
+                errors.append(scanner_error)
+
+    verification_runs: list[CommandRun] = []
     if packet is None:
         checks.append(
             WorkClaimCheck(
@@ -723,6 +1054,7 @@ def verify_work_claim(
         verification_runs=tuple(verification_runs),
         work_packet=packet,
         work_packet_text=work_packet_text,
+        scanner_runs=tuple(scanner_runs),
     )
 
 
@@ -733,7 +1065,9 @@ def _scope_sha_check(
     producer: str,
     head_sha: str,
     handoff_rel_path: str,
-) -> tuple[WorkClaimCheck, str | None]:
+) -> tuple[WorkClaimCheck, str | None, str | None]:
+    """Return the check, its error, and the resolved full ``scope_sha``."""
+
     if not scope_sha:
         detail = (
             f"producer {producer} omitted scope_sha; the claim must name the "
@@ -742,6 +1076,7 @@ def _scope_sha_check(
         return (
             WorkClaimCheck("scope_sha", "FAIL", detail),
             f"{SCOPE_SHA_NOT_HEAD_PREFIX}: {detail}",
+            None,
         )
 
     resolved = git_resolve_commit(repo_root, scope_sha)
@@ -753,6 +1088,7 @@ def _scope_sha_check(
         return (
             WorkClaimCheck("scope_sha", "FAIL", detail),
             f"{SCOPE_SHA_NOT_HEAD_PREFIX}: {detail}",
+            None,
         )
 
     equivalents = head_equivalent_commits(repo_root, head_sha, handoff_rel_path)
@@ -765,6 +1101,7 @@ def _scope_sha_check(
         return (
             WorkClaimCheck("scope_sha", "FAIL", detail),
             f"{SCOPE_SHA_NOT_HEAD_PREFIX}: {detail}",
+            resolved,
         )
 
     depth = equivalents.index(resolved)
@@ -775,7 +1112,7 @@ def _scope_sha_check(
             f"scope_sha {_short(resolved)} is HEAD~{depth}; only handoff-only "
             "commits sit above it."
         )
-    return WorkClaimCheck("scope_sha", "PASS", detail), None
+    return WorkClaimCheck("scope_sha", "PASS", detail), None, resolved
 
 
 def _diff_scope_check(
@@ -861,10 +1198,10 @@ def _verification_check(
     *,
     repo_root: Path,
     timeout_seconds: int,
-    runs: list[VerificationRun],
+    runs: list[CommandRun],
 ) -> tuple[WorkClaimCheck, str | None]:
     for command in packet.verification_commands:
-        run = run_verification_command(
+        run = run_shell_command(
             command,
             cwd=repo_root,
             timeout_seconds=timeout_seconds,
@@ -888,14 +1225,17 @@ def _verification_check(
 def bounce_route_for(result: WorkClaimResult, *, implementer: str) -> BounceRoute:
     """Decide who receives a failed claim.
 
-    Scope, SHA, worktree, and verification failures go back to the implementer
-    as ``verified_fail``. A missing or unusable Work Packet is the planner's
-    artifact, so that bounce routes to ``planner``. Unreadable Git state is an
-    operator problem and escalates to ``user``.
+    Scope, SHA, worktree, scanner, and verification failures go back to the
+    implementer as ``verified_fail``. A missing or unusable Work Packet is the
+    planner's artifact, so that bounce routes to ``planner``. Unreadable Git
+    state and an unrenderable scanner command are operator problems and
+    escalate to ``user``.
     """
 
     prefixes = set(result.failed_prefixes)
-    if GIT_STATE_UNAVAILABLE_PREFIX in prefixes:
+    if GIT_STATE_UNAVAILABLE_PREFIX in prefixes or any(
+        prefix.split(":", 1)[0] == SCANNER_CONFIG_INVALID_PREFIX for prefix in prefixes
+    ):
         return BounceRoute(next_agent="user", status="escalate_to_user")
     if prefixes & WORK_PACKET_ERROR_PREFIXES:
         return BounceRoute(next_agent="planner", status="verified_fail")
@@ -1003,6 +1343,24 @@ def _dispatcher_verification_section(
     lines.append("- **Checks:**")
     for check in result.checks:
         lines.append(f"  - {check.outcome} `{check.name}`: {check.detail}")
+    failed_scanner_runs = [
+        scanner_run
+        for scanner_run in result.scanner_runs
+        if scanner_run.run is not None and scanner_run.outcome == "FAIL"
+    ]
+    if failed_scanner_runs:
+        lines.extend(["", "### Scanner Output", ""])
+        for scanner_run in failed_scanner_runs:
+            assert scanner_run.run is not None
+            lines.append(
+                f"Scanner `{scanner_run.name}`: `{scanner_run.command}` "
+                f"({scanner_run.run.describe_outcome()})"
+            )
+            lines.append("")
+            lines.append("````text")
+            lines.append(scanner_run.run.output_tail or "(no output)")
+            lines.append("````")
+            lines.append("")
     if result.verification_runs:
         lines.extend(["", "### Verification Output", ""])
         for run in result.verification_runs:
@@ -1079,7 +1437,12 @@ __all__ = [
     "WORK_CLAIM_ERROR_PREFIXES",
     "WORK_PACKET_ERROR_PREFIXES",
     "BounceRoute",
+    "CommandRun",
     "PreDispatchState",
+    "RenderedScannerCommand",
+    "ScannerCommandError",
+    "ScannerContext",
+    "ScannerRun",
     "VerificationRun",
     "WorkClaimCheck",
     "WorkClaimResult",
@@ -1092,7 +1455,11 @@ __all__ = [
     "extract_work_packet_section",
     "parse_work_packet",
     "path_matches_entry",
+    "render_scanner_command",
+    "run_scanner",
+    "run_shell_command",
     "run_verification_command",
+    "shell_quote",
     "verify_work_claim",
     "work_packet_errors",
 ]

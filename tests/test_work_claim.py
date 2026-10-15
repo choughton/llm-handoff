@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,12 +11,13 @@ from typing import Any
 import pytest
 
 from llm_handoff.agents import DispatchResult, SubagentResult
-from llm_handoff.config import DispatchConfig, load_dispatch_config
+from llm_handoff.config import DispatchConfig, ScannerConfig, load_dispatch_config
 import llm_handoff.ledger as ledger
 from llm_handoff.router import parse_handoff_frontmatter_text, route
 from llm_handoff.validator import ValidationResult, validate_handoff_text
 from llm_handoff.work_claim import (
     PreDispatchState,
+    ScannerContext,
     WorkPacketError,
     bounce_route_for,
     build_bounce_handoff,
@@ -23,6 +25,8 @@ from llm_handoff.work_claim import (
     extract_work_packet_section,
     parse_work_packet,
     path_matches_entry,
+    render_scanner_command,
+    shell_quote,
     verify_work_claim,
 )
 
@@ -1199,3 +1203,573 @@ Re-scoping needed.
     assert dispatches == ["backend", "planner"]
     assert ledger.bounce_count(STORY_ID) == 3
     assert any("THREE_FIX_CIRCUIT_BREAKER" in message for _level, message in messages)
+
+
+# ---------------------------------------------------------------------------
+# Scanners
+# ---------------------------------------------------------------------------
+
+
+FINDING_TOOL_BODY = (
+    "import json, sys\nprint('finding: ' + json.dumps(sys.argv[1:]))\nsys.exit(1)\n"
+)
+CLEAN_TOOL_BODY = (
+    "import json, sys\nprint('clean: ' + json.dumps(sys.argv[1:]))\nsys.exit(0)\n"
+)
+HANG_TOOL_BODY = "import time\ntime.sleep(30)\n"
+
+
+def _order_tool_body(log_path: Path, label: str, exit_code: int) -> str:
+    return (
+        "import sys\n"
+        f"with open({str(log_path)!r}, 'a', encoding='utf-8') as handle:\n"
+        f"    handle.write({label!r} + '\\n')\n"
+        f"sys.exit({exit_code})\n"
+    )
+
+
+def _install_fake_tool(bin_dir: Path, name: str, body: str) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write(bin_dir / f"{name}.py", body)
+    if os.name == "nt":
+        (bin_dir / f"{name}.cmd").write_text(
+            f'@"{PYTHON}" "%~dp0{name}.py" %*\r\n',
+            encoding="utf-8",
+            newline="",
+        )
+    else:
+        launcher = bin_dir / name
+        _write(
+            launcher,
+            f'#!/bin/sh\nexec "{PYTHON}" "$(dirname "$0")/{name}.py" "$@"\n',
+        )
+        launcher.chmod(0o755)
+
+
+@pytest.fixture
+def fake_bin(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    bin_dir = tmp_path_factory.mktemp("fake-bin")
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    return bin_dir
+
+
+def _scanner(name: str, command: str, **overrides: Any) -> ScannerConfig:
+    return ScannerConfig(name=name, command=command, **overrides)
+
+
+def _passing_claim_setup(
+    tmp_path: Path,
+    assignment: str | None = None,
+) -> tuple[PreDispatchState, str]:
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    return state, head
+
+
+def _verify_with_scanners(
+    tmp_path: Path,
+    state: PreDispatchState,
+    head: str,
+    scanners: Any,
+    *,
+    assignment: str | None = None,
+):
+    return verify_work_claim(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=assignment or _assignment(),
+        claim_content=_claim(head),
+        pre_dispatch_state=state,
+        verification_timeout_seconds=60,
+        scanners=scanners,
+    )
+
+
+def test_scanner_config_defaults() -> None:
+    scanner = ScannerConfig(name="gitleaks", command="gitleaks git {repo_root}")
+
+    assert scanner.timeout_ms == 300000
+    assert scanner.required is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "semgrep {changed_file}",
+        "tool {diff_range!r}",
+        "tool {changed_files:>10}",
+        "tool {",
+    ],
+)
+def test_scanner_config_rejects_unfillable_placeholders(command: str) -> None:
+    with pytest.raises(ValueError, match="scanner_config_invalid:semgrep"):
+        ScannerConfig(name="semgrep", command=command)
+
+
+def test_scanner_config_accepts_doubled_literal_braces() -> None:
+    scanner = ScannerConfig(name="jq", command="jq '{{a: 1}}' {changed_files}")
+
+    assert scanner.command == "jq '{{a: 1}}' {changed_files}"
+
+
+def test_scanner_config_rejects_bad_names_and_duplicates(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="scanner name"):
+        ScannerConfig(name="bad name", command="tool")
+    with pytest.raises(ValueError, match="unique"):
+        DispatchConfig(
+            repo_root=tmp_path,
+            scanners=(
+                ScannerConfig(name="dup", command="tool"),
+                ScannerConfig(name="dup", command="tool"),
+            ),
+        )
+
+
+def test_load_dispatch_config_reads_scanners(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """enforce_work_packet: true
+scanners:
+  - name: gitleaks
+    command: gitleaks git --log-opts="{diff_range}" {repo_root}
+  - name: bandit
+    command: bandit -q {changed_py_files}
+    timeout_ms: 1000
+    required: false
+""",
+        encoding="utf-8",
+    )
+
+    config = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert [scanner.name for scanner in config.scanners] == ["gitleaks", "bandit"]
+    assert config.scanners[0].timeout_ms == 300000
+    assert config.scanners[1].timeout_ms == 1000
+    assert config.scanners[1].required is False
+
+
+def test_load_dispatch_config_rejects_unknown_scanner_placeholder(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "scanners:\n  - name: semgrep\n    command: semgrep {files}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="scanner_config_invalid:semgrep"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_dispatch_config_scanners_default_to_empty(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path).scanners == ()
+
+
+def test_render_scanner_command_substitutes_and_quotes_paths(tmp_path: Path) -> None:
+    context = ScannerContext(
+        repo_root=tmp_path,
+        diff_range="aaa..bbb",
+        changed_files=("src/my file.py", "docs/notes.md"),
+        changed_py_files=("src/my file.py",),
+    )
+
+    rendered = render_scanner_command(
+        "tool --range {diff_range} --root {repo_root} -- {changed_files} "
+        ":: {changed_py_files}",
+        context,
+    )
+
+    quoted = shell_quote("src/my file.py")
+    assert quoted != "src/my file.py"
+    assert rendered.command == (
+        f"tool --range aaa..bbb --root {shell_quote(str(tmp_path))} -- "
+        f"{quoted} {shell_quote('docs/notes.md')} :: {quoted}"
+    )
+    assert rendered.empty_placeholder is None
+
+
+def test_render_scanner_command_skips_when_list_placeholder_is_empty(
+    tmp_path: Path,
+) -> None:
+    context = ScannerContext(
+        repo_root=tmp_path,
+        diff_range="aaa..bbb",
+        changed_files=("docs/notes.md",),
+        changed_py_files=(),
+    )
+
+    rendered = render_scanner_command("bandit -q {changed_py_files}", context)
+
+    assert rendered.command is None
+    assert rendered.empty_placeholder == "changed_py_files"
+
+
+def test_scanner_receives_quoted_paths_with_spaces(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "fakescan", FINDING_TOOL_BODY)
+    assignment = _assignment(files_in_scope="src/")
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "my file.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "add spaced file")
+
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [_scanner("fakescan", "fakescan {changed_files}")],
+        assignment=assignment,
+    )
+
+    assert result.failed_prefixes == ("scanner_failed:fakescan",)
+    scanner_run = result.scanner_runs[0]
+    assert scanner_run.run is not None
+    assert 'finding: ["src/my file.py"]' in scanner_run.run.output_tail
+
+
+def test_scanner_diff_range_spans_pre_dispatch_head_to_scope_sha(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "rangescan", FINDING_TOOL_BODY)
+    initial = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [_scanner("range", "rangescan {diff_range}")],
+    )
+
+    assert result.scanner_runs[0].run is not None
+    assert f'["{initial}..{head}"]' in result.scanner_runs[0].run.output_tail
+
+
+def test_scanners_run_in_config_order_before_verification_and_report_all(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    order_log = fake_bin / "order.log"
+    _install_fake_tool(fake_bin, "scan-a", _order_tool_body(order_log, "a", 1))
+    _install_fake_tool(fake_bin, "scan-b", _order_tool_body(order_log, "b", 0))
+    _install_fake_tool(fake_bin, "scan-c", _order_tool_body(order_log, "c", 1))
+    _install_fake_tool(fake_bin, "verify-cmd", _order_tool_body(order_log, "verify", 0))
+    assignment = _assignment("verify-cmd")
+    state, head = _passing_claim_setup(tmp_path, assignment)
+
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [
+            _scanner("a", "scan-a {diff_range}"),
+            _scanner("b", "scan-b"),
+            _scanner("c", "scan-c {repo_root}"),
+        ],
+        assignment=assignment,
+    )
+
+    assert order_log.read_text(encoding="utf-8").split() == ["a", "b", "c", "verify"]
+    assert result.failed_prefixes == ("scanner_failed:a", "scanner_failed:c")
+    assert [run.outcome for run in result.scanner_runs] == ["FAIL", "PASS", "FAIL"]
+    assert [check.name for check in result.checks][-4:] == [
+        "scanner:a",
+        "scanner:b",
+        "scanner:c",
+        "verification",
+    ]
+    assert result.verification_runs[0].exit_code == 0
+
+
+def test_scanner_skips_when_changed_py_files_is_empty(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "pyscan", FINDING_TOOL_BODY)
+    assignment = _assignment(files_in_scope="docs/")
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "docs" / "notes.md", "notes\n")
+    head = _commit_all(tmp_path, "add notes")
+
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [_scanner("pyscan", "pyscan {changed_py_files}")],
+        assignment=assignment,
+    )
+
+    assert result.passed
+    assert result.scanner_runs[0].outcome == "SKIP"
+    assert result.scanner_runs[0].skipped is True
+    assert "{changed_py_files} is empty" in result.scanner_runs[0].detail
+
+
+def test_required_missing_scanner_fails_and_optional_is_skipped(
+    tmp_path: Path,
+) -> None:
+    state, head = _passing_claim_setup(tmp_path)
+
+    required = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [_scanner("ghost", "ghost-scanner-not-installed {repo_root}")],
+    )
+    optional = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [
+            _scanner(
+                "ghost",
+                "ghost-scanner-not-installed {repo_root}",
+                required=False,
+            )
+        ],
+    )
+
+    assert required.failed_prefixes == ("scanner_missing:ghost",)
+    assert "ghost-scanner-not-installed" in required.errors[0]
+    assert required.scanner_runs[0].missing is True
+    assert optional.passed
+    assert optional.scanner_runs[0].outcome == "SKIP"
+    assert optional.scanner_runs[0].missing is True
+
+
+def test_scanner_timeout_kills_the_tool_and_reports_it(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "hangscan", HANG_TOOL_BODY)
+    state, head = _passing_claim_setup(tmp_path)
+
+    started = time.monotonic()
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [_scanner("hang", "hangscan", timeout_ms=1000)],
+    )
+
+    assert time.monotonic() - started < 20
+    assert result.failed_prefixes == ("scanner_timeout:hang",)
+    assert "timed out after 1s" in result.errors[0]
+    assert result.scanner_runs[0].run is not None
+    assert result.scanner_runs[0].run.timed_out is True
+
+
+def test_scanners_do_not_run_when_scope_checks_fail(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    order_log = fake_bin / "order.log"
+    _install_fake_tool(fake_bin, "scan-a", _order_tool_body(order_log, "a", 0))
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    head = _commit_all(tmp_path, "touch api")
+
+    result = _verify_with_scanners(tmp_path, state, head, [_scanner("a", "scan-a")])
+
+    assert not order_log.exists()
+    assert result.failed_prefixes == ("scope_violation",)
+    assert result.scanner_runs[0].outcome == "SKIP"
+    assert "scope checks did not pass" in result.scanner_runs[0].detail
+
+
+def test_empty_scanner_list_leaves_gate_unchanged(tmp_path: Path) -> None:
+    state, head = _passing_claim_setup(tmp_path)
+
+    result = _verify_with_scanners(tmp_path, state, head, [])
+
+    assert result.passed
+    assert result.scanner_runs == ()
+    assert not any(check.name.startswith("scanner:") for check in result.checks)
+
+
+def test_build_bounce_handoff_lists_every_failed_scanner(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "scan-a", FINDING_TOOL_BODY)
+    _install_fake_tool(fake_bin, "scan-b", CLEAN_TOOL_BODY)
+    _install_fake_tool(fake_bin, "scan-c", FINDING_TOOL_BODY)
+    state, head = _passing_claim_setup(tmp_path)
+    claim = _claim(head)
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [
+            _scanner("a", "scan-a {changed_py_files}"),
+            _scanner("b", "scan-b"),
+            _scanner("c", "scan-c {diff_range}"),
+        ],
+    )
+    bounce_route = bounce_route_for(result, implementer="backend")
+
+    bounce = build_bounce_handoff(
+        claim_content=claim,
+        result=result,
+        implementer="backend",
+        route=bounce_route,
+        bounce_count=1,
+    )
+
+    assert bounce_route.next_agent == "backend"
+    assert (
+        'reason: "Dispatcher verification failed: scanner_failed:a, '
+        'scanner_failed:c."' in bounce
+    )
+    assert "### Scanner Output" in bounce
+    assert "Scanner `a`:" in bounce
+    assert "Scanner `c`:" in bounce
+    assert "Scanner `b`:" not in bounce
+    assert "FAIL `scanner:a`" in bounce
+    assert "PASS `scanner:b`" in bounce
+    assert "FAIL `scanner:c`" in bounce
+    assert 'finding: ["src/app.py"]' in bounce
+    assert route(bounce).route == "backend"
+
+
+def test_scanner_config_invalid_at_runtime_escalates_to_user(tmp_path: Path) -> None:
+    class RawScanner:
+        name = "raw"
+        command = "tool {unknown}"
+        timeout_ms = 1000
+        required = True
+
+    state, head = _passing_claim_setup(tmp_path)
+
+    result = _verify_with_scanners(tmp_path, state, head, [RawScanner()])
+
+    assert result.failed_prefixes == ("scanner_config_invalid:raw",)
+    assert bounce_route_for(result, implementer="backend").next_agent == "user"
+
+
+def test_run_loop_bounces_scanner_findings_and_warns_for_optional_missing_tool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "gitleaks", FINDING_TOOL_BODY)
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path,
+        scanners=(
+            ScannerConfig(name="gitleaks", command="gitleaks {diff_range}"),
+            ScannerConfig(
+                name="pip-audit",
+                command="pip-audit-not-installed",
+                required=False,
+            ),
+        ),
+    )
+    dispatches: list[str] = []
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        head = _commit_all(tmp_path, "set value")
+        path.write_text(_claim(head), encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_support(
+        subagent_name: str, prompt: str, **_kwargs: object
+    ) -> SubagentResult:
+        raise AssertionError("auditor must not be dispatched when a scanner fails")
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    assert dispatches == ["backend"]
+    bounced = parse_handoff_frontmatter_text(
+        config.handoff_full_path.read_text(encoding="utf-8")
+    )
+    assert bounced is not None
+    assert bounced.next_agent == "backend"
+    assert bounced.status == "verified_fail"
+    assert ledger.bounce_count(STORY_ID) == 1
+    assert any(
+        level == "ERROR" and message.startswith("scanner_failed:gitleaks:")
+        for level, message in messages
+    )
+    assert any(
+        level == "WARN" and "optional scanner pip-audit skipped" in message
+        for level, message in messages
+    )
+    assert any(
+        "Scanners:           gitleaks, pip-audit" in message
+        for _level, message in messages
+    )
+
+
+def test_startup_banner_warns_when_scanners_configured_but_gate_is_off(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path,
+        enforce_work_packet=False,
+        dry_run=True,
+        scanners=(ScannerConfig(name="gitleaks", command="gitleaks"),),
+    )
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert any(
+        level == "WARN" and "Scanners configured (gitleaks)" in message
+        for level, message in messages
+    )
+
+
+def test_docs_describe_scanners() -> None:
+    configuration = (REPO_ROOT / "CONFIGURATION.md").read_text(encoding="utf-8")
+    architecture = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    example = (REPO_ROOT / "dispatch_config.example.yaml").read_text(encoding="utf-8")
+
+    for tool in ("gitleaks", "semgrep", "bandit", "pip-audit"):
+        assert tool in configuration
+        assert tool in example
+    for placeholder in (
+        "{diff_range}",
+        "{changed_files}",
+        "{changed_py_files}",
+        "{repo_root}",
+    ):
+        assert placeholder in configuration
+    for prefix in (
+        "scanner_failed",
+        "scanner_missing",
+        "scanner_timeout",
+        "scanner_config_invalid",
+    ):
+        assert prefix in configuration
+        assert prefix in architecture
+    assert "operator-authored" in architecture
+    assert "operator" in security
+    assert "sandbox" in security.lower()
+    assert "requirements-dev" not in configuration
