@@ -200,7 +200,10 @@ Enable one bounded repair attempt by naming a configured role:
 
 The supervisor writes a failure packet, invokes the configured repair role with
 a repair-only prompt, then requires the repair to create a new HEAD commit. If
-HEAD does not change, the repair is treated as failed. After a successful
+HEAD does not change, the repair is treated as failed. The committed diff and
+any new uncommitted files must stay inside the allowed repair scope, or the
+supervisor stops with an incident instead of restarting; dispatcher runtime
+state under `logs/dispatch/` is exempt from that check. After a successful
 scoped repair commit, the supervisor restarts the child dispatcher.
 
 The default allowed repair scope is deliberately narrow:

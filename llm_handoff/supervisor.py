@@ -461,6 +461,29 @@ def _run_supervised_dispatch_locked(
                 changed_files=changed_files,
             )
 
+        dirty_out_of_scope_files = _repair_dirty_files_out_of_scope(
+            config,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+        if dirty_out_of_scope_files:
+            log_fn(
+                "ERROR",
+                "Repair role left uncommitted changes outside the allowed repair "
+                f"scope: {', '.join(dirty_out_of_scope_files)}",
+            )
+            return _stop_with_incident(
+                config,
+                log_fn,
+                result,
+                fingerprint=fingerprint,
+                reason="repair_dirty_out_of_scope",
+                snapshot=after_snapshot,
+                repair_attempts=repair_attempts,
+                failure_packet_path=failure_packet_path,
+                changed_files=_dedupe((*changed_files, *dirty_out_of_scope_files)),
+            )
+
         _append_repair_summary_record(
             config,
             attempt=repair_attempts,
@@ -479,6 +502,49 @@ def _run_supervised_dispatch_locked(
             message="llm-handoff supervisor repair committed and dispatcher is restarting",
             log=log_fn,
         )
+
+
+_RUNTIME_STATE_DIRECTORY = "logs/dispatch/"
+
+
+def _repair_dirty_files_out_of_scope(
+    config: SupervisorConfig,
+    *,
+    before_snapshot: RepoSnapshot,
+    after_snapshot: RepoSnapshot,
+) -> tuple[str, ...]:
+    """Uncommitted paths a repair introduced outside the allowed surface.
+
+    The committed diff is checked separately; this catches edits the repair
+    role made but never committed, which would otherwise ride into the
+    restarted dispatcher. Dispatcher runtime state under logs/dispatch/
+    (supervisor packets, provider session files, bounce counts) and paths
+    that were already dirty before the repair are not blamed on it.
+    """
+    previously_dirty = set(before_snapshot.dirty_files)
+    new_dirty_files = tuple(
+        path
+        for path in after_snapshot.dirty_files
+        if path not in previously_dirty and not _is_runtime_state_path(path, config)
+    )
+    return _out_of_scope_repair_files(
+        new_dirty_files,
+        allowed_repair_paths=config.allowed_repair_paths,
+    )
+
+
+def _is_runtime_state_path(path: str, config: SupervisorConfig) -> bool:
+    prefixes = [_RUNTIME_STATE_DIRECTORY]
+    for directory in (
+        config.failure_directory,
+        config.incident_directory,
+        config.summary_path.parent,
+        config.run_state_path.parent,
+        config.lock_path.parent,
+    ):
+        if not directory.is_absolute():
+            prefixes.append(f"{directory.as_posix().rstrip('/')}/")
+    return any(path.startswith(prefix) for prefix in prefixes)
 
 
 def _stop_with_incident(

@@ -697,3 +697,131 @@ def test_supervisor_rejects_conflicting_shared_options(tmp_path: Path) -> None:
         )
 
     assert excinfo.value.code == 2
+
+
+def _run_repair_scenario(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    before_dirty: tuple[str, ...],
+    after_dirty: tuple[str, ...],
+) -> tuple[int, Any, list[tuple[str, str]]]:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    config = supervisor.SupervisorConfig(
+        repo_root=repo_root,
+        repair_role="validator",
+        max_repair_attempts=1,
+    )
+    dispatch_results = [
+        supervisor.DispatchProcessResult(
+            exit_code=1,
+            output_lines=("[AGENT] Post-dispatch gate FAILED for backend.",),
+            elapsed_seconds=0.1,
+        ),
+        _dispatch_result(),
+    ]
+    before = supervisor.RepoSnapshot(
+        head_sha="a" * 40, dirty_files=before_dirty, handoff_sha="h1"
+    )
+    after = supervisor.RepoSnapshot(
+        head_sha="b" * 40, dirty_files=after_dirty, handoff_sha="h2"
+    )
+    # snapshot_fn call order: loop start, before repair, after repair, then
+    # loop start and success record on a restart.
+    snapshots = [before, before, after, after, after]
+    monkeypatch.setattr(
+        supervisor,
+        "_git_changed_files",
+        lambda *_args: ("docs/handoff/HANDOFF.md",),
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = supervisor.run_supervised_dispatch(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+        dispatch_runner=lambda _config, _log: dispatch_results.pop(0),
+        repair_runner=lambda _config, _packet, _log: _repair_result(),
+        snapshot_reader=lambda _repo_root: snapshots.pop(0),
+    )
+    return exit_code, config, log_messages
+
+
+def _summary_records(config: Any) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in config.summary_path_full_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip()
+    ]
+
+
+def test_supervisor_stops_when_repair_leaves_dirty_files_outside_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    exit_code, config, log_messages = _run_repair_scenario(
+        tmp_path,
+        monkeypatch,
+        before_dirty=(),
+        after_dirty=("src/app.py",),
+    )
+
+    assert exit_code == 1
+    assert any(
+        level == "ERROR"
+        and "uncommitted changes outside the allowed repair scope: src/app.py"
+        in message
+        for level, message in log_messages
+    )
+    stop_records = [
+        record
+        for record in _summary_records(config)
+        if record["event"] == "dispatch_stop"
+    ]
+    assert [record["reason"] for record in stop_records] == [
+        "repair_dirty_out_of_scope"
+    ]
+    incident_path = Path(stop_records[0]["incident_path"])
+    assert (incident_path / "changed-files.txt").read_text(
+        encoding="utf-8"
+    ) == "docs/handoff/HANDOFF.md\nsrc/app.py\n"
+
+
+def test_supervisor_tolerates_in_scope_and_runtime_state_dirty_files_after_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    exit_code, config, _log_messages = _run_repair_scenario(
+        tmp_path,
+        monkeypatch,
+        before_dirty=(),
+        after_dirty=(
+            "docs/notes.md",
+            "logs/dispatch/codex/session.json",
+            "logs/dispatch/supervisor/failure-20260101T000000Z-abc.json",
+        ),
+    )
+
+    assert exit_code == 0
+    repair_records = [
+        record
+        for record in _summary_records(config)
+        if record["event"] == "repair_attempt"
+    ]
+    assert [record["restart_outcome"] for record in repair_records] == ["restarted"]
+
+
+def test_supervisor_does_not_blame_repair_for_pre_existing_dirty_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    exit_code, _config, _log_messages = _run_repair_scenario(
+        tmp_path,
+        monkeypatch,
+        before_dirty=("src/legacy.py",),
+        after_dirty=("src/legacy.py",),
+    )
+
+    assert exit_code == 0

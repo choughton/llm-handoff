@@ -178,7 +178,8 @@ signal; it is not an alternate state machine.
 The optional repair path is disabled unless `--repair-role` is provided. When
 enabled, the supervisor writes a failure packet, invokes the configured role
 through `llm_handoff.agent_roles.invoke_support_role`, requires a new HEAD
-commit, checks that changed files are within an allowed repair surface, and then
+commit, checks that committed and uncommitted changes stay within an allowed repair
+surface, and then
 restarts the child dispatcher. If the repair is ambiguous, repeats the same
 failure fingerprint, fails to commit, or touches files outside scope, the
 supervisor stops with an incident bundle.
