@@ -442,12 +442,13 @@ Codex keeps its `workspace-write` sandbox: writes are limited to the
 workspace and network access is off by default. The sandbox always keeps
 `.git` read-only, even when `.git` is listed under
 `sandbox_workspace_write.writable_roots`, so a sandboxed role cannot commit on
-its own. The reference workflow ships `.codex/rules/llm-handoff.rules`, a
-Codex rules file (an experimental Codex feature) that lets exactly
-`git add ...` and `git commit --no-verify ...` run outside the sandbox and
-forbids `git push` and `git commit --amend`. Commits skip hooks because hooks
-would otherwise run outside the sandbox. Everything else the role runs stays
-sandboxed.
+its own. Use `commit_mode: dispatcher` for sandboxed Codex implementers: the
+dispatcher commits the in-scope files after the role finishes. The reference
+workflow ships `.codex/rules/llm-handoff.rules`, a Codex rules file (an
+experimental Codex feature) that forbids `git push`. It does not let git
+writes run outside the sandbox: rules match command prefixes only, so an
+allow rule for `git commit` would also allow `git commit -a` or a trailing
+`--amend`. Everything the role runs stays sandboxed.
 
 Codex applies the strictest matching rule, but a project rule cannot override
 an `allow` rule in `~/.codex/rules/` that matches the full shell command (for

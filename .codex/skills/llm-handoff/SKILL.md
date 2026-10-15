@@ -78,18 +78,14 @@ If the dispatcher's instruction says dispatcher commit mode is on, do not
 stage or commit at all: leave your changes in the working tree, leave
 `scope_sha` empty, and write `pending-dispatcher-commit` as the
 `Commit SHA verified` value. The dispatcher commits the in-scope files for you.
-The rest of this section applies only when you commit yourself.
 
-Codex keeps `.git` read-only inside its sandbox. The repository's
-`.codex/rules/llm-handoff.rules` lets exactly two command forms run outside it:
-
-- Stage with `git add -- <path> [<path> ...]`, listing only files in the Work
-  Packet's `Files in scope`.
-- Commit with `git commit --no-verify -m "<message>"`.
-
-Type them exactly that way: no `-c` options, no `-C <dir>`, and no other
-prefix, or the rule does not match and the command fails inside the sandbox.
-`git commit --amend` and `git push` are forbidden.
+Otherwise, Codex keeps `.git` read-only inside its sandbox, so `git add` and
+`git commit` fail there. The repository's `.codex/rules/llm-handoff.rules`
+does not let git writes out of the sandbox, and it forbids `git push`. If you
+are sandboxed and the protocol asks you to commit, do not work around the
+sandbox: leave the changes uncommitted and hand back as
+`status: blocked_implementation_failure` explaining that the operator should
+enable `commit_mode: dispatcher`.
 
 Read-only git commands (`status`, `diff`, `log`, `rev-parse`) stay in the
 sandbox. On Windows the sandbox runs as a separate account, so add
@@ -115,7 +111,7 @@ contract, document the contradiction and route with
 
 - Verify the requested backend scope is complete.
 - Run the focused tests or checks that cover the change.
-- Commit the backend change with the exact `git add` and `git commit --no-verify` forms above if the repository protocol asks agents to commit locally.
+- Commit the backend change only if the repository protocol asks agents to commit locally and you are not sandboxed; in dispatcher commit mode, leave it uncommitted.
 - Rewrite `docs/handoff/HANDOFF.md` with concrete files changed, checks run, blockers if any, and the next role.
 - Preserve the assignment's `## Work Packet` section in the handback; the auditor and the dispatcher's work-claim gate read it.
 - Never run `git push`; remote pushes are the operator's call.

@@ -163,7 +163,7 @@ def test_claude_role_agents_do_not_point_at_dispatcher_docs() -> None:
         assert "docs/ARCHITECTURE.md" not in content
 
 
-def test_codex_rules_let_only_staging_and_hookless_commits_out_of_the_sandbox() -> None:
+def test_codex_rules_allow_no_git_writes_and_forbid_push() -> None:
     rules = (REFERENCE_WORKFLOW / ".codex" / "rules" / "llm-handoff.rules").read_text(
         encoding="utf-8"
     )
@@ -174,6 +174,7 @@ def test_codex_rules_let_only_staging_and_hookless_commits_out_of_the_sandbox() 
         r'pattern = (\[[^\]]*\]),\s*decision = "forbidden"', rules
     )
 
-    assert allowed == ['["git", "add"]', '["git", "commit", "--no-verify"]']
+    # Prefix rules cannot constrain trailing arguments, so allowing
+    # `git commit` would also allow `-a` and `--amend`.
+    assert allowed == []
     assert '["git", "push"]' in forbidden
-    assert '["git", "commit", "--no-verify", "--amend"]' in forbidden

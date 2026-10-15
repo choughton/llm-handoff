@@ -204,12 +204,21 @@ def publish_story(
     state = _load_state(repo_root)
     current = _current_branch(repo_root)
     if state is None or current != state.branch:
-        log(
-            "WARN",
-            "Publish skipped: the audited work is not on a story branch the "
-            f"dispatcher created (current branch: {current or 'unknown'}).",
+        # Continuing would treat unpublished work as done and leave the
+        # checkout on a branch the next story cannot start from.
+        expected = state.branch if state is not None else None
+        return _stop(
+            log,
+            "the audited work is not on a story branch the dispatcher created "
+            f"(current branch: {current or 'unknown'}; "
+            + (
+                f"expected: {expected}"
+                if expected
+                else f"no story state at {STATE_PATH.as_posix()}"
+            )
+            + "). Merge or publish it yourself, check out the base branch, "
+            "then start the dispatcher again",
         )
-        return PublishOutcome()
 
     title, body = build_report(repo_root, state, handoff_content)
     message_path = repo_root / MESSAGE_PATH

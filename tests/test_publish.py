@@ -635,3 +635,48 @@ def test_pr_report_does_not_mention_github_accounts(
     assert "@codex" not in body
     assert "`@\u2060codex review`" in body
     assert "a@b.c stays" in body
+
+
+def test_publish_stops_when_the_story_state_is_missing(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _start_story(tmp_path)
+    (tmp_path / STATE_PATH).unlink()
+    entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=tmp_path,
+        mode="merge-commit",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert "no story state" in outcome.message
+    assert any(level == "ERROR" for level, _ in entries)
+    assert _git(tmp_path, "branch", "--show-current") == BRANCH
+
+
+def test_publish_stops_when_the_checkout_is_not_the_story_branch(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    _start_story(tmp_path)
+    _git(tmp_path, "switch", "-q", "main")
+    _entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=tmp_path,
+        mode="merge-commit",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert f"expected: {BRANCH}" in outcome.message
+    assert _git(tmp_path, "log", "-1", "--format=%s") == "initial"
