@@ -19,6 +19,12 @@ import time
 from typing import Callable, Sequence
 from uuid import uuid4
 
+import yaml
+
+from llm_handoff.agent_process import (
+    _kill_process_tree,
+    _process_group_popen_kwargs,
+)
 from llm_handoff.agent_roles import invoke_support_role
 from llm_handoff.agent_types import SubagentResult
 from llm_handoff.config import (
@@ -52,9 +58,12 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _TIMESTAMP_RE = re.compile(r"^\[[0-9T:\-]+\]\s+")
 _CYCLE_RE = re.compile(r"---\s+Cycle\s+([0-9]+)\s+---")
 _ROUTE_RE = re.compile(r"Routing instruction:\s*(.+?)\s*$")
+# Each marker must be a substring of a line the orchestrator really logs;
+# tests/test_supervisor.py builds these messages from the orchestrator's own
+# log output so the two cannot drift apart again.
 _REPAIRABLE_ZERO_EXIT_MARKERS = (
-    "Post-dispatch validation failed",
-    "Pre-dispatch validation verdict: NO",
+    "Post-dispatch gate FAILED",
+    "Handoff validation verdict: NO",
     "Producer repair failed",
     "No supported producer repair path",
     "Hit maximum consecutive failures",
@@ -275,7 +284,7 @@ def _run_supervised_dispatch_locked(
 ) -> int:
     dispatch_fn = dispatch_runner or _run_dispatch_child
     repair_fn = repair_runner or _run_repair_role
-    snapshot_fn = snapshot_reader or _repo_snapshot
+    snapshot_fn = snapshot_reader or _default_snapshot_reader(config)
     seen_fingerprints: set[str] = set()
     repair_attempts = 0
     transient_retries = 0
@@ -452,6 +461,29 @@ def _run_supervised_dispatch_locked(
                 changed_files=changed_files,
             )
 
+        dirty_out_of_scope_files = _repair_dirty_files_out_of_scope(
+            config,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+        if dirty_out_of_scope_files:
+            log_fn(
+                "ERROR",
+                "Repair role left uncommitted changes outside the allowed repair "
+                f"scope: {', '.join(dirty_out_of_scope_files)}",
+            )
+            return _stop_with_incident(
+                config,
+                log_fn,
+                result,
+                fingerprint=fingerprint,
+                reason="repair_dirty_out_of_scope",
+                snapshot=after_snapshot,
+                repair_attempts=repair_attempts,
+                failure_packet_path=failure_packet_path,
+                changed_files=_dedupe((*changed_files, *dirty_out_of_scope_files)),
+            )
+
         _append_repair_summary_record(
             config,
             attempt=repair_attempts,
@@ -470,6 +502,49 @@ def _run_supervised_dispatch_locked(
             message="llm-handoff supervisor repair committed and dispatcher is restarting",
             log=log_fn,
         )
+
+
+_RUNTIME_STATE_DIRECTORY = "logs/dispatch/"
+
+
+def _repair_dirty_files_out_of_scope(
+    config: SupervisorConfig,
+    *,
+    before_snapshot: RepoSnapshot,
+    after_snapshot: RepoSnapshot,
+) -> tuple[str, ...]:
+    """Uncommitted paths a repair introduced outside the allowed surface.
+
+    The committed diff is checked separately; this catches edits the repair
+    role made but never committed, which would otherwise ride into the
+    restarted dispatcher. Dispatcher runtime state under logs/dispatch/
+    (supervisor packets, provider session files, bounce counts) and paths
+    that were already dirty before the repair are not blamed on it.
+    """
+    previously_dirty = set(before_snapshot.dirty_files)
+    new_dirty_files = tuple(
+        path
+        for path in after_snapshot.dirty_files
+        if path not in previously_dirty and not _is_runtime_state_path(path, config)
+    )
+    return _out_of_scope_repair_files(
+        new_dirty_files,
+        allowed_repair_paths=config.allowed_repair_paths,
+    )
+
+
+def _is_runtime_state_path(path: str, config: SupervisorConfig) -> bool:
+    prefixes = [_RUNTIME_STATE_DIRECTORY]
+    for directory in (
+        config.failure_directory,
+        config.incident_directory,
+        config.summary_path.parent,
+        config.run_state_path.parent,
+        config.lock_path.parent,
+    ):
+        if not directory.is_absolute():
+            prefixes.append(f"{directory.as_posix().rstrip('/')}/")
+    return any(path.startswith(prefix) for prefix in prefixes)
 
 
 def _stop_with_incident(
@@ -524,7 +599,13 @@ def _stop_with_incident(
 
 
 def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcessResult:
-    command = [sys.executable, "-m", "llm_handoff", *config.dispatch_args]
+    command = [
+        sys.executable,
+        "-m",
+        "llm_handoff",
+        *_child_dispatch_options(config),
+        *config.dispatch_args,
+    ]
     log("INFO", f"Starting supervised dispatch child: {_format_command(command)}")
     start_time = time.monotonic()
     output_tail: deque[str] = deque(maxlen=config.tail_lines)
@@ -536,13 +617,17 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
         text=True,
         encoding="utf-8",
         errors="replace",
+        **_process_group_popen_kwargs(),
     )
     assert process.stdout is not None
     _write_run_state(
         config,
         status="child_running",
         route=_current_route(config),
-        snapshot=_repo_snapshot(config.repo_root),
+        snapshot=_repo_snapshot(
+            config.repo_root,
+            handoff_path=_dispatch_handoff_path(config),
+        ),
         repair_attempts=0,
         last_event="child_started",
         child_pid=process.pid,
@@ -574,7 +659,9 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
                 )
                 output_tail.append(stall_line)
                 log("ERROR", stall_line)
-                process.kill()
+                # The child dispatcher owns provider CLI grandchildren; a
+                # plain kill() would orphan them mid-edit.
+                _kill_process_tree(process)
                 break
             if _should_emit_heartbeat(
                 now=now,
@@ -647,6 +734,7 @@ def _run_repair_role(
         handoff_path=dispatch_config.handoff_full_path,
         agent_config=agent_config,
         log=log,
+        repo_root=dispatch_config.repo_root,
     )
 
 
@@ -698,12 +786,18 @@ def _run_preflight(
     check_lock: bool = False,
     strict_handoff: bool = True,
 ) -> PreflightResult:
-    snapshot = _repo_snapshot(config.repo_root)
     errors: list[str] = []
     warnings: list[str] = []
     route: str | None = None
     agents_path = config.repo_root / "AGENTS.md"
-    handoff_path = config.repo_root / DEFAULT_HANDOFF_PATH
+    # The child dispatcher reads handoff_path from dispatch_config.yaml, so
+    # preflight must check the same file (for example a flat HANDOFF.md).
+    try:
+        handoff_path = _load_dispatch_handoff_path(config)
+    except _DISPATCH_CONFIG_ERRORS as exc:
+        errors.append(f"dispatch config could not be loaded: {exc}")
+        handoff_path = (config.repo_root / DEFAULT_HANDOFF_PATH).resolve()
+    snapshot = _repo_snapshot(config.repo_root, handoff_path=handoff_path)
 
     if not agents_path.exists():
         warnings.append(f"missing AGENTS.md at {agents_path}")
@@ -810,9 +904,37 @@ def _log_preflight(preflight: PreflightResult, log: LogFn) -> None:
         log("ERROR", f"Preflight error: {error}")
 
 
+_DISPATCH_CONFIG_ERRORS = (OSError, ValueError, yaml.YAMLError)
+
+
+def _load_dispatch_handoff_path(config: SupervisorConfig) -> Path:
+    dispatch_config = load_dispatch_config(
+        repo_root=config.repo_root,
+        config_path=config.config_path_full_path,
+    )
+    return dispatch_config.handoff_full_path
+
+
+def _dispatch_handoff_path(config: SupervisorConfig) -> Path:
+    """Return the handoff file the child dispatcher will use.
+
+    Falls back to the default layout when dispatch_config.yaml cannot be
+    loaded; preflight reports that failure as an error separately.
+    """
+    try:
+        return _load_dispatch_handoff_path(config)
+    except _DISPATCH_CONFIG_ERRORS:
+        return (config.repo_root / DEFAULT_HANDOFF_PATH).resolve()
+
+
+def _default_snapshot_reader(config: SupervisorConfig) -> SnapshotReader:
+    handoff_path = _dispatch_handoff_path(config)
+    return lambda repo_root: _repo_snapshot(repo_root, handoff_path=handoff_path)
+
+
 def _current_route(config: SupervisorConfig) -> str | None:
     try:
-        content = read_dispatch_text(config.repo_root / DEFAULT_HANDOFF_PATH)
+        content = read_dispatch_text(_dispatch_handoff_path(config))
     except OSError:
         return None
     decision = route_handoff(content)
@@ -897,7 +1019,7 @@ def _write_incident_bundle(
         "\n".join(result.output_lines) + ("\n" if result.output_lines else ""),
         encoding="utf-8",
     )
-    handoff_path = config.repo_root / DEFAULT_HANDOFF_PATH
+    handoff_path = _dispatch_handoff_path(config)
     if handoff_path.exists():
         (incident_path / "handoff-current.md").write_text(
             handoff_path.read_text(encoding="utf-8"),
@@ -1121,6 +1243,7 @@ def _log_supervisor_startup(config: SupervisorConfig, log: LogFn) -> None:
     log("INFO", "  Operator wrapper, optional bounded repair role")
     log("INFO", "================================================")
     log("INFO", f"Repo root:          {config.repo_root}")
+    log("INFO", f"Handoff path:       {_dispatch_handoff_path(config)}")
     log("INFO", f"Dispatcher args:    {dispatch_args}")
     log("INFO", f"Repair role:        {repair_role}")
     log(
@@ -1352,7 +1475,7 @@ def _write_failure_packet(
         "fingerprint": fingerprint,
         "head_sha": snapshot.head_sha,
         "dirty_files": list(snapshot.dirty_files),
-        "handoff_path": str((config.repo_root / DEFAULT_HANDOFF_PATH).resolve()),
+        "handoff_path": str(_dispatch_handoff_path(config)),
         "handoff_sha": snapshot.handoff_sha,
         "log_tail": list(result.output_lines[-config.tail_lines :]),
     }
@@ -1360,11 +1483,18 @@ def _write_failure_packet(
     return packet_path
 
 
-def _repo_snapshot(repo_root: Path) -> RepoSnapshot:
+def _repo_snapshot(
+    repo_root: Path,
+    *,
+    handoff_path: Path | None = None,
+) -> RepoSnapshot:
+    resolved_handoff_path = (
+        handoff_path if handoff_path is not None else repo_root / DEFAULT_HANDOFF_PATH
+    )
     return RepoSnapshot(
         head_sha=_git_stdout(repo_root, ["git", "rev-parse", "HEAD"]),
         dirty_files=_git_dirty_files(repo_root),
-        handoff_sha=_file_sha(repo_root / DEFAULT_HANDOFF_PATH),
+        handoff_sha=_file_sha(resolved_handoff_path),
     )
 
 
@@ -1447,6 +1577,57 @@ def _default_log(level: str, message: str) -> None:
     print(f"[SUPERVISOR] [{level}] {message}")
 
 
+# --repo-root and --config are shared between the supervisor and the child
+# dispatcher. They are resolved once in _parse_args, whichever side of "--"
+# they appear on, so the child and the repair role always load the same
+# repository and configuration.
+def _child_dispatch_options(config: SupervisorConfig) -> list[str]:
+    options = ["--repo-root", str(config.repo_root)]
+    if config.config_path is not None:
+        options.extend(["--config", str(config.config_path_full_path)])
+    return options
+
+
+def _take_child_option(
+    dispatch_args: Sequence[str],
+    option: str,
+) -> tuple[list[str], Path | None]:
+    """Remove ``option VALUE`` or ``option=VALUE`` from the pass-through args."""
+    remaining: list[str] = []
+    value: Path | None = None
+    index = 0
+    while index < len(dispatch_args):
+        argument = dispatch_args[index]
+        if argument == option and index + 1 < len(dispatch_args):
+            value = Path(dispatch_args[index + 1])
+            index += 2
+            continue
+        if argument.startswith(f"{option}="):
+            value = Path(argument.split("=", 1)[1])
+            index += 1
+            continue
+        remaining.append(argument)
+        index += 1
+    return remaining, value
+
+
+def _merge_shared_option(
+    parser: argparse.ArgumentParser,
+    option: str,
+    supervisor_value: Path | None,
+    child_value: Path | None,
+) -> Path | None:
+    if supervisor_value is None:
+        return child_value
+    if child_value is None or child_value.resolve() == supervisor_value.resolve():
+        return supervisor_value
+    parser.error(
+        f"{option} must be the same on both sides of '--': the supervisor got "
+        f"{supervisor_value} and the dispatcher got {child_value}."
+    )
+    return None  # pragma: no cover - parser.error exits
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> SupervisorConfig:
     parser = argparse.ArgumentParser(
         description="Run llm-handoff with supervised operator controls.",
@@ -1487,9 +1668,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> SupervisorConfig:
     known, dispatch_args = parser.parse_known_args(argv)
     if dispatch_args and dispatch_args[0] == "--":
         dispatch_args = dispatch_args[1:]
-    root_start = known.repo_root
-    if root_start is None and known.config is not None and known.config.is_absolute():
-        root_start = known.config.parent
+    dispatch_args, child_repo_root = _take_child_option(dispatch_args, "--repo-root")
+    dispatch_args, child_config = _take_child_option(dispatch_args, "--config")
+    repo_root_option = _merge_shared_option(
+        parser, "--repo-root", known.repo_root, child_repo_root
+    )
+    config_option = _merge_shared_option(parser, "--config", known.config, child_config)
+    root_start = repo_root_option
+    if root_start is None and config_option is not None and config_option.is_absolute():
+        root_start = config_option.parent
     repo_root = detect_repo_root(root_start)
     repair_role = known.repair_role
     max_repair_attempts = (
@@ -1497,7 +1684,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> SupervisorConfig:
         if repair_role is not None and known.max_repair_attempts is None
         else int(known.max_repair_attempts or 0)
     )
-    config_path = known.config
+    config_path = config_option
     if config_path is None and (repo_root / DEFAULT_CONFIG_PATH).exists():
         config_path = DEFAULT_CONFIG_PATH
     return SupervisorConfig(

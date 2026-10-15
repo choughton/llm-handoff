@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from unittest.mock import Mock
@@ -112,6 +113,7 @@ def test_run_epic_close_passes_configured_finalizer_agent(
         role="finalizer",
         handoff_path=dispatch_config.handoff_full_path,
         agent_config=dispatch_config.agents["finalizer"],
+        repo_root=dispatch_config.repo_root,
     )
 
 
@@ -314,3 +316,64 @@ def test_run_epic_close_returns_failed_result_when_subagent_fails(
     assert result.push_status == "UNKNOWN"
     assert result.push_detail is None
     assert "ledger-updater failed" in caplog.text.lower()
+
+
+def test_bounce_counts_persist_across_simulated_restart(tmp_path: Path) -> None:
+    story_id = "story-persisted-bounce"
+    state_path = tmp_path / "logs" / "dispatch" / "bounce-counts.json"
+    ledger.reset_bounce(story_id)
+
+    assert (
+        ledger.record_status_transition(
+            story_id,
+            HandoffStatus.VERIFIED_FAIL,
+            state_path=state_path,
+        )
+        == 1
+    )
+    assert (
+        ledger.record_status_transition(
+            story_id,
+            HandoffStatus.VERIFIED_FAIL,
+            state_path=state_path,
+        )
+        == 2
+    )
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "bounce_counts": {story_id: 2},
+    }
+
+    # Simulate a dispatcher restart: the in-memory table is empty again.
+    ledger._BOUNCE_COUNTS.pop(story_id, None)
+    assert ledger.bounce_count(story_id) == 0
+
+    assert ledger.seed_bounce_counts(state_path) == {story_id: 2}
+    assert ledger.bounce_count(story_id) == 2
+
+    ledger.record_status_transition(
+        story_id,
+        HandoffStatus.VERIFIED_PASS,
+        state_path=state_path,
+    )
+
+    assert ledger.bounce_count(story_id) == 0
+    assert json.loads(state_path.read_text(encoding="utf-8"))["bounce_counts"] == {}
+
+
+def test_seed_bounce_counts_ignores_missing_or_corrupt_state(tmp_path: Path) -> None:
+    story_id = "story-corrupt-bounce"
+    ledger.reset_bounce(story_id)
+    missing_path = tmp_path / "missing.json"
+    corrupt_path = tmp_path / "corrupt.json"
+    corrupt_path.write_text("{not json", encoding="utf-8")
+    malformed_path = tmp_path / "malformed.json"
+    malformed_path.write_text(
+        json.dumps({"bounce_counts": {story_id: "3", "other": -1, "flag": True}}),
+        encoding="utf-8",
+    )
+
+    assert ledger.seed_bounce_counts(missing_path) == {}
+    assert ledger.seed_bounce_counts(corrupt_path) == {}
+    assert ledger.seed_bounce_counts(malformed_path) == {}
+    assert ledger.bounce_count(story_id) == 0

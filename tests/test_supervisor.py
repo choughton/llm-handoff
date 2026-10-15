@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 from pathlib import Path
+import sys
 from typing import Any
+
+import pytest
 
 from llm_handoff.agent_types import SubagentResult
 
@@ -144,7 +148,7 @@ def test_supervisor_optional_repair_role_restarts_after_scoped_commit(
     dispatch_results = [
         supervisor.DispatchProcessResult(
             exit_code=1,
-            output_lines=("[ERROR] Post-dispatch validation failed",),
+            output_lines=("[AGENT] Post-dispatch gate FAILED for backend.",),
             elapsed_seconds=0.1,
         ),
         supervisor.DispatchProcessResult(
@@ -337,7 +341,8 @@ def test_supervisor_main_parses_options_and_forwards_dispatch_args(
     assert config.heartbeat_interval_seconds == 300
     assert config.stalled_output_timeout_seconds == 900
     assert config.notify_command == "echo supervisor"
-    assert config.dispatch_args == ("--dry-run", "--config", "dispatch_config.yaml")
+    assert config.dispatch_args == ("--dry-run",)
+    assert config.config_path == Path("dispatch_config.yaml")
 
 
 def test_supervisor_main_forwards_child_help_arg(tmp_path: Path, monkeypatch) -> None:
@@ -363,3 +368,460 @@ def test_dispatch_supervised_wrappers_use_source_python_entrypoint() -> None:
 
     assert "-m llm_handoff.supervisor @args" in ps1_text
     assert "-m llm_handoff.supervisor %*" in cmd_text
+
+
+def test_repairable_markers_match_real_orchestrator_log_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # Build the marker corpus from the orchestrator's own log lines rather
+    # than from hand-typed strings so the supervisor cannot drift away from
+    # what the dispatcher actually emits.
+    supervisor = _load_supervisor_module()
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+    from llm_handoff.agent_types import DispatchResult
+    from llm_handoff.config import DispatchConfig
+    from llm_handoff.validator import ValidationResult
+
+    repo_root = _write_repo(tmp_path)
+    config = DispatchConfig(
+        repo_root=repo_root,
+        poll_interval_seconds=0,
+        max_consecutive_failures=1,
+    )
+    lines: list[str] = []
+
+    def log(level: str, message: str) -> None:
+        lines.append(f"[{level}] {message}")
+
+    failed_validation = ValidationResult(
+        verdict="NO",
+        warnings=[],
+        errors=[
+            "scope_claim_missing: Handoff is missing an **Agent:** ownership line."
+        ],
+        routing_instruction="auditor",
+    )
+
+    # Post-dispatch gate failure and the validation verdict line.
+    orchestrator._log_validation(failed_validation, "backend", log)
+
+    # Producer repair ran but violated a post-check (HEAD did not change).
+    monkeypatch.setattr(orchestrator, "_git_head", lambda _repo_root: "a" * 40)
+    monkeypatch.setattr(orchestrator, "_git_dirty_files", lambda _repo_root: ())
+    monkeypatch.setattr(
+        orchestrator,
+        "_dispatch_handoff_hygiene_repair",
+        lambda **_kwargs: DispatchResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.0
+        ),
+    )
+    orchestrator._attempt_post_dispatch_handoff_hygiene_repair(
+        config=config,
+        validation_result=failed_validation,
+        previous_agent="backend",
+        log=log,
+    )
+
+    # No repair lane exists for the producer.
+    monkeypatch.setattr(
+        orchestrator,
+        "_dispatch_handoff_hygiene_repair",
+        lambda **_kwargs: None,
+    )
+    orchestrator._attempt_post_dispatch_handoff_hygiene_repair(
+        config=config,
+        validation_result=failed_validation,
+        previous_agent="frontend",
+        log=log,
+    )
+
+    # Consecutive failure budget exhausted.
+    orchestrator._record_failure(config, config.max_consecutive_failures, log)
+
+    for marker in supervisor._REPAIRABLE_ZERO_EXIT_MARKERS:
+        matching = tuple(line for line in lines if marker in line)
+        assert matching, f"marker {marker!r} never appears in orchestrator output"
+        assert supervisor._is_repairable_dispatch_failure(
+            supervisor.DispatchProcessResult(
+                exit_code=0,
+                output_lines=matching,
+                elapsed_seconds=0.1,
+            )
+        )
+
+    # A clean cycle must not trip the zero-exit repair path.
+    lines.clear()
+    orchestrator._log_validation(
+        ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="auditor"
+        ),
+        "backend",
+        log,
+    )
+    assert not supervisor._is_repairable_dispatch_failure(
+        supervisor.DispatchProcessResult(
+            exit_code=0,
+            output_lines=tuple(lines),
+            elapsed_seconds=0.1,
+        )
+    )
+
+
+FLAT_HANDOFF_CONTENT = """---
+next_agent: planner
+reason: Scope the next task.
+producer: user
+---
+
+# Flat Handoff
+
+Plan the next bounded task.
+"""
+
+
+def _write_flat_repo(tmp_path: Path) -> Path:
+    # CONFIGURATION.md's supported flat layout: HANDOFF.md at the repo root and
+    # no docs/handoff directory at all.
+    repo_root = tmp_path
+    (repo_root / ".git").mkdir()
+    (repo_root / "HANDOFF.md").write_text(FLAT_HANDOFF_CONTENT, encoding="utf-8")
+    (repo_root / "AGENTS.md").write_text("repo instructions\n", encoding="utf-8")
+    (repo_root / "dispatch_config.yaml").write_text(
+        "handoff_path: HANDOFF.md\n",
+        encoding="utf-8",
+    )
+    return repo_root
+
+
+def test_supervisor_honors_flat_handoff_path_from_dispatch_config(
+    tmp_path: Path,
+) -> None:
+    from hashlib import sha256
+
+    supervisor = _load_supervisor_module()
+    repo_root = _write_flat_repo(tmp_path)
+    flat_handoff = (repo_root / "HANDOFF.md").resolve()
+    config = supervisor.SupervisorConfig(
+        repo_root=repo_root,
+        config_path=Path("dispatch_config.yaml"),
+        doctor=True,
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = supervisor.run_supervised_dispatch(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+        dispatch_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("doctor mode must not dispatch"),
+        ),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", f"Handoff path:       {flat_handoff}") in log_messages
+    state = json.loads(config.run_state_path_full_path.read_text(encoding="utf-8"))
+    assert state["status"] == "doctor_passed"
+    assert state["route"] == "planner"
+    assert state["handoff_sha"] == sha256(flat_handoff.read_bytes()).hexdigest()
+    assert supervisor._current_route(config) == "planner"
+
+    snapshot = supervisor._default_snapshot_reader(config)(repo_root)
+    assert snapshot.handoff_sha == state["handoff_sha"]
+    packet_path = supervisor._write_failure_packet(
+        config,
+        _dispatch_result(exit_code=1),
+        fingerprint="f" * 40,
+        snapshot=snapshot,
+    )
+    assert json.loads(packet_path.read_text(encoding="utf-8"))["handoff_path"] == (
+        str(flat_handoff)
+    )
+    incident_path = supervisor._write_incident_bundle(
+        config,
+        _dispatch_result(exit_code=1),
+        fingerprint="f" * 40,
+        reason="test",
+        snapshot=snapshot,
+    )
+    assert (incident_path / "handoff-current.md").read_text(encoding="utf-8") == (
+        FLAT_HANDOFF_CONTENT
+    )
+
+
+def test_supervisor_preflight_reports_unloadable_dispatch_config(
+    tmp_path: Path,
+) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    (repo_root / "dispatch_config.yaml").write_text(
+        "handoff_path: [\n",
+        encoding="utf-8",
+    )
+    config = supervisor.SupervisorConfig(repo_root=repo_root, doctor=True)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = supervisor.run_supervised_dispatch(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+        dispatch_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("doctor mode must not dispatch"),
+        ),
+    )
+
+    assert exit_code == 1
+    state = json.loads(config.run_state_path_full_path.read_text(encoding="utf-8"))
+    assert state["status"] == "doctor_failed"
+    assert any(
+        level == "ERROR"
+        and message.startswith("Preflight error: dispatch config could not be loaded")
+        for level, message in log_messages
+    )
+
+
+class _ExitedChild:
+    # A child that produces no output and exits immediately; enough to see
+    # which command line the supervisor built.
+    def __init__(self) -> None:
+        self.stdout = iter(())
+        self.pid = 1
+        self.returncode = 0
+
+    def poll(self) -> int:
+        return 0
+
+    def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        return None
+
+
+def test_supervisor_shares_repo_root_and_config_with_child_and_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    (repo_root / "alt.yaml").write_text(
+        "agents:\n  validator:\n    provider: claude\n    binary: claude-alt\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        supervisor,
+        "run_supervised_dispatch",
+        lambda config: captured.update(config=config) or 0,
+    )
+
+    # --config after "--" used to reach only the child; the supervisor's
+    # repair role then loaded the default config instead.
+    assert (
+        supervisor.main(
+            ["--repo-root", str(repo_root), "--", "--dry-run", "--config=alt.yaml"]
+        )
+        == 0
+    )
+    config = captured["config"]
+    assert config.repo_root == repo_root.resolve()
+    assert config.config_path == Path("alt.yaml")
+    assert config.dispatch_args == ("--dry-run",)
+
+    popen_commands: list[list[str]] = []
+
+    def fake_popen(command: list[str], **_kwargs: Any) -> _ExitedChild:
+        popen_commands.append(list(command))
+        return _ExitedChild()
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        supervisor,
+        "_repo_snapshot",
+        lambda _repo_root, **_kwargs: supervisor.RepoSnapshot(
+            head_sha=None, dirty_files=(), handoff_sha=None
+        ),
+    )
+
+    result = supervisor._run_dispatch_child(config, lambda level, message: None)
+
+    assert result.exit_code == 0
+    assert popen_commands == [
+        [
+            sys.executable,
+            "-m",
+            "llm_handoff",
+            "--repo-root",
+            str(repo_root.resolve()),
+            "--config",
+            str(repo_root.resolve() / "alt.yaml"),
+            "--dry-run",
+        ]
+    ]
+
+    repair_calls: list[dict[str, Any]] = []
+
+    def fake_invoke(subagent_name: str, prompt: str, **kwargs: Any) -> SubagentResult:
+        del subagent_name, prompt
+        repair_calls.append(kwargs)
+        return _repair_result()
+
+    monkeypatch.setattr(supervisor, "invoke_support_role", fake_invoke)
+    repair_config = dataclasses.replace(
+        config, repair_role="validator", max_repair_attempts=1
+    )
+
+    supervisor._run_repair_role(
+        repair_config,
+        repo_root / "failure-packet.json",
+        lambda level, message: None,
+    )
+
+    assert len(repair_calls) == 1
+    assert repair_calls[0]["agent_config"].binary == "claude-alt"
+
+
+def test_supervisor_rejects_conflicting_shared_options(tmp_path: Path) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+
+    with pytest.raises(SystemExit) as excinfo:
+        supervisor._parse_args(
+            [
+                "--repo-root",
+                str(repo_root),
+                "--config",
+                "a.yaml",
+                "--",
+                "--config",
+                "b.yaml",
+            ]
+        )
+
+    assert excinfo.value.code == 2
+
+
+def _run_repair_scenario(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    before_dirty: tuple[str, ...],
+    after_dirty: tuple[str, ...],
+) -> tuple[int, Any, list[tuple[str, str]]]:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    config = supervisor.SupervisorConfig(
+        repo_root=repo_root,
+        repair_role="validator",
+        max_repair_attempts=1,
+    )
+    dispatch_results = [
+        supervisor.DispatchProcessResult(
+            exit_code=1,
+            output_lines=("[AGENT] Post-dispatch gate FAILED for backend.",),
+            elapsed_seconds=0.1,
+        ),
+        _dispatch_result(),
+    ]
+    before = supervisor.RepoSnapshot(
+        head_sha="a" * 40, dirty_files=before_dirty, handoff_sha="h1"
+    )
+    after = supervisor.RepoSnapshot(
+        head_sha="b" * 40, dirty_files=after_dirty, handoff_sha="h2"
+    )
+    # snapshot_fn call order: loop start, before repair, after repair, then
+    # loop start and success record on a restart.
+    snapshots = [before, before, after, after, after]
+    monkeypatch.setattr(
+        supervisor,
+        "_git_changed_files",
+        lambda *_args: ("docs/handoff/HANDOFF.md",),
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = supervisor.run_supervised_dispatch(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+        dispatch_runner=lambda _config, _log: dispatch_results.pop(0),
+        repair_runner=lambda _config, _packet, _log: _repair_result(),
+        snapshot_reader=lambda _repo_root: snapshots.pop(0),
+    )
+    return exit_code, config, log_messages
+
+
+def _summary_records(config: Any) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in config.summary_path_full_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip()
+    ]
+
+
+def test_supervisor_stops_when_repair_leaves_dirty_files_outside_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    exit_code, config, log_messages = _run_repair_scenario(
+        tmp_path,
+        monkeypatch,
+        before_dirty=(),
+        after_dirty=("src/app.py",),
+    )
+
+    assert exit_code == 1
+    assert any(
+        level == "ERROR"
+        and "uncommitted changes outside the allowed repair scope: src/app.py"
+        in message
+        for level, message in log_messages
+    )
+    stop_records = [
+        record
+        for record in _summary_records(config)
+        if record["event"] == "dispatch_stop"
+    ]
+    assert [record["reason"] for record in stop_records] == [
+        "repair_dirty_out_of_scope"
+    ]
+    incident_path = Path(stop_records[0]["incident_path"])
+    assert (incident_path / "changed-files.txt").read_text(
+        encoding="utf-8"
+    ) == "docs/handoff/HANDOFF.md\nsrc/app.py\n"
+
+
+def test_supervisor_tolerates_in_scope_and_runtime_state_dirty_files_after_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    exit_code, config, _log_messages = _run_repair_scenario(
+        tmp_path,
+        monkeypatch,
+        before_dirty=(),
+        after_dirty=(
+            "docs/notes.md",
+            "logs/dispatch/codex/session.json",
+            "logs/dispatch/supervisor/failure-20260101T000000Z-abc.json",
+        ),
+    )
+
+    assert exit_code == 0
+    repair_records = [
+        record
+        for record in _summary_records(config)
+        if record["event"] == "repair_attempt"
+    ]
+    assert [record["restart_outcome"] for record in repair_records] == ["restarted"]
+
+
+def test_supervisor_does_not_blame_repair_for_pre_existing_dirty_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    exit_code, _config, _log_messages = _run_repair_scenario(
+        tmp_path,
+        monkeypatch,
+        before_dirty=("src/legacy.py",),
+        after_dirty=("src/legacy.py",),
+    )
+
+    assert exit_code == 0

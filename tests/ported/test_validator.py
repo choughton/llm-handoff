@@ -123,19 +123,16 @@ def test_parse_validation_output_requires_valid_verdict_line() -> None:
 
 def test_validate_handoff_accepts_windows_and_unc_paths_in_body() -> None:
     handoff_content = _with_frontmatter(
-        r"""# Task Assignment
+        r"""# Handoff: Windows path fixture
 
-**Agent:** backend
+## Work Packet
 
-## Objective
-
-Update the local fixture under C:\repo\src and compare it with \\server\share\docs.
-
-## Acceptance Criteria
-
-- Preserve Windows and UNC path text without changing routing.
-
-Reference SHA: 82ce839
+- **Objective:** Update the local fixture under C:\repo\src and compare it with \\server\share\docs.
+- **Files in scope:** C:\repo\src\fixture.py
+- **Files out of bounds:** none
+- **Context:** Preserve Windows and UNC path text without changing routing (see 82ce839).
+- **Verification command:** python -m pytest tests -q
+- **Expected next route:** auditor
 """,
         next_agent="backend",
         reason="Route backend path-handling fixture.",
@@ -1089,7 +1086,7 @@ producer: frontend (manual frontend)
     assert any("frontmatter_next_agent_invalid" in error for error in result.errors)
 
 
-def test_validate_handoff_rejects_planner_output_without_task_assignment_block(
+def test_validate_handoff_rejects_planner_output_without_work_packet(
     tmp_path: Path,
 ) -> None:
     handoff_path = _write_handoff(
@@ -1114,7 +1111,10 @@ def test_validate_handoff_rejects_planner_output_without_task_assignment_block(
     )
 
     assert result.verdict == "NO"
-    assert any("scope_claim_mismatch" in error for error in result.errors)
+    assert any(
+        error.startswith("scope_claim_mismatch:") and "## Work Packet" in error
+        for error in result.errors
+    )
 
 
 def test_validate_handoff_accepts_frontmatter_producer_for_completed_work(
@@ -1463,3 +1463,146 @@ def test_validate_handoff_allows_auditor_handoff_to_epic_close_for_ledger_close_
 def test_author_role_coalesces_support_variants() -> None:
     assert validator._author_role("auditor") == "auditor-family"
     assert validator._author_role("validator") == "auditor-family"
+
+
+# The exact body shape shipped in .gemini/agents/planner.md ("Output Shape")
+# filled with the worked example from docs/handoff/PLANNER_HANDOFF_PROMPT.md.
+SHIPPED_PLANNER_WORK_PACKET_BODY = """# Handoff: Reject empty widget names
+
+## Work Packet
+
+- **Objective:** Reject empty `name` values in `create_widget`.
+- **Files in scope:** src/foo/bar.py, tests/test_bar.py
+- **Files out of bounds:** src/foo/api.py, frontend/
+- **Context:** Preserve the existing `WidgetError` contract.
+- **Verification command:** python -m pytest tests/test_bar.py::test_create_widget_rejects_empty_name -q
+- **Expected next route:** auditor
+
+## Next Step
+- **backend:** Implement the validation and route to auditor.
+"""
+
+
+def _shipped_planner_handoff(next_agent: str = "backend") -> str:
+    return _with_frontmatter(
+        SHIPPED_PLANNER_WORK_PACKET_BODY,
+        next_agent=next_agent,
+        reason='"Dispatch EXAMPLE-EPIC-S1: reject empty widget names."',
+        producer="planner",
+    )
+
+
+@pytest.mark.parametrize("next_agent", ["backend", "frontend"])
+def test_validate_handoff_accepts_shipped_planner_work_packet_shape(
+    next_agent: str,
+) -> None:
+    result = validator.validate_handoff_text(
+        _shipped_planner_handoff(next_agent),
+        "planner",
+    )
+
+    assert result.errors == []
+    assert result.routing_instruction == next_agent
+    # A planner assignment has no commit yet, so the only expected warning is
+    # the informational sha_missing notice.
+    assert result.warnings == [
+        "sha_missing: Planner handoff does not yet include a git commit SHA."
+    ]
+    assert result.verdict == "WARNINGS-ONLY"
+
+
+def test_validate_handoff_shipped_work_packet_with_sha_reference_is_clean() -> None:
+    handoff_content = _shipped_planner_handoff().replace(
+        "Preserve the existing `WidgetError` contract.",
+        "Preserve the existing `WidgetError` contract introduced in 82ce839.",
+    )
+
+    result = validator.validate_handoff_text(handoff_content, "planner")
+
+    assert result.verdict == "YES"
+    assert result.errors == []
+    assert result.warnings == []
+
+
+def test_validate_handoff_warns_for_missing_or_empty_work_packet_fields() -> None:
+    handoff_content = _with_frontmatter(
+        """# Handoff: Partial work packet
+
+## Work Packet
+
+- **Objective:** Reject empty `name` values in `create_widget`.
+- **Files out of bounds:**
+- **Expected next route:** auditor
+""",
+        next_agent="backend",
+        reason="Dispatch a partial work packet.",
+        producer="planner",
+    )
+
+    result = validator.validate_handoff_text(handoff_content, "planner")
+
+    assert result.verdict == "WARNINGS-ONLY"
+    assert result.errors == []
+    assert (
+        "acceptance_coverage_unclear: Work Packet is missing the Files in scope field."
+        in result.warnings
+    )
+    assert (
+        "acceptance_coverage_unclear: Work Packet is missing the Context field."
+        in result.warnings
+    )
+    assert (
+        "acceptance_coverage_unclear: Work Packet is missing the Verification command field."
+        in result.warnings
+    )
+    assert (
+        "acceptance_coverage_unclear: Work Packet field Files out of bounds is empty."
+        in result.warnings
+    )
+    assert all("Objective" not in warning for warning in result.warnings)
+    assert all(
+        "task_assignment_deprecated" not in warning for warning in result.warnings
+    )
+
+
+def test_validate_handoff_accepts_legacy_task_assignment_with_deprecation_warning() -> (
+    None
+):
+    handoff_content = _with_frontmatter(
+        """## Task Assignment
+
+**Agent:** backend
+
+### Objective
+
+Implement the backend dispatch refactor (see 82ce839).
+
+### Acceptance Criteria
+
+- Persist per-model completion incrementally.
+""",
+        next_agent="backend",
+        reason="Legacy task assignment fixture.",
+        producer="planner",
+    )
+
+    result = validator.validate_handoff_text(handoff_content, "planner")
+
+    assert result.verdict == "WARNINGS-ONLY"
+    assert result.errors == []
+    assert result.warnings == [
+        "task_assignment_deprecated: ## Task Assignment is a legacy alias; use a "
+        "## Work Packet section with the six bold fields instead."
+    ]
+
+
+def test_validate_handoff_work_packet_satisfies_scope_claim_for_any_planner_route() -> (
+    None
+):
+    result = validator.validate_handoff_text(
+        _shipped_planner_handoff("auditor"),
+        "planner",
+    )
+
+    assert result.errors == []
+    assert result.routing_instruction == "auditor"

@@ -377,8 +377,12 @@ def invoke_gemini(
     previous_handoff_sha: str | None = None,
     current_handoff_sha: str | None = None,
     log: LogFn | None = None,
+    repo_root: Path | None = None,
 ) -> DispatchResult:
-    repo_root = Path.cwd()
+    # The dispatcher may run from its own source checkout against a different
+    # target repo, so the launch directory must come from the config rather
+    # than from the process cwd.
+    repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
     resolved_handoff_path = _resolve_handoff_path(handoff_path, repo_root)
     should_resume = use_resume and bool(session_id)
     resolved_mention = mention or _default_gemini_mention(role)

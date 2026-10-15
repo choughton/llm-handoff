@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -15,6 +16,52 @@ from llm_handoff.agent_types import LogFn, _ProcessResult
 
 
 PROCESS_READER_JOIN_TIMEOUT_SECONDS = 0.2
+PROCESS_TREE_KILL_TIMEOUT_SECONDS = 30
+_WINDOWS = os.name == "nt"
+
+
+def _process_group_popen_kwargs() -> dict[str, object]:
+    # On POSIX, start the child in its own session so the whole process tree
+    # shares one process group that _kill_process_tree can signal at once.
+    # Windows ignores this and relies on taskkill /T instead.
+    if _WINDOWS:
+        return {}
+    return {"start_new_session": True}
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    """Terminate ``process`` and every descendant it spawned.
+
+    On Windows the configured provider binaries are ``.cmd`` shims, so
+    ``Popen.kill()`` only terminates the ``cmd.exe`` wrapper and the inner
+    ``node`` process keeps running and editing the repo. ``taskkill /T``
+    walks the tree while the parent is still alive. On POSIX the child was
+    started in its own session, so killing its process group reaches every
+    descendant.
+    """
+    if process.poll() is not None:
+        return
+    if _WINDOWS:
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True,
+                check=False,
+                timeout=PROCESS_TREE_KILL_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    # Always fall back to a direct kill so a failed tree kill still ends the
+    # immediate child and lets the caller's wait() return.
+    try:
+        process.kill()
+    except OSError:
+        pass
 
 
 def _append_agent_additional_instruction(
@@ -113,6 +160,7 @@ def _run_command_streaming(
         "encoding": "utf-8",
         "errors": "replace",
         "bufsize": 1,
+        **_process_group_popen_kwargs(),
     }
     if env is not None:
         popen_kwargs["env"] = env
@@ -142,19 +190,25 @@ def _run_command_streaming(
 
     deadline = time.monotonic() + (timeout_ms / 1000)
     timed_out = False
-    while process.poll() is None and time.monotonic() < deadline:
-        _drain_stream_queue(
-            stream_queue,
-            stdout_parts=stdout_parts,
-            stderr_parts=stderr_parts,
-            on_stdout=on_stdout,
-            on_stderr=on_stderr,
-            timeout=0.1,
-        )
+    try:
+        while process.poll() is None and time.monotonic() < deadline:
+            _drain_stream_queue(
+                stream_queue,
+                stdout_parts=stdout_parts,
+                stderr_parts=stderr_parts,
+                on_stdout=on_stdout,
+                on_stderr=on_stderr,
+                timeout=0.1,
+            )
+    except BaseException:
+        # A KeyboardInterrupt no longer reaches a child that runs in its own
+        # process group, so take the tree down before propagating.
+        _kill_process_tree(process)
+        raise
 
     if process.poll() is None:
         timed_out = True
-        process.kill()
+        _kill_process_tree(process)
 
     process.wait()
     for reader in readers:

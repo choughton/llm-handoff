@@ -50,6 +50,7 @@ def test_invoke_role_dispatches_backend_to_configured_claude(
         "timeout_ms": 123,
         "agent_name": "backend-worker",
         "log": None,
+        "repo_root": None,
     }
 
 
@@ -84,6 +85,7 @@ def test_invoke_role_dispatches_planner_to_configured_codex(
         binary="codex-custom",
         skill_name="custom-skill",
         timeout_ms=456,
+        repo_root=None,
     )
 
 
@@ -125,4 +127,5 @@ def test_invoke_support_role_dispatches_validator_to_configured_gemini(
         previous_handoff_sha=None,
         current_handoff_sha=None,
         log=None,
+        repo_root=None,
     )

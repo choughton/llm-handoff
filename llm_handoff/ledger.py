@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
+from pathlib import Path
 import re
 from typing import Callable, Literal
 
 from llm_handoff.agent_types import HandoffStatus
 from llm_handoff.agent_roles import invoke_support_role
-from llm_handoff.config import DispatchConfig
+from llm_handoff.config import DEFAULT_HANDOFF_PATH, DispatchConfig
 
 
 PushStatus = Literal["PUSHED", "FAILED", "SKIPPED", "UNKNOWN"]
 
-LEDGER_UPDATER_PROMPT = (
+LEDGER_UPDATER_PROMPT_TEMPLATE = (
     "Use the finalizer or ledger-updater agent to update the project state. "
-    "Read docs/handoff/HANDOFF.md for the completed scope and validation verdict. "
+    "Read {handoff_path} for the completed scope and validation verdict. "
     "Update PROJECT_STATE.md with the completed scope, next state, and durable commit references. "
-    "Rewrite docs/handoff/HANDOFF.md so YAML frontmatter routes the next cycle "
+    "Rewrite {handoff_path} so YAML frontmatter routes the next cycle "
     "to planner for the next phase or to user if blocked; do not leave it "
     "routing to finalizer after the state update is complete. "
-    "Commit PROJECT_STATE.md and docs/handoff/HANDOFF.md atomically with a "
+    "Commit PROJECT_STATE.md and {handoff_path} atomically with a "
     "clear message and any required Co-Authored-By trailer. Do not push unless "
     "the repository instructions explicitly allow this finalizer to push. "
     "Return ONLY this exact machine-readable format, one field per line: "
@@ -35,6 +37,17 @@ LEDGER_UPDATER_PROMPT = (
     "the COMMIT SHA line. "
     "Do not return prose, explanations, markdown headings, or conversational text."
 )
+
+
+def ledger_updater_prompt(handoff_path: Path = DEFAULT_HANDOFF_PATH) -> str:
+    # The finalizer prompt names the handoff file by its configured relative
+    # path so the flat HANDOFF.md layout gets correct instructions too.
+    return LEDGER_UPDATER_PROMPT_TEMPLATE.format(
+        handoff_path=Path(handoff_path).as_posix()
+    )
+
+
+LEDGER_UPDATER_PROMPT = ledger_updater_prompt()
 
 _YES_NO_LINE_RE = r"(?im)^{label}:\s*(YES|NO)(?:\s*\((.+)\))?\s*$"
 _SCOPE_CLOSED_RE = re.compile(r"(?im)^SCOPE CLOSED:\s*(.+)\s*$")
@@ -117,26 +130,90 @@ def bounce_count(story_id: str) -> int:
     return _BOUNCE_COUNTS.get(story_id, 0)
 
 
-def increment_bounce(story_id: str) -> int:
+def increment_bounce(story_id: str, *, state_path: Path | None = None) -> int:
+    # Memory is updated before the file write so a failed write never loses
+    # the in-process count.
     _BOUNCE_COUNTS[story_id] = bounce_count(story_id) + 1
+    _persist_bounce_count(state_path, story_id, _BOUNCE_COUNTS[story_id])
     return _BOUNCE_COUNTS[story_id]
 
 
-def reset_bounce(story_id: str) -> None:
+def reset_bounce(story_id: str, *, state_path: Path | None = None) -> None:
     _BOUNCE_COUNTS.pop(story_id, None)
+    _persist_bounce_count(state_path, story_id, None)
 
 
-def record_status_transition(story_id: str | None, status: HandoffStatus | None) -> int:
+def record_status_transition(
+    story_id: str | None,
+    status: HandoffStatus | None,
+    *,
+    state_path: Path | None = None,
+) -> int:
+    """Update the story's bounce count for a post-dispatch status.
+
+    When ``state_path`` is given the change is also written to that JSON file
+    so the three-fix circuit breaker survives a dispatcher restart; an
+    ``OSError`` from that write propagates to the caller.
+    """
     if not story_id or status is None:
         return 0
     if status == HandoffStatus.VERIFIED_FAIL:
-        return increment_bounce(story_id)
+        return increment_bounce(story_id, state_path=state_path)
     if status in {
         HandoffStatus.VERIFIED_PASS,
         HandoffStatus.ESCALATE_TO_USER,
     }:
-        reset_bounce(story_id)
+        reset_bounce(story_id, state_path=state_path)
     return bounce_count(story_id)
+
+
+def seed_bounce_counts(state_path: Path) -> dict[str, int]:
+    """Load persisted bounce counts into memory and return what was loaded.
+
+    Persisted values override in-memory values for the stories they name;
+    stories only known in memory are left untouched. A missing or unreadable
+    file loads nothing.
+    """
+    persisted = _read_bounce_state(state_path)
+    _BOUNCE_COUNTS.update(persisted)
+    return dict(persisted)
+
+
+def _read_bounce_state(state_path: Path) -> dict[str, int]:
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    counts = payload.get("bounce_counts") if isinstance(payload, dict) else None
+    if not isinstance(counts, dict):
+        return {}
+    return {
+        story_id: count
+        for story_id, count in counts.items()
+        if isinstance(story_id, str)
+        and isinstance(count, int)
+        and not isinstance(count, bool)
+        and count > 0
+    }
+
+
+def _persist_bounce_count(
+    state_path: Path | None,
+    story_id: str,
+    count: int | None,
+) -> None:
+    if state_path is None:
+        return
+    counts = _read_bounce_state(state_path)
+    if count is None:
+        counts.pop(story_id, None)
+    else:
+        counts[story_id] = count
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": 1, "bounce_counts": dict(sorted(counts.items()))}
+    temporary_path = state_path.with_name(f"{state_path.name}.tmp")
+    temporary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(state_path)
 
 
 def run_epic_close(
@@ -145,15 +222,18 @@ def run_epic_close(
     log: LogFn | None = None,
 ) -> EpicCloseResult:
     kwargs = {}
+    prompt = LEDGER_UPDATER_PROMPT
     if config is not None:
+        prompt = ledger_updater_prompt(config.handoff_path)
         kwargs = {
             "role": "finalizer",
             "handoff_path": config.handoff_full_path,
             "agent_config": config.agents["finalizer"],
+            "repo_root": config.repo_root,
         }
     subagent_result = invoke_support_role(
         "ledger-updater",
-        LEDGER_UPDATER_PROMPT,
+        prompt,
         log=log,
         **kwargs,
     )
