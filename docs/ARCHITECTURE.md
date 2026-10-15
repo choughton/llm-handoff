@@ -53,6 +53,8 @@ Continue, pause, or escalate
   control flow.
 - `llm_handoff.normalizer_models`: normalizer schema and prompt contract.
 - `llm_handoff.normalizer_providers.*`: model-provider normalizer adapters.
+- `llm_handoff.audit_review`: opt-in audit fan-out with a quality reviewer
+  and a security reviewer, structured verdicts, and the merge rule.
 - `llm_handoff.ledger`: finalizer-style close flow for durable state updates.
 - `llm_handoff.logging_util`: dispatch log writer.
 - `llm_handoff.text_io`: robust text decoding for handoff files.
@@ -138,6 +140,10 @@ The dispatcher should name and isolate failure modes rather than guessing:
 - missing route after dispatch;
 - malformed validator output;
 - malformed close/finalizer output;
+- audit fan-out reviewer failure: `review_scope_unavailable`,
+  `security_extension_missing`, `quality_verdict_malformed`,
+  `security_verdict_malformed`, reviewer exit or timeout, or
+  `reviewer_wrote_handoff`.
 - work-claim gate failure (opt-in): missing or unparseable Work Packet,
   `scope_sha` not at HEAD, scope violation, uncommitted changes, a failed,
   missing, or timed-out configured scanner, or a failed verification command.
@@ -290,6 +296,61 @@ must not independently rewrite `HANDOFF.md`, update project-state files, or
 create competing routing state. This keeps the handoff file as the mutex and
 preserves the serial dispatch contract.
 
+## Audit Fan-Out
+
+By default the auditor route runs one reviewer that both judges the work and
+rewrites `HANDOFF.md`. Setting `audit.reviewers: [quality, security]` changes
+that route into a read-only fan-out:
+
+1. The dispatcher computes a concrete Git range: the `HEAD` recorded before
+   the implementer dispatch, through the handoff's `scope_sha`. Without a
+   recorded base it falls back to `scope_sha~1`. Reviewers are never asked to
+   scan the whole repository.
+2. The quality reviewer (the configured `auditor` agent) and a security
+   reviewer run concurrently in two threads through the existing streaming
+   process runner.
+3. Each reviewer returns a JSON verdict validated by a Pydantic model:
+   `verdict` (`pass` or `fail`) and `findings[]` with `severity`, `file`,
+   `line`, `title`, `description`, and `recommendation`. The quality verdict
+   also carries the forward route and the evidence fields.
+4. The dispatcher merges the verdicts and writes `HANDOFF.md` itself. A
+   finding at or above `audit.block_severity`, or either reviewer returning
+   `fail`, routes back to the implementer with `status: verified_fail`.
+   Otherwise the handoff follows the quality reviewer's route.
+
+The single-writer rule from the provider-native helper boundary still holds:
+in fan-out mode the dispatcher is the only writer of `HANDOFF.md`. Reviewers
+are told not to edit it, and the dispatcher hashes the file around each
+reviewer run. A changed hash is a hard `reviewer_wrote_handoff:` error; the
+dispatcher restores the pre-review content and treats the cycle as a failed
+dispatch. Any malformed or missing verdict fails closed the same way.
+
+Choosing a security vendor different from the implementer's provider avoids
+asking a model family to grade its own output. When `audit.security_provider`
+is unset, the dispatcher picks the first of `claude`, `codex`, and `gemini`
+that differs from the implementer role's provider.
+
+### Reviewer Security Posture
+
+- The security reviewer gets read-only tool permissions where the CLI supports
+  them: Claude runs in `dontAsk` mode with an allow-list of read tools and
+  `git diff`/`git show`/`git log`, and edit tools denied; Gemini runs in
+  `--approval-mode plan`; the Codex fallback runs `codex exec --sandbox
+  read-only`. The Codex Security CLI has no documented write mode for scans.
+- The quality reviewer keeps the configured auditor permissions because it
+  runs verification commands. The handoff hash check, not a sandbox, enforces
+  that it does not write `HANDOFF.md`. Other file writes by the quality
+  reviewer are not detected by the fan-out.
+- The existing API-key environment scrubbing still applies: Claude reviewers
+  run without `ANTHROPIC_API_KEY`, and Gemini reviewers run without
+  `GOOGLE_API_KEY` and, unless opted in, without `GEMINI_API_KEY`.
+- Vendor security reviewers are LLM tools. They are not hardened against
+  prompt injection in repository content such as source comments, docs, or
+  commit messages. The fan-out reduces that risk by bounding the scope,
+  denying writes, requiring a structured verdict, and failing closed on bad
+  output. It does not eliminate it. A crafted change can still talk a reviewer
+  into a `pass`.
+
 ## Circuit Breakers
 
 The dispatcher tracks a three-fix circuit breaker per `story_id`. Each
@@ -326,7 +387,9 @@ valid.
 
 ## Non-Goals
 
-- Parallel execution.
+- Parallel execution of workflow roles. The audit fan-out runs two
+  read-only reviewers inside one auditor dispatch; it does not run roles in
+  parallel.
 - Worktree orchestration.
 - Pull request automation as a core requirement.
 - Non-Git state backends.

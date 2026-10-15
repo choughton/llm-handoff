@@ -95,3 +95,12 @@ normalizer:
   on_unknown: fail_closed
   # Registered normalizer providers: claude, gemini, openai.
   # Claude can fall back to CLI auth; Gemini and OpenAI are API-key only.
+
+# Optional audit fan-out. The defaults keep the single quality auditor.
+# Add `security` to run a read-only security reviewer next to it; the
+# dispatcher then writes HANDOFF.md from both structured verdicts.
+audit:
+  reviewers: [quality]
+  # security_provider: claude   # claude | gemini | codex; unset = auto
+  block_severity: high          # critical | high | medium | low
+  review_timeout_ms: 900000

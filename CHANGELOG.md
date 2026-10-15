@@ -22,6 +22,10 @@ This project follows a simple pre-release changelog until the first public tag.
   bandit, pip-audit, or any installed tool) with diff-scoped placeholders,
   per-scanner timeouts, and `required` handling for missing executables.
 - Preserved Apache-2.0 licensing.
+- Added opt-in audit fan-out (`audit.reviewers: [quality, security]`): a
+  read-only quality reviewer and security reviewer run concurrently on the
+  implementer's commit range, and the dispatcher writes `HANDOFF.md` from
+  their structured verdicts.
 
 ## 0.0.0
 

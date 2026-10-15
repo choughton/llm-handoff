@@ -17,8 +17,10 @@ from llm_handoff.agent_roles import (
     invoke_support_role,
 )
 from llm_handoff.agent_types import DispatchResult, SubagentResult
+from llm_handoff.audit_review import AuditFanOutContext, run_audit_fan_out
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
+    AgentConfig,
     DispatchConfig,
     NormalizerConfig,
 )
@@ -269,6 +271,7 @@ def run_loop(
     breaker_planner_seen: set[str] = set()
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
+    implementer_base_sha: str | None = None
 
     while True:
         cycle_number += 1
@@ -526,6 +529,17 @@ def run_loop(
             pre_dispatch_state: PreDispatchState | None = None
             if _work_claim_gate_applies(config, current_cycle.route):
                 pre_dispatch_state = capture_pre_dispatch_state(config.repo_root)
+            if config.audit.security_enabled and current_cycle.route in {
+                "backend",
+                "frontend",
+            }:
+                # The audit fan-out reviews pre-dispatch HEAD..scope_sha, so
+                # remember where the implementer started.
+                implementer_base_sha = (
+                    pre_dispatch_state.head_sha
+                    if pre_dispatch_state is not None
+                    else _git_head(config.repo_root)
+                )
             dispatch_result, previous_agent = _dispatch_route(
                 current_cycle.route,
                 config,
@@ -541,6 +555,11 @@ def run_loop(
                         if decision.source == "stale_epic_close_recovery"
                         else None
                     )
+                ),
+                audit_context=AuditFanOutContext(
+                    cycle_number=cycle_number,
+                    handoff_content=handoff_content,
+                    implementer_base_sha=implementer_base_sha,
                 ),
             )
             post_dispatch_handoff_content = _read_required_text(
@@ -799,6 +818,7 @@ def _dispatch_route(
     planner_previous_handoff_sha: str | None = None,
     current_handoff_sha: str | None = None,
     additional_instruction: str | None = None,
+    audit_context: AuditFanOutContext | None = None,
 ) -> tuple[DispatchResult, str]:
     handoff_path = config.handoff_full_path
 
@@ -854,6 +874,17 @@ def _dispatch_route(
         )
 
     if route == "auditor":
+        if config.audit.security_enabled:
+            _log(
+                log,
+                "DISPATCH",
+                "Dispatching audit fan-out (quality + security reviewers).",
+            )
+            return _dispatch_audit_fan_out(
+                config,
+                log,
+                audit_context=audit_context,
+            ), "auditor (audit)"
         _log(log, "DISPATCH", "Dispatching auditor for audit.")
         return _dispatch_from_subagent(
             _invoke_support_callable(
@@ -882,6 +913,39 @@ def _dispatch_route(
         ), "validator"
 
     raise ValueError(f"Unsupported route: {route}")
+
+
+def _dispatch_audit_fan_out(
+    config: DispatchConfig,
+    log: LogFn,
+    *,
+    audit_context: AuditFanOutContext | None,
+) -> DispatchResult:
+    handoff_path = config.handoff_full_path
+    if audit_context is None:
+        audit_context = AuditFanOutContext(
+            cycle_number=0,
+            handoff_content=_read_required_text(handoff_path) or "",
+        )
+
+    def quality_invoker(prompt: str, agent_config: AgentConfig) -> SubagentResult:
+        return _invoke_support_callable(
+            "auditor",
+            prompt,
+            role="auditor",
+            handoff_path=handoff_path,
+            agent_config=agent_config,
+            log=log,
+            repo_root=config.repo_root,
+        )
+
+    return run_audit_fan_out(
+        config,
+        context=audit_context,
+        frontmatter=_parse_frontmatter_or_none(audit_context.handoff_content),
+        quality_invoker=quality_invoker,
+        log=log,
+    )
 
 
 def _invoke_dispatch_callable(
@@ -2038,6 +2102,13 @@ def _log_dry_run(config: DispatchConfig, route: RouteName, log: LogFn) -> None:
         return
 
     if route == "auditor":
+        if config.audit.security_enabled:
+            _log(
+                log,
+                "DISPATCH",
+                "[DRY RUN] Would dispatch audit fan-out (quality + security reviewers)",
+            )
+            return
         _log(log, "DISPATCH", "[DRY RUN] Would dispatch auditor for audit")
         return
 
@@ -2118,6 +2189,14 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         if config.planner_api_key_env_enabled
         else "Planner API env:    STRIP configured provider API keys",
     )
+    if config.audit.security_enabled:
+        _log(
+            log,
+            "INFO",
+            "Audit reviewers:    quality + security (read-only fan-out; "
+            f"security provider: {config.audit.security_provider or 'auto'}; "
+            f"block severity: {config.audit.block_severity})",
+        )
 
 
 def _read_required_text(path: Path) -> str | None:
