@@ -3424,3 +3424,303 @@ def test_audit_range_survives_a_rejected_approval(
     assert len(backend_heads) == 2
     assert backend_heads[1] != base
     assert audit_bases == [base, base]
+
+
+# ---------------------------------------------------------------------------
+# W1.11: evidence SHA and no-change checks
+# ---------------------------------------------------------------------------
+
+
+def _claim_with_evidence(scope_sha: str, evidence_value: str) -> str:
+    claim = _claim(scope_sha)
+    old_line = f"- **Commit SHA verified:** {scope_sha}"
+    assert old_line in claim
+    return claim.replace(old_line, f"- **Commit SHA verified:** {evidence_value}")
+
+
+def _no_auditor(subagent_name: str, prompt: str, **_kwargs: object) -> SubagentResult:
+    raise AssertionError("auditor must not be dispatched for a failed claim")
+
+
+def test_verify_work_claim_rejects_evidence_naming_a_different_commit(
+    tmp_path: Path,
+) -> None:
+    base = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim_with_evidence(head, base),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("evidence_sha_mismatch",)
+    assert _outcomes(result)["scope_sha"] == "PASS"
+    assert _outcomes(result)["evidence_sha"] == "FAIL"
+    assert base[:12] in result.errors[0]
+    assert head[:12] in result.errors[0]
+
+
+def test_verify_work_claim_rejects_evidence_that_is_not_a_commit(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim_with_evidence(head, "f" * 40),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("evidence_sha_mismatch",)
+    assert "does not resolve to a commit" in result.errors[0]
+
+
+@pytest.mark.parametrize("evidence_value", ["", "n/a"])
+def test_verify_work_claim_rejects_evidence_without_a_sha(
+    tmp_path: Path,
+    evidence_value: str,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim_with_evidence(head, evidence_value),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("evidence_sha_mismatch",)
+
+
+def test_verify_work_claim_rejects_a_claim_without_an_evidence_block(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    claim = _claim(head).split("## Verification Evidence")[0]
+
+    result = _verify(tmp_path, assignment=_assignment(), claim=claim, state=state)
+
+    assert result.failed_prefixes == ("evidence_sha_mismatch",)
+    assert "no Commit SHA verified value" in result.errors[0]
+
+
+@pytest.mark.parametrize(
+    "evidence_template",
+    ["`{sha}`", "{short} (implementation commit)"],
+)
+def test_verify_work_claim_accepts_annotated_evidence_for_scope_sha(
+    tmp_path: Path,
+    evidence_template: str,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    evidence = evidence_template.format(sha=head, short=head[:7])
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim_with_evidence(head, evidence),
+        state=state,
+    )
+
+    assert result.passed, result.errors
+    assert "evidence_sha" not in _outcomes(result)
+
+
+def test_verify_work_claim_accepts_evidence_at_a_handoff_only_commit_above_scope_sha(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    work_sha = _commit_all(tmp_path, "set value")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(work_sha))
+    handoff_sha = _commit_all(tmp_path, "handoff")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim_with_evidence(work_sha, handoff_sha),
+        state=state,
+    )
+
+    assert result.passed, result.errors
+
+
+def test_verify_work_claim_rejects_evidence_above_scope_sha_through_source_commits(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    work_sha = _commit_all(tmp_path, "set value")
+    _write(tmp_path / "src" / "app.py", "VALUE = 3\n")
+    later_sha = _commit_all(tmp_path, "more work")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim_with_evidence(later_sha, work_sha),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("evidence_sha_mismatch",)
+
+
+def test_verify_work_claim_reads_only_the_top_level_evidence_section(
+    tmp_path: Path,
+) -> None:
+    base = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    claim = _claim(head) + (
+        "\n## Prior Handback\n\n### Verification Evidence\n\n"
+        f"- **Commit SHA verified:** {base}\n"
+    )
+
+    result = _verify(tmp_path, assignment=_assignment(), claim=claim, state=state)
+
+    assert result.passed, result.errors
+
+
+def test_verify_work_claim_skips_the_evidence_check_without_a_resolvable_scope_sha(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path,
+        assignment=_assignment(),
+        claim=_claim("f" * 40),
+        state=state,
+    )
+
+    assert result.failed_prefixes == ("scope_sha_not_head",)
+
+
+@pytest.mark.parametrize("dispatcher_commit_mode", [False, True])
+@pytest.mark.parametrize("implementer", ["backend", "frontend"])
+def test_new_gate_failures_route_back_to_the_implementer_as_verified_fail(
+    tmp_path: Path,
+    dispatcher_commit_mode: bool,
+    implementer: str,
+) -> None:
+    base = _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+
+    def verify(claim: str):
+        return verify_work_claim(
+            repo_root=tmp_path,
+            handoff_path=HANDOFF_RELATIVE_PATH,
+            assignment_content=_assignment(),
+            claim_content=claim,
+            pre_dispatch_state=state,
+            verification_timeout_seconds=60,
+            require_new_commit=True,
+            dispatcher_commit_mode=dispatcher_commit_mode,
+        )
+
+    no_changes = verify(_claim(base))
+    assert no_changes.failed_prefixes == ("no_changes",)
+
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    mismatch = verify(_claim_with_evidence(head, base))
+    assert mismatch.failed_prefixes == ("evidence_sha_mismatch",)
+
+    for result in (no_changes, mismatch):
+        route = bounce_route_for(result, implementer=implementer)
+        assert (route.next_agent, route.status) == (implementer, "verified_fail")
+
+
+@pytest.mark.parametrize("commit_mode", ["agent", "dispatcher"])
+def test_run_loop_rejects_a_claim_that_changed_nothing_in_both_commit_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    commit_mode: str,
+) -> None:
+    base = _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode=commit_mode)
+    messages: list[tuple[str, str]] = []
+    dispatches: list[str] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        # Verification-only work: nothing changed, so there is nothing to
+        # commit. In agent mode the claim names the pre-dispatch HEAD.
+        claim = _claim(base) if commit_mode == "agent" else _pending_claim()
+        path.write_text(claim, encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", _no_auditor)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert dispatches == ["backend"], "no handoff repair should be dispatched"
+    assert _git(tmp_path, "rev-parse", "HEAD") == base
+    handoff = config.handoff_full_path.read_text(encoding="utf-8")
+    bounced = parse_handoff_frontmatter_text(handoff)
+    assert bounced is not None
+    assert bounced.next_agent == "backend"
+    assert bounced.status == "verified_fail"
+    assert "- **Failed checks:** no_changes" in handoff
+    assert any(
+        level == "ERROR" and message.startswith("no_changes:")
+        for level, message in messages
+    )
+
+
+def test_run_loop_bounces_an_evidence_sha_mismatch_to_the_implementer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    base = _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path)
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        head = _commit_all(tmp_path, "set value")
+        path.write_text(_claim_with_evidence(head, base), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", _no_auditor)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    handoff = config.handoff_full_path.read_text(encoding="utf-8")
+    bounced = parse_handoff_frontmatter_text(handoff)
+    assert bounced is not None
+    assert bounced.next_agent == "backend"
+    assert bounced.status == "verified_fail"
+    assert "- **Failed checks:** evidence_sha_mismatch" in handoff
+    assert any(
+        level == "ERROR" and message.startswith("evidence_sha_mismatch:")
+        for level, message in messages
+    )

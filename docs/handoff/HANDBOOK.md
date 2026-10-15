@@ -91,3 +91,10 @@ implementation path failed structurally and needs re-scoping.
 - Repeated implementer/auditor bounces on the same story.
 - Completion claims whose `scope_sha` is not HEAD or whose diff leaves the
   Work Packet scope.
+
+Verification-only work, such as re-running tests or checking an earlier
+commit, belongs with the auditor, not in an implementer Work Packet. When the
+work-claim gate runs, an implementer `ready_for_review` claim whose commits
+since dispatch change no file other than the handoff fails `no_changes`, and
+a claim whose `Commit SHA verified` names a different commit than `scope_sha`
+fails `evidence_sha_mismatch`.

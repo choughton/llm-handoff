@@ -2495,7 +2495,7 @@ def _run_work_claim_gate(
         pre_dispatch_state=pre_dispatch_state,
         verification_timeout_seconds=config.work_packet_verification_timeout_seconds,
         scanners=config.scanners,
-        require_new_commit=config.commit_mode == "dispatcher",
+        require_new_commit=True,
         dispatcher_commit_mode=config.commit_mode == "dispatcher",
         story_base_sha=story_base_sha,
     )
