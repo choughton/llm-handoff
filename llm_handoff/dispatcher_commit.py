@@ -218,6 +218,83 @@ def stamp_commit_sha(handoff_content: str, sha: str) -> str:
     return frontmatter + rest
 
 
+@dataclass(frozen=True)
+class GitPosition:
+    head: str | None
+    branch: str | None
+
+
+@dataclass(frozen=True)
+class PlannerCommitCheck:
+    """``undone`` lists planner commits that were reset; ``error`` stops the loop."""
+
+    undone: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def git_position(repo_root: Path) -> GitPosition:
+    head = _git(repo_root, ["rev-parse", "--verify", "HEAD"])
+    branch = _git(repo_root, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    return GitPosition(
+        head=(head.stdout.strip() or None) if head.returncode == 0 else None,
+        branch=(branch.stdout.strip() or None) if branch.returncode == 0 else None,
+    )
+
+
+def undo_planner_handoff_commits(
+    repo_root: Path, handoff_path: Path, before: GitPosition
+) -> PlannerCommitCheck:
+    """Enforce that the planner leaves ``.git`` alone in dispatcher commit mode.
+
+    The planner prompt says not to commit, but prompts are advisory. When the
+    planner added commits that change only the handoff file, they are reset
+    with ``git reset --soft`` and the handoff is unstaged, so it stays in the
+    working tree uncommitted. Anything else (other files, a branch switch, or
+    rewritten history) is reported as an error for the operator.
+    """
+
+    after = git_position(repo_root)
+    if before.head is None or after.head == before.head:
+        return PlannerCommitCheck()
+    if after.branch != before.branch:
+        return PlannerCommitCheck(
+            error=(
+                f"the planner moved the checkout from `{before.branch or 'detached HEAD'}` "
+                f"to `{after.branch or 'detached HEAD'}`"
+            )
+        )
+    if after.head is None or _git(
+        repo_root, ["merge-base", "--is-ancestor", before.head, after.head]
+    ).returncode != 0:
+        return PlannerCommitCheck(
+            error=f"the planner rewrote history on `{after.branch}` (HEAD was {before.head[:12]})"
+        )
+    commits = tuple(
+        _git(repo_root, ["rev-list", "--reverse", f"{before.head}..{after.head}"])
+        .stdout.split()
+    )
+    changed = _git(
+        repo_root, ["diff", "--name-only", before.head, after.head]
+    ).stdout.split()
+    handoff = handoff_path.as_posix()
+    others = sorted(set(changed) - {handoff})
+    if others:
+        return PlannerCommitCheck(
+            error=(
+                f"the planner committed {', '.join(c[:12] for c in commits)} with "
+                f"files other than the handoff: {', '.join(others)}"
+            )
+        )
+    reset = _git(repo_root, ["reset", "--soft", before.head])
+    if reset.returncode != 0:
+        return PlannerCommitCheck(
+            error=f"could not undo the planner's handoff commit: {_first_line(reset)}"
+        )
+    if changed:
+        _git(repo_root, ["restore", "--staged", "--", handoff])
+    return PlannerCommitCheck(undone=commits)
+
+
 def _git(repo_root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],

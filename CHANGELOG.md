@@ -115,8 +115,12 @@ This project follows a simple pre-release changelog until the first public tag.
   `max_review_rounds` rounds. A review that does not finish within
   `review_timeout_seconds` stops the loop with the pull request left open.
 - In `commit_mode: dispatcher`, the planner is now told not to commit the
-  handoff file. Committing it put live dispatch state on the base branch and,
-  in the branch publish modes, into every story pull request.
+  handoff file, and the dispatcher enforces it: planner commits that change
+  only the handoff are undone with `git reset --soft` (the handoff stays in
+  the working tree), and any other planner commit, branch switch, or history
+  rewrite stops the loop. Committing the handoff put live dispatch state on
+  the base branch and, in the branch publish modes, into every story pull
+  request.
 - Review findings are now closed the way a person would close them: the
   implementer writes a `## Review Responses` entry per finding, and on the
   next push the dispatcher posts each one as the reply on that finding's

@@ -2271,3 +2271,105 @@ def test_planner_is_told_to_leave_the_handoff_uncommitted_in_dispatcher_mode(
     assert len(instructions) == 1
     told = PLANNER_COMMIT_MODE_INSTRUCTION in str(instructions[0] or "")
     assert told is (commit_mode == "dispatcher")
+
+
+def _run_planner_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    planner_work,
+    *,
+    commit_mode: str = "dispatcher",
+) -> tuple[int, list[tuple[str, str]], DispatchConfig]:
+    _init_repo(
+        tmp_path,
+        handoff_content=_claim(
+            "a" * 40, status="verified_pass", producer="auditor", next_agent="planner"
+        ),
+    )
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode=commit_mode)
+    messages: list[tuple[str, str]] = []
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        path.write_text(_assignment(), encoding="utf-8")
+        planner_work(path)
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_support_role",
+        lambda *_args, **_kwargs: SubagentResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.01
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_args, **_kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="backend"
+        ),
+    )
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=1, log=_collecting_log(messages)
+    )
+    return exit_code, messages, config
+
+
+def test_a_planner_commit_of_the_handoff_is_undone_in_dispatcher_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    base = None
+
+    def planner_work(path: Path) -> None:
+        nonlocal base
+        base = _git(tmp_path, "rev-parse", "HEAD")
+        _commit_paths(tmp_path, "Dispatch S1 to backend", HANDOFF_RELATIVE_PATH.as_posix())
+
+    exit_code, messages, config = _run_planner_cycle(tmp_path, monkeypatch, planner_work)
+
+    assert exit_code == 0
+    assert _git(tmp_path, "rev-parse", "HEAD") == base
+    assert _git(tmp_path, "status", "--porcelain") == f"M {HANDOFF_RELATIVE_PATH.as_posix()}"
+    assert "next_agent: backend" in config.handoff_full_path.read_text(encoding="utf-8")
+    assert any(
+        level == "WARN" and "undid it with `git reset --soft`" in message
+        for level, message in messages
+    )
+
+
+def test_a_planner_commit_of_other_files_stops_the_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    def planner_work(path: Path) -> None:
+        _write(tmp_path / "src" / "app.py", "VALUE = 9\n")
+        _commit_paths(tmp_path, "planner wrote code", "src/app.py")
+
+    exit_code, messages, _config = _run_planner_cycle(tmp_path, monkeypatch, planner_work)
+
+    assert exit_code == 1
+    assert _git(tmp_path, "log", "-1", "--format=%s") == "planner wrote code"
+    assert any(
+        level == "ERROR" and "files other than the handoff: src/app.py" in message
+        for level, message in messages
+    )
+
+
+def test_planner_commits_are_left_alone_in_agent_commit_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    def planner_work(path: Path) -> None:
+        _commit_paths(tmp_path, "Dispatch S1 to backend", HANDOFF_RELATIVE_PATH.as_posix())
+
+    exit_code, _messages, _config = _run_planner_cycle(
+        tmp_path, monkeypatch, planner_work, commit_mode="agent"
+    )
+
+    assert exit_code == 0
+    assert _git(tmp_path, "log", "-1", "--format=%s") == "Dispatch S1 to backend"
