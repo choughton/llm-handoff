@@ -13,6 +13,8 @@ from llm_handoff.publish import (
     RESPONSES_PATH,
     STATE_PATH,
     PublishOutcome,
+    StoryState,
+    build_review_bounce_handoff,
     ensure_story_branch,
     publish_story,
     save_gate_section,
@@ -229,6 +231,55 @@ def test_ensure_story_branch_creates_then_reuses_the_branch(tmp_path: Path) -> N
         is None
     )
     assert _git(tmp_path, "branch", "--show-current") == BRANCH
+
+
+def test_a_revised_work_packet_reaches_the_review_bounce(tmp_path: Path) -> None:
+    _init(tmp_path)
+    revised = ASSIGNMENT.replace('"print(1)"', '"print(2)"')
+    assert revised != ASSIGNMENT
+    # The planner revises the packet while the story branch is checked out.
+    for content in (ASSIGNMENT, revised):
+        assert (
+            ensure_story_branch(
+                repo_root=tmp_path,
+                prefix="llm-handoff/",
+                base_branch=None,
+                assignment_content=content,
+                log_file=None,
+            )
+            is None
+        )
+    state = StoryState(**json.loads((tmp_path / STATE_PATH).read_text(encoding="utf-8")))
+
+    handoff = build_review_bounce_handoff(
+        state=state,
+        findings=[],
+        url="https://example.invalid/pull/7",
+        head_sha="0" * 40,
+        review_round=1,
+        max_rounds=1,
+    )
+
+    assert "print(2)" in handoff
+    assert "print(1)" not in handoff
+
+    # Switching back to the existing branch refreshes it too, and an
+    # assignment without a Work Packet keeps the saved one.
+    _git(tmp_path, "switch", "-q", "main")
+    no_packet = ASSIGNMENT.split("## Work Packet")[0]
+    for content in (ASSIGNMENT, no_packet):
+        assert (
+            ensure_story_branch(
+                repo_root=tmp_path,
+                prefix="llm-handoff/",
+                base_branch=None,
+                assignment_content=content,
+                log_file=None,
+            )
+            is None
+        )
+    state = json.loads((tmp_path / STATE_PATH).read_text(encoding="utf-8"))
+    assert 'print(1)' in state["work_packet"]
 
 
 def test_ensure_story_branch_refuses_to_start_from_another_story(

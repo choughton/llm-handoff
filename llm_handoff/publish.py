@@ -154,11 +154,13 @@ def ensure_story_branch(
     if current is None:
         return "could not read the current branch (detached HEAD?)"
     if current == branch:
+        _refresh_work_packet(repo_root, branch, assignment_content)
         return None
     if _branch_exists(repo_root, branch):
         switched = _git(repo_root, ["switch", branch])
         if switched.returncode != 0:
             return f"git switch {branch} failed: {_first_line(switched)}"
+        _refresh_work_packet(repo_root, branch, assignment_content)
         return None
     if current.startswith(prefix):
         return (
@@ -192,6 +194,23 @@ def ensure_story_branch(
     (repo_root / GATE_SECTION_PATH).unlink(missing_ok=True)
     (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
     return None
+
+
+def _refresh_work_packet(repo_root: Path, branch: str, assignment_content: str) -> None:
+    """Keep the saved Work Packet in step with the latest assignment.
+
+    The planner can revise a story's packet after its branch exists. The review
+    bounce and the pull request report read the saved packet, so a stale copy
+    would bring back what the planner fixed. An assignment without a Work
+    Packet keeps the saved one.
+    """
+
+    state = _load_state(repo_root)
+    if state is None or state.branch != branch:
+        return
+    work_packet = (extract_work_packet_section(assignment_content) or "").strip()
+    if work_packet and work_packet != state.work_packet:
+        _save_state(repo_root, replace(state, work_packet=work_packet))
 
 
 def save_gate_section(repo_root: Path, section: str) -> None:

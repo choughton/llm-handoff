@@ -13,6 +13,13 @@ This project follows a simple pre-release changelog until the first public tag.
   resolved its thread, so a real finding the implementer left unfixed was
   closed silently and the pull request merged.
 
+- Fixed a stale Work Packet in the branch publish modes. The story state kept
+  the packet from when the story branch was created, so a planner revision
+  made later was lost: the review correction handoff and the pull request
+  report brought the old packet back, and the gate failed on the defect the
+  planner had fixed. Each implementer dispatch on the story branch now
+  refreshes the saved packet from the assignment.
+
 - Added a `codex` next-agent normalizer provider. `normalizer.provider: codex`
   runs `codex exec --sandbox read-only` on the user's Codex CLI login, so an
   all-Codex setup does not need `OPENAI_API_KEY`; the adapter never passes
