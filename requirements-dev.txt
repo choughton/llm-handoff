@@ -11,3 +11,4 @@ pytest
 pytest-xdist
 pre-commit
 ruff
+hatchling>=1.27

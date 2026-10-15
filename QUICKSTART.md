@@ -3,8 +3,17 @@
 This is the shortest source-checkout path for trying `llm-handoff` against a
 target repository.
 
-`llm-handoff` is not published to PyPI. Clone this repo, run it from source, and
-point it at the repository you want to coordinate.
+`llm-handoff` is not yet published to PyPI. Clone this repo, run it from source
+or install it from the checkout, and point it at the repository you want to
+coordinate.
+
+To install it as a package instead of running from source, run
+`python -m pip install .` in the checkout, or
+`python -m pip install git+https://github.com/choughton/llm-handoff.git`.
+That adds an `llm-handoff` console command, and `llm-handoff ...` can replace
+`python -m llm_handoff ...` in every command below. The installed package
+bundles the reference workflow template, so `llm-handoff init` works from any
+directory.
 
 This is pre-release software. Read the [README status](README.md#status) before
 using it against a repository with sensitive or production work.

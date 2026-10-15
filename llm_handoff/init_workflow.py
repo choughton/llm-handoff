@@ -1,15 +1,52 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 
 REFERENCE_TEMPLATE = "reference-workflow"
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_TEMPLATE_ROOT = _REPO_ROOT / "examples" / REFERENCE_TEMPLATE
+_PACKAGE_NAME = "llm_handoff"
+# Wheels carry the template under llm_handoff/templates/ (pyproject.toml maps
+# examples/reference-workflow/ there at build time).
+_PACKAGED_TEMPLATES_DIR = "templates"
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _PACKAGE_DIR.parent
+
+
+def _packaged_template_root(template: str = REFERENCE_TEMPLATE) -> Path | None:
+    """Return the template bundled with the installed package, if present.
+
+    Only a template that sits beside this module counts, so a source checkout
+    never picks up a template from a different installed copy of the package.
+    """
+
+    try:
+        candidate = resources.files(_PACKAGE_NAME) / _PACKAGED_TEMPLATES_DIR / template
+        path = Path(os.fspath(candidate)).resolve()
+    except (ModuleNotFoundError, TypeError, ValueError, OSError):
+        return None
+    if not path.is_dir():
+        return None
+    if path.parent.parent != _PACKAGE_DIR:
+        return None
+    return path
+
+
+def resolve_template_root(template: str = REFERENCE_TEMPLATE) -> Path:
+    """Locate a template: installed package data first, then the source layout."""
+
+    packaged = _packaged_template_root(template)
+    if packaged is not None:
+        return packaged
+    return _REPO_ROOT / "examples" / template
+
+
+_TEMPLATE_ROOT = resolve_template_root()
 _EXCLUDED_TEMPLATE_FILES = frozenset({Path("README.md")})
 
 # Provider mappings `init` can write into dispatch_config.yaml. `reference`
