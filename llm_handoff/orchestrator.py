@@ -87,6 +87,7 @@ from llm_handoff.work_claim import (
     build_bounce_handoff,
     capture_implementer_leftovers,
     capture_pre_dispatch_state,
+    carry_over_key,
     git_dirty_files,
     passed_verification_section,
     record_passed_verification,
@@ -629,19 +630,20 @@ def run_loop(
                     _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
                     return 1
             pre_dispatch_state: PreDispatchState | None = None
-            story_id = _handoff_story_id(handoff_content)
+            story_key = carry_over_key(handoff_content)
             if _work_claim_gate_applies(config, current_cycle.route):
                 pre_dispatch_state = capture_pre_dispatch_state(
                     config.repo_root,
                     leftovers=implementer_leftovers,
-                    story_id=story_id,
+                    story_key=story_key,
                 )
                 if pre_dispatch_state.carried_over:
+                    story_id = _handoff_story_id(handoff_content)
                     _log(
                         log_fn,
                         "INFO",
                         "Carrying over uncommitted work from the previous "
-                        f"{story_id} dispatch: "
+                        f"{story_id or 'same Work Packet'} dispatch: "
                         f"{', '.join(pre_dispatch_state.carried_over)}.",
                     )
             if config.audit.security_enabled and current_cycle.route in {
@@ -691,7 +693,7 @@ def run_loop(
                     config.repo_root,
                     handoff_path=config.handoff_path,
                     pre_dispatch_state=pre_dispatch_state,
-                    story_id=story_id,
+                    story_key=story_key,
                 )
             if planner_git_before is not None:
                 planner_check = undo_planner_handoff_commits(

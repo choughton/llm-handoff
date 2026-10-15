@@ -168,9 +168,10 @@ class ImplementerLeftovers:
 
     The dispatcher keeps this in memory between cycles. It does not survive a
     dispatcher restart; after one, leftovers count as operator edits again.
+    ``story_key`` comes from :func:`carry_over_key`.
     """
 
-    story_id: str | None
+    story_key: str | None
     fingerprints: tuple[tuple[str, str], ...]
 
 
@@ -558,13 +559,14 @@ def capture_pre_dispatch_state(
     repo_root: Path,
     *,
     leftovers: ImplementerLeftovers | None = None,
-    story_id: str | None = None,
+    story_key: str | None = None,
 ) -> PreDispatchState:
     """Record HEAD, dirty files, and their content before an implementer dispatch.
 
-    Files in ``leftovers`` from an earlier dispatch for the same ``story_id``
-    whose content has not changed since are carried over as implementer work
-    instead of being recorded as pre-existing dirty files.
+    Files in ``leftovers`` from an earlier dispatch with the same ``story_key``
+    (see :func:`carry_over_key`) whose content has not changed since are carried
+    over as implementer work instead of being recorded as pre-existing dirty
+    files.
     """
 
     dirty_files = git_dirty_files(repo_root) or ()
@@ -572,7 +574,7 @@ def capture_pre_dispatch_state(
         path: working_tree_fingerprint(repo_root, path) for path in dirty_files
     }
     carried: tuple[str, ...] = ()
-    if leftovers is not None and story_id and leftovers.story_id == story_id:
+    if leftovers is not None and story_key and leftovers.story_key == story_key:
         carried = tuple(
             sorted(
                 path
@@ -594,7 +596,7 @@ def capture_implementer_leftovers(
     *,
     handoff_path: Path,
     pre_dispatch_state: PreDispatchState,
-    story_id: str | None,
+    story_key: str | None,
 ) -> ImplementerLeftovers:
     """Record what an implementer dispatch left uncommitted, minus operator edits."""
 
@@ -606,11 +608,33 @@ def capture_implementer_leftovers(
         if path != handoff_rel_path and path not in operator_dirty
     )
     return ImplementerLeftovers(
-        story_id=story_id,
+        story_key=story_key,
         fingerprints=tuple(
             (path, working_tree_fingerprint(repo_root, path)) for path in leftover_paths
         ),
     )
+
+
+def carry_over_key(handoff_content: str) -> str | None:
+    """Identify the assignment an implementer dispatch works on.
+
+    The key is the handoff's ``story_id``. ``story_id`` is optional, so without
+    one the key is a hash of the ``## Work Packet`` section, which a bounce
+    carries forward verbatim. None means neither exists, and nothing is carried
+    over.
+    """
+
+    try:
+        frontmatter = parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        frontmatter = None
+    story_id = frontmatter.story_id if frontmatter is not None else None
+    if story_id:
+        return f"story:{story_id}"
+    section = extract_work_packet_section(handoff_content)
+    if section is None:
+        return None
+    return "work-packet:" + hashlib.sha256(section.encode("utf-8")).hexdigest()
 
 
 def working_tree_fingerprint(repo_root: Path, path: str) -> str:
@@ -1707,6 +1731,7 @@ __all__ = [
     "passed_verification_section",
     "record_passed_verification",
     "capture_implementer_leftovers",
+    "carry_over_key",
     "capture_pre_dispatch_state",
     "extract_work_packet_section",
     "parse_work_packet",

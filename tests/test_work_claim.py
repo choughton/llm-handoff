@@ -28,6 +28,7 @@ from llm_handoff.work_claim import (
     build_bounce_handoff,
     capture_implementer_leftovers,
     capture_pre_dispatch_state,
+    carry_over_key,
     extract_work_packet_section,
     parse_work_packet,
     path_is_in_scope,
@@ -2080,11 +2081,11 @@ def test_dispatcher_commit_commits_work_the_previous_story_dispatch_left_behind(
         tmp_path,
         handoff_path=HANDOFF_RELATIVE_PATH,
         pre_dispatch_state=first_state,
-        story_id=STORY_ID,
+        story_key=STORY_ID,
     )
 
     second_state = capture_pre_dispatch_state(
-        tmp_path, leftovers=leftovers, story_id=STORY_ID
+        tmp_path, leftovers=leftovers, story_key=STORY_ID
     )
     result = commit_implementer_changes(
         repo_root=tmp_path,
@@ -2108,10 +2109,10 @@ def test_carried_over_work_left_uncommitted_fails_the_gate(tmp_path: Path) -> No
         tmp_path,
         handoff_path=HANDOFF_RELATIVE_PATH,
         pre_dispatch_state=first_state,
-        story_id=STORY_ID,
+        story_key=STORY_ID,
     )
     second_state = capture_pre_dispatch_state(
-        tmp_path, leftovers=leftovers, story_id=STORY_ID
+        tmp_path, leftovers=leftovers, story_key=STORY_ID
     )
 
     # Before the carry-over, an untouched pre-dispatch file was ignored and a
@@ -2135,21 +2136,37 @@ def test_pre_dispatch_state_does_not_carry_over_edited_or_other_story_files(
         tmp_path,
         handoff_path=HANDOFF_RELATIVE_PATH,
         pre_dispatch_state=first_state,
-        story_id=STORY_ID,
+        story_key=STORY_ID,
     )
     _write(tmp_path / "src" / "api.py", "API = 'operator edit'\n")
 
     same_story = capture_pre_dispatch_state(
-        tmp_path, leftovers=leftovers, story_id=STORY_ID
+        tmp_path, leftovers=leftovers, story_key=STORY_ID
     )
     other_story = capture_pre_dispatch_state(
-        tmp_path, leftovers=leftovers, story_id="EPIC-1-S2"
+        tmp_path, leftovers=leftovers, story_key="EPIC-1-S2"
     )
 
     assert same_story.carried_over == ("src/app.py",)
     assert same_story.dirty_files == ("src/api.py",)
     assert other_story.carried_over == ()
     assert other_story.dirty_files == ("src/api.py", "src/app.py")
+
+
+def test_carry_over_key_falls_back_to_the_work_packet_without_story_id() -> None:
+    assignment = _assignment()
+    without_story = assignment.replace(f"story_id: {STORY_ID}\n", "")
+    other_packet = without_story.replace("Set VALUE to 2.", "Set VALUE to 3.")
+
+    assert carry_over_key(assignment) == f"story:{STORY_ID}"
+    packet_key = carry_over_key(without_story)
+    assert packet_key is not None and packet_key.startswith("work-packet:")
+    # A bounce carries the Work Packet verbatim under a new handoff body.
+    bounced = without_story.replace("## Task Assignment", "## Dispatcher Verification")
+    assert carry_over_key(bounced) == packet_key
+    assert carry_over_key(other_packet) != packet_key
+    no_packet = _assignment_without_packet().replace(f"story_id: {STORY_ID}\n", "")
+    assert carry_over_key(no_packet) is None
 
 
 def test_implementer_leftovers_exclude_operator_edits_and_the_handoff(
@@ -2165,7 +2182,7 @@ def test_implementer_leftovers_exclude_operator_edits_and_the_handoff(
         tmp_path,
         handoff_path=HANDOFF_RELATIVE_PATH,
         pre_dispatch_state=state,
-        story_id=STORY_ID,
+        story_key=STORY_ID,
     )
 
     assert [path for path, _ in leftovers.fingerprints] == ["src/app.py"]
@@ -2350,15 +2367,24 @@ def test_git_dirty_files_keeps_the_first_porcelain_path_whole(tmp_path: Path) ->
     assert orchestrator._git_dirty_files(tmp_path) == ("AGENTS.md", "src/app.py")
 
 
+STORY_ID_LINE = f"story_id: {STORY_ID}\n"
+
+
+@pytest.mark.parametrize("with_story_id", [True, False])
 def test_run_loop_commits_work_a_bounced_dispatch_left_uncommitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     reset_story_bounce: None,
+    with_story_id: bool,
 ) -> None:
     # Replays the W1.5 self-host stall: the first commit dropped an in-scope
     # file, the gate bounced to backend, and the retry could never commit it
-    # because it was already dirty before the retry's dispatch.
-    _init_repo(tmp_path)
+    # because it was already dirty before the retry's dispatch. story_id is
+    # optional, so carry-over must also work without one.
+    def strip(content: str) -> str:
+        return content if with_story_id else content.replace(STORY_ID_LINE, "")
+
+    _init_repo(tmp_path, strip(_assignment()))
     orchestrator = _load_orchestrator()
     config = _dispatch_config(tmp_path, commit_mode="dispatcher")
     messages: list[tuple[str, str]] = []
@@ -2377,7 +2403,7 @@ def test_run_loop_commits_work_a_bounced_dispatch_left_uncommitted(
         if len(dispatches) == 1:
             _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
             _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    pass\n")
-        path.write_text(_pending_claim(), encoding="utf-8")
+        path.write_text(strip(_pending_claim()), encoding="utf-8")
         return _dispatch_result()
 
     monkeypatch.setattr(orchestrator, "commit_implementer_changes", dropping_commit)
@@ -2388,8 +2414,9 @@ def test_run_loop_commits_work_a_bounced_dispatch_left_uncommitted(
     assert len(dispatches) == 2
     assert _commit_files(tmp_path, "HEAD") == ["src/app.py"]
     assert "src/app.py" not in _git(tmp_path, "status", "--porcelain")
+    label = STORY_ID if with_story_id else "same Work Packet"
     carried = (
-        f"Carrying over uncommitted work from the previous {STORY_ID} "
+        f"Carrying over uncommitted work from the previous {label} "
         "dispatch: src/app.py."
     )
     assert ("INFO", carried) in messages

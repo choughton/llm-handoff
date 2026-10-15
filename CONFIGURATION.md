@@ -191,11 +191,13 @@ claim whose commits since dispatch change nothing but the handoff
 
 Files an implementer dispatch leaves uncommitted are the story's work, not
 operator edits. The dispatcher remembers their content hashes, and the next
-implementer dispatch for the same `story_id` treats any of them that are still
-unchanged as its own changes: the commit step can stage them, and the worktree
-check fails the claim if they stay uncommitted. A file edited in between, a
-different story, or a dispatcher restart puts a file back in the "already dirty
-before dispatch" group, which is never committed.
+implementer dispatch for the same `story_id` (or, when the handoff has no
+`story_id`, the same `## Work Packet` text, which a bounce carries forward
+verbatim) treats any of them that are still unchanged as its own changes: the
+commit step can stage them, and the worktree check fails the claim if they stay
+uncommitted. A file edited in between, a different story, or a dispatcher
+restart puts a file back in the "already dirty before dispatch" group, which is
+never committed.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the
