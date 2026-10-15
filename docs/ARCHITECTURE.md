@@ -368,6 +368,15 @@ that differs from the implementer role's provider.
   provider's role sets `unsafe_bypass: true`; for Gemini that setting only
   drops the container sandbox. Without Docker or Podman, a Gemini security
   reviewer fails closed with `security_reviewer_failed:`.
+- Gemini plan mode alone is not treated as a read-only boundary. Gemini CLI's
+  plan mode docs say that in non-interactive runs the policy engine
+  auto-approves `exit_plan_mode` and the CLI then switches to YOLO mode. A
+  reviewer talked into "executing the plan" by content in the diff would
+  then have every tool approved. The container sandbox still holds in that
+  case, so the reviewer follows the same rule as Gemini role launches. When
+  `audit.security_provider` is `gemini`, `run` checks for a sandbox runtime
+  at startup and refuses to start without one, unless the Gemini role whose
+  config the reviewer uses sets `unsafe_bypass: true`.
 - The quality reviewer keeps the configured auditor permissions because it
   runs verification commands. The handoff hash check, not a sandbox, enforces
   that it does not write `HANDOFF.md`. Other file writes by the quality

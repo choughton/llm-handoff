@@ -531,7 +531,11 @@ Security reviewer invocation by provider:
   `--json-schema` structured output. The prompt asks for Claude Code's
   built-in security review restricted to the given range.
 - `gemini`: `gemini -p "/security:analyze ..."` in `--approval-mode plan`
-  with `--sandbox`, so it needs Docker or Podman like the Gemini roles.
+  with `--sandbox`, so it needs Docker or Podman like the Gemini roles. Plan
+  mode is not enough by itself: headless Gemini CLI auto-approves
+  `exit_plan_mode` and then continues in YOLO mode. With
+  `audit.security_provider: gemini`, `run` refuses to start when no sandbox
+  runtime is found, instead of failing at the first audit.
   The target repository's Gemini CLI must have the security extension
   installed:
 
