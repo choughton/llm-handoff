@@ -31,6 +31,7 @@ def test_invoke_role_dispatches_backend_to_configured_claude(
             provider="claude",
             binary="claude-custom",
             model="claude-test",
+            unsafe_bypass=True,
             permissions_flag="--allowed",
             timeout_ms=123,
             agent_name="backend-worker",

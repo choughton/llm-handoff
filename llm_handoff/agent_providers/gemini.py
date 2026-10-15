@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import sys
 import time
 from typing import Callable, Literal
 
@@ -388,11 +391,25 @@ def invoke_gemini(
     should_resume = use_resume and bool(session_id)
     resolved_mention = mention or _default_gemini_mention(role)
     resolved_agent_name = agent_name or _gemini_role_label(role)
+    unsafe_bypass = bool(agent_config is not None and agent_config.unsafe_bypass)
+    if not unsafe_bypass and detect_gemini_sandbox_runtime() is None:
+        # Fail closed: without a container runtime Gemini CLI would either
+        # refuse to start or run unsandboxed with --yolo.
+        message = gemini_sandbox_unavailable_message(str(role))
+        if log is not None:
+            log("ERROR", message)
+        return DispatchResult(
+            stdout="",
+            stderr=message,
+            exit_code=1,
+            elapsed_seconds=0.0,
+        )
     command = _build_gemini_command(
         role,
         resolved_handoff_path,
         mention=resolved_mention,
         binary=binary,
+        unsafe_bypass=unsafe_bypass,
         additional_instruction=additional_instruction,
         resume_session_id=session_id if should_resume else None,
         previous_handoff_sha=previous_handoff_sha,
@@ -432,6 +449,7 @@ def invoke_gemini(
             resolved_handoff_path,
             mention=resolved_mention,
             binary=binary,
+            unsafe_bypass=unsafe_bypass,
             additional_instruction=additional_instruction,
             resume_session_id=None,
             previous_handoff_sha=None,
@@ -464,12 +482,49 @@ def invoke_gemini(
     )
 
 
+def gemini_sandbox_args(*, unsafe_bypass: bool = False) -> list[str]:
+    """Return the Gemini CLI approval/sandbox arguments for one role launch.
+
+    The default keeps --yolo inside Gemini CLI's container sandbox (Docker or
+    Podman; sandbox-exec on macOS). ``unsafe_bypass`` restores the previous
+    ``--yolo --sandbox=false`` launch.
+    """
+    if unsafe_bypass:
+        return list(config.GEMINI_UNSAFE_BYPASS_ARGS)
+    return list(config.GEMINI_SANDBOX_ARGS)
+
+
+def detect_gemini_sandbox_runtime() -> str | None:
+    """Return the sandbox runtime Gemini CLI can use, or None."""
+    configured = os.environ.get("GEMINI_SANDBOX", "").strip().lower()
+    if configured in {"docker", "podman", "sandbox-exec"}:
+        return configured if shutil.which(configured) else None
+    if sys.platform == "darwin" and shutil.which("sandbox-exec"):
+        return "sandbox-exec"
+    for runtime in ("docker", "podman"):
+        if shutil.which(runtime):
+            return runtime
+    return None
+
+
+def gemini_sandbox_unavailable_message(role: str) -> str:
+    role_key = role.strip().lower() or "<role>"
+    return (
+        f"Gemini CLI sandbox unavailable for role `{role_key}`: no Docker or "
+        "Podman executable was found on PATH (macOS can use sandbox-exec). "
+        "Install Docker or Podman, or set "
+        f"agents.{role_key}.unsafe_bypass: true in dispatch_config.yaml to run "
+        "Gemini CLI without a sandbox."
+    )
+
+
 def _build_gemini_command(
     role: GeminiRole,
     resolved_handoff_path: Path,
     *,
     mention: str | None = None,
     binary: str | None = None,
+    unsafe_bypass: bool = False,
     additional_instruction: str | None,
     resume_session_id: str | None,
     previous_handoff_sha: str | None,
@@ -482,8 +537,7 @@ def _build_gemini_command(
         [
             "--output-format",
             "stream-json",
-            "--yolo",
-            "--sandbox=false",
+            *gemini_sandbox_args(unsafe_bypass=unsafe_bypass),
             "-p",
             _build_gemini_prompt(
                 role,

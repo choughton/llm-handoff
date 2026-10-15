@@ -221,7 +221,13 @@ orchestrator passes the target role's `AgentConfig`; provider modules translate
 that generic role invocation into concrete CLI flags, prompt mentions,
 subagent names, session-resume behavior, and timeouts.
 
-The dispatcher does not sandbox these tools and does not manage their auth.
+The dispatcher does not sandbox these tools itself and does not manage their
+auth. It chooses the launch flags: by default each CLI runs under its own
+permission or sandbox mode (Claude Code `dontAsk` with an allowlist, Codex
+`workspace-write`, Gemini CLI container sandbox), and a role must set
+`unsafe_bypass: true` to launch with approvals and sandboxing disabled. It
+also builds each launch environment from an allowlist. See
+[CONFIGURATION.md](../CONFIGURATION.md#launch-permissions-and-sandboxing).
 
 ## Provider-Native Subagents
 

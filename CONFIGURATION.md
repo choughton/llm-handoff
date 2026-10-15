@@ -151,6 +151,71 @@ Codex roles previously inherited `OPENAI_API_KEY`. A Codex setup that
 authenticates with an API key instead of `codex login` now needs
 `use_api_key_env: true` on that role.
 
+## Launch Permissions And Sandboxing
+
+Each role launches its provider CLI with the safer arguments below. A role can
+restore the previous approval and sandbox bypass with `unsafe_bypass: true`.
+The startup banner prints one `Launch <role>:` line per role and a
+`WARN UNSAFE BYPASS:` line for every role that opts out.
+
+| Provider | Default launch | `unsafe_bypass: true` |
+| --- | --- | --- |
+| Claude Code | `--permission-mode dontAsk --allowedTools <allowed_tools> --disallowedTools WebFetch,WebSearch` | `--dangerously-skip-permissions` |
+| Codex | `--sandbox workspace-write --ask-for-approval never` | `--yolo` |
+| Gemini CLI | `--yolo --sandbox` | `--yolo --sandbox=false` |
+
+Claude Code in `dontAsk` mode denies any tool call that `allowed_tools` does
+not allow instead of prompting. The default list is:
+
+```yaml
+allowed_tools:
+  - Read
+  - Edit
+  - Write
+  - Grep
+  - Glob
+  - Agent
+  - Bash(git status:*)
+  - Bash(git diff:*)
+  - Bash(git log:*)
+  - Bash(git show:*)
+  - Bash(git cat-file:*)
+  - Bash(git add:*)
+  - Bash(git commit:*)
+  - Bash(git rev-parse:*)
+  - Bash(python:*)
+  - Bash(python3:*)
+  - Bash(pytest:*)
+```
+
+`Agent` is included because the Claude-side prompts delegate to the named
+subagent, and `git cat-file` because the shipped `handoff-validator` resolves
+SHAs with it. Setting `allowed_tools` on a role replaces the whole list. The
+list is a guardrail, not a sandbox: `Bash(python:*)` still lets the agent run
+arbitrary Python. `git push` is not on the list.
+
+Codex keeps its `workspace-write` sandbox: writes are limited to the
+workspace and network access is off by default. The Codex native Windows
+sandbox is experimental; if Codex cannot start or cannot commit in your
+setup, check its sandbox settings before reaching for `unsafe_bypass`.
+
+Gemini CLI keeps `--yolo` so tool calls do not prompt, but runs inside its
+container sandbox. That needs Docker or Podman on `PATH` (macOS can use
+`sandbox-exec`; `GEMINI_SANDBOX` selects a runtime). When no runtime is found
+the dispatcher refuses to start and names the key to set, for example
+`agents.planner.unsafe_bypass: true`. The adapter repeats the same check
+before every Gemini launch. Inside the container, the role sees the mounted
+project directory; host tools and credentials outside it may be missing.
+
+`permissions_flag` now only applies together with `unsafe_bypass: true`. It
+replaces `--dangerously-skip-permissions` for that role. Setting it without
+`unsafe_bypass` fails at config load.
+
+These flags were checked against the provider CLI documentation, not run end
+to end against every CLI version on every platform. If a CLI rejects a flag,
+pin `unsafe_bypass: true` on that role only while you investigate, and treat
+the run as unsandboxed.
+
 ## Protected Control Files
 
 Default:
@@ -262,6 +327,8 @@ Common fields:
 - `env_passthrough`: extra environment variable names to pass to this role.
 - `use_api_key_env`: pass the provider's own API key (`OPENAI_API_KEY` for
   Codex, `GEMINI_API_KEY` for Gemini). Ignored for Claude.
+- `unsafe_bypass`: restore the provider's previous approval and sandbox bypass
+  flags for this role. Off by default and logged as a startup warning.
 
 Codex-specific fields:
 
@@ -271,7 +338,9 @@ Codex-specific fields:
 Claude-specific fields:
 
 - `model`: Claude model for subagent or validator calls.
-- `permissions_flag`: optional CLI permission flag.
+- `allowed_tools`: tool rules passed to `--allowedTools` in the default
+  `dontAsk` launch. See [Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
+- `permissions_flag`: bypass flag used only with `unsafe_bypass: true`.
 
 Gemini-specific fields:
 

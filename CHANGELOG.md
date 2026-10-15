@@ -24,6 +24,12 @@ This project follows a simple pre-release changelog until the first public tag.
   prompts, the dispatch config, or provider agent directories without listing
   them in the Work Packet now routes the handoff to `user` with a
   `protected_file_modified:` error. Configure with `protected_paths`.
+- Safer launch flags by default: Claude Code runs with
+  `--permission-mode dontAsk`, an `allowed_tools` list, and web tools denied;
+  Codex runs with `--sandbox workspace-write --ask-for-approval never`; Gemini
+  CLI keeps its container sandbox and refuses to start without Docker or
+  Podman. Per-role `unsafe_bypass: true` restores the previous flags and logs
+  a startup warning. `permissions_flag` now requires `unsafe_bypass`.
 
 ## 0.0.0
 

@@ -19,7 +19,42 @@ GEMINI_FRONTEND_MENTION = "@frontend"
 CODEX_SKILL_NAME = "llm-handoff"
 CODEX_WEB_SEARCH_MODE = "disabled"
 
+# Launch permissions. Each provider launches with the safer arguments below
+# unless the role sets `unsafe_bypass: true`, which restores the previous
+# approval/sandbox bypass flags exactly.
 CLAUDE_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+CLAUDE_PERMISSION_MODE = "dontAsk"
+CLAUDE_DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    # The Claude-side prompts delegate to the named subagent.
+    "Agent",
+    "Bash(git status:*)",
+    "Bash(git diff:*)",
+    "Bash(git log:*)",
+    "Bash(git show:*)",
+    # The handoff-validator template resolves SHAs with `git cat-file -t`.
+    "Bash(git cat-file:*)",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git rev-parse:*)",
+    "Bash(python:*)",
+    "Bash(python3:*)",
+    "Bash(pytest:*)",
+)
+CLAUDE_DISALLOWED_TOOLS: tuple[str, ...] = ("WebFetch", "WebSearch")
+CODEX_SANDBOX_ARGS: tuple[str, ...] = (
+    "--sandbox",
+    "workspace-write",
+    "--ask-for-approval",
+    "never",
+)
+CODEX_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo",)
+GEMINI_SANDBOX_ARGS: tuple[str, ...] = ("--yolo", "--sandbox")
+GEMINI_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo", "--sandbox=false")
 CLAUDE_MODEL = "claude-opus-4-7"
 NORMALIZER_PROVIDER = "claude"
 NORMALIZER_MODEL = "claude-haiku-4-5"
@@ -146,6 +181,8 @@ class AgentConfig(BaseModel):
     use_api_key_env: bool | None = None
     env_mode: EnvMode = "allowlist"
     env_passthrough: tuple[str, ...] = ()
+    unsafe_bypass: bool = False
+    allowed_tools: tuple[str, ...] | None = None
 
     @field_validator("timeout_ms", mode="after")
     @classmethod
@@ -170,6 +207,33 @@ class AgentConfig(BaseModel):
                     "provider key."
                 )
         return value
+
+    @field_validator("allowed_tools", mode="after")
+    @classmethod
+    def _validate_allowed_tools(
+        cls,
+        value: tuple[str, ...] | None,
+    ) -> tuple[str, ...] | None:
+        if value is None:
+            return value
+        for rule in value:
+            if not rule.strip() or "," in rule:
+                raise ValueError(
+                    f"allowed_tools entry `{rule}` must be one non-empty tool "
+                    "rule without commas, for example `Bash(git status:*)`."
+                )
+        return tuple(rule.strip() for rule in value)
+
+    @model_validator(mode="after")
+    def _validate_launch_permissions(self) -> AgentConfig:
+        if self.permissions_flag is not None and not self.unsafe_bypass:
+            raise ValueError(
+                "permissions_flag only applies with unsafe_bypass: true; the "
+                "default launch uses --permission-mode dontAsk with allowed_tools."
+            )
+        if self.allowed_tools is not None and self.provider != "claude":
+            raise ValueError("allowed_tools only applies to claude roles.")
+        return self
 
     @field_validator("retries", mode="after")
     @classmethod
@@ -248,7 +312,6 @@ def _agent_defaults_for_provider(role: str, provider: object) -> dict[str, objec
             "provider": provider,
             "binary": CLAUDE_BINARY,
             "model": NORMALIZER_MODEL if role == "validator" else CLAUDE_MODEL,
-            "permissions_flag": CLAUDE_PERMISSIONS_FLAG,
             "resume": False,
             "timeout_ms": SUBAGENT_TIMEOUT_MS,
         }

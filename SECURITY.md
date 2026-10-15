@@ -46,8 +46,14 @@ Please include:
 
 ## Security Boundaries
 
-The dispatcher does not sandbox provider CLIs. The safety boundary is the same
-as running those CLIs directly in the target repository.
+The dispatcher does not sandbox provider CLIs itself. By default it launches
+each CLI in that CLI's own restricted mode: Claude Code with
+`--permission-mode dontAsk` and a tool allowlist, Codex with its
+`workspace-write` sandbox, and Gemini CLI inside its Docker or Podman sandbox.
+Those boundaries are only as strong as the provider's implementation. A role
+with `unsafe_bypass: true` runs with approvals and sandboxing disabled, which
+is the same as running that CLI directly with full access to the target
+repository and your user account.
 
 The dispatcher should fail closed on parse errors and ambiguous routing, but it
 cannot make an unsafe provider CLI configuration safe.

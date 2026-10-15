@@ -12,6 +12,9 @@ import subprocess
 import time
 from typing import Callable
 
+from llm_handoff.agent_providers import claude as claude_provider
+from llm_handoff.agent_providers import codex as codex_provider
+from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_types import HandoffStatus
 from llm_handoff.agent_roles import (
     invoke_backend_role,
@@ -22,6 +25,7 @@ from llm_handoff.agent_roles import (
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
+    CLAUDE_DEFAULT_ALLOWED_TOOLS,
     DispatchConfig,
     NormalizerConfig,
 )
@@ -263,6 +267,15 @@ def run_loop(
     log_fn = log or _default_log
 
     _log_startup_banner(config, log_fn)
+    missing_sandbox_roles = _roles_missing_gemini_sandbox(config)
+    if missing_sandbox_roles and not config.dry_run:
+        for role in missing_sandbox_roles:
+            _log(
+                log_fn,
+                "ERROR",
+                gemini_provider.gemini_sandbox_unavailable_message(role),
+            )
+        return 1
     _restore_bounce_counts(config, log_fn)
     mark_startup_complete = getattr(log_fn, "mark_startup_complete", None)
     if callable(mark_startup_complete):
@@ -2294,6 +2307,7 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         if config.planner_api_key_env_enabled
         else "Planner API env:    STRIP configured provider API keys",
     )
+    _log_launch_posture(config, log)
     _log(
         log,
         "INFO",
@@ -2302,6 +2316,73 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         if config.protected_paths
         else "Protected files:    OFF (protected_paths is empty)",
     )
+
+
+def _dispatched_roles(config: DispatchConfig) -> list[str]:
+    roles = list(config.agents)
+    if config.use_manual_frontend:
+        roles = [role for role in roles if role != "frontend"]
+    return roles
+
+
+def _roles_missing_gemini_sandbox(config: DispatchConfig) -> list[str]:
+    gemini_roles = [
+        role
+        for role in _dispatched_roles(config)
+        if config.agents[role].provider == "gemini"
+        and not config.agents[role].unsafe_bypass
+    ]
+    if not gemini_roles or gemini_provider.detect_gemini_sandbox_runtime():
+        return []
+    return gemini_roles
+
+
+def _launch_args_for_role(config: DispatchConfig, role: str) -> list[str]:
+    agent_config = config.agents[role]
+    if agent_config.provider == "claude":
+        return claude_provider.claude_permission_args(agent_config)
+    if agent_config.provider == "codex":
+        return codex_provider.codex_permission_args(
+            unsafe_bypass=agent_config.unsafe_bypass
+        )
+    if agent_config.provider == "gemini":
+        return gemini_provider.gemini_sandbox_args(
+            unsafe_bypass=agent_config.unsafe_bypass
+        )
+    return []
+
+
+def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
+    gemini_runtime: str | None = None
+    if any(
+        config.agents[role].provider == "gemini" for role in _dispatched_roles(config)
+    ):
+        gemini_runtime = gemini_provider.detect_gemini_sandbox_runtime()
+    for role in _dispatched_roles(config):
+        agent_config = config.agents[role]
+        args = _launch_args_for_role(config, role)
+        summary = " ".join(args)
+        if agent_config.provider == "claude" and not agent_config.unsafe_bypass:
+            allowed = (
+                agent_config.allowed_tools
+                if agent_config.allowed_tools is not None
+                else CLAUDE_DEFAULT_ALLOWED_TOOLS
+            )
+            summary = (
+                f"--permission-mode dontAsk ({len(allowed)} allowed tool rules; "
+                "WebFetch/WebSearch denied)"
+            )
+        if agent_config.provider == "gemini" and not agent_config.unsafe_bypass:
+            summary = f"{summary} (sandbox runtime: {gemini_runtime or 'NOT FOUND'})"
+        _log(log, "INFO", f"Launch {role + ':':<12}{agent_config.provider} {summary}")
+        if agent_config.unsafe_bypass:
+            _log(
+                log,
+                "WARN",
+                f"UNSAFE BYPASS: {role} ({agent_config.provider}) launches with "
+                f"{' '.join(args)}; approvals and sandboxing are disabled. Remove "
+                f"agents.{role}.unsafe_bypass to restore the safe default.",
+            )
 
 
 def _read_required_text(path: Path) -> str | None:

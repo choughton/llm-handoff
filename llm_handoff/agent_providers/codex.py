@@ -179,6 +179,7 @@ def invoke_codex(
     resolved_skill_name = skill_name or config.CODEX_SKILL_NAME
     resolved_timeout_ms = timeout_ms or config.AGENT_TIMEOUT_MS
     env = _build_codex_env(agent_config)
+    unsafe_bypass = bool(agent_config is not None and agent_config.unsafe_bypass)
     start_time = time.monotonic()
     if use_resume:
         saved_thread_id = _read_codex_session_state(artifact_paths)
@@ -192,6 +193,7 @@ def invoke_codex(
                     additional_instruction=additional_instruction,
                     binary=resolved_binary,
                     skill_name=resolved_skill_name,
+                    unsafe_bypass=unsafe_bypass,
                 ),
                 cwd=repo_root,
                 timeout_ms=resolved_timeout_ms,
@@ -222,6 +224,7 @@ def invoke_codex(
                         ),
                         artifact_paths=artifact_paths,
                         binary=resolved_binary,
+                        unsafe_bypass=unsafe_bypass,
                     ),
                     cwd=repo_root,
                     timeout_ms=resolved_timeout_ms,
@@ -241,6 +244,7 @@ def invoke_codex(
                     ),
                     artifact_paths=artifact_paths,
                     binary=resolved_binary,
+                    unsafe_bypass=unsafe_bypass,
                 ),
                 cwd=repo_root,
                 timeout_ms=resolved_timeout_ms,
@@ -262,6 +266,7 @@ def invoke_codex(
                 ),
                 artifact_paths=artifact_paths,
                 binary=resolved_binary,
+                unsafe_bypass=unsafe_bypass,
             ),
             cwd=repo_root,
             timeout_ms=resolved_timeout_ms,
@@ -277,15 +282,27 @@ def invoke_codex(
     )
 
 
+def codex_permission_args(*, unsafe_bypass: bool = False) -> list[str]:
+    """Return the Codex sandbox/approval arguments for one role launch.
+
+    The default keeps Codex inside its workspace-write sandbox and never asks
+    for approval; ``unsafe_bypass`` restores the previous ``--yolo`` launch.
+    """
+    if unsafe_bypass:
+        return list(config.CODEX_UNSAFE_BYPASS_ARGS)
+    return list(config.CODEX_SANDBOX_ARGS)
+
+
 def _build_codex_exec_command(
     prompt: str,
     *,
     artifact_paths: _CodexArtifactPaths,
     binary: str | None = None,
+    unsafe_bypass: bool = False,
 ) -> list[str]:
     return [
         binary or config.CODEX_BINARY,
-        "--yolo",
+        *codex_permission_args(unsafe_bypass=unsafe_bypass),
         "exec",
         "--json",
         "-c",
@@ -306,10 +323,11 @@ def _build_codex_resume_command(
     additional_instruction: str | None = None,
     binary: str | None = None,
     skill_name: str | None = None,
+    unsafe_bypass: bool = False,
 ) -> list[str]:
     return [
         binary or config.CODEX_BINARY,
-        "--yolo",
+        *codex_permission_args(unsafe_bypass=unsafe_bypass),
         "exec",
         "resume",
         "--json",

@@ -227,14 +227,17 @@ def invoke_claude_subagent(
     # than from the process cwd.
     resolved_repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
     resolved_binary = binary or config.CLAUDE_BINARY
-    resolved_permissions_flag = permissions_flag or config.CLAUDE_PERMISSIONS_FLAG
+    permission_args = claude_permission_args(
+        agent_config or config.AgentConfig(provider="claude"),
+        permissions_flag=permissions_flag,
+    )
     resolved_model = model or config.CLAUDE_MODEL
     resolved_timeout_ms = timeout_ms or config.SUBAGENT_TIMEOUT_MS
     resolved_agent_name = agent_name or f"Claude {subagent_name}"
     start_time = time.monotonic()
     stream_json_command = [
         resolved_binary,
-        resolved_permissions_flag,
+        *permission_args,
         "--model",
         resolved_model,
         "--output-format",
@@ -261,7 +264,7 @@ def invoke_claude_subagent(
             resolved_agent_name,
             [
                 resolved_binary,
-                resolved_permissions_flag,
+                *permission_args,
                 "--model",
                 resolved_model,
                 "-p",
@@ -279,6 +282,36 @@ def invoke_claude_subagent(
         exit_code=result.exit_code,
         elapsed_seconds=time.monotonic() - start_time,
     )
+
+
+def claude_permission_args(
+    agent_config: config.AgentConfig,
+    *,
+    permissions_flag: str | None = None,
+) -> list[str]:
+    """Return the Claude Code permission arguments for one role launch.
+
+    The default runs in ``dontAsk`` mode: tools outside ``allowed_tools`` are
+    denied instead of prompting, and web tools are always denied.
+    ``unsafe_bypass`` restores the previous ``--dangerously-skip-permissions``
+    launch (or the role's ``permissions_flag``).
+    """
+    if agent_config.unsafe_bypass:
+        return [
+            permissions_flag
+            or agent_config.permissions_flag
+            or config.CLAUDE_PERMISSIONS_FLAG
+        ]
+    allowed_tools = (
+        config.CLAUDE_DEFAULT_ALLOWED_TOOLS
+        if agent_config.allowed_tools is None
+        else agent_config.allowed_tools
+    )
+    args = ["--permission-mode", config.CLAUDE_PERMISSION_MODE]
+    if allowed_tools:
+        args.extend(["--allowedTools", ",".join(allowed_tools)])
+    args.extend(["--disallowedTools", ",".join(config.CLAUDE_DISALLOWED_TOOLS)])
+    return args
 
 
 def _run_claude_stream_json_command(
