@@ -11,6 +11,7 @@ import pytest
 import llm_handoff.agents as agents
 import llm_handoff.ledger as ledger
 from llm_handoff import config
+from llm_handoff.agent_providers.claude import claude_shell_guidance
 from llm_handoff.validator import parse_validation_output
 
 
@@ -1817,6 +1818,8 @@ def test_invoke_claude_subagent_cleans_anthropic_env_and_pins_model(
         ",".join(config.CLAUDE_DEFAULT_ALLOWED_TOOLS),
         "--disallowedTools",
         "WebFetch,WebSearch",
+        "--append-system-prompt",
+        claude_shell_guidance(config.CLAUDE_DEFAULT_ALLOWED_TOOLS),
         "--model",
         config.CLAUDE_MODEL,
         "--output-format",

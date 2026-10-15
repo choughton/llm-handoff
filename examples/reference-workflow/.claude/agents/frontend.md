@@ -18,6 +18,22 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 5. `docs/handoff/README.md`
 6. The frontend source and test files named in the Work Packet
 
+## Shell Commands
+
+The dispatcher launches this role with an allowlist of shell command prefixes
+(by default `git status`, `git diff`, `git log`, `git show`, `git rev-parse`,
+`python`, and `pytest`, among others). A command outside it is refused, not
+prompted.
+
+- Run one command per Bash call, from the repository root.
+- Do not join commands with `&&`, `;`, or `|`, and do not use redirections,
+  loops, `cd`, environment-variable prefixes, or `git -C <path>`.
+- Use Read, Glob, and Grep to read, list, and search files instead of `cat`,
+  `ls`, `find`, or `head`. When your role may change files, use Write and
+  Edit.
+- If a command is refused, rewrite it as one allowed command. A refusal does
+  not mean the shell is unavailable.
+
 ## Boundary
 
 - Stay inside the Work Packet's `Files in scope`, and never touch `Files out of bounds`.

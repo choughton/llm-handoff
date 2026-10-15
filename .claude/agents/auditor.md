@@ -19,6 +19,22 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 6. The files and tests named in the handoff
 7. Repository-specific architecture or requirements docs referenced by the handoff
 
+## Shell Commands
+
+The dispatcher launches this role with an allowlist of shell command prefixes
+(by default `git status`, `git diff`, `git log`, `git show`, `git rev-parse`,
+`python`, and `pytest`, among others). A command outside it is refused, not
+prompted.
+
+- Run one command per Bash call, from the repository root.
+- Do not join commands with `&&`, `;`, or `|`, and do not use redirections,
+  loops, `cd`, environment-variable prefixes, or `git -C <path>`.
+- Use Read, Glob, and Grep to read, list, and search files instead of `cat`,
+  `ls`, `find`, or `head`. When your role may change files, use Write and
+  Edit.
+- If a command is refused, rewrite it as one allowed command. A refusal does
+  not mean the shell is unavailable.
+
 ## Audit Rules
 
 - Audit in two phases: phase 1 spec compliance, then phase 2 code quality.

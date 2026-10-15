@@ -41,6 +41,7 @@ from llm_handoff.agent_process import _run_logged_agent_command
 from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_providers.claude import (
     _build_claude_env,
+    claude_shell_guidance,
     claude_tool_restriction_args,
 )
 from llm_handoff.agent_providers.codex import _build_codex_env, _run_codex_json_command
@@ -800,6 +801,7 @@ def build_security_reviewer_plan(
             *CLAUDE_SECURITY_ALLOWED_TOOLS,
             "--disallowedTools",
             *CLAUDE_SECURITY_DISALLOWED_TOOLS,
+            *_claude_shell_guidance_args(CLAUDE_SECURITY_ALLOWED_TOOLS),
             "--model",
             model,
             "--output-format",
@@ -1793,3 +1795,8 @@ __all__ = [
     "resolve_security_provider",
     "run_audit_fan_out",
 ]
+
+
+def _claude_shell_guidance_args(allowed_tools: tuple[str, ...]) -> list[str]:
+    guidance = claude_shell_guidance(allowed_tools)
+    return ["--append-system-prompt", guidance] if guidance else []

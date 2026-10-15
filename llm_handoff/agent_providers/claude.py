@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 import time
 
 from llm_handoff import config
@@ -15,6 +16,11 @@ from llm_handoff.agent_process import (
 )
 from llm_handoff.agent_types import LogFn, SubagentResult, _ProcessResult
 from llm_handoff.usage_log import format_usage_line, usage_fields_from_claude_result
+
+
+_BASH_RULE_RE = re.compile(r"Bash\((.+?)(?::\*| \*)\)")
+# Claude Code's tool_result text when dontAsk mode refuses a tool call.
+_PERMISSION_REFUSAL_MARKERS = ("Permission to use", "has been denied")
 
 
 @dataclass
@@ -187,7 +193,15 @@ class _ClaudeStreamJsonMonitor:
 
         if self.log is None:
             return
-        if is_error:
+        if is_error and is_permission_refusal(content):
+            # The agent asked for a command its allowlist does not cover. That
+            # is the agent's to fix, not a dispatcher error.
+            self.log(
+                "WARN",
+                f"{self.agent_name}: refused by the permission rules: "
+                f"{_shorten(label)}",
+            )
+        elif is_error:
             detail = first_line or "tool reported failure"
             self.log("ERROR", f"{self.agent_name}: {label} failed: {detail}")
         return
@@ -324,7 +338,50 @@ def claude_permission_args(
     if allowed_tools:
         args.extend(["--allowedTools", ",".join(allowed_tools)])
     args.extend(["--disallowedTools", ",".join(config.CLAUDE_DISALLOWED_TOOLS)])
+    guidance = claude_shell_guidance(allowed_tools)
+    if guidance:
+        args.extend(["--append-system-prompt", guidance])
     return args
+
+
+def claude_shell_guidance(allowed_tools: tuple[str, ...]) -> str | None:
+    """Explain the Bash allowlist so the agent does not waste refused calls.
+
+    In ``dontAsk`` mode a command outside the allowlist is refused outright.
+    Agents tend to chain commands or reach for ``cat``/``find``, get refused,
+    and sometimes conclude they have no shell at all.
+    """
+
+    prefixes: list[str] = []
+    for rule in allowed_tools:
+        match = _BASH_RULE_RE.fullmatch(rule.strip())
+        if match and match.group(1) not in prefixes:
+            prefixes.append(match.group(1))
+    if not prefixes:
+        return None
+    allowed = ", ".join(f"`{prefix}`" for prefix in prefixes)
+    return (
+        f"Shell commands in this session are pre-approved by prefix: {allowed}. "
+        "Anything else is refused without a prompt. Run one command per Bash "
+        "call, from the repository root. Do not join commands with `&&`, `;`, "
+        "or `|`, and do not use redirections, loops, `cd`, environment-variable "
+        "prefixes, or `git -C <path>`. Use the Read, Glob, and Grep tools to "
+        "read, list, and search files instead of `cat`, `ls`, `find`, or "
+        "`head`, and Write or Edit to change files. If a command is refused, "
+        "rewrite it as one allowed command; a refusal does not mean the shell "
+        "is unavailable."
+    )
+
+
+def is_permission_refusal(tool_result_text: str) -> bool:
+    return all(marker in tool_result_text for marker in _PERMISSION_REFUSAL_MARKERS)
+
+
+def _shorten(text: str, limit: int = 160) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3].rstrip() + "..."
 
 
 def claude_tool_restriction_args(allowed_tools: tuple[str, ...]) -> list[str]:
