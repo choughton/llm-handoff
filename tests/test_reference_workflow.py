@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 from llm_handoff.config import load_dispatch_config
+from llm_handoff.init_workflow import template_files
 from llm_handoff.router import parse_handoff_frontmatter, route
 
 
@@ -233,18 +234,16 @@ def test_codex_role_skills_do_not_point_at_dispatcher_docs() -> None:
 
 
 def test_shipped_template_files_do_not_point_at_dispatcher_docs() -> None:
-    # `llm-handoff init` copies every template file except the top-level
-    # README.md, and a target repository has neither of these docs.
-    shipped = sorted(
-        path
-        for path in REFERENCE_WORKFLOW.rglob("*")
-        if path.is_file() and path.relative_to(REFERENCE_WORKFLOW) != Path("README.md")
-    )
+    # Scan exactly the files `llm-handoff init` ships: every template file
+    # except the top-level README.md and any bytecode caches. A target
+    # repository has neither of these docs.
+    shipped = template_files(REFERENCE_WORKFLOW)
     assert shipped
+    assert Path("README.md") not in shipped
 
-    for path in shipped:
-        relative_path = path.relative_to(REFERENCE_WORKFLOW).as_posix()
-        content = path.read_text(encoding="utf-8")
+    for shipped_path in shipped:
+        relative_path = shipped_path.as_posix()
+        content = (REFERENCE_WORKFLOW / shipped_path).read_text(encoding="utf-8")
         assert "docs/ARCHITECTURE.md" not in content, relative_path
         if relative_path == "dispatch_config.yaml":
             for line in content.splitlines():
