@@ -81,9 +81,9 @@ Run `git rev-parse HEAD` for concrete SHAs. Do not write `scope_sha: HEAD`.
 ## Git Inside The Sandbox
 
 `commit_mode: dispatcher` does not cover the finalizer. The dispatcher
-commits planner, backend, and frontend work in that mode, but it does not
-commit the finalizer's state and handoff update and sends the finalizer no
-commit-mode instruction. The finalizer commits its own update whatever
+commits backend and frontend work in that mode and leaves the planner's
+handoff uncommitted on purpose, but it does not commit the finalizer's state
+and handoff update and sends the finalizer no commit-mode instruction. The finalizer commits its own update whatever
 `commit_mode` is set to.
 
 Codex keeps `.git` read-only inside its sandbox, so `git add` and
