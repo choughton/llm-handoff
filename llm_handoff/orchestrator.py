@@ -758,6 +758,7 @@ def run_loop(
                 previous_agent,
                 prior_handoff_sha=current_cycle.handoff_sha,
                 require_work_packet=config.enforce_work_packet,
+                dispatcher_commit_mode=config.commit_mode == "dispatcher",
             )
             _record_post_dispatch_status_transition(
                 config=config,
@@ -1288,6 +1289,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         previous_agent,
         prior_handoff_sha=before_state.handoff_sha,
         require_work_packet=config.enforce_work_packet,
+        dispatcher_commit_mode=config.commit_mode == "dispatcher",
     )
     if repaired_validation.verdict == "NO":
         _log(

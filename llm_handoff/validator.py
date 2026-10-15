@@ -7,7 +7,12 @@ import re
 import subprocess
 from typing import Literal
 
-from llm_handoff.agent_types import COMPLETION_STATUSES, HandoffStatus
+from llm_handoff.agent_types import (
+    BLOCKED_STATUSES,
+    COMPLETION_STATUSES,
+    HandoffStatus,
+)
+from llm_handoff.dispatcher_commit import PENDING_COMMIT_SHA
 from llm_handoff.rationalization_detector import detect as detect_rationalizations
 from llm_handoff.router import (
     HandoffFrontmatterError,
@@ -237,6 +242,7 @@ def validate_handoff(
     *,
     prior_handoff_sha: str | None = None,
     require_work_packet: bool = False,
+    dispatcher_commit_mode: bool = False,
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
     return validate_handoff_text(
@@ -245,6 +251,7 @@ def validate_handoff(
         prior_handoff_sha=prior_handoff_sha,
         git_cwd=handoff_path.parent,
         require_work_packet=require_work_packet,
+        dispatcher_commit_mode=dispatcher_commit_mode,
     )
 
 
@@ -255,6 +262,7 @@ def validate_handoff_text(
     prior_handoff_sha: str | None = None,
     git_cwd: Path | None = None,
     require_work_packet: bool = False,
+    dispatcher_commit_mode: bool = False,
 ) -> ValidationResult:
     normalized_content = handoff_content.lstrip("\ufeff")
     current_handoff_sha = sha256(normalized_content.encode("utf-8")).hexdigest()
@@ -331,7 +339,17 @@ def validate_handoff_text(
     commit_shas = _COMMIT_SHA_RE.findall(normalized_content)
     if _requires_commit_sha(previous_route):
         if not commit_shas:
-            errors.append("sha_missing: Handoff is missing a git commit SHA.")
+            if dispatcher_commit_mode and _is_blocked_pending_commit_handback(
+                normalized_content,
+                frontmatter,
+                previous_route=previous_route,
+            ):
+                warnings.append(
+                    "sha_pending: Blocked implementer handback has no commit SHA; "
+                    "dispatcher commit mode leaves blocked work uncommitted."
+                )
+            else:
+                errors.append("sha_missing: Handoff is missing a git commit SHA.")
     elif not commit_shas:
         warnings.append(
             "sha_missing: Planner handoff does not yet include a git commit SHA."
@@ -635,6 +653,26 @@ def _requires_commit_sha(previous_route: str | None) -> bool:
         "auditor",
         "validator",
     }
+
+
+def _is_blocked_pending_commit_handback(
+    handoff_content: str,
+    frontmatter: HandoffRouting | None,
+    *,
+    previous_route: str | None,
+) -> bool:
+    # With commit_mode: dispatcher the dispatcher commits only after a
+    # ready_for_review claim, so a blocked or escalated implementer handback
+    # has no commit to cite and carries the pending marker instead.
+    if previous_route not in _IMPLEMENTER_ROUTES:
+        return False
+    if _frontmatter_status(frontmatter) not in BLOCKED_STATUSES:
+        return False
+    block = _verification_evidence_block(handoff_content)
+    if block is None:
+        return False
+    commit_value = _evidence_fields(block).get("Commit SHA verified", "")
+    return commit_value.strip().strip("`") == PENDING_COMMIT_SHA
 
 
 def _scope_claim_errors(
