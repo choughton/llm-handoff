@@ -81,6 +81,12 @@ Remote pushes should be explicit. The dispatcher may create local commits as
 part of a finalizer workflow, but it should not publish to a remote unless a
 user explicitly opts in.
 
+`auto_push` is parsed but not read by the current dispatcher. The dispatcher
+itself never pushes, and setting `auto_push: true` has no effect. Agents are
+told not to push, and the reference workflow denies `git push` through
+provider guardrails, but neither is a hard boundary. Keep push credentials out
+of the dispatch environment; see [SECURITY.md](SECURITY.md#threat-model).
+
 ## Runtime Controls
 
 The dispatcher exposes role-based runtime toggles for session reuse and planner

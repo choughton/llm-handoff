@@ -30,6 +30,12 @@ This project follows a simple pre-release changelog until the first public tag.
   CLI keeps its container sandbox and refuses to start without Docker or
   Podman. Per-role `unsafe_bypass: true` restores the previous flags and logs
   a startup warning. `permissions_flag` now requires `unsafe_bypass`.
+- The reference workflow's Gemini guardrails now use the policy engine's
+  `[[rule]]` schema (the previous file matched no schema and enforced
+  nothing), with user-tier install steps. It also ships a Claude Code
+  `.claude/settings.json` with deny rules and a standard-library
+  `PreToolUse` hook that blocks the same commands.
+- SECURITY.md has a Threat Model section. `auto_push` is documented as unused.
 
 ## 0.0.0
 
