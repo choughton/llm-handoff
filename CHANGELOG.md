@@ -11,8 +11,9 @@ This project follows a simple pre-release changelog until the first public tag.
   `plus`, `also`) or that ends in `:` is now `work_packet_unparseable`, so the
   planner's post-dispatch validation rejects it. Before, the gate ran it as a
   command. A claim whose Verification command fails again with the same command
-  as the previous bounce, and that has no new commit changing a file other than
-  the handoff, now bounces to the planner instead of the implementer. The gate
+  as the previous bounce, with no other failed check and no new commit changing
+  a file other than the handoff, now bounces to the planner instead of the
+  implementer. The gate
   runs the packet from the assignment, so the implementer could not fix it.
 
 - Added a `codex` next-agent normalizer provider. `normalizer.provider: codex`

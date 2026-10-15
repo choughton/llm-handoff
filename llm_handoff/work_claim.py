@@ -268,8 +268,9 @@ class WorkClaimResult:
     work_packet_text: str | None
     scanner_runs: tuple[ScannerRun, ...] = ()
     dispatcher_commit_mode: bool = False
-    # The same Verification command failed on the previous bounce too, and no
-    # commit since then changed a file other than the handoff.
+    # The same Verification command failed on the previous bounce too, no
+    # commit since then changed a file other than the handoff, and no other
+    # check failed.
     repeated_verification_failure: bool = False
 
     @property
@@ -1332,14 +1333,18 @@ def verify_work_claim(
         )
         checks.append(verification_check)
         if verification_error is not None:
-            errors.append(verification_error)
             # The bounce carries the packet forward unchanged, so an
-            # implementer that commits nothing cannot change the outcome.
-            repeated_verification_failure = not any(
-                path != handoff_rel_path for path in changed_files
-            ) and _previous_bounce_failed_command(
-                assignment_content, verification_runs[-1].command
+            # implementer that commits nothing cannot change the outcome. Any
+            # other failure, such as uncommitted work, is still the
+            # implementer's to fix, so the claim stays with the implementer.
+            repeated_verification_failure = (
+                not errors
+                and not any(path != handoff_rel_path for path in changed_files)
+                and _previous_bounce_failed_command(
+                    assignment_content, verification_runs[-1].command
+                )
             )
+            errors.append(verification_error)
 
     return WorkClaimResult(
         checks=tuple(checks),
@@ -1604,9 +1609,10 @@ def bounce_route_for(result: WorkClaimResult, *, implementer: str) -> BounceRout
     Scope, SHA, worktree, scanner, and verification failures go back to the
     implementer as ``verified_fail``. A missing or unusable Work Packet is the
     planner's artifact, so that bounce routes to ``planner``. So does a
-    Verification command that failed again on a claim that committed nothing
-    since the previous bounce: the implementer cannot change the packet the
-    gate reads, so another implementer dispatch would fail the same way.
+    Verification command that failed again, as the only failed check, on a
+    claim that committed nothing since the previous bounce: the implementer
+    cannot change the packet the gate reads, so another implementer dispatch
+    would fail the same way.
     Unreadable Git state and an unrenderable scanner command are operator
     problems and escalate to ``user``.
     """

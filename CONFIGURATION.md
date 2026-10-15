@@ -148,8 +148,9 @@ missing or unusable Work Packet routes the bounce to `planner` instead, because
 the packet is the planner's artifact. Every bounce carries the original
 `## Work Packet` forward verbatim, and the gate reads the packet from the
 assignment, so the implementer cannot change it. If the same Verification
-command fails again and no commit since the previous bounce changed a file
-other than the handoff, the bounce goes to `planner` as well.
+command fails again as the only failed check, and no commit since the previous
+bounce changed a file other than the handoff, the bounce goes to `planner` as
+well.
 
 Every line of `Verification command` runs as its own command. A line that is
 only a connective (`and`, `or`, `then`, `plus`, `also`) or ends in `:` is prose,

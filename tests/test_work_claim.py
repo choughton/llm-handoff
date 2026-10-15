@@ -2214,6 +2214,28 @@ def test_verify_work_claim_returns_a_repeated_failure_with_new_work_to_the_imple
     assert bounce_route_for(second, implementer="backend").next_agent == "backend"
 
 
+def test_verify_work_claim_returns_a_repeated_failure_with_uncommitted_work_to_the_implementer(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment(FAIL_COMMAND)
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    first = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+    bounce = _bounce_for(tmp_path, _claim(head), first)
+
+    retry_state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 3\n")
+    claim = _claim(head)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, claim)
+    second = _verify(tmp_path, assignment=bounce, claim=claim, state=retry_state)
+
+    assert second.failed_prefixes == ("uncommitted_changes", "verification_failed")
+    assert second.repeated_verification_failure is False
+    assert bounce_route_for(second, implementer="backend").next_agent == "backend"
+
+
 def test_verify_work_claim_returns_a_different_failing_command_to_the_implementer(
     tmp_path: Path,
 ) -> None:
