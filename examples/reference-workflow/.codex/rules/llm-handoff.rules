@@ -1,36 +1,15 @@
 # llm-handoff rules for Codex roles.
 #
 # Codex keeps .git read-only inside its workspace-write sandbox, so a
-# sandboxed role cannot stage or commit. These rules let exactly two command
-# forms run outside the sandbox; everything else stays sandboxed.
-#
-# Commits must use --no-verify: git hooks would otherwise run outside the
-# sandbox, driven by hook configuration the agent can edit. The work-claim
-# gate and the audit do the checking instead.
+# sandboxed role cannot stage or commit. These rules deliberately do not let
+# any git write run outside the sandbox: Codex rules match command prefixes
+# only, so an allow rule for `git add` or `git commit` would also allow
+# `git commit -a` (out-of-scope files) or a trailing `--amend` (rewriting
+# recorded commits). Use `commit_mode: dispatcher` instead: the dispatcher
+# stages and commits only the files in the Work Packet's scope.
 #
 # When several rules match, the strictest decision wins
 # (forbidden > prompt > allow).
-
-prefix_rule(
-    pattern = ["git", "add"],
-    decision = "allow",
-    justification = "Stage the assigned files; .git is read-only in the sandbox.",
-    match = ["git add -- tests/test_example.py"],
-)
-
-prefix_rule(
-    pattern = ["git", "commit", "--no-verify"],
-    decision = "allow",
-    justification = "Commit the assigned change without running repository hooks.",
-    match = ["git commit --no-verify -m 'Fix the example'"],
-    not_match = ["git commit -m 'Fix the example'"],
-)
-
-prefix_rule(
-    pattern = ["git", "commit", "--no-verify", "--amend"],
-    decision = "forbidden",
-    justification = "Do not rewrite commits the dispatcher already recorded.",
-)
 
 prefix_rule(
     pattern = ["git", "push"],
