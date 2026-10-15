@@ -73,6 +73,8 @@ def test_normalize_next_agent_uses_instructor_for_freeform_values(
     assert call["model"] == "claude-haiku-5-5"
     assert call["response_model"] is handoff_normalizer.NormalizedNextAgent
     assert call["max_retries"] == 3
+    # Claude Haiku 5.5 rejects non-default sampling parameters with a 400.
+    assert not {"temperature", "top_p", "top_k"} & call.keys()
     assert freeform in call["messages"][0]["content"]
 
 
