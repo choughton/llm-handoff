@@ -303,3 +303,13 @@ def test_an_old_usage_limit_comment_does_not_fail_a_new_review() -> None:
 
     assert state.failed is False
     assert state.completed is True
+
+
+def test_a_usage_limit_comment_without_a_review_of_this_head_is_ignored() -> None:
+    # A late usage-limit comment from a review of an earlier commit must not
+    # fail the new head, which Codex may not have started reviewing yet.
+    for summaries in ([], [summary(OLD[:7], status="**Failed**")]):
+        state = read(issue_comments=[*summaries, USAGE_LIMIT_COMMENT])
+
+        assert state.failed is False
+        assert state.completed is False

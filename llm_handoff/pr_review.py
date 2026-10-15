@@ -157,9 +157,10 @@ def read_codex_review(
         for reaction in reactions
     )
 
-    # Codex posts this a few seconds after marking the review failed, so
-    # either signal alone ends the wait.
-    usage_limited = any(
+    # The usage-limit comment names no commit, so it only counts while the
+    # summary shows a review of this head running or failed. Codex can post
+    # it a few seconds before the summary flips to Failed.
+    usage_limited = summary_status in {"running", "failed"} and any(
         by_bot(comment)
         and _USAGE_LIMIT_RE.search(comment.get("body") or "")
         and _parse_time(comment.get("created_at")) >= requested_at
