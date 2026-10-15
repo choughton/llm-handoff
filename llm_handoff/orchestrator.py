@@ -1699,7 +1699,9 @@ def _write_protected_file_escalation(
         "---",
         "next_agent: user",
         f"reason: {json.dumps(reason)}",
-        "producer: dispatcher",
+        # A canonical role, matching the work-claim gate's dispatcher-written
+        # failure handoffs; `dispatcher` is not a protocol producer.
+        "producer: validator",
         "status: escalate_to_user",
         "---",
         "",

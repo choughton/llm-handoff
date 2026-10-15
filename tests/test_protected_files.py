@@ -12,7 +12,7 @@ from llm_handoff.config import (
     DispatchConfig,
     load_dispatch_config,
 )
-from llm_handoff.router import route
+from llm_handoff.router import parse_handoff_frontmatter_text, route
 
 
 ORIGINAL_AGENTS = "# Repository Instructions\n\nRun the tests before committing.\n"
@@ -428,6 +428,10 @@ def test_escalation_handoff_preserves_prior_content_without_rerouting(
     decision = route(handoff)
     assert decision.route == "user"
     assert decision.confidence == "HIGH"
+    frontmatter = parse_handoff_frontmatter_text(handoff)
+    assert frontmatter is not None
+    assert frontmatter.producer == "validator"
+    assert frontmatter.status == "escalate_to_user"
     assert "~~~~~markdown" in handoff
     assert "Next: dispatch backend" in handoff
 

@@ -238,17 +238,17 @@ the next role is told to do, so the dispatcher treats them as protected.
 Before every dispatch (role dispatches, finalizer, validator runs, and the
 handoff repair lane) the orchestrator hashes every file that matches
 `protected_paths` and records `HEAD`. After the dispatch it compares the
-hashes and lists protected files changed in any new commits, so a change that
-was committed and then reverted, on disk or by a later commit, still counts. Nested repositories and
-worktrees inside a protected directory are skipped. The handoff file itself is
-never protected.
+hashes and lists the protected files each new commit touched, so a change
+that was committed and then reverted, on disk or by a later commit, still
+counts. Nested repositories and worktrees inside a protected directory are
+skipped. The handoff file itself is never protected.
 
 A change is allowed when the Work Packet the role received lists the path, or
 a parent directory ending in `/`, under `Files in scope`. Any other change
 fails closed. The dispatcher logs a `protected_file_modified:` error, rewrites
-the handoff to `next_agent: user` with the changed paths and the agent's
-handoff text preserved in a fenced block, and skips post-dispatch validation
-for that cycle. It does not revert the changes; a human reviews them.
+the handoff to `next_agent: user` with `producer: validator`, lists the changed
+paths, preserves the agent's handoff text in a fenced block, and skips
+post-dispatch validation for that cycle. It does not revert the changes; a human reviews them.
 
 ## Dispatch Lock
 
