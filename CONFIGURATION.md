@@ -210,8 +210,11 @@ publish:
 - `pr`: same story branch. After the audit passes, the dispatcher pushes it,
   opens a pull request with that report as the body (`gh pr create`), and
   with `auto_merge: true` merges it (`gh pr merge --merge --delete-branch`)
-  and continues on the updated base branch. With `auto_merge: false` the loop
-  stops after opening the pull request so you can review and merge it. With
+  and continues on the updated base branch. It only auto-merges when every
+  review thread on the pull request is resolved, including threads from
+  people; otherwise the loop stops and leaves the pull request open. With
+  `auto_merge: false` the loop stops after opening the pull request so you
+  can review and merge it. With
   `wait_for_checks: true` it waits for the pull request's checks
   (`gh pr checks --watch`) before merging and stops if they fail; only enable
   this when the repository has CI.
@@ -236,11 +239,17 @@ The outcomes:
 - Findings: the pull request stays open and is not merged. The dispatcher
   rewrites `HANDOFF.md` as a `verified_fail` bounce to the story's implementer.
   The bounce lists each finding (file, line, text, link) and carries the Work
-  Packet. The implementer fixes the findings on the same story branch, and
-  the gate and audit run again. The dispatcher then pushes to the same pull
-  request, updates its report, comments `@codex review` to request a new
-  review, and waits again. After `max_review_rounds` rounds that still have
-  findings, the loop stops and leaves the pull request open for you.
+  Packet. The implementer fixes the findings on the same story branch and
+  writes a `## Review Responses` section with one `### Finding N` entry per
+  finding: what it changed, or why it left the finding. The dispatcher saves
+  that section when the gate passes, because the auditor rewrites
+  `HANDOFF.md`. After the gate and audit pass again, the dispatcher pushes
+  to the same pull request and updates its report. It posts each response as
+  the reply on that finding's review thread and resolves the thread, then
+  comments `@codex review` to request a new review and waits again. A finding
+  without a response keeps its thread unresolved, which blocks the merge.
+  After `max_review_rounds` rounds that still have findings, the loop stops
+  and leaves the pull request open for you.
 - No finished review within `review_timeout_seconds`, a failed review, or a
   `gh` error: the loop stops and leaves the pull request open. It never
   merges without a finished review.

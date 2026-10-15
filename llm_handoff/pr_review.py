@@ -47,6 +47,9 @@ _BADGE_RE = re.compile(r"!\[(\w+) Badge\]\([^)]*\)")
 _FEEDBACK_LINE_RE = re.compile(r"(?m)^Useful\? React with .*$")
 _DETAILS_RE = re.compile(r"<details>.*?</details>", re.DOTALL)
 _FINDING_BODY_LIMIT = 4000
+_RESPONSE_RE = re.compile(
+    r"(?ms)^### Finding (\d+)\b[^\n]*\n(.*?)(?=^### |\Z)"
+)
 
 ReviewOutcome = Literal["clean", "findings", "timeout", "failed"]
 
@@ -68,6 +71,7 @@ class ReviewFinding:
     path: str | None = None
     line: int | None = None
     url: str | None = None
+    comment_id: int | None = None
 
     def location(self) -> str:
         if self.path and self.line:
@@ -115,6 +119,7 @@ def read_codex_review(
             path=comment.get("path") or None,
             line=comment.get("line") or comment.get("original_line") or None,
             url=comment.get("html_url") or None,
+            comment_id=comment.get("id") if isinstance(comment.get("id"), int) else None,
         )
         for comment in review_comments
         if by_bot(comment)
@@ -238,6 +243,23 @@ def wait_for_codex_review(
                 ),
             )
         sleep(poll_seconds)
+
+
+def parse_review_responses(text: str) -> dict[int, str]:
+    """Read ``### Finding N`` entries from a ``## Review Responses`` section."""
+
+    normalized = text.replace("\r\n", "\n")
+    section = re.search(
+        r"(?ms)^## Review Responses[ \t]*\n(.*?)(?=^## |\Z)", normalized
+    )
+    if section is None:
+        return {}
+    responses: dict[int, str] = {}
+    for match in _RESPONSE_RE.finditer(section.group(1)):
+        body = match.group(2).strip()
+        if body:
+            responses[int(match.group(1))] = body
+    return responses
 
 
 def parse_gh_json_pages(text: str) -> list[dict[str, Any]] | None:

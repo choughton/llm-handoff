@@ -53,7 +53,12 @@ from llm_handoff.dispatcher_commit import (
 )
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
 from llm_handoff.pr_review import ReviewGate
-from llm_handoff.publish import ensure_story_branch, publish_story, save_gate_section
+from llm_handoff.publish import (
+    ensure_story_branch,
+    publish_story,
+    save_gate_section,
+    save_review_responses,
+)
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
     HandoffFrontmatterError,
@@ -2206,6 +2211,7 @@ def _run_work_claim_gate(
         )
         if config.publish.mode != "local":
             save_gate_section(config.repo_root, passed_verification_section(result))
+            save_review_responses(config.repo_root, claim_content)
         return False
 
     for error in result.errors:
