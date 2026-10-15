@@ -114,6 +114,12 @@ This project follows a simple pre-release changelog until the first public tag.
   pull request with an `@codex review` request, for up to
   `max_review_rounds` rounds. A review that does not finish within
   `review_timeout_seconds` stops the loop with the pull request left open.
+- Review findings are now closed the way a person would close them: the
+  implementer writes a `## Review Responses` entry per finding, and on the
+  next push the dispatcher posts each one as the reply on that finding's
+  review thread and resolves it. `pr` mode only auto-merges a pull request
+  whose review threads are all resolved; otherwise the loop stops and leaves
+  it open.
 
 ## 0.0.0
 

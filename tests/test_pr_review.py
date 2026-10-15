@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from llm_handoff.pr_review import (
     parse_gh_json_pages,
+    parse_review_responses,
     read_codex_review,
     wait_for_codex_review,
 )
@@ -230,3 +231,24 @@ def test_wait_returns_findings_or_times_out() -> None:
     )
     assert result.outcome == "timeout"
     assert "45s" in result.detail
+
+
+def test_findings_keep_their_comment_id_for_thread_replies() -> None:
+    state = read(review_comments=[{**INLINE_FINDING, "id": 4279958834}])
+
+    assert state.findings[0].comment_id == 4279958834
+
+
+def test_parse_review_responses_reads_numbered_findings() -> None:
+    text = (
+        "# Handback\n\n## Review Responses\n\n"
+        "### Finding 1: `llm_handoff/publish.py:175`\nNow stops with an error.\n\n"
+        "### Finding 2\n\n### Finding 3\nLeft as is: out of scope.\n\n"
+        "## Verification Evidence\n\n### Finding 9\nnot a response\n"
+    )
+
+    assert parse_review_responses(text) == {
+        1: "Now stops with an error.",
+        3: "Left as is: out of scope.",
+    }
+    assert parse_review_responses("no section") == {}

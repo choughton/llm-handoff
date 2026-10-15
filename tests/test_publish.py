@@ -10,11 +10,13 @@ import pytest
 from llm_handoff.config import DispatchConfig
 from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
+    RESPONSES_PATH,
     STATE_PATH,
     PublishOutcome,
     ensure_story_branch,
     publish_story,
     save_gate_section,
+    save_review_responses,
     story_branch_name,
 )
 from llm_handoff.router import route
@@ -107,8 +109,35 @@ elif args[:2] == ["pr", "merge"]:
     state["pr"] = "MERGED"
     save()
 elif args[0] == "api":
-    endpoint = args[-1].split("{repo}/", 1)[1]
-    print(json.dumps(state.get("api", {}).get(endpoint, [])))
+    fields = {}
+    for flag, value in zip(args, args[1:]):
+        if flag in ("-f", "-F"):
+            key, _, field = value.partition("=")
+            fields[key] = field
+    endpoint = args[-1]
+    threads = state.setdefault("threads", [])
+    if endpoint == "graphql" and "resolveReviewThread" in fields["query"]:
+        for thread in threads:
+            if thread["id"] == fields["id"]:
+                thread["isResolved"] = True
+        save()
+        print(json.dumps({"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}}))
+    elif endpoint == "graphql":
+        nodes = [
+            {"id": t["id"], "isResolved": t["isResolved"],
+             "comments": {"nodes": [{"databaseId": t["comment_id"]}]}}
+            for t in threads
+        ]
+        print(json.dumps({"data": {"repository": {"pullRequest": {
+            "reviewThreads": {"nodes": nodes}}}}}))
+    elif endpoint.endswith("/replies"):
+        state.setdefault("replies", []).append(
+            {"endpoint": endpoint, "body": fields["body"]})
+        save()
+        print("{}")
+    else:
+        endpoint = endpoint.split("{repo}/", 1)[1]
+        print(json.dumps(state.get("api", {}).get(endpoint, [])))
 """
 
 
@@ -337,12 +366,15 @@ def test_pr_mode_with_auto_merge_merges_and_returns_to_base(
     )
 
     assert outcome.stop is False
-    assert [call[:2] for call in _gh_calls(tmp_path)] == [
+    calls = [call for call in _gh_calls(tmp_path) if call[0] == "pr"]
+    assert [call[:2] for call in calls] == [
         ["pr", "view"],
         ["pr", "create"],
+        ["pr", "view"],
         ["pr", "merge"],
     ]
-    merge_call = _gh_calls(tmp_path)[2]
+    assert any(call[-1] == "graphql" for call in _gh_calls(tmp_path))
+    merge_call = calls[-1]
     assert "--merge" in merge_call and "--delete-branch" in merge_call
     assert _git(repo, "branch", "--show-current") == "main"
     assert _git(repo, "rev-parse", "HEAD") == story_head
@@ -412,6 +444,7 @@ def _codex_summary(sha: str) -> dict:
 
 def _codex_finding(sha: str) -> dict:
     return {
+        "id": 101,
         "user": {"login": BOT},
         "commit_id": sha,
         "original_commit_id": sha,
@@ -432,6 +465,17 @@ def _set_api(tmp_path: Path, **pages: list) -> None:
         "pulls/7/comments": pages.get("review_comments", []),
         "issues/7/reactions": pages.get("reactions", []),
     }
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _gh_state(tmp_path: Path) -> dict:
+    return json.loads((tmp_path / "gh_state.json").read_text(encoding="utf-8"))
+
+
+def _set_threads(tmp_path: Path, *threads: dict) -> None:
+    path = tmp_path / "gh_state.json"
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    state["threads"] = list(threads)
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -484,6 +528,7 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
         comments=[_codex_summary(first)],
         review_comments=[_codex_finding(first)],
     )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 101})
     _entries, log = _logs()
 
     outcome = _publish_with_review(repo, gh, log)
@@ -502,6 +547,10 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
     assert decision.route == "backend" and decision.warnings == []
     state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
     assert state["review_rounds"] == 1
+    assert state["open_findings"] == [
+        {"number": 1, "comment_id": 101, "location": "src/widget.py:1"}
+    ]
+    assert "## Review Responses" in handoff
 
     # The implementer fixes the finding on the same branch, and Codex reviews
     # the new head commit cleanly. The old finding stays on the old commit.
@@ -513,10 +562,22 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
         comments=[_codex_summary(second)],
         review_comments=[_codex_finding(first)],
     )
+    save_review_responses(
+        repo,
+        "## Review Responses\n\n### Finding 1: `src/widget.py:1`\n"
+        "Defaulted WIDGET when it is unset; asked @codex to recheck.\n",
+    )
 
     outcome = _publish_with_review(repo, gh, log)
 
     assert outcome == PublishOutcome()
+    gh_state = _gh_state(tmp_path)
+    assert gh_state["threads"][0]["isResolved"] is True
+    [reply] = gh_state["replies"]
+    assert reply["endpoint"].endswith("/pulls/7/comments/101/replies")
+    assert reply["body"].startswith("Defaulted WIDGET when it is unset")
+    assert "@codex" not in reply["body"]
+    assert second[:12] in reply["body"]
     calls = _gh_calls(tmp_path)
     kinds = [call[:2] for call in calls]
     assert kinds.count(["pr", "create"]) == 1
@@ -680,3 +741,77 @@ def test_publish_stops_when_the_checkout_is_not_the_story_branch(
     assert outcome.stop is True and outcome.exit_code == 1
     assert f"expected: {BRANCH}" in outcome.message
     assert _git(tmp_path, "log", "-1", "--format=%s") == "initial"
+
+
+def test_a_finding_without_a_response_keeps_its_thread_and_blocks_the_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 101})
+    entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    second = _git(repo, "rev-parse", "HEAD")
+    _set_api(tmp_path, comments=[_codex_summary(second)])
+    assert not (repo / RESPONSES_PATH).exists()
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "1 review thread(s)" in outcome.message
+    assert _gh_state(tmp_path)["threads"][0]["isResolved"] is False
+    assert "replies" not in _gh_state(tmp_path)
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any("No review response for finding 1" in m for _l, m in entries)
+
+
+def test_auto_merge_waits_for_every_review_thread_to_be_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _set_threads(
+        tmp_path,
+        {"id": "T9", "isResolved": False, "comment_id": 900},
+        {"id": "T8", "isResolved": True, "comment_id": 800},
+    )
+    entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=repo,
+        mode="pr",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+        gh_command=gh,
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "1 review thread(s)" in outcome.message
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any(level == "PAUSE" for level, _ in entries)
+
+
+def test_save_review_responses_keeps_only_claims_with_responses(
+    tmp_path: Path,
+) -> None:
+    save_review_responses(tmp_path, "## Review Responses\n\n### Finding 1\nFixed.\n")
+    assert (tmp_path / RESPONSES_PATH).is_file()
+
+    save_review_responses(tmp_path, "# Handback\n\nNo responses here.\n")
+    assert not (tmp_path / RESPONSES_PATH).exists()
