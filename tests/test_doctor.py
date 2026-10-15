@@ -415,6 +415,67 @@ def test_doctor_fails_on_security_opt_out_without_a_reason(
     assert "security_opt_out_reason" in output
 
 
+def test_doctor_reports_work_claim_gate_on_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert (
+        "PASS work-claim gate: the work-claim gate is on (enforce_work_packet: true)"
+        in output
+    )
+    assert "WARN work-claim gate:" not in output
+
+
+def test_doctor_warns_with_the_work_claim_gate_opt_out_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "enforce_work_packet: false\n"
+        + 'work_packet_opt_out_reason: "Planner prompts do not emit packets yet."\n',
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    warn_lines = [
+        line
+        for line in output.splitlines()
+        if line.startswith("WARN work-claim gate:")
+    ]
+    assert len(warn_lines) == 1
+    assert "work-claim gate is off (enforce_work_packet: false)" in warn_lines[0]
+    assert "Planner prompts do not emit packets yet." in warn_lines[0]
+    assert "PASS work-claim gate:" not in output
+
+
+def test_doctor_fails_on_work_claim_gate_opt_out_without_a_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + "enforce_work_packet: false\n",
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert "FAIL config: dispatch config could not be loaded" in output
+    assert "work_packet_opt_out_reason" in output
+
+
 def test_doctor_warns_on_dirty_tree_and_falls_back_to_default_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

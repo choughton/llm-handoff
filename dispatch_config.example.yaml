@@ -16,12 +16,16 @@ backend_resume: true
 planner_resume: true
 planner_api_key_env: false
 
-# Opt-in deterministic work-claim gate. When true, a ready_for_review handoff
+# Deterministic work-claim gate, on by default. A ready_for_review handoff
 # from backend or frontend is checked against the planner's Work Packet
 # (scope_sha at HEAD, diff inside Files in scope, Verification command exits 0)
 # before the auditor is dispatched. The Verification command is agent-written
-# text executed in repo_root; see CONFIGURATION.md.
-enforce_work_packet: false
+# text executed in repo_root; see CONFIGURATION.md. To turn the gate off, set
+# enforce_work_packet: false and give a reason, which every start and
+# `llm-handoff doctor` report as a warning:
+#   enforce_work_packet: false
+#   work_packet_opt_out_reason: "<why>"
+enforce_work_packet: true
 # Who commits implementer work: agent (default) or dispatcher. dispatcher
 # keeps agents out of .git and needs enforce_work_packet: true.
 commit_mode: agent

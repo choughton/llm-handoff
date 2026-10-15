@@ -4,9 +4,9 @@ The doctor command checks a checkout before the dispatcher runs: Git, the
 provider CLI binaries the configured roles launch, the container runtime
 Gemini CLI roles need for their sandbox, whether the configured next-agent
 normalizer has an API key or CLI to run with, whether the audit runs the
-security reviewer (with the opt-out reason when it does not), and the current
-handoff file. It
-does not start a dispatch, call a provider, contact the network, or write any
+security reviewer (with the opt-out reason when it does not), whether the
+work-claim gate is on (with the opt-out reason when it is not), and the
+current handoff file. It does not start a dispatch, call a provider, contact the network, or write any
 files.
 
 `_command_available` and `_command_binary_name` live here so the supervisor's
@@ -124,6 +124,7 @@ def run_doctor(
         _check_container_runtime(dispatch_config, checks)
         _check_normalizer(dispatch_config, resolved_root, checks)
         _check_security_review(dispatch_config, checks)
+        _check_work_claim_gate(dispatch_config, checks)
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
     else:
@@ -424,6 +425,30 @@ def _check_security_review(
             "security review",
             "the security reviewer is on (security provider: "
             f"{audit.security_provider or 'auto'})",
+        )
+    )
+
+
+def _check_work_claim_gate(
+    dispatch_config: DispatchConfig,
+    checks: list[DoctorCheck],
+) -> None:
+    """Report whether the work-claim gate is on, and the opt-out reason if not."""
+    if not dispatch_config.enforce_work_packet:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                "work-claim gate",
+                "the work-claim gate is off (enforce_work_packet: false); "
+                f"opt-out reason: {dispatch_config.work_packet_opt_out_reason}",
+            )
+        )
+        return
+    checks.append(
+        DoctorCheck(
+            "PASS",
+            "work-claim gate",
+            "the work-claim gate is on (enforce_work_packet: true)",
         )
     )
 

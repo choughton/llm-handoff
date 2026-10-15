@@ -31,11 +31,14 @@ After the first tagged release, supported versions will be listed here.
   pushes. Agents can still push if a push credential is reachable from the
   dispatch environment; see [Threat Model](#threat-model).
 - Treat generated handoff instructions as untrusted until validated.
-- `enforce_work_packet` makes the dispatcher itself run the planner's Work
-  Packet `Verification command` through the shell in the target repository.
-  The agents already run there with provider permissions disabled, so this
-  adds no new exposure, but it is still execution of agent-written text. Leave
-  it off for repositories whose handoff files you have not reviewed.
+- The work-claim gate (`enforce_work_packet`) is on by default. It makes the
+  dispatcher itself run the planner's Work Packet `Verification command`
+  through the shell in the target repository. The agents already run there
+  with provider permissions disabled, so this adds no new exposure, but it is
+  still execution of agent-written text. Review the handoff files of a
+  repository before you run the dispatcher there. Turning the gate off needs
+  `enforce_work_packet: false` plus a non-empty `work_packet_opt_out_reason`,
+  which every dispatcher start and `llm-handoff doctor` report as a warning.
 - `scanners` entries in `dispatch_config.yaml` are operator-authored commands,
   so they are trusted operator input rather than agent-written text. The
   dispatcher does not sandbox scanners any more than it sandboxes agents; a

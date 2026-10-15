@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: the work-claim gate is now on by default
+  (`enforce_work_packet` defaults to `true`, and the shipped
+  `dispatch_config.example.yaml` and reference workflow config set it to
+  `true`). Opting out takes `enforce_work_packet: false` plus a non-empty
+  `work_packet_opt_out_reason`; a config that turns the gate off without a
+  reason, or with a whitespace-only one, no longer loads, and a reason set
+  while the gate is on is rejected. `commit_mode: dispatcher` still requires
+  the gate, with the same error as before, even when a reason is set. When the
+  gate is off, every dispatcher start logs a WARN with
+  `enforce_work_packet: false` and the reason instead of the old INFO line,
+  and `llm-handoff doctor` prints `WARN work-claim gate:` with the reason; with
+  the gate on it prints `PASS work-claim gate:`. Configs that omit
+  `enforce_work_packet` now run the gate: planner assignments to `backend` or
+  `frontend` must carry a parseable `## Work Packet`, and post-dispatch
+  validation rejects them otherwise. To keep the old behavior, opt out with a
+  reason.
+
 - Behavior change: completion claims are now checked against Git.
   Post-dispatch validation fails a `ready_for_review` handback from `backend`
   or `frontend` that has no frontmatter `scope_sha`

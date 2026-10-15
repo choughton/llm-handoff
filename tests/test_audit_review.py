@@ -126,6 +126,7 @@ def _fan_out_config(
     security_provider: str | None = "claude",
     block_severity: str = "high",
     agents: dict[str, Any] | None = None,
+    **overrides: Any,
 ) -> DispatchConfig:
     audit: dict[str, Any] = {
         "reviewers": ["quality", "security"],
@@ -140,6 +141,7 @@ def _fan_out_config(
     }
     if agents is not None:
         kwargs["agents"] = agents
+    kwargs.update(overrides)
     return DispatchConfig(**kwargs)
 
 
@@ -1649,7 +1651,13 @@ producer: planner
 """,
     )
     pre_dispatch_head = _git(repo, "rev-parse", "HEAD")
-    config = _fan_out_config(repo)
+    # The assignment carries no Work Packet; these tests cover the audit
+    # fan-out, and the work-claim gate is covered in tests/test_work_claim.py.
+    config = _fan_out_config(
+        repo,
+        enforce_work_packet=False,
+        work_packet_opt_out_reason="Tests cover the audit fan-out, not the gate.",
+    )
 
     def fake_backend(path: Path, **_kwargs: Any) -> DispatchResult:
         _commit_file(repo, "src/one.py", "one = 1\n", "first")

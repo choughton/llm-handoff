@@ -610,7 +610,8 @@ class DispatchConfig(BaseModel):
     planner_resume: bool = GEMINI_RESUME_DEFAULT
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
-    enforce_work_packet: bool = False
+    enforce_work_packet: bool = True
+    work_packet_opt_out_reason: str | None = None
     work_packet_verification_timeout_seconds: int = (
         WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS
     )
@@ -627,12 +628,31 @@ class DispatchConfig(BaseModel):
                 "dispatcher only commits files the Work Packet puts in scope, "
                 "and the work-claim gate checks what it committed."
             )
+        reason = self.work_packet_opt_out_reason
+        if self.enforce_work_packet:
+            if reason is not None:
+                raise ValueError(
+                    "work_packet_opt_out_reason only applies when the work-claim "
+                    "gate is off (enforce_work_packet: false); remove it or set "
+                    "enforce_work_packet: false."
+                )
+        elif not reason:
+            raise ValueError(
+                "enforce_work_packet: false turns the work-claim gate off, so "
+                "work_packet_opt_out_reason must give a non-empty reason for "
+                "turning it off."
+            )
         if self.publish.mode != "local" and self.commit_mode != "dispatcher":
             raise ValueError(
                 f"publish.mode: {self.publish.mode} requires commit_mode: "
                 "dispatcher; the dispatcher owns the story branch and its commits."
             )
         return self
+
+    @field_validator("work_packet_opt_out_reason", mode="after")
+    @classmethod
+    def _strip_work_packet_opt_out_reason(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
 
     @field_validator("protected_paths", mode="after")
     @classmethod
