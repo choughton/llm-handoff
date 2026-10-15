@@ -74,3 +74,5 @@ implementation path failed structurally and needs re-scoping.
 - Planner assignments without a concrete work packet.
 - Auditor approvals that skip spec compliance.
 - Repeated implementer/auditor bounces on the same story.
+- Completion claims whose `scope_sha` is not HEAD or whose diff leaves the
+  Work Packet scope.

@@ -24,6 +24,7 @@ Route next_agent
 Invoke provider CLI
 Capture output and logs
 Validate updated HANDOFF.md
+Verify the work claim (opt-in gate)
 Continue, pause, or escalate
 ```
 
@@ -37,6 +38,9 @@ Continue, pause, or escalate
 - `llm_handoff.init_workflow`: target-repo reference workflow initialization.
 - `llm_handoff.router`: handoff parsing and route selection.
 - `llm_handoff.validator`: post-dispatch handoff validation.
+- `llm_handoff.work_claim`: opt-in deterministic work-claim gate (Work Packet
+  parsing, `scope_sha` and diff-scope checks, verification command execution,
+  bounce handoff).
 - `llm_handoff.orchestrator`: dispatch loop and failure-mode handling.
 - `llm_handoff.agents`: compatibility facade for older tests and imports; new
   runtime code should use the layered modules directly.
@@ -49,6 +53,8 @@ Continue, pause, or escalate
   control flow.
 - `llm_handoff.normalizer_models`: normalizer schema and prompt contract.
 - `llm_handoff.normalizer_providers.*`: model-provider normalizer adapters.
+- `llm_handoff.audit_review`: opt-in audit fan-out with a quality reviewer
+  and a security reviewer, structured verdicts, and the merge rule.
 - `llm_handoff.ledger`: finalizer-style close flow for durable state updates.
 - `llm_handoff.logging_util`: dispatch log writer.
 - `llm_handoff.text_io`: robust text decoding for handoff files.
@@ -134,6 +140,13 @@ The dispatcher should name and isolate failure modes rather than guessing:
 - missing route after dispatch;
 - malformed validator output;
 - malformed close/finalizer output;
+- audit fan-out reviewer failure: `review_scope_unavailable`,
+  `security_extension_missing`, `quality_verdict_malformed`,
+  `security_verdict_malformed`, reviewer exit or timeout, or
+  `reviewer_wrote_handoff`;
+- work-claim gate failure (opt-in): missing or unparseable Work Packet,
+  `scope_sha` not at HEAD, scope violation, uncommitted changes, a failed,
+  missing, or timed-out configured scanner, or a failed verification command;
 - protected control file modified outside the Work Packet scope.
 
 When a failure mode is detected, the safe default is to pause or dispatch a
@@ -147,6 +160,75 @@ state unchanged except for the handoff, and pass validation. If that producer
 repair fails, the planner gets one cleanup-only attempt. If the planner cannot
 operationalize the handoff, the dispatcher aborts to the user.
 
+## Work-Claim Gate
+
+`validate_handoff` checks the shape of a completion claim: frontmatter fields,
+a SHA that exists, a populated evidence block. It does not check that the work
+was done. By default that judgment belongs to the auditor, which costs a full
+agent session even when the tests already fail.
+
+`enforce_work_packet: true` adds a deterministic gate in
+`llm_handoff.work_claim`. It runs right after post-dispatch validation succeeds
+for a `status: ready_for_review` handoff from `backend` or `frontend`:
+
+1. Parse the `## Work Packet` from the handoff the implementer received:
+   `Files in scope`, `Files out of bounds`, and `Verification command`. A
+   missing or unparseable packet is an error (`work_packet_missing`,
+   `work_packet_unparseable`), not a skip.
+2. Require `scope_sha` to resolve to the current HEAD of `repo_root`
+   (`scope_sha_not_head`). A pre-existing commit pasted as `scope_sha` fails.
+   Commits above `scope_sha` that touch only the handoff file are tolerated,
+   because some repository protocols commit the handoff after writing the SHA
+   into it.
+3. Diff the pre-dispatch HEAD against the current HEAD and require every
+   changed path to be inside `Files in scope` or to be the handoff file. Any
+   changed path under `Files out of bounds` is a `scope_violation`. New
+   uncommitted changes outside the handoff file are `uncommitted_changes`,
+   because the verification command runs against the working tree and the
+   claim must be reproducible from `scope_sha`.
+4. Run the configured `scanners` (for example gitleaks, semgrep, bandit, and
+   pip-audit) in config order, each through the shell in `repo_root` with its
+   own `timeout_ms`, with `{diff_range}`, `{changed_files}`,
+   `{changed_py_files}`, and `{repo_root}` substituted from the values the
+   earlier checks already computed. Scanners run only when steps 2 and 3
+   passed, and every scanner runs even after one fails so a single bounce
+   carries every finding. A non-zero exit is `scanner_failed:<name>`, a
+   timeout is `scanner_timeout:<name>`, and a missing executable is
+   `scanner_missing:<name>` for a required scanner or a WARN-level skip for an
+   optional one. A command whose placeholders cannot be filled is
+   `scanner_config_invalid:<name>`, rejected at config load. The list is
+   empty by default.
+5. Run the `Verification command` through the shell in `repo_root`, bounded
+   by `work_packet_verification_timeout_seconds`. A non-zero exit or a timeout
+   is `verification_failed`. The command, exit code, and a bounded output tail
+   go to the dispatch log, as do scanner output tails.
+
+Each check has its own error prefix so repair and recovery code can key on it.
+On any failure the dispatcher does not dispatch the auditor. It rewrites
+`HANDOFF.md` into a bounce: `status: verified_fail`, `producer: validator`, a
+quoted `reason` naming the failed checks, a `## Dispatcher Verification`
+section with the evidence, the original `## Work Packet` carried forward
+verbatim, and the implementer's handback preserved under `## Prior Handback`.
+The bounce goes through `record_status_transition`, so the three-fix circuit
+breaker counts it. Scope, SHA, worktree, scanner, and verification failures
+route back to the same implementer. A missing or unusable Work Packet routes
+to `planner`, which owns that artifact. Unreadable Git state and a scanner
+command that cannot be rendered escalate to `user`.
+
+Running the Work Packet's verification command is execution of agent-written
+text. The dispatcher already launches the implementer with provider
+permissions disabled in the same repository, so the planner and implementer
+could have run that command themselves; the gate adds no new exposure. It does
+mean the dispatcher process, not a provider CLI, runs the command, so keep
+`repo_root` pointed at a repository whose handoff files you trust (see
+`SECURITY.md`).
+
+Scanner commands sit on the other side of that boundary. They come from
+`dispatch_config.yaml`, which the operator writes, so they are trusted
+operator-authored input rather than agent-written text. The dispatcher still
+does not sandbox them: a scanner runs with the same permissions as the
+dispatcher and as the agents it launches, in the same repository, and the only
+limits are its `timeout_ms` and the process-tree kill on timeout.
 ## Protected Control Files
 
 Roles read `AGENTS.md`, the handoff prompts, provider agent files, and the
@@ -241,6 +323,61 @@ must not independently rewrite `HANDOFF.md`, update project-state files, or
 create competing routing state. This keeps the handoff file as the mutex and
 preserves the serial dispatch contract.
 
+## Audit Fan-Out
+
+By default the auditor route runs one reviewer that both judges the work and
+rewrites `HANDOFF.md`. Setting `audit.reviewers: [quality, security]` changes
+that route into a read-only fan-out:
+
+1. The dispatcher computes a concrete Git range: the `HEAD` recorded before
+   the implementer dispatch, through the handoff's `scope_sha`. Without a
+   recorded base it falls back to `scope_sha~1`. Reviewers are never asked to
+   scan the whole repository.
+2. The quality reviewer (the configured `auditor` agent) and a security
+   reviewer run concurrently in two threads through the existing streaming
+   process runner.
+3. Each reviewer returns a JSON verdict validated by a Pydantic model:
+   `verdict` (`pass` or `fail`) and `findings[]` with `severity`, `file`,
+   `line`, `title`, `description`, and `recommendation`. The quality verdict
+   also carries the forward route and the evidence fields.
+4. The dispatcher merges the verdicts and writes `HANDOFF.md` itself. A
+   finding at or above `audit.block_severity`, or either reviewer returning
+   `fail`, routes back to the implementer with `status: verified_fail`.
+   Otherwise the handoff follows the quality reviewer's route.
+
+The single-writer rule from the provider-native helper boundary still holds:
+in fan-out mode the dispatcher is the only writer of `HANDOFF.md`. Reviewers
+are told not to edit it, and the dispatcher hashes the file around each
+reviewer run. A changed hash is a hard `reviewer_wrote_handoff:` error; the
+dispatcher restores the pre-review content and treats the cycle as a failed
+dispatch. Any malformed or missing verdict fails closed the same way.
+
+Choosing a security vendor different from the implementer's provider avoids
+asking a model family to grade its own output. When `audit.security_provider`
+is unset, the dispatcher picks the first of `claude`, `codex`, and `gemini`
+that differs from the implementer role's provider.
+
+### Reviewer Security Posture
+
+- The security reviewer gets read-only tool permissions where the CLI supports
+  them: Claude runs in `dontAsk` mode with an allow-list of read tools and
+  `git diff`/`git show`/`git log`, and edit tools denied; Gemini runs in
+  `--approval-mode plan`; the Codex fallback runs `codex exec --sandbox
+  read-only`. The Codex Security CLI has no documented write mode for scans.
+- The quality reviewer keeps the configured auditor permissions because it
+  runs verification commands. The handoff hash check, not a sandbox, enforces
+  that it does not write `HANDOFF.md`. Other file writes by the quality
+  reviewer are not detected by the fan-out.
+- The existing API-key environment scrubbing still applies: Claude reviewers
+  run without `ANTHROPIC_API_KEY`, and Gemini reviewers run without
+  `GOOGLE_API_KEY` and, unless opted in, without `GEMINI_API_KEY`.
+- Vendor security reviewers are LLM tools. They are not hardened against
+  prompt injection in repository content such as source comments, docs, or
+  commit messages. The fan-out reduces that risk by bounding the scope,
+  denying writes, requiring a structured verdict, and failing closed on bad
+  output. It does not eliminate it. A crafted change can still talk a reviewer
+  into a `pass`.
+
 ## Circuit Breakers
 
 The dispatcher tracks a three-fix circuit breaker per `story_id`. Each
@@ -277,7 +414,9 @@ valid.
 
 ## Non-Goals
 
-- Parallel execution.
+- Parallel execution of workflow roles. The audit fan-out runs two
+  read-only reviewers inside one auditor dispatch; it does not run roles in
+  parallel.
 - Worktree orchestration.
 - Pull request automation as a core requirement.
 - Non-Git state backends.
