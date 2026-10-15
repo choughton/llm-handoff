@@ -254,6 +254,7 @@ def invoke_claude_subagent(
     )
     resolved_model = model or config.CLAUDE_MODEL
     resolved_timeout_ms = timeout_ms or config.SUBAGENT_TIMEOUT_MS
+    idle_timeout_ms = agent_config.idle_timeout_ms if agent_config else None
     resolved_agent_name = agent_name or f"Claude {subagent_name}"
     start_time = time.monotonic()
     stream_json_command = [
@@ -272,6 +273,7 @@ def invoke_claude_subagent(
         stream_json_command,
         cwd=resolved_repo_root,
         timeout_ms=resolved_timeout_ms,
+        idle_timeout_ms=idle_timeout_ms,
         env=_build_claude_env(agent_config),
         log=log,
     )
@@ -293,6 +295,7 @@ def invoke_claude_subagent(
             ],
             cwd=resolved_repo_root,
             timeout_ms=resolved_timeout_ms,
+            idle_timeout_ms=idle_timeout_ms,
             env=_build_claude_env(agent_config),
             log=log,
             stream_all_stdout=True,
@@ -441,6 +444,7 @@ def _run_claude_stream_json_command(
     *,
     cwd: Path,
     timeout_ms: int,
+    idle_timeout_ms: int | None = None,
     env: dict[str, str] | None = None,
     log: LogFn | None = None,
 ) -> _ProcessResult:
@@ -449,6 +453,7 @@ def _run_claude_stream_json_command(
         command,
         cwd=cwd,
         timeout_ms=timeout_ms,
+        idle_timeout_ms=idle_timeout_ms,
         env=env,
         on_stdout=monitor.consume_stdout,
         on_stderr=monitor.consume_stderr,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import codecs
+import io
 import os
 from pathlib import Path
 import queue
@@ -17,6 +19,7 @@ from llm_handoff.config import VENDOR_API_KEY_ENV_NAMES, AgentConfig
 
 
 PROCESS_READER_JOIN_TIMEOUT_SECONDS = 0.2
+PROCESS_READ_CHUNK_BYTES = 65536
 PROCESS_TREE_KILL_TIMEOUT_SECONDS = 30
 _WINDOWS = os.name == "nt"
 
@@ -238,6 +241,7 @@ def _run_logged_agent_command(
     *,
     cwd: Path,
     timeout_ms: int,
+    idle_timeout_ms: int | None = None,
     env: dict[str, str] | None = None,
     log: LogFn | None = None,
     stream_all_stdout: bool = False,
@@ -248,6 +252,7 @@ def _run_logged_agent_command(
             command,
             cwd=cwd,
             timeout_ms=timeout_ms,
+            idle_timeout_ms=idle_timeout_ms,
             env=env,
             on_stdout=None,
             on_stderr=None,
@@ -263,6 +268,7 @@ def _run_logged_agent_command(
         command,
         cwd=cwd,
         timeout_ms=timeout_ms,
+        idle_timeout_ms=idle_timeout_ms,
         env=env,
         on_stdout=lambda chunk: monitor.consume("stdout", chunk),
         on_stderr=lambda chunk: monitor.consume("stderr", chunk),
@@ -274,10 +280,17 @@ def _run_command_streaming(
     *,
     cwd: Path,
     timeout_ms: int,
+    idle_timeout_ms: int | None = None,
     env: dict[str, str] | None = None,
     on_stdout: Callable[[str], None] | None = None,
     on_stderr: Callable[[str], None] | None = None,
 ) -> _ProcessResult:
+    """Run ``command``, streaming its output, and kill it on a timeout.
+
+    ``timeout_ms`` bounds the whole run. ``idle_timeout_ms``, when set, also
+    kills the process once it has written nothing to stdout or stderr for
+    that long, so a hung CLI is caught before the full timeout.
+    """
     resolved_command = list(command)
     resolved_command[0] = _resolve_command_binary(resolved_command[0])
     popen_kwargs = {
@@ -316,18 +329,28 @@ def _run_command_streaming(
     for reader in readers:
         reader.start()
 
-    deadline = time.monotonic() + (timeout_ms / 1000)
+    last_output_at = time.monotonic()
+    deadline = last_output_at + (timeout_ms / 1000)
+    idle_limit = None if idle_timeout_ms is None else idle_timeout_ms / 1000
     timed_out = False
+    idled_out = False
     try:
         while process.poll() is None and time.monotonic() < deadline:
-            _drain_stream_queue(
+            if _drain_stream_queue(
                 stream_queue,
                 stdout_parts=stdout_parts,
                 stderr_parts=stderr_parts,
                 on_stdout=on_stdout,
                 on_stderr=on_stderr,
                 timeout=0.1,
-            )
+            ):
+                last_output_at = time.monotonic()
+            elif (
+                idle_limit is not None
+                and time.monotonic() - last_output_at >= idle_limit
+            ):
+                idled_out = True
+                break
     except BaseException:
         # A KeyboardInterrupt no longer reaches a child that runs in its own
         # process group, so take the tree down before propagating.
@@ -357,7 +380,15 @@ def _run_command_streaming(
     stdout = "".join(stdout_parts)
     stderr = "".join(stderr_parts)
     if timed_out:
-        message = f"Process timed out after {timeout_ms / 1000:g} seconds."
+        # Both messages keep the "Process timed out after" prefix that the
+        # failover classifier treats as a timeout.
+        if idled_out:
+            message = (
+                f"Process timed out after {idle_timeout_ms / 1000:g} seconds "
+                "without output (idle_timeout_ms)."
+            )
+        else:
+            message = f"Process timed out after {timeout_ms / 1000:g} seconds."
         if stderr:
             message = f"{message}\n{stderr}"
         return _ProcessResult(stdout=stdout, stderr=message, exit_code=1)
@@ -374,12 +405,45 @@ def _read_process_stream(
     stream_name: str,
     stream_queue: queue.Queue[tuple[str, str | None]],
 ) -> None:
+    """Queue each complete line of ``stream`` as one chunk.
+
+    Reads whatever bytes are available rather than blocking in ``readline``,
+    so output written without a newline (token streams, progress bars) still
+    counts as activity: it is queued as a ``None`` chunk, which resets the
+    idle timer without reaching the output buffers. Line endings are
+    translated as in text-mode ``readline``.
+    """
     if stream is None:
         return
 
     try:
-        for chunk in iter(stream.readline, ""):
-            stream_queue.put((stream_name, chunk))
+        raw = getattr(stream, "buffer", None)
+        if raw is None or not hasattr(raw, "read1"):
+            for chunk in iter(stream.readline, ""):
+                stream_queue.put((stream_name, chunk))
+            return
+
+        decoder = io.IncrementalNewlineDecoder(
+            codecs.getincrementaldecoder(stream.encoding or "utf-8")(
+                errors=stream.errors or "strict"
+            ),
+            translate=True,
+        )
+        pending = ""
+        while True:
+            data = raw.read1(PROCESS_READ_CHUNK_BYTES)
+            pending += decoder.decode(data, final=not data)
+            emitted = False
+            while (end := pending.find("\n")) >= 0:
+                stream_queue.put((stream_name, pending[: end + 1]))
+                pending = pending[end + 1 :]
+                emitted = True
+            if not data:
+                if pending:
+                    stream_queue.put((stream_name, pending))
+                return
+            if not emitted:
+                stream_queue.put((stream_name, None))
     finally:
         stream.close()
 
@@ -393,7 +457,9 @@ def _drain_stream_queue(
     on_stderr: Callable[[str], None] | None,
     timeout: float,
     drain_all: bool = False,
-) -> None:
+) -> bool:
+    """Move queued output into the buffers; return True if any chunk arrived."""
+    received = False
     while True:
         try:
             if drain_all:
@@ -401,8 +467,10 @@ def _drain_stream_queue(
             else:
                 stream_name, chunk = stream_queue.get(timeout=timeout)
         except queue.Empty:
-            return
+            return received
 
+        # A None chunk marks a partial line: activity, but nothing to record.
+        received = True
         if chunk is None:
             continue
 
@@ -416,7 +484,7 @@ def _drain_stream_queue(
                 on_stderr(chunk)
 
         if not drain_all:
-            return
+            return received
 
 
 def _run_command(

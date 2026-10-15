@@ -11,6 +11,10 @@ This project follows a simple pre-release changelog until the first public tag.
   dispatcher reruns that dispatch once on the fallback. Ordinary failures and
   runs that already rewrote the handoff or changed a protected control file
   do not fail over.
+- Roles accept an optional `idle_timeout_ms`. When set, an agent that writes
+  no stdout or stderr output for that long is killed and reported as a
+  timeout, so a hung agent fails over to its fallback before the full
+  `timeout_ms`. Off by default, because some CLIs stay silent while they work.
 
 - The audit fan-out range now starts at the story's first implementer
   dispatch. A retry after a work-claim or audit bounce no longer moves the

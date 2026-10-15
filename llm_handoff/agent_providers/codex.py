@@ -168,6 +168,7 @@ def invoke_codex(
     resolved_binary = binary or config.CODEX_BINARY
     resolved_skill_name = skill_name or config.CODEX_SKILL_NAME
     resolved_timeout_ms = timeout_ms or config.AGENT_TIMEOUT_MS
+    idle_timeout_ms = agent_config.idle_timeout_ms if agent_config else None
     env = _build_codex_env(agent_config)
     unsafe_bypass = bool(agent_config is not None and agent_config.unsafe_bypass)
     start_time = time.monotonic()
@@ -187,6 +188,7 @@ def invoke_codex(
                 ),
                 cwd=repo_root,
                 timeout_ms=resolved_timeout_ms,
+                idle_timeout_ms=idle_timeout_ms,
                 output_last_message_path=artifact_paths.output_last_message_path,
                 log=log,
                 env=env,
@@ -218,6 +220,7 @@ def invoke_codex(
                     ),
                     cwd=repo_root,
                     timeout_ms=resolved_timeout_ms,
+                    idle_timeout_ms=idle_timeout_ms,
                     output_last_message_path=artifact_paths.output_last_message_path,
                     log=log,
                     env=env,
@@ -238,6 +241,7 @@ def invoke_codex(
                 ),
                 cwd=repo_root,
                 timeout_ms=resolved_timeout_ms,
+                idle_timeout_ms=idle_timeout_ms,
                 output_last_message_path=artifact_paths.output_last_message_path,
                 log=log,
                 env=env,
@@ -260,6 +264,7 @@ def invoke_codex(
             ),
             cwd=repo_root,
             timeout_ms=resolved_timeout_ms,
+            idle_timeout_ms=idle_timeout_ms,
             output_last_message_path=artifact_paths.output_last_message_path,
             log=log,
             env=env,
@@ -444,12 +449,14 @@ def _run_codex_json_command(
     output_last_message_path: Path,
     log: LogFn | None = None,
     env: dict[str, str] | None = None,
+    idle_timeout_ms: int | None = None,
 ) -> _CodexCommandResult:
     monitor = _CodexJsonMonitor(agent_name=agent_name, log=log)
     result = _run_command_streaming(
         command,
         cwd=cwd,
         timeout_ms=timeout_ms,
+        idle_timeout_ms=idle_timeout_ms,
         env=env,
         on_stdout=monitor.consume_stdout,
         on_stderr=monitor.consume_stderr,
