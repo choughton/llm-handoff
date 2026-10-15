@@ -2225,3 +2225,49 @@ def test_run_loop_writes_the_review_bounce_from_publish(
     review = published[0]["review"]
     assert review.reviewers == ("codex",) and review.max_rounds == 3
     assert config.handoff_full_path.read_text(encoding="utf-8") == bounce
+
+
+@pytest.mark.parametrize("commit_mode", ["dispatcher", "agent"])
+def test_planner_is_told_to_leave_the_handoff_uncommitted_in_dispatcher_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    commit_mode: str,
+) -> None:
+    from llm_handoff.dispatcher_commit import PLANNER_COMMIT_MODE_INSTRUCTION
+
+    _init_repo(
+        tmp_path,
+        handoff_content=_claim(
+            "a" * 40, status="verified_pass", producer="auditor", next_agent="planner"
+        ),
+    )
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode=commit_mode)
+    instructions: list[object] = []
+
+    def fake_planner(path: Path, **kwargs: object) -> DispatchResult:
+        instructions.append(kwargs.get("additional_instruction"))
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_support_role",
+        lambda *_args, **_kwargs: SubagentResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.01
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_args, **_kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="planner"
+        ),
+    )
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    assert len(instructions) == 1
+    told = PLANNER_COMMIT_MODE_INSTRUCTION in str(instructions[0] or "")
+    assert told is (commit_mode == "dispatcher")

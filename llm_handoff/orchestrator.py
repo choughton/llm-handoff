@@ -48,6 +48,7 @@ from llm_handoff.handoff_normalizer import (
 )
 from llm_handoff.dispatcher_commit import (
     COMMIT_MODE_INSTRUCTION,
+    PLANNER_COMMIT_MODE_INSTRUCTION,
     commit_implementer_changes,
     stamp_commit_sha,
 )
@@ -994,7 +995,11 @@ def _dispatch_route(
                 invoke_planner_role,
                 handoff_path,
                 use_api_key_env=config.planner_api_key_env_enabled,
-                additional_instruction=additional_instruction,
+                additional_instruction=_with_commit_mode_instruction(
+                    config,
+                    additional_instruction,
+                    instruction=PLANNER_COMMIT_MODE_INSTRUCTION,
+                ),
                 use_resume=config.planner_resume_enabled,
                 session_id=planner_session_id,
                 previous_handoff_sha=planner_previous_handoff_sha,
@@ -2093,14 +2098,17 @@ def _work_claim_gate_applies(config: DispatchConfig, route: RouteName) -> bool:
 def _with_commit_mode_instruction(
     config: DispatchConfig,
     additional_instruction: str | None,
+    *,
+    instruction: str = COMMIT_MODE_INSTRUCTION,
 ) -> str | None:
-    """Tell implementers not to touch ``.git`` when the dispatcher commits."""
+    """Tell implementers and the planner not to touch ``.git`` when the
+    dispatcher commits."""
 
     if config.commit_mode != "dispatcher":
         return additional_instruction
     if additional_instruction and additional_instruction.strip():
-        return "\n\n".join((COMMIT_MODE_INSTRUCTION, additional_instruction.strip()))
-    return COMMIT_MODE_INSTRUCTION
+        return "\n\n".join((instruction, additional_instruction.strip()))
+    return instruction
 
 
 def _commit_for_implementer(

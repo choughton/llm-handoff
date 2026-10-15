@@ -114,6 +114,9 @@ This project follows a simple pre-release changelog until the first public tag.
   pull request with an `@codex review` request, for up to
   `max_review_rounds` rounds. A review that does not finish within
   `review_timeout_seconds` stops the loop with the pull request left open.
+- In `commit_mode: dispatcher`, the planner is now told not to commit the
+  handoff file. Committing it put live dispatch state on the base branch and,
+  in the branch publish modes, into every story pull request.
 - Review findings are now closed the way a person would close them: the
   implementer writes a `## Review Responses` entry per finding, and on the
   next push the dispatcher posts each one as the reply on that finding's

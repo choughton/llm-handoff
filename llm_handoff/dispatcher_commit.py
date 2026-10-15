@@ -47,6 +47,15 @@ COMMIT_MODE_INSTRUCTION = (
     "temporary files in the repository: anything outside Files in scope that is "
     "still in the working tree fails the gate."
 )
+# The handoff is live dispatch state. Committing it would put that state on
+# the base branch and, with `publish.mode`, into every story branch and pull
+# request.
+PLANNER_COMMIT_MODE_INSTRUCTION = (
+    "Dispatcher commit mode is on. Do not run `git add`, `git commit`, or any "
+    "other command that writes to `.git`, even if the repository protocol asks "
+    "agents to commit the handoff. Rewrite the handoff file and leave it "
+    "uncommitted; the dispatcher keeps it out of commits."
+)
 PENDING_COMMIT_SHA = "pending-dispatcher-commit"
 _GIT_TIMEOUT_SECONDS = 60
 _FRONTMATTER_SCOPE_SHA_RE = re.compile(r"(?m)^scope_sha:[^\n]*$")
