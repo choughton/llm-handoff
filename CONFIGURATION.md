@@ -329,12 +329,22 @@ publish:
 - `merge-commit`: before an implementer's first dispatch for a story, the
   dispatcher creates `llm-handoff/<story-id>-<title>` from the base branch.
   After the audit passes, it merges that branch into the base with `--no-ff`.
-  The merge commit carries a report built from data the loop already has, in
-  the shape of `.github/pull_request_template.md`: Summary (the Work Packet
-  objective), Changes (files and commits), Reviewer notes (both reviewers'
-  verdicts, with the full reviews folded), and Test plan (the passing
-  `## Dispatcher Verification` result), followed by the Work Packet and the
-  story's `usage:` lines with the reported cost. Nothing is pushed.
+  The merge commit carries a report for people to read, built from data the
+  loop already has. It has two sections, and the dispatcher lays it out
+  itself, so the format holds whatever the agents wrote:
+  - Summary: at most three sentences (about 500 characters) from the start
+    of the Work Packet's Objective. A sentence that ends with a colon, such
+    as "Acceptance checks:", starts the details instead.
+  - Reviewer notes: `### Story` (story, epic, implementer), then
+    `### Acceptance checks` (the rest of the Objective, with its lists and
+    line breaks kept), then `### Audit` (both reviewers' verdicts, with the
+    full reviews folded).
+
+  The report is not part of the dispatcher's checks, and it leaves out what
+  other places already show: changed files and commits (the pull request's
+  Files and Commits tabs, or `git log`), the Work Packet and the gate's
+  verification results (`HANDOFF.md`), and token usage (the dispatch log).
+  Nothing is pushed.
 - `pr`: same story branch. After the audit passes, the dispatcher pushes it,
   opens a pull request with that report as the body (`gh pr create`), and
   with `auto_merge: true` merges it (`gh pr merge --merge --delete-branch`)
@@ -377,9 +387,29 @@ The outcomes:
   the reply on that finding's review thread and resolves the thread. A
   finding without a response keeps its thread unresolved, which blocks the
   merge. A response that starts with `Deferred:` (or `**Deferred:**`) marks
-  a real finding left unfixed for later work: the dispatcher posts the
-  reply, logs a `WARN` naming the finding, and leaves the thread unresolved,
-  so the merge pauses for a person to decide.
+  a real finding left unfixed for later work, often because its fix is
+  outside the Work Packet's Files in scope: the dispatcher posts the reply,
+  logs a `WARN` naming the finding, and leaves the thread unresolved.
+- Deferred findings only: when the only unresolved review threads are
+  deferred findings, the dispatcher does not pause. It rewrites `HANDOFF.md`
+  to route to `planner` with each deferred finding, the implementer's
+  response, and the current Work Packet. The planner gets one pass per pull
+  request and decides each finding:
+  - Widen the scope: route back to the implementer with the same
+    `story_id` and a Work Packet whose Files in scope cover the fix. The
+    implementer answers under `## Review Responses` as usual, and the fix
+    merges without another review once every thread is resolved.
+  - Accept it as follow-up work: plan a follow-up story and add a
+    `## Deferred Finding Decisions` section with a `### Finding N` entry that
+    starts with `Follow-up:` and names it. After the planner's cycle passes
+    validation, the dispatcher posts each decision as the reply, resolves
+    the thread, and merges once every review thread is resolved.
+  - Ask the user: route to `user`. The pull request stays open.
+
+  The dispatcher pauses for a person when the planner leaves a finding
+  neither accepted nor sent back, when the implementer defers a finding
+  again after the planner's pass, or when any other review thread, such as
+  a finding without a response or a person's comment, is still unresolved.
 - One correction round by default (`max_review_rounds: 1`). The first review
   should surface what matters most; each review of a fix tends to find new
   edge cases in the new code, so the dispatcher does not wait for another
