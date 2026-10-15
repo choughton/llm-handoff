@@ -6,6 +6,7 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Isolated supervised child imports from the target working directory while preserving source-checkout launches.
 - Fixed Codex launches in target repositories by resolving the output schema from the installed package.
 - Seeded the `llm_handoff` extraction scaffold.
 - Added public repository instructions and README.
