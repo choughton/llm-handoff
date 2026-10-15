@@ -111,6 +111,26 @@ gh auth status
 Provider auth must already be valid before the dispatcher invokes a provider
 CLI.
 
+## Verify Setup
+
+Run the preflight check from inside the target repository, or point it at one
+with `--repo-root` (and `--config` for a non-default `dispatch_config.yaml`):
+
+```bash
+llm-handoff doctor
+llm-handoff doctor --repo-root path/to/your-project
+```
+
+From a source checkout, use `python -m llm_handoff doctor`. The command checks
+that `git` is on PATH and the root is inside a Git repository, that each
+configured role's provider CLI binary is on PATH, that Docker or Podman
+(`sandbox-exec` on macOS) is available when a Gemini CLI role runs sandboxed,
+and that the handoff file routes and validates. It prints one `PASS`, `FAIL`,
+or `WARN` line per check and a summary. It exits `0` when there are no errors
+(warnings such as a dirty working tree or a missing handoff file are allowed)
+and `1` when any check fails. It does not check provider sign-in, start a
+dispatch, use the network, or write files.
+
 ## Safety Defaults
 
 Agents launch with an allowlisted environment, permission checks and sandboxes

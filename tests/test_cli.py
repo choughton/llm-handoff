@@ -36,6 +36,16 @@ def test_help_text_names_public_dispatcher(capsys) -> None:
     assert LEGACY_TOOL_NAME not in output.lower()
 
 
+def test_help_text_lists_doctor_subcommand(capsys) -> None:
+    assert main_module.main(["--help"]) == 0
+    assert "doctor" in capsys.readouterr().out
+
+    assert main_module.main(["doctor", "--help"]) == 0
+    output = capsys.readouterr().out
+    assert "--repo-root" in output
+    assert "--config" in output
+
+
 def test_init_command_dry_run_previews_without_writing(
     tmp_path: Path,
     capsys,
