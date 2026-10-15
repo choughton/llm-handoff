@@ -20,7 +20,10 @@ ORIGINAL_AUDITOR = "---\nname: auditor\n---\nAudit the claimed work.\n"
 ORIGINAL_SKILL = "# llm-handoff skill\n"
 
 
-def _handoff(files_in_scope: str = "src/app.py") -> str:
+def _handoff(
+    files_in_scope: str = "src/app.py",
+    files_out_of_bounds: str = "everything else",
+) -> str:
     return f"""---
 next_agent: backend
 reason: "Implement the scoped change."
@@ -33,7 +36,7 @@ producer: planner
 
 - **Objective:** Change the app.
 - **Files in scope:** {files_in_scope}
-- **Files out of bounds:** everything else
+- **Files out of bounds:** {files_out_of_bounds}
 - **Context:** none
 - **Verification command:** python -m pytest -q
 - **Expected next route:** auditor
@@ -60,14 +63,19 @@ def _git(repo: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def _init_repo(repo: Path, *, files_in_scope: str = "src/app.py") -> None:
+def _init_repo(
+    repo: Path,
+    *,
+    files_in_scope: str = "src/app.py",
+    files_out_of_bounds: str = "everything else",
+) -> None:
     files = {
         "AGENTS.md": ORIGINAL_AGENTS,
         "dispatch_config.yaml": "auto_push: false\n",
         ".gitignore": ".claude/settings.local.json\n",
         ".claude/agents/auditor.md": ORIGINAL_AUDITOR,
         ".codex/skills/llm-handoff/SKILL.md": ORIGINAL_SKILL,
-        "docs/handoff/HANDOFF.md": _handoff(files_in_scope),
+        "docs/handoff/HANDOFF.md": _handoff(files_in_scope, files_out_of_bounds),
         "docs/handoff/BACKEND_HANDOFF_PROMPT.md": "Backend prompt.\n",
         "src/app.py": "VALUE = 1\n",
     }
@@ -285,6 +293,46 @@ def test_directory_entry_in_work_packet_scope_covers_its_files(
     handoff = _handoff_text(tmp_path)
     assert "- `AGENTS.md`" in handoff
     assert "- `.claude/agents/auditor.md`" not in handoff
+
+
+def test_bulleted_work_packet_scope_allows_listed_protected_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _init_repo(
+        tmp_path,
+        files_in_scope="\n  - `src/app.py`\n  - `.codex/skills/llm-handoff/SKILL.md`",
+        files_out_of_bounds="every other `.codex/` and `.claude/` file",
+    )
+
+    def backend_work(repo: Path) -> None:
+        (repo / ".codex" / "skills" / "llm-handoff" / "SKILL.md").write_text(
+            ORIGINAL_SKILL + "Updated wording.\n", encoding="utf-8"
+        )
+
+    _run_backend_cycle(monkeypatch, _config(tmp_path), backend_work)
+
+    assert "protected_file_modified:" not in _handoff_text(tmp_path)
+
+
+def test_out_of_bounds_entry_narrows_protected_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _init_repo(
+        tmp_path,
+        files_in_scope="src/app.py, .claude/",
+        files_out_of_bounds="`.claude/agents/auditor.md`",
+    )
+
+    def backend_work(repo: Path) -> None:
+        (repo / ".claude" / "agents" / "auditor.md").write_text("x\n", encoding="utf-8")
+
+    _run_backend_cycle(monkeypatch, _config(tmp_path), backend_work)
+
+    handoff = _handoff_text(tmp_path)
+    assert "protected_file_modified:" in handoff
+    assert "- `.claude/agents/auditor.md`" in handoff
 
 
 def test_unprotected_changes_do_not_escalate(

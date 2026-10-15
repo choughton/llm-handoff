@@ -15,6 +15,11 @@ This project follows a simple pre-release changelog until the first public tag.
   `llm-handoff's CONFIGURATION.md`. The root copies of the edited prompts
   match the templates, and a new test guards every shipped template file.
 
+- Fixed the protected-file check pausing a run when a protected file was
+  listed under a Work Packet's Files in scope as a bullet list. The check
+  now reads Files in scope and Files out of bounds with the same parser as
+  the work-claim gate and dispatcher commit, so the narrowest entry decides.
+
 - Wording and ASCII fixes: the normalizer comment in both config templates
   no longer says the model is a Claude model, so it stays true in the
   all-Codex `init` config; the finalizer skill and `CONFIGURATION.md` now say

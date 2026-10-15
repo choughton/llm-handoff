@@ -400,6 +400,28 @@ def parse_work_packet(handoff_content: str) -> WorkPacket:
     )
 
 
+def parse_work_packet_scope(handoff_content: str) -> WorkPacket | None:
+    """Parse only the path lists of the ``## Work Packet``, never raising.
+
+    Checks that need scope but do not enforce the whole packet, such as the
+    protected-file check, read Files in scope and Files out of bounds the same
+    way :func:`parse_work_packet` does. None means there is no Work Packet.
+    """
+
+    section = extract_work_packet_section(handoff_content)
+    if section is None:
+        return None
+    fields = _parse_packet_fields(section)
+    return WorkPacket(
+        files_in_scope=_split_path_list(fields.get("files_in_scope", [])),
+        files_out_of_bounds=_split_path_list(
+            fields.get("files_out_of_bounds", []), drop_exceptions=True
+        ),
+        verification_commands=(),
+        section_text=section,
+    )
+
+
 def work_packet_errors(handoff_content: str) -> list[str]:
     """Return validator-style error strings for an unusable Work Packet."""
 

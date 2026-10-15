@@ -77,8 +77,6 @@ from llm_handoff.router import (
 from llm_handoff.text_io import read_dispatch_text
 from llm_handoff.validator import (
     ValidationResult,
-    _work_packet_block,
-    _work_packet_fields,
     parse_validation_output,
     validate_handoff,
 )
@@ -93,6 +91,8 @@ from llm_handoff.work_claim import (
     carry_over_key,
     git_changed_files,
     git_dirty_files,
+    parse_work_packet_scope,
+    path_is_in_scope,
     record_passed_verification,
     verify_work_claim,
 )
@@ -1918,36 +1918,6 @@ def _protected_file_changes(
     return tuple(sorted(changed))
 
 
-def _work_packet_scope(handoff_content: str) -> tuple[str, ...]:
-    block = _work_packet_block(handoff_content)
-    if block is None:
-        return ()
-    value = _work_packet_fields(block).get("Files in scope", "")
-    entries: list[str] = []
-    for raw_entry in re.split(r"[,;]", value):
-        entry = raw_entry.strip().strip("`'\"").strip().replace("\\", "/")
-        while entry.startswith("./"):
-            entry = entry[2:]
-        if entry:
-            entries.append(entry)
-    return tuple(entries)
-
-
-def _is_in_work_packet_scope(path: str, scope: tuple[str, ...]) -> bool:
-    path_parts = _path_match_parts(path)
-    for entry in scope:
-        entry_parts = _path_match_parts(entry)
-        if not entry_parts:
-            continue
-        if entry.endswith("/"):
-            if path_parts[: len(entry_parts)] == entry_parts:
-                return True
-            continue
-        if _glob_parts_match(path_parts, entry_parts):
-            return True
-    return False
-
-
 def _enforce_protected_files(
     *,
     config: DispatchConfig,
@@ -1967,9 +1937,13 @@ def _enforce_protected_files(
     if not changed:
         return False
 
-    scope = _work_packet_scope(handoff_content)
+    # Read scope the way the work-claim gate and dispatcher commit do, so a
+    # Files in scope list written as bullets counts here too.
+    packet = parse_work_packet_scope(handoff_content)
     violations = tuple(
-        path for path in changed if not _is_in_work_packet_scope(path, scope)
+        path
+        for path in changed
+        if packet is None or not path_is_in_scope(path, packet)
     )
     allowed = tuple(path for path in changed if path not in violations)
     if allowed:
