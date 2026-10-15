@@ -6,6 +6,21 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added integration tests in `tests/integration/` (marker `integration`).
+  They build and install the wheel offline, then run the installed
+  `init`, `doctor`, and `--dry-run` on a throwaway Node repository and a
+  one-commit Go repository, each with only a fake `claude` or only a fake
+  `codex` on `PATH`. They check the single-provider mapping, that existing
+  `AGENTS.md` text and `.claude/settings.json` deny rules survive `init`,
+  that a second `init` changes nothing, and that no other file changes.
+
+- `llm-handoff doctor` now reports a `git history` check. It warns when the
+  repository has no commits yet (commit before the first dispatcher run) or
+  only one commit (the audit review base defaults to the parent of the
+  reviewed commit, so audits need a second commit or an explicit base). Two
+  or more commits pass. The check reads history with `git rev-list` only and
+  never fails the doctor.
+
 - Added an all-Codex mapping. The reference workflow now ships a Codex repo
   skill for every role (`llm-handoff-planner`, `llm-handoff-frontend`,
   `llm-handoff-auditor`, `llm-handoff-validator`, and
