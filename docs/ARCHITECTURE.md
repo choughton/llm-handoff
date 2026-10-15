@@ -330,9 +330,13 @@ rewrites `HANDOFF.md`. Setting `audit.reviewers: [quality, security]` changes
 that route into a read-only fan-out:
 
 1. The dispatcher computes a concrete Git range: the `HEAD` recorded before
-   the implementer dispatch, through the handoff's `scope_sha`. Without a
-   recorded base it falls back to `scope_sha~1`. Reviewers are never asked to
-   scan the whole repository.
+   the story's first implementer dispatch, through the handoff's `scope_sha`.
+   Retries after a `verified_fail` bounce keep that base, so the range covers
+   commits from every attempt; it restarts when the `story_id` changes or the
+   story reaches `verified_pass`. The base lives in memory, so after a
+   dispatcher restart the next implementer dispatch records a new one. Without
+   a recorded base it falls back to `scope_sha~1`. Reviewers are never asked
+   to scan the whole repository.
 2. The quality reviewer (the configured `auditor` agent) and a security
    reviewer run concurrently in two threads through the existing streaming
    process runner.

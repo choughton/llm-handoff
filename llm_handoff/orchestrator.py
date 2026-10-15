@@ -325,6 +325,7 @@ def run_loop(
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
     implementer_base_sha: str | None = None
+    implementer_base_story_id: str | None = None
 
     while True:
         cycle_number += 1
@@ -622,12 +623,25 @@ def run_loop(
                 "frontend",
             }:
                 # The audit fan-out reviews pre-dispatch HEAD..scope_sha, so
-                # remember where the implementer started.
-                implementer_base_sha = (
-                    pre_dispatch_state.head_sha
-                    if pre_dispatch_state is not None
-                    else _git_head(config.repo_root)
+                # remember where the implementer started. A retry of the same
+                # story keeps the first dispatch's base so the audit still
+                # covers commits from earlier, bounced attempts.
+                story_id = (
+                    cycle_frontmatter.story_id
+                    if cycle_frontmatter is not None
+                    else None
                 )
+                if (
+                    implementer_base_sha is None
+                    or story_id is None
+                    or story_id != implementer_base_story_id
+                ):
+                    implementer_base_sha = (
+                        pre_dispatch_state.head_sha
+                        if pre_dispatch_state is not None
+                        else _git_head(config.repo_root)
+                    )
+                    implementer_base_story_id = story_id
             planner_git_before = (
                 git_position(config.repo_root)
                 if current_cycle.route == "planner"
@@ -760,10 +774,14 @@ def run_loop(
                 require_work_packet=config.enforce_work_packet,
                 dispatcher_commit_mode=config.commit_mode == "dispatcher",
             )
-            _record_post_dispatch_status_transition(
+            post_dispatch_status = _record_post_dispatch_status_transition(
                 config=config,
                 log=log_fn,
             )
+            if post_dispatch_status == HandoffStatus.VERIFIED_PASS:
+                # The story is approved; its next implementer dispatch starts
+                # a new audit range.
+                implementer_base_sha = None
             self_loop_kind = _self_loop_kind(validation_result)
             _log_validation(
                 validation_result,
@@ -2327,13 +2345,13 @@ def _record_post_dispatch_status_transition(
     *,
     config: DispatchConfig,
     log: LogFn,
-) -> None:
+) -> HandoffStatus | None:
     handoff_content = _read_required_text(config.handoff_full_path)
     if handoff_content is None:
-        return
+        return None
     frontmatter = _parse_frontmatter_or_none(handoff_content)
     if frontmatter is None:
-        return
+        return None
     status = _handoff_status(frontmatter.status)
     state_path = _bounce_state_path(config)
     try:
@@ -2371,6 +2389,7 @@ def _record_post_dispatch_status_transition(
             "INFO",
             f"Bounce count reset for story_id={frontmatter.story_id}.",
         )
+    return status
 
 
 def _bounce_state_path(config: DispatchConfig) -> Path:
