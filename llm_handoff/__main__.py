@@ -280,11 +280,11 @@ def init_command(
     _echo_candidates(result.candidates, result.verification_command)
 
 
-_UNSAFE_TERMINAL_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+_UNSAFE_TERMINAL_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
 
 def _terminal_safe(text: str) -> str:
-    """Escape control, format, and surrogate characters for terminal output.
+    """Escape control, format, surrogate, and line/paragraph separators.
 
     Detected candidates come from files in the target repository, which may be
     untrusted. ANSI/OSC sequences or bidi overrides could spoof the output, and

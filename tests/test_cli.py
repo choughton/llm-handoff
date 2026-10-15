@@ -130,7 +130,7 @@ def test_init_escapes_control_and_surrogate_characters_in_candidates(
 ) -> None:
     (tmp_path / "package.json").write_text(
         '{"scripts": {"a\\u001b]0;spoof\\u0007b": "x", '
-        '"c\\u202ed": "x", "test\\ud800": "x"}}',
+        '"c\\u202ed": "x", "test\\ud800": "x", "e\\u2028f": "x"}}',
         encoding="utf-8",
     )
 
@@ -140,11 +140,12 @@ def test_init_escapes_control_and_surrogate_characters_in_candidates(
     output.encode("utf-8")  # strict: a lone surrogate would raise here
     assert "\x1b" not in output
     assert "\x07" not in output
-    assert "‮" not in output
+    assert "\u202e" not in output
     lines = output.splitlines()
     assert "  - npm run a\\x1b]0;spoof\\x07b  (from package.json)" in lines
     assert "  - npm run c\\u202ed  (from package.json)" in lines
     assert "  - npm run test\\ud800  (from package.json)" in lines
+    assert "  - npm run e\\u2028f  (from package.json)" in lines
 
 
 def test_init_escapes_control_characters_in_verification_command(
