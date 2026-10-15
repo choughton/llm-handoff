@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Fixed the protected-file check pausing a run when a protected file was
+  listed under a Work Packet's Files in scope as a bullet list. The check
+  now reads Files in scope and Files out of bounds with the same parser as
+  the work-claim gate and dispatcher commit, so the narrowest entry decides.
 - Added integration tests in `tests/integration/` (marker `integration`).
   They build and install the wheel offline, then run the installed
   `init`, `doctor`, and `--dry-run` on a throwaway Node repository and a
