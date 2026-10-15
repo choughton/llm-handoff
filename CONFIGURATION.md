@@ -181,6 +181,42 @@ claim whose commits since dispatch change nothing but the handoff
 Use it when an implementer runs in a sandbox that keeps `.git` read-only (Codex
 `workspace-write`), or simply to keep agents out of Git history.
 
+### Publishing: Story Branches And Pull Requests
+
+```yaml
+commit_mode: dispatcher
+publish:
+  mode: local            # local (default) | merge-commit | pr
+  base_branch: null      # default: the branch checked out when a story starts
+  branch_prefix: llm-handoff/
+  remote: origin         # pr mode
+  auto_merge: true       # pr mode: merge once the audit passes
+  wait_for_checks: false # pr mode: wait for the PR's CI checks before merging
+```
+
+- `local`: commits stay on the branch you have checked out.
+- `merge-commit`: before an implementer's first dispatch for a story, the
+  dispatcher creates `llm-handoff/<story-id>-<title>` from the base branch.
+  After the audit passes, it merges that branch into the base with `--no-ff`.
+  The merge commit carries a report built from data the loop already has: the
+  Work Packet, the passing `## Dispatcher Verification` result, both reviewers'
+  verdicts, and the story's `usage:` lines with the reported cost. Nothing is
+  pushed.
+- `pr`: same story branch. After the audit passes, the dispatcher pushes it,
+  opens a pull request with that report as the body (`gh pr create`), and
+  with `auto_merge: true` merges it (`gh pr merge --merge --delete-branch`)
+  and continues on the updated base branch. With `auto_merge: false` the loop
+  stops after opening the pull request so you can review and merge it. With
+  `wait_for_checks: true` it waits for the pull request's checks
+  (`gh pr checks --watch`) before merging and stops if they fail; only enable
+  this when the repository has CI.
+
+Agents never branch, push, or merge: the dispatcher does all of it, and only
+after the work-claim gate and both reviewers pass. `pr` mode pushes with your
+Git credentials and needs the GitHub CLI (`gh`) signed in. Both branch modes
+require `commit_mode: dispatcher`. A failed push, merge, or `gh` call stops the
+loop with the error instead of retrying.
+
 ### Scanners
 
 The gate can also run operator-configured scanners before the verification

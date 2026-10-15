@@ -52,6 +52,7 @@ from llm_handoff.dispatcher_commit import (
     stamp_commit_sha,
 )
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
+from llm_handoff.publish import ensure_story_branch, publish_story, save_gate_section
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
     HandoffFrontmatterError,
@@ -75,6 +76,7 @@ from llm_handoff.work_claim import (
     bounce_route_for,
     build_bounce_handoff,
     capture_pre_dispatch_state,
+    passed_verification_section,
     record_passed_verification,
     verify_work_claim,
 )
@@ -588,6 +590,20 @@ def run_loop(
             previous_cycle = current_cycle
             consecutive_failures = 0
         else:
+            if (
+                config.publish.mode != "local"
+                and current_cycle.route in {"backend", "frontend"}
+            ):
+                branch_error = ensure_story_branch(
+                    repo_root=config.repo_root,
+                    prefix=config.publish.branch_prefix,
+                    base_branch=config.publish.base_branch,
+                    assignment_content=handoff_content,
+                    log_file=getattr(log_fn, "log_file_path", None),
+                )
+                if branch_error is not None:
+                    _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
+                    return 1
             pre_dispatch_state: PreDispatchState | None = None
             if _work_claim_gate_applies(config, current_cycle.route):
                 pre_dispatch_state = capture_pre_dispatch_state(config.repo_root)
@@ -894,6 +910,23 @@ def run_loop(
             else:
                 previous_cycle = current_cycle
                 consecutive_failures = 0
+                if (
+                    config.publish.mode != "local"
+                    and current_cycle.route == "auditor"
+                ):
+                    outcome = publish_story(
+                        repo_root=config.repo_root,
+                        mode=config.publish.mode,
+                        remote=config.publish.remote,
+                        auto_merge=config.publish.auto_merge,
+                        wait_for_checks=config.publish.wait_for_checks,
+                        handoff_content=(
+                            _read_required_text(config.handoff_full_path) or ""
+                        ),
+                        log=log_fn,
+                    )
+                    if outcome.stop:
+                        return outcome.exit_code
 
         if max_cycles is not None and cycle_number >= max_cycles:
             return 0
@@ -2151,6 +2184,8 @@ def _run_work_claim_gate(
             record_passed_verification(claim_content, result),
             encoding="utf-8",
         )
+        if config.publish.mode != "local":
+            save_gate_section(config.repo_root, passed_verification_section(result))
         return False
 
     for error in result.errors:
@@ -2721,6 +2756,20 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         if config.protected_paths
         else "Protected files:    OFF (protected_paths is empty)",
     )
+    publish = config.publish
+    if publish.mode == "local":
+        _log(log, "INFO", "Publish:            local (commits stay on the current branch)")
+    else:
+        detail = f"story branches {publish.branch_prefix}*"
+        if publish.mode == "pr":
+            detail += (
+                f"; push to {publish.remote} and open a PR after the audit passes; "
+                + ("auto-merge" if publish.auto_merge else "operator merges")
+                + ("; waits for PR checks" if publish.wait_for_checks else "")
+            )
+        else:
+            detail += "; merge with a report commit after the audit passes"
+        _log(log, "INFO", f"Publish:            {publish.mode} ({detail})")
 
 
 def _dispatched_roles(config: DispatchConfig) -> list[str]:

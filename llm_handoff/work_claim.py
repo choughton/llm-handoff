@@ -1424,6 +1424,20 @@ def record_passed_verification(claim_content: str, result: WorkClaimResult) -> s
     existing section (from an earlier bounce) is replaced.
     """
 
+    section = passed_verification_section(result)
+    normalized = claim_content.replace("\r\n", "\n")
+    start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
+    if start == -1:
+        return normalized.rstrip("\n") + "\n\n" + section
+    start += 1
+    next_heading = re.search(r"(?m)^## ", normalized[start + 1 :])
+    end = len(normalized) if next_heading is None else start + 1 + next_heading.start()
+    return normalized[:start] + section + ("\n" if end < len(normalized) else "") + normalized[end:]
+
+
+def passed_verification_section(result: WorkClaimResult) -> str:
+    """The passing ``## Dispatcher Verification`` section for a claim."""
+
     lines = [DISPATCHER_VERIFICATION_HEADING, ""]
     lines.append(
         "The dispatcher verified this `ready_for_review` claim before "
@@ -1445,16 +1459,7 @@ def record_passed_verification(claim_content: str, result: WorkClaimResult) -> s
         lines.append(
             f"- **Verification command:** `{run.command}` ({run.describe_outcome()})"
         )
-    section = "\n".join(lines).rstrip() + "\n"
-
-    normalized = claim_content.replace("\r\n", "\n")
-    start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
-    if start == -1:
-        return normalized.rstrip("\n") + "\n\n" + section
-    start += 1
-    next_heading = re.search(r"(?m)^## ", normalized[start + 1 :])
-    end = len(normalized) if next_heading is None else start + 1 + next_heading.start()
-    return normalized[:start] + section + ("\n" if end < len(normalized) else "") + normalized[end:]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _split_frontmatter(content: str) -> tuple[dict[str, object] | None, str]:
@@ -1535,6 +1540,7 @@ __all__ = [
     "bounce_reason",
     "bounce_route_for",
     "build_bounce_handoff",
+    "passed_verification_section",
     "record_passed_verification",
     "capture_pre_dispatch_state",
     "extract_work_packet_section",

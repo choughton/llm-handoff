@@ -1,0 +1,366 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
+
+from llm_handoff.config import DispatchConfig
+from llm_handoff.publish import (
+    STATE_PATH,
+    ensure_story_branch,
+    publish_story,
+    save_gate_section,
+    story_branch_name,
+)
+
+
+ASSIGNMENT = """---
+next_agent: backend
+reason: "Build the widget."
+epic_id: E1
+story_id: W9.9
+story_title: Add a widget
+producer: planner
+---
+
+# Handoff: Add a widget
+
+## Work Packet
+
+- **Objective:** Add the widget module.
+- **Files in scope:** `src/widget.py`
+- **Files out of bounds:** none
+- **Context:** none
+- **Verification command:** `python -c "print(1)"`
+- **Expected next route:** auditor
+"""
+
+VERIFIED = """---
+next_agent: planner
+reason: "W9.9 approved."
+epic_id: E1
+story_id: W9.9
+story_title: Add a widget
+status: verified_pass
+close_type: story
+producer: auditor
+---
+
+# Audit Report - W9.9
+
+## Verdict
+
+APPROVED
+
+## Quality Review
+
+The widget does what the packet asked.
+
+## Security Review
+
+No security issues.
+
+## Next Step
+
+- **planner:** pick the next story.
+"""
+
+BRANCH = "llm-handoff/w9.9-add-a-widget"
+
+FAKE_GH = r"""
+import json, os, subprocess, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(args) + "\n")
+if args[:2] == ["pr", "create"]:
+    print("https://github.example/acme/repo/pull/7")
+elif args[:2] == ["pr", "merge"]:
+    branch = args[2]
+    subprocess.run(
+        ["git", "--git-dir", os.environ["FAKE_GH_REMOTE"], "update-ref",
+         "refs/heads/main", f"refs/heads/{branch}"],
+        check=True,
+    )
+"""
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+
+
+def _init(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "llm-handoff tests")
+    _git(repo, "config", "user.email", "tests@example.invalid")
+    _git(repo, "config", "core.autocrlf", "false")
+    (repo / ".gitignore").write_text("logs/\n", encoding="utf-8")
+    (repo / "README.md").write_text("repo\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "initial")
+
+
+def _start_story(repo: Path, log_file: Path | None = None) -> None:
+    error = ensure_story_branch(
+        repo_root=repo,
+        prefix="llm-handoff/",
+        base_branch=None,
+        assignment_content=ASSIGNMENT,
+        log_file=log_file,
+    )
+    assert error is None
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src" / "widget.py").write_text("WIDGET = 1\n", encoding="utf-8")
+    _git(repo, "add", "src/widget.py")
+    _git(repo, "commit", "-q", "-m", "W9.9 Add a widget")
+
+
+def _logs() -> tuple[list[tuple[str, str]], object]:
+    entries: list[tuple[str, str]] = []
+    return entries, lambda level, message: entries.append((level, message))
+
+
+def test_story_branch_name_is_a_readable_slug() -> None:
+    assert story_branch_name("llm-handoff/", "W9.9", "Add a widget") == BRANCH
+    assert story_branch_name("x/", "S-1", "Fix: the  thing!!") == "x/s-1-fix-the-thing"
+
+
+def test_ensure_story_branch_creates_then_reuses_the_branch(tmp_path: Path) -> None:
+    _init(tmp_path)
+
+    assert (
+        ensure_story_branch(
+            repo_root=tmp_path,
+            prefix="llm-handoff/",
+            base_branch=None,
+            assignment_content=ASSIGNMENT,
+            log_file=None,
+        )
+        is None
+    )
+    assert _git(tmp_path, "branch", "--show-current") == BRANCH
+    state = json.loads((tmp_path / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["base_branch"] == "main"
+    assert "Add the widget module." in state["work_packet"]
+
+    _git(tmp_path, "switch", "-q", "main")
+    assert (
+        ensure_story_branch(
+            repo_root=tmp_path,
+            prefix="llm-handoff/",
+            base_branch=None,
+            assignment_content=ASSIGNMENT,
+            log_file=None,
+        )
+        is None
+    )
+    assert _git(tmp_path, "branch", "--show-current") == BRANCH
+
+
+def test_ensure_story_branch_refuses_to_start_from_another_story(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    _git(tmp_path, "switch", "-q", "-c", "llm-handoff/other-story")
+
+    error = ensure_story_branch(
+        repo_root=tmp_path,
+        prefix="llm-handoff/",
+        base_branch=None,
+        assignment_content=ASSIGNMENT,
+        log_file=None,
+    )
+
+    assert error is not None and "llm-handoff/other-story" in error
+
+
+def test_merge_commit_mode_merges_with_a_story_report(tmp_path: Path) -> None:
+    _init(tmp_path)
+    log_file = tmp_path / "logs" / "dispatch" / "run.log"
+    log_file.parent.mkdir(parents=True)
+    log_file.write_text(
+        "[t] [DEBUG] usage: Earlier provider=claude cost_usd=9.99\n", encoding="utf-8"
+    )
+    _start_story(tmp_path, log_file)
+    save_gate_section(tmp_path, "## Dispatcher Verification\n\n- **Verdict:** PASS\n")
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "[t] [DEBUG] usage: Claude auditor provider=claude cost_usd=0.30\n"
+            "[t] [DEBUG] usage: Codex provider=codex input_tokens=10 output_tokens=3\n"
+            "[t] [DEBUG] usage: Claude planner provider=claude cost_usd=0.15\n"
+        )
+    _entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=tmp_path,
+        mode="merge-commit",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+    )
+
+    assert outcome.stop is False
+    assert _git(tmp_path, "branch", "--show-current") == "main"
+    message = _git(tmp_path, "log", "-1", "--format=%B")
+    assert message.startswith("Merge W9.9: Add a widget")
+    assert "Add the widget module." in message
+    assert "Dispatcher Verification" in message
+    assert "The widget does what the packet asked." in message
+    assert "Reported cost: $0.45" in message
+    assert "Earlier" not in message
+    assert _git(tmp_path, "log", "-1", "--format=%P").count(" ") == 1
+    assert BRANCH not in _git(tmp_path, "branch", "--list")
+    assert not (tmp_path / STATE_PATH).exists()
+
+
+def _with_remote(tmp_path: Path) -> tuple[Path, Path, list[str], dict[str, str]]:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True
+    )
+    _init(repo)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "main")
+    script = tmp_path / "fake_gh.py"
+    script.write_text(FAKE_GH, encoding="utf-8")
+    gh_log = tmp_path / "gh.jsonl"
+    env = {"FAKE_GH_LOG": str(gh_log), "FAKE_GH_REMOTE": str(remote)}
+    return repo, remote, [sys.executable, str(script)], env
+
+
+def _gh_calls(tmp_path: Path) -> list[list[str]]:
+    path = tmp_path / "gh.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_pr_mode_without_auto_merge_opens_a_pr_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=repo,
+        mode="pr",
+        remote="origin",
+        auto_merge=False,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+        gh_command=gh,
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "pull/7" in outcome.message
+    remote_branches = subprocess.run(
+        ["git", "--git-dir", str(remote), "branch", "--list"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert BRANCH in remote_branches
+    calls = _gh_calls(tmp_path)
+    assert calls[0][:2] == ["pr", "create"]
+    assert calls[0][calls[0].index("--base") + 1] == "main"
+    assert calls[0][calls[0].index("--head") + 1] == BRANCH
+    body = Path(calls[0][calls[0].index("--body-file") + 1]).read_text(encoding="utf-8")
+    assert "Add the widget module." in body
+    assert any(level == "PAUSE" for level, _ in entries)
+
+
+def test_pr_mode_with_auto_merge_merges_and_returns_to_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    story_head = _git(repo, "rev-parse", "HEAD")
+    _entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=repo,
+        mode="pr",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+        gh_command=gh,
+    )
+
+    assert outcome.stop is False
+    assert [call[:2] for call in _gh_calls(tmp_path)] == [
+        ["pr", "create"],
+        ["pr", "merge"],
+    ]
+    merge_call = _gh_calls(tmp_path)[1]
+    assert "--merge" in merge_call and "--delete-branch" in merge_call
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "HEAD") == story_head
+    assert BRANCH not in _git(repo, "branch", "--list")
+
+
+def test_pr_mode_stops_when_the_push_fails(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _start_story(tmp_path)
+    entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=tmp_path,
+        mode="pr",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+        gh_command=["gh-should-not-run"],
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert any(level == "ERROR" and "git push" in msg for level, msg in entries)
+
+
+def test_publish_ignores_handoffs_that_are_not_verified_pass(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _start_story(tmp_path)
+    _entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=tmp_path,
+        mode="merge-commit",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED.replace("verified_pass", "verified_fail"),
+        log=log,
+    )
+
+    assert outcome.stop is False
+    assert _git(tmp_path, "branch", "--show-current") == BRANCH
+
+
+def test_publish_modes_require_dispatcher_commits(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires commit_mode: dispatcher"):
+        DispatchConfig(
+            repo_root=tmp_path,
+            enforce_work_packet=True,
+            publish={"mode": "pr"},
+        )
