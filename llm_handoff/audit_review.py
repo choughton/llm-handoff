@@ -521,9 +521,7 @@ def run_audit_fan_out(
         handoff_display=handoff_display,
         provider=quality_provider,
     )
-    quality_agent_config = config.agents["auditor"].model_copy(
-        update={"timeout_ms": config.audit.review_timeout_ms}
-    )
+    quality_agent_config = _quality_reviewer_agent_config(config)
     security_plan = build_security_reviewer_plan(
         config,
         provider=security_provider,
@@ -1159,6 +1157,24 @@ def _guarded(
             ),
             handoff_sha_after="",
         )
+
+
+def _quality_reviewer_agent_config(config: DispatchConfig) -> AgentConfig:
+    """Return the auditor config for the fan-out quality reviewer.
+
+    The quality prompt and verdict parsing are built for the auditor's
+    provider, so only a fallback on that same provider is kept, and it gets
+    the same review timeout.
+    """
+
+    auditor = config.agents["auditor"]
+    review_timeout = {"timeout_ms": config.audit.review_timeout_ms}
+    fallback = auditor.fallback
+    if fallback is not None and fallback.provider == auditor.provider:
+        fallback = fallback.model_copy(update=review_timeout)
+    else:
+        fallback = None
+    return auditor.model_copy(update={**review_timeout, "fallback": fallback})
 
 
 def _run_quality_reviewer(

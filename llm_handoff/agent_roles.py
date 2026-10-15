@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from llm_handoff import config as config_module
 from llm_handoff.agent_providers.claude import invoke_claude_subagent
@@ -9,6 +11,14 @@ from llm_handoff.agent_providers.gemini import invoke_gemini
 from llm_handoff.agent_providers.manual import invoke_manual_frontend
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
 from llm_handoff.config import AgentConfig, AgentRole
+from llm_handoff.failover import FAILOVER_REASON_TEXT, classify_fatal_failure
+from llm_handoff.provider_auth import auth_fix_instructions
+
+
+_Result = TypeVar("_Result", DispatchResult, SubagentResult)
+# Called after a fatal primary failure, before the fallback starts. Returns
+# why the fallback must not run, or None to let it run.
+FailoverGuard = Callable[[], str | None]
 
 
 def invoke_role(
@@ -27,6 +37,7 @@ def invoke_role(
     support_prompt: str | None = None,
     subagent_name: str | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> DispatchResult:
     # ``repo_root`` is the target repository the provider CLI must launch in.
     # ``None`` falls back to the process cwd for callers that already run
@@ -39,6 +50,52 @@ def invoke_role(
             repo_root=repo_root,
         )
 
+    def run(launch_config: AgentConfig, is_fallback: bool) -> DispatchResult:
+        # A fallback starts a fresh session: resume state and session ids
+        # belong to the primary agent's provider.
+        return _invoke_role_provider(
+            role,
+            handoff_path,
+            agent_config=launch_config,
+            log=log,
+            use_resume=use_resume and not is_fallback,
+            use_api_key_env=use_api_key_env,
+            additional_instruction=additional_instruction,
+            session_id=None if is_fallback else session_id,
+            previous_handoff_sha=None if is_fallback else previous_handoff_sha,
+            current_handoff_sha=current_handoff_sha,
+            support_prompt=support_prompt,
+            subagent_name=subagent_name,
+            repo_root=repo_root,
+        )
+
+    return _run_with_failover(
+        run,
+        role=role,
+        agent_config=agent_config,
+        handoff_path=handoff_path,
+        repo_root=repo_root,
+        failover_guard=failover_guard,
+        log=log,
+    )
+
+
+def _invoke_role_provider(
+    role: AgentRole,
+    handoff_path: Path,
+    *,
+    agent_config: AgentConfig,
+    log: LogFn | None,
+    use_resume: bool,
+    use_api_key_env: bool,
+    additional_instruction: str | None,
+    session_id: str | None,
+    previous_handoff_sha: str | None,
+    current_handoff_sha: str | None,
+    support_prompt: str | None,
+    subagent_name: str | None,
+    repo_root: Path | None,
+) -> DispatchResult:
     provider = agent_config.provider
     if provider == "codex":
         return invoke_codex(
@@ -121,6 +178,7 @@ def invoke_backend_role(
     additional_instruction: str | None = None,
     agent_config: AgentConfig | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "backend",
@@ -130,6 +188,7 @@ def invoke_backend_role(
         use_resume=use_resume,
         additional_instruction=additional_instruction,
         repo_root=repo_root,
+        failover_guard=failover_guard,
     )
 
 
@@ -145,6 +204,7 @@ def invoke_planner_role(
     log: LogFn | None = None,
     agent_config: AgentConfig | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "planner",
@@ -158,6 +218,7 @@ def invoke_planner_role(
         current_handoff_sha=current_handoff_sha,
         log=log,
         repo_root=repo_root,
+        failover_guard=failover_guard,
     )
 
 
@@ -170,6 +231,7 @@ def invoke_frontend_role(
     log: LogFn | None = None,
     agent_config: AgentConfig | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "frontend",
@@ -180,6 +242,7 @@ def invoke_frontend_role(
         additional_instruction=additional_instruction,
         log=log,
         repo_root=repo_root,
+        failover_guard=failover_guard,
     )
 
 
@@ -192,6 +255,7 @@ def invoke_support_role(
     agent_config: AgentConfig | None = None,
     log: LogFn | None = None,
     repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> SubagentResult:
     resolved_role = role or "validator"
     if agent_config is None:
@@ -201,6 +265,42 @@ def invoke_support_role(
             log=log,
             repo_root=repo_root,
         )
+    resolved_handoff_path = handoff_path or config_module.DEFAULT_HANDOFF_PATH
+
+    def run(launch_config: AgentConfig, is_fallback: bool) -> SubagentResult:
+        return _invoke_support_provider(
+            subagent_name,
+            prompt,
+            role=resolved_role,
+            handoff_path=resolved_handoff_path,
+            agent_config=launch_config,
+            use_resume=bool(launch_config.resume) and not is_fallback,
+            log=log,
+            repo_root=repo_root,
+        )
+
+    return _run_with_failover(
+        run,
+        role=resolved_role,
+        agent_config=agent_config,
+        handoff_path=resolved_handoff_path,
+        repo_root=repo_root,
+        failover_guard=failover_guard,
+        log=log,
+    )
+
+
+def _invoke_support_provider(
+    subagent_name: str,
+    prompt: str,
+    *,
+    role: AgentRole,
+    handoff_path: Path,
+    agent_config: AgentConfig,
+    use_resume: bool,
+    log: LogFn | None,
+    repo_root: Path | None,
+) -> SubagentResult:
     if agent_config.provider == "claude":
         return invoke_claude_subagent(
             agent_config.agent_name or subagent_name,
@@ -218,13 +318,17 @@ def invoke_support_role(
             agent_config=agent_config,
         )
 
-    result = invoke_role(
-        resolved_role,
-        handoff_path or config_module.DEFAULT_HANDOFF_PATH,
+    result = _invoke_role_provider(
+        role,
+        handoff_path,
         agent_config=agent_config,
         log=log,
-        use_resume=bool(agent_config.resume),
+        use_resume=use_resume,
         use_api_key_env=bool(agent_config.use_api_key_env),
+        additional_instruction=None,
+        session_id=None,
+        previous_handoff_sha=None,
+        current_handoff_sha=None,
         support_prompt=prompt,
         subagent_name=subagent_name,
         repo_root=repo_root,
@@ -235,6 +339,135 @@ def invoke_support_role(
         exit_code=result.exit_code,
         elapsed_seconds=result.elapsed_seconds,
     )
+
+
+def _run_with_failover(
+    run: Callable[[AgentConfig, bool], _Result],
+    *,
+    role: str,
+    agent_config: AgentConfig,
+    handoff_path: Path,
+    repo_root: Path | None,
+    log: LogFn | None,
+    failover_guard: FailoverGuard | None = None,
+) -> _Result:
+    """Run the primary agent, then the fallback once after a fatal failure.
+
+    The fallback is skipped when the primary rewrote the handoff before it
+    failed, because running the role again could repeat a finished handoff,
+    and when ``failover_guard`` reports a reason, such as a changed protected
+    control file the fallback would otherwise read as instructions.
+    """
+
+    fallback = agent_config.fallback
+    if fallback is None:
+        return run(agent_config, False)
+
+    handoff_file = _resolve_handoff_file(handoff_path, repo_root)
+    handoff_before = _read_handoff_bytes(handoff_file)
+    primary = run(agent_config, False)
+    reason = classify_fatal_failure(
+        exit_code=primary.exit_code,
+        stdout=primary.stdout,
+        stderr=primary.stderr,
+    )
+    if reason is None:
+        return primary
+
+    primary_label = _describe_agent(agent_config)
+    fallback_label = _describe_agent(fallback)
+    blocked = None
+    if _read_handoff_bytes(handoff_file) != handoff_before:
+        blocked = (
+            f"it had already rewritten {handoff_file.name}, so running the role "
+            "again could repeat a finished handoff"
+        )
+    elif failover_guard is not None:
+        blocked = failover_guard()
+    if blocked is not None:
+        _emit(
+            log,
+            "WARN",
+            f"{role} ({primary_label}) failed: {FAILOVER_REASON_TEXT[reason]}, "
+            f"but {blocked}. Not failing over to {fallback_label}; this counts "
+            "as a normal failure for the role.",
+        )
+        return primary
+
+    _emit(
+        log,
+        "WARN",
+        f"{role} ({primary_label}) failed: {FAILOVER_REASON_TEXT[reason]}. "
+        f"Failing over to {fallback_label} for this dispatch.",
+    )
+    if reason == "auth":
+        _emit(
+            log,
+            "WARN",
+            f"Primary {primary_label} sign-in fix: "
+            f"{auth_fix_instructions(agent_config.provider)}",
+        )
+    secondary = run(fallback, True)
+    _emit(
+        log,
+        "INFO",
+        f"{role} fallback ({fallback_label}) exited with code "
+        f"{secondary.exit_code}.",
+    )
+    fallback_reason = classify_fatal_failure(
+        exit_code=secondary.exit_code,
+        stdout=secondary.stdout,
+        stderr=secondary.stderr,
+    )
+    if fallback_reason == "auth":
+        # The loop's sign-in stop names the role's primary CLI; name this one.
+        _emit(
+            log,
+            "WARN",
+            f"Fallback {fallback_label} sign-in fix: "
+            f"{auth_fix_instructions(fallback.provider)}",
+        )
+    elapsed = primary.elapsed_seconds + secondary.elapsed_seconds
+    if isinstance(secondary, DispatchResult):
+        # The fallback's session belongs to another agent, and the primary's
+        # session may have stopped mid-turn, so neither is resumed next cycle.
+        return replace(
+            secondary,
+            elapsed_seconds=elapsed,
+            session_id=None,
+            session_invalidated=True,
+        )
+    return replace(secondary, elapsed_seconds=elapsed)
+
+
+def _describe_agent(agent_config: AgentConfig) -> str:
+    label = agent_config.provider
+    if agent_config.provider == "claude" and agent_config.model:
+        label = f"{label} {agent_config.model}"
+    # Name a non-default binary so two agents on one provider read apart.
+    if agent_config.binary and Path(agent_config.binary).stem != agent_config.provider:
+        cli = Path(agent_config.binary).stem
+        label = f"{label} via {cli}"
+    return label
+
+
+def _resolve_handoff_file(handoff_path: Path, repo_root: Path | None) -> Path:
+    path = Path(handoff_path)
+    if path.is_absolute():
+        return path
+    return (Path(repo_root) if repo_root is not None else Path.cwd()) / path
+
+
+def _read_handoff_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _emit(log: LogFn | None, level: str, message: str) -> None:
+    if log is not None:
+        log(level, message)
 
 
 def _default_agent_config(role: AgentRole) -> AgentConfig:

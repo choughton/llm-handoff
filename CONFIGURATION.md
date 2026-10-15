@@ -645,6 +645,78 @@ With every role on Claude, an enabled security reviewer runs on the same
 vendor as the implementer, so it is a second read-only review rather than an
 independent one.
 
+### Fallback Agents
+
+A role can name one fallback agent. When the primary agent fails fatally, the
+dispatcher runs the same dispatch once more on the fallback, in the same cycle:
+
+```yaml
+agents:
+  backend:
+    provider: codex
+    fallback:
+      provider: claude
+      model: claude-sonnet-4-6
+  auditor:
+    provider: claude
+    model: claude-opus-4-7
+    fallback:
+      provider: claude
+      model: claude-sonnet-4-6
+```
+
+A failure is fatal, and fails over, only when the primary could not do the
+work at all:
+
+| Reason | Detected from |
+| --- | --- |
+| Launch failure | No output and an OS "file not found" or "command not found" error. |
+| Sign-in failure | The same markers that stop the loop without a fallback. |
+| Rate or usage limit | 429, `RESOURCE_EXHAUSTED`, `rate_limit_error`, `overloaded_error`, quota, or usage-limit messages in stderr or the end of stdout. |
+| Timeout | The process ran past the role's `timeout_ms` and was killed. |
+
+Any other non-zero exit is the agent's own failure: the fallback does not run
+and the failure counts toward `max_consecutive_failures` as before.
+
+The dispatcher also skips the fallback when the primary failed after it:
+
+- rewrote `HANDOFF.md`, because running the role again could repeat a
+  finished handoff; or
+- changed a file under `protected_paths`, because the fallback would read the
+  changed file as instructions. The protected-file gate then handles the
+  change as usual.
+
+In both cases the run counts as a normal failure, exactly as it would without
+a fallback. The next cycle reads the new handoff unless that failure stops the
+loop, for example a sign-in failure or `max_consecutive_failures` reached.
+
+Rules and limits:
+
+- The fallback block takes the same fields as a role. Omitted fields come from
+  the fallback provider's defaults, not from the primary.
+- The fallback must launch a different provider, a different `binary`, or,
+  for `claude`, a different `model`. The Codex and Gemini adapters do not pass
+  a model flag, so a second model on those providers needs a different binary
+  or account.
+- One level only: a fallback cannot have its own fallback.
+- The fallback starts a fresh session. When it runs, the dispatcher also drops
+  the planner's saved session, so the next planner dispatch starts fresh.
+- The fallback provider needs the same role files the primary needs, such as
+  the Claude subagent, Codex skill, or Gemini agent for that role.
+- If the fallback also fails, its result is the dispatch result and the
+  normal failure count applies. A sign-in failure on the fallback still stops
+  the loop.
+- A hung agent is only detected when `timeout_ms` expires, so lower it on a
+  role to fail over sooner. Gemini retries its own 429s first (`retries`, with
+  backoff); set `retries: 0` on a Gemini role to fail over at the first 429.
+- Fallbacks cover role dispatches. In audit fan-out the quality reviewer's
+  prompt and verdict parsing depend on its provider, so it fails over only to
+  an `auditor` fallback on the same provider, with `audit.review_timeout_ms`.
+  The security reviewer and the next-agent normalizer do not use fallbacks.
+
+Startup logs a `Launch <role> fallback:` line for each fallback, and a Gemini
+fallback needs a sandbox runtime like any Gemini role.
+
 ## Provider Fields
 
 Common fields:
@@ -663,6 +735,8 @@ Common fields:
   Codex, `GEMINI_API_KEY` for Gemini). Ignored for Claude.
 - `unsafe_bypass`: restore the provider's previous approval and sandbox bypass
   flags for this role. Off by default and logged as a startup warning.
+- `fallback`: optional agent that reruns the dispatch after a fatal failure.
+  See [Fallback Agents](#fallback-agents).
 
 Codex-specific fields:
 

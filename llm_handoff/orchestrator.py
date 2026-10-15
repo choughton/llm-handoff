@@ -31,6 +31,7 @@ from llm_handoff.audit_review import (
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
     AgentConfig,
+    AgentRole,
     CLAUDE_DEFAULT_ALLOWED_TOOLS,
     DispatchConfig,
     NormalizerConfig,
@@ -1070,6 +1071,7 @@ def _dispatch_route(
             ),
             agent_config=config.agents["backend"],
             repo_root=config.repo_root,
+            **_failover_kwargs(config, "backend"),
         ), "backend"
 
     if route == "planner":
@@ -1091,6 +1093,7 @@ def _dispatch_route(
                 log=log,
                 agent_config=config.agents["planner"],
                 repo_root=config.repo_root,
+                **_failover_kwargs(config, "planner"),
             ),
             "planner",
         )
@@ -1113,6 +1116,7 @@ def _dispatch_route(
                 log=log,
                 agent_config=config.agents["frontend"],
                 repo_root=config.repo_root,
+                **_failover_kwargs(config, "frontend"),
             ),
             "frontend",
         )
@@ -1139,6 +1143,7 @@ def _dispatch_route(
                 agent_config=config.agents["auditor"],
                 log=log,
                 repo_root=config.repo_root,
+                **_failover_kwargs(config, "auditor"),
             )
         ), "auditor (audit)"
 
@@ -1153,6 +1158,7 @@ def _dispatch_route(
                 agent_config=config.agents["validator"],
                 log=log,
                 repo_root=config.repo_root,
+                **_failover_kwargs(config, "validator"),
             )
         ), "validator"
 
@@ -1172,6 +1178,8 @@ def _dispatch_audit_fan_out(
             handoff_content=_read_required_text(handoff_path) or "",
         )
 
+    failover_kwargs = _failover_kwargs(config, "auditor")
+
     def quality_invoker(prompt: str, agent_config: AgentConfig) -> SubagentResult:
         return _invoke_support_callable(
             "auditor",
@@ -1181,6 +1189,7 @@ def _dispatch_audit_fan_out(
             agent_config=agent_config,
             log=log,
             repo_root=config.repo_root,
+            **failover_kwargs,
         )
 
     return run_audit_fan_out(
@@ -1190,6 +1199,29 @@ def _dispatch_audit_fan_out(
         quality_invoker=quality_invoker,
         log=log,
     )
+
+
+def _failover_kwargs(config: DispatchConfig, role: AgentRole) -> dict[str, object]:
+    """Return the failover guard for a role that has a fallback agent.
+
+    The protected-file gate only runs after both attempts return, so the guard
+    snapshots the protected control files now and stops the fallback from
+    starting when the primary changed one of them.
+    """
+
+    if config.agents[role].fallback is None:
+        return {}
+    before = _capture_protected_snapshot(config)
+    if before is None:
+        return {}
+
+    def guard() -> str | None:
+        changed = _protected_file_changes(config, before)
+        if not changed:
+            return None
+        return f"it changed protected control files ({', '.join(changed)})"
+
+    return {"failover_guard": guard}
 
 
 def _invoke_dispatch_callable(
@@ -1240,7 +1272,10 @@ def _invoke_epic_close(
     log: LogFn,
 ):
     return run_epic_close(
-        **_supported_kwargs(run_epic_close, {"config": config, "log": log})
+        **_supported_kwargs(
+            run_epic_close,
+            {"config": config, "log": log, **_failover_kwargs(config, "finalizer")},
+        )
     )
 
 
@@ -1448,6 +1483,7 @@ def _dispatch_handoff_hygiene_repair(
                 agent_config=config.agents["auditor"],
                 log=log,
                 repo_root=config.repo_root,
+                **_failover_kwargs(config, "auditor"),
             )
         )
     if previous_agent == "backend":
@@ -1459,6 +1495,7 @@ def _dispatch_handoff_hygiene_repair(
             additional_instruction=repair_prompt,
             agent_config=config.agents["backend"],
             repo_root=config.repo_root,
+            **_failover_kwargs(config, "backend"),
         )
     if previous_agent == "frontend":
         if config.use_manual_frontend:
@@ -1472,6 +1509,7 @@ def _dispatch_handoff_hygiene_repair(
             log=log,
             agent_config=config.agents["frontend"],
             repo_root=config.repo_root,
+            **_failover_kwargs(config, "frontend"),
         )
     return None
 
@@ -2036,6 +2074,7 @@ def _run_validator(
         agent_config=config.agents["validator"],
         log=log,
         repo_root=config.repo_root,
+        **_failover_kwargs(config, "validator"),
     )
     _log(log, "AGENT", f"{label} exited with code {result.exit_code}")
     if _enforce_protected_files(
@@ -2960,12 +2999,29 @@ def _dispatched_roles(config: DispatchConfig) -> list[str]:
     return roles
 
 
+def _launch_agents(config: DispatchConfig) -> list[tuple[str, str, AgentConfig]]:
+    """Return (label, config key, agent config) for every agent a run may launch."""
+
+    agents: list[tuple[str, str, AgentConfig]] = []
+    for role in _dispatched_roles(config):
+        agent_config = config.agents[role]
+        agents.append((role, f"agents.{role}", agent_config))
+        if agent_config.fallback is not None:
+            agents.append(
+                (
+                    f"{role} fallback",
+                    f"agents.{role}.fallback",
+                    agent_config.fallback,
+                )
+            )
+    return agents
+
+
 def _roles_missing_gemini_sandbox(config: DispatchConfig) -> list[str]:
     gemini_roles = [
-        role
-        for role in _dispatched_roles(config)
-        if config.agents[role].provider == "gemini"
-        and not config.agents[role].unsafe_bypass
+        label
+        for label, _key, agent_config in _launch_agents(config)
+        if agent_config.provider == "gemini" and not agent_config.unsafe_bypass
     ]
     if not gemini_roles or gemini_provider.detect_gemini_sandbox_runtime():
         return []
@@ -2973,7 +3029,10 @@ def _roles_missing_gemini_sandbox(config: DispatchConfig) -> list[str]:
 
 
 def _launch_args_for_role(config: DispatchConfig, role: str) -> list[str]:
-    agent_config = config.agents[role]
+    return _launch_args_for_agent(config.agents[role])
+
+
+def _launch_args_for_agent(agent_config: AgentConfig) -> list[str]:
     if agent_config.provider == "claude":
         return claude_provider.claude_permission_args(agent_config)
     if agent_config.provider == "codex":
@@ -2988,14 +3047,12 @@ def _launch_args_for_role(config: DispatchConfig, role: str) -> list[str]:
 
 
 def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
+    launch_agents = _launch_agents(config)
     gemini_runtime: str | None = None
-    if any(
-        config.agents[role].provider == "gemini" for role in _dispatched_roles(config)
-    ):
+    if any(agent_config.provider == "gemini" for _, _, agent_config in launch_agents):
         gemini_runtime = gemini_provider.detect_gemini_sandbox_runtime()
-    for role in _dispatched_roles(config):
-        agent_config = config.agents[role]
-        args = _launch_args_for_role(config, role)
+    for label, config_key, agent_config in launch_agents:
+        args = _launch_args_for_agent(agent_config)
         summary = " ".join(args)
         if agent_config.provider == "claude" and not agent_config.unsafe_bypass:
             allowed = (
@@ -3009,14 +3066,14 @@ def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
             )
         if agent_config.provider == "gemini" and not agent_config.unsafe_bypass:
             summary = f"{summary} (sandbox runtime: {gemini_runtime or 'NOT FOUND'})"
-        _log(log, "INFO", f"Launch {role + ':':<12}{agent_config.provider} {summary}")
+        _log(log, "INFO", f"Launch {label + ':':<12}{agent_config.provider} {summary}")
         if agent_config.unsafe_bypass:
             _log(
                 log,
                 "WARN",
-                f"UNSAFE BYPASS: {role} ({agent_config.provider}) launches with "
+                f"UNSAFE BYPASS: {label} ({agent_config.provider}) launches with "
                 f"{' '.join(args)}; approvals and sandboxing are disabled. Remove "
-                f"agents.{role}.unsafe_bypass to restore the safe default.",
+                f"{config_key}.unsafe_bypass to restore the safe default.",
             )
 
 
