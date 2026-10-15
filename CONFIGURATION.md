@@ -121,6 +121,7 @@ work_packet_verification_timeout_seconds: 600
 | `work_packet_opt_out_reason` | unset | Required, non-empty text when `enforce_work_packet` is `false`; rejected while the gate is on. |
 | `work_packet_verification_timeout_seconds` | `600` | Timeout in seconds for the Verification command. |
 | `work_claim_env_passthrough` | `[]` | Extra environment variable names the Verification command and scanners receive. They always get only `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`, `USERNAME`, `USER`, `LOGNAME`, `COMSPEC`, `PATHEXT`, `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, and `SHELL`, plus these names. Names match case-insensitively. Vendor API keys are rejected at config load; `CLAUDE_*`, `CODEX_*`, and `GEMINI_*` names are never passed. |
+| `verification_allowed_prefixes` | `[]` | Command prefixes a Work Packet Verification command must start with, matched word by word. A command that matches none, or that contains a shell control character, fails `verification_not_allowed` and routes to `planner`. Empty runs any command, with a startup and `doctor` `WARN`. See [Verification Command Allowlist](#verification-command-allowlist). |
 
 To turn the gate off, set `enforce_work_packet: false` and say why:
 
@@ -156,6 +157,7 @@ dispatches the auditor. The checks are deterministic and run against the
 | `scope_sha` | `scope_sha_not_head` | `scope_sha` resolves to the current HEAD; commits above it that touch only the handoff file are tolerated |
 | Diff scope | `scope_violation` | every file changed since dispatch is inside `Files in scope` or is the handoff file, and none is under `Files out of bounds` |
 | Working tree | `uncommitted_changes` | no new uncommitted changes exist outside the handoff file |
+| Verification allowlist | `verification_not_allowed` | `verification_allowed_prefixes` is empty, or every `Verification command` starts with a listed prefix and contains no shell control character |
 | Verification | `verification_failed` | the `Verification command` exits 0 within the timeout |
 | Changes | `no_changes` | an implementer claim's commits since dispatch change at least one file other than the handoff file; applies in both commit modes |
 | Evidence SHA | `evidence_sha_mismatch` | the `Commit SHA verified` value in `## Verification Evidence` names the same commit as `scope_sha` |
@@ -182,7 +184,8 @@ the packet is the planner's artifact. Every bounce carries the original
 assignment, so the implementer cannot change it. If the same Verification
 command fails again as the only failed check, and no commit since the previous
 bounce changed a file other than the handoff, the bounce goes to `planner` as
-well.
+well. So does a Verification command that `verification_allowed_prefixes`
+rejects (`verification_not_allowed`).
 
 Every line of `Verification command` runs as its own command. A line that is
 only a connective (`and`, `or`, `then`, `plus`, `also`) or ends in `:` is prose,
@@ -219,6 +222,45 @@ after surrounding whitespace is stripped; an empty entry or a vendor API key
 name such as `OPENAI_API_KEY` fails config load. This limits what the command
 can read from the environment only. It still runs as your user account and can
 use credentials stored outside the environment.
+
+### Verification Command Allowlist
+
+`verification_allowed_prefixes` limits which Work Packet Verification commands
+the gate runs. It is optional but recommended:
+
+```yaml
+verification_allowed_prefixes: ["python -m pytest", "npm test"]
+```
+
+- Matching is by whole words. The command and each prefix are split on
+  whitespace, and the command's leading words must equal a prefix's words,
+  case-sensitively. `python -m pytest` allows `python -m pytest tests -q` and
+  rejects `python -m pytestx` and `python -c "..."`.
+- Once the list is set, a command containing any of `&`, `|`, `;`, `<`, `>`,
+  `$`, backtick, `(`, `)`, `%`, `!`, a carriage return, or a newline is
+  rejected even if its first words match, so an allowed prefix cannot be
+  chained to a second command. `%` and `!` are included because on Windows
+  the command runs through `cmd.exe`, which expands `%NAME%` (and `!NAME!`
+  with delayed expansion) before parsing. Entries are stripped of surrounding whitespace; an empty entry or
+  an entry containing one of these characters fails config load.
+- The gate checks every Verification command in the packet before it runs
+  any. If one is rejected, none runs, the claim fails
+  `verification_not_allowed`, and the bounce routes to `planner` with
+  `status: verified_fail`, because only the planner can change the Work
+  Packet. Git state and scanner configuration failures still escalate to
+  `user` first.
+- With the list empty, any command runs, as before. Every dispatcher start
+  then logs `WARN Verification allowlist: OFF`, and `llm-handoff doctor`
+  prints `WARN verification allowlist:`. With the list set, the start logs
+  the prefixes and the doctor prints `PASS verification allowlist:`. Neither
+  line appears while the gate is off.
+- `llm-handoff init --verification-command "<cmd>"` writes the confirmed
+  command as the single entry. `init` rejects a command that contains one of
+  the characters above.
+
+Scanner commands are operator-authored config and are not prefix-checked. The
+dispatcher logs the exact text of each scanner command and each Verification
+command before it runs.
 
 ### Dispatcher Commits
 

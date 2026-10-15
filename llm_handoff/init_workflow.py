@@ -13,7 +13,10 @@ from pathlib import Path
 
 import yaml
 
-from llm_handoff.config import CLAUDE_DEFAULT_ALLOWED_TOOLS
+from llm_handoff.config import (
+    CLAUDE_DEFAULT_ALLOWED_TOOLS,
+    VERIFICATION_FORBIDDEN_CHARS,
+)
 from llm_handoff.stack_detect import Candidate, detect_candidates
 
 REFERENCE_TEMPLATE = "reference-workflow"
@@ -150,6 +153,9 @@ _CLAUDE_SECURITY_PROVIDER_LINE = (
 _EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _AGENT_ROLE_RE = re.compile(r"^  ([A-Za-z_][A-Za-z0-9_-]*):\s*$")
 _AGENT_FIELD_RE = re.compile(r"^    (provider|binary):\s*(\S+)\s*$")
+_VERIFICATION_TIMEOUT_LINE_RE = re.compile(
+    r"^work_packet_verification_timeout_seconds:"
+)
 
 
 @dataclass(frozen=True)
@@ -271,10 +277,13 @@ def render_config(template_text: str, mapping: str) -> str:
 def verification_executable(command: str) -> str:
     """Return the executable of a confirmed verification command.
 
-    Raises InvalidVerificationCommandError for an empty command, a command
-    `shlex` cannot split, or a first token that is not a bare program name.
+    Raises InvalidVerificationCommandError for a command containing a shell
+    control character (see `VERIFICATION_FORBIDDEN_CHARS`), an empty command,
+    a command `shlex` cannot split, or a first token that is not a bare
+    program name.
     """
 
+    check_verification_command_chars(command)
     try:
         tokens = shlex.split(command)
     except ValueError as exc:
@@ -292,6 +301,72 @@ def verification_executable(command: str) -> str:
             f"{_EXECUTABLE_RE.pattern} (no path separators or shell operators)",
         )
     return executable
+
+
+def check_verification_command_chars(command: str) -> None:
+    """Reject a confirmed verification command with a shell control character.
+
+    `init` writes the command into `verification_allowed_prefixes`, whose
+    entries may not contain any character in `VERIFICATION_FORBIDDEN_CHARS`.
+    """
+
+    for char in command:
+        if char in VERIFICATION_FORBIDDEN_CHARS:
+            raise InvalidVerificationCommandError(
+                command,
+                char,
+                f"the command contains the shell control character {char!r}; "
+                "a verification command must be a single command without "
+                "chaining, pipes, redirection, substitution, or line breaks",
+            )
+
+
+def add_verification_allowed_prefixes(config_text: str, command: str) -> str:
+    """Add `verification_allowed_prefixes` with ``command`` as its only entry.
+
+    The key is inserted after the top-level
+    `work_packet_verification_timeout_seconds:` line, with the command written
+    as a JSON-quoted YAML string. The rest of the text is unchanged.
+    """
+
+    lines = config_text.splitlines(keepends=True)
+    matches = [
+        index
+        for index, line in enumerate(lines)
+        if _VERIFICATION_TIMEOUT_LINE_RE.match(line)
+    ]
+    if len(matches) != 1:
+        raise InitWorkflowError(
+            "Template dispatch_config.yaml no longer has exactly one "
+            "work_packet_verification_timeout_seconds line; cannot add "
+            "verification_allowed_prefixes for the verification command."
+        )
+    index = matches[0]
+    line = lines[index]
+    newline = _line_ending(line) or "\n"
+    if not _line_ending(line):
+        lines[index] = line + newline
+    lines.insert(
+        index + 1,
+        f"verification_allowed_prefixes:{newline}"
+        f"  - {json.dumps(command)}{newline}",
+    )
+    rendered = "".join(lines)
+    try:
+        data = yaml.safe_load(rendered)
+    except yaml.YAMLError as exc:
+        raise InitWorkflowError(
+            "Rendered dispatch_config.yaml is not valid YAML."
+        ) from exc
+    if (
+        not isinstance(data, dict)
+        or data.get("verification_allowed_prefixes") != [command]
+    ):
+        raise InitWorkflowError(
+            "Rendered dispatch_config.yaml does not carry the verification "
+            "command as its only verification_allowed_prefixes entry."
+        )
+    return rendered
 
 
 def verification_allowed_tools(executable: str) -> tuple[str, ...]:
@@ -384,7 +459,10 @@ def _config_is_rendered(mapping: str, executable: str | None) -> bool:
 
 
 def _source_bytes(
-    relative_path: Path, mapping: str, executable: str | None = None
+    relative_path: Path,
+    mapping: str,
+    executable: str | None = None,
+    verification_command: str | None = None,
 ) -> bytes:
     source_path = _TEMPLATE_ROOT / relative_path
     if relative_path == _CONFIG_PATH and _config_is_rendered(mapping, executable):
@@ -395,6 +473,8 @@ def _source_bytes(
             text = render_config(source_path.read_text(encoding="utf-8"), mapping)
         if executable is not None:
             text = add_verification_allowed_tools(text, executable)
+        if verification_command is not None:
+            text = add_verification_allowed_prefixes(text, verification_command)
         return text.encode("utf-8")
     return source_path.read_bytes()
 
@@ -538,7 +618,9 @@ def init_reference_workflow(
 
     for relative_path in template_files():
         target_path = target_root / relative_path
-        source = _source_bytes(relative_path, mapping, executable)
+        source = _source_bytes(
+            relative_path, mapping, executable, verification_command
+        )
         managed = relative_path in _TEXT_MARKERS or relative_path == _SETTINGS_PATH
         if _has_linked_destination(target_root, relative_path) or target_path.is_dir():
             conflicts.append(relative_path)
@@ -602,7 +684,9 @@ def init_reference_workflow(
         if relative_path in planned:
             target_path.write_bytes(planned[relative_path])
         elif relative_path == _CONFIG_PATH and _config_is_rendered(mapping, executable):
-            target_path.write_bytes(_source_bytes(relative_path, mapping, executable))
+            target_path.write_bytes(
+                _source_bytes(relative_path, mapping, executable, verification_command)
+            )
         else:
             shutil.copy2(source_path, target_path)
 

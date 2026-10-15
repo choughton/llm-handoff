@@ -476,6 +476,69 @@ def test_doctor_fails_on_work_claim_gate_opt_out_without_a_reason(
     assert "work_packet_opt_out_reason" in output
 
 
+def test_doctor_warns_when_the_verification_allowlist_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    warn_lines = [
+        line
+        for line in output.splitlines()
+        if line.startswith("WARN verification allowlist:")
+    ]
+    assert len(warn_lines) == 1
+    assert "verification_allowed_prefixes is empty" in warn_lines[0]
+    assert "PASS verification allowlist:" not in output
+
+
+def test_doctor_passes_when_the_verification_allowlist_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + 'verification_allowed_prefixes: ["python -m pytest", "npm test"]\n',
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    pass_lines = [
+        line
+        for line in output.splitlines()
+        if line.startswith("PASS verification allowlist:")
+    ]
+    assert len(pass_lines) == 1
+    assert "python -m pytest, npm test" in pass_lines[0]
+    assert "WARN verification allowlist:" not in output
+
+
+def test_doctor_omits_the_verification_allowlist_when_the_gate_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "enforce_work_packet: false\n"
+        + 'work_packet_opt_out_reason: "Planner prompts do not emit packets yet."\n',
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert "verification allowlist" not in output
+
+
 # A Work Packet section the gate cannot parse: it has no Files in scope or
 # Verification command.
 HANDOFF_WITHOUT_WORK_PACKET = """---

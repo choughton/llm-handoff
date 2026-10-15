@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from llm_handoff.config import CLAUDE_DEFAULT_ALLOWED_TOOLS, load_dispatch_config
 from llm_handoff.init_workflow import (
@@ -484,7 +485,9 @@ def test_verification_command_adds_allowed_tools_to_reference_claude_roles(
         assert tools[name] is None
 
 
-def test_verification_command_only_inserts_allowed_tools(tmp_path: Path) -> None:
+def test_verification_command_only_inserts_allowed_tools_and_allowlist(
+    tmp_path: Path,
+) -> None:
     init_reference_workflow(
         tmp_path, available_providers=(), verification_command="npm test"
     )
@@ -497,8 +500,74 @@ def test_verification_command_only_inserts_allowed_tools(tmp_path: Path) -> None
         + [f"      - {rule}".encode() for rule in CLAUDE_DEFAULT_ALLOWED_TOOLS]
         + [b"      - Bash(npm:*)", b""]
     )
+    allowlist = newline.join(
+        [b"verification_allowed_prefixes:", b'  - "npm test"', b""]
+    )
     assert rendered.count(block) == 3
-    assert rendered.replace(block, b"") == template
+    assert rendered.count(allowlist) == 1
+    assert rendered.replace(block, b"").replace(allowlist, b"") == template
+    timeout_line = b"work_packet_verification_timeout_seconds: 600" + newline
+    assert timeout_line + allowlist in rendered
+
+
+@pytest.mark.parametrize("provider", [None, "claude"])
+def test_verification_command_writes_a_loadable_allowlist(
+    tmp_path: Path, provider: str | None
+) -> None:
+    command = 'python -m pytest tests -q -k "not slow"'
+    init_reference_workflow(
+        tmp_path,
+        provider=provider,
+        available_providers=(),
+        verification_command=command,
+    )
+
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "verification_allowed_prefixes:\n" in text.replace("\r\n", "\n")
+    assert f"  - {json.dumps(command)}" in text
+    assert yaml.safe_load(text)["verification_allowed_prefixes"] == [command]
+    config = load_dispatch_config(
+        repo_root=tmp_path, config_path=tmp_path / "dispatch_config.yaml"
+    )
+    assert config.verification_allowed_prefixes == (command,)
+
+
+@pytest.mark.parametrize("provider", [None, "claude"])
+def test_no_verification_command_leaves_the_allowlist_unset(
+    tmp_path: Path, provider: str | None
+) -> None:
+    init_reference_workflow(tmp_path, provider=provider, available_providers=())
+
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "verification_allowed_prefixes" not in yaml.safe_load(text)
+    assert not any(
+        line.startswith("verification_allowed_prefixes")
+        for line in text.splitlines()
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "char"),
+    [
+        ("pytest && whoami", "&"),
+        ("pytest | tee out", "|"),
+        ("pytest > out.txt", ">"),
+        ("pytest $(whoami)", "$"),
+        ("pytest `whoami`", "`"),
+        ("pytest %CD%", "%"),
+        ("pytest\nwhoami", "\n"),
+    ],
+)
+def test_verification_command_with_shell_control_char_is_rejected(
+    tmp_path: Path, command: str, char: str
+) -> None:
+    with pytest.raises(InvalidVerificationCommandError) as error:
+        init_reference_workflow(
+            tmp_path, available_providers=(), verification_command=command
+        )
+    assert repr(char) in str(error.value)
+    assert error.value.token == char
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_verification_command_with_claude_mapping_covers_all_roles(

@@ -26,6 +26,7 @@ from llm_handoff.work_claim import (
     PreDispatchState,
     ScannerContext,
     WorkPacket,
+    WorkClaimResult,
     WorkPacketError,
     bounce_route_for,
     build_bounce_handoff,
@@ -42,6 +43,7 @@ from llm_handoff.work_claim import (
     run_scanner,
     run_shell_command,
     shell_quote,
+    verification_command_allowed,
     verify_work_claim,
     work_packet_errors,
 )
@@ -2065,6 +2067,331 @@ def test_startup_banner_logs_info_when_gate_is_on(tmp_path: Path) -> None:
             "Work-claim gate:    ON (runs the Work Packet verification command)",
         )
     ]
+
+
+def _allowlist_lines(messages: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [
+        (level, message)
+        for level, message in messages
+        if message.startswith("Verification allowlist:")
+    ]
+
+
+def test_startup_banner_warns_when_verification_allowlist_is_empty(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _load_orchestrator()
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._log_startup_banner(
+        _dispatch_config(tmp_path), _collecting_log(messages)
+    )
+
+    lines = _allowlist_lines(messages)
+    assert len(lines) == 1
+    level, message = lines[0]
+    assert level == "WARN"
+    assert message.startswith("Verification allowlist: OFF")
+    assert "verification_allowed_prefixes" in message
+
+
+def test_startup_banner_lists_verification_allowlist_when_set(tmp_path: Path) -> None:
+    orchestrator = _load_orchestrator()
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._log_startup_banner(
+        _dispatch_config(
+            tmp_path,
+            verification_allowed_prefixes=("python -m pytest", "npm test"),
+        ),
+        _collecting_log(messages),
+    )
+
+    assert _allowlist_lines(messages) == [
+        ("INFO", "Verification allowlist: python -m pytest, npm test")
+    ]
+
+
+def test_startup_banner_omits_verification_allowlist_when_gate_is_off(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _load_orchestrator()
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._log_startup_banner(
+        _dispatch_config(
+            tmp_path,
+            enforce_work_packet=False,
+            work_packet_opt_out_reason=GATE_OPT_OUT_REASON,
+        ),
+        _collecting_log(messages),
+    )
+
+    assert _allowlist_lines(messages) == []
+
+
+# ---------------------------------------------------------------------------
+# Verification command allowlist
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pytest",
+        "python -m pytest tests -q",
+        "  python   -m pytest\ttests  ",
+        "anything at all & whoami",
+    ],
+)
+def test_verification_command_allowed_with_an_empty_list_allows_everything(
+    command: str,
+) -> None:
+    assert verification_command_allowed(command, ()) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["python -m pytest", "python -m pytest tests -q", "  python   -m pytest\ttests"],
+)
+def test_verification_command_allowed_accepts_a_token_prefix_match(
+    command: str,
+) -> None:
+    assert verification_command_allowed(command, ("python -m pytest",)) is None
+
+
+def test_verification_command_allowed_accepts_any_listed_prefix() -> None:
+    prefixes = ("npm test", "python -m pytest")
+    assert verification_command_allowed("python -m pytest -q", prefixes) is None
+    assert verification_command_allowed("npm test -- --ci", prefixes) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "fragment"),
+    [
+        ("python -m pytestx", "does not start with any"),
+        ('python -c "x"', "does not start with any"),
+        ("Python -m pytest", "does not start with any"),
+        ("python -m", "does not start with any"),
+        ("python -m pytest tests -q & whoami", "'&'"),
+        ("python -m pytest | tee out", "'|'"),
+        ("python -m pytest; whoami", "';'"),
+        ("python -m pytest < in", "'<'"),
+        ("python -m pytest > out", "'>'"),
+        ("python -m pytest $HOME", "'$'"),
+        ("python -m pytest `whoami`", "'`'"),
+        ("python -m pytest (x)", "'('"),
+        ("python -m pytest x)", "')'"),
+        ("python -m pytest %CD%", "'%'"),
+        ("python -m pytest !CD!", "'!'"),
+        ("python -m pytest\rwhoami", "'\\r'"),
+        ("python -m pytest\nwhoami", "'\\n'"),
+    ],
+)
+def test_verification_command_allowed_rejects_with_a_one_line_reason(
+    command: str,
+    fragment: str,
+) -> None:
+    reason = verification_command_allowed(command, ("python -m pytest",))
+
+    assert reason is not None
+    assert fragment in reason
+    assert "\n" not in reason and "\r" not in reason
+
+
+def _assignment_with_commands(*commands: str) -> str:
+    listed = "\n".join(f"  - {command}" for command in commands)
+    return _assignment("").replace(
+        "- **Verification command:** \n",
+        f"- **Verification command:**\n{listed}\n",
+    )
+
+
+def test_verify_work_claim_rejects_a_disallowed_command_without_running_any(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    order_log = fake_bin / "order.log"
+    _install_fake_tool(fake_bin, "verify-cmd", _order_tool_body(order_log, "verify", 0))
+    _install_fake_tool(fake_bin, "other-cmd", _order_tool_body(order_log, "other", 0))
+    assignment = _assignment_with_commands("verify-cmd", "other-cmd --all")
+    assert parse_work_packet(assignment).verification_commands == (
+        "verify-cmd",
+        "other-cmd --all",
+    )
+    state, head = _passing_claim_setup(tmp_path, assignment)
+    claim = _claim(head)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, claim)
+    logged: list[tuple[str, str]] = []
+
+    result = verify_work_claim(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=assignment,
+        claim_content=claim,
+        pre_dispatch_state=state,
+        verification_timeout_seconds=60,
+        verification_allowed_prefixes=("verify-cmd",),
+        log=_collecting_log(logged),
+    )
+
+    assert not order_log.exists()
+    assert result.verification_runs == ()
+    assert result.failed_prefixes == ("verification_not_allowed",)
+    assert _outcomes(result)["verification"] == "FAIL"
+    assert "`other-cmd --all`" in result.errors[0]
+    assert result.rejected_verification_command == "other-cmd --all"
+    assert not any("running verification command" in m for _l, m in logged)
+
+    bounce_route = bounce_route_for(result, implementer="backend")
+    assert bounce_route.next_agent == "planner"
+    assert bounce_route.status == "verified_fail"
+    bounce = build_bounce_handoff(
+        claim_content=claim,
+        result=result,
+        implementer="backend",
+        route=bounce_route,
+        bounce_count=1,
+    )
+    assert route(bounce).route == "planner"
+    assert "rejected the Verification command `other-cmd --all`" in bounce
+    assert "`verification_allowed_prefixes`" in bounce
+    assert "shell control character" in bounce
+    assert "Re-issue the Work Packet" in bounce
+    assert "did not carry a usable `## Work Packet`" not in bounce
+
+
+def test_verification_not_allowed_yields_to_a_user_escalation(tmp_path: Path) -> None:
+    result = WorkClaimResult(
+        checks=(),
+        errors=(
+            "verification_not_allowed: rejected.",
+            "git_state_unavailable: git status failed.",
+        ),
+        pre_dispatch_head=None,
+        head_sha=None,
+        scope_sha=None,
+        changed_files=(),
+        verification_runs=(),
+        work_packet=None,
+        work_packet_text=None,
+    )
+
+    bounce_route = bounce_route_for(result, implementer="backend")
+
+    assert bounce_route.next_agent == "user"
+    assert bounce_route.status == "escalate_to_user"
+
+
+def test_verification_not_allowed_outranks_implementer_failures(
+    tmp_path: Path,
+) -> None:
+    result = WorkClaimResult(
+        checks=(),
+        errors=(
+            "scope_violation: changed files outside Files in scope: x.py.",
+            "verification_not_allowed: rejected.",
+        ),
+        pre_dispatch_head=None,
+        head_sha=None,
+        scope_sha=None,
+        changed_files=(),
+        verification_runs=(),
+        work_packet=None,
+        work_packet_text=None,
+    )
+
+    assert bounce_route_for(result, implementer="backend").next_agent == "planner"
+
+
+def test_verify_work_claim_runs_an_allowed_command(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    order_log = fake_bin / "order.log"
+    _install_fake_tool(fake_bin, "verify-cmd", _order_tool_body(order_log, "verify", 0))
+    assignment = _assignment("verify-cmd --quiet")
+    state, head = _passing_claim_setup(tmp_path, assignment)
+    claim = _claim(head)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, claim)
+
+    result = verify_work_claim(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=assignment,
+        claim_content=claim,
+        pre_dispatch_state=state,
+        verification_timeout_seconds=60,
+        verification_allowed_prefixes=("npm test", "verify-cmd"),
+    )
+
+    assert result.passed, result.errors
+    assert order_log.read_text(encoding="utf-8").split() == ["verify"]
+    assert _outcomes(result)["verification"] == "PASS"
+    assert result.rejected_verification_command is None
+
+
+def test_verify_work_claim_logs_scanner_and_verification_commands_before_running(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    order_log = fake_bin / "order.log"
+    _install_fake_tool(fake_bin, "scan-a", _order_tool_body(order_log, "scan", 0))
+    _install_fake_tool(fake_bin, "verify-cmd", _order_tool_body(order_log, "verify", 0))
+    assignment = _assignment("verify-cmd --quiet")
+    state, head = _passing_claim_setup(tmp_path, assignment)
+    claim = _claim(head)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, claim)
+    logged: list[tuple[str, str]] = []
+
+    def log(level: str, message: str) -> None:
+        logged.append((level, message))
+        with order_log.open("a", encoding="utf-8") as handle:
+            handle.write("log\n")
+
+    result = verify_work_claim(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=assignment,
+        claim_content=claim,
+        pre_dispatch_state=state,
+        verification_timeout_seconds=60,
+        scanners=[_scanner("a", "scan-a {diff_range}")],
+        log=log,
+    )
+
+    assert result.passed, result.errors
+    assert order_log.read_text(encoding="utf-8").split() == [
+        "log",
+        "scan",
+        "log",
+        "verify",
+    ]
+    assert logged == [
+        (
+            "INFO",
+            f"work-claim: running scanner a: scan-a {state.head_sha}..{head}",
+        ),
+        ("INFO", "work-claim: running verification command: verify-cmd --quiet"),
+    ]
+
+
+def test_verify_work_claim_without_log_behaves_as_before(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    order_log = fake_bin / "order.log"
+    _install_fake_tool(fake_bin, "scan-a", _order_tool_body(order_log, "scan", 0))
+    _install_fake_tool(fake_bin, "verify-cmd", _order_tool_body(order_log, "verify", 0))
+    assignment = _assignment("verify-cmd")
+    state, head = _passing_claim_setup(tmp_path, assignment)
+
+    result = _verify_with_scanners(
+        tmp_path, state, head, [_scanner("a", "scan-a")], assignment=assignment
+    )
+
+    assert result.passed, result.errors
+    assert order_log.read_text(encoding="utf-8").split() == ["scan", "verify"]
 
 
 def test_docs_describe_scanners() -> None:

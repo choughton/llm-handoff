@@ -274,3 +274,60 @@ def test_work_claim_env_passthrough_rejects_invalid_entries(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         DispatchConfig(repo_root=tmp_path, work_claim_env_passthrough=(entry,))
+
+
+def test_verification_forbidden_chars_is_exactly_the_shell_control_set() -> None:
+    assert config_module.VERIFICATION_FORBIDDEN_CHARS == frozenset(
+        {"&", "|", ";", "<", ">", "$", "`", "(", ")", "%", "!", "\r", "\n"}
+    )
+    assert isinstance(config_module.VERIFICATION_FORBIDDEN_CHARS, frozenset)
+
+
+def test_verification_allowed_prefixes_defaults_to_empty(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path).verification_allowed_prefixes == ()
+    assert (
+        load_dispatch_config(repo_root=tmp_path).verification_allowed_prefixes == ()
+    )
+
+
+def test_load_dispatch_config_reads_verification_allowed_prefixes(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """verification_allowed_prefixes:
+  - "  python -m pytest  "
+  - npm test
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.verification_allowed_prefixes == ("python -m pytest", "npm test")
+
+
+@pytest.mark.parametrize("entry", ["", "   ", "\t"])
+def test_verification_allowed_prefixes_rejects_empty_entries(
+    tmp_path: Path,
+    entry: str,
+) -> None:
+    with pytest.raises(ValueError, match="verification_allowed_prefixes") as error:
+        DispatchConfig(repo_root=tmp_path, verification_allowed_prefixes=(entry,))
+    assert "non-empty" in str(error.value)
+    assert repr(entry) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "char", sorted(config_module.VERIFICATION_FORBIDDEN_CHARS)
+)
+def test_verification_allowed_prefixes_rejects_each_forbidden_char(
+    tmp_path: Path,
+    char: str,
+) -> None:
+    entry = f"python -m pytest {char} x"
+    with pytest.raises(ValueError, match="verification_allowed_prefixes") as error:
+        DispatchConfig(repo_root=tmp_path, verification_allowed_prefixes=(entry,))
+    message = str(error.value)
+    assert repr(entry) in message
+    assert repr(char) in message

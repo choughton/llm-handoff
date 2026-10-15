@@ -2499,6 +2499,8 @@ def _run_work_claim_gate(
         dispatcher_commit_mode=config.commit_mode == "dispatcher",
         story_base_sha=story_base_sha,
         env_passthrough=config.work_claim_env_passthrough,
+        verification_allowed_prefixes=config.verification_allowed_prefixes,
+        log=log,
     )
     _log_work_claim_result(result, log)
     if result.passed:
@@ -3045,6 +3047,20 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
             "INFO",
             "Work-claim gate:    ON (runs the Work Packet verification command)",
         )
+        if config.verification_allowed_prefixes:
+            _log(
+                log,
+                "INFO",
+                "Verification allowlist: "
+                + ", ".join(config.verification_allowed_prefixes),
+            )
+        else:
+            _log(
+                log,
+                "WARN",
+                "Verification allowlist: OFF (verification_allowed_prefixes is "
+                "empty; any Work Packet Verification command runs)",
+            )
     else:
         _log(
             log,

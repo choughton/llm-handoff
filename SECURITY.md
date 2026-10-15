@@ -43,6 +43,18 @@ After the first tagged release, supported versions will be listed here.
   credential manager outside the environment. Review the handoff files of a
   repository before you run the dispatcher there, and do not start the
   dispatcher from a shell or account that holds credentials it does not need.
+  Set `verification_allowed_prefixes` to narrow what runs: with the list set,
+  a Verification command runs only if its leading words match a listed
+  prefix and it contains none of `&`, `|`, `;`, `<`, `>`, `$`, backtick, `(`,
+  `)`, `%`, `!`, or a line break (`%` and `!` block `cmd.exe` variable
+  expansion, which could otherwise inject a control character on Windows);
+  otherwise the gate runs nothing, fails the claim
+  `verification_not_allowed`, and routes it to `planner`. A prefix such as
+  `python -m pytest` still runs whatever tests and plugins the repository
+  holds, so the allowlist limits the command line, not what the allowed tool
+  does. With the list empty, every dispatcher start and `llm-handoff doctor`
+  print a warning. The exact text of each Verification and scanner command is
+  logged before it runs.
   Turning the gate off needs
   `enforce_work_packet: false` plus a non-empty `work_packet_opt_out_reason`,
   which every dispatcher start and `llm-handoff doctor` report as a warning.

@@ -146,7 +146,9 @@ The dispatcher should name and isolate failure modes rather than guessing:
   `reviewer_wrote_handoff`;
 - work-claim gate failure: missing or unparseable Work Packet,
   `scope_sha` not at HEAD, scope violation, uncommitted changes, a failed,
-  missing, or timed-out configured scanner, or a failed verification command;
+  missing, or timed-out configured scanner, a Verification command rejected
+  by `verification_allowed_prefixes` (`verification_not_allowed`), or a
+  failed verification command;
 - protected control file modified outside the Work Packet scope.
 
 When a failure mode is detected, the safe default is to pause or dispatch a
@@ -215,10 +217,19 @@ for a `status: ready_for_review` handoff from `backend` or `frontend`:
    optional one. A command whose placeholders cannot be filled is
    `scanner_config_invalid:<name>`, rejected at config load. The list is
    empty by default.
-5. Run the `Verification command` through the shell in `repo_root`, bounded
-   by `work_packet_verification_timeout_seconds`. A non-zero exit or a timeout
-   is `verification_failed`. The command, exit code, and a bounded output tail
-   go to the dispatch log, as do scanner output tails.
+5. When `verification_allowed_prefixes` is set, check every `Verification
+   command` before running any: each must start with the words of a listed
+   prefix (whitespace-split, case-sensitive) and contain none of `&`, `|`,
+   `;`, `<`, `>`, `$`, backtick, `(`, `)`, `%`, `!`, or a line break (`%`
+   and `!` block `cmd.exe` variable expansion on Windows). If one fails, no
+   command runs and the claim fails `verification_not_allowed`. With the list
+   empty every command runs, and the dispatcher start and
+   `llm-handoff doctor` warn. Then run the `Verification command` through the
+   shell in `repo_root`, bounded by `work_packet_verification_timeout_seconds`.
+   A non-zero exit or a timeout is `verification_failed`. The exact text of
+   each scanner and Verification command is logged before it runs; the
+   command, exit code, and a bounded output tail go to the dispatch log, as do
+   scanner output tails.
 
 Each check has its own error prefix so repair and recovery code can key on it.
 On any failure the dispatcher does not dispatch the auditor. It rewrites
@@ -228,8 +239,9 @@ section with the evidence, the original `## Work Packet` carried forward
 verbatim, and the implementer's handback preserved under `## Prior Handback`.
 The bounce goes through `record_status_transition`, so the three-fix circuit
 breaker counts it. Scope, SHA, worktree, scanner, and verification failures
-route back to the same implementer. A missing or unusable Work Packet routes
-to `planner`, which owns that artifact. Unreadable Git state and a scanner
+route back to the same implementer. A missing or unusable Work Packet, and a
+Verification command the allowlist rejected (`verification_not_allowed`),
+route to `planner`, which owns that artifact. Unreadable Git state and a scanner
 command that cannot be rendered escalate to `user`.
 
 Running the Work Packet's verification command is execution of agent-written

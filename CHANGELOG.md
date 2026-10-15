@@ -6,6 +6,22 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added the optional `verification_allowed_prefixes` config key. When set,
+  the work-claim gate runs a Work Packet Verification command only if its
+  whitespace-split words start with a listed prefix's words and it contains
+  none of `&`, `|`, `;`, `<`, `>`, `$`, backtick, `(`, `)`, `%`, `!`, or a
+  line break (`%` and `!` block `cmd.exe` variable expansion on Windows).
+  Otherwise no Verification command runs, the claim fails the new
+  `verification_not_allowed` check, and the bounce routes to `planner`. An
+  empty or whitespace-only entry, or an entry with one of those characters,
+  fails config load. With the list empty, commands run as before, and every
+  dispatcher start logs `WARN Verification allowlist: OFF` and
+  `llm-handoff doctor` prints `WARN verification allowlist:`.
+  `llm-handoff init --verification-command` writes the confirmed command into
+  the list and now rejects a command with one of those characters. The
+  dispatcher logs the exact text of each scanner and Verification command
+  before it runs.
+
 - Behavior change: the work-claim gate's Verification command and configured
   `scanners` now run with an allowlisted environment instead of the
   dispatcher's full inherited environment. They receive only the base and
