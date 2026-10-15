@@ -807,14 +807,10 @@ def run_loop(
                 require_work_packet=config.enforce_work_packet,
                 dispatcher_commit_mode=config.commit_mode == "dispatcher",
             )
-            post_dispatch_status = _record_post_dispatch_status_transition(
+            _record_post_dispatch_status_transition(
                 config=config,
                 log=log_fn,
             )
-            if post_dispatch_status == HandoffStatus.VERIFIED_PASS:
-                # The story is approved; its next implementer dispatch starts
-                # a new audit range.
-                implementer_base_sha = None
             self_loop_kind = _self_loop_kind(validation_result)
             _log_validation(
                 validation_result,
@@ -880,6 +876,8 @@ def run_loop(
                             pre_dispatch_state=pre_dispatch_state,
                             log=log_fn,
                         )
+                        if _accepted_approval(config):
+                            implementer_base_sha = None
                         previous_cycle = current_cycle
                         consecutive_failures = 0
                         if max_cycles is not None and cycle_number >= max_cycles:
@@ -1000,6 +998,10 @@ def run_loop(
             else:
                 previous_cycle = current_cycle
                 consecutive_failures = 0
+                if _accepted_approval(config):
+                    # The story is approved; its next implementer dispatch
+                    # starts a new audit range.
+                    implementer_base_sha = None
                 if (
                     config.publish.mode != "local"
                     and current_cycle.route == "auditor"
@@ -2415,13 +2417,13 @@ def _record_post_dispatch_status_transition(
     *,
     config: DispatchConfig,
     log: LogFn,
-) -> HandoffStatus | None:
+) -> None:
     handoff_content = _read_required_text(config.handoff_full_path)
     if handoff_content is None:
-        return None
+        return
     frontmatter = _parse_frontmatter_or_none(handoff_content)
     if frontmatter is None:
-        return None
+        return
     status = _handoff_status(frontmatter.status)
     state_path = _bounce_state_path(config)
     try:
@@ -2459,7 +2461,23 @@ def _record_post_dispatch_status_transition(
             "INFO",
             f"Bounce count reset for story_id={frontmatter.story_id}.",
         )
-    return status
+
+
+def _accepted_approval(config: DispatchConfig) -> bool:
+    """Return whether the handoff the dispatcher just accepted approves the story.
+
+    Called only after validation, the work-claim gate, and recovery checks let
+    the handoff stand, so a rejected ``verified_pass`` keeps the audit base.
+    """
+
+    handoff_content = _read_required_text(config.handoff_full_path)
+    if handoff_content is None:
+        return False
+    frontmatter = _parse_frontmatter_or_none(handoff_content)
+    return (
+        frontmatter is not None
+        and _handoff_status(frontmatter.status) == HandoffStatus.VERIFIED_PASS
+    )
 
 
 def _bounce_state_path(config: DispatchConfig) -> Path:

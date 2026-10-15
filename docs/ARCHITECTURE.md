@@ -337,10 +337,11 @@ that route into a read-only fan-out:
    Retries after a `verified_fail` bounce keep that base, so the range covers
    commits from every attempt; it restarts when the story changes (its
    `story_id`, or its `## Work Packet` when there is no `story_id`) or the
-   story reaches `verified_pass`. The base lives in memory, so after a
-   dispatcher restart the next implementer dispatch records a new one. Without
-   a recorded base it falls back to `scope_sha~1`. Reviewers are never asked
-   to scan the whole repository.
+   dispatcher accepts a `verified_pass` handoff. An approval that fails
+   validation or triggers recovery keeps the base. The base lives in memory,
+   so after a dispatcher restart the next implementer dispatch records a new
+   one. Without a recorded base it falls back to `scope_sha~1`. Reviewers are
+   never asked to scan the whole repository.
 2. The quality reviewer (the configured `auditor` agent) and a security
    reviewer run concurrently in two threads through the existing streaming
    process runner.

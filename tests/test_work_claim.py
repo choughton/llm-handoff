@@ -2764,6 +2764,7 @@ def _audit_range_harness(
     *,
     backend_work,
     planner_handoff: str | None = None,
+    audit_warnings: list[list[str]] | None = None,
 ) -> tuple[DispatchConfig, list[str], list[str | None]]:
     """Run real-git cycles with the fan-out replaced by a base-SHA recorder."""
 
@@ -2799,8 +2800,11 @@ def _audit_range_harness(
     def validate(path: Path, previous_agent: str, **kwargs: object) -> ValidationResult:
         if previous_agent == "backend":
             return real_validate(path, previous_agent, **kwargs)
+        warnings: list[str] = []
+        if previous_agent.startswith("auditor") and audit_warnings:
+            warnings = audit_warnings.pop(0)
         return ValidationResult(
-            verdict="YES", warnings=[], errors=[], routing_instruction="planner"
+            verdict="YES", warnings=warnings, errors=[], routing_instruction="planner"
         )
 
     monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
@@ -2857,3 +2861,30 @@ def test_audit_range_restarts_after_the_story_is_approved(
 
     assert len(backend_heads) == 2
     assert audit_bases == backend_heads
+
+
+def test_audit_range_survives_a_rejected_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    base = _init_repo(tmp_path)
+
+    def backend_work(attempt: int) -> None:
+        _write(tmp_path / "src" / "app.py", f"VALUE = {attempt + 1}\n")
+
+    config, backend_heads, audit_bases = _audit_range_harness(
+        tmp_path,
+        monkeypatch,
+        backend_work=backend_work,
+        planner_handoff=_assignment(),
+        # The first verified_pass is a rationalized claim, so the dispatcher
+        # sends the story back through the planner instead of accepting it.
+        audit_warnings=[["RATIONALIZATION_DETECTED: claimed done without proof"]],
+    )
+
+    _load_orchestrator().run_loop(config, max_cycles=5, log=_collecting_log([]))
+
+    assert len(backend_heads) == 2
+    assert backend_heads[1] != base
+    assert audit_bases == [base, base]
