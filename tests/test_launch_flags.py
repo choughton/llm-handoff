@@ -391,7 +391,11 @@ def test_startup_banner_shows_launch_posture_and_warns_on_unsafe_bypass(
     )
 
     info = [message for level, message in logs if level == "INFO"]
-    warnings = [message for level, message in logs if level == "WARN"]
+    warnings = [
+        message
+        for level, message in logs
+        if level == "WARN" and not message.startswith("Verification allowlist:")
+    ]
     assert any(
         m.startswith("Launch planner:") and "--yolo --sandbox" in m for m in info
     )
@@ -412,7 +416,11 @@ def test_startup_banner_has_no_unsafe_warning_by_default(tmp_path: Path) -> None
         lambda level, message: logs.append((level, message)),
     )
 
-    assert [m for level, m in logs if level == "WARN"] == []
+    assert [
+        m
+        for level, m in logs
+        if level == "WARN" and not m.startswith("Verification allowlist:")
+    ] == []
 
 
 def test_config_file_reads_unsafe_bypass_and_allowed_tools(tmp_path: Path) -> None:

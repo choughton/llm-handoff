@@ -42,6 +42,13 @@ work_packet_verification_timeout_seconds: 600
 # environment. List any extra variable names they need. Vendor API keys are
 # rejected.
 # work_claim_env_passthrough: [HTTPS_PROXY, SSL_CERT_FILE]
+# Optional Verification command allowlist (recommended). When set, the gate
+# runs a Work Packet Verification command only if its leading words match one
+# of these prefixes and it has no shell control character (& | ; < > $ ` ( )
+# or a line break); otherwise the claim fails verification_not_allowed and
+# routes to planner. Empty runs any command, with a warning at every start and
+# in `llm-handoff doctor`.
+# verification_allowed_prefixes: ["python -m pytest"]
 
 # Operator-configured scanners that the work-claim gate runs after the scope
 # checks pass and before the Work Packet verification command. They only run

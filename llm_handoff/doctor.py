@@ -439,7 +439,11 @@ def _check_work_claim_gate(
     dispatch_config: DispatchConfig,
     checks: list[DoctorCheck],
 ) -> None:
-    """Report whether the work-claim gate is on, and the opt-out reason if not."""
+    """Report whether the work-claim gate is on, and the opt-out reason if not.
+
+    With the gate on, also report the Verification command allowlist: WARN
+    when ``verification_allowed_prefixes`` is empty, PASS when it is set.
+    """
     if not dispatch_config.enforce_work_packet:
         checks.append(
             DoctorCheck(
@@ -457,6 +461,26 @@ def _check_work_claim_gate(
             "the work-claim gate is on (enforce_work_packet: true)",
         )
     )
+    prefixes = dispatch_config.verification_allowed_prefixes
+    if prefixes:
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                "verification allowlist",
+                "Work Packet Verification commands must start with one of: "
+                + ", ".join(prefixes),
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                "verification allowlist",
+                "verification_allowed_prefixes is empty, so the work-claim gate "
+                "runs any Work Packet Verification command; list the command "
+                "prefixes you expect (for example `python -m pytest`)",
+            )
+        )
 
 
 def _describe_missing(names: list[str]) -> str:

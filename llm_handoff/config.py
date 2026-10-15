@@ -72,6 +72,13 @@ AUDIT_REVIEW_TIMEOUT_MS = 900_000
 POLL_INTERVAL_SECONDS = 30
 MAX_CONSECUTIVE_FAILURES = 3
 WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS = 600
+# Shell control characters a Verification command (and every
+# `verification_allowed_prefixes` entry) must not contain once the allowlist
+# is set. A prefix match alone would otherwise allow chaining, piping,
+# redirection, substitution, or a second line after an allowed prefix.
+VERIFICATION_FORBIDDEN_CHARS: frozenset[str] = frozenset(
+    {"&", "|", ";", "<", ">", "$", "`", "(", ")", "\r", "\n"}
+)
 SCANNER_TIMEOUT_MS = 300_000
 SCANNER_PLACEHOLDERS = frozenset(
     {"diff_range", "changed_files", "changed_py_files", "repo_root"}
@@ -618,6 +625,9 @@ class DispatchConfig(BaseModel):
     # Extra environment variable names the Verification command and scanners
     # receive on top of the allowlisted base and platform variables.
     work_claim_env_passthrough: tuple[str, ...] = ()
+    # Command prefixes a Work Packet Verification command must start with.
+    # Empty means any command runs (with a startup and doctor WARN).
+    verification_allowed_prefixes: tuple[str, ...] = ()
     scanners: tuple[ScannerConfig, ...] = ()
     protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
     commit_mode: CommitMode = "agent"
@@ -766,6 +776,30 @@ class DispatchConfig(BaseModel):
                     "vendor API keys."
                 )
             normalized.append(name)
+        return tuple(normalized)
+
+    @field_validator("verification_allowed_prefixes", mode="after")
+    @classmethod
+    def _validate_verification_allowed_prefixes(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for entry in value:
+            prefix = entry.strip()
+            if not prefix:
+                raise ValueError(
+                    "verification_allowed_prefixes entries must be non-empty "
+                    f"command prefixes; got {entry!r}."
+                )
+            for char in prefix:
+                if char in VERIFICATION_FORBIDDEN_CHARS:
+                    raise ValueError(
+                        f"verification_allowed_prefixes entry {entry!r} contains "
+                        f"the shell control character {char!r}; prefixes must "
+                        "not contain any of & | ; < > $ ` ( ) or a line break."
+                    )
+            normalized.append(prefix)
         return tuple(normalized)
 
     @field_validator("scanners", mode="after")

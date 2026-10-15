@@ -17,6 +17,9 @@ planner's ``## Work Packet`` before it spends an auditor session:
   (``uncommitted_changes``);
 - configured scanners must exit 0 (``scanner_failed:<name>``,
   ``scanner_missing:<name>``, ``scanner_timeout:<name>``);
+- when ``verification_allowed_prefixes`` is set, every ``Verification
+  command`` must start with an allowed prefix and contain no shell control
+  character (``verification_not_allowed``);
 - the ``Verification command`` must exit 0 (``verification_failed``).
 
 Each failed check is a distinct error prefix so the orchestrator and recovery
@@ -52,6 +55,7 @@ from llm_handoff.agent_process import (
 )
 from llm_handoff.config import (
     VENDOR_API_KEY_ENV_NAMES,
+    VERIFICATION_FORBIDDEN_CHARS,
     ScannerConfig,
     scanner_command_placeholders,
 )
@@ -75,6 +79,7 @@ SCANNER_TIMEOUT_PREFIX = "scanner_timeout"
 SCANNER_CONFIG_INVALID_PREFIX = "scanner_config_invalid"
 NO_CHANGES_PREFIX = "no_changes"
 EVIDENCE_SHA_MISMATCH_PREFIX = "evidence_sha_mismatch"
+VERIFICATION_NOT_ALLOWED_PREFIX = "verification_not_allowed"
 
 WORK_PACKET_ERROR_PREFIXES = frozenset(
     {WORK_PACKET_MISSING_PREFIX, WORK_PACKET_UNPARSEABLE_PREFIX}
@@ -95,6 +100,7 @@ WORK_CLAIM_ERROR_PREFIXES = frozenset(
         SCANNER_CONFIG_INVALID_PREFIX,
         NO_CHANGES_PREFIX,
         EVIDENCE_SHA_MISMATCH_PREFIX,
+        VERIFICATION_NOT_ALLOWED_PREFIX,
     }
 )
 # POSIX sh and cmd.exe exit codes for "command not found".
@@ -300,6 +306,9 @@ class WorkClaimResult:
     # commit since then changed a file other than the handoff, and no other
     # check failed.
     repeated_verification_failure: bool = False
+    # The first Verification command that ``verification_allowed_prefixes``
+    # rejected; set only when the check failed ``verification_not_allowed``.
+    rejected_verification_command: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -1240,6 +1249,8 @@ def verify_work_claim(
     dispatcher_commit_mode: bool = False,
     story_base_sha: str | None = None,
     env_passthrough: tuple[str, ...] = (),
+    verification_allowed_prefixes: tuple[str, ...] = (),
+    log: Callable[[str, str], None] | None = None,
 ) -> WorkClaimResult:
     """Check an implementer's ``ready_for_review`` claim against the packet.
 
@@ -1257,6 +1268,11 @@ def verify_work_claim(
     ``env_passthrough`` names extra environment variables that the scanners
     and the verification command receive on top of the allowlisted gate
     environment (see :func:`build_work_claim_env`).
+    ``verification_allowed_prefixes``, when non-empty, restricts which
+    Verification commands run (see :func:`verification_command_allowed`); a
+    rejected command fails ``verification_not_allowed`` and nothing runs.
+    ``log``, when given, receives ``(level, message)`` with the exact command
+    text before each scanner and Verification command run.
     """
 
     handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
@@ -1429,10 +1445,16 @@ def verify_work_claim(
             else None
         )
         for scanner in scanners:
+            scanner_kwargs: dict[str, object] = {}
+            if log is not None:
+                scanner_kwargs["runner"] = _logging_scanner_runner(
+                    scanner.name, log
+                )
             scanner_run, scanner_error = run_scanner(
                 scanner,
                 context,
                 env_passthrough=env_passthrough,
+                **scanner_kwargs,
             )
             scanner_runs.append(scanner_run)
             checks.append(
@@ -1447,6 +1469,7 @@ def verify_work_claim(
 
     verification_runs: list[CommandRun] = []
     repeated_verification_failure = False
+    rejected_verification_command: str | None = None
     if packet is None:
         checks.append(
             WorkClaimCheck(
@@ -1462,15 +1485,33 @@ def verify_work_claim(
             timeout_seconds=verification_timeout_seconds,
             runs=verification_runs,
             env_passthrough=env_passthrough,
+            verification_allowed_prefixes=verification_allowed_prefixes,
+            log=log,
         )
         checks.append(verification_check)
-        if verification_error is not None:
+        if verification_error is not None and verification_error.startswith(
+            f"{VERIFICATION_NOT_ALLOWED_PREFIX}: "
+        ):
+            rejected_verification_command = next(
+                (
+                    command
+                    for command in packet.verification_commands
+                    if verification_command_allowed(
+                        command, verification_allowed_prefixes
+                    )
+                    is not None
+                ),
+                None,
+            )
+            errors.append(verification_error)
+        elif verification_error is not None:
             # The bounce carries the packet forward unchanged, so an
             # implementer that commits nothing cannot change the outcome. Any
             # other failure, such as uncommitted work, is still the
             # implementer's to fix, so the claim stays with the implementer.
             repeated_verification_failure = (
                 not errors
+                and bool(verification_runs)
                 and not any(path != handoff_rel_path for path in changed_files)
                 and _previous_bounce_failed_command(
                     assignment_content, verification_runs[-1].command
@@ -1491,6 +1532,58 @@ def verify_work_claim(
         scanner_runs=tuple(scanner_runs),
         dispatcher_commit_mode=dispatcher_commit_mode,
         repeated_verification_failure=repeated_verification_failure,
+        rejected_verification_command=rejected_verification_command,
+    )
+
+
+def _logging_scanner_runner(
+    name: str,
+    log: Callable[[str, str], None],
+) -> Callable[..., CommandRun]:
+    """Wrap :func:`run_shell_command` so the rendered scanner command is logged
+    immediately before it runs."""
+
+    def runner(command: str, **kwargs: object) -> CommandRun:
+        log("INFO", f"work-claim: running scanner {name}: {command}")
+        return run_shell_command(command, **kwargs)  # type: ignore[arg-type]
+
+    return runner
+
+
+def _single_line(text: str) -> str:
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
+def verification_command_allowed(
+    command: str,
+    allowed_prefixes: Sequence[str],
+) -> str | None:
+    """Return ``None`` when ``command`` may run, or a one-line reason why not.
+
+    An empty ``allowed_prefixes`` allows every command. Otherwise the command
+    must contain no character in ``VERIFICATION_FORBIDDEN_CHARS`` and its
+    whitespace-split tokens must begin with the whitespace-split tokens of at
+    least one prefix, compared case-sensitively.
+    """
+
+    if not allowed_prefixes:
+        return None
+    shown = _single_line(command)
+    for char in command:
+        if char in VERIFICATION_FORBIDDEN_CHARS:
+            return (
+                f"Verification command `{shown}` contains the shell control "
+                f"character {char!r}."
+            )
+    tokens = command.split()
+    for prefix in allowed_prefixes:
+        prefix_tokens = prefix.split()
+        if prefix_tokens and tokens[: len(prefix_tokens)] == prefix_tokens:
+            return None
+    listed = ", ".join(f"`{_single_line(prefix)}`" for prefix in allowed_prefixes)
+    return (
+        f"Verification command `{shown}` does not start with any "
+        f"verification_allowed_prefixes entry ({listed})."
     )
 
 
@@ -1768,8 +1861,26 @@ def _verification_check(
     timeout_seconds: int,
     runs: list[CommandRun],
     env_passthrough: tuple[str, ...] = (),
+    verification_allowed_prefixes: tuple[str, ...] = (),
+    log: Callable[[str, str], None] | None = None,
 ) -> tuple[WorkClaimCheck, str | None]:
+    # Check every command before running any, so a rejected command later in
+    # the list does not let an earlier one run first.
     for command in packet.verification_commands:
+        reason = verification_command_allowed(command, verification_allowed_prefixes)
+        if reason is not None:
+            detail = (
+                f"{reason} No Verification command ran; the Work Packet must use "
+                "a command that starts with a verification_allowed_prefixes "
+                "entry and contains no shell control character."
+            )
+            return (
+                WorkClaimCheck("verification", "FAIL", detail),
+                f"{VERIFICATION_NOT_ALLOWED_PREFIX}: {detail}",
+            )
+    for command in packet.verification_commands:
+        if log is not None:
+            log("INFO", f"work-claim: running verification command: {command}")
         run = run_shell_command(
             command,
             cwd=repo_root,
@@ -1801,7 +1912,9 @@ def bounce_route_for(result: WorkClaimResult, *, implementer: str) -> BounceRout
     Verification command that failed again, as the only failed check, on a
     claim that committed nothing since the previous bounce: the implementer
     cannot change the packet the gate reads, so another implementer dispatch
-    would fail the same way.
+    would fail the same way. A Verification command that
+    ``verification_allowed_prefixes`` rejected (``verification_not_allowed``)
+    is also the planner's to replace.
     Unreadable Git state and an unrenderable scanner command are operator
     problems and escalate to ``user``.
     """
@@ -1811,7 +1924,11 @@ def bounce_route_for(result: WorkClaimResult, *, implementer: str) -> BounceRout
         prefix.split(":", 1)[0] == SCANNER_CONFIG_INVALID_PREFIX for prefix in prefixes
     ):
         return BounceRoute(next_agent="user", status="escalate_to_user")
-    if prefixes & WORK_PACKET_ERROR_PREFIXES or result.repeated_verification_failure:
+    if (
+        prefixes & WORK_PACKET_ERROR_PREFIXES
+        or VERIFICATION_NOT_ALLOWED_PREFIX in prefixes
+        or result.repeated_verification_failure
+    ):
         return BounceRoute(next_agent="planner", status="verified_fail")
     return BounceRoute(next_agent=implementer, status="verified_fail")
 
@@ -1901,6 +2018,21 @@ def _dispatcher_verification_section(
             f"The dispatcher checked the `ready_for_review` claim from "
             f"`{implementer}` before dispatching the auditor and rejected it. "
             + remedy
+        )
+    elif (
+        route.next_agent == "planner"
+        and VERIFICATION_NOT_ALLOWED_PREFIX in result.failed_prefixes
+    ):
+        rejected = _single_line(result.rejected_verification_command or "unknown")
+        lines.append(
+            f"The dispatcher rejected the Verification command `{rejected}` "
+            f"from the assignment's `## Work Packet` while checking the "
+            f"`ready_for_review` claim from `{implementer}`: it did not match "
+            "`verification_allowed_prefixes` or it contained a shell control "
+            "character, so no Verification command ran. Re-issue the Work "
+            "Packet with a Verification command that starts with an allowed "
+            "prefix and contains no shell control character. The "
+            "implementer's work has not been audited."
         )
     elif route.next_agent == "planner" and result.repeated_verification_failure:
         failed_command = result.verification_runs[-1].command
@@ -2080,6 +2212,7 @@ def _short(sha: str | None) -> str:
 __all__ = [
     "WORK_CLAIM_ERROR_PREFIXES",
     "WORK_PACKET_ERROR_PREFIXES",
+    "VERIFICATION_NOT_ALLOWED_PREFIX",
     "BounceRoute",
     "CommandRun",
     "ImplementerLeftovers",
@@ -2114,6 +2247,7 @@ __all__ = [
     "run_shell_command",
     "run_verification_command",
     "shell_quote",
+    "verification_command_allowed",
     "verify_work_claim",
     "work_packet_errors",
 ]
