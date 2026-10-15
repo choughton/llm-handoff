@@ -555,3 +555,21 @@ def test_other_tool_failures_still_log_errors() -> None:
     assert any(
         level == "ERROR" and "failed: Exit code 1" in message for level, message in logs
     )
+
+
+def test_claude_shell_guidance_lists_exact_bash_rules() -> None:
+    guidance = claude.claude_shell_guidance(("Bash(npm run build)", "Bash(git log:*)"))
+
+    assert guidance is not None
+    assert "by prefix: `git log`" in guidance
+    assert "as exact commands: `npm run build`" in guidance
+    assert claude.claude_shell_guidance(("Bash(make test)",)) is not None
+
+
+def test_claude_shell_guidance_only_recommends_available_file_tools() -> None:
+    guidance = claude.claude_shell_guidance(("Grep", "Bash(git log:*)"))
+
+    assert guidance is not None
+    assert "Use the Grep tool instead of" in guidance
+    for missing in ("Read", "Glob", "Write", "Edit"):
+        assert f"{missing} " not in guidance and f"{missing}," not in guidance

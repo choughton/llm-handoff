@@ -18,7 +18,9 @@ from llm_handoff.agent_types import LogFn, SubagentResult, _ProcessResult
 from llm_handoff.usage_log import format_usage_line, usage_fields_from_claude_result
 
 
-_BASH_RULE_RE = re.compile(r"Bash\((.+?)(?::\*| \*)\)")
+# `Bash(git diff:*)` and `Bash(git log *)` approve a prefix; `Bash(npm test)`
+# approves that exact command.
+_BASH_RULE_RE = re.compile(r"Bash\((.+?)(:\*| \*)?\)")
 # Claude Code's tool_result text when dontAsk mode refuses a tool call.
 _PERMISSION_REFUSAL_MARKERS = ("Permission to use", "has been denied")
 
@@ -353,24 +355,52 @@ def claude_shell_guidance(allowed_tools: tuple[str, ...]) -> str | None:
     """
 
     prefixes: list[str] = []
+    exact: list[str] = []
     for rule in allowed_tools:
         match = _BASH_RULE_RE.fullmatch(rule.strip())
-        if match and match.group(1) not in prefixes:
-            prefixes.append(match.group(1))
-    if not prefixes:
+        if match is None:
+            continue
+        command, wildcard = match.group(1).strip(), match.group(2)
+        bucket = prefixes if wildcard else exact
+        if command and command not in bucket:
+            bucket.append(command)
+    if not prefixes and not exact:
         return None
-    allowed = ", ".join(f"`{prefix}`" for prefix in prefixes)
+    approved = []
+    if prefixes:
+        approved.append("by prefix: " + ", ".join(f"`{p}`" for p in prefixes))
+    if exact:
+        approved.append("as exact commands: " + ", ".join(f"`{c}`" for c in exact))
+    tools = {rule.split("(", 1)[0].strip() for rule in allowed_tools}
+    readers = [name for name in ("Read", "Glob", "Grep") if name in tools]
+    writers = [name for name in ("Write", "Edit") if name in tools]
+    file_tools = ""
+    if readers:
+        file_tools += (
+            f"Use the {_join_names(readers, 'and')} tool"
+            + ("s" if len(readers) > 1 else "")
+            + " instead of `cat`, `ls`, `find`, or `head`"
+        )
+        if writers:
+            file_tools += f", and {_join_names(writers, 'or')} to change files"
+        file_tools += ". "
+    elif writers:
+        file_tools = f"Use {_join_names(writers, 'or')} to change files. "
     return (
-        f"Shell commands in this session are pre-approved by prefix: {allowed}. "
+        f"Shell commands in this session are pre-approved {'; '.join(approved)}. "
         "Anything else is refused without a prompt. Run one command per Bash "
         "call, from the repository root. Do not join commands with `&&`, `;`, "
         "or `|`, and do not use redirections, loops, `cd`, environment-variable "
-        "prefixes, or `git -C <path>`. Use the Read, Glob, and Grep tools to "
-        "read, list, and search files instead of `cat`, `ls`, `find`, or "
-        "`head`, and Write or Edit to change files. If a command is refused, "
+        f"prefixes, or `git -C <path>`. {file_tools}If a command is refused, "
         "rewrite it as one allowed command; a refusal does not mean the shell "
         "is unavailable."
     )
+
+
+def _join_names(names: list[str], conjunction: str) -> str:
+    if len(names) <= 2:
+        return f" {conjunction} ".join(names)
+    return ", ".join(names[:-1]) + f", {conjunction} {names[-1]}"
 
 
 def is_permission_refusal(tool_result_text: str) -> bool:
