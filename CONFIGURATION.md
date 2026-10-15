@@ -495,6 +495,22 @@ SHAs with it. Setting `allowed_tools` on a role replaces the whole list. The
 list is a guardrail, not a sandbox: `Bash(python:*)` still lets the agent run
 arbitrary Python. `git push` is not on the list.
 
+`llm-handoff init` reads the target repository's CI workflows,
+`package.json`, `pyproject.toml`, `Makefile`, `Cargo.toml`, and `go.mod`,
+and prints the build and test commands it finds, each with the file it came
+from. It runs none of them and writes nothing about them. To confirm one, pass
+`init --verification-command "<cmd>"`. The first word of the command is its
+executable. It must be a bare program name matching
+`^[A-Za-z0-9][A-Za-z0-9._+-]*$`: no path separators, quotes, or shell
+operators, so `./run-tests.sh` and `a;b` are rejected and `init` writes no
+files. `init` then gives every `provider: claude` role in the written
+`dispatch_config.yaml` an `allowed_tools` list: the default list above plus
+`Bash(<executable>:*)`, unless the default list already has that rule (for
+example `python` or `pytest`). The rule allows every subcommand of that
+executable, not only the confirmed command: `Bash(npm:*)` also allows
+`npm install` and `npm publish`. Without `--verification-command`, `init`
+writes the same config as before.
+
 Codex keeps its `workspace-write` sandbox: writes are limited to the
 workspace and network access is off by default. The sandbox always keeps
 `.git` read-only, even when `.git` is listed under

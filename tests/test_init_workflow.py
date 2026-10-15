@@ -7,11 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from llm_handoff.config import load_dispatch_config
+from llm_handoff.config import CLAUDE_DEFAULT_ALLOWED_TOOLS, load_dispatch_config
 from llm_handoff.init_workflow import (
     CLAUDE_MAPPING,
     REFERENCE_MAPPING,
     InitConflictError,
+    InvalidVerificationCommandError,
     UnknownProviderError,
     UnknownTemplateError,
     init_reference_workflow,
@@ -455,6 +456,143 @@ def test_init_reports_a_mapping_change_as_a_config_conflict(tmp_path: Path) -> N
 def test_init_rejects_an_unknown_provider_mapping(tmp_path: Path) -> None:
     with pytest.raises(UnknownProviderError):
         init_reference_workflow(tmp_path, provider="openai", available_providers=())
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+def _loaded_allowed_tools(root: Path) -> dict[str, tuple[str, ...] | None]:
+    config = load_dispatch_config(
+        repo_root=root,
+        config_path=root / "dispatch_config.yaml",
+    )
+    return {name: agent.allowed_tools for name, agent in config.agents.items()}
+
+
+def test_verification_command_adds_allowed_tools_to_reference_claude_roles(
+    tmp_path: Path,
+) -> None:
+    result = init_reference_workflow(
+        tmp_path, available_providers=(), verification_command="npm test"
+    )
+
+    assert result.provider_mapping == REFERENCE_MAPPING
+    assert result.verification_command == "npm test"
+    expected = (*CLAUDE_DEFAULT_ALLOWED_TOOLS, "Bash(npm:*)")
+    tools = _loaded_allowed_tools(tmp_path)
+    for name in ("auditor", "validator", "finalizer"):
+        assert tools[name] == expected
+    for name in ("planner", "backend", "frontend"):
+        assert tools[name] is None
+
+
+def test_verification_command_only_inserts_allowed_tools(tmp_path: Path) -> None:
+    init_reference_workflow(
+        tmp_path, available_providers=(), verification_command="npm test"
+    )
+
+    template = (TEMPLATE_ROOT / "dispatch_config.yaml").read_bytes()
+    rendered = (tmp_path / "dispatch_config.yaml").read_bytes()
+    newline = b"\r\n" if b"\r\n" in template else b"\n"
+    block = newline.join(
+        [b"    allowed_tools:"]
+        + [f"      - {rule}".encode() for rule in CLAUDE_DEFAULT_ALLOWED_TOOLS]
+        + [b"      - Bash(npm:*)", b""]
+    )
+    assert rendered.count(block) == 3
+    assert rendered.replace(block, b"") == template
+
+
+def test_verification_command_with_claude_mapping_covers_all_roles(
+    tmp_path: Path,
+) -> None:
+    init_reference_workflow(
+        tmp_path,
+        provider="claude",
+        available_providers=(),
+        verification_command="npm test",
+    )
+
+    expected = (*CLAUDE_DEFAULT_ALLOWED_TOOLS, "Bash(npm:*)")
+    tools = _loaded_allowed_tools(tmp_path)
+    assert set(tools) == {
+        "planner", "backend", "frontend", "auditor", "validator", "finalizer"
+    }
+    assert all(value == expected for value in tools.values())
+
+
+def test_verification_command_does_not_duplicate_a_default_rule(
+    tmp_path: Path,
+) -> None:
+    init_reference_workflow(
+        tmp_path, available_providers=(), verification_command="python -m pytest"
+    )
+
+    tools = _loaded_allowed_tools(tmp_path)
+    assert tools["auditor"] == CLAUDE_DEFAULT_ALLOWED_TOOLS
+    assert tools["auditor"].count("Bash(python:*)") == 1
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["", "./run-tests.sh", "C:\\tools\\x.exe", "a;b", "'unterminated"],
+)
+def test_invalid_verification_command_writes_nothing(
+    tmp_path: Path, command: str
+) -> None:
+    with pytest.raises(InvalidVerificationCommandError):
+        init_reference_workflow(
+            tmp_path, available_providers=(), verification_command=command
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalid_verification_command_names_the_token(tmp_path: Path) -> None:
+    with pytest.raises(InvalidVerificationCommandError) as error:
+        init_reference_workflow(
+            tmp_path, available_providers=(), verification_command="./run-tests.sh -q"
+        )
+    assert "'./run-tests.sh'" in str(error.value)
+
+
+def test_verification_command_rerun_is_skipped_identical(tmp_path: Path) -> None:
+    init_reference_workflow(
+        tmp_path, available_providers=(), verification_command="npm test"
+    )
+    second = init_reference_workflow(
+        tmp_path, available_providers=(), verification_command="npm test"
+    )
+
+    assert Path("dispatch_config.yaml") in second.skipped
+    assert second.copied == second.conflicts == ()
+
+
+def test_verification_command_change_is_a_conflict_unless_forced(
+    tmp_path: Path,
+) -> None:
+    init_reference_workflow(tmp_path, available_providers=())
+
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(
+            tmp_path, available_providers=(), verification_command="npm test"
+        )
+    assert error.value.conflicts == (Path("dispatch_config.yaml"),)
+
+    result = init_reference_workflow(
+        tmp_path, available_providers=(), verification_command="npm test", force=True
+    )
+    assert Path("dispatch_config.yaml") in result.copied
+    assert _loaded_allowed_tools(tmp_path)["auditor"][-1] == "Bash(npm:*)"
+
+
+def test_candidates_are_reported_on_dry_run(tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/demo\n", encoding="utf-8")
+
+    result = init_reference_workflow(tmp_path, dry_run=True, available_providers=())
+
+    assert [(c.command, c.source) for c in result.candidates] == [
+        ("go build ./...", "go.mod"),
+        ("go test ./...", "go.mod"),
+    ]
+    assert result.verification_command is None
     assert not (tmp_path / "AGENTS.md").exists()
 
 

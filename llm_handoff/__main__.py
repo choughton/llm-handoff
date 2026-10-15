@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 from typing import Sequence
+import unicodedata
 
 import click
 import typer
@@ -24,11 +25,14 @@ from llm_handoff.doctor import run_doctor
 from llm_handoff.init_workflow import (
     REFERENCE_MAPPING,
     InitConflictError,
+    InvalidVerificationCommandError,
     UnknownProviderError,
     UnknownTemplateError,
     init_reference_workflow,
+    verification_executable,
 )
 from llm_handoff.logging_util import DispatchLogger
+from llm_handoff.stack_detect import Candidate
 from llm_handoff.orchestrator import run_loop
 
 _WINDOWS = os.name == "nt"
@@ -219,6 +223,14 @@ def init_command(
             "PATH, otherwise the reference mapping."
         ),
     ),
+    verification_command: str | None = typer.Option(
+        None,
+        "--verification-command",
+        help=(
+            "Confirmed verification command; its executable is added to "
+            "Claude roles' allowed_tools."
+        ),
+    ),
 ) -> None:
     _configure_stdio_encoding()
     try:
@@ -228,9 +240,14 @@ def init_command(
             dry_run=dry_run,
             force=force,
             provider=provider,
+            verification_command=verification_command,
         )
-    except (UnknownTemplateError, UnknownProviderError) as exc:
-        typer.echo(str(exc), err=True)
+    except (
+        UnknownTemplateError,
+        UnknownProviderError,
+        InvalidVerificationCommandError,
+    ) as exc:
+        typer.echo(_terminal_safe(str(exc)), err=True)
         raise typer.Exit(2) from exc
     except InitConflictError as exc:
         typer.echo("Initialization aborted: target files already exist.", err=True)
@@ -260,6 +277,50 @@ def init_command(
             typer.echo(
                 "Review conflicts; --force only overwrites non-managed files."
             )
+    _echo_candidates(result.candidates, result.verification_command)
+
+
+_UNSAFE_TERMINAL_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def _terminal_safe(text: str) -> str:
+    """Escape control, format, surrogate, and line/paragraph separators.
+
+    Detected candidates come from files in the target repository, which may be
+    untrusted. ANSI/OSC sequences or bidi overrides could spoof the output, and
+    a lone surrogate raises UnicodeEncodeError on a strict UTF-8 stream.
+    """
+    return "".join(
+        ch.encode("unicode_escape").decode("ascii")
+        if unicodedata.category(ch) in _UNSAFE_TERMINAL_CATEGORIES
+        else ch
+        for ch in text
+    )
+
+
+def _echo_candidates(
+    candidates: tuple[Candidate, ...], verification_command: str | None
+) -> None:
+    if candidates:
+        typer.echo(f"Candidate commands: {len(candidates)}")
+        for candidate in candidates:
+            command = _terminal_safe(candidate.command)
+            source = _terminal_safe(candidate.source)
+            typer.echo(f"  - {command}  (from {source})")
+    else:
+        typer.echo("Candidate commands: none found")
+    if verification_command is not None:
+        executable = verification_executable(verification_command)
+        typer.echo(
+            f"Verification command: {_terminal_safe(verification_command)}; "
+            f"allowed_tools adds Bash({_terminal_safe(executable)}:*) "
+            "for claude roles"
+        )
+    elif candidates:
+        typer.echo(
+            "No verification command selected; rerun with "
+            '--verification-command "<cmd>" to allow its executable.'
+        )
 
 
 @app.command("doctor")
