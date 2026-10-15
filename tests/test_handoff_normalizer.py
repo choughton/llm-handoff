@@ -430,7 +430,7 @@ def test_codex_process_timeout_bounds_a_real_hung_child() -> None:
     assert time.monotonic() - started < 30
 
 
-_FREEFORM_HANDOFF ="""---
+_FREEFORM_HANDOFF = """---
 next_agent: the implementer please
 reason: "Work assigned."
 producer: planner
