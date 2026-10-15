@@ -63,6 +63,7 @@ from llm_handoff.publish import (
     publish_story,
     save_gate_section,
     save_review_responses,
+    saved_story_base,
 )
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
@@ -649,7 +650,18 @@ def run_loop(
                     or gate_story_base is None
                     or gate_story_base[0] != story_key
                 ):
-                    gate_story_base = (story_key, pre_dispatch_state.head_sha)
+                    story_base = pre_dispatch_state.head_sha
+                    if config.publish.mode != "local":
+                        # After a restart mid-story, HEAD may already hold the
+                        # story's earlier commits; the saved story branch base
+                        # outlives the run.
+                        story_base = (
+                            saved_story_base(
+                                config.repo_root, _handoff_story_id(handoff_content)
+                            )
+                            or story_base
+                        )
+                    gate_story_base = (story_key, story_base)
                 if gate_story_base is not None and gate_story_base[0] == story_key:
                     story_base_sha = gate_story_base[1]
                 if pre_dispatch_state.carried_over:

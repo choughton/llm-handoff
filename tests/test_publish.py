@@ -19,6 +19,7 @@ from llm_handoff.publish import (
     publish_story,
     save_gate_section,
     save_review_responses,
+    saved_story_base,
     story_branch_name,
 )
 from llm_handoff.router import route
@@ -297,6 +298,18 @@ def test_ensure_story_branch_refuses_to_start_from_another_story(
     )
 
     assert error is not None and "llm-handoff/other-story" in error
+
+
+def test_saved_story_base_needs_the_same_story_on_its_branch(tmp_path: Path) -> None:
+    _init(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _start_story(tmp_path)
+
+    assert saved_story_base(tmp_path, "W9.9") == base
+    assert saved_story_base(tmp_path, "W1.1") is None
+    assert saved_story_base(tmp_path, None) is None
+    _git(tmp_path, "switch", "-q", "main")
+    assert saved_story_base(tmp_path, "W9.9") is None
 
 
 def test_merge_commit_mode_merges_with_a_story_report(tmp_path: Path) -> None:

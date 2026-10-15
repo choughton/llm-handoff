@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The work-claim gate's story base now survives a dispatcher restart in the
+  `merge-commit` and `pr` publish modes. The base was kept only in memory, so
+  after a restart mid-story it became the current HEAD. A re-claim with nothing
+  new to commit, for example after a review correction round, then failed
+  `no_changes` and post-dispatch validation failed
+  `frontmatter_scope_sha_missing`. The gate now takes the base from the saved
+  story state (`logs/dispatch/publish/story.json`) when it names the same
+  `story_id` and its branch is checked out. `local` mode and a story state for
+  another story still use HEAD.
+
 - Fixed a work-claim loop that prose in a Work Packet caused. A
   `Verification command` line that is only a connective (`and`, `or`, `then`,
   `plus`, `also`) or that ends in `:` is now `work_packet_unparseable`, so the

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -2924,6 +2925,84 @@ def test_run_loop_puts_implementer_work_on_a_story_branch(
     assert _git(tmp_path, "log", "-1", "--format=%s").startswith(STORY_ID)
     assert (tmp_path / "logs" / "dispatch" / "publish" / "gate.md").is_file()
     assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+
+
+def _restart_mid_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    saved_story_id: str | None = None,
+) -> tuple[DispatchConfig, str, str, list[tuple[str, str]]]:
+    """Commit the story's work in one run, then re-claim it in a fresh run."""
+
+    base = _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path, commit_mode="dispatcher", publish={"mode": "pr"}
+    )
+    dispatches: list[int] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append(1)
+        if len(dispatches) == 1:
+            _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+    story_head = _git(tmp_path, "rev-parse", "HEAD")
+    assert story_head != base
+
+    # A review correction routes the story back to the implementer, whose
+    # work is already committed. The dispatcher restarts before it runs.
+    config.handoff_full_path.write_text(_assignment(), encoding="utf-8")
+    if saved_story_id is not None:
+        state_path = tmp_path / "logs" / "dispatch" / "publish" / "story.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["story_id"] = saved_story_id
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    messages: list[tuple[str, str]] = []
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+    assert len(dispatches) == 2
+    return config, base, story_head, messages
+
+
+def test_run_loop_story_base_survives_a_restart_mid_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    config, _base, story_head, messages = _restart_mid_story(tmp_path, monkeypatch)
+
+    assert _git(tmp_path, "rev-parse", "HEAD") == story_head
+    assert any(
+        "nothing new to commit; recorded the story's earlier commit" in message
+        for _level, message in messages
+    )
+    assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+    frontmatter = parse_handoff_frontmatter_text(
+        config.handoff_full_path.read_text(encoding="utf-8")
+    )
+    assert frontmatter is not None
+    assert frontmatter.scope_sha == story_head
+
+
+def test_run_loop_ignores_a_saved_story_base_for_another_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _config, _base, _story_head, messages = _restart_mid_story(
+        tmp_path, monkeypatch, saved_story_id="EPIC-9-S9"
+    )
+
+    assert not any(
+        "recorded the story's earlier commit" in message
+        for _level, message in messages
+    )
+    assert ("AGENT", "Work-claim gate PASSED for backend.") not in messages
+    assert any("no_changes" in message for _level, message in messages)
 
 
 def test_run_loop_writes_the_review_bounce_from_publish(
