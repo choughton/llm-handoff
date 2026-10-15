@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `init` preserves user content through managed sections in AGENTS.md and
+  ignore files, merges Claude settings, and reports merge actions separately.
+  Added a .gitignore template for dispatcher logs and the lock file.
+
 - Isolated supervised child imports from the target working directory while preserving source-checkout launches.
 - Fixed Codex launches in target repositories by resolving the output schema from the installed package.
 - Seeded the `llm_handoff` extraction scaffold.

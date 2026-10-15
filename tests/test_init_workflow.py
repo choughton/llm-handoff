@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -16,9 +17,130 @@ from llm_handoff.init_workflow import (
     template_files,
 )
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = REPO_ROOT / "examples" / "reference-workflow"
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_managed_files_preserve_content_and_repeat(tmp_path: Path, force: bool) -> None:
+    originals = {
+        Path("AGENTS.md"): b"# Custom\r\nKeep these instructions.",
+        Path(".gitignore"): b"custom/\r\n",
+        Path(".geminiignore"): b"private/\n",
+    }
+    for path, content in originals.items():
+        (tmp_path / path).write_bytes(content)
+    settings = tmp_path / ".claude/settings.json"
+    settings.parent.mkdir()
+    custom = {
+        "permissions": {"deny": ["Custom", "WebFetch", "Custom"], "allow": ["Read"]},
+        "hooks": {"Stop": [{"custom": True}], "PreToolUse": []},
+        "custom": {"nested": [1, True, "keep"]},
+    }
+    settings.write_text(json.dumps(custom), encoding="utf-8")
+    result = init_reference_workflow(tmp_path, force=force)
+    assert set(result.merged) == {*originals, Path(".claude/settings.json")}
+    for path, content in originals.items():
+        assert (tmp_path / path).read_bytes().startswith(content)
+    merged = json.loads(settings.read_bytes())
+    template = json.loads((TEMPLATE_ROOT / ".claude/settings.json").read_bytes())
+    assert merged["permissions"]["deny"] == list(
+        dict.fromkeys(custom["permissions"]["deny"] + template["permissions"]["deny"])
+    )
+    assert merged["permissions"]["allow"] == ["Read"]
+    assert merged["custom"] == custom["custom"]
+    assert merged["hooks"]["Stop"] == custom["hooks"]["Stop"]
+    assert merged["hooks"]["PreToolUse"] == template["hooks"]["PreToolUse"]
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    second = init_reference_workflow(tmp_path)
+    assert second.copied == second.merged == second.conflicts == ()
+    assert all(p.read_bytes() == content for p, content in before.items())
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", ".gitignore", ".geminiignore"])
+def test_managed_block_replaced_in_place(tmp_path: Path, name: str) -> None:
+    begin, end = (
+        (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->")
+        if name == "AGENTS.md"
+        else (b"# llm-handoff:begin", b"# llm-handoff:end")
+    )
+    path = tmp_path / name
+    prefix, suffix = b"custom\r\n\r\n", b"\r\nuser suffix\r\n"
+    path.write_bytes(prefix + begin + b"\r\nstale\r\n" + end + suffix)
+    result = init_reference_workflow(tmp_path)
+    content = path.read_bytes()
+    assert Path(name) in result.merged
+    assert content.startswith(prefix + begin)
+    assert content.endswith(end + suffix)
+    assert b"\r\nstale\r\n" not in content
+    assert content.count(begin) == content.count(end) == 1
+    assert not init_reference_workflow(tmp_path).merged
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", ".gitignore", ".geminiignore"])
+@pytest.mark.parametrize(
+    "shape",
+    ["{b}", "{e}", "{e}\n{b}", "{b}\n{b}\n{e}", "{b}\n{e}\n{b}\n{e}", "text{b}\n{e}"],
+)
+@pytest.mark.parametrize("force", [False, True])
+def test_malformed_markers_conflict(
+    tmp_path: Path, name: str, shape: str, force: bool
+) -> None:
+    begin, end = (
+        ("<!-- llm-handoff:begin -->", "<!-- llm-handoff:end -->")
+        if name == "AGENTS.md"
+        else ("# llm-handoff:begin", "# llm-handoff:end")
+    )
+    path = tmp_path / name
+    original = shape.format(b=begin, e=end).encode()
+    path.write_bytes(original)
+    assert init_reference_workflow(tmp_path, dry_run=True, force=force).conflicts == (
+        Path(name),
+    )
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(tmp_path, force=force)
+    assert error.value.conflicts == (Path(name),)
+    assert path.read_bytes() == original
+    assert not (tmp_path / "dispatch_config.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"{",
+        b"[]",
+        b'{"permissions": null}',
+        b'{"permissions": {"deny": "bad"}}',
+        b'{"hooks": {"PreToolUse": [null]}}',
+        b'{"hooks": {"PreToolUse": [{"hooks": [null]}]}}',
+    ],
+)
+def test_invalid_settings_conflict(tmp_path: Path, content: bytes) -> None:
+    path = tmp_path / ".claude/settings.json"
+    path.parent.mkdir()
+    path.write_bytes(content)
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(tmp_path, force=True)
+    assert error.value.conflicts == (Path(".claude/settings.json"),)
+    assert path.read_bytes() == content
+
+
+def test_settings_hook_identity_uses_matcher_and_command(tmp_path: Path) -> None:
+    template = json.loads((TEMPLATE_ROOT / ".claude/settings.json").read_bytes())
+    entry = template["hooks"]["PreToolUse"][0]
+    entry["hooks"][0]["timeout"] = 99
+    path = tmp_path / ".claude/settings.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(template), encoding="utf-8")
+    init_reference_workflow(tmp_path)
+    assert json.loads(path.read_bytes()) == template
+
+
+def test_new_gitignore_matches_template(tmp_path: Path) -> None:
+    init_reference_workflow(tmp_path)
+    assert (tmp_path / ".gitignore").read_bytes() == (
+        TEMPLATE_ROOT / ".gitignore"
+    ).read_bytes()
 
 
 def test_init_reference_workflow_copies_template_files(tmp_path: Path) -> None:
@@ -72,26 +194,26 @@ def test_init_reference_workflow_skips_identical_files(tmp_path: Path) -> None:
 def test_init_reference_workflow_fails_on_existing_different_file(
     tmp_path: Path,
 ) -> None:
-    target_file = tmp_path / "AGENTS.md"
+    target_file = tmp_path / "PROJECT_STATE.md"
     target_file.write_text("custom repo instructions\n", encoding="utf-8")
 
     with pytest.raises(InitConflictError) as exc_info:
         init_reference_workflow(tmp_path)
 
-    assert Path("AGENTS.md") in exc_info.value.conflicts
+    assert Path("PROJECT_STATE.md") in exc_info.value.conflicts
     assert target_file.read_text(encoding="utf-8") == "custom repo instructions\n"
 
 
 def test_init_reference_workflow_force_overwrites_conflicts(tmp_path: Path) -> None:
-    target_file = tmp_path / "AGENTS.md"
+    target_file = tmp_path / "PROJECT_STATE.md"
     target_file.write_text("custom repo instructions\n", encoding="utf-8")
 
     result = init_reference_workflow(tmp_path, force=True)
 
-    assert Path("AGENTS.md") in result.copied
+    assert Path("PROJECT_STATE.md") in result.copied
     assert result.conflicts == ()
     assert target_file.read_text(encoding="utf-8") == (
-        TEMPLATE_ROOT / "AGENTS.md"
+        TEMPLATE_ROOT / "PROJECT_STATE.md"
     ).read_text(encoding="utf-8")
 
 

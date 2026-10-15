@@ -201,13 +201,13 @@ def init_command(
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Preview the files that would be copied without writing them.",
+        help="Preview copies and merges without writing files.",
     ),
     force: bool = typer.Option(
         False,
         "--force",
         "--overwrite",
-        help="Overwrite existing files that differ from the template.",
+        help="Overwrite non-managed files; preserve user content in managed files.",
     ),
     provider: str | None = typer.Option(
         None,
@@ -233,7 +233,7 @@ def init_command(
         raise typer.Exit(2) from exc
     except InitConflictError as exc:
         typer.echo("Initialization aborted: target files already exist.", err=True)
-        typer.echo("Use --force to overwrite them after reviewing the diff.", err=True)
+        typer.echo("Review conflicts; --force only overwrites non-managed files.", err=True)
         typer.echo(_format_path_list(exc.conflicts), err=True)
         raise typer.Exit(1) from exc
 
@@ -247,6 +247,9 @@ def init_command(
     )
     typer.echo(f"Provider mapping: {mapping_note}; provider CLIs found: {detected}")
     typer.echo(f"Copy: {len(result.copied)} file(s)")
+    typer.echo(f"Merge: {len(result.merged)} file(s)")
+    if result.merged:
+        typer.echo(_format_path_list(result.merged))
     if result.skipped:
         typer.echo(f"Skip identical: {len(result.skipped)} file(s)")
     if result.conflicts:
@@ -254,7 +257,7 @@ def init_command(
         typer.echo(_format_path_list(result.conflicts))
         if result.dry_run:
             typer.echo(
-                "Run without --dry-run to initialize, or use --force to overwrite."
+                "Review conflicts; --force only overwrites non-managed files."
             )
 
 
