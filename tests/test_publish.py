@@ -605,3 +605,33 @@ def test_wait_for_reviewers_config_accepts_codex(tmp_path: Path) -> None:
 
     assert config.publish.wait_for_reviewers == ("codex",)
     assert config.publish.codex_bot_login == BOT
+
+
+def test_pr_report_does_not_mention_github_accounts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _entries, log = _logs()
+
+    publish_story(
+        repo_root=repo,
+        mode="pr",
+        remote="origin",
+        auto_merge=False,
+        wait_for_checks=False,
+        handoff_content=VERIFIED.replace(
+            "The widget does what the packet asked.",
+            "Then the dispatcher comments `@codex review`; email a@b.c stays.",
+        ),
+        log=log,
+        gh_command=gh,
+    )
+
+    create = _gh_calls(tmp_path)[1]
+    body = Path(create[create.index("--body-file") + 1]).read_text(encoding="utf-8")
+    assert "@codex" not in body
+    assert "`@\u2060codex review`" in body
+    assert "a@b.c stays" in body

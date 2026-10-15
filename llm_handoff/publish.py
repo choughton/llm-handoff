@@ -51,6 +51,11 @@ MESSAGE_PATH = Path("logs") / "dispatch" / "publish" / "message.md"
 _GIT_TIMEOUT_SECONDS = 120
 _GH_TIMEOUT_SECONDS = 1800
 _REPORT_BODY_LIMIT = 60000
+# GitHub treats any `@name` in a pull request body as a mention, even inside
+# code spans, and `@codex` there starts a Codex cloud task instead of a code
+# review. A word joiner after `@` keeps the text readable without a mention.
+_MENTION_RE = re.compile(r"(?<![\w.])@(?=[A-Za-z0-9])")
+_WORD_JOINER = "\u2060"
 _USAGE_RE = re.compile(r"\] \[DEBUG\] (usage: .+)$")
 _USAGE_FIELD_RE = re.compile(r"(\w+)=(\S+)")
 _REPORT_SECTIONS = (
@@ -234,6 +239,8 @@ def publish_story(
     if mode != "pr":
         return PublishOutcome()
 
+    title = _without_mentions(title)
+    body = _without_mentions(body)
     message_path.write_text(body, encoding="utf-8")
     requested_at = utc_now()
     pushed = _git(repo_root, ["push", "-u", remote, state.branch])
@@ -597,6 +604,10 @@ def _usage_summary(state: StoryState) -> list[str]:
         "",
         *rows,
     ]
+
+
+def _without_mentions(text: str) -> str:
+    return _MENTION_RE.sub("@" + _WORD_JOINER, text)
 
 
 def _demote(markdown: str, *, levels: int = 1) -> str:

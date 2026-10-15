@@ -245,6 +245,11 @@ The outcomes:
   `gh` error: the loop stops and leaves the pull request open. It never
   merges without a finished review.
 
+The pull request report has every `@name` mention neutralized (a word
+joiner after `@`), because GitHub treats a mention of `@codex` anywhere in
+the body, even in a code span, as a request for a Codex cloud task rather
+than a code review.
+
 Finding text comes from the pull request and is untrusted. The bounce tells
 the implementer to check each finding and to fix only what holds up inside
 the Work Packet's scope. The work-claim gate and the audit still apply to
