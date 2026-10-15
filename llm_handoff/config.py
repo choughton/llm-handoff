@@ -145,6 +145,9 @@ BlockSeverity = Literal["critical", "high", "medium", "low"]
 # Who commits an implementer's work: the agent itself, or the dispatcher after
 # checking every changed file against the Work Packet's scope.
 CommitMode = Literal["agent", "dispatcher"]
+# What happens to audited work: stay local, merge a story branch with a report
+# commit, or push it and open a pull request.
+PublishMode = Literal["local", "merge-commit", "pr"]
 DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality",)
 # Order used to pick a security reviewer vendor that differs from the
 # implementer's provider when `audit.security_provider` is not set.
@@ -301,6 +304,29 @@ class NormalizerConfig(BaseModel):
     def _validate_timeout_ms(cls, value: int) -> int:
         if value < 1:
             raise ValueError("normalizer timeout_ms must be at least 1.")
+        return value
+
+
+class PublishConfig(BaseModel):
+    """Per-story branches and how audited work reaches the base branch."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: PublishMode = "local"
+    base_branch: str | None = None
+    branch_prefix: str = "llm-handoff/"
+    remote: str = "origin"
+    auto_merge: bool = True
+    wait_for_checks: bool = False
+
+    @field_validator("branch_prefix", mode="after")
+    @classmethod
+    def _validate_branch_prefix(cls, value: str) -> str:
+        if not value or any(char.isspace() for char in value) or ".." in value:
+            raise ValueError(
+                "publish.branch_prefix must be a non-empty branch-name prefix "
+                "without spaces or `..`."
+            )
         return value
 
 
@@ -485,6 +511,7 @@ class DispatchConfig(BaseModel):
     scanners: tuple[ScannerConfig, ...] = ()
     protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
     commit_mode: CommitMode = "agent"
+    publish: PublishConfig = PublishConfig()
 
     @model_validator(mode="after")
     def _validate_commit_mode(self) -> DispatchConfig:
@@ -493,6 +520,11 @@ class DispatchConfig(BaseModel):
                 "commit_mode: dispatcher requires enforce_work_packet: true; the "
                 "dispatcher only commits files the Work Packet puts in scope, "
                 "and the work-claim gate checks what it committed."
+            )
+        if self.publish.mode != "local" and self.commit_mode != "dispatcher":
+            raise ValueError(
+                f"publish.mode: {self.publish.mode} requires commit_mode: "
+                "dispatcher; the dispatcher owns the story branch and its commits."
             )
         return self
 

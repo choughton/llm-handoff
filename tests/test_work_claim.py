@@ -2148,3 +2148,33 @@ def test_record_passed_verification_replaces_an_earlier_section() -> None:
     assert updated.count("## Dispatcher Verification") == 1
     assert "old FAIL text" not in updated
     assert "- **Verdict:** PASS" in updated
+
+
+def test_run_loop_puts_implementer_work_on_a_story_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    base_branch = _git(tmp_path, "branch", "--show-current")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path, commit_mode="dispatcher", publish={"mode": "merge-commit"}
+    )
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    branch = _git(tmp_path, "branch", "--show-current")
+    assert branch.startswith("llm-handoff/epic-1-s1-")
+    assert branch != base_branch
+    assert _git(tmp_path, "log", "-1", "--format=%s").startswith(STORY_ID)
+    assert (tmp_path / "logs" / "dispatch" / "publish" / "gate.md").is_file()
+    assert ("AGENT", "Work-claim gate PASSED for backend.") in messages

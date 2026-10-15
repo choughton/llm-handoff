@@ -98,6 +98,13 @@ This project follows a simple pre-release changelog until the first public tag.
   (verdict, verified commit, checks, verification command) into the handoff.
   The auditor and the fan-out quality reviewer are told not to re-run a
   Verification command the dispatcher already passed on that commit.
+- Added `publish.mode` (`local`, `merge-commit`, `pr`). In the branch modes
+  the dispatcher puts each story on its own `llm-handoff/<story>` branch and,
+  after the gate and audit pass, either merges it with a report commit or
+  pushes it and opens a pull request whose body is the report (Work Packet,
+  gate result, audit verdicts, token usage and cost), merging it when
+  `auto_merge` is on. Agents never branch, push, or merge. Default stays
+  `local`; the branch modes need `commit_mode: dispatcher`.
 
 ## 0.0.0
 
