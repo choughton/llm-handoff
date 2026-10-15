@@ -195,7 +195,7 @@ publish:
   wait_for_reviewers: [] # pr mode + auto_merge: [codex] waits for Codex review
   review_timeout_seconds: 1200
   review_poll_seconds: 30
-  max_review_rounds: 3
+  max_review_rounds: 1 # >1 needs Codex to review every push on its own
   codex_bot_login: chatgpt-codex-connector[bot]
 ```
 
@@ -226,7 +226,8 @@ publish:
 With `wait_for_reviewers: [codex]`, `pr` mode with `auto_merge: true` waits
 for the Codex code review (the ChatGPT Codex connector for GitHub) of the
 exact commit it pushed before merging. Set this only when Codex reviews pull
-requests in the repository. The dispatcher polls the pull request with
+requests in the repository on its own: the dispatcher never asks for a
+review. The dispatcher polls the pull request with
 `gh api` every `review_poll_seconds`. It counts only activity from
 `codex_bot_login`, and only for the pushed commit's SHA:
 
@@ -247,11 +248,19 @@ The outcomes:
   that section when the gate passes, because the auditor rewrites
   `HANDOFF.md`. After the gate and audit pass again, the dispatcher pushes
   to the same pull request and updates its report. It posts each response as
-  the reply on that finding's review thread and resolves the thread, then
-  comments `@codex review` to request a new review and waits again. A finding
-  without a response keeps its thread unresolved, which blocks the merge.
-  After `max_review_rounds` rounds that still have findings, the loop stops
-  and leaves the pull request open for you.
+  the reply on that finding's review thread and resolves the thread. A
+  finding without a response keeps its thread unresolved, which blocks the
+  merge.
+- One correction round by default (`max_review_rounds: 1`). The first review
+  should surface what matters most; each review of a fix tends to find new
+  edge cases in the new code, so the dispatcher does not wait for another
+  review after the last correction round. It merges once every review thread
+  is resolved. With a higher `max_review_rounds`, it waits for the review
+  Codex runs on the pushed fix and can bounce again, up to that many rounds.
+  That only works when Codex is set to review every push to a pull request,
+  not just newly opened ones: the dispatcher never requests a review, so
+  without per-push reviews the wait times out and the loop stops with the
+  pull request left open.
 - No finished review within `review_timeout_seconds`, a failed review, or a
   `gh` error: the loop stops and leaves the pull request open. It never
   merges without a finished review.

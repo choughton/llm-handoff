@@ -526,7 +526,7 @@ def test_codex_gate_merges_after_a_clean_review_of_the_head_commit(
     assert any("no findings" in message for _level, message in entries)
 
 
-def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
+def test_codex_findings_get_one_correction_round_then_merge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, _remote, gh, env = _with_remote(tmp_path)
@@ -563,8 +563,8 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
     ]
     assert "## Review Responses" in handoff
 
-    # The implementer fixes the finding on the same branch, and Codex reviews
-    # the new head commit cleanly. The old finding stays on the old commit.
+    # The implementer fixes the finding on the same branch. The dispatcher
+    # answers and resolves the thread and merges without another review.
     (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
     _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
     second = _git(repo, "rev-parse", "HEAD")
@@ -578,6 +578,8 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
         "## Review Responses\n\n### Finding 1: `src/widget.py:1`\n"
         "Defaulted WIDGET when it is unset; asked @codex to recheck.\n",
     )
+
+    calls_before = len(_gh_calls(tmp_path))
 
     outcome = _publish_with_review(repo, gh, log)
 
@@ -593,8 +595,12 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
     kinds = [call[:2] for call in calls]
     assert kinds.count(["pr", "create"]) == 1
     assert ["pr", "edit"] in kinds
-    comment = calls[kinds.index(["pr", "comment"])]
-    assert comment[comment.index("--body") + 1] == "@codex review"
+    assert ["pr", "comment"] not in kinds
+    second_round = calls[calls_before:]
+    assert not any(
+        call[:2] == ["api", "--paginate"] and call[-1] != "graphql"
+        for call in second_round
+    ), "the dispatcher waited for another Codex review"
     assert kinds[-1] == ["pr", "merge"]
     assert _git(repo, "branch", "--show-current") == "main"
     assert _git(repo, "rev-parse", "HEAD") == second
@@ -622,7 +628,7 @@ def test_codex_gate_pauses_without_merging_when_no_review_arrives(
     assert not (repo / STATE_PATH).exists()
 
 
-def test_codex_gate_pauses_after_the_last_review_round(
+def test_a_higher_round_limit_waits_for_codexs_own_review_of_the_fix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, _remote, gh, env = _with_remote(tmp_path)
@@ -632,20 +638,23 @@ def test_codex_gate_pauses_after_the_last_review_round(
     head = _git(repo, "rev-parse", "HEAD")
     state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
     (repo / STATE_PATH).write_text(
-        json.dumps({**state, "review_rounds": 3}), encoding="utf-8"
+        json.dumps({**state, "review_rounds": 1}), encoding="utf-8"
     )
-    _set_api(
-        tmp_path,
-        comments=[_codex_summary(head)],
-        review_comments=[_codex_finding(head)],
-    )
+    _set_api(tmp_path, comments=[_codex_summary(head)])
     _entries, log = _logs()
 
-    outcome = _publish_with_review(repo, gh, log)
+    outcome = _publish_with_review(
+        repo,
+        gh,
+        log,
+        gate=ReviewGate(reviewers=("codex",), timeout_seconds=600, max_rounds=2),
+    )
 
-    assert outcome.stop is True and outcome.handoff is None
-    assert "after 3 review round(s)" in outcome.message
-    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert outcome == PublishOutcome()
+    kinds = [call[:2] for call in _gh_calls(tmp_path)]
+    assert ["pr", "comment"] not in kinds
+    assert ["api", "--paginate"] in kinds
+    assert kinds[-1] == ["pr", "merge"]
 
 
 @pytest.mark.parametrize(

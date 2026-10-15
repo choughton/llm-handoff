@@ -325,7 +325,10 @@ class PublishConfig(BaseModel):
     wait_for_reviewers: tuple[PublishReviewer, ...] = ()
     review_timeout_seconds: int = 1200
     review_poll_seconds: int = 30
-    max_review_rounds: int = 3
+    # Correction rounds for review findings. Above 1, the dispatcher waits for
+    # the reviewer's own review of each pushed fix, so the reviewer must be
+    # set to review every push; the dispatcher never requests a review.
+    max_review_rounds: int = 1
     codex_bot_login: str = DEFAULT_CODEX_BOT_LOGIN
 
     @model_validator(mode="after")

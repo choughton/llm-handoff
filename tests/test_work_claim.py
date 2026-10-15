@@ -2223,7 +2223,7 @@ def test_run_loop_writes_the_review_bounce_from_publish(
     assert exit_code == 0
     assert len(published) == 1
     review = published[0]["review"]
-    assert review.reviewers == ("codex",) and review.max_rounds == 3
+    assert review.reviewers == ("codex",) and review.max_rounds == 1
     assert config.handoff_full_path.read_text(encoding="utf-8") == bounce
 
 
