@@ -292,7 +292,7 @@ def _merge_settings(existing: bytes, source: bytes) -> bytes:
 
 
 def _has_linked_destination(target_root: Path, relative_path: Path) -> bool:
-    """Reject links in the destination, including dangling links and parents."""
+    """Reject linked destinations and paths with non-directory parents."""
     current = target_root
     for part in relative_path.parts:
         current = current / part
@@ -300,6 +300,12 @@ def _has_linked_destination(target_root: Path, relative_path: Path) -> bool:
             metadata = current.lstat()
         except FileNotFoundError:
             continue
+        except NotADirectoryError:
+            return True
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1:
+            return True
+        if current != target_root / relative_path and not stat.S_ISDIR(metadata.st_mode):
+            return True
         # Windows exposes reparse attributes on Python 3.11 too; pathlib's
         # is_junction() only exists from 3.12. Do not follow links to inspect them.
         if stat.S_ISLNK(metadata.st_mode) or (

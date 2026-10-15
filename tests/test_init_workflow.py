@@ -77,6 +77,53 @@ def test_linked_managed_file_conflicts(
 
 
 @pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize(
+    "name", ["AGENTS.md", ".gitignore", ".geminiignore", ".claude/settings.json"]
+)
+def test_hard_linked_managed_file_conflicts(
+    tmp_path: Path, name: str, force: bool
+) -> None:
+    root = tmp_path / "repo"
+    path = root / name
+    path.parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    original = b"{}" if name.endswith(".json") else b"private content\n"
+    outside.write_bytes(original)
+    path.hardlink_to(outside)
+    assert path.stat().st_nlink == 2
+
+    preview = init_reference_workflow(root, dry_run=True, force=force)
+    assert preview.conflicts == (Path(name),)
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(root, force=force)
+    assert error.value.conflicts == preview.conflicts
+    assert path.read_bytes() == outside.read_bytes() == original
+    assert path.stat().st_nlink == 2
+    assert not (root / "dispatch_config.yaml").exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("parent", [".claude", ".claude/agents", "docs/handoff"])
+def test_non_directory_destination_parent_conflicts(
+    tmp_path: Path, parent: str, force: bool
+) -> None:
+    root = tmp_path / "repo"
+    path = root / parent
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"keep this file\n")
+    expected = tuple(p for p in template_files() if Path(parent) in p.parents)
+    assert expected
+
+    preview = init_reference_workflow(root, dry_run=True, force=force)
+    assert preview.conflicts == expected
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(root, force=force)
+    assert error.value.conflicts == expected
+    assert path.read_bytes() == b"keep this file\n"
+    assert not (root / "AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
 def test_linked_settings_parent_conflicts(tmp_path: Path, force: bool) -> None:
     root = tmp_path / "repo"
     root.mkdir()

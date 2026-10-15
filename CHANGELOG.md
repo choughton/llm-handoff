@@ -12,6 +12,8 @@ This project follows a simple pre-release changelog until the first public tag.
   Identical unmarked templates migrate without duplication; linked destination
   files and directories are rejected as conflicts, including with --force.
   Windows reparse-point detection also protects junctions on Python 3.11.
+  Hard-linked files and non-directory destination parents are also conflicts,
+  including during dry runs and with --force.
 
 - Isolated supervised child imports from the target working directory while preserving source-checkout launches.
 - Fixed Codex launches in target repositories by resolving the output schema from the installed package.
