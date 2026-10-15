@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 from pathlib import Path
+import sys
 from typing import Any
+
+import pytest
 
 from llm_handoff.agent_types import SubagentResult
 
@@ -337,7 +341,8 @@ def test_supervisor_main_parses_options_and_forwards_dispatch_args(
     assert config.heartbeat_interval_seconds == 300
     assert config.stalled_output_timeout_seconds == 900
     assert config.notify_command == "echo supervisor"
-    assert config.dispatch_args == ("--dry-run", "--config", "dispatch_config.yaml")
+    assert config.dispatch_args == ("--dry-run",)
+    assert config.config_path == Path("dispatch_config.yaml")
 
 
 def test_supervisor_main_forwards_child_help_arg(tmp_path: Path, monkeypatch) -> None:
@@ -571,3 +576,124 @@ def test_supervisor_preflight_reports_unloadable_dispatch_config(
         and message.startswith("Preflight error: dispatch config could not be loaded")
         for level, message in log_messages
     )
+
+
+class _ExitedChild:
+    # A child that produces no output and exits immediately; enough to see
+    # which command line the supervisor built.
+    def __init__(self) -> None:
+        self.stdout = iter(())
+        self.pid = 1
+        self.returncode = 0
+
+    def poll(self) -> int:
+        return 0
+
+    def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        return None
+
+
+def test_supervisor_shares_repo_root_and_config_with_child_and_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    (repo_root / "alt.yaml").write_text(
+        "agents:\n  validator:\n    provider: claude\n    binary: claude-alt\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        supervisor,
+        "run_supervised_dispatch",
+        lambda config: captured.update(config=config) or 0,
+    )
+
+    # --config after "--" used to reach only the child; the supervisor's
+    # repair role then loaded the default config instead.
+    assert (
+        supervisor.main(
+            ["--repo-root", str(repo_root), "--", "--dry-run", "--config=alt.yaml"]
+        )
+        == 0
+    )
+    config = captured["config"]
+    assert config.repo_root == repo_root.resolve()
+    assert config.config_path == Path("alt.yaml")
+    assert config.dispatch_args == ("--dry-run",)
+
+    popen_commands: list[list[str]] = []
+
+    def fake_popen(command: list[str], **_kwargs: Any) -> _ExitedChild:
+        popen_commands.append(list(command))
+        return _ExitedChild()
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        supervisor,
+        "_repo_snapshot",
+        lambda _repo_root, **_kwargs: supervisor.RepoSnapshot(
+            head_sha=None, dirty_files=(), handoff_sha=None
+        ),
+    )
+
+    result = supervisor._run_dispatch_child(config, lambda level, message: None)
+
+    assert result.exit_code == 0
+    assert popen_commands == [
+        [
+            sys.executable,
+            "-m",
+            "llm_handoff",
+            "--repo-root",
+            str(repo_root.resolve()),
+            "--config",
+            str(repo_root.resolve() / "alt.yaml"),
+            "--dry-run",
+        ]
+    ]
+
+    repair_calls: list[dict[str, Any]] = []
+
+    def fake_invoke(subagent_name: str, prompt: str, **kwargs: Any) -> SubagentResult:
+        del subagent_name, prompt
+        repair_calls.append(kwargs)
+        return _repair_result()
+
+    monkeypatch.setattr(supervisor, "invoke_support_role", fake_invoke)
+    repair_config = dataclasses.replace(
+        config, repair_role="validator", max_repair_attempts=1
+    )
+
+    supervisor._run_repair_role(
+        repair_config,
+        repo_root / "failure-packet.json",
+        lambda level, message: None,
+    )
+
+    assert len(repair_calls) == 1
+    assert repair_calls[0]["agent_config"].binary == "claude-alt"
+
+
+def test_supervisor_rejects_conflicting_shared_options(tmp_path: Path) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+
+    with pytest.raises(SystemExit) as excinfo:
+        supervisor._parse_args(
+            [
+                "--repo-root",
+                str(repo_root),
+                "--config",
+                "a.yaml",
+                "--",
+                "--config",
+                "b.yaml",
+            ]
+        )
+
+    assert excinfo.value.code == 2

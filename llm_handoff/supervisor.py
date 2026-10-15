@@ -533,7 +533,13 @@ def _stop_with_incident(
 
 
 def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcessResult:
-    command = [sys.executable, "-m", "llm_handoff", *config.dispatch_args]
+    command = [
+        sys.executable,
+        "-m",
+        "llm_handoff",
+        *_child_dispatch_options(config),
+        *config.dispatch_args,
+    ]
     log("INFO", f"Starting supervised dispatch child: {_format_command(command)}")
     start_time = time.monotonic()
     output_tail: deque[str] = deque(maxlen=config.tail_lines)
@@ -1505,6 +1511,57 @@ def _default_log(level: str, message: str) -> None:
     print(f"[SUPERVISOR] [{level}] {message}")
 
 
+# --repo-root and --config are shared between the supervisor and the child
+# dispatcher. They are resolved once in _parse_args, whichever side of "--"
+# they appear on, so the child and the repair role always load the same
+# repository and configuration.
+def _child_dispatch_options(config: SupervisorConfig) -> list[str]:
+    options = ["--repo-root", str(config.repo_root)]
+    if config.config_path is not None:
+        options.extend(["--config", str(config.config_path_full_path)])
+    return options
+
+
+def _take_child_option(
+    dispatch_args: Sequence[str],
+    option: str,
+) -> tuple[list[str], Path | None]:
+    """Remove ``option VALUE`` or ``option=VALUE`` from the pass-through args."""
+    remaining: list[str] = []
+    value: Path | None = None
+    index = 0
+    while index < len(dispatch_args):
+        argument = dispatch_args[index]
+        if argument == option and index + 1 < len(dispatch_args):
+            value = Path(dispatch_args[index + 1])
+            index += 2
+            continue
+        if argument.startswith(f"{option}="):
+            value = Path(argument.split("=", 1)[1])
+            index += 1
+            continue
+        remaining.append(argument)
+        index += 1
+    return remaining, value
+
+
+def _merge_shared_option(
+    parser: argparse.ArgumentParser,
+    option: str,
+    supervisor_value: Path | None,
+    child_value: Path | None,
+) -> Path | None:
+    if supervisor_value is None:
+        return child_value
+    if child_value is None or child_value.resolve() == supervisor_value.resolve():
+        return supervisor_value
+    parser.error(
+        f"{option} must be the same on both sides of '--': the supervisor got "
+        f"{supervisor_value} and the dispatcher got {child_value}."
+    )
+    return None  # pragma: no cover - parser.error exits
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> SupervisorConfig:
     parser = argparse.ArgumentParser(
         description="Run llm-handoff with supervised operator controls.",
@@ -1545,9 +1602,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> SupervisorConfig:
     known, dispatch_args = parser.parse_known_args(argv)
     if dispatch_args and dispatch_args[0] == "--":
         dispatch_args = dispatch_args[1:]
-    root_start = known.repo_root
-    if root_start is None and known.config is not None and known.config.is_absolute():
-        root_start = known.config.parent
+    dispatch_args, child_repo_root = _take_child_option(dispatch_args, "--repo-root")
+    dispatch_args, child_config = _take_child_option(dispatch_args, "--config")
+    repo_root_option = _merge_shared_option(
+        parser, "--repo-root", known.repo_root, child_repo_root
+    )
+    config_option = _merge_shared_option(parser, "--config", known.config, child_config)
+    root_start = repo_root_option
+    if root_start is None and config_option is not None and config_option.is_absolute():
+        root_start = config_option.parent
     repo_root = detect_repo_root(root_start)
     repair_role = known.repair_role
     max_repair_attempts = (
@@ -1555,7 +1618,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> SupervisorConfig:
         if repair_role is not None and known.max_repair_attempts is None
         else int(known.max_repair_attempts or 0)
     )
-    config_path = known.config
+    config_path = config_option
     if config_path is None and (repo_root / DEFAULT_CONFIG_PATH).exists():
         config_path = DEFAULT_CONFIG_PATH
     return SupervisorConfig(

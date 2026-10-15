@@ -45,7 +45,10 @@ $env:LLM_HANDOFF_PYTHON = "C:\path\to\python.exe"
 ```
 
 Arguments before `--` configure the supervisor. Arguments after `--` pass
-through to the normal dispatcher. For example, this forwards `--config` and
+through to the normal dispatcher. `--repo-root` and `--config` are shared:
+wherever you place them, the supervisor resolves them once and passes the same
+values to the child dispatcher and to the optional repair role, and it refuses
+to start if the two sides disagree. For example, this forwards `--config` and
 `--dry-run` to `python -m llm_handoff`:
 
 ```powershell
