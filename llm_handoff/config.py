@@ -20,7 +20,42 @@ GEMINI_FRONTEND_MENTION = "@frontend"
 CODEX_SKILL_NAME = "llm-handoff"
 CODEX_WEB_SEARCH_MODE = "disabled"
 
+# Launch permissions. Each provider launches with the safer arguments below
+# unless the role sets `unsafe_bypass: true`, which restores the previous
+# approval/sandbox bypass flags exactly.
 CLAUDE_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+CLAUDE_PERMISSION_MODE = "dontAsk"
+CLAUDE_DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    # The Claude-side prompts delegate to the named subagent.
+    "Agent",
+    "Bash(git status:*)",
+    "Bash(git diff:*)",
+    "Bash(git log:*)",
+    "Bash(git show:*)",
+    # The handoff-validator template resolves SHAs with `git cat-file -t`.
+    "Bash(git cat-file:*)",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git rev-parse:*)",
+    "Bash(python:*)",
+    "Bash(python3:*)",
+    "Bash(pytest:*)",
+)
+CLAUDE_DISALLOWED_TOOLS: tuple[str, ...] = ("WebFetch", "WebSearch")
+CODEX_SANDBOX_ARGS: tuple[str, ...] = (
+    "--sandbox",
+    "workspace-write",
+    "--ask-for-approval",
+    "never",
+)
+CODEX_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo",)
+GEMINI_SANDBOX_ARGS: tuple[str, ...] = ("--yolo", "--sandbox")
+GEMINI_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo", "--sandbox=false")
 CLAUDE_MODEL = "claude-opus-4-7"
 NORMALIZER_PROVIDER = "claude"
 NORMALIZER_MODEL = "claude-haiku-4-5"
@@ -53,6 +88,20 @@ DEFAULT_HANDOFF_PATH = Path("docs/handoff/HANDOFF.md")
 DEFAULT_PROJECT_STATE_PATH = Path("PROJECT_STATE.md")
 DEFAULT_SHARED_INIT_PROMPT_PATH = Path("docs/handoff/SHARED_REPO_INIT_PROMPT.md")
 DEFAULT_CONFIG_PATH = Path("dispatch_config.yaml")
+# Control files the roles read as instructions. A dispatch that changes one of
+# these without listing it under the Work Packet's Files in scope routes the
+# handoff to user. Patterns are repo-relative; `**` matches any depth.
+DEFAULT_PROTECTED_PATHS: tuple[str, ...] = (
+    "AGENTS.md",
+    "docs/handoff/HANDBOOK.md",
+    "docs/handoff/*_PROMPT.md",
+    "docs/handoff/README.md",
+    "dispatch_config.yaml",
+    ".claude/**",
+    ".codex/**",
+    ".gemini/**",
+    ".githooks/**",
+)
 CODEX_OUTPUT_SCHEMA_PATH = (
     Path("llm_handoff") / "schemas" / "codex_final_response.schema.json"
 )
@@ -88,6 +137,7 @@ AgentRole = Literal[
     "finalizer",
 ]
 ProviderName = Literal["codex", "gemini", "claude", "openai"]
+EnvMode = Literal["allowlist", "inherit"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
 AuditReviewer = Literal["quality", "security"]
 SecurityReviewProvider = Literal["claude", "gemini", "codex"]
@@ -118,6 +168,21 @@ NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
 }
 REQUIRED_AGENT_ROLES = frozenset(DEFAULT_AGENT_PROVIDERS)
 
+# Vendor API keys are never copied from one provider's launch to another's.
+# Each key is only passed to its own provider, and only through the
+# provider-specific rule in ``agent_process.build_agent_env`` (for example
+# ``use_api_key_env``), never through ``env_passthrough``.
+VENDOR_API_KEY_ENV_NAMES = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    }
+)
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -133,6 +198,10 @@ class AgentConfig(BaseModel):
     timeout_ms: int | None = None
     retries: int | None = None
     use_api_key_env: bool | None = None
+    env_mode: EnvMode = "allowlist"
+    env_passthrough: tuple[str, ...] = ()
+    unsafe_bypass: bool = False
+    allowed_tools: tuple[str, ...] | None = None
 
     @field_validator("timeout_ms", mode="after")
     @classmethod
@@ -140,6 +209,50 @@ class AgentConfig(BaseModel):
         if value is not None and value < 1:
             raise ValueError("timeout_ms must be at least 1 when set.")
         return value
+
+    @field_validator("env_passthrough", mode="after")
+    @classmethod
+    def _validate_env_passthrough(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for name in value:
+            if not _ENV_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    f"env_passthrough entry `{name}` is not a valid environment "
+                    "variable name."
+                )
+            if name.upper() in VENDOR_API_KEY_ENV_NAMES:
+                raise ValueError(
+                    f"env_passthrough must not name the vendor API key `{name}`; "
+                    "use the role's `use_api_key_env` setting for its own "
+                    "provider key."
+                )
+        return value
+
+    @field_validator("allowed_tools", mode="after")
+    @classmethod
+    def _validate_allowed_tools(
+        cls,
+        value: tuple[str, ...] | None,
+    ) -> tuple[str, ...] | None:
+        if value is None:
+            return value
+        for rule in value:
+            if not rule.strip() or "," in rule:
+                raise ValueError(
+                    f"allowed_tools entry `{rule}` must be one non-empty tool "
+                    "rule without commas, for example `Bash(git status:*)`."
+                )
+        return tuple(rule.strip() for rule in value)
+
+    @model_validator(mode="after")
+    def _validate_launch_permissions(self) -> AgentConfig:
+        if self.permissions_flag is not None and not self.unsafe_bypass:
+            raise ValueError(
+                "permissions_flag only applies with unsafe_bypass: true; the "
+                "default launch uses --permission-mode dontAsk with allowed_tools."
+            )
+        if self.allowed_tools is not None and self.provider != "claude":
+            raise ValueError("allowed_tools only applies to claude roles.")
+        return self
 
     @field_validator("retries", mode="after")
     @classmethod
@@ -331,7 +444,6 @@ def _agent_defaults_for_provider(role: str, provider: object) -> dict[str, objec
             "provider": provider,
             "binary": CLAUDE_BINARY,
             "model": NORMALIZER_MODEL if role == "validator" else CLAUDE_MODEL,
-            "permissions_flag": CLAUDE_PERMISSIONS_FLAG,
             "resume": False,
             "timeout_ms": SUBAGENT_TIMEOUT_MS,
         }
@@ -368,6 +480,28 @@ class DispatchConfig(BaseModel):
         WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS
     )
     scanners: tuple[ScannerConfig, ...] = ()
+    protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
+
+    @field_validator("protected_paths", mode="after")
+    @classmethod
+    def _validate_protected_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for pattern in value:
+            candidate = pattern.strip().replace("\\", "/")
+            while candidate.startswith("./"):
+                candidate = candidate[2:]
+            if (
+                not candidate
+                or candidate.startswith("/")
+                or re.match(r"^[A-Za-z]:", candidate)
+                or ".." in candidate.split("/")
+            ):
+                raise ValueError(
+                    f"protected_paths entry `{pattern}` must be a relative path "
+                    "or glob inside the repository."
+                )
+            normalized.append(candidate)
+        return tuple(normalized)
 
     @field_validator("repo_root", mode="after")
     @classmethod

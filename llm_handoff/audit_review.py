@@ -34,8 +34,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from llm_handoff import config as config_module
 from llm_handoff.agent_process import _run_logged_agent_command
-from llm_handoff.agent_providers.claude import _build_claude_env
-from llm_handoff.agent_providers.codex import _run_codex_json_command
+from llm_handoff.agent_providers import gemini as gemini_provider
+from llm_handoff.agent_providers.claude import (
+    _build_claude_env,
+    claude_tool_restriction_args,
+)
+from llm_handoff.agent_providers.codex import _build_codex_env, _run_codex_json_command
 from llm_handoff.agent_providers.gemini import _build_gemini_env
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
 from llm_handoff.config import AgentConfig, AgentRole, DispatchConfig
@@ -86,6 +90,8 @@ CLAUDE_SECURITY_DISALLOWED_TOOLS: tuple[str, ...] = (
     "Write",
     "MultiEdit",
     "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
 )
 _SECURITY_PROVIDER_ROLE_ORDER: tuple[AgentRole, ...] = (
     "auditor",
@@ -406,6 +412,9 @@ class SecurityReviewerPlan:
     env: dict[str, str] | None = None
     last_message_path: Path | None = None
     precheck_command: tuple[str, ...] | None = None
+    # Set when the reviewer must not launch (for example, no sandbox runtime
+    # for Gemini CLI); the run fails closed with this error instead.
+    preflight_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -759,6 +768,10 @@ def build_security_reviewer_plan(
         provider=provider,
     )
     provider_config = _provider_agent_config(config, provider)
+    # Reviewers launch with the same environment allowlist as the provider's
+    # role. Their read-only restrictions apply even when that role sets
+    # unsafe_bypass; for Gemini, unsafe_bypass only lifts the container
+    # sandbox requirement.
 
     if provider == "claude":
         binary = (provider_config.binary if provider_config else None) or (
@@ -771,6 +784,7 @@ def build_security_reviewer_plan(
             binary,
             "--permission-mode",
             "dontAsk",
+            *claude_tool_restriction_args(CLAUDE_SECURITY_ALLOWED_TOOLS),
             "--allowedTools",
             *CLAUDE_SECURITY_ALLOWED_TOOLS,
             "--disallowedTools",
@@ -789,7 +803,7 @@ def build_security_reviewer_plan(
             provider=provider,
             kind="claude",
             command=tuple(command),
-            env=_build_claude_env(),
+            env=_build_claude_env(provider_config),
         )
 
     if provider == "gemini":
@@ -802,20 +816,33 @@ def build_security_reviewer_plan(
             and provider_config.use_api_key_env is not None
             else config.planner_api_key_env_enabled
         )
+        unsafe_bypass = bool(
+            provider_config is not None and provider_config.unsafe_bypass
+        )
         command = [
             binary,
             "--approval-mode",
             "plan",
-            "--sandbox=false",
+            "--sandbox=false" if unsafe_bypass else "--sandbox",
             "-p",
             prompt,
         ]
+        preflight_error = None
+        if (
+            not unsafe_bypass
+            and gemini_provider.detect_gemini_sandbox_runtime() is None
+        ):
+            preflight_error = _gemini_reviewer_sandbox_error(config)
         return SecurityReviewerPlan(
             provider=provider,
             kind="gemini",
             command=tuple(command),
-            env=_build_gemini_env(use_api_key_env=use_api_key_env),
+            env=_build_gemini_env(
+                use_api_key_env=use_api_key_env,
+                agent_config=provider_config,
+            ),
             precheck_command=(binary, "extensions", "list"),
+            preflight_error=preflight_error,
         )
 
     if provider == "codex":
@@ -834,6 +861,7 @@ def build_security_reviewer_plan(
                     scope.base_sha,
                     "--json",
                 ),
+                env=_build_codex_env(provider_config),
             )
         binary = (provider_config.binary if provider_config else None) or (
             config_module.CODEX_BINARY
@@ -862,6 +890,7 @@ def build_security_reviewer_plan(
             provider=provider,
             kind="codex-exec",
             command=tuple(command),
+            env=_build_codex_env(provider_config),
             last_message_path=last_message_path,
         )
 
@@ -1166,6 +1195,21 @@ def _run_security_reviewer(
     agent_name = f"Security reviewer ({plan.provider})"
     start = time.monotonic()
 
+    if plan.preflight_error is not None:
+        return _ReviewerOutcome(
+            run=ReviewerRun(
+                name="security",
+                provider=plan.provider,
+                command=plan.command,
+                exit_code=1,
+                elapsed_seconds=0.0,
+                stdout="",
+                stderr=plan.preflight_error,
+                error=plan.preflight_error,
+            ),
+            handoff_sha_after=_handoff_sha(handoff_path),
+        )
+
     if plan.precheck_command is not None:
         precheck = _run_logged_agent_command(
             agent_name,
@@ -1208,6 +1252,7 @@ def _run_security_reviewer(
             timeout_ms=timeout_ms,
             output_last_message_path=plan.last_message_path,
             log=log,
+            env=plan.env,
         )
         stdout = codex_result.result.stdout
         stderr = codex_result.result.stderr
@@ -1398,11 +1443,31 @@ def _matching_brace(text: str, start: int) -> int | None:
 
 
 def _provider_agent_config(config: DispatchConfig, provider: str) -> AgentConfig | None:
+    role = _provider_agent_role(config, provider)
+    return config.agents[role] if role is not None else None
+
+
+def _provider_agent_role(config: DispatchConfig, provider: str) -> AgentRole | None:
     for role in _SECURITY_PROVIDER_ROLE_ORDER:
         agent_config = config.agents.get(role)
         if agent_config is not None and agent_config.provider == provider:
-            return agent_config
+            return role
     return None
+
+
+def _gemini_reviewer_sandbox_error(config: DispatchConfig) -> str:
+    role = _provider_agent_role(config, "gemini")
+    if role is not None:
+        detail = gemini_provider.gemini_sandbox_unavailable_message(role)
+    else:
+        detail = (
+            "Gemini CLI sandbox unavailable for the security reviewer: no Docker "
+            "or Podman executable was found on PATH (macOS can use sandbox-exec)."
+        )
+    return (
+        f"security_reviewer_failed: {detail} Alternatively set "
+        "audit.security_provider to another vendor."
+    )
 
 
 def _implementer_role(frontmatter: HandoffRouting | None, log: LogFn) -> AgentRole:

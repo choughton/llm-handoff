@@ -117,6 +117,13 @@ auditor is dispatched. Every handoff that routes work to `backend` or
 `frontend` must then carry a parseable Work Packet, including `verified_fail`
 audit results, so implementer handbacks should preserve the section verbatim
 and auditors should carry it forward.
+`Files in scope` also controls edits to protected control files such as
+`AGENTS.md`, the handoff prompts, `dispatch_config.yaml`, and the `.claude/`,
+`.codex/`, and `.gemini/` directories. A role that changes one of these
+without the path listed under `Files in scope` fails closed: the dispatcher
+rewrites the handoff to route to `user` with a `protected_file_modified:`
+error. List the exact path, or a directory ending in `/`, when a role is
+meant to edit a control file.
 
 ## Rules
 

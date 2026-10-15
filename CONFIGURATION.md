@@ -81,6 +81,12 @@ Remote pushes should be explicit. The dispatcher may create local commits as
 part of a finalizer workflow, but it should not publish to a remote unless a
 user explicitly opts in.
 
+`auto_push` is parsed but not read by the current dispatcher. The dispatcher
+itself never pushes, and setting `auto_push: true` has no effect. Agents are
+told not to push, and the reference workflow denies `git push` through
+provider guardrails, but neither is a hard boundary. Keep push credentials out
+of the dispatch environment; see [SECURITY.md](SECURITY.md#threat-model).
+
 ## Runtime Controls
 
 The dispatcher exposes role-based runtime toggles for session reuse and planner
@@ -222,6 +228,158 @@ Scanner commands are operator-authored configuration, so they are trusted
 operator input, unlike the Work Packet verification command, which is
 agent-written. The dispatcher does not sandbox scanners any more than it
 sandboxes agents.
+## Agent Environment
+
+Each provider CLI is launched with an explicit environment built from an
+allowlist. The dispatcher's own environment is not copied, so tokens such as
+`GITHUB_TOKEN`, `AWS_*` credentials, or database passwords in the shell that
+started the dispatcher do not reach the agents.
+
+In the default `env_mode: allowlist`, a launch receives only:
+
+- process basics: `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`,
+  `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`;
+- non-secret process plumbing the CLIs need to start: `COMSPEC`, `PATHEXT`,
+  `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, `SHELL`;
+- the provider's own configuration variables: `CLAUDE_*` for Claude Code,
+  `CODEX_*` for Codex, and `GEMINI_*`, `GOOGLE_CLOUD_PROJECT`,
+  `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, plus container sandbox
+  variables (`DOCKER_HOST`, `DOCKER_CONTEXT`, `CONTAINER_HOST`,
+  `SANDBOX_FLAGS`, `SEATBELT_PROFILE`) for Gemini CLI;
+- any extra names listed under the role's `env_passthrough`.
+
+Names are matched case-insensitively.
+
+Vendor API keys follow a fixed rule in every mode. A key only reaches its own
+provider, and only when the role opts in:
+
+| Key | Passed to |
+| --- | --- |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` | never; Claude Code uses its own login |
+| `OPENAI_API_KEY` | Codex roles with `use_api_key_env: true` |
+| `GEMINI_API_KEY` | Gemini roles with `use_api_key_env: true` (or the planner flag above) |
+| `GOOGLE_API_KEY` | never |
+
+`env_passthrough` cannot name a vendor API key; config loading fails if it
+does.
+
+```yaml
+agents:
+  backend:
+    provider: codex
+    env_passthrough: [HTTPS_PROXY, SSL_CERT_FILE]
+```
+
+`env_mode: inherit` restores the previous behavior of copying the
+dispatcher's environment into the launch. The vendor API key rule above still
+applies. Use it only for debugging a CLI that needs a variable you have not
+identified yet; prefer adding that name to `env_passthrough`.
+
+Codex roles previously inherited `OPENAI_API_KEY`. A Codex setup that
+authenticates with an API key instead of `codex login` now needs
+`use_api_key_env: true` on that role.
+
+## Launch Permissions And Sandboxing
+
+Each role launches its provider CLI with the safer arguments below. A role can
+restore the previous approval and sandbox bypass with `unsafe_bypass: true`.
+The startup banner prints one `Launch <role>:` line per role and a
+`WARN UNSAFE BYPASS:` line for every role that opts out.
+
+| Provider | Default launch | `unsafe_bypass: true` |
+| --- | --- | --- |
+| Claude Code | `--permission-mode dontAsk --tools <tool names> --strict-mcp-config --allowedTools <allowed_tools> --disallowedTools WebFetch,WebSearch` | `--dangerously-skip-permissions` |
+| Codex | `--sandbox workspace-write --ask-for-approval never` | `--yolo` |
+| Gemini CLI | `--yolo --sandbox` | `--yolo --sandbox=false` |
+
+Claude Code in `dontAsk` mode denies any tool call that `allowed_tools` does
+not allow instead of prompting. `--allowedTools` only pre-approves rules, so
+the launch also passes `--tools` with the base tool names from the list
+(`Read`, `Bash`, and so on). Built-in tools outside the list are then not
+available at all, even if user or project settings approve them.
+`--strict-mcp-config` loads no MCP servers unless `allowed_tools` names an
+`mcp__` tool. The default list is:
+
+```yaml
+allowed_tools:
+  - Read
+  - Edit
+  - Write
+  - Grep
+  - Glob
+  - Agent
+  - Bash(git status:*)
+  - Bash(git diff:*)
+  - Bash(git log:*)
+  - Bash(git show:*)
+  - Bash(git cat-file:*)
+  - Bash(git add:*)
+  - Bash(git commit:*)
+  - Bash(git rev-parse:*)
+  - Bash(python:*)
+  - Bash(python3:*)
+  - Bash(pytest:*)
+```
+
+`Agent` is included because the Claude-side prompts delegate to the named
+subagent, and `git cat-file` because the shipped `handoff-validator` resolves
+SHAs with it. Setting `allowed_tools` on a role replaces the whole list. The
+list is a guardrail, not a sandbox: `Bash(python:*)` still lets the agent run
+arbitrary Python. `git push` is not on the list.
+
+Codex keeps its `workspace-write` sandbox: writes are limited to the
+workspace and network access is off by default. The Codex native Windows
+sandbox is experimental; if Codex cannot start or cannot commit in your
+setup, check its sandbox settings before reaching for `unsafe_bypass`.
+
+Gemini CLI keeps `--yolo` so tool calls do not prompt, but runs inside its
+container sandbox. That needs Docker or Podman on `PATH` (macOS can use
+`sandbox-exec`; `GEMINI_SANDBOX` selects a runtime). When no runtime is found
+the dispatcher refuses to start and names the key to set, for example
+`agents.planner.unsafe_bypass: true`. The adapter repeats the same check
+before every Gemini launch. Inside the container, the role sees the mounted
+project directory; host tools and credentials outside it may be missing.
+
+`permissions_flag` now only applies together with `unsafe_bypass: true`. It
+replaces `--dangerously-skip-permissions` for that role. Setting it without
+`unsafe_bypass` fails at config load.
+
+These flags were checked against the provider CLI documentation, not run end
+to end against every CLI version on every platform. If a CLI rejects a flag,
+pin `unsafe_bypass: true` on that role only while you investigate, and treat
+the run as unsandboxed.
+
+## Protected Control Files
+
+Default:
+
+```yaml
+protected_paths:
+  - AGENTS.md
+  - docs/handoff/HANDBOOK.md
+  - docs/handoff/*_PROMPT.md
+  - docs/handoff/README.md
+  - dispatch_config.yaml
+  - .claude/**
+  - .codex/**
+  - .gemini/**
+  - .githooks/**
+```
+
+Patterns are relative to the repository root. `*` matches within one path
+segment and `**` matches any depth. Missing paths are ignored.
+
+Before each dispatch the dispatcher hashes the matching files. After the
+dispatch, a protected file that changed on disk or in the new commits, and
+that the role's Work Packet did not list under `Files in scope`, stops the
+loop: the handoff is rewritten to route to `user` with a
+`protected_file_modified:` error and the changed paths. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#protected-control-files).
+
+Set `protected_paths: []` to turn the check off. A config file passed with
+`--config` under another name is not protected unless you add its path. If a
+provider CLI writes its own state under one of these directories in your
+setup, narrow the pattern rather than removing the check.
 
 ## Supervised Dispatch
 
@@ -297,15 +455,25 @@ Common fields:
 - `resume`: whether the adapter may reuse a prior session.
 - `timeout_ms`: process timeout for a single dispatch.
 - `retries`: provider retry count where supported.
+- `env_mode`: `allowlist` (default) or `inherit`. See
+  [Agent Environment](#agent-environment).
+- `env_passthrough`: extra environment variable names to pass to this role.
+- `use_api_key_env`: pass the provider's own API key (`OPENAI_API_KEY` for
+  Codex, `GEMINI_API_KEY` for Gemini). Ignored for Claude.
+- `unsafe_bypass`: restore the provider's previous approval and sandbox bypass
+  flags for this role. Off by default and logged as a startup warning.
 
 Codex-specific fields:
 
 - `skill_name`: Codex skill to invoke in the target repo.
+- `use_api_key_env`: whether to pass `OPENAI_API_KEY`. Off by default.
 
 Claude-specific fields:
 
 - `model`: Claude model for subagent or validator calls.
-- `permissions_flag`: optional CLI permission flag.
+- `allowed_tools`: tool rules passed to `--allowedTools` in the default
+  `dontAsk` launch. See [Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
+- `permissions_flag`: bypass flag used only with `unsafe_bypass: true`.
 
 Gemini-specific fields:
 
@@ -362,7 +530,8 @@ Security reviewer invocation by provider:
   read and `git diff`/`git show`/`git log` tools, edit tools denied, and
   `--json-schema` structured output. The prompt asks for Claude Code's
   built-in security review restricted to the given range.
-- `gemini`: `gemini -p "/security:analyze ..."` in `--approval-mode plan`.
+- `gemini`: `gemini -p "/security:analyze ..."` in `--approval-mode plan`
+  with `--sandbox`, so it needs Docker or Podman like the Gemini roles.
   The target repository's Gemini CLI must have the security extension
   installed:
 
@@ -381,6 +550,10 @@ Security reviewer invocation by provider:
   in beta as of mid-2026 and may require plan-level or approved access; its
   JSON output shape is parsed defensively, and an unrecognized severity is
   treated as `high`.
+
+Security reviewers use the environment allowlist of the role that maps to
+their provider, and keep their read-only flags even if that role sets
+`unsafe_bypass: true`.
 
 A missing, malformed, or timed-out reviewer verdict, and any reviewer that
 changes `HANDOFF.md`, fails the audit dispatch. The dispatcher restores the

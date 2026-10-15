@@ -112,10 +112,17 @@ docs/handoff/*.md
 .claude/agents/handoff-router.md
 .claude/agents/handoff-validator.md
 .claude/agents/ledger-updater.md
+.claude/settings.json
+.claude/hooks/block_dangerous_commands.py
 ```
 
 Existing identical files are skipped. Existing changed files stop the init
 unless you pass `--force` after reviewing the conflict.
+
+Gemini CLI ignores policy files in a project's `.gemini/policies/` directory
+today. To enforce the shipped Gemini guardrails, copy
+`.gemini/policies/planner_guardrails.toml` into `~/.gemini/policies/`. See the
+Guardrails section of `examples/reference-workflow/README.md`.
 
 ## Step 4. Review The Target Repo Files
 

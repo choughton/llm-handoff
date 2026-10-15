@@ -3,6 +3,11 @@
 # This file documents the shipped reference role-to-provider mapping for source
 # checkout users and target-repo templates. Roles can be remapped to registered
 # runtime adapters: codex, gemini, or claude.
+#
+# Launch flags are safe by default: Claude Code runs in dontAsk mode with an
+# allowed_tools list, Codex in its workspace-write sandbox, and Gemini CLI in
+# its container sandbox (needs Docker or Podman). `unsafe_bypass: true` on a
+# role restores the old bypass flags and is logged as a startup warning.
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
@@ -44,6 +49,18 @@ scanners:
     command: pip-audit --strict
     timeout_ms: 300000
     required: false
+# Control files a role may only change when its Work Packet lists them under
+# Files in scope. Any other change routes the handoff to user. [] disables.
+protected_paths:
+  - AGENTS.md
+  - docs/handoff/HANDBOOK.md
+  - docs/handoff/*_PROMPT.md
+  - docs/handoff/README.md
+  - dispatch_config.yaml
+  - .claude/**
+  - .codex/**
+  - .gemini/**
+  - .githooks/**
 
 agents:
   planner:
@@ -59,6 +76,9 @@ agents:
     skill_name: llm-handoff
     resume: true
     timeout_ms: 1200000
+    # Launch environments are allowlisted by default (env_mode: allowlist).
+    # Add extra variable names here; vendor API keys are not accepted.
+    # env_passthrough: [HTTPS_PROXY]
 
   frontend:
     provider: gemini
@@ -73,6 +93,9 @@ agents:
     model: claude-opus-4-7
     resume: false
     timeout_ms: 900000
+    # Replaces the default dontAsk allowlist for this role when set.
+    # allowed_tools: [Read, Grep, Glob, "Bash(git diff:*)"]
+    # unsafe_bypass: false
 
   validator:
     provider: claude

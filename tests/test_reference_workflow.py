@@ -33,6 +33,8 @@ REQUIRED_TEMPLATE_FILES = (
     ".claude/agents/handoff-router.md",
     ".claude/agents/handoff-validator.md",
     ".claude/agents/ledger-updater.md",
+    ".claude/settings.json",
+    ".claude/hooks/block_dangerous_commands.py",
 )
 
 COPIED_TEMPLATE_FILES = (

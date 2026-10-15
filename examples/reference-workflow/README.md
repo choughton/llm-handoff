@@ -25,7 +25,37 @@ docs/handoff/*.md
 .claude/agents/handoff-router.md
 .claude/agents/handoff-validator.md
 .claude/agents/ledger-updater.md
+.claude/settings.json
+.claude/hooks/block_dangerous_commands.py
 ```
+
+## Guardrails
+
+The reference workflow ships provider guardrails that deny `git push`, `curl`,
+`wget`, `rm -rf`, and `git reset --hard`:
+
+- `.claude/settings.json` adds Claude Code deny rules for those commands and
+  for `WebFetch`/`WebSearch`, plus a `PreToolUse` hook. The hook,
+  `.claude/hooks/block_dangerous_commands.py`, is a standard-library Python
+  script. It inspects every Bash or PowerShell call, including chained
+  commands and `bash -c` wrappers, and blocks matches with exit code 2. It
+  runs in every permission mode, including roles with `unsafe_bypass: true`.
+  The hook command calls `python`; change it to `python3` on systems without
+  a `python` executable.
+- `.gemini/policies/planner_guardrails.toml` holds the same deny rules in
+  Gemini CLI's policy engine schema. Gemini CLI's workspace policy tier is
+  currently disabled, so the copy inside the project has no effect. Copy it
+  to `~/.gemini/policies/` (Windows: `%USERPROFILE%\.gemini\policies\`) to
+  enforce it. User-tier rules apply to every Gemini CLI session on that
+  account.
+
+These rules match command prefixes. They catch mistakes and simple prompt
+injection; they do not stop an agent that writes a script to do the same
+thing. Keep push credentials out of the dispatch environment. See the threat
+model in the `llm-handoff` SECURITY.md.
+
+Both files sit under protected paths, so a role that edits them without
+listing them in its Work Packet stops the dispatch loop.
 
 ## Role Contract
 

@@ -3061,6 +3061,7 @@ def test_run_loop_passes_configured_agent_provider_to_backend_dispatch(
         provider="claude",
         binary="claude-custom",
         model="claude-test",
+        unsafe_bypass=True,
         permissions_flag="--allowed",
         timeout_ms=123,
         agent_name="backend-worker",

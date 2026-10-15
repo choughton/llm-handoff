@@ -26,6 +26,26 @@ This project follows a simple pre-release changelog until the first public tag.
   read-only quality reviewer and security reviewer run concurrently on the
   implementer's commit range, and the dispatcher writes `HANDOFF.md` from
   their structured verdicts.
+- Provider CLIs now launch with an allowlisted environment instead of a copy
+  of the dispatcher's environment. Per-role `env_passthrough` adds names and
+  `env_mode: inherit` restores the old copy. Codex roles need
+  `use_api_key_env: true` to receive `OPENAI_API_KEY`.
+- Protected control files: a dispatch that changes `AGENTS.md`, handoff
+  prompts, the dispatch config, or provider agent directories without listing
+  them in the Work Packet now routes the handoff to `user` with a
+  `protected_file_modified:` error. Configure with `protected_paths`.
+- Safer launch flags by default: Claude Code runs with
+  `--permission-mode dontAsk`, an `allowed_tools` list, and web tools denied;
+  Codex runs with `--sandbox workspace-write --ask-for-approval never`; Gemini
+  CLI keeps its container sandbox and refuses to start without Docker or
+  Podman. Per-role `unsafe_bypass: true` restores the previous flags and logs
+  a startup warning. `permissions_flag` now requires `unsafe_bypass`.
+- The reference workflow's Gemini guardrails now use the policy engine's
+  `[[rule]]` schema (the previous file matched no schema and enforced
+  nothing), with user-tier install steps. It also ships a Claude Code
+  `.claude/settings.json` with deny rules and a standard-library
+  `PreToolUse` hook that blocks the same commands.
+- SECURITY.md has a Threat Model section. `auto_push` is documented as unused.
 
 ## 0.0.0
 

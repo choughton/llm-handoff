@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 
@@ -31,6 +31,7 @@ def test_invoke_role_dispatches_backend_to_configured_claude(
             provider="claude",
             binary="claude-custom",
             model="claude-test",
+            unsafe_bypass=True,
             permissions_flag="--allowed",
             timeout_ms=123,
             agent_name="backend-worker",
@@ -51,7 +52,9 @@ def test_invoke_role_dispatches_backend_to_configured_claude(
         "agent_name": "backend-worker",
         "log": None,
         "repo_root": None,
+        "agent_config": ANY,
     }
+    assert invoke_mock.call_args.kwargs["agent_config"].binary == "claude-custom"
 
 
 def test_invoke_role_dispatches_planner_to_configured_codex(
@@ -86,7 +89,9 @@ def test_invoke_role_dispatches_planner_to_configured_codex(
         skill_name="custom-skill",
         timeout_ms=456,
         repo_root=None,
+        agent_config=ANY,
     )
+    assert invoke_mock.call_args.kwargs["agent_config"].skill_name == "custom-skill"
 
 
 def test_invoke_support_role_dispatches_validator_to_configured_gemini(
@@ -128,4 +133,6 @@ def test_invoke_support_role_dispatches_validator_to_configured_gemini(
         current_handoff_sha=None,
         log=None,
         repo_root=None,
+        agent_config=ANY,
     )
+    assert invoke_mock.call_args.kwargs["agent_config"].mention == "@validator"

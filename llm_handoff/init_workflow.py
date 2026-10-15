@@ -48,6 +48,10 @@ def template_files(template_root: Path = _TEMPLATE_ROOT) -> tuple[Path, ...]:
         relative_path = path.relative_to(template_root)
         if relative_path in _EXCLUDED_TEMPLATE_FILES:
             continue
+        # The template ships a Python hook script; never copy bytecode caches
+        # that a local run may have left beside it.
+        if "__pycache__" in relative_path.parts or path.suffix == ".pyc":
+            continue
         files.append(relative_path)
     return tuple(sorted(files))
 

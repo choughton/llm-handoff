@@ -143,10 +143,11 @@ The dispatcher should name and isolate failure modes rather than guessing:
 - audit fan-out reviewer failure: `review_scope_unavailable`,
   `security_extension_missing`, `quality_verdict_malformed`,
   `security_verdict_malformed`, reviewer exit or timeout, or
-  `reviewer_wrote_handoff`.
+  `reviewer_wrote_handoff`;
 - work-claim gate failure (opt-in): missing or unparseable Work Packet,
   `scope_sha` not at HEAD, scope violation, uncommitted changes, a failed,
-  missing, or timed-out configured scanner, or a failed verification command.
+  missing, or timed-out configured scanner, or a failed verification command;
+- protected control file modified outside the Work Packet scope.
 
 When a failure mode is detected, the safe default is to pause or dispatch a
 validator role with a scoped prompt.
@@ -228,6 +229,26 @@ operator-authored input rather than agent-written text. The dispatcher still
 does not sandbox them: a scanner runs with the same permissions as the
 dispatcher and as the agents it launches, in the same repository, and the only
 limits are its `timeout_ms` and the process-tree kill on timeout.
+## Protected Control Files
+
+Roles read `AGENTS.md`, the handoff prompts, provider agent files, and the
+dispatch config as instructions. A role that edits those files can change what
+the next role is told to do, so the dispatcher treats them as protected.
+
+Before every dispatch (role dispatches, finalizer, validator runs, and the
+handoff repair lane) the orchestrator hashes every file that matches
+`protected_paths` and records `HEAD`. After the dispatch it compares the
+hashes and lists the protected files each new commit touched, so a change
+that was committed and then reverted, on disk or by a later commit, still
+counts. Nested repositories and worktrees inside a protected directory are
+skipped. The handoff file itself is never protected.
+
+A change is allowed when the Work Packet the role received lists the path, or
+a parent directory ending in `/`, under `Files in scope`. Any other change
+fails closed. The dispatcher logs a `protected_file_modified:` error, rewrites
+the handoff to `next_agent: user` with `producer: validator`, lists the changed
+paths, preserves the agent's handoff text in a fenced block, and skips
+post-dispatch validation for that cycle. It does not revert the changes; a human reviews them.
 
 ## Dispatch Lock
 
@@ -282,7 +303,13 @@ orchestrator passes the target role's `AgentConfig`; provider modules translate
 that generic role invocation into concrete CLI flags, prompt mentions,
 subagent names, session-resume behavior, and timeouts.
 
-The dispatcher does not sandbox these tools and does not manage their auth.
+The dispatcher does not sandbox these tools itself and does not manage their
+auth. It chooses the launch flags: by default each CLI runs under its own
+permission or sandbox mode (Claude Code `dontAsk` with an allowlist, Codex
+`workspace-write`, Gemini CLI container sandbox), and a role must set
+`unsafe_bypass: true` to launch with approvals and sandboxing disabled. It
+also builds each launch environment from an allowlist. See
+[CONFIGURATION.md](../CONFIGURATION.md#launch-permissions-and-sandboxing).
 
 ## Provider-Native Subagents
 
@@ -334,15 +361,21 @@ that differs from the implementer role's provider.
 
 - The security reviewer gets read-only tool permissions where the CLI supports
   them: Claude runs in `dontAsk` mode with an allow-list of read tools and
-  `git diff`/`git show`/`git log`, and edit tools denied; Gemini runs in
-  `--approval-mode plan`; the Codex fallback runs `codex exec --sandbox
-  read-only`. The Codex Security CLI has no documented write mode for scans.
+  `git diff`/`git show`/`git log`, and edit and web tools denied; Gemini runs
+  in `--approval-mode plan` inside its container sandbox; the Codex fallback
+  runs `codex exec --sandbox read-only`. The Codex Security CLI has no
+  documented write mode for scans. These restrictions apply even when the
+  provider's role sets `unsafe_bypass: true`; for Gemini that setting only
+  drops the container sandbox. Without Docker or Podman, a Gemini security
+  reviewer fails closed with `security_reviewer_failed:`.
 - The quality reviewer keeps the configured auditor permissions because it
   runs verification commands. The handoff hash check, not a sandbox, enforces
   that it does not write `HANDOFF.md`. Other file writes by the quality
   reviewer are not detected by the fan-out.
-- The existing API-key environment scrubbing still applies: Claude reviewers
-  run without `ANTHROPIC_API_KEY`, and Gemini reviewers run without
+- Every security reviewer, including both Codex paths, launches with the same
+  allowlisted environment as its provider's role (`env_mode`,
+  `env_passthrough`, and the vendor API key rule). Claude reviewers run
+  without `ANTHROPIC_API_KEY`, and Gemini reviewers run without
   `GOOGLE_API_KEY` and, unless opted in, without `GEMINI_API_KEY`.
 - Vendor security reviewers are LLM tools. They are not hardened against
   prompt injection in repository content such as source comments, docs, or

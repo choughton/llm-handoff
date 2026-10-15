@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-from unittest.mock import Mock, call
+from unittest.mock import ANY, Mock, call
 
 import pytest
 
@@ -151,7 +151,7 @@ def test_invoke_gemini_planner_uses_expected_prompt_and_timeout(
         "--output-format",
         "stream-json",
         "--yolo",
-        "--sandbox=false",
+        "--sandbox",
         "-p",
         (
             f"{config.GEMINI_PLANNER_MENTION} Execute your assigned task based on the "
@@ -194,7 +194,7 @@ def test_invoke_gemini_appends_additional_instruction_when_provided(
         "--output-format",
         "stream-json",
         "--yolo",
-        "--sandbox=false",
+        "--sandbox",
         "-p",
         (
             f"{config.GEMINI_PLANNER_MENTION} Execute your assigned task based on the "
@@ -763,7 +763,7 @@ def test_run_gemini_command_falls_back_when_stream_json_is_unsupported(
             "--output-format",
             "stream-json",
             "--yolo",
-            "--sandbox=false",
+            "--sandbox",
             "-p",
             "prompt",
         ],
@@ -782,7 +782,7 @@ def test_run_gemini_command_falls_back_when_stream_json_is_unsupported(
     assert legacy_mock.call_args.args[0] == [
         config.GEMINI_BINARY,
         "--yolo",
-        "--sandbox=false",
+        "--sandbox",
         "-p",
         "prompt",
     ]
@@ -1538,7 +1538,10 @@ def test_invoke_codex_uses_repo_skill_prompt_and_json_artifacts_when_stateless(
         "Codex",
         [
             config.CODEX_BINARY,
-            "--yolo",
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
             "exec",
             "--json",
             "-c",
@@ -1555,6 +1558,7 @@ def test_invoke_codex_uses_repo_skill_prompt_and_json_artifacts_when_stateless(
         output_last_message_path=(
             Path.cwd() / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
         ).resolve(),
+        env=ANY,
     )
 
 
@@ -1599,7 +1603,10 @@ def test_invoke_codex_resumes_managed_session_when_enabled(
         "Codex",
         [
             config.CODEX_BINARY,
-            "--yolo",
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
             "exec",
             "resume",
             "--json",
@@ -1616,6 +1623,7 @@ def test_invoke_codex_resumes_managed_session_when_enabled(
         output_last_message_path=(
             Path.cwd() / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
         ).resolve(),
+        env=ANY,
     )
 
 
@@ -1711,9 +1719,12 @@ def test_invoke_codex_retries_with_new_session_when_resume_state_is_invalid(
         "thread-stale",
         agents._build_codex_resume_prompt(HANDOFF_PATH),
     ]
-    assert run_mock.call_args_list[1].args[1][0:3] == [
+    assert run_mock.call_args_list[1].args[1][0:6] == [
         config.CODEX_BINARY,
-        "--yolo",
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "never",
         "exec",
     ]
 
@@ -1795,7 +1806,15 @@ def test_invoke_claude_subagent_cleans_anthropic_env_and_pins_model(
     assert call_args.args[0] == "Claude handoff-validator"
     assert call_args.args[1] == [
         config.CLAUDE_BINARY,
-        config.CLAUDE_PERMISSIONS_FLAG,
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "Read,Edit,Write,Grep,Glob,Agent,Bash",
+        "--strict-mcp-config",
+        "--allowedTools",
+        ",".join(config.CLAUDE_DEFAULT_ALLOWED_TOOLS),
+        "--disallowedTools",
+        "WebFetch,WebSearch",
         "--model",
         config.CLAUDE_MODEL,
         "--output-format",

@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import sys
 import time
 from typing import Callable, Literal
 
@@ -18,6 +20,7 @@ from tenacity import (
 
 from llm_handoff import config
 from llm_handoff.agent_process import (
+    build_agent_env,
     _first_nonempty_line,
     _first_nonempty_value,
     _format_process_failure_detail,
@@ -378,6 +381,7 @@ def invoke_gemini(
     current_handoff_sha: str | None = None,
     log: LogFn | None = None,
     repo_root: Path | None = None,
+    agent_config: config.AgentConfig | None = None,
 ) -> DispatchResult:
     # The dispatcher may run from its own source checkout against a different
     # target repo, so the launch directory must come from the config rather
@@ -387,11 +391,25 @@ def invoke_gemini(
     should_resume = use_resume and bool(session_id)
     resolved_mention = mention or _default_gemini_mention(role)
     resolved_agent_name = agent_name or _gemini_role_label(role)
+    unsafe_bypass = bool(agent_config is not None and agent_config.unsafe_bypass)
+    if not unsafe_bypass and detect_gemini_sandbox_runtime() is None:
+        # Fail closed: without a container runtime Gemini CLI would either
+        # refuse to start or run unsandboxed with --yolo.
+        message = gemini_sandbox_unavailable_message(str(role))
+        if log is not None:
+            log("ERROR", message)
+        return DispatchResult(
+            stdout="",
+            stderr=message,
+            exit_code=1,
+            elapsed_seconds=0.0,
+        )
     command = _build_gemini_command(
         role,
         resolved_handoff_path,
         mention=resolved_mention,
         binary=binary,
+        unsafe_bypass=unsafe_bypass,
         additional_instruction=additional_instruction,
         resume_session_id=session_id if should_resume else None,
         previous_handoff_sha=previous_handoff_sha,
@@ -403,6 +421,7 @@ def invoke_gemini(
         command,
         repo_root=repo_root,
         use_api_key_env=use_api_key_env,
+        agent_config=agent_config,
         stop_on_resume_recoverable_failure=should_resume,
         agent_name=resolved_agent_name,
         timeout_ms=timeout_ms,
@@ -430,6 +449,7 @@ def invoke_gemini(
             resolved_handoff_path,
             mention=resolved_mention,
             binary=binary,
+            unsafe_bypass=unsafe_bypass,
             additional_instruction=additional_instruction,
             resume_session_id=None,
             previous_handoff_sha=None,
@@ -439,6 +459,7 @@ def invoke_gemini(
             fresh_command,
             repo_root=repo_root,
             use_api_key_env=use_api_key_env,
+            agent_config=agent_config,
             stop_on_resume_recoverable_failure=False,
             agent_name=resolved_agent_name,
             timeout_ms=timeout_ms,
@@ -461,12 +482,49 @@ def invoke_gemini(
     )
 
 
+def gemini_sandbox_args(*, unsafe_bypass: bool = False) -> list[str]:
+    """Return the Gemini CLI approval/sandbox arguments for one role launch.
+
+    The default keeps --yolo inside Gemini CLI's container sandbox (Docker or
+    Podman; sandbox-exec on macOS). ``unsafe_bypass`` restores the previous
+    ``--yolo --sandbox=false`` launch.
+    """
+    if unsafe_bypass:
+        return list(config.GEMINI_UNSAFE_BYPASS_ARGS)
+    return list(config.GEMINI_SANDBOX_ARGS)
+
+
+def detect_gemini_sandbox_runtime() -> str | None:
+    """Return the sandbox runtime Gemini CLI can use, or None."""
+    configured = os.environ.get("GEMINI_SANDBOX", "").strip().lower()
+    if configured in {"docker", "podman", "sandbox-exec"}:
+        return configured if shutil.which(configured) else None
+    if sys.platform == "darwin" and shutil.which("sandbox-exec"):
+        return "sandbox-exec"
+    for runtime in ("docker", "podman"):
+        if shutil.which(runtime):
+            return runtime
+    return None
+
+
+def gemini_sandbox_unavailable_message(role: str) -> str:
+    role_key = role.strip().lower() or "<role>"
+    return (
+        f"Gemini CLI sandbox unavailable for role `{role_key}`: no Docker or "
+        "Podman executable was found on PATH (macOS can use sandbox-exec). "
+        "Install Docker or Podman, or set "
+        f"agents.{role_key}.unsafe_bypass: true in dispatch_config.yaml to run "
+        "Gemini CLI without a sandbox."
+    )
+
+
 def _build_gemini_command(
     role: GeminiRole,
     resolved_handoff_path: Path,
     *,
     mention: str | None = None,
     binary: str | None = None,
+    unsafe_bypass: bool = False,
     additional_instruction: str | None,
     resume_session_id: str | None,
     previous_handoff_sha: str | None,
@@ -479,8 +537,7 @@ def _build_gemini_command(
         [
             "--output-format",
             "stream-json",
-            "--yolo",
-            "--sandbox=false",
+            *gemini_sandbox_args(unsafe_bypass=unsafe_bypass),
             "-p",
             _build_gemini_prompt(
                 role,
@@ -532,6 +589,7 @@ def _run_gemini_with_retries(
     repo_root: Path,
     use_api_key_env: bool,
     stop_on_resume_recoverable_failure: bool,
+    agent_config: config.AgentConfig | None = None,
     agent_name: str = "Gemini CLI",
     timeout_ms: int | None = None,
     max_retries: int | None = None,
@@ -542,7 +600,7 @@ def _run_gemini_with_retries(
         config.GEMINI_MAX_RETRIES if max_retries is None else max_retries
     ) + 1
     resolved_timeout_ms = timeout_ms or config.AGENT_TIMEOUT_MS
-    env = _build_gemini_env(use_api_key_env=use_api_key_env)
+    env = _build_gemini_env(use_api_key_env=use_api_key_env, agent_config=agent_config)
     attempt_count = 0
 
     def run_attempt() -> _ProcessResult:
@@ -782,12 +840,17 @@ def _format_gemini_result_tokens(stats: object) -> str | None:
     return None
 
 
-def _build_gemini_env(*, use_api_key_env: bool) -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("GOOGLE_API_KEY", None)
-    if not use_api_key_env:
-        env.pop("GEMINI_API_KEY", None)
-    return env
+def _build_gemini_env(
+    *,
+    use_api_key_env: bool,
+    agent_config: config.AgentConfig | None = None,
+) -> dict[str, str]:
+    # GEMINI_API_KEY is passed only when use_api_key_env is on; GOOGLE_API_KEY
+    # is never passed, in either env mode.
+    return build_agent_env(
+        agent_config or config.AgentConfig(provider="gemini"),
+        use_api_key_env=use_api_key_env,
+    )
 
 
 def _log_gemini_failure(

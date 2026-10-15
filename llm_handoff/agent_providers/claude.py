@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-import os
 from pathlib import Path
 import time
 
 from llm_handoff import config
 from llm_handoff.agent_process import (
+    build_agent_env,
     _first_nonempty_line,
     _first_nonempty_value,
     _run_command_streaming,
@@ -220,20 +220,24 @@ def invoke_claude_subagent(
     agent_name: str | None = None,
     log: LogFn | None = None,
     repo_root: Path | None = None,
+    agent_config: config.AgentConfig | None = None,
 ) -> SubagentResult:
     # The dispatcher may run from its own source checkout against a different
     # target repo, so the launch directory must come from the config rather
     # than from the process cwd.
     resolved_repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
     resolved_binary = binary or config.CLAUDE_BINARY
-    resolved_permissions_flag = permissions_flag or config.CLAUDE_PERMISSIONS_FLAG
+    permission_args = claude_permission_args(
+        agent_config or config.AgentConfig(provider="claude"),
+        permissions_flag=permissions_flag,
+    )
     resolved_model = model or config.CLAUDE_MODEL
     resolved_timeout_ms = timeout_ms or config.SUBAGENT_TIMEOUT_MS
     resolved_agent_name = agent_name or f"Claude {subagent_name}"
     start_time = time.monotonic()
     stream_json_command = [
         resolved_binary,
-        resolved_permissions_flag,
+        *permission_args,
         "--model",
         resolved_model,
         "--output-format",
@@ -247,7 +251,7 @@ def invoke_claude_subagent(
         stream_json_command,
         cwd=resolved_repo_root,
         timeout_ms=resolved_timeout_ms,
-        env=_build_claude_env(),
+        env=_build_claude_env(agent_config),
         log=log,
     )
     if _claude_stream_json_unsupported(result):
@@ -260,7 +264,7 @@ def invoke_claude_subagent(
             resolved_agent_name,
             [
                 resolved_binary,
-                resolved_permissions_flag,
+                *permission_args,
                 "--model",
                 resolved_model,
                 "-p",
@@ -268,7 +272,7 @@ def invoke_claude_subagent(
             ],
             cwd=resolved_repo_root,
             timeout_ms=resolved_timeout_ms,
-            env=_build_claude_env(),
+            env=_build_claude_env(agent_config),
             log=log,
             stream_all_stdout=True,
         )
@@ -278,6 +282,65 @@ def invoke_claude_subagent(
         exit_code=result.exit_code,
         elapsed_seconds=time.monotonic() - start_time,
     )
+
+
+def claude_permission_args(
+    agent_config: config.AgentConfig,
+    *,
+    permissions_flag: str | None = None,
+) -> list[str]:
+    """Return the Claude Code permission arguments for one role launch.
+
+    The default runs in ``dontAsk`` mode. ``--tools`` limits the built-in
+    tools that exist at all to the base names in ``allowed_tools`` (so user
+    or project settings cannot approve anything else), ``--strict-mcp-config``
+    loads no MCP servers unless the list names an ``mcp__`` tool,
+    ``--allowedTools`` pre-approves the listed rules, and web tools are always
+    denied. ``unsafe_bypass`` restores the previous
+    ``--dangerously-skip-permissions`` launch (or the role's
+    ``permissions_flag``).
+    """
+    if agent_config.unsafe_bypass:
+        return [
+            permissions_flag
+            or agent_config.permissions_flag
+            or config.CLAUDE_PERMISSIONS_FLAG
+        ]
+    allowed_tools = (
+        config.CLAUDE_DEFAULT_ALLOWED_TOOLS
+        if agent_config.allowed_tools is None
+        else agent_config.allowed_tools
+    )
+    args = [
+        "--permission-mode",
+        config.CLAUDE_PERMISSION_MODE,
+        *claude_tool_restriction_args(allowed_tools),
+    ]
+    if allowed_tools:
+        args.extend(["--allowedTools", ",".join(allowed_tools)])
+    args.extend(["--disallowedTools", ",".join(config.CLAUDE_DISALLOWED_TOOLS)])
+    return args
+
+
+def claude_tool_restriction_args(allowed_tools: tuple[str, ...]) -> list[str]:
+    """Return ``--tools`` (and ``--strict-mcp-config``) for an allowlist.
+
+    ``--allowedTools`` only pre-approves rules; tools approved elsewhere in
+    settings would still run. ``--tools`` restricts which built-in tools are
+    available, and an empty value disables them all.
+    """
+    built_in: list[str] = []
+    uses_mcp = False
+    for rule in allowed_tools:
+        name = rule.split("(", 1)[0].strip()
+        if name.startswith("mcp__"):
+            uses_mcp = True
+        elif name and name not in built_in:
+            built_in.append(name)
+    args = ["--tools", ",".join(built_in)]
+    if not uses_mcp:
+        args.append("--strict-mcp-config")
+    return args
 
 
 def _run_claude_stream_json_command(
@@ -403,7 +466,9 @@ def _coerce_claude_usage_value(usage: object, key: str) -> int | None:
     return None
 
 
-def _build_claude_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
-    return env
+def _build_claude_env(
+    agent_config: config.AgentConfig | None = None,
+) -> dict[str, str]:
+    # Claude Code launches always use the CLI's own login; ANTHROPIC_API_KEY
+    # is never passed, in either env mode.
+    return build_agent_env(agent_config or config.AgentConfig(provider="claude"))
