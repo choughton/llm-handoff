@@ -505,6 +505,7 @@ def test_render_config_codex_puts_every_role_on_codex() -> None:
     assert data["normalizer"]["provider"] == "codex"
     assert "model" not in data["normalizer"]
     assert "claude-haiku-5-5" not in rendered
+    assert "Claude model" not in rendered
     assert "provider: claude" not in rendered
     assert "provider: gemini" not in rendered
 

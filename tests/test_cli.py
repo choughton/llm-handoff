@@ -119,7 +119,7 @@ def test_init_help_names_both_single_provider_mappings(capsys) -> None:
     assert main_module.main(["init", "--help"]) == 0
 
     # Drop the help panel borders so wrapped help text reads as one line.
-    output = " ".join(capsys.readouterr().out.replace("│", " ").split())
+    output = " ".join(capsys.readouterr().out.replace("\u2502", " ").split())
     assert "claude or codex" in output
     assert "codex when Codex is the only provider CLI on PATH" in output
 

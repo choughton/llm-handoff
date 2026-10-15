@@ -10,6 +10,14 @@ This project follows a simple pre-release changelog until the first public tag.
   listed under a Work Packet's Files in scope as a bullet list. The check
   now reads Files in scope and Files out of bounds with the same parser as
   the work-claim gate and dispatcher commit, so the narrowest entry decides.
+
+- Wording and ASCII fixes: the normalizer comment in both config templates
+  no longer says the model is a Claude model, so it stays true in the
+  all-Codex `init` config; the finalizer skill and `CONFIGURATION.md` now say
+  that `commit_mode: dispatcher` commits backend and frontend work and leaves
+  the planner's handoff uncommitted; `tests/test_cli.py` uses a Python
+  escape for U+2502 instead of the literal box-drawing character.
+
 - Added integration tests in `tests/integration/` (marker `integration`).
   They build and install the wheel offline, then run the installed
   `init`, `doctor`, and `--dry-run` on a throwaway Node repository and a

@@ -833,8 +833,9 @@ Whether Codex's `workspace-write` sandbox lets a role run `git add` and
 `git commit` is unverified. The skills tell a sandboxed role not to work
 around the sandbox. For the planner, backend, and frontend roles,
 `commit_mode: dispatcher` (see [Dispatcher Commits](#dispatcher-commits))
-avoids the question, because the dispatcher commits their work and they never
-write to `.git`. It does not cover the finalizer: the dispatcher does not
+avoids the question: the dispatcher commits backend and frontend work, and the
+planner writes nothing to `.git` because its handoff is left uncommitted on
+purpose. It does not cover the finalizer: the dispatcher does not
 commit the finalizer's `PROJECT_STATE.md` and `HANDOFF.md` update. If the
 sandbox blocks the finalizer's commit, the finalizer reports no commit SHA,
 the dispatcher pauses, and you commit those files yourself.
