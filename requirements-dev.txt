@@ -8,5 +8,6 @@ PyYAML
 tenacity
 typer
 pytest
+pytest-xdist
 pre-commit
 ruff

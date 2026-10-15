@@ -108,7 +108,19 @@ def _run_backend_cycle(
         backend_work(config.repo_root)
         return _dispatch_result()
 
+    def stub_validator(subagent_name: str, prompt: str, **_kwargs: object):
+        # A backend stub that never rewrites HANDOFF.md makes the dispatcher
+        # call the validator agent. Answer it here instead of launching a real
+        # provider CLI.
+        return SubagentResult(
+            stdout="VALID: NO\nSUMMARY: stubbed validator for tests.\n",
+            stderr="",
+            exit_code=0,
+            elapsed_seconds=0.0,
+        )
+
     monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", stub_validator)
     logs: list[tuple[str, str]] = []
     exit_code = orchestrator.run_loop(
         config,
