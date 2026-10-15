@@ -25,6 +25,9 @@ agents:
     skill_name: llm-handoff
     resume: true
     timeout_ms: 1200000
+    # Launch environments are allowlisted by default (env_mode: allowlist).
+    # Add extra variable names here; vendor API keys are not accepted.
+    # env_passthrough: [HTTPS_PROXY]
 
   frontend:
     provider: gemini

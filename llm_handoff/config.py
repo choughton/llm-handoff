@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -79,6 +80,7 @@ AgentRole = Literal[
     "finalizer",
 ]
 ProviderName = Literal["codex", "gemini", "claude", "openai"]
+EnvMode = Literal["allowlist", "inherit"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
 
 DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
@@ -98,6 +100,21 @@ NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
 }
 REQUIRED_AGENT_ROLES = frozenset(DEFAULT_AGENT_PROVIDERS)
 
+# Vendor API keys are never copied from one provider's launch to another's.
+# Each key is only passed to its own provider, and only through the
+# provider-specific rule in ``agent_process.build_agent_env`` (for example
+# ``use_api_key_env``), never through ``env_passthrough``.
+VENDOR_API_KEY_ENV_NAMES = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    }
+)
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -113,12 +130,31 @@ class AgentConfig(BaseModel):
     timeout_ms: int | None = None
     retries: int | None = None
     use_api_key_env: bool | None = None
+    env_mode: EnvMode = "allowlist"
+    env_passthrough: tuple[str, ...] = ()
 
     @field_validator("timeout_ms", mode="after")
     @classmethod
     def _validate_timeout_ms(cls, value: int | None) -> int | None:
         if value is not None and value < 1:
             raise ValueError("timeout_ms must be at least 1 when set.")
+        return value
+
+    @field_validator("env_passthrough", mode="after")
+    @classmethod
+    def _validate_env_passthrough(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for name in value:
+            if not _ENV_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    f"env_passthrough entry `{name}` is not a valid environment "
+                    "variable name."
+                )
+            if name.upper() in VENDOR_API_KEY_ENV_NAMES:
+                raise ValueError(
+                    f"env_passthrough must not name the vendor API key `{name}`; "
+                    "use the role's `use_api_key_env` setting for its own "
+                    "provider key."
+                )
         return value
 
     @field_validator("retries", mode="after")

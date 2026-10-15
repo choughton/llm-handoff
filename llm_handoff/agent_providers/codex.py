@@ -7,6 +7,7 @@ import time
 
 from llm_handoff import config
 from llm_handoff.agent_process import (
+    build_agent_env,
     _append_agent_additional_instruction,
     _run_command_streaming,
 )
@@ -166,6 +167,7 @@ def invoke_codex(
     skill_name: str | None = None,
     timeout_ms: int | None = None,
     repo_root: Path | None = None,
+    agent_config: config.AgentConfig | None = None,
 ) -> DispatchResult:
     # The dispatcher may run from its own source checkout against a different
     # target repo, so the launch directory must come from the config rather
@@ -176,6 +178,7 @@ def invoke_codex(
     resolved_binary = binary or config.CODEX_BINARY
     resolved_skill_name = skill_name or config.CODEX_SKILL_NAME
     resolved_timeout_ms = timeout_ms or config.AGENT_TIMEOUT_MS
+    env = _build_codex_env(agent_config)
     start_time = time.monotonic()
     if use_resume:
         saved_thread_id = _read_codex_session_state(artifact_paths)
@@ -194,6 +197,7 @@ def invoke_codex(
                 timeout_ms=resolved_timeout_ms,
                 output_last_message_path=artifact_paths.output_last_message_path,
                 log=log,
+                env=env,
             )
             if (
                 result.result.exit_code != 0
@@ -223,6 +227,7 @@ def invoke_codex(
                     timeout_ms=resolved_timeout_ms,
                     output_last_message_path=artifact_paths.output_last_message_path,
                     log=log,
+                    env=env,
                 )
         else:
             result = _run_codex_json_command(
@@ -241,6 +246,7 @@ def invoke_codex(
                 timeout_ms=resolved_timeout_ms,
                 output_last_message_path=artifact_paths.output_last_message_path,
                 log=log,
+                env=env,
             )
         if result.thread_id:
             _write_codex_session_state(artifact_paths, result.thread_id)
@@ -261,6 +267,7 @@ def invoke_codex(
             timeout_ms=resolved_timeout_ms,
             output_last_message_path=artifact_paths.output_last_message_path,
             log=log,
+            env=env,
         )
     return DispatchResult(
         stdout=result.final_message or result.result.stdout,
@@ -428,12 +435,14 @@ def _run_codex_json_command(
     timeout_ms: int,
     output_last_message_path: Path,
     log: LogFn | None = None,
+    env: dict[str, str] | None = None,
 ) -> _CodexCommandResult:
     monitor = _CodexJsonMonitor(agent_name=agent_name, log=log)
     result = _run_command_streaming(
         command,
         cwd=cwd,
         timeout_ms=timeout_ms,
+        env=env,
         on_stdout=monitor.consume_stdout,
         on_stderr=monitor.consume_stderr,
     )
@@ -446,6 +455,11 @@ def _run_codex_json_command(
         thread_id=monitor.thread_id,
         final_message=final_message,
     )
+
+
+def _build_codex_env(agent_config: config.AgentConfig | None = None) -> dict[str, str]:
+    # OPENAI_API_KEY is passed only when the role sets use_api_key_env: true.
+    return build_agent_env(agent_config or config.AgentConfig(provider="codex"))
 
 
 def _read_codex_output_last_message(path: Path) -> str:

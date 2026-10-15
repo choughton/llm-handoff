@@ -172,10 +172,11 @@ def _coerce_cli_result_payload(result: object) -> object:
 
 
 def _claude_cli_oauth_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
-    env.pop("ANTHROPIC_AUTH_TOKEN", None)
-    return env
+    # Same allowlist as the Claude role adapter: CLI login only, no API keys
+    # and no unrelated secrets from the dispatcher's environment.
+    from llm_handoff.agent_process import build_agent_env
+
+    return build_agent_env(config.AgentConfig(provider="claude"))
 
 
 def _resolve_command_binary(command: str) -> str:

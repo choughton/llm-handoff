@@ -100,6 +100,57 @@ When `planner_api_key_env` is `false`, planner launches strip
 When `planner_api_key_env` is `true`, `GEMINI_API_KEY` is preserved, but
 `GOOGLE_API_KEY` is still stripped.
 
+## Agent Environment
+
+Each provider CLI is launched with an explicit environment built from an
+allowlist. The dispatcher's own environment is not copied, so tokens such as
+`GITHUB_TOKEN`, `AWS_*` credentials, or database passwords in the shell that
+started the dispatcher do not reach the agents.
+
+In the default `env_mode: allowlist`, a launch receives only:
+
+- process basics: `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`,
+  `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`;
+- non-secret process plumbing the CLIs need to start: `COMSPEC`, `PATHEXT`,
+  `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, `SHELL`;
+- the provider's own configuration variables: `CLAUDE_*` for Claude Code,
+  `CODEX_*` for Codex, and `GEMINI_*`, `GOOGLE_CLOUD_PROJECT`,
+  `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, plus container sandbox
+  variables (`DOCKER_HOST`, `DOCKER_CONTEXT`, `CONTAINER_HOST`,
+  `SANDBOX_FLAGS`, `SEATBELT_PROFILE`) for Gemini CLI;
+- any extra names listed under the role's `env_passthrough`.
+
+Names are matched case-insensitively.
+
+Vendor API keys follow a fixed rule in every mode. A key only reaches its own
+provider, and only when the role opts in:
+
+| Key | Passed to |
+| --- | --- |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` | never; Claude Code uses its own login |
+| `OPENAI_API_KEY` | Codex roles with `use_api_key_env: true` |
+| `GEMINI_API_KEY` | Gemini roles with `use_api_key_env: true` (or the planner flag above) |
+| `GOOGLE_API_KEY` | never |
+
+`env_passthrough` cannot name a vendor API key; config loading fails if it
+does.
+
+```yaml
+agents:
+  backend:
+    provider: codex
+    env_passthrough: [HTTPS_PROXY, SSL_CERT_FILE]
+```
+
+`env_mode: inherit` restores the previous behavior of copying the
+dispatcher's environment into the launch. The vendor API key rule above still
+applies. Use it only for debugging a CLI that needs a variable you have not
+identified yet; prefer adding that name to `env_passthrough`.
+
+Codex roles previously inherited `OPENAI_API_KEY`. A Codex setup that
+authenticates with an API key instead of `codex login` now needs
+`use_api_key_env: true` on that role.
+
 ## Supervised Dispatch
 
 The optional supervisor wrapper is configured through command-line options, not
@@ -174,10 +225,16 @@ Common fields:
 - `resume`: whether the adapter may reuse a prior session.
 - `timeout_ms`: process timeout for a single dispatch.
 - `retries`: provider retry count where supported.
+- `env_mode`: `allowlist` (default) or `inherit`. See
+  [Agent Environment](#agent-environment).
+- `env_passthrough`: extra environment variable names to pass to this role.
+- `use_api_key_env`: pass the provider's own API key (`OPENAI_API_KEY` for
+  Codex, `GEMINI_API_KEY` for Gemini). Ignored for Claude.
 
 Codex-specific fields:
 
 - `skill_name`: Codex skill to invoke in the target repo.
+- `use_api_key_env`: whether to pass `OPENAI_API_KEY`. Off by default.
 
 Claude-specific fields:
 

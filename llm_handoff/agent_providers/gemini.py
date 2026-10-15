@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-import os
 from pathlib import Path
 import re
 import time
@@ -18,6 +17,7 @@ from tenacity import (
 
 from llm_handoff import config
 from llm_handoff.agent_process import (
+    build_agent_env,
     _first_nonempty_line,
     _first_nonempty_value,
     _format_process_failure_detail,
@@ -378,6 +378,7 @@ def invoke_gemini(
     current_handoff_sha: str | None = None,
     log: LogFn | None = None,
     repo_root: Path | None = None,
+    agent_config: config.AgentConfig | None = None,
 ) -> DispatchResult:
     # The dispatcher may run from its own source checkout against a different
     # target repo, so the launch directory must come from the config rather
@@ -403,6 +404,7 @@ def invoke_gemini(
         command,
         repo_root=repo_root,
         use_api_key_env=use_api_key_env,
+        agent_config=agent_config,
         stop_on_resume_recoverable_failure=should_resume,
         agent_name=resolved_agent_name,
         timeout_ms=timeout_ms,
@@ -439,6 +441,7 @@ def invoke_gemini(
             fresh_command,
             repo_root=repo_root,
             use_api_key_env=use_api_key_env,
+            agent_config=agent_config,
             stop_on_resume_recoverable_failure=False,
             agent_name=resolved_agent_name,
             timeout_ms=timeout_ms,
@@ -532,6 +535,7 @@ def _run_gemini_with_retries(
     repo_root: Path,
     use_api_key_env: bool,
     stop_on_resume_recoverable_failure: bool,
+    agent_config: config.AgentConfig | None = None,
     agent_name: str = "Gemini CLI",
     timeout_ms: int | None = None,
     max_retries: int | None = None,
@@ -542,7 +546,7 @@ def _run_gemini_with_retries(
         config.GEMINI_MAX_RETRIES if max_retries is None else max_retries
     ) + 1
     resolved_timeout_ms = timeout_ms or config.AGENT_TIMEOUT_MS
-    env = _build_gemini_env(use_api_key_env=use_api_key_env)
+    env = _build_gemini_env(use_api_key_env=use_api_key_env, agent_config=agent_config)
     attempt_count = 0
 
     def run_attempt() -> _ProcessResult:
@@ -782,12 +786,17 @@ def _format_gemini_result_tokens(stats: object) -> str | None:
     return None
 
 
-def _build_gemini_env(*, use_api_key_env: bool) -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("GOOGLE_API_KEY", None)
-    if not use_api_key_env:
-        env.pop("GEMINI_API_KEY", None)
-    return env
+def _build_gemini_env(
+    *,
+    use_api_key_env: bool,
+    agent_config: config.AgentConfig | None = None,
+) -> dict[str, str]:
+    # GEMINI_API_KEY is passed only when use_api_key_env is on; GOOGLE_API_KEY
+    # is never passed, in either env mode.
+    return build_agent_env(
+        agent_config or config.AgentConfig(provider="gemini"),
+        use_api_key_env=use_api_key_env,
+    )
 
 
 def _log_gemini_failure(

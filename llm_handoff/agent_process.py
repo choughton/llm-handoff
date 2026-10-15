@@ -9,15 +9,137 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Callable, TextIO
+from typing import Callable, Mapping, TextIO
 
 from llm_handoff.agent_streams import StderrMode, _LiveAgentOutputMonitor
 from llm_handoff.agent_types import LogFn, _ProcessResult
+from llm_handoff.config import VENDOR_API_KEY_ENV_NAMES, AgentConfig
 
 
 PROCESS_READER_JOIN_TIMEOUT_SECONDS = 0.2
 PROCESS_TREE_KILL_TIMEOUT_SECONDS = 30
 _WINDOWS = os.name == "nt"
+
+# Environment variables every provider CLI receives in ``allowlist`` mode.
+# Names are compared case-insensitively because Windows environment names are
+# case-insensitive.
+BASE_AGENT_ENV_NAMES = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USERPROFILE",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+    }
+)
+# Non-secret process plumbing the CLIs need to start at all: Windows `.cmd`
+# shims need COMSPEC/PATHEXT/WINDIR, Node-based CLIs read APPDATA and
+# LOCALAPPDATA, and POSIX tools use TMPDIR and SHELL.
+PLATFORM_AGENT_ENV_NAMES = frozenset(
+    {
+        "COMSPEC",
+        "PATHEXT",
+        "WINDIR",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "TMPDIR",
+        "SHELL",
+    }
+)
+# Provider-owned auth and config variables. Vendor API keys are handled
+# separately by ``_granted_vendor_keys``.
+PROVIDER_AGENT_ENV_PREFIXES: dict[str, tuple[str, ...]] = {
+    "claude": ("CLAUDE_",),
+    "codex": ("CODEX_",),
+    "gemini": ("GEMINI_",),
+}
+PROVIDER_AGENT_ENV_NAMES: dict[str, frozenset[str]] = {
+    "claude": frozenset(),
+    "codex": frozenset(),
+    "gemini": frozenset(
+        {
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            # Container sandbox plumbing for Gemini's Docker/Podman sandbox.
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "CONTAINER_HOST",
+            "SANDBOX_FLAGS",
+            "SEATBELT_PROFILE",
+        }
+    ),
+}
+
+
+def build_agent_env(
+    agent_config: AgentConfig,
+    *,
+    use_api_key_env: bool | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return the environment for one provider CLI launch.
+
+    ``allowlist`` mode (the default) passes only process plumbing, the
+    provider's own auth/config variables, and names the role lists under
+    ``env_passthrough``. ``inherit`` mode restores the previous behavior of
+    copying the dispatcher's environment. In both modes vendor API keys only
+    reach their own provider, and only when the provider rule grants them.
+    """
+    source = os.environ if environ is None else environ
+    provider = agent_config.provider
+    effective_use_api_key_env = (
+        bool(agent_config.use_api_key_env)
+        if use_api_key_env is None
+        else use_api_key_env
+    )
+    granted_keys = _granted_vendor_keys(
+        provider,
+        use_api_key_env=effective_use_api_key_env,
+    )
+
+    if agent_config.env_mode == "inherit":
+        return {
+            key: value
+            for key, value in source.items()
+            if key.upper() not in VENDOR_API_KEY_ENV_NAMES
+            or key.upper() in granted_keys
+        }
+
+    allowed_names = (
+        BASE_AGENT_ENV_NAMES
+        | PLATFORM_AGENT_ENV_NAMES
+        | PROVIDER_AGENT_ENV_NAMES.get(provider, frozenset())
+        | {name.upper() for name in agent_config.env_passthrough}
+    )
+    allowed_prefixes = PROVIDER_AGENT_ENV_PREFIXES.get(provider, ())
+    env: dict[str, str] = {}
+    for key, value in source.items():
+        upper_key = key.upper()
+        if upper_key in VENDOR_API_KEY_ENV_NAMES:
+            if upper_key in granted_keys:
+                env[key] = value
+            continue
+        if upper_key in allowed_names or upper_key.startswith(allowed_prefixes):
+            env[key] = value
+    return env
+
+
+def _granted_vendor_keys(provider: str, *, use_api_key_env: bool) -> frozenset[str]:
+    # Claude CLI launches always use the CLI's own login, never an API key.
+    # GOOGLE_API_KEY is never passed to the Gemini CLI.
+    if not use_api_key_env:
+        return frozenset()
+    if provider == "gemini":
+        return frozenset({"GEMINI_API_KEY"})
+    if provider == "codex":
+        return frozenset({"OPENAI_API_KEY"})
+    return frozenset()
 
 
 def _process_group_popen_kwargs() -> dict[str, object]:

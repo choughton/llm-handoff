@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-from unittest.mock import Mock, call
+from unittest.mock import ANY, Mock, call
 
 import pytest
 
@@ -1555,6 +1555,7 @@ def test_invoke_codex_uses_repo_skill_prompt_and_json_artifacts_when_stateless(
         output_last_message_path=(
             Path.cwd() / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
         ).resolve(),
+        env=ANY,
     )
 
 
@@ -1616,6 +1617,7 @@ def test_invoke_codex_resumes_managed_session_when_enabled(
         output_last_message_path=(
             Path.cwd() / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
         ).resolve(),
+        env=ANY,
     )
 
 

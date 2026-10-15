@@ -16,6 +16,10 @@ This project follows a simple pre-release changelog until the first public tag.
   target repository.
 - Promoted the ported dispatcher tests into the public full-suite gate.
 - Preserved Apache-2.0 licensing.
+- Provider CLIs now launch with an allowlisted environment instead of a copy
+  of the dispatcher's environment. Per-role `env_passthrough` adds names and
+  `env_mode: inherit` restores the old copy. Codex roles need
+  `use_api_key_env: true` to receive `OPENAI_API_KEY`.
 
 ## 0.0.0
 

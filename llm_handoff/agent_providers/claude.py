@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-import os
 from pathlib import Path
 import time
 
 from llm_handoff import config
 from llm_handoff.agent_process import (
+    build_agent_env,
     _first_nonempty_line,
     _first_nonempty_value,
     _run_command_streaming,
@@ -220,6 +220,7 @@ def invoke_claude_subagent(
     agent_name: str | None = None,
     log: LogFn | None = None,
     repo_root: Path | None = None,
+    agent_config: config.AgentConfig | None = None,
 ) -> SubagentResult:
     # The dispatcher may run from its own source checkout against a different
     # target repo, so the launch directory must come from the config rather
@@ -247,7 +248,7 @@ def invoke_claude_subagent(
         stream_json_command,
         cwd=resolved_repo_root,
         timeout_ms=resolved_timeout_ms,
-        env=_build_claude_env(),
+        env=_build_claude_env(agent_config),
         log=log,
     )
     if _claude_stream_json_unsupported(result):
@@ -268,7 +269,7 @@ def invoke_claude_subagent(
             ],
             cwd=resolved_repo_root,
             timeout_ms=resolved_timeout_ms,
-            env=_build_claude_env(),
+            env=_build_claude_env(agent_config),
             log=log,
             stream_all_stdout=True,
         )
@@ -403,7 +404,9 @@ def _coerce_claude_usage_value(usage: object, key: str) -> int | None:
     return None
 
 
-def _build_claude_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
-    return env
+def _build_claude_env(
+    agent_config: config.AgentConfig | None = None,
+) -> dict[str, str]:
+    # Claude Code launches always use the CLI's own login; ANTHROPIC_API_KEY
+    # is never passed, in either env mode.
+    return build_agent_env(agent_config or config.AgentConfig(provider="claude"))

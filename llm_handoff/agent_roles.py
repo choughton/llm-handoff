@@ -55,6 +55,7 @@ def invoke_role(
             skill_name=agent_config.skill_name,
             timeout_ms=agent_config.timeout_ms,
             repo_root=repo_root,
+            agent_config=agent_config,
         )
 
     if provider == "gemini":
@@ -82,6 +83,7 @@ def invoke_role(
             current_handoff_sha=current_handoff_sha,
             log=log,
             repo_root=repo_root,
+            agent_config=agent_config,
         )
 
     if provider == "claude":
@@ -104,6 +106,7 @@ def invoke_role(
                 ),
                 log=log,
                 repo_root=repo_root,
+                agent_config=agent_config,
             )
         )
 
@@ -212,6 +215,7 @@ def invoke_support_role(
             ),
             log=log,
             repo_root=repo_root,
+            agent_config=agent_config,
         )
 
     result = invoke_role(
