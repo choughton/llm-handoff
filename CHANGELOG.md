@@ -15,7 +15,10 @@ This project follows a simple pre-release changelog until the first public tag.
   says to revert it. With `commit_mode: dispatcher` the bounce no longer asks
   the implementer to commit, and when the dispatcher committed nothing, the
   dispatcher skips the handoff repair for the missing SHA and lets the gate
-  report the claim.
+  report the claim. `src` and `src/` count as the same entry for the
+  both-lists check. A retry that only reverts a forbidden file now passes
+  `no_changes` on the story's earlier dispatcher commit, which the dispatcher
+  records as `scope_sha`.
 
 - The default Claude model for roles with no `model` set is now
   `claude-opus-5-5`, and the default Claude normalizer model is

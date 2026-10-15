@@ -72,6 +72,8 @@ class DispatcherCommitResult:
     left_uncommitted: tuple[str, ...] = ()
     skipped_reason: str | None = None
     error: str | None = None
+    # True when a ready_for_review claim changed no in-scope file this dispatch.
+    nothing_to_commit: bool = False
 
 
 def commit_implementer_changes(
@@ -132,6 +134,7 @@ def commit_implementer_changes(
             sha=None,
             left_uncommitted=left_uncommitted,
             skipped_reason="no in-scope files changed since dispatch",
+            nothing_to_commit=True,
         )
 
     story_id = frontmatter.story_id if frontmatter is not None else None

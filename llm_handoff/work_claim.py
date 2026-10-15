@@ -320,7 +320,11 @@ def parse_work_packet(handoff_content: str) -> WorkPacket:
     # resolves to out of bounds: the implementer may not change it, and the
     # dispatcher will not commit it. A packet cannot limit edits within a file;
     # the planner must pick one list and state any limit in the Objective.
-    conflicts = [path for path in files_in_scope if path in files_out_of_bounds]
+    # ``src`` and ``src/`` name the same directory, so compare without the slash.
+    out_of_bounds_entries = {entry.rstrip("/") for entry in files_out_of_bounds}
+    conflicts = [
+        path for path in files_in_scope if path.rstrip("/") in out_of_bounds_entries
+    ]
     if conflicts:
         problems.append(
             "listed under both Files in scope and Files out of bounds: "
@@ -1097,6 +1101,7 @@ def verify_work_claim(
     scanners: Sequence[ScannerConfig] = (),
     require_new_commit: bool = False,
     dispatcher_commit_mode: bool = False,
+    story_base_sha: str | None = None,
 ) -> WorkClaimResult:
     """Check an implementer's ``ready_for_review`` claim against the packet.
 
@@ -1108,6 +1113,9 @@ def verify_work_claim(
     no file other than the handoff (``no_changes``).
     ``dispatcher_commit_mode`` says the dispatcher, not the implementer, commits
     and records ``scope_sha``, so failure guidance never asks for a commit.
+    ``story_base_sha`` is HEAD before the story's first dispatch; with it,
+    ``no_changes`` counts commits from earlier dispatches of the same story, so
+    a retry that only reverts a forbidden file can pass.
     """
 
     handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
@@ -1161,12 +1169,25 @@ def verify_work_claim(
         )
 
     changed_files = git_changed_files(repo_root, pre_dispatch_head, head_sha)
+    # Files the story's commits changed: since this dispatch, or since the
+    # story's first dispatch when an earlier one already committed work.
+    story_files = changed_files
+    if (
+        story_base_sha
+        and story_base_sha != pre_dispatch_head
+        and changed_files is not None
+        and not any(path != handoff_rel_path for path in changed_files)
+    ):
+        story_files = git_changed_files(repo_root, story_base_sha, head_sha)
+    has_story_work = story_files is not None and any(
+        path != handoff_rel_path for path in story_files
+    )
 
     if (
         dispatcher_commit_mode
         and not scope_sha
-        and changed_files is not None
-        and not any(path != handoff_rel_path for path in changed_files)
+        and story_files is not None
+        and not has_story_work
     ):
         # The dispatcher records scope_sha only when it commits; with nothing
         # committed there is no SHA to claim, and no_changes reports why.
@@ -1214,9 +1235,7 @@ def verify_work_claim(
         checks.append(diff_check)
         errors.extend(diff_errors)
 
-    if require_new_commit and not any(
-        path != handoff_rel_path for path in changed_files
-    ):
+    if require_new_commit and not has_story_work:
         detail = (
             "no file other than the handoff changed in commits since dispatch "
             f"({_short(pre_dispatch_head)}..{_short(head_sha)})."

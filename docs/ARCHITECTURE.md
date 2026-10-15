@@ -191,6 +191,9 @@ for a `status: ready_for_review` handoff from `backend` or `frontend`:
    into it. With `commit_mode: dispatcher`, an empty `scope_sha` is skipped
    when no commit since dispatch changed a file other than the handoff, because
    the dispatcher had nothing to commit and `no_changes` reports that.
+   `no_changes` counts commits since the story's first dispatch, so a retry
+   that only reverts a forbidden file passes on the work an earlier dispatch
+   of the story committed; the dispatcher records that HEAD as `scope_sha`.
 3. Diff the pre-dispatch HEAD against the current HEAD and require every
    changed path to be inside `Files in scope` or to be the handoff file. Any
    changed path under `Files out of bounds` is a `scope_violation`, and so is

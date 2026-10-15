@@ -90,6 +90,7 @@ from llm_handoff.work_claim import (
     capture_implementer_leftovers,
     capture_pre_dispatch_state,
     carry_over_key,
+    git_changed_files,
     git_dirty_files,
     passed_verification_section,
     record_passed_verification,
@@ -342,6 +343,8 @@ def run_loop(
     planner_previous_handoff_sha: str | None = None
     implementer_base_sha: str | None = None
     implementer_base_story_key: str | None = None
+    # (story key, HEAD before that story's first gated dispatch).
+    gate_story_base: tuple[str | None, str] | None = None
     implementer_leftovers: ImplementerLeftovers | None = None
 
     while True:
@@ -633,6 +636,7 @@ def run_loop(
                     _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
                     return 1
             pre_dispatch_state: PreDispatchState | None = None
+            story_base_sha: str | None = None
             story_key = carry_over_key(handoff_content)
             if _work_claim_gate_applies(config, current_cycle.route):
                 pre_dispatch_state = capture_pre_dispatch_state(
@@ -640,6 +644,14 @@ def run_loop(
                     leftovers=implementer_leftovers,
                     story_key=story_key,
                 )
+                if pre_dispatch_state.head_sha is not None and (
+                    story_key is None
+                    or gate_story_base is None
+                    or gate_story_base[0] != story_key
+                ):
+                    gate_story_base = (story_key, pre_dispatch_state.head_sha)
+                if gate_story_base is not None and gate_story_base[0] == story_key:
+                    story_base_sha = gate_story_base[1]
                 if pre_dispatch_state.carried_over:
                     story_id = _handoff_story_id(handoff_content)
                     _log(
@@ -796,6 +808,7 @@ def run_loop(
                 assignment_content=handoff_content,
                 pre_dispatch_state=pre_dispatch_state,
                 log=log_fn,
+                story_base_sha=story_base_sha,
             )
             _log(
                 log_fn,
@@ -892,6 +905,7 @@ def run_loop(
                             assignment_content=handoff_content,
                             pre_dispatch_state=pre_dispatch_state,
                             log=log_fn,
+                            story_base_sha=story_base_sha,
                         )
                         if _accepted_approval(config):
                             implementer_base_sha = None
@@ -988,6 +1002,7 @@ def run_loop(
                 assignment_content=handoff_content,
                 pre_dispatch_state=pre_dispatch_state,
                 log=log_fn,
+                story_base_sha=story_base_sha,
             ):
                 previous_cycle = current_cycle
                 consecutive_failures = 0
@@ -2295,11 +2310,15 @@ def _commit_for_implementer(
     assignment_content: str,
     pre_dispatch_state: PreDispatchState | None,
     log: LogFn,
+    story_base_sha: str | None = None,
 ) -> DispatcherCommitResult | None:
     """Commit an implementer's in-scope changes in ``dispatcher`` commit mode.
 
     Runs before handoff validation so the recorded ``scope_sha`` and evidence
     SHA are real. Anything left uncommitted is reported by the work-claim gate.
+    When a retry changes no in-scope file, for example because it only reverted
+    a forbidden one, but an earlier dispatch of the story already committed
+    work since ``story_base_sha``, HEAD is recorded as the claim.
     Returns None when the commit step does not apply.
     """
 
@@ -2320,8 +2339,25 @@ def _commit_for_implementer(
         pre_dispatch_state=pre_dispatch_state,
         role=route,
     )
+    head = _git_head(config.repo_root) if result.nothing_to_commit else None
     if result.error is not None:
         _log(log, "ERROR", f"Dispatcher commit for {route} failed: {result.error}.")
+    elif (
+        head is not None
+        and story_base_sha is not None
+        and head != story_base_sha
+        and _story_committed_work(config, story_base_sha, head)
+    ):
+        config.handoff_full_path.write_text(
+            stamp_commit_sha(claim_content, head),
+            encoding="utf-8",
+        )
+        _log(
+            log,
+            "AGENT",
+            f"Dispatcher commit for {route}: nothing new to commit; recorded the "
+            f"story's earlier commit {head[:12]} as scope_sha.",
+        )
     elif result.sha is None:
         _log(
             log,
@@ -2348,6 +2384,14 @@ def _commit_for_implementer(
             "report them.",
         )
     return result
+
+
+def _story_committed_work(
+    config: DispatchConfig, story_base_sha: str, head: str
+) -> bool:
+    changed = git_changed_files(config.repo_root, story_base_sha, head)
+    handoff = config.handoff_path.as_posix()
+    return changed is not None and any(path != handoff for path in changed)
 
 
 def _scope_sha_missing_for_gate(
@@ -2391,6 +2435,7 @@ def _run_work_claim_gate(
     assignment_content: str,
     pre_dispatch_state: PreDispatchState | None,
     log: LogFn,
+    story_base_sha: str | None = None,
 ) -> bool:
     """Verify a ``ready_for_review`` claim deterministically before audit.
 
@@ -2421,6 +2466,7 @@ def _run_work_claim_gate(
         scanners=config.scanners,
         require_new_commit=config.commit_mode == "dispatcher",
         dispatcher_commit_mode=config.commit_mode == "dispatcher",
+        story_base_sha=story_base_sha,
     )
     _log_work_claim_result(result, log)
     if result.passed:

@@ -2063,6 +2063,13 @@ def test_parse_work_packet_rejects_a_path_in_both_lists() -> None:
     assert work_packet_errors(assignment)
 
 
+def test_parse_work_packet_treats_a_directory_with_and_without_slash_as_one() -> None:
+    with pytest.raises(WorkPacketError) as exc_info:
+        parse_work_packet(_assignment(files_in_scope="src", files_out_of_bounds="src/"))
+
+    assert "Files out of bounds: `src`" in exc_info.value.detail
+
+
 def test_verify_work_claim_routes_a_path_in_both_lists_to_the_planner(
     tmp_path: Path,
 ) -> None:
@@ -2438,6 +2445,75 @@ def test_work_claim_in_dispatcher_mode_still_requires_scope_sha_for_agent_commit
 
     assert _outcomes(result)["scope_sha"] == "FAIL"
     assert "scope_sha_not_head" in result.failed_prefixes
+
+
+def test_work_claim_counts_earlier_story_commits_for_a_revert_only_retry(
+    tmp_path: Path,
+) -> None:
+    story_base = _init_repo(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_paths(tmp_path, "first dispatch", "src/app.py")
+    state = capture_pre_dispatch_state(tmp_path)
+
+    def verify(base: str | None):
+        return verify_work_claim(
+            repo_root=tmp_path,
+            handoff_path=HANDOFF_RELATIVE_PATH,
+            assignment_content=_assignment(),
+            claim_content=_claim(head),
+            pre_dispatch_state=state,
+            verification_timeout_seconds=60,
+            require_new_commit=True,
+            dispatcher_commit_mode=True,
+            story_base_sha=base,
+        )
+
+    assert verify(story_base).passed
+    assert verify(None).failed_prefixes == ("no_changes",)
+
+
+def test_run_loop_passes_a_retry_that_only_reverts_a_forbidden_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    dispatches: list[int] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append(1)
+        if len(dispatches) == 1:
+            _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+            _write(tmp_path / "src" / "api.py", "API = 2\n")
+        else:
+            _write(tmp_path / "src" / "api.py", "API = 1\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=2, log=_collecting_log(messages))
+
+    assert len(dispatches) == 2
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    assert _commit_files(tmp_path, head) == ["src/app.py"]
+    assert any(
+        level == "ERROR" and message.startswith("scope_violation:")
+        for level, message in messages
+    )
+    assert any(
+        "nothing new to commit; recorded the story's earlier commit" in message
+        for _level, message in messages
+    )
+    assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+    frontmatter = parse_handoff_frontmatter_text(
+        config.handoff_full_path.read_text(encoding="utf-8")
+    )
+    assert frontmatter is not None
+    assert frontmatter.scope_sha == head
 
 
 def test_run_loop_skips_handoff_repair_when_the_dispatcher_committed_nothing(
