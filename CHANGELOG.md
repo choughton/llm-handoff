@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A pull request review response that starts with `Deferred:` now keeps its
+  finding's review thread open. The dispatcher still posts the reply, logs a
+  `WARN` naming the deferred finding, and does not resolve the thread, so the
+  unresolved-thread rule pauses the merge for a person. Before, any response
+  resolved its thread, so a real finding the implementer left unfixed was
+  closed silently and the pull request merged.
+
 - Added a `codex` next-agent normalizer provider. `normalizer.provider: codex`
   runs `codex exec --sandbox read-only` on the user's Codex CLI login, so an
   all-Codex setup does not need `OPENAI_API_KEY`; the adapter never passes

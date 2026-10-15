@@ -16,7 +16,9 @@
   round (``max_review_rounds``), and a review that never finishes leaves the
   pull request open and stops the loop. The implementer's response to each
   finding is posted as a reply on its review thread, which is then resolved,
-  and the fix merges without another review. The dispatcher never asks
+  and the fix merges without another review. A response that starts with
+  ``Deferred:`` gets the reply, but its thread stays unresolved, so the merge
+  pauses for a person to decide. The dispatcher never asks
   Codex for a review.
 
 In ``pr`` mode the dispatcher only auto-merges a pull request whose review
@@ -42,6 +44,7 @@ import yaml
 from llm_handoff.pr_review import (
     ReviewFinding,
     ReviewGate,
+    is_deferred_response,
     parse_gh_json_pages,
     parse_review_responses,
     utc_now,
@@ -453,7 +456,9 @@ def build_review_bounce_handoff(
         "what you changed, or why you left it. After the audit passes, the "
         "dispatcher pushes the fix to the same pull request, posts each "
         "response as the reply on that finding's review thread, and resolves "
-        "the thread. "
+        "the thread. If you leave a real finding unfixed for later work, start "
+        "its response with `Deferred:`; the dispatcher posts that reply but "
+        "leaves the thread unresolved, so a person decides before the merge. "
         + (
             "This is the last correction round: the dispatcher then merges the "
             "pull request without another Codex review. "
@@ -593,7 +598,9 @@ def _answer_findings(
     """Reply to and resolve the review threads of the last bounce's findings.
 
     Returns an error message when a ``gh`` call fails, else ``None``. A finding
-    without an implementer response keeps its thread unresolved. Progress is
+    without an implementer response keeps its thread unresolved, and so does a
+    deferred one (a response that starts with ``Deferred:``), after its reply
+    is posted. Progress is
     saved after every reply and resolution, so a retry after a failure never
     posts the same reply twice, and a thread that is already resolved gets
     no reply.
@@ -630,8 +637,11 @@ def _answer_findings(
             finding["resolved"] = True
             save_progress()
             continue
+        response = responses.get(number) if isinstance(number, int) else None
+        deferred = bool(finding.get("deferred")) or (
+            response is not None and is_deferred_response(response)
+        )
         if not finding.get("replied"):
-            response = responses.get(number) if isinstance(number, int) else None
             if not response:
                 log(
                     "WARN",
@@ -657,7 +667,17 @@ def _answer_findings(
                     f"{_first_line(replied)}"
                 )
             finding["replied"] = True
+            if deferred:
+                finding["deferred"] = True
             save_progress()
+        if deferred:
+            log(
+                "WARN",
+                f"Finding {number} ({location}) was deferred by the "
+                f"`{state.implementer}` role and is not fixed; its review "
+                "thread stays unresolved, so the merge waits for a person.",
+            )
+            continue
         if thread is None:
             log(
                 "WARN",

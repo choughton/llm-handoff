@@ -562,6 +562,7 @@ def test_codex_findings_get_one_correction_round_then_merge(
         {"number": 1, "comment_id": 4279958834, "location": "src/widget.py:1"}
     ]
     assert "## Review Responses" in handoff
+    assert "`Deferred:`" in handoff
 
     # The implementer fixes the finding on the same branch. The dispatcher
     # answers and resolves the thread and merges without another review.
@@ -794,6 +795,88 @@ def test_a_finding_without_a_response_keeps_its_thread_and_blocks_the_merge(
     assert "replies" not in _gh_state(tmp_path)
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
     assert any("No review response for finding 1" in m for _l, m in entries)
+
+
+def test_a_deferred_finding_gets_a_reply_but_keeps_its_thread_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    _set_api(tmp_path, comments=[_codex_summary(_git(repo, "rev-parse", "HEAD"))])
+    save_review_responses(
+        repo,
+        "## Review Responses\n\n### Finding 1: `src/widget.py:1`\n"
+        "**Deferred:** out of scope for this story; needs its own packet.\n",
+    )
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "1 review thread(s)" in outcome.message
+    gh_state = _gh_state(tmp_path)
+    [reply] = gh_state["replies"]
+    assert reply["body"].startswith("**Deferred:** out of scope")
+    assert gh_state["threads"][0]["isResolved"] is False
+    assert not any(
+        call[-1] == "graphql" and any("resolveReviewThread" in a for a in call)
+        for call in _gh_calls(tmp_path)
+    )
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any(
+        level == "WARN" and "Finding 1 (src/widget.py:1) was deferred" in message
+        for level, message in entries
+    )
+
+
+def test_a_retry_keeps_a_replied_deferred_finding_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    # An earlier attempt already posted the deferred reply and saved that in
+    # the story state; the saved responses are gone (a later gate pass
+    # without responses removes them). The finding must still stay open.
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    state["open_findings"][0].update(replied=True, deferred=True)
+    (repo / STATE_PATH).write_text(json.dumps(state), encoding="utf-8")
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    _set_api(tmp_path, comments=[_codex_summary(_git(repo, "rev-parse", "HEAD"))])
+    assert not (repo / RESPONSES_PATH).exists()
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and "1 review thread(s)" in outcome.message
+    assert "replies" not in _gh_state(tmp_path)
+    assert _gh_state(tmp_path)["threads"][0]["isResolved"] is False
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any("was deferred" in message for _level, message in entries)
 
 
 def test_auto_merge_waits_for_every_review_thread_to_be_resolved(

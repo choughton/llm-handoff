@@ -52,6 +52,21 @@ When `status` is `ready_for_review`, `verified_pass`, or `verified_fail`, includ
 Evidence must come from the current turn. Prior output, assumptions, and model
 confidence are not evidence.
 
+## Pull Request Review Responses
+
+When the dispatcher bounces pull request review findings back to you, add a
+`## Review Responses` section to the handback with one `### Finding N`
+subsection per finding: one or two sentences on what you changed, or why you
+left it. The dispatcher posts each response as the reply on that finding's
+review thread and resolves the thread.
+
+If a finding is real but you leave it unfixed for later work, start its
+response with `Deferred:`, for example
+`Deferred: out of scope for this story; needs its own Work Packet.` The
+dispatcher posts that reply but leaves the thread unresolved, so the pull
+request is not merged until a person decides. Do not use `Deferred:` for a
+finding you rejected as wrong; explain why it does not hold up instead.
+
 ## When To Flag Uncertainty
 
 Stop and route to `planner`, `validator`, or `user` when scope, ownership,
