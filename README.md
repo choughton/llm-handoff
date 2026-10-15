@@ -247,10 +247,50 @@ is not a graph runtime. It is the inversion that prompts are advisory while
 validators are authoritative. The router can propose, but the loop only
 advances when the handoff state parses, routes, and validates.
 
+## Agent Safety Defaults
+
+Provider CLIs launch with these protections on by default:
+
+- **Allowlisted environment.** Agents get process basics and their own
+  provider's variables, not a copy of the dispatcher's shell. `GITHUB_TOKEN`,
+  cloud credentials, and other vendors' API keys stay out. See
+  [Agent Environment](CONFIGURATION.md#agent-environment).
+- **Permission checks and sandboxes on.** Claude Code runs in `dontAsk` mode
+  with a tool allowlist, Codex in its `workspace-write` sandbox, and Gemini CLI
+  in its container sandbox. See
+  [Launch Permissions And Sandboxing](CONFIGURATION.md#launch-permissions-and-sandboxing).
+- **Protected control files fail closed.** A role that edits `AGENTS.md`, the
+  handoff prompts, `dispatch_config.yaml`, or `.claude/`, `.codex/`, or
+  `.gemini/` without listing the path in its Work Packet stops the loop, and
+  the handoff routes to `user`. See
+  [Protected Control Files](CONFIGURATION.md#protected-control-files).
+
+Roles mapped to Gemini CLI need Docker or Podman on `PATH` (macOS can use
+`sandbox-exec`). Without one, the dispatcher refuses to start and names the
+setting to change.
+
+Each protection has an opt-out:
+
+```yaml
+protected_paths: []      # stop checking control files
+agents:
+  planner:
+    unsafe_bypass: true  # this role runs with approvals and sandbox off
+    env_mode: inherit    # this role gets the dispatcher's full environment
+```
+
+Warning: each opt-out removes a protection. Use one only to debug a specific
+role.
+
+On Windows, run the dispatcher inside WSL2 or a container that has no push
+credential. See the [threat model](SECURITY.md#threat-model).
+
 ## Known Limitations
 
 - The reference implementation has been validated primarily in one workflow.
-- Provider CLI behavior can change underneath the dispatcher.
+- Provider CLI behavior can change underneath the dispatcher. The default
+  permission and sandbox flags follow each CLI's documentation but have not
+  been run against every CLI version and platform.
 - Validator calls optimize for correctness over token cost.
 - Runtime role providers are configurable across the registered CLI adapters:
   `codex`, `gemini`, and `claude`. Provider-specific prompt files and local auth

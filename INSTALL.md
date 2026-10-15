@@ -15,6 +15,9 @@ detailed source-checkout and target-repo explanation, see
   - Codex CLI for backend-style dispatches.
   - Gemini CLI for planner or frontend-style dispatches.
   - Claude Code CLI for auditor, validator, or finalizer-style dispatches.
+- Docker or Podman on `PATH` for any role mapped to Gemini CLI (macOS can use
+  `sandbox-exec`). Gemini roles run in its container sandbox and the
+  dispatcher refuses to start without one.
 - Optional: GitHub CLI (`gh`) for repository checks and release workflow.
 
 The dispatcher orchestrates provider CLIs. It does not install them, configure
@@ -87,6 +90,23 @@ gh auth status
 
 Provider auth must already be valid before the dispatcher invokes a provider
 CLI.
+
+## Safety Defaults
+
+Agents launch with an allowlisted environment, permission checks and sandboxes
+on, and protected control files that stop the loop when a role edits them
+outside its Work Packet. Codex users who authenticate with an API key instead
+of `codex login` must set `use_api_key_env: true` on the Codex roles.
+
+The per-role opt-outs are `unsafe_bypass: true`, `env_mode: inherit`, and the
+repo-wide `protected_paths: []`. Each one removes a protection. See
+[Agent Safety Defaults](README.md#agent-safety-defaults) and
+[CONFIGURATION.md](CONFIGURATION.md#launch-permissions-and-sandboxing).
+
+On Windows, run the dispatcher inside WSL2 or a container that has no push
+credential. Claude Code's Bash sandbox needs WSL2, and the Codex native
+Windows sandbox is experimental. See the
+[threat model](SECURITY.md#threat-model).
 
 ## Initialize A Target Repository
 

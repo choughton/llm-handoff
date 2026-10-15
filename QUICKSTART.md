@@ -61,6 +61,20 @@ claude --version
 The dispatcher launches provider CLIs. It does not install them or configure
 their accounts.
 
+Gemini CLI roles run in a container sandbox by default. Check that Docker or
+Podman is on `PATH` (macOS can use `sandbox-exec` instead):
+
+```bash
+docker --version
+```
+
+Without one, the dispatcher refuses to start. Agents also launch with an
+allowlisted environment and permission checks on, and edits to protected
+control files stop the loop. See
+[Agent Safety Defaults](README.md#agent-safety-defaults) for what that means
+and how to opt out per role. On Windows, prefer running inside WSL2 or a
+container with no push credential.
+
 ## 4. Initialize A Target Repo
 
 Preview the files that would be copied:
