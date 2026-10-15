@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added a `pyproject.toml` (hatchling) so the dispatcher installs from a Git
+  checkout with `pip install .` or `pip install git+https://...` and exposes an
+  `llm-handoff` console command. The wheel bundles
+  `examples/reference-workflow/`, hidden paths included, and `init` resolves the
+  template through `importlib.resources`, falling back to the source layout.
+  hatchling joins the dev requirements so the packaging test builds the wheel
+  offline. Not yet published to PyPI.
+
 - Roles accept an optional `fallback` agent. When the primary agent times
   out, hits a rate or usage limit, is not signed in, or cannot launch, the
   dispatcher reruns that dispatch once on the fallback. Ordinary failures and

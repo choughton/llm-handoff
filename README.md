@@ -60,6 +60,7 @@ are parser fixtures, not user-facing docs.
 | --- | --- |
 | [dispatch_config.example.yaml](dispatch_config.example.yaml) | Example role-to-provider config shape. |
 | [.pre-commit-config.yaml](.pre-commit-config.yaml) | Lightweight contributor hooks for whitespace, YAML/TOML, large files, and Ruff. |
+| [pyproject.toml](pyproject.toml) | Package metadata, runtime dependencies, and the `llm-handoff` console command. |
 | [requirements-dev.txt](requirements-dev.txt) | Source-checkout runtime and test dependencies. |
 | [examples/reference-workflow/README.md](examples/reference-workflow/README.md) | Copyable workflow protocol plan. |
 
@@ -142,8 +143,11 @@ are parser fixtures, not user-facing docs.
 
 ## Source Checkout
 
-This will not be published to PyPI. The intended workflow is clone-and-run from
-source:
+The package is installable from a Git checkout (`python -m pip install .`) or
+straight from Git
+(`python -m pip install git+https://github.com/choughton/llm-handoff.git`),
+which adds an `llm-handoff` console command and bundles the reference workflow
+template. It is not yet published to PyPI. To run from source instead:
 
 Windows PowerShell:
 

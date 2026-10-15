@@ -68,9 +68,29 @@ macOS or Linux:
 python -m pip install -r requirements-dev.txt
 ```
 
-No PyPI distribution is planned. This repository is intended to be cloned and
-run from source. If a `pyproject.toml` is added later, it should support local
-tooling and tests, not package publication.
+## Install The Package From A Git Checkout
+
+The repository ships a `pyproject.toml`, so you can install it as a package
+from a checkout or straight from Git. It is not yet published to PyPI.
+
+From a local checkout:
+
+```bash
+python -m pip install .
+```
+
+Or straight from Git:
+
+```bash
+python -m pip install git+https://github.com/choughton/llm-handoff.git
+```
+
+Either install puts an `llm-handoff` console command on `PATH` for that
+environment. `llm-handoff ...` and `python -m llm_handoff ...` run the same
+CLI. The wheel bundles the `examples/reference-workflow/` template, including
+its hidden `.claude/`, `.codex/`, `.gemini/`, `.geminiignore`, and `.gitignore`
+paths, so `llm-handoff init` works outside the source checkout. Run from source
+instead, `init` reads the template from `examples/reference-workflow/`.
 
 ## Check Provider CLIs
 
@@ -159,9 +179,9 @@ python -m llm_handoff --config dispatch_config.yaml
 The dispatcher reads the handoff file, invokes one role, validates the updated
 handoff, then continues or pauses.
 
-When running against a separate target repository before packaging support
-exists, run with the source checkout on `PYTHONPATH` or from the source checkout
-itself while pointing the config paths at the target repo.
+To run against a separate target repository, either install the package (see
+above) and run `llm-handoff` from anywhere, or run from the source checkout
+while pointing `--repo-root` and `--config` at the target repo.
 
 ## Debugging
 
