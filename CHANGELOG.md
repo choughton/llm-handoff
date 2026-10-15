@@ -81,6 +81,15 @@ This project follows a simple pre-release changelog until the first public tag.
   `scope_sha` before validation and the work-claim gate. In that mode the gate
   also fails claims with no new commit (`no_changes`). Requires
   `enforce_work_packet: true`.
+- Token usage and cost moved off the console and into the log file. Each
+  agent run writes one `DEBUG` line, `usage: <agent> provider=<p> model=...
+  input_tokens=... output_tokens=... cache_*=... cost_usd=... num_turns=...`,
+  for Claude roles, Codex and Gemini (tokens only; they report no price), and
+  the Claude security reviewer. `grep 'usage:'` a dispatch log to total a run.
+  The console keeps a short `Claude result (stop=...)` / `Gemini result
+  (status=...)` line.
+- The security reviewer's verdict schema no longer carries a `$schema` key,
+  which Claude Code's `--json-schema` rejected at launch.
 
 ## 0.0.0
 

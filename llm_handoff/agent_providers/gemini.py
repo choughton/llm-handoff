@@ -30,6 +30,7 @@ from llm_handoff.agent_process import (
 from llm_handoff.agent_streams import _LiveAgentOutputMonitor
 from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
 from llm_handoff.provider_auth import find_auth_failure
+from llm_handoff.usage_log import format_usage_line
 
 
 GeminiRole = str
@@ -320,10 +321,11 @@ class _GeminiStreamJsonMonitor:
         if self.log is None:
             return
         status = str(event.get("status", "unknown"))
-        stats = event.get("stats")
-        tokens = _format_gemini_result_tokens(stats)
-        suffix = f", tokens={tokens}" if tokens is not None else ""
-        self.log("AGENT", f"{self.agent_name}: Gemini result (status={status}{suffix})")
+        self.log("AGENT", f"{self.agent_name}: Gemini result (status={status})")
+        fields = _gemini_usage_fields(event.get("stats"))
+        if fields:
+            # Gemini reports tokens but no price. Log file only (DEBUG).
+            self.log("DEBUG", format_usage_line(self.agent_name, "gemini", fields))
 
     def _handle_error_event(self, event: dict[str, object]) -> None:
         if self.log is None:
@@ -826,6 +828,23 @@ def _format_gemini_tool_use_label(name: object, parameters: object) -> str:
         return "Finding files"
 
     return f"Using tool: {tool_name}"
+
+
+def _gemini_usage_fields(stats: object) -> dict[str, object]:
+    if not isinstance(stats, dict):
+        return {}
+    fields: dict[str, object] = {}
+    for target, keys in (
+        ("input_tokens", ("inputTokens", "input_tokens")),
+        ("output_tokens", ("outputTokens", "output_tokens")),
+        ("total_tokens", ("totalTokens", "total_tokens")),
+    ):
+        for key in keys:
+            value = stats.get(key)
+            if isinstance(value, int):
+                fields[target] = value
+                break
+    return fields
 
 
 def _format_gemini_result_tokens(stats: object) -> str | None:

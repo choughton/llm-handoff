@@ -28,11 +28,15 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Callable, Literal, Mapping
+from typing import Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from llm_handoff import config as config_module
+from llm_handoff.usage_log import (
+    format_usage_line,
+    usage_fields_from_claude_result,
+)
 from llm_handoff.agent_process import _run_logged_agent_command
 from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_providers.claude import (
@@ -1186,6 +1190,33 @@ def _run_quality_reviewer(
     )
 
 
+def _log_claude_json_usage(
+    agent_name: str,
+    stdout: str,
+    command: Sequence[str],
+    log: LogFn | None,
+) -> None:
+    """Log a ``--output-format json`` Claude run's usage to the log file only."""
+
+    if log is None:
+        return
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(envelope, dict):
+        return
+    fields = usage_fields_from_claude_result(envelope)
+    if not fields:
+        return
+    model = None
+    if "--model" in command:
+        index = list(command).index("--model")
+        if index + 1 < len(command):
+            model = command[index + 1]
+    log("DEBUG", format_usage_line(agent_name, "claude", {"model": model, **fields}))
+
+
 def _run_security_reviewer(
     plan: SecurityReviewerPlan,
     *,
@@ -1273,6 +1304,8 @@ def _run_security_reviewer(
         stderr = process_result.stderr
         exit_code = process_result.exit_code
         verdict_text = stdout
+        if plan.kind == "claude":
+            _log_claude_json_usage(agent_name, stdout, plan.command, log)
     elapsed = time.monotonic() - start
     after_sha = _handoff_sha(handoff_path)
 
