@@ -647,7 +647,7 @@ work at all:
 | Launch failure | No output and an OS "file not found" or "command not found" error. |
 | Sign-in failure | The same markers that stop the loop without a fallback. |
 | Rate or usage limit | 429, `RESOURCE_EXHAUSTED`, `rate_limit_error`, `overloaded_error`, quota, or usage-limit messages in stderr or the end of stdout. |
-| Timeout | The process ran past the role's `timeout_ms` and was killed. |
+| Timeout | The process ran past the role's `timeout_ms`, or its optional `idle_timeout_ms`, and was killed. |
 
 Any other non-zero exit is the agent's own failure: the fallback does not run
 and the failure counts toward `max_consecutive_failures` as before. The
@@ -671,8 +671,9 @@ Rules and limits:
 - If the fallback also fails, its result is the dispatch result and the
   normal failure count applies. A sign-in failure on the fallback still stops
   the loop.
-- A hung agent is only detected when `timeout_ms` expires, so lower it on a
-  role to fail over sooner. Gemini retries its own 429s first (`retries`, with
+- By default a hung agent is only detected when `timeout_ms` expires. Set
+  `idle_timeout_ms` (see [Idle Output Timeout](#idle-output-timeout)) or lower
+  `timeout_ms` on a role to fail over sooner. Gemini retries its own 429s first (`retries`, with
   backoff); set `retries: 0` on a Gemini role to fail over at the first 429.
 - Fallbacks cover role dispatches. In audit fan-out the quality reviewer's
   prompt and verdict parsing depend on its provider, so it fails over only to
@@ -681,6 +682,37 @@ Rules and limits:
 
 Startup logs a `Launch <role> fallback:` line for each fallback, and a Gemini
 fallback needs a sandbox runtime like any Gemini role.
+
+### Idle Output Timeout
+
+`idle_timeout_ms` is an optional per-role limit on silence. When it is set, the
+dispatcher kills the agent's process tree once the process has written nothing
+to stdout or stderr for that long, instead of waiting for the full
+`timeout_ms`:
+
+```yaml
+agents:
+  backend:
+    provider: codex
+    timeout_ms: 1200000
+    idle_timeout_ms: 300000
+    fallback:
+      provider: claude
+      model: claude-sonnet-4-6
+```
+
+The kill is reported as `Process timed out after <n> seconds without output
+(idle_timeout_ms).`, which counts as a timeout, so a configured fallback runs
+next. Without a fallback it is an ordinary timed-out dispatch.
+
+It is off by default (unset), and it should stay off unless you know the CLI
+streams steadily. Some CLIs write nothing for long stretches while they work:
+Gemini in plain-text mode (the fallback when `stream-json` is not supported)
+and Claude in buffered text mode print only when they finish, and any CLI can
+go quiet during a long model call or a slow tool. Set the limit well above the
+longest quiet stretch you have seen in that role's dispatch logs. A fallback
+block takes its own `idle_timeout_ms`; it does not inherit the primary's.
+The audit security reviewer and the next-agent normalizer do not use it.
 
 ## Provider Fields
 
@@ -692,6 +724,9 @@ Common fields:
   role selection.
 - `resume`: whether the adapter may reuse a prior session.
 - `timeout_ms`: process timeout for a single dispatch.
+- `idle_timeout_ms`: optional limit on how long the process may write no
+  output before it is killed. Off by default. See
+  [Idle Output Timeout](#idle-output-timeout).
 - `retries`: provider retry count where supported.
 - `env_mode`: `allowlist` (default) or `inherit`. See
   [Agent Environment](#agent-environment).

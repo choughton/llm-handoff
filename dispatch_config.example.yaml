@@ -94,6 +94,10 @@ agents:
     # fallback:
     #   provider: claude
     #   model: claude-sonnet-4-6
+    # Optional: kill the agent after this long with no output, so a hang fails
+    # over before timeout_ms. Off by default; some CLIs stay silent for long
+    # stretches while they work, so set it well above their quiet periods.
+    # idle_timeout_ms: 300000
 
   frontend:
     provider: gemini

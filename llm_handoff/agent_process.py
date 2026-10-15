@@ -238,6 +238,7 @@ def _run_logged_agent_command(
     *,
     cwd: Path,
     timeout_ms: int,
+    idle_timeout_ms: int | None = None,
     env: dict[str, str] | None = None,
     log: LogFn | None = None,
     stream_all_stdout: bool = False,
@@ -248,6 +249,7 @@ def _run_logged_agent_command(
             command,
             cwd=cwd,
             timeout_ms=timeout_ms,
+            idle_timeout_ms=idle_timeout_ms,
             env=env,
             on_stdout=None,
             on_stderr=None,
@@ -263,6 +265,7 @@ def _run_logged_agent_command(
         command,
         cwd=cwd,
         timeout_ms=timeout_ms,
+        idle_timeout_ms=idle_timeout_ms,
         env=env,
         on_stdout=lambda chunk: monitor.consume("stdout", chunk),
         on_stderr=lambda chunk: monitor.consume("stderr", chunk),
@@ -274,10 +277,17 @@ def _run_command_streaming(
     *,
     cwd: Path,
     timeout_ms: int,
+    idle_timeout_ms: int | None = None,
     env: dict[str, str] | None = None,
     on_stdout: Callable[[str], None] | None = None,
     on_stderr: Callable[[str], None] | None = None,
 ) -> _ProcessResult:
+    """Run ``command``, streaming its output, and kill it on a timeout.
+
+    ``timeout_ms`` bounds the whole run. ``idle_timeout_ms``, when set, also
+    kills the process once it has written nothing to stdout or stderr for
+    that long, so a hung CLI is caught before the full timeout.
+    """
     resolved_command = list(command)
     resolved_command[0] = _resolve_command_binary(resolved_command[0])
     popen_kwargs = {
@@ -316,18 +326,28 @@ def _run_command_streaming(
     for reader in readers:
         reader.start()
 
-    deadline = time.monotonic() + (timeout_ms / 1000)
+    last_output_at = time.monotonic()
+    deadline = last_output_at + (timeout_ms / 1000)
+    idle_limit = None if idle_timeout_ms is None else idle_timeout_ms / 1000
     timed_out = False
+    idled_out = False
     try:
         while process.poll() is None and time.monotonic() < deadline:
-            _drain_stream_queue(
+            if _drain_stream_queue(
                 stream_queue,
                 stdout_parts=stdout_parts,
                 stderr_parts=stderr_parts,
                 on_stdout=on_stdout,
                 on_stderr=on_stderr,
                 timeout=0.1,
-            )
+            ):
+                last_output_at = time.monotonic()
+            elif (
+                idle_limit is not None
+                and time.monotonic() - last_output_at >= idle_limit
+            ):
+                idled_out = True
+                break
     except BaseException:
         # A KeyboardInterrupt no longer reaches a child that runs in its own
         # process group, so take the tree down before propagating.
@@ -357,7 +377,15 @@ def _run_command_streaming(
     stdout = "".join(stdout_parts)
     stderr = "".join(stderr_parts)
     if timed_out:
-        message = f"Process timed out after {timeout_ms / 1000:g} seconds."
+        # Both messages keep the "Process timed out after" prefix that the
+        # failover classifier treats as a timeout.
+        if idled_out:
+            message = (
+                f"Process timed out after {idle_timeout_ms / 1000:g} seconds "
+                "without output (idle_timeout_ms)."
+            )
+        else:
+            message = f"Process timed out after {timeout_ms / 1000:g} seconds."
         if stderr:
             message = f"{message}\n{stderr}"
         return _ProcessResult(stdout=stdout, stderr=message, exit_code=1)
@@ -393,7 +421,9 @@ def _drain_stream_queue(
     on_stderr: Callable[[str], None] | None,
     timeout: float,
     drain_all: bool = False,
-) -> None:
+) -> bool:
+    """Move queued output into the buffers; return True if any chunk arrived."""
+    received = False
     while True:
         try:
             if drain_all:
@@ -401,10 +431,11 @@ def _drain_stream_queue(
             else:
                 stream_name, chunk = stream_queue.get(timeout=timeout)
         except queue.Empty:
-            return
+            return received
 
         if chunk is None:
             continue
+        received = True
 
         if stream_name == "stdout":
             stdout_parts.append(chunk)
@@ -416,7 +447,7 @@ def _drain_stream_queue(
                 on_stderr(chunk)
 
         if not drain_all:
-            return
+            return received
 
 
 def _run_command(

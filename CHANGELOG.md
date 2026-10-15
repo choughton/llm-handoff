@@ -10,6 +10,10 @@ This project follows a simple pre-release changelog until the first public tag.
   out, hits a rate or usage limit, is not signed in, or cannot launch, the
   dispatcher reruns that dispatch once on the fallback. Ordinary failures and
   runs that already rewrote the handoff do not fail over.
+- Roles accept an optional `idle_timeout_ms`. When set, an agent that writes
+  no stdout or stderr output for that long is killed and reported as a
+  timeout, so a hung agent fails over to its fallback before the full
+  `timeout_ms`. Off by default, because some CLIs stay silent while they work.
 
 - `init` preserves user content through managed sections in AGENTS.md and
   ignore files, merges Claude settings, and reports merge actions separately.

@@ -206,6 +206,9 @@ class AgentConfig(BaseModel):
     permissions_flag: str | None = None
     resume: bool | None = None
     timeout_ms: int | None = None
+    # Off by default: some CLIs write nothing for long stretches while they
+    # work, so an idle limit only suits CLIs that stream steadily.
+    idle_timeout_ms: int | None = None
     retries: int | None = None
     use_api_key_env: bool | None = None
     env_mode: EnvMode = "allowlist"
@@ -222,6 +225,13 @@ class AgentConfig(BaseModel):
     def _validate_timeout_ms(cls, value: int | None) -> int | None:
         if value is not None and value < 1:
             raise ValueError("timeout_ms must be at least 1 when set.")
+        return value
+
+    @field_validator("idle_timeout_ms", mode="after")
+    @classmethod
+    def _validate_idle_timeout_ms(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("idle_timeout_ms must be at least 1 when set.")
         return value
 
     @field_validator("env_passthrough", mode="after")

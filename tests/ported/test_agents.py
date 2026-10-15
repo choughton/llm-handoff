@@ -1557,6 +1557,7 @@ def test_invoke_codex_uses_repo_skill_prompt_and_json_artifacts_when_stateless(
         ],
         cwd=Path.cwd(),
         timeout_ms=config.AGENT_TIMEOUT_MS,
+        idle_timeout_ms=None,
         log=None,
         output_last_message_path=(
             Path.cwd() / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
@@ -1622,6 +1623,7 @@ def test_invoke_codex_resumes_managed_session_when_enabled(
         ],
         cwd=Path.cwd(),
         timeout_ms=config.AGENT_TIMEOUT_MS,
+        idle_timeout_ms=None,
         log=None,
         output_last_message_path=(
             Path.cwd() / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
