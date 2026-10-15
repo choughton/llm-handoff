@@ -797,6 +797,55 @@ With every role on Claude, the security reviewer runs on the same vendor as
 the implementer, so it is a second read-only review rather than an
 independent one, and each dispatcher start logs a warning saying so.
 
+### All-Codex Mapping
+
+The reference workflow ships a Codex repo skill for every role, so a machine
+with only the Codex CLI installed can run the whole loop. Each role names its
+skill in `skill_name`, and the Codex adapter tells Codex to use that skill:
+
+| Role | Codex skill |
+| --- | --- |
+| `planner` | `.codex/skills/llm-handoff-planner/SKILL.md` |
+| `backend` | `.codex/skills/llm-handoff/SKILL.md` |
+| `frontend` | `.codex/skills/llm-handoff-frontend/SKILL.md` |
+| `auditor` | `.codex/skills/llm-handoff-auditor/SKILL.md` |
+| `validator` | `.codex/skills/llm-handoff-validator/SKILL.md` |
+| `finalizer` | `.codex/skills/llm-handoff-finalizer/SKILL.md` |
+
+The validator skill covers both the handoff validation and handoff routing
+tasks; the dispatcher's prompt names which one applies.
+
+`llm-handoff init --provider codex` writes this mapping into
+`dispatch_config.yaml`, with every role on `provider: codex`,
+`audit.security_provider: codex`, and `normalizer.provider: codex` (the
+normalizer runs through the Codex CLI login, so no API key is needed).
+Without `--provider`, `init` writes it automatically when `codex` is the only
+provider CLI on `PATH`. If both `claude` and `codex` are on `PATH`, `init`
+keeps the reference mapping; pass `--provider` to choose one.
+`--verification-command` changes no `agents:` entry under this mapping,
+because it only adds `allowed_tools` to Claude roles.
+
+With every role on Codex, the security reviewer runs on the same vendor as
+the implementer, so it is a second read-only review rather than an
+independent one, and the dispatcher logs a warning saying so.
+
+Whether Codex's `workspace-write` sandbox lets a role run `git add` and
+`git commit` is unverified. The skills tell a sandboxed role not to work
+around the sandbox. For the planner, backend, and frontend roles,
+`commit_mode: dispatcher` (see [Dispatcher Commits](#dispatcher-commits))
+avoids the question, because the dispatcher commits their work and they never
+write to `.git`. It does not cover the finalizer: the dispatcher does not
+commit the finalizer's `PROJECT_STATE.md` and `HANDOFF.md` update. If the
+sandbox blocks the finalizer's commit, the finalizer reports no commit SHA,
+the dispatcher pauses, and you commit those files yourself.
+
+A fresh `codex exec` run returns the role's final message as a
+`{status, summary}` JSON envelope. For the `validator` and `finalizer`
+roles, the dispatcher parses the `summary` text, so the validator's `VALID:`
+report and the finalizer's `PROJECT STATE UPDATED` report must be the whole
+`summary`. Output that is not an envelope, such as a resumed session's
+answer, is parsed as it is.
+
 ### Fallback Agents
 
 A role can name one fallback agent. When the primary agent fails fatally, the

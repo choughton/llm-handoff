@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -760,6 +761,60 @@ def test_doctor_passes_gemini_normalizer_with_google_api_key(
     assert exit_code == 0, output
     assert _normalizer_lines(output) == [
         "PASS normalizer: provider gemini can use GOOGLE_API_KEY (auth not verified)"
+    ]
+
+
+def _fake_codex_bin(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    if os.name == "nt":
+        (bin_dir / "codex.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+    else:
+        script = bin_dir / "codex"
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+    return bin_dir
+
+
+def test_doctor_passes_an_all_codex_init_with_only_codex_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    real_git = REAL_WHICH("git")
+    assert real_git is not None, "the doctor's git checks need git on PATH"
+    bin_dir = _fake_codex_bin(tmp_path)
+    # Only the fake codex CLI and git itself: no claude or gemini CLI.
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(bin_dir), str(Path(real_git).parent)])
+    )
+    monkeypatch.delenv("GEMINI_SANDBOX", raising=False)
+    for name in NORMALIZER_KEY_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    assert shutil.which("codex") is not None
+    assert shutil.which("claude") is None
+    assert shutil.which("gemini") is None
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    assert main_module.main(["init", str(repo), "--provider", "codex"]) == 0
+    init_output = capsys.readouterr().out
+    assert "Provider mapping: all roles on codex" in init_output
+    assert "provider CLIs found: codex" in init_output
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "initial")
+
+    report = doctor.run_doctor(repo_root=repo)
+    exit_code, output = _run(repo, capsys)
+
+    assert [check for check in report.checks if check.status == "FAIL"] == []
+    assert report.exit_code == 0
+    assert exit_code == 0, output
+    assert not any(line.startswith("FAIL") for line in output.splitlines())
+    for role in ROLES:
+        assert f"PASS role {role}: provider codex binary `codex` is on PATH" in output
+    assert _normalizer_lines(output) == [
+        f"PASS normalizer: provider codex binary `{config_module.CODEX_BINARY}` "
+        "is on PATH (auth not verified)"
     ]
 
 

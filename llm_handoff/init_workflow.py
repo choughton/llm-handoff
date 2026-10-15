@@ -60,10 +60,12 @@ _TEMPLATE_ROOT = resolve_template_root()
 _EXCLUDED_TEMPLATE_FILES = frozenset({Path("README.md")})
 
 # Provider mappings `init` can write into dispatch_config.yaml. `reference`
-# keeps the template's mixed mapping; `claude` puts every role on Claude Code.
+# keeps the template's mixed mapping; `claude` puts every role on Claude Code;
+# `codex` puts every role on the Codex CLI.
 REFERENCE_MAPPING = "reference"
 CLAUDE_MAPPING = "claude"
-PROVIDER_MAPPINGS = (CLAUDE_MAPPING,)
+CODEX_MAPPING = "codex"
+PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING)
 PROVIDER_CLIS = ("claude", "codex", "gemini")
 _CONFIG_PATH = Path("dispatch_config.yaml")
 _TEXT_MARKERS = {
@@ -140,6 +142,52 @@ _CLAUDE_AGENTS_BLOCK = """agents:
     timeout_ms: 900000
 
 """
+_CODEX_AGENTS_BLOCK = """agents:
+  # All-Codex mapping written by `llm-handoff init` (Codex CLI only).
+  # Each role runs the matching repo skill in .codex/skills/.
+  planner:
+    provider: codex
+    binary: codex
+    skill_name: llm-handoff-planner
+    resume: false
+    timeout_ms: 1200000
+
+  backend:
+    provider: codex
+    binary: codex
+    skill_name: llm-handoff
+    resume: false
+    timeout_ms: 1200000
+
+  frontend:
+    provider: codex
+    binary: codex
+    skill_name: llm-handoff-frontend
+    resume: false
+    timeout_ms: 1200000
+
+  auditor:
+    provider: codex
+    binary: codex
+    skill_name: llm-handoff-auditor
+    resume: false
+    timeout_ms: 900000
+
+  validator:
+    provider: codex
+    binary: codex
+    skill_name: llm-handoff-validator
+    resume: false
+    timeout_ms: 900000
+
+  finalizer:
+    provider: codex
+    binary: codex
+    skill_name: llm-handoff-finalizer
+    resume: false
+    timeout_ms: 900000
+
+"""
 _REFERENCE_SECURITY_PROVIDER_LINE = (
     "  # security_provider: claude   # claude | gemini | codex; unset = auto\n"
 )
@@ -147,6 +195,28 @@ _CLAUDE_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available.\n"
     "  security_provider: claude\n"
 )
+_CODEX_SECURITY_PROVIDER_LINE = (
+    "  # Same vendor as the implementer: the only CLI available.\n"
+    "  security_provider: codex\n"
+)
+_REFERENCE_NORMALIZER_LINES = (
+    "normalizer:\n"
+    "  provider: claude\n"
+    "  model: claude-haiku-5-5\n"
+)
+_CODEX_NORMALIZER_LINES = (
+    "normalizer:\n"
+    "  # All-Codex mapping: the normalizer runs through the Codex CLI login.\n"
+    "  provider: codex\n"
+)
+_MAPPING_AGENTS_BLOCKS = {
+    CLAUDE_MAPPING: _CLAUDE_AGENTS_BLOCK,
+    CODEX_MAPPING: _CODEX_AGENTS_BLOCK,
+}
+_MAPPING_SECURITY_PROVIDER_LINES = {
+    CLAUDE_MAPPING: _CLAUDE_SECURITY_PROVIDER_LINE,
+    CODEX_MAPPING: _CODEX_SECURITY_PROVIDER_LINE,
+}
 # The executable of a confirmed verification command becomes one
 # `Bash(<exe>:*)` rule, so it must be a bare program name: no path separators,
 # shell operators, quotes, or whitespace.
@@ -239,17 +309,20 @@ def resolve_provider_mapping(
 ) -> str:
     """Pick the mapping to write: an explicit choice, else auto-detect.
 
-    Auto-detection only switches to the all-Claude mapping when Claude Code
-    is the only provider CLI installed; any other combination keeps the
-    reference mapping.
+    Auto-detection switches to a single-provider mapping only when that
+    provider's CLI (Claude Code or Codex) is the only provider CLI installed;
+    any other combination keeps the reference mapping.
     """
 
     if provider is not None:
         if provider not in PROVIDER_MAPPINGS:
             raise UnknownProviderError(provider)
         return provider
-    if set(available_providers) == {"claude"}:
+    available = set(available_providers)
+    if available == {"claude"}:
         return CLAUDE_MAPPING
+    if available == {"codex"}:
+        return CODEX_MAPPING
     return REFERENCE_MAPPING
 
 
@@ -258,20 +331,38 @@ def render_config(template_text: str, mapping: str) -> str:
 
     if mapping == REFERENCE_MAPPING:
         return template_text
-    if mapping != CLAUDE_MAPPING:
+    if mapping not in PROVIDER_MAPPINGS:
         raise UnknownProviderError(mapping)
-    start = template_text.index("agents:\n")
-    end = template_text.index("normalizer:\n", start)
-    rendered = template_text[:start] + _CLAUDE_AGENTS_BLOCK + template_text[end:]
+    start = template_text.find("agents:\n")
+    end = template_text.find("normalizer:\n", start) if start != -1 else -1
+    if start == -1 or end == -1:
+        raise InitWorkflowError(
+            "Template dispatch_config.yaml no longer has the expected "
+            "agents: and normalizer: blocks."
+        )
+    rendered = (
+        template_text[:start] + _MAPPING_AGENTS_BLOCKS[mapping] + template_text[end:]
+    )
     if rendered.count(_REFERENCE_SECURITY_PROVIDER_LINE) != 1:
         raise InitWorkflowError(
             "Template dispatch_config.yaml no longer has the expected "
             "audit.security_provider line."
         )
-    return rendered.replace(
+    rendered = rendered.replace(
         _REFERENCE_SECURITY_PROVIDER_LINE,
-        _CLAUDE_SECURITY_PROVIDER_LINE,
+        _MAPPING_SECURITY_PROVIDER_LINES[mapping],
     )
+    if mapping == CODEX_MAPPING:
+        if rendered.count(_REFERENCE_NORMALIZER_LINES) != 1:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has the expected "
+                "normalizer provider and model lines."
+            )
+        rendered = rendered.replace(
+            _REFERENCE_NORMALIZER_LINES,
+            _CODEX_NORMALIZER_LINES,
+        )
+    return rendered
 
 
 def verification_executable(command: str) -> str:

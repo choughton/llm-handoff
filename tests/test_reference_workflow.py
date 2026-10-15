@@ -27,6 +27,11 @@ REQUIRED_TEMPLATE_FILES = (
     "docs/handoff/FINALIZER_HANDOFF_PROMPT.md",
     ".codex/skills/llm-handoff/SKILL.md",
     ".codex/skills/llm-handoff/agents/openai.yaml",
+    ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".codex/skills/llm-handoff-frontend/SKILL.md",
+    ".codex/skills/llm-handoff-auditor/SKILL.md",
+    ".codex/skills/llm-handoff-validator/SKILL.md",
+    ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".codex/rules/llm-handoff.rules",
     ".gemini/agents/planner.md",
     ".gemini/agents/frontend.md",
@@ -54,6 +59,11 @@ COPIED_TEMPLATE_FILES = (
     "docs/handoff/FINALIZER_HANDOFF_PROMPT.md",
     ".codex/skills/llm-handoff/SKILL.md",
     ".codex/skills/llm-handoff/agents/openai.yaml",
+    ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".codex/skills/llm-handoff-frontend/SKILL.md",
+    ".codex/skills/llm-handoff-auditor/SKILL.md",
+    ".codex/skills/llm-handoff-validator/SKILL.md",
+    ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".codex/rules/llm-handoff.rules",
     ".gemini/agents/planner.md",
     ".gemini/agents/frontend.md",
@@ -76,6 +86,19 @@ CLAUDE_ROLE_AGENT_FILES = {
     "auditor": ".claude/agents/auditor.md",
     "validator": ".claude/agents/handoff-validator.md",
     "finalizer": ".claude/agents/ledger-updater.md",
+}
+
+# The repo skill each role uses when it is mapped to `codex`.
+CODEX_ROLE_SKILLS = {
+    "planner": "llm-handoff-planner",
+    "backend": "llm-handoff",
+    "frontend": "llm-handoff-frontend",
+    "auditor": "llm-handoff-auditor",
+    "validator": "llm-handoff-validator",
+    "finalizer": "llm-handoff-finalizer",
+}
+NEW_CODEX_ROLE_SKILLS = {
+    role: skill for role, skill in CODEX_ROLE_SKILLS.items() if role != "backend"
 }
 
 
@@ -161,6 +184,62 @@ def test_claude_role_agents_do_not_point_at_dispatcher_docs() -> None:
         )
         assert "CONFIGURATION.md" not in content
         assert "docs/ARCHITECTURE.md" not in content
+
+
+def test_reference_workflow_ships_a_codex_skill_for_every_role() -> None:
+    config = load_dispatch_config(
+        repo_root=REFERENCE_WORKFLOW,
+        config_path=REFERENCE_WORKFLOW / "dispatch_config.yaml",
+    )
+
+    assert set(CODEX_ROLE_SKILLS) == set(config.agents)
+    for role, skill_name in CODEX_ROLE_SKILLS.items():
+        relative_path = Path(".codex") / "skills" / skill_name / "SKILL.md"
+        template_path = REFERENCE_WORKFLOW / relative_path
+        assert template_path.is_file(), relative_path
+        assert template_path.read_bytes() == (REPO_ROOT / relative_path).read_bytes()
+        content = template_path.read_text(encoding="utf-8")
+        assert content.startswith("---\n"), relative_path
+        frontmatter = content.split("---\n", 2)[1]
+        assert f'name: "{skill_name}"\n' in frontmatter, relative_path
+        assert re.search(r'(?m)^description: ".+"$', frontmatter), relative_path
+        assert f"`{role}` role" in content, relative_path
+        for field in (
+            "next_agent",
+            "producer",
+            "epic_id",
+            "story_id",
+            "story_title",
+            "remaining_stories",
+        ):
+            assert field in content, (relative_path, field)
+        assert "never run `git push`" in content.lower(), relative_path
+
+
+def test_new_codex_role_skills_have_no_openai_yaml() -> None:
+    for skill_name in NEW_CODEX_ROLE_SKILLS.values():
+        for root in (REFERENCE_WORKFLOW, REPO_ROOT):
+            agents_dir = root / ".codex" / "skills" / skill_name / "agents"
+            assert not agents_dir.exists(), agents_dir
+
+
+def test_codex_role_skills_do_not_point_at_dispatcher_docs() -> None:
+    for skill_name in NEW_CODEX_ROLE_SKILLS.values():
+        content = (
+            REFERENCE_WORKFLOW / ".codex" / "skills" / skill_name / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        assert "CONFIGURATION.md" not in content, skill_name
+        assert "docs/ARCHITECTURE.md" not in content, skill_name
+
+
+def test_codex_validator_skill_covers_validation_and_routing() -> None:
+    content = (
+        REFERENCE_WORKFLOW / ".codex" / "skills" / "llm-handoff-validator" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Handoff Validation" in content
+    assert "## Handoff Routing" in content
+    assert "The dispatcher's prompt names which task applies." in content
 
 
 def test_codex_rules_allow_no_git_writes_and_forbid_push() -> None:

@@ -6,6 +6,21 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added an all-Codex mapping. The reference workflow now ships a Codex repo
+  skill for every role (`llm-handoff-planner`, `llm-handoff-frontend`,
+  `llm-handoff-auditor`, `llm-handoff-validator`, and
+  `llm-handoff-finalizer`, with `llm-handoff` staying the backend skill).
+  `llm-handoff init --provider codex` writes every role as `provider: codex`
+  with its `skill_name`, `audit.security_provider: codex`, and
+  `normalizer.provider: codex`. Without `--provider`, `init` picks this
+  mapping when `codex` is the only provider CLI on `PATH`. Whether Codex's
+  `workspace-write` sandbox lets a role commit is unverified;
+  `commit_mode: dispatcher` avoids the question for the planner, backend, and
+  frontend, but not for the finalizer, which still commits its own state
+  update. When the validator or finalizer runs on Codex, the dispatcher
+  parses the `summary` of Codex's `{status, summary}` JSON envelope, so their
+  reports are read instead of being reported as unparseable.
+
 - The pull request and merge-commit report is now a short, readable page
   for people, with two sections. The Summary is at most three sentences,
   taken from the start of the Work Packet's Objective. Before, it was the

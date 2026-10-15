@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import ANY, Mock
 
@@ -8,6 +9,7 @@ import pytest
 from llm_handoff import agent_roles
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import AgentConfig
+from llm_handoff.validator import parse_validation_output
 
 
 def _dispatch_result() -> DispatchResult:
@@ -136,3 +138,108 @@ def test_invoke_support_role_dispatches_validator_to_configured_gemini(
         agent_config=ANY,
     )
     assert invoke_mock.call_args.kwargs["agent_config"].mention == "@validator"
+
+
+VALIDATION_REPORT = (
+    "VALID: NO\n"
+    "  ROUTING: FAIL - next_agent is missing.\n"
+    "  SHA: PASS - scope_sha is HEAD.\n"
+)
+
+
+def _codex_envelope(summary: str) -> DispatchResult:
+    return DispatchResult(
+        stdout=json.dumps({"status": "fail", "summary": summary}),
+        stderr="",
+        exit_code=0,
+        elapsed_seconds=0.01,
+    )
+
+
+def test_codex_validator_output_is_unwrapped_for_the_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invoke_mock = Mock(return_value=_codex_envelope(VALIDATION_REPORT))
+    monkeypatch.setattr(agent_roles, "invoke_codex", invoke_mock)
+
+    result = agent_roles.invoke_support_role(
+        "handoff-validator",
+        "Return ONLY the structured validation output.",
+        role="validator",
+        handoff_path=Path("docs/handoff/HANDOFF.md"),
+        agent_config=AgentConfig(provider="codex"),
+    )
+
+    instruction = invoke_mock.call_args.kwargs["additional_instruction"]
+    assert instruction.startswith("Return ONLY the structured validation output.")
+    assert instruction.endswith(agent_roles.CODEX_SUPPORT_REPORT_INSTRUCTION)
+    assert result.stdout == VALIDATION_REPORT
+    parsed = parse_validation_output(result.stdout)
+    assert parsed.verdict == "NO"
+    assert parsed.errors == ["routing: next_agent is missing."]
+
+
+def test_codex_plain_output_passes_through_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A resumed Codex session runs without the output schema.
+    plain = DispatchResult(
+        stdout=VALIDATION_REPORT, stderr="", exit_code=0, elapsed_seconds=0.01
+    )
+    monkeypatch.setattr(agent_roles, "invoke_codex", Mock(return_value=plain))
+
+    result = agent_roles.invoke_support_role(
+        "handoff-validator",
+        "Return ONLY the structured validation output.",
+        role="validator",
+        handoff_path=Path("docs/handoff/HANDOFF.md"),
+        agent_config=AgentConfig(provider="codex"),
+    )
+
+    assert result.stdout == VALIDATION_REPORT
+
+
+def test_codex_finalizer_report_is_unwrapped_for_the_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff.config import DispatchConfig, _default_agent_configs
+    from llm_handoff.ledger import run_epic_close
+
+    commit_sha = "0123456789abcdef0123456789abcdef01234567"
+    report = (
+        "PROJECT STATE UPDATED: YES\n"
+        "HANDOFF.MD REWRITTEN: YES\n"
+        "SCOPE CLOSED: Example epic\n"
+        "NEXT ROUTE: planner\n"
+        "AUDIT SHA: 939702b\n"
+        f"COMMIT SHA: {commit_sha}\n"
+        "PUSH RESULT: SKIPPED (auto_push is false.)\n"
+        "CHANGES MADE:\n"
+        "  - PROJECT_STATE.md: recorded the epic close\n"
+    )
+    monkeypatch.setattr(
+        agent_roles, "invoke_codex", Mock(return_value=_codex_envelope(report))
+    )
+    config = DispatchConfig(
+        repo_root=tmp_path,
+        agents={**_default_agent_configs(), "finalizer": AgentConfig(provider="codex")},
+    )
+
+    result = run_epic_close(config=config)
+
+    assert result.parse_error is None
+    assert result.project_state_updated is True
+    assert result.commit_sha == commit_sha
+
+
+def test_unwrap_codex_final_message_needs_a_full_envelope() -> None:
+    from llm_handoff.agent_providers.codex import unwrap_codex_final_message
+
+    assert unwrap_codex_final_message('{"status": "ok", "summary": "VALID: YES"}') == (
+        "VALID: YES"
+    )
+    assert unwrap_codex_final_message('{"summary": "no status"}') == (
+        '{"summary": "no status"}'
+    )
+    assert unwrap_codex_final_message("VALID: YES") == "VALID: YES"
+    assert unwrap_codex_final_message("[1, 2]") == "[1, 2]"
