@@ -24,7 +24,7 @@ Route next_agent
 Invoke provider CLI
 Capture output and logs
 Validate updated HANDOFF.md
-Verify the work claim (opt-in gate)
+Verify the work claim (gate on by default)
 Continue, pause, or escalate
 ```
 
@@ -38,7 +38,7 @@ Continue, pause, or escalate
 - `llm_handoff.init_workflow`: target-repo reference workflow initialization.
 - `llm_handoff.router`: handoff parsing and route selection.
 - `llm_handoff.validator`: post-dispatch handoff validation.
-- `llm_handoff.work_claim`: opt-in deterministic work-claim gate (Work Packet
+- `llm_handoff.work_claim`: deterministic work-claim gate (Work Packet
   parsing, `scope_sha` and diff-scope checks, verification command execution,
   bounce handoff).
 - `llm_handoff.orchestrator`: dispatch loop and failure-mode handling.
@@ -144,7 +144,7 @@ The dispatcher should name and isolate failure modes rather than guessing:
   `security_extension_missing`, `quality_verdict_malformed`,
   `security_verdict_malformed`, reviewer exit or timeout, or
   `reviewer_wrote_handoff`;
-- work-claim gate failure (opt-in): missing or unparseable Work Packet,
+- work-claim gate failure: missing or unparseable Work Packet,
   `scope_sha` not at HEAD, scope violation, uncommitted changes, a failed,
   missing, or timed-out configured scanner, or a failed verification command;
 - protected control file modified outside the Work Packet scope.
@@ -171,10 +171,10 @@ operationalize the handoff, the dispatcher aborts to the user.
 
 `validate_handoff` checks the shape of a completion claim: frontmatter fields,
 a SHA that exists, a populated evidence block. It does not check that the work
-was done. By default that judgment belongs to the auditor, which costs a full
-agent session even when the tests already fail.
+was done. Without another check that judgment belongs to the auditor, which
+costs a full agent session even when the tests already fail.
 
-`enforce_work_packet: true` adds a deterministic gate in
+`enforce_work_packet: true`, the default, adds a deterministic gate in
 `llm_handoff.work_claim`. It runs right after post-dispatch validation succeeds
 for a `status: ready_for_review` handoff from `backend` or `frontend`:
 

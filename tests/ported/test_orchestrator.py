@@ -49,6 +49,10 @@ def _dispatch_config(
             "reviewers": ["quality"],
             "security_opt_out_reason": "Tests cover the single-auditor route.",
         },
+        # These tests route handoffs without a Work Packet; the work-claim
+        # gate is covered in tests/test_work_claim.py.
+        "enforce_work_packet": False,
+        "work_packet_opt_out_reason": "Tests cover routing without the gate.",
     }
     if agents is not None:
         kwargs["agents"] = agents

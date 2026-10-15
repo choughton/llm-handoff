@@ -108,12 +108,41 @@ When `planner_api_key_env` is `true`, `GEMINI_API_KEY` is preserved, but
 
 ## Work-Claim Gate
 
-Off by default:
+On by default:
+
+```yaml
+enforce_work_packet: true
+work_packet_verification_timeout_seconds: 600
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enforce_work_packet` | `true` | Runs the work-claim gate. Setting it to `false` needs `work_packet_opt_out_reason`. |
+| `work_packet_opt_out_reason` | unset | Required, non-empty text when `enforce_work_packet` is `false`; rejected while the gate is on. |
+| `work_packet_verification_timeout_seconds` | `600` | Timeout in seconds for the Verification command. |
+
+To turn the gate off, set `enforce_work_packet: false` and say why:
 
 ```yaml
 enforce_work_packet: false
-work_packet_verification_timeout_seconds: 600
+work_packet_opt_out_reason: "Planner prompts do not write Work Packets yet."
 ```
+
+The reason is stripped of surrounding whitespace. A config that sets
+`enforce_work_packet: false` without a reason, or with a whitespace-only
+reason, fails to load with a validation error that names both
+`enforce_work_packet` and `work_packet_opt_out_reason`. A config that sets a
+reason while the gate is on also fails to load, because the reason only applies
+when the gate is off. `commit_mode: dispatcher` still needs the gate on: with
+`commit_mode: dispatcher` and `enforce_work_packet: false`, the config fails
+with the `commit_mode: dispatcher requires enforce_work_packet: true` error even
+when a reason is set. When the gate is off, every dispatcher start logs a
+`WARN` line with `enforce_work_packet: false` and the reason, and
+`llm-handoff doctor` prints `WARN work-claim gate:` with it. When it is on,
+the doctor prints `PASS work-claim gate:`. The doctor validates the current
+handoff with the same Work Packet requirement as the dispatch loop, so a
+planner assignment the dispatcher would reject for an unparseable Work Packet
+also fails `llm-handoff doctor` while the gate is on.
 
 When `enforce_work_packet` is `true`, the dispatcher verifies every
 `status: ready_for_review` handoff from `backend` or `frontend` before it
@@ -127,6 +156,8 @@ dispatches the auditor. The checks are deterministic and run against the
 | Diff scope | `scope_violation` | every file changed since dispatch is inside `Files in scope` or is the handoff file, and none is under `Files out of bounds` |
 | Working tree | `uncommitted_changes` | no new uncommitted changes exist outside the handoff file |
 | Verification | `verification_failed` | the `Verification command` exits 0 within the timeout |
+| Changes | `no_changes` | an implementer claim's commits since dispatch change at least one file other than the handoff file; applies in both commit modes |
+| Evidence SHA | `evidence_sha_mismatch` | the `Commit SHA verified` value in `## Verification Evidence` names the same commit as `scope_sha` |
 
 Path lists accept files, directories (`src/`), and globs, separated by commas,
 semicolons, or whitespace. A value that uses backticks or an exception phrase is
@@ -193,9 +224,9 @@ telling it to leave changes uncommitted, leave `scope_sha` empty, and write
    `Commit SHA verified` value.
 
 Files it did not stage stay in the working tree and fail the gate's worktree
-check, which sends the claim back to the implementer. The gate also fails a
-claim whose commits since dispatch change nothing but the handoff
-(`no_changes`). This mode requires `enforce_work_packet: true`.
+check, which sends the claim back to the implementer. As in agent commit mode,
+the gate's `no_changes` check fails a claim whose commits since dispatch change
+nothing but the handoff. This mode requires `enforce_work_packet: true`.
 
 Files an implementer dispatch leaves uncommitted are the story's work, not
 operator edits. The dispatcher remembers their content hashes, and the next

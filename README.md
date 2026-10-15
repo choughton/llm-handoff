@@ -179,14 +179,16 @@ python -m llm_handoff init path/to/your-project --template reference-workflow --
 - A Python CLI for serially dispatching work between AI coding CLIs.
 - A file-based operating protocol centered on `HANDOFF.md`.
 - A deterministic router with validator-backed failure handling.
-- An opt-in deterministic work-claim gate that checks an implementer's
-  `scope_sha`, diff scope, and verification command before an audit session,
-  with optional operator-configured scanners such as gitleaks or bandit.
+- A deterministic work-claim gate, on by default, that checks an
+  implementer's `scope_sha`, diff scope, and verification command before an
+  audit session, with optional operator-configured scanners such as gitleaks
+  or bandit; turning the gate off needs a written reason.
 - A security reviewer that runs next to the quality auditor on the same
   commit range by default; turning it off needs a written reason.
 - A reference workflow that users can inspect, copy, fork, or adapt.
 - An `llm-handoff doctor` preflight check for Git, provider CLIs, the Gemini
-  sandbox runtime, the security reviewer setting, and the handoff file; it
+  sandbox runtime, the security reviewer and work-claim gate settings, and
+  the handoff file; it
   exits `1` on any error.
 - An optional supervised wrapper for operator evidence, heartbeat output, and
   bounded repair-role handoff when explicitly enabled.
@@ -212,8 +214,9 @@ python -m llm_handoff init path/to/your-project --template reference-workflow --
 4. If the role is non-canonical, a constrained model-backed normalizer may
    rewrite obvious values or return `unknown`.
 5. The configured provider CLI runs one role.
-6. The updated handoff is validated. With `enforce_work_packet` enabled, a
-   completion claim is also checked against the Work Packet before audit.
+6. The updated handoff is validated. With the work-claim gate on (the
+   default), a completion claim is also checked against the Work Packet
+   before audit.
 7. The loop continues, pauses, or escalates to the user.
 
 ```text
@@ -252,22 +255,21 @@ route boundaries, and can invoke one configured repair role only when
 ## Optional Gates
 
 Three checks are `dispatch_config.yaml` settings in the target repository.
-The security reviewer is on by default; the work-claim gate and scanners are
-off by default, and leaving them unset keeps the behavior described above.
-Scanners run inside the work-claim gate, so they need it enabled. The
+The work-claim gate and the security reviewer are on by default; turning
+either off needs a written reason, which every dispatcher start and
+`llm-handoff doctor` report as a warning. Scanners are off until you list
+them. Scanners run inside the work-claim gate, so they need it on. The
 security reviewer is independent of both.
 
 | Gate | Setting | What it adds | Details |
 | --- | --- | --- | --- |
-| Work-claim gate | `enforce_work_packet: true` | For `ready_for_review` handoffs from `backend` or `frontend`, checks before the auditor runs that `scope_sha` is HEAD, the diff stays inside the Work Packet's `Files in scope`, the tree is clean, and the Work Packet's verification command exits 0. Handoffs routed to the auditor by other roles are not checked | [Work-Claim Gate](CONFIGURATION.md#work-claim-gate) |
+| Work-claim gate | on by default (`enforce_work_packet: true`) | For `ready_for_review` handoffs from `backend` or `frontend`, checks before the auditor runs that `scope_sha` is HEAD, the diff stays inside the Work Packet's `Files in scope`, the tree is clean, and the Work Packet's verification command exits 0. Handoffs routed to the auditor by other roles are not checked. Opting out takes `enforce_work_packet: false` plus a non-empty `work_packet_opt_out_reason` | [Work-Claim Gate](CONFIGURATION.md#work-claim-gate) |
 | Scanners | a `scanners:` list | Runs tools the target repo installs, such as gitleaks, semgrep, bandit, or pip-audit, inside the work-claim gate | [Scanners](CONFIGURATION.md#scanners) |
 | Security reviewer | on by default (`audit.reviewers: [quality, security]`) | Runs a read-only security reviewer concurrently with the quality auditor on the same commit range. Opting out takes `audit.reviewers: [quality]` plus a non-empty `audit.security_opt_out_reason`, which every dispatcher start and `llm-handoff doctor` report as a warning | [Audit Fan-Out](CONFIGURATION.md#audit-fan-out) |
 
-A minimal configuration that enables the other two:
+A minimal configuration that adds scanners to the default gates:
 
 ```yaml
-enforce_work_packet: true
-
 scanners:
   - name: gitleaks
     command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}
@@ -289,11 +291,13 @@ failure:
 - A missing, malformed, or timed-out reviewer verdict restores the pre-review
   handoff and counts as a dispatch failure.
 
-Notes before enabling:
+Notes on the gates:
 
 - The work-claim gate needs planner handoffs to include a `## Work Packet`
   with `Files in scope`, `Files out of bounds`, and `Verification command`.
-  The shipped planner prompts already ask for it.
+  The shipped planner prompts already ask for it. A handoff that routes work
+  to `backend` or `frontend` without a parseable packet fails post-dispatch
+  validation while the gate is on.
 - The verification command is written by an agent and runs with the
   dispatcher's permissions. Scanner commands come from your config and are
   trusted operator input.

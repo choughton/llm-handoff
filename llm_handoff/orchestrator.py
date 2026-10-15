@@ -3038,13 +3038,19 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         "Smart router:       ON (frontmatter primary; legacy fallback warning)",
     )
     _log(log, "INFO", "Handoff validation: ON (hard gate)")
-    _log(
-        log,
-        "INFO",
-        "Work-claim gate:    ON (runs the Work Packet verification command)"
-        if config.enforce_work_packet
-        else "Work-claim gate:    OFF (enforce_work_packet: false)",
-    )
+    if config.enforce_work_packet:
+        _log(
+            log,
+            "INFO",
+            "Work-claim gate:    ON (runs the Work Packet verification command)",
+        )
+    else:
+        _log(
+            log,
+            "WARN",
+            "Work-claim gate:    OFF (enforce_work_packet: false; "
+            f"work_packet_opt_out_reason: {config.work_packet_opt_out_reason})",
+        )
     if config.scanners:
         scanner_names = ", ".join(scanner.name for scanner in config.scanners)
         if config.enforce_work_packet:

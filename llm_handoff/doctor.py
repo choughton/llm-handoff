@@ -4,9 +4,10 @@ The doctor command checks a checkout before the dispatcher runs: Git, the
 provider CLI binaries the configured roles launch, the container runtime
 Gemini CLI roles need for their sandbox, whether the configured next-agent
 normalizer has an API key or CLI to run with, whether the audit runs the
-security reviewer (with the opt-out reason when it does not), and the current
-handoff file. It
-does not start a dispatch, call a provider, contact the network, or write any
+security reviewer (with the opt-out reason when it does not), whether the
+work-claim gate is on (with the opt-out reason when it is not), and the
+current handoff file, validated with the same Work Packet requirement the
+dispatch loop applies. It does not start a dispatch, call a provider, contact the network, or write any
 files.
 
 `_command_available` and `_command_binary_name` live here so the supervisor's
@@ -124,15 +125,21 @@ def run_doctor(
         _check_container_runtime(dispatch_config, checks)
         _check_normalizer(dispatch_config, resolved_root, checks)
         _check_security_review(dispatch_config, checks)
+        _check_work_claim_gate(dispatch_config, checks)
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
+        require_work_packet = dispatch_config.enforce_work_packet
     else:
         handoff_path = (resolved_root / DEFAULT_HANDOFF_PATH).resolve()
         dispatcher_commit_mode = False
+        # The config did not load (already a FAIL); validate against the
+        # built-in default, which runs the work-claim gate.
+        require_work_packet = True
     _check_handoff(
         resolved_root,
         handoff_path,
         dispatcher_commit_mode=dispatcher_commit_mode,
+        require_work_packet=require_work_packet,
         git_available=git_available,
         checks=checks,
     )
@@ -428,6 +435,30 @@ def _check_security_review(
     )
 
 
+def _check_work_claim_gate(
+    dispatch_config: DispatchConfig,
+    checks: list[DoctorCheck],
+) -> None:
+    """Report whether the work-claim gate is on, and the opt-out reason if not."""
+    if not dispatch_config.enforce_work_packet:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                "work-claim gate",
+                "the work-claim gate is off (enforce_work_packet: false); "
+                f"opt-out reason: {dispatch_config.work_packet_opt_out_reason}",
+            )
+        )
+        return
+    checks.append(
+        DoctorCheck(
+            "PASS",
+            "work-claim gate",
+            "the work-claim gate is on (enforce_work_packet: true)",
+        )
+    )
+
+
 def _describe_missing(names: list[str]) -> str:
     if len(names) == 1:
         return f"{names[0]} is not available"
@@ -443,7 +474,13 @@ def _check_handoff(
     dispatcher_commit_mode: bool,
     git_available: bool,
     checks: list[DoctorCheck],
+    require_work_packet: bool = True,
 ) -> None:
+    """Validate the current handoff the way the dispatch loop does.
+
+    ``require_work_packet`` mirrors ``enforce_work_packet`` so a handoff the
+    dispatcher would reject for a missing Work Packet also fails here.
+    """
     if not handoff_path.exists():
         checks.append(
             DoctorCheck(
@@ -503,6 +540,7 @@ def _check_handoff(
             handoff_content,
             producer,
             git_cwd=repo_root if git_available else None,
+            require_work_packet=require_work_packet,
             dispatcher_commit_mode=dispatcher_commit_mode,
         )
     except (OSError, subprocess.SubprocessError) as exc:

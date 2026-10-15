@@ -898,11 +898,95 @@ producer: auditor
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_config_work_claim_gate_is_off_by_default(tmp_path: Path) -> None:
+GATE_OPT_OUT_REASON = "Tests cover the dispatch loop without the gate."
+
+
+def test_dispatch_config_work_claim_gate_is_on_by_default(tmp_path: Path) -> None:
     config = DispatchConfig(repo_root=tmp_path)
 
-    assert config.enforce_work_packet is False
+    assert config.enforce_work_packet is True
+    assert config.work_packet_opt_out_reason is None
     assert config.work_packet_verification_timeout_seconds == 600
+
+
+def test_load_dispatch_config_without_gate_key_turns_gate_on(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("auto_push: false\n", encoding="utf-8")
+
+    config = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert config.enforce_work_packet is True
+    assert config.work_packet_opt_out_reason is None
+
+
+def test_dispatch_config_rejects_gate_opt_out_without_reason(tmp_path: Path) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        DispatchConfig(repo_root=tmp_path, enforce_work_packet=False)
+
+    message = str(exc_info.value)
+    assert "enforce_work_packet" in message
+    assert "work_packet_opt_out_reason" in message
+
+
+def test_dispatch_config_rejects_whitespace_only_gate_opt_out_reason(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        DispatchConfig(
+            repo_root=tmp_path,
+            enforce_work_packet=False,
+            work_packet_opt_out_reason="   \t ",
+        )
+
+    message = str(exc_info.value)
+    assert "enforce_work_packet" in message
+    assert "work_packet_opt_out_reason" in message
+    assert "non-empty reason" in message
+
+
+def test_dispatch_config_rejects_gate_opt_out_reason_while_gate_is_on(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="work_packet_opt_out_reason only applies when the work-claim gate is off",
+    ):
+        DispatchConfig(
+            repo_root=tmp_path,
+            work_packet_opt_out_reason=GATE_OPT_OUT_REASON,
+        )
+
+
+def test_load_dispatch_config_reads_valid_gate_opt_out(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "enforce_work_packet: false\n"
+        'work_packet_opt_out_reason: "  Planner prompts do not emit packets yet.  "\n',
+        encoding="utf-8",
+    )
+
+    config = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert config.enforce_work_packet is False
+    assert config.work_packet_opt_out_reason == (
+        "Planner prompts do not emit packets yet."
+    )
+
+
+def test_dispatcher_commit_mode_error_wins_over_gate_opt_out(tmp_path: Path) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        DispatchConfig(
+            repo_root=tmp_path,
+            commit_mode="dispatcher",
+            enforce_work_packet=False,
+            work_packet_opt_out_reason=GATE_OPT_OUT_REASON,
+        )
+
+    assert (
+        "commit_mode: dispatcher requires enforce_work_packet: true; the "
+        "dispatcher only commits files the Work Packet puts in scope, "
+        "and the work-claim gate checks what it committed."
+    ) in str(exc_info.value)
 
 
 def test_load_dispatch_config_reads_work_claim_keys(tmp_path: Path) -> None:
@@ -932,12 +1016,15 @@ def test_dispatch_config_rejects_non_positive_verification_timeout(
         REPO_ROOT / "examples" / "reference-workflow" / "dispatch_config.yaml",
     ],
 )
-def test_shipped_configs_document_gate_off(config_path: Path) -> None:
+def test_shipped_configs_document_gate_on(config_path: Path) -> None:
     content = config_path.read_text(encoding="utf-8")
     config = load_dispatch_config(repo_root=config_path.parent, config_path=config_path)
 
-    assert "enforce_work_packet: false" in content
-    assert config.enforce_work_packet is False
+    assert "\nenforce_work_packet: true\n" in content
+    assert "#   enforce_work_packet: false" in content
+    assert '#   work_packet_opt_out_reason: "<why>"' in content
+    assert config.enforce_work_packet is True
+    assert config.work_packet_opt_out_reason is None
 
 
 def test_docs_describe_work_claim_gate() -> None:
@@ -1103,7 +1190,11 @@ def test_run_loop_leaves_claims_alone_when_gate_is_disabled(
 ) -> None:
     _init_repo(tmp_path)
     orchestrator = _load_orchestrator()
-    config = _dispatch_config(tmp_path, enforce_work_packet=False)
+    config = _dispatch_config(
+        tmp_path,
+        enforce_work_packet=False,
+        work_packet_opt_out_reason=GATE_OPT_OUT_REASON,
+    )
     messages: list[tuple[str, str]] = []
 
     def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
@@ -1749,6 +1840,7 @@ def test_startup_banner_warns_when_scanners_configured_but_gate_is_off(
     config = _dispatch_config(
         tmp_path,
         enforce_work_packet=False,
+        work_packet_opt_out_reason=GATE_OPT_OUT_REASON,
         dry_run=True,
         scanners=(ScannerConfig(name="gitleaks", command="gitleaks"),),
     )
@@ -1760,6 +1852,51 @@ def test_startup_banner_warns_when_scanners_configured_but_gate_is_off(
         level == "WARN" and "Scanners configured (gitleaks)" in message
         for level, message in messages
     )
+
+
+def test_startup_banner_warns_with_reason_when_gate_is_off(tmp_path: Path) -> None:
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path,
+        enforce_work_packet=False,
+        work_packet_opt_out_reason=GATE_OPT_OUT_REASON,
+    )
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._log_startup_banner(config, _collecting_log(messages))
+
+    gate_lines = [
+        (level, message)
+        for level, message in messages
+        if message.startswith("Work-claim gate:")
+    ]
+    assert gate_lines == [
+        (
+            "WARN",
+            "Work-claim gate:    OFF (enforce_work_packet: false; "
+            f"work_packet_opt_out_reason: {GATE_OPT_OUT_REASON})",
+        )
+    ]
+
+
+def test_startup_banner_logs_info_when_gate_is_on(tmp_path: Path) -> None:
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path)
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._log_startup_banner(config, _collecting_log(messages))
+
+    gate_lines = [
+        (level, message)
+        for level, message in messages
+        if message.startswith("Work-claim gate:")
+    ]
+    assert gate_lines == [
+        (
+            "INFO",
+            "Work-claim gate:    ON (runs the Work Packet verification command)",
+        )
+    ]
 
 
 def test_docs_describe_scanners() -> None:

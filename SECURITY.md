@@ -31,11 +31,18 @@ After the first tagged release, supported versions will be listed here.
   pushes. Agents can still push if a push credential is reachable from the
   dispatch environment; see [Threat Model](#threat-model).
 - Treat generated handoff instructions as untrusted until validated.
-- `enforce_work_packet` makes the dispatcher itself run the planner's Work
-  Packet `Verification command` through the shell in the target repository.
-  The agents already run there with provider permissions disabled, so this
-  adds no new exposure, but it is still execution of agent-written text. Leave
-  it off for repositories whose handoff files you have not reviewed.
+- The work-claim gate (`enforce_work_packet`) is on by default. It makes the
+  dispatcher itself run the planner's Work Packet `Verification command`
+  through the shell in the target repository. This is execution of
+  agent-written text, and it currently runs with the dispatcher's full
+  inherited environment, not the allowlisted environment provider CLIs get
+  (see [Credential inheritance](#credential-inheritance)). A planner steered by
+  prompt injection could write a verification command that reads secrets the
+  provider CLIs never see. Review the handoff files of a repository before you
+  run the dispatcher there, and do not start the dispatcher from a shell that
+  holds credentials it does not need. Turning the gate off needs
+  `enforce_work_packet: false` plus a non-empty `work_packet_opt_out_reason`,
+  which every dispatcher start and `llm-handoff doctor` report as a warning.
 - `scanners` entries in `dispatch_config.yaml` are operator-authored commands,
   so they are trusted operator input rather than agent-written text. The
   dispatcher does not sandbox scanners any more than it sandboxes agents; a
@@ -78,6 +85,8 @@ They catch mistakes and simple injections, not a determined attacker.
 Each provider CLI gets an allowlisted environment, so `GITHUB_TOKEN`, cloud
 credentials, and other secrets in the dispatcher's shell are not passed on.
 Vendor API keys only reach their own provider, and only when a role opts in.
+The work-claim gate's Verification command and configured `scanners` are the
+exception: the dispatcher runs them itself with its own full environment.
 
 This does not cover credentials that live outside environment variables. The
 agents run as your user account. A Git credential manager, an SSH agent, an
