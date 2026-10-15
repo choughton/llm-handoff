@@ -65,6 +65,10 @@ Run `git rev-parse HEAD` for concrete SHAs. Do not write `scope_sha: HEAD`.
 Every `verified_pass` or `verified_fail` handoff must include the
 `## Verification Evidence` block defined in `docs/handoff/README.md`.
 
+When routing `verified_fail` back to `backend` or `frontend`, carry the
+assignment's `## Work Packet` forward verbatim; the next implementation round
+and the dispatcher's work-claim gate read it.
+
 ## Output Shape
 
 Rewrite `docs/handoff/HANDOFF.md` with:
