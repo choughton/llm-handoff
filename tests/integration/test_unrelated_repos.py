@@ -38,6 +38,8 @@ CUSTOM_AGENTS_TEXT = (
     b"- Run `npm test` before every commit.\n"
 )
 CUSTOM_DENY_RULE = "Read(./secrets/**)"
+# The dispatcher's runtime directory; a dry run writes its log file here.
+RUNTIME_LOG_PREFIX = "logs/dispatch/"
 # Keys a normalizer could use to reach a provider API. The child processes
 # run offline, so none of them is passed through.
 API_KEY_NAMES = (
@@ -46,7 +48,8 @@ API_KEY_NAMES = (
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
 )
-# A doctor WARN line about the repository's commit count (F17). Handoff
+# A doctor WARN line about the repository's commit count (the one-commit
+# audit-base warning). Handoff
 # checks are excluded: the template handoff's `sha_missing` warning also says
 # "commit" but is about the handoff, not the repository history.
 _COMMIT_WARNING = re.compile(
@@ -324,6 +327,13 @@ def test_installed_command_runs_on_unrelated_repository(
         for relative, content in after_init.items()
         if before_init.get(relative) != content
     }
+    for relative, content in before_init.items():
+        if relative in MERGED_PATHS:
+            continue
+        assert after_init.get(relative) == content, f"init changed {relative}"
+    init_status = _status_paths(repo)
+    stray = init_status - init_paths
+    assert not stray, f"init changed paths it did not write: {sorted(stray)}"
 
     config = yaml.safe_load(after_init["dispatch_config.yaml"])
     for role in ROLES:
@@ -355,15 +365,24 @@ def test_installed_command_runs_on_unrelated_repository(
     assert "[DRY RUN] Would dispatch planner" in dry_run.stdout + dry_run.stderr
 
     # --- no stray changes ---------------------------------------------------
+    # doctor and --dry-run must leave every file that existed after init,
+    # including the files init generated, byte-identical. The only new files
+    # allowed are the dispatcher's own run logs under its runtime directory,
+    # and the git status check below shows init's .gitignore covers them.
     final = _snapshot(repo)
-    for relative, content in before_init.items():
-        if relative in MERGED_PATHS:
-            continue
-        assert final.get(relative) == content, f"{relative} changed"
-    stray = _status_paths(repo) - init_paths
-    assert not stray, f"paths changed outside init's writes: {sorted(stray)}"
+    changed = sorted(
+        relative
+        for relative in final.keys() | after_init.keys()
+        if final.get(relative) != after_init.get(relative)
+        and not (
+            relative not in after_init
+            and relative.startswith(RUNTIME_LOG_PREFIX)
+        )
+    )
+    assert not changed, f"doctor or --dry-run changed files: {changed}"
+    assert _status_paths(repo) == init_status
 
-    # --- doctor commit-count warning (F17) -----------------------------------
+    # --- doctor one-commit audit-base warning --------------------------------
     commit_warnings = _commit_warnings(doctor.stdout)
     if fixture_name == "go":
         assert commit_warnings, (
