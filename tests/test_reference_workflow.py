@@ -232,6 +232,28 @@ def test_codex_role_skills_do_not_point_at_dispatcher_docs() -> None:
         assert "docs/ARCHITECTURE.md" not in content, skill_name
 
 
+def test_shipped_template_files_do_not_point_at_dispatcher_docs() -> None:
+    # `llm-handoff init` copies every template file except the top-level
+    # README.md, and a target repository has neither of these docs.
+    shipped = sorted(
+        path
+        for path in REFERENCE_WORKFLOW.rglob("*")
+        if path.is_file() and path.relative_to(REFERENCE_WORKFLOW) != Path("README.md")
+    )
+    assert shipped
+
+    for path in shipped:
+        relative_path = path.relative_to(REFERENCE_WORKFLOW).as_posix()
+        content = path.read_text(encoding="utf-8")
+        assert "docs/ARCHITECTURE.md" not in content, relative_path
+        if relative_path == "dispatch_config.yaml":
+            for line in content.splitlines():
+                if "CONFIGURATION.md" in line:
+                    assert "llm-handoff's CONFIGURATION.md" in line, line
+        else:
+            assert "CONFIGURATION.md" not in content, relative_path
+
+
 def test_codex_validator_skill_covers_validation_and_routing() -> None:
     content = (
         REFERENCE_WORKFLOW / ".codex" / "skills" / "llm-handoff-validator" / "SKILL.md"

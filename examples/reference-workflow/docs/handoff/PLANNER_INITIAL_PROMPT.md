@@ -11,8 +11,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 3. `PROJECT_STATE.md` if present
 4. `docs/handoff/HANDOFF.md`
 5. `README.md`
-6. `CONFIGURATION.md`
-7. `docs/ARCHITECTURE.md`
+6. Repository-specific architecture or requirements docs referenced by the handoff
 
 ## Role Boundaries
 

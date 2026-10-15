@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The files `llm-handoff init` copies no longer point at llm-handoff's own
+  `CONFIGURATION.md` or `docs/ARCHITECTURE.md`, which a target repository
+  does not have. The planner, Gemini planner, and Codex backend prompts now
+  read repository-specific architecture or requirements docs referenced by
+  the handoff; the template `AGENTS.md` states the provider-native helper
+  boundary directly; the template `dispatch_config.yaml` comments say
+  `llm-handoff's CONFIGURATION.md`. The root copies of the edited prompts
+  match the templates, and a new test guards every shipped template file.
+
 - Wording and ASCII fixes: the normalizer comment in both config templates
   no longer says the model is a Claude model, so it stays true in the
   all-Codex `init` config; the finalizer skill and `CONFIGURATION.md` now say
