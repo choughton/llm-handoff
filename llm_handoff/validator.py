@@ -607,11 +607,27 @@ def _work_packet_block(handoff_content: str) -> tuple[int, str] | None:
 
 
 def _work_packet_fields(block: tuple[int, str]) -> dict[str, str]:
+    """Map each Work Packet field to its value.
+
+    A value is the text after the label plus any indented lines below it, so a
+    field written as nested bullets (``- **Context:**`` followed by indented
+    ``- ...`` items) is not empty.
+    """
+
     _line_number, content = block
-    return {
-        match.group(1): match.group(2).strip()
-        for match in _WORK_PACKET_FIELD_RE.finditer(content)
-    }
+    matches = list(_WORK_PACKET_FIELD_RE.finditer(content))
+    fields: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        parts = [match.group(2).strip()]
+        for line in content[match.end() : end].splitlines():
+            if not line.strip():
+                continue
+            if not line[0].isspace():
+                break
+            parts.append(line.strip())
+        fields[match.group(1)] = " ".join(part for part in parts if part)
+    return fields
 
 
 def _work_packet_coverage_warnings(block: tuple[int, str]) -> list[str]:

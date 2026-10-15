@@ -156,7 +156,10 @@ For narrow post-dispatch handoff hygiene failures, the dispatcher has a bounded
 repair lane. The producer gets one repair-only dispatch constrained to
 `docs/handoff/HANDOFF.md`; the repair must create a commit, change the handoff
 hash, touch only the handoff file, preserve critical frontmatter, leave dirty
-state unchanged except for the handoff, and pass validation. If that producer
+state unchanged except for the handoff, and pass validation. With
+`commit_mode: dispatcher` the handoff is never committed: the repair must leave
+HEAD where it was (handoff-only commits are undone with `git reset --soft`) and
+keep the handoff uncommitted. If that producer
 repair fails, the planner gets one cleanup-only attempt. If the planner cannot
 operationalize the handoff, the dispatcher aborts to the user.
 
