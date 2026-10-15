@@ -128,8 +128,10 @@ _FINDING_JSON_SCHEMA: dict[str, object] = {
         "recommendation": {"type": "string"},
     },
 }
+# No "$schema" key: Claude Code's --json-schema validator rejects the draft
+# 2020-12 meta-schema reference ("no schema with key or ref"), which made the
+# Claude security reviewer fail at launch.
 SECURITY_VERDICT_JSON_SCHEMA: dict[str, object] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "additionalProperties": False,
     "required": ["verdict", "summary", "findings"],

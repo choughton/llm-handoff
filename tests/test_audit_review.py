@@ -532,6 +532,8 @@ def test_claude_security_command_is_read_only_structured_review(
     assert json.loads(command[command.index("--json-schema") + 1]) == (
         audit_review.SECURITY_VERDICT_JSON_SCHEMA
     )
+    # Claude Code rejects a draft 2020-12 "$schema" reference in --json-schema.
+    assert "$schema" not in json.loads(command[command.index("--json-schema") + 1])
     assert command[-2] == "-p"
     prompt = command[-1]
     assert "security review" in prompt
