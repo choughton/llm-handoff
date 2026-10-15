@@ -2262,6 +2262,13 @@ def test_run_command_streaming_does_not_join_reader_threads_forever_after_timeou
         "Popen",
         lambda _command, **_kwargs: FakeProcess(),
     )
+    # The fake has no real pid or process tree; keep the timeout path on the
+    # plain kill so the test stays about reader-thread joins.
+    monkeypatch.setattr(
+        agent_process,
+        "_kill_process_tree",
+        lambda process: process.kill(),
+    )
     monkeypatch.setattr(
         agent_process.time,
         "monotonic",

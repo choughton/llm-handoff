@@ -184,7 +184,8 @@ signal; it is not an alternate state machine.
 The optional repair path is disabled unless `--repair-role` is provided. When
 enabled, the supervisor writes a failure packet, invokes the configured role
 through `llm_handoff.agent_roles.invoke_support_role`, requires a new HEAD
-commit, checks that changed files are within an allowed repair surface, and then
+commit, checks that committed and uncommitted changes stay within an allowed repair
+surface, and then
 restarts the child dispatcher. If the repair is ambiguous, repeats the same
 failure fingerprint, fails to commit, or touches files outside scope, the
 supervisor stops with an incident bundle.
@@ -284,6 +285,14 @@ implementer, the dispatcher emits `THREE_FIX_CIRCUIT_BREAKER` and routes to the
 planner for re-scoping. If that story has already gone through planner recovery
 and still routes back to implementation, the dispatcher emits
 `THREE_FIX_CIRCUIT_BREAKER_ESCALATE` and routes to `user`.
+
+Bounce counts are persisted per `story_id` in
+`logs/dispatch/bounce-counts.json` under the target repo and reloaded when the
+dispatcher starts, so a restart (including the supervised wrapper's restart
+after a repair) does not reset the breaker. `verified_pass` and
+`escalate_to_user` remove the story from that file. The `bounce_count`
+frontmatter field is informational; the JSON file is the count the dispatcher
+acts on.
 
 ## Prompt And Agent Templates
 

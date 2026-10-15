@@ -26,12 +26,17 @@ def invoke_role(
     current_handoff_sha: str | None = None,
     support_prompt: str | None = None,
     subagent_name: str | None = None,
+    repo_root: Path | None = None,
 ) -> DispatchResult:
+    # ``repo_root`` is the target repository the provider CLI must launch in.
+    # ``None`` falls back to the process cwd for callers that already run
+    # inside the target repo.
     if role == "frontend" and use_manual_frontend:
         return invoke_manual_frontend(
             handoff_path,
             additional_instruction=additional_instruction,
             log=log,
+            repo_root=repo_root,
         )
 
     provider = agent_config.provider
@@ -49,6 +54,7 @@ def invoke_role(
             binary=agent_config.binary,
             skill_name=agent_config.skill_name,
             timeout_ms=agent_config.timeout_ms,
+            repo_root=repo_root,
         )
 
     if provider == "gemini":
@@ -75,6 +81,7 @@ def invoke_role(
             previous_handoff_sha=previous_handoff_sha,
             current_handoff_sha=current_handoff_sha,
             log=log,
+            repo_root=repo_root,
         )
 
     if provider == "claude":
@@ -96,6 +103,7 @@ def invoke_role(
                     default=f"Claude {subagent_name or role}",
                 ),
                 log=log,
+                repo_root=repo_root,
             )
         )
 
@@ -109,6 +117,7 @@ def invoke_backend_role(
     use_resume: bool = False,
     additional_instruction: str | None = None,
     agent_config: AgentConfig | None = None,
+    repo_root: Path | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "backend",
@@ -117,6 +126,7 @@ def invoke_backend_role(
         log=log,
         use_resume=use_resume,
         additional_instruction=additional_instruction,
+        repo_root=repo_root,
     )
 
 
@@ -131,6 +141,7 @@ def invoke_planner_role(
     current_handoff_sha: str | None = None,
     log: LogFn | None = None,
     agent_config: AgentConfig | None = None,
+    repo_root: Path | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "planner",
@@ -143,6 +154,7 @@ def invoke_planner_role(
         previous_handoff_sha=previous_handoff_sha,
         current_handoff_sha=current_handoff_sha,
         log=log,
+        repo_root=repo_root,
     )
 
 
@@ -154,6 +166,7 @@ def invoke_frontend_role(
     additional_instruction: str | None = None,
     log: LogFn | None = None,
     agent_config: AgentConfig | None = None,
+    repo_root: Path | None = None,
 ) -> DispatchResult:
     return invoke_role(
         "frontend",
@@ -163,6 +176,7 @@ def invoke_frontend_role(
         use_api_key_env=use_api_key_env,
         additional_instruction=additional_instruction,
         log=log,
+        repo_root=repo_root,
     )
 
 
@@ -174,10 +188,16 @@ def invoke_support_role(
     handoff_path: Path | None = None,
     agent_config: AgentConfig | None = None,
     log: LogFn | None = None,
+    repo_root: Path | None = None,
 ) -> SubagentResult:
     resolved_role = role or "validator"
     if agent_config is None:
-        return invoke_claude_subagent(subagent_name, prompt, log=log)
+        return invoke_claude_subagent(
+            subagent_name,
+            prompt,
+            log=log,
+            repo_root=repo_root,
+        )
     if agent_config.provider == "claude":
         return invoke_claude_subagent(
             agent_config.agent_name or subagent_name,
@@ -191,6 +211,7 @@ def invoke_support_role(
                 default=f"Claude {subagent_name}",
             ),
             log=log,
+            repo_root=repo_root,
         )
 
     result = invoke_role(
@@ -202,6 +223,7 @@ def invoke_support_role(
         use_api_key_env=bool(agent_config.use_api_key_env),
         support_prompt=prompt,
         subagent_name=subagent_name,
+        repo_root=repo_root,
     )
     return SubagentResult(
         stdout=result.stdout,

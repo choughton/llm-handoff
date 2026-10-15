@@ -219,8 +219,12 @@ def invoke_claude_subagent(
     timeout_ms: int | None = None,
     agent_name: str | None = None,
     log: LogFn | None = None,
+    repo_root: Path | None = None,
 ) -> SubagentResult:
-    repo_root = Path.cwd()
+    # The dispatcher may run from its own source checkout against a different
+    # target repo, so the launch directory must come from the config rather
+    # than from the process cwd.
+    resolved_repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
     resolved_binary = binary or config.CLAUDE_BINARY
     resolved_permissions_flag = permissions_flag or config.CLAUDE_PERMISSIONS_FLAG
     resolved_model = model or config.CLAUDE_MODEL
@@ -241,7 +245,7 @@ def invoke_claude_subagent(
     result = _run_claude_stream_json_command(
         resolved_agent_name,
         stream_json_command,
-        cwd=repo_root,
+        cwd=resolved_repo_root,
         timeout_ms=resolved_timeout_ms,
         env=_build_claude_env(),
         log=log,
@@ -262,7 +266,7 @@ def invoke_claude_subagent(
                 "-p",
                 prompt,
             ],
-            cwd=repo_root,
+            cwd=resolved_repo_root,
             timeout_ms=resolved_timeout_ms,
             env=_build_claude_env(),
             log=log,

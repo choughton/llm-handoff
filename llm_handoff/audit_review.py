@@ -459,14 +459,6 @@ def run_audit_fan_out(
         implementer_role=implementer_role,
     )
     quality_provider = config.agents["auditor"].provider
-    if Path.cwd().resolve() != config.repo_root:
-        _log(
-            log,
-            "WARN",
-            "The quality reviewer uses the existing auditor invocation, which "
-            f"runs in the process working directory ({Path.cwd()}), not "
-            f"repo_root ({config.repo_root}).",
-        )
     if security_provider == config.agents[implementer_role].provider:
         _log(
             log,

@@ -26,13 +26,16 @@ from llm_handoff.router import parse_handoff_frontmatter_text
 
 
 STORY_ID = "AUDIT-S1"
-ORIGINAL_AUDIT_PROMPT = (
+ORIGINAL_AUDIT_PROMPT_TEMPLATE = (
     "Use the auditor agent to audit the work described in "
-    "docs/handoff/HANDOFF.md. Read the repository instructions and relevant "
+    "{handoff_path}. Read the repository instructions and relevant "
     "state files before judging the diff. Run the configured verification "
     "commands when available. Return a concise audit report, then update "
-    "docs/handoff/HANDOFF.md with findings and a routing instruction for the "
+    "{handoff_path} with findings and a routing instruction for the "
     "next agent."
+)
+ORIGINAL_AUDIT_PROMPT = ORIGINAL_AUDIT_PROMPT_TEMPLATE.format(
+    handoff_path="docs/handoff/HANDOFF.md"
 )
 
 
@@ -374,7 +377,7 @@ def test_default_config_dispatches_original_single_auditor(
 
     result, label = orchestrator._dispatch_route("auditor", config, log)
 
-    assert orchestrator.AUDIT_PROMPT == ORIGINAL_AUDIT_PROMPT
+    assert orchestrator.AUDIT_PROMPT_TEMPLATE == ORIGINAL_AUDIT_PROMPT_TEMPLATE
     assert label == "auditor (audit)"
     assert result.stdout == "audit report"
     assert calls == [
@@ -385,6 +388,7 @@ def test_default_config_dispatches_original_single_auditor(
                 "handoff_path": config.handoff_full_path,
                 "agent_config": config.agents["auditor"],
                 "log": log,
+                "repo_root": config.repo_root,
             },
         )
     ]

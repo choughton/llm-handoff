@@ -51,6 +51,9 @@ CODEX_OUTPUT_SCHEMA_PATH = (
 CODEX_OUTPUT_DIRECTORY = Path("logs") / "dispatch" / "codex"
 CODEX_OUTPUT_LAST_MESSAGE_PATH = CODEX_OUTPUT_DIRECTORY / "last-message.json"
 CODEX_SESSION_STATE_PATH = CODEX_OUTPUT_DIRECTORY / "session.json"
+# Per-story bounce counts for the three-fix circuit breaker. Kept outside the
+# handoff file so a dispatcher restart cannot reset the breaker.
+BOUNCE_COUNT_STATE_PATH = Path("logs") / "dispatch" / "bounce-counts.json"
 
 
 def detect_repo_root(start: Path | None = None) -> Path:

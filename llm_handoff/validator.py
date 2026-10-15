@@ -32,6 +32,10 @@ _TASK_ASSIGNMENT_RE = re.compile(r"(?im)^#{1,6}\s+Task Assignment\b")
 _OBJECTIVE_RE = re.compile(r"(?im)^#{1,6}\s+Objective\b")
 _ACCEPTANCE_CRITERIA_RE = re.compile(r"(?im)^#{1,6}\s+Acceptance Criteria\b")
 _WORK_PACKET_RE = re.compile(r"(?im)^#{1,6}\s+Work Packet\b")
+_WORK_PACKET_HEADING_RE = re.compile(r"(?im)^#{1,6}\s+Work Packet\b[^\n]*$")
+_WORK_PACKET_FIELD_RE = re.compile(
+    r"(?im)^-[ \t]+\*\*(Objective|Files in scope|Files out of bounds|Context|Verification command|Expected next route):\*\*[ \t]*(.*)$"
+)
 _VERIFICATION_EVIDENCE_RE = re.compile(r"(?im)^##\s+Verification Evidence\s*$")
 _EVIDENCE_FIELD_RE = re.compile(
     r"(?im)^-\s+\*\*(Commands run|Output summary|Commit SHA verified|Files changed or reviewed|Unresolved concerns):\*\*\s*(.*)$"
@@ -54,6 +58,22 @@ _REQUIRED_EVIDENCE_FIELDS = {
     "Files changed or reviewed",
     "Unresolved concerns",
 }
+# The planner prompt contract: a ``## Work Packet`` section with exactly
+# these six bold bullet fields. ``## Task Assignment`` with ``Objective`` and
+# ``Acceptance Criteria`` headings is the pre-extraction shape and is only
+# kept as a deprecated alias.
+_REQUIRED_WORK_PACKET_FIELDS = (
+    "Objective",
+    "Files in scope",
+    "Files out of bounds",
+    "Context",
+    "Verification command",
+    "Expected next route",
+)
+_TASK_ASSIGNMENT_DEPRECATION_WARNING = (
+    "task_assignment_deprecated: ## Task Assignment is a legacy alias; use a "
+    "## Work Packet section with the six bold fields instead."
+)
 
 
 @dataclass(frozen=True)
@@ -513,6 +533,40 @@ def _evidence_fields(block: tuple[int, str]) -> dict[str, str]:
     }
 
 
+def _work_packet_block(handoff_content: str) -> tuple[int, str] | None:
+    match = _WORK_PACKET_HEADING_RE.search(handoff_content)
+    if match is None:
+        return None
+    start = match.end()
+    next_heading = _HEADING_RE.search(handoff_content, start)
+    end = next_heading.start() if next_heading is not None else len(handoff_content)
+    line_number = handoff_content[: match.start()].count("\n") + 1
+    return line_number, handoff_content[start:end]
+
+
+def _work_packet_fields(block: tuple[int, str]) -> dict[str, str]:
+    _line_number, content = block
+    return {
+        match.group(1): match.group(2).strip()
+        for match in _WORK_PACKET_FIELD_RE.finditer(content)
+    }
+
+
+def _work_packet_coverage_warnings(block: tuple[int, str]) -> list[str]:
+    fields = _work_packet_fields(block)
+    warnings: list[str] = []
+    for name in _REQUIRED_WORK_PACKET_FIELDS:
+        if name not in fields:
+            warnings.append(
+                f"acceptance_coverage_unclear: Work Packet is missing the {name} field."
+            )
+        elif not fields[name]:
+            warnings.append(
+                f"acceptance_coverage_unclear: Work Packet field {name} is empty."
+            )
+    return warnings
+
+
 def _git_commit_exists(sha: str, cwd: Path | None) -> bool | None:
     if cwd is None:
         return None
@@ -557,9 +611,10 @@ def _scope_claim_errors(
     if previous_route == "planner":
         if routing_instruction == "user":
             return []
-        if not has_task_assignment:
+        has_work_packet = _WORK_PACKET_RE.search(handoff_content) is not None
+        if not has_work_packet and not has_task_assignment:
             return [
-                "scope_claim_mismatch: planner handoffs must use a Task Assignment block."
+                "scope_claim_mismatch: planner handoffs must include a ## Work Packet section."
             ]
         return []
 
@@ -605,6 +660,12 @@ def _content_warnings(
 
     if previous_route == "planner":
         if routing_instruction == "user":
+            return warnings
+        if _TASK_ASSIGNMENT_RE.search(handoff_content) is not None:
+            warnings.append(_TASK_ASSIGNMENT_DEPRECATION_WARNING)
+        work_packet = _work_packet_block(handoff_content)
+        if work_packet is not None:
+            warnings.extend(_work_packet_coverage_warnings(work_packet))
             return warnings
         if _OBJECTIVE_RE.search(handoff_content) is None:
             warnings.append(
