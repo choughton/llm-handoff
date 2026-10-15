@@ -112,9 +112,9 @@ def run_doctor(
     checks: list[DoctorCheck] = []
 
     dispatch_config = _check_config(resolved_root, config_path, checks)
-    _check_git(resolved_root, checks)
+    git_available = _check_git(resolved_root, checks)
     if dispatch_config is not None:
-        _check_role_binaries(dispatch_config, checks)
+        _check_role_binaries(dispatch_config, resolved_root, checks)
         _check_container_runtime(dispatch_config, checks)
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
@@ -125,6 +125,7 @@ def run_doctor(
         resolved_root,
         handoff_path,
         dispatcher_commit_mode=dispatcher_commit_mode,
+        git_available=git_available,
         checks=checks,
     )
     return DoctorReport(repo_root=resolved_root, checks=tuple(checks))
@@ -163,11 +164,17 @@ def _check_config(
     return dispatch_config
 
 
-def _check_git(repo_root: Path, checks: list[DoctorCheck]) -> None:
+def _check_git(repo_root: Path, checks: list[DoctorCheck]) -> bool:
+    """Append the Git checks and return whether `git` is on PATH."""
     if not _command_available("git"):
         checks.append(DoctorCheck("FAIL", "git", "git is not on PATH"))
-        return
+        return False
     checks.append(DoctorCheck("PASS", "git", "git is on PATH"))
+    _check_git_repository(repo_root, checks)
+    return True
+
+
+def _check_git_repository(repo_root: Path, checks: list[DoctorCheck]) -> None:
 
     toplevel = _run_git(repo_root, "rev-parse", "--show-toplevel")
     if toplevel is None or toplevel.returncode != 0:
@@ -242,15 +249,21 @@ def _agent_binary(agent_config: AgentConfig) -> str:
     return agent_config.binary or _command_binary_name(agent_config.provider)
 
 
-def _role_binary_available(binary: str) -> bool:
+def _role_binary_available(binary: str, repo_root: Path) -> bool:
     """Return whether a role launch would find ``binary``.
 
     Mirrors ``agent_process._resolve_command_binary``: a path is used as
     given, and a ``.cmd`` name also resolves through its bare stem (for
-    example ``claude.cmd`` -> ``claude.exe`` on Windows).
+    example ``claude.cmd`` -> ``claude.exe`` on Windows). Provider processes
+    run with the repository root as their working directory, so a relative
+    path such as ``./tools/codex`` is resolved against ``repo_root`` rather
+    than the caller's current directory.
     """
     if Path(binary).is_absolute() or any(sep in binary for sep in ("\\", "/")):
-        return Path(binary).is_file()
+        path = Path(binary)
+        if not path.is_absolute():
+            path = repo_root / path
+        return path.is_file()
     if _command_available(binary):
         return True
     path = Path(binary)
@@ -259,12 +272,13 @@ def _role_binary_available(binary: str) -> bool:
 
 def _check_role_binaries(
     dispatch_config: DispatchConfig,
+    repo_root: Path,
     checks: list[DoctorCheck],
 ) -> None:
     for label, agent_config in _role_launches(dispatch_config):
         binary = _agent_binary(agent_config)
         name = f"role {label}"
-        if _role_binary_available(binary):
+        if _role_binary_available(binary, repo_root):
             checks.append(
                 DoctorCheck(
                     "PASS",
@@ -322,6 +336,7 @@ def _check_handoff(
     handoff_path: Path,
     *,
     dispatcher_commit_mode: bool,
+    git_available: bool,
     checks: list[DoctorCheck],
 ) -> None:
     if not handoff_path.exists():
@@ -367,12 +382,33 @@ def _check_handoff(
         if frontmatter is not None and frontmatter.producer
         else "unknown producer"
     )
-    validation = validate_handoff_text(
-        handoff_content,
-        producer,
-        git_cwd=repo_root,
-        dispatcher_commit_mode=dispatcher_commit_mode,
-    )
+    # Without git on PATH (already reported by the git check), skip the
+    # validator's Git-backed scope_sha lookup: it shells out to `git` and
+    # would raise instead of letting the doctor print its report.
+    if not git_available:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                "handoff validation",
+                "git is not on PATH; skipped the scope_sha commit lookup",
+            )
+        )
+    try:
+        validation = validate_handoff_text(
+            handoff_content,
+            producer,
+            git_cwd=repo_root if git_available else None,
+            dispatcher_commit_mode=dispatcher_commit_mode,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        checks.append(
+            DoctorCheck(
+                "FAIL",
+                "handoff validation",
+                f"handoff validator could not run: {exc}",
+            )
+        )
+        return
     for error in validation.errors:
         checks.append(DoctorCheck("FAIL", "handoff validation", error))
     for warning in validation.warnings:

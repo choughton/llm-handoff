@@ -176,6 +176,89 @@ def test_doctor_resolves_cmd_binary_through_bare_stem_like_launcher(
     assert "PASS role auditor: provider claude binary `fake-claude.cmd`" in output
 
 
+def test_doctor_resolves_relative_path_binary_against_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    tool = repo / "tools" / "fake-codex"
+    tool.parent.mkdir()
+    tool.write_text("#!/bin/sh\n", encoding="utf-8")
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "binary: fake-codex", "binary: ./tools/fake-codex"
+        ),
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-claude"})
+    # Invoke from outside the checkout; provider processes run in the repo.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert "PASS role backend: provider codex binary `./tools/fake-codex`" in output
+
+
+def test_doctor_reports_missing_relative_path_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "binary: fake-codex", "binary: ./tools/fake-codex"
+        ),
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-claude"})
+    # A same-named file relative to the caller's cwd must not count.
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "fake-codex").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert "FAIL role backend: provider codex binary `./tools/fake-codex`" in output
+
+
+def test_doctor_reports_when_git_is_missing_and_handoff_has_scope_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    handoff = VALID_HANDOFF.replace(
+        "producer: planner\n",
+        "producer: planner\nscope_sha: 0123456789abcdef0123456789abcdef01234567\n",
+    )
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=handoff)
+    available = {"fake-codex", "fake-claude"}
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: f"/usr/bin/{name}" if name in available else None,
+    )
+
+    def no_git(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(subprocess, "run", no_git)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    lines = output.strip().splitlines()
+    assert "FAIL git: git is not on PATH" in lines
+    assert any(line.startswith("PASS handoff route:") for line in lines)
+    assert (
+        "WARN handoff validation: git is not on PATH; skipped the scope_sha "
+        "commit lookup" in lines
+    )
+    assert not any("could not run" in line for line in lines)
+    assert lines[-1].startswith("Doctor FAIL:")
+
+
 def test_doctor_skips_container_runtime_without_gemini_roles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
