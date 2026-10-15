@@ -284,7 +284,8 @@ failure:
   evidence and routes it back to the implementer. These bounces count toward
   the three-fix circuit breaker.
 - A missing or unusable Work Packet routes to `planner`, which owns the
-  packet.
+  packet. So does a Verification command that fails again when the claim has
+  no new commit since the previous bounce.
 - A scanner command whose placeholders cannot be filled escalates to `user`.
 - A missing, malformed, or timed-out reviewer verdict restores the pre-review
   handoff and counts as a dispatch failure.

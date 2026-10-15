@@ -113,6 +113,9 @@ _EXCEPTION_PHRASE_RE = re.compile(
 _BACKTICK_SPAN_RE = re.compile(r"`[^`]*`")
 _PROSE_PATH_CHARS = frozenset("/.*?[")
 _WRAPPED_PATH_FIELDS = frozenset({"files_in_scope", "files_out_of_bounds"})
+# A Verification command line that is only a connective joins two commands in
+# prose; it is not a command.
+_PROSE_COMMAND_RE = re.compile(r"(?i)^(?:and|or|then|plus|also)[,.;:]?$")
 
 _FIELD_ALIASES = {
     "objective": "objective",
@@ -265,6 +268,9 @@ class WorkClaimResult:
     work_packet_text: str | None
     scanner_runs: tuple[ScannerRun, ...] = ()
     dispatcher_commit_mode: bool = False
+    # The same Verification command failed on the previous bounce too, and no
+    # commit since then changed a file other than the handoff.
+    repeated_verification_failure: bool = False
 
     @property
     def passed(self) -> bool:
@@ -303,7 +309,9 @@ def parse_work_packet(handoff_content: str) -> WorkPacket:
     files_out_of_bounds = _split_path_list(
         fields.get("files_out_of_bounds", []), drop_exceptions=True
     )
-    verification_commands = _split_commands(fields.get("verification_command", []))
+    verification_commands, prose_lines = _split_commands(
+        fields.get("verification_command", [])
+    )
 
     problems: list[str] = []
     if "files_in_scope" not in fields:
@@ -314,8 +322,15 @@ def parse_work_packet(handoff_content: str) -> WorkPacket:
         problems.append("missing Files out of bounds (write `none` when unused)")
     if "verification_command" not in fields:
         problems.append("missing Verification command")
-    elif not verification_commands:
+    elif not verification_commands and not prose_lines:
         problems.append("empty Verification command")
+    if prose_lines:
+        problems.append(
+            "Verification command has lines that are not commands: "
+            + ", ".join(f"`{line}`" for line in prose_lines)
+            + " (every line runs as a command; list only commands, and put "
+            "notes in the Context)"
+        )
     # The narrowest entry decides scope, so an entry listed under both fields
     # resolves to out of bounds: the implementer may not change it, and the
     # dispatcher will not commit it. A packet cannot limit edits within a file;
@@ -476,8 +491,16 @@ def _split_path_list(
     return tuple(dict.fromkeys(path for path in paths if path))
 
 
-def _split_commands(values: list[str]) -> tuple[str, ...]:
+def _split_commands(values: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split Verification command values into commands and prose lines.
+
+    Every line becomes one command, so a line that is clearly prose (a lone
+    connective such as ``and``, or a lead-in ending in ``:``) is returned in
+    the second tuple instead; the gate would otherwise run it as a command.
+    """
+
     commands: list[str] = []
+    prose: list[str] = []
     for raw_value in values:
         command = raw_value.strip()
         if command.startswith(("```", "~~~")):
@@ -485,8 +508,11 @@ def _split_commands(values: list[str]) -> tuple[str, ...]:
         command = command.strip("`").strip()
         if not command or command.lower() in _NONE_VALUES:
             continue
+        if _PROSE_COMMAND_RE.match(command) or command.endswith(":"):
+            prose.append(command)
+            continue
         commands.append(command)
-    return tuple(dict.fromkeys(commands))
+    return tuple(dict.fromkeys(commands)), tuple(dict.fromkeys(prose))
 
 
 def normalize_repo_path(path: str) -> str:
@@ -1288,6 +1314,7 @@ def verify_work_claim(
                 errors.append(scanner_error)
 
     verification_runs: list[CommandRun] = []
+    repeated_verification_failure = False
     if packet is None:
         checks.append(
             WorkClaimCheck(
@@ -1306,6 +1333,13 @@ def verify_work_claim(
         checks.append(verification_check)
         if verification_error is not None:
             errors.append(verification_error)
+            # The bounce carries the packet forward unchanged, so an
+            # implementer that commits nothing cannot change the outcome.
+            repeated_verification_failure = not any(
+                path != handoff_rel_path for path in changed_files
+            ) and _previous_bounce_failed_command(
+                assignment_content, verification_runs[-1].command
+            )
 
     return WorkClaimResult(
         checks=tuple(checks),
@@ -1319,6 +1353,29 @@ def verify_work_claim(
         work_packet_text=work_packet_text,
         scanner_runs=tuple(scanner_runs),
         dispatcher_commit_mode=dispatcher_commit_mode,
+        repeated_verification_failure=repeated_verification_failure,
+    )
+
+
+def _previous_bounce_failed_command(assignment_content: str, command: str) -> bool:
+    """Return whether the assignment is a bounce whose verification ran ``command``
+    and failed.
+
+    Only the top-level ``## Dispatcher Verification`` section counts; older
+    sections inside ``## Prior Handback`` have demoted headings.
+    """
+
+    normalized = assignment_content.replace("\r\n", "\n")
+    start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
+    if start == -1:
+        return False
+    start += 1
+    next_heading = re.search(r"(?m)^## ", normalized[start + 1 :])
+    end = len(normalized) if next_heading is None else start + 1 + next_heading.start()
+    section = normalized[start:end]
+    return (
+        "- **Verdict:** FAIL" in section
+        and f"- FAIL `verification`: `{command}` " in section
     )
 
 
@@ -1546,9 +1603,12 @@ def bounce_route_for(result: WorkClaimResult, *, implementer: str) -> BounceRout
 
     Scope, SHA, worktree, scanner, and verification failures go back to the
     implementer as ``verified_fail``. A missing or unusable Work Packet is the
-    planner's artifact, so that bounce routes to ``planner``. Unreadable Git
-    state and an unrenderable scanner command are operator problems and
-    escalate to ``user``.
+    planner's artifact, so that bounce routes to ``planner``. So does a
+    Verification command that failed again on a claim that committed nothing
+    since the previous bounce: the implementer cannot change the packet the
+    gate reads, so another implementer dispatch would fail the same way.
+    Unreadable Git state and an unrenderable scanner command are operator
+    problems and escalate to ``user``.
     """
 
     prefixes = set(result.failed_prefixes)
@@ -1556,7 +1616,7 @@ def bounce_route_for(result: WorkClaimResult, *, implementer: str) -> BounceRout
         prefix.split(":", 1)[0] == SCANNER_CONFIG_INVALID_PREFIX for prefix in prefixes
     ):
         return BounceRoute(next_agent="user", status="escalate_to_user")
-    if prefixes & WORK_PACKET_ERROR_PREFIXES:
+    if prefixes & WORK_PACKET_ERROR_PREFIXES or result.repeated_verification_failure:
         return BounceRoute(next_agent="planner", status="verified_fail")
     return BounceRoute(next_agent=implementer, status="verified_fail")
 
@@ -1646,6 +1706,19 @@ def _dispatcher_verification_section(
             f"The dispatcher checked the `ready_for_review` claim from "
             f"`{implementer}` before dispatching the auditor and rejected it. "
             + remedy
+        )
+    elif route.next_agent == "planner" and result.repeated_verification_failure:
+        failed_command = result.verification_runs[-1].command
+        lines.append(
+            f"The Verification command `{failed_command}` failed again on the "
+            f"`ready_for_review` claim from `{implementer}`, and no commit since "
+            "the previous bounce changed a file other than the handoff. The "
+            "dispatcher runs the command from the assignment's `## Work "
+            "Packet`, which the implementer cannot change, so the claim was "
+            "routed to the planner instead of the implementer. Check the "
+            "Verification command and the implementer's handback below, then "
+            "re-issue the assignment with a corrected Work Packet or re-scope "
+            "the story. The implementer's work has not been audited."
         )
     elif route.next_agent == "planner":
         lines.append(

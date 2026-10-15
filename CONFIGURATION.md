@@ -146,7 +146,14 @@ with the evidence, then routes back to the implementer. The bounce increments
 the story's bounce count, so the three-fix circuit breaker still applies. A
 missing or unusable Work Packet routes the bounce to `planner` instead, because
 the packet is the planner's artifact. Every bounce carries the original
-`## Work Packet` forward verbatim.
+`## Work Packet` forward verbatim, and the gate reads the packet from the
+assignment, so the implementer cannot change it. If the same Verification
+command fails again and no commit since the previous bounce changed a file
+other than the handoff, the bounce goes to `planner` as well.
+
+Every line of `Verification command` runs as its own command. A line that is
+only a connective (`and`, `or`, `then`, `plus`, `also`) or ends in `:` is prose,
+and the packet is `work_packet_unparseable`.
 
 With the gate enabled, post-dispatch validation also rejects any handoff that
 routes work to an implementer without a parseable Work Packet;
