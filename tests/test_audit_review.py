@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 from typing import Any
 
@@ -1475,3 +1477,245 @@ def test_run_loop_fan_out_reviewer_failure_counts_as_dispatch_failure(
         encoding="utf-8"
     ) == handoff
     assert "security_verdict_malformed:" in log.text()
+
+
+# --------------------------------------------------------------------------
+# reviewer subprocess environment (end to end)
+# --------------------------------------------------------------------------
+
+
+REVIEWER_UNRELATED_SECRETS = {
+    "GITHUB_TOKEN": "ghp-secret",
+    "GH_TOKEN": "gh-secret",
+    "AWS_ACCESS_KEY_ID": "aws-id",
+    "AWS_SECRET_ACCESS_KEY": "aws-secret",
+    "AWS_SESSION_TOKEN": "aws-session",
+    "NPM_TOKEN": "npm-secret",
+}
+REVIEWER_VENDOR_KEYS = {
+    "ANTHROPIC_API_KEY": "anthropic-secret",
+    "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+    "OPENAI_API_KEY": "openai-secret",
+    "GEMINI_API_KEY": "gemini-secret",
+    "GOOGLE_API_KEY": "google-secret",
+}
+
+
+@pytest.fixture
+def reviewer_secret_environ(monkeypatch: pytest.MonkeyPatch) -> None:
+    # PATH stays real: the fan-out runs git for the review scope.
+    for name, value in {**REVIEWER_UNRELATED_SECRETS, **REVIEWER_VENDOR_KEYS}.items():
+        monkeypatch.setenv(name, value)
+
+
+class _ProviderPopenRecorder:
+    """Record the environment each provider CLI launch actually receives.
+
+    Git runs for real. Every other command is replaced by a Python child that
+    prints the Gemini security extension name, so the Gemini precheck passes
+    and the reviewer launch itself is reached.
+    """
+
+    def __init__(self) -> None:
+        self.real_popen = subprocess.Popen
+        self.launches: list[tuple[list[str], dict[str, str]]] = []
+        self.lock = threading.Lock()
+
+    def __call__(self, args, *popen_args, **kwargs):
+        command = [str(arg) for arg in args]
+        if Path(command[0]).stem.lower() == "git":
+            return self.real_popen(args, *popen_args, **kwargs)
+        env = kwargs.get("env")
+        with self.lock:
+            self.launches.append(
+                (command, dict(os.environ) if env is None else dict(env))
+            )
+        return self.real_popen(
+            [sys.executable, "-c", "print('gemini-cli-security')"],
+            *popen_args,
+            **kwargs,
+        )
+
+    def stems(self) -> set[str]:
+        return {Path(command[0]).stem.lower() for command, _env in self.launches}
+
+
+def _with_codex_security_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    present: bool,
+) -> None:
+    real_which = audit_review.shutil.which
+
+    def which(name: str, *args: Any, **kwargs: Any) -> str | None:
+        if name == audit_review.CODEX_SECURITY_BINARY:
+            return "/opt/bin/codex-security" if present else None
+        return real_which(name, *args, **kwargs)
+
+    monkeypatch.setattr(audit_review.shutil, "which", which)
+
+
+def _default_agents(**overrides: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **{
+            role: agent.model_dump(exclude_none=True)
+            for role, agent in config_module._default_agent_configs().items()
+        },
+        **overrides,
+    }
+
+
+def _binary_stem(provider: str) -> str:
+    binary = getattr(config_module, f"{provider.upper()}_BINARY")
+    return Path(binary).stem.lower()
+
+
+@pytest.mark.parametrize(
+    ("quality_provider", "security_provider", "codex_security_cli"),
+    [
+        ("claude", "codex", False),
+        ("claude", "codex", True),
+        ("codex", "claude", False),
+        ("gemini", "gemini", False),
+    ],
+)
+def test_no_reviewer_subprocess_receives_unrelated_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reviewer_secret_environ: None,
+    quality_provider: str,
+    security_provider: str,
+    codex_security_cli: bool,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    config = _fan_out_config(
+        repo,
+        security_provider=security_provider,
+        agents=_default_agents(auditor={"provider": quality_provider}),
+    )
+    _with_codex_security_cli(monkeypatch, present=codex_security_cli)
+    recorder = _ProviderPopenRecorder()
+    monkeypatch.setattr(subprocess, "Popen", recorder)
+
+    orchestrator._dispatch_audit_fan_out(
+        config,
+        _Recorder(),
+        audit_context=AuditFanOutContext(
+            cycle_number=1,
+            handoff_content=handoff,
+            implementer_base_sha=base,
+        ),
+    )
+
+    security_stem = (
+        "codex-security" if codex_security_cli else _binary_stem(security_provider)
+    )
+    assert {_binary_stem(quality_provider), security_stem} <= recorder.stems()
+    for command, env in recorder.launches:
+        upper_names = {name.upper() for name in env}
+        leaked = sorted(
+            name
+            for name in upper_names
+            if name in REVIEWER_UNRELATED_SECRETS
+            or name in REVIEWER_VENDOR_KEYS
+            or name.startswith("AWS_")
+        )
+        assert not leaked, f"{command[0]} received {leaked}"
+        assert "PATH" in upper_names
+
+
+# --------------------------------------------------------------------------
+# Gemini reviewer startup check
+# --------------------------------------------------------------------------
+
+
+def _no_gemini_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        audit_review.gemini_provider,
+        "detect_gemini_sandbox_runtime",
+        lambda: None,
+    )
+
+
+def _agents_without_gemini() -> dict[str, Any]:
+    return _default_agents(
+        planner={"provider": "codex"},
+        frontend={"provider": "codex"},
+    )
+
+
+def test_run_loop_refuses_to_start_when_gemini_reviewer_has_no_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_gemini_sandbox(monkeypatch)
+    config = _fan_out_config(
+        tmp_path,
+        security_provider="gemini",
+        agents=_agents_without_gemini(),
+    )
+    log = _Recorder()
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=log)
+
+    assert exit_code == 1
+    errors = [message for level, message in log.messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].startswith("security_reviewer_failed:")
+    assert "audit.security_provider" in errors[0]
+    assert "unsafe_bypass" not in errors[0]
+
+
+def test_startup_check_follows_gemini_role_unsafe_bypass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_gemini_sandbox(monkeypatch)
+    config = _fan_out_config(
+        tmp_path,
+        security_provider="gemini",
+        agents=_default_agents(
+            planner={"provider": "gemini", "unsafe_bypass": True},
+            frontend={"provider": "codex"},
+        ),
+    )
+
+    assert audit_review.security_reviewer_startup_error(config) is None
+
+
+def test_startup_check_names_gemini_role_bypass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_gemini_sandbox(monkeypatch)
+    config = _fan_out_config(tmp_path, security_provider="gemini")
+
+    error = audit_review.security_reviewer_startup_error(config)
+
+    assert error is not None
+    assert "agents.planner.unsafe_bypass: true" in error
+
+
+@pytest.mark.parametrize("security_provider", [None, "claude", "codex"])
+def test_startup_check_skips_non_gemini_security_reviewers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    security_provider: str | None,
+) -> None:
+    _no_gemini_sandbox(monkeypatch)
+    config = _fan_out_config(tmp_path, security_provider=security_provider)
+
+    assert audit_review.security_reviewer_startup_error(config) is None
+
+
+def test_startup_check_is_off_when_security_review_is_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_gemini_sandbox(monkeypatch)
+    config = DispatchConfig(
+        repo_root=tmp_path,
+        audit={"reviewers": ["quality"], "security_provider": "gemini"},
+    )
+
+    assert audit_review.security_reviewer_startup_error(config) is None

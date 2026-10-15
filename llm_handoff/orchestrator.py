@@ -23,7 +23,11 @@ from llm_handoff.agent_roles import (
     invoke_support_role,
 )
 from llm_handoff.agent_types import DispatchResult, SubagentResult
-from llm_handoff.audit_review import AuditFanOutContext, run_audit_fan_out
+from llm_handoff.audit_review import (
+    AuditFanOutContext,
+    run_audit_fan_out,
+    security_reviewer_startup_error,
+)
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
     AgentConfig,
@@ -285,6 +289,10 @@ def run_loop(
                 "ERROR",
                 gemini_provider.gemini_sandbox_unavailable_message(role),
             )
+        return 1
+    reviewer_launch_error = security_reviewer_startup_error(config)
+    if reviewer_launch_error is not None and not config.dry_run:
+        _log(log_fn, "ERROR", reviewer_launch_error)
         return 1
     _restore_bounce_counts(config, log_fn)
     mark_startup_complete = getattr(log_fn, "mark_startup_complete", None)

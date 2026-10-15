@@ -1470,6 +1470,23 @@ def _gemini_reviewer_sandbox_error(config: DispatchConfig) -> str:
     )
 
 
+def security_reviewer_startup_error(config: DispatchConfig) -> str | None:
+    """Return the launch error a configured Gemini security reviewer will hit.
+
+    Checked once at startup so a missing sandbox runtime stops the loop
+    before an implementer cycle runs. Automatic provider selection prefers
+    claude and codex, so only a configured ``gemini`` provider is checked.
+    """
+    if not config.audit.security_enabled or config.audit.security_provider != "gemini":
+        return None
+    provider_config = _provider_agent_config(config, "gemini")
+    if provider_config is not None and provider_config.unsafe_bypass:
+        return None
+    if gemini_provider.detect_gemini_sandbox_runtime() is not None:
+        return None
+    return _gemini_reviewer_sandbox_error(config)
+
+
 def _implementer_role(frontmatter: HandoffRouting | None, log: LogFn) -> AgentRole:
     producer = frontmatter.producer if frontmatter is not None else None
     normalized, _warnings = normalize_agent_label(producer or "")

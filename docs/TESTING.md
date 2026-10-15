@@ -13,7 +13,7 @@ the focused public-default tests.
 Current full-suite result on Windows:
 
 ```text
-725 passed
+736 passed
 ```
 
 One test, `test_timed_out_cmd_shim_child_is_killed_with_its_tree` in

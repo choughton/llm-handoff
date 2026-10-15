@@ -46,6 +46,15 @@ This project follows a simple pre-release changelog until the first public tag.
   `.claude/settings.json` with deny rules and a standard-library
   `PreToolUse` hook that blocks the same commands.
 - SECURITY.md has a Threat Model section. `auto_push` is documented as unused.
+- Audit security reviewers now launch with the hardened defaults. Both Codex
+  reviewer paths (`codex-security scan` and `codex exec`) used to inherit the
+  dispatcher's whole environment; every reviewer now uses its provider
+  role's environment allowlist. The Claude reviewer also denies web tools.
+- The Gemini audit security reviewer runs plan mode inside Gemini CLI's
+  container sandbox instead of `--sandbox=false`, because headless plan mode
+  auto-approves `exit_plan_mode` and continues in YOLO mode. With
+  `audit.security_provider: gemini`, `run` refuses to start without Docker or
+  Podman unless the Gemini role sets `unsafe_bypass: true`.
 
 ## 0.0.0
 
