@@ -4,9 +4,24 @@ from pathlib import Path
 
 from llm_handoff import __main__ as main_module
 
-
 LEGACY_PROJECT_NAME = bytes.fromhex("43726f737366697265").decode("ascii")
 LEGACY_TOOL_NAME = bytes.fromhex("616e746967726176697479").decode("ascii")
+
+
+def test_init_dry_run_reports_merges_without_writes(tmp_path: Path, capsys) -> None:
+    names = ("AGENTS.md", ".gitignore", ".geminiignore", ".claude/settings.json")
+    for name in names:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"{}" if name.endswith(".json") else b"custom\r\n")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert main_module.main(["init", str(tmp_path), "--dry-run"]) == 0
+    output = capsys.readouterr().out
+    assert "Merge: 4 file(s)" in output
+    assert "Copy:" in output
+    for name in names:
+        assert name in output.replace("\\", "/")
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
 def test_help_text_names_public_dispatcher(capsys) -> None:
@@ -51,14 +66,14 @@ def test_init_command_reports_conflicts(
     tmp_path: Path,
     capsys,
 ) -> None:
-    (tmp_path / "AGENTS.md").write_text("custom\n", encoding="utf-8")
+    (tmp_path / "PROJECT_STATE.md").write_text("custom\n", encoding="utf-8")
 
     exit_code = main_module.main(["init", str(tmp_path)])
 
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "Initialization aborted" in captured.err
-    assert "AGENTS.md" in captured.err
+    assert "PROJECT_STATE.md" in captured.err
 
 
 def test_init_command_provider_claude_writes_all_claude_mapping(

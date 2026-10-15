@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
+import shutil
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-import shutil
-
 
 REFERENCE_TEMPLATE = "reference-workflow"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,36 @@ CLAUDE_MAPPING = "claude"
 PROVIDER_MAPPINGS = (CLAUDE_MAPPING,)
 PROVIDER_CLIS = ("claude", "codex", "gemini")
 _CONFIG_PATH = Path("dispatch_config.yaml")
+_TEXT_MARKERS = {
+    Path("AGENTS.md"): (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->"),
+    Path(".gitignore"): (b"# llm-handoff:begin", b"# llm-handoff:end"),
+    Path(".geminiignore"): (b"# llm-handoff:begin", b"# llm-handoff:end"),
+}
+_SETTINGS_PATH = Path(".claude/settings.json")
+_GEMINIIGNORE_BLOCK = b""".git
+node_modules
+venv
+.venv
+__pycache__
+dist
+build
+out
+.next
+logs
+.pytest_cache
+htmlcov
+.ruff_cache
+.tox
+coverage
+.vscode
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+package-lock.json
+"""
 
 _CLAUDE_AGENTS_BLOCK = """agents:
   # All-Claude mapping written by `llm-handoff init` (Claude Code only).
@@ -82,6 +113,7 @@ class InitResult:
     force: bool
     provider_mapping: str = REFERENCE_MAPPING
     detected_providers: tuple[str, ...] = ()
+    merged: tuple[Path, ...] = ()
 
 
 class InitWorkflowError(RuntimeError):
@@ -182,6 +214,108 @@ def _source_bytes(relative_path: Path, mapping: str) -> bytes:
     return source_path.read_bytes()
 
 
+def _marker_span(content: bytes, begin: bytes, end: bytes) -> tuple[int, int] | None:
+    if begin not in content and end not in content:
+        return None
+    if content.count(begin) != 1 or content.count(end) != 1:
+        raise ValueError("Expected exactly one managed marker pair")
+    start = content.index(begin)
+    stop = content.index(end) + len(end)
+    if start >= stop - len(end):
+        raise ValueError("Reversed managed markers")
+    for offset, marker in ((start, begin), (stop - len(end), end)):
+        tail = content[offset + len(marker) :]
+        if (offset and content[offset - 1 : offset] != b"\n") or (
+            tail and not tail.startswith((b"\n", b"\r\n"))
+        ):
+            raise ValueError("Managed markers must occupy separate lines")
+    return start, stop
+
+
+def _merge_text(path: Path, existing: bytes, source: bytes) -> bytes:
+    begin, end = _TEXT_MARKERS[path]
+    unmarked_template = existing == source
+    if path == Path(".geminiignore"):
+        source = _GEMINIIGNORE_BLOCK
+    source_span = _marker_span(source, begin, end)
+    block = (
+        source[source_span[0] : source_span[1]]
+        if source_span
+        else begin + b"\n" + source.rstrip(b"\r\n") + b"\n" + end
+    )
+    span = _marker_span(existing, begin, end)
+    if span:
+        return existing[: span[0]] + block + existing[span[1] :]
+    if unmarked_template:
+        return block + b"\n"
+    separator = b"\n" if existing and not existing.endswith(b"\n") else b""
+    return existing + separator + block + b"\n"
+
+
+def _merge_settings(existing: bytes, source: bytes) -> bytes:
+    target = json.loads(existing)
+    template = json.loads(source)
+    if not isinstance(target, dict):
+        raise TypeError("Settings must be an object")
+    permissions = target.setdefault("permissions", {})
+    hooks = target.setdefault("hooks", {})
+    if not isinstance(permissions, dict) or not isinstance(hooks, dict):
+        raise TypeError("Permissions and hooks must be objects")
+    deny = permissions.setdefault("deny", [])
+    entries = hooks.setdefault("PreToolUse", [])
+    if not isinstance(deny, list) or not all(isinstance(item, str) for item in deny):
+        raise TypeError("Permission deny must be a list of strings")
+    if not isinstance(entries, list):
+        raise TypeError("PreToolUse must be a list")
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("hooks", []), list):
+            raise TypeError("Invalid PreToolUse entry")
+        if not all(isinstance(hook, dict) for hook in entry.get("hooks", [])):
+            raise TypeError("Invalid PreToolUse hook")
+    permissions["deny"] = list(dict.fromkeys(deny + template["permissions"]["deny"]))
+    for entry in template["hooks"]["PreToolUse"]:
+        missing = [
+            hook
+            for hook in entry["hooks"]
+            if not any(
+                candidate.get("matcher") == entry.get("matcher")
+                and any(
+                    item.get("command") == hook["command"]
+                    for item in candidate.get("hooks", [])
+                )
+                for candidate in entries
+            )
+        ]
+        if missing:
+            entries.append({**entry, "hooks": missing})
+    return (json.dumps(target, indent=2) + "\n").encode("utf-8")
+
+
+def _has_linked_destination(target_root: Path, relative_path: Path) -> bool:
+    """Reject linked destinations and paths with non-directory parents."""
+    current = target_root
+    for part in relative_path.parts:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        except NotADirectoryError:
+            return True
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1:
+            return True
+        if current != target_root / relative_path and not stat.S_ISDIR(metadata.st_mode):
+            return True
+        # Windows exposes reparse attributes on Python 3.11 too; pathlib's
+        # is_junction() only exists from 3.12. Do not follow links to inspect them.
+        if stat.S_ISLNK(metadata.st_mode) or (
+            getattr(metadata, "st_file_attributes", 0)
+            & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            return True
+    return False
+
+
 def init_reference_workflow(
     target_root: Path,
     *,
@@ -205,9 +339,33 @@ def init_reference_workflow(
     copied: list[Path] = []
     skipped: list[Path] = []
     conflicts: list[Path] = []
+    merged: list[Path] = []
+    planned: dict[Path, bytes] = {}
 
     for relative_path in template_files():
         target_path = target_root / relative_path
+        source = _source_bytes(relative_path, mapping)
+        managed = relative_path in _TEXT_MARKERS or relative_path == _SETTINGS_PATH
+        if _has_linked_destination(target_root, relative_path) or target_path.is_dir():
+            conflicts.append(relative_path)
+            continue
+        if managed:
+            exists = target_path.exists()
+            existing = target_path.read_bytes() if exists else b""
+            try:
+                if relative_path in _TEXT_MARKERS:
+                    rendered = _merge_text(relative_path, existing, source)
+                else:
+                    rendered = _merge_settings(existing if exists else b"{}", source)
+            except (ValueError, TypeError):
+                conflicts.append(relative_path)
+                continue
+            if exists and rendered == existing:
+                skipped.append(relative_path)
+            else:
+                (merged if exists else copied).append(relative_path)
+                planned[relative_path] = rendered
+            continue
         if not target_path.exists():
             copied.append(relative_path)
             continue
@@ -232,6 +390,7 @@ def init_reference_workflow(
         force=force,
         provider_mapping=mapping,
         detected_providers=detected,
+        merged=tuple(merged),
     )
 
     if conflicts and not dry_run:
@@ -240,11 +399,13 @@ def init_reference_workflow(
         return result
 
     target_root.mkdir(parents=True, exist_ok=True)
-    for relative_path in copied:
+    for relative_path in copied + merged:
         source_path = _TEMPLATE_ROOT / relative_path
         target_path = target_root / relative_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        if relative_path == _CONFIG_PATH and mapping != REFERENCE_MAPPING:
+        if relative_path in planned:
+            target_path.write_bytes(planned[relative_path])
+        elif relative_path == _CONFIG_PATH and mapping != REFERENCE_MAPPING:
             target_path.write_bytes(_source_bytes(relative_path, mapping))
         else:
             shutil.copy2(source_path, target_path)

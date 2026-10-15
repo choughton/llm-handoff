@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,9 +19,282 @@ from llm_handoff.init_workflow import (
     template_files,
 )
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = REPO_ROOT / "examples" / "reference-workflow"
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", ".geminiignore"])
+def test_unmarked_template_migrates_without_duplication(tmp_path: Path, name: str) -> None:
+    path = tmp_path / name
+    original = (TEMPLATE_ROOT / name).read_bytes()
+    path.write_bytes(original)
+    preview = init_reference_workflow(tmp_path, dry_run=True)
+    assert Path(name) in preview.merged
+    assert path.read_bytes() == original
+    result = init_reference_workflow(tmp_path)
+    assert Path(name) in result.merged
+    begin, end = (
+        (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->")
+        if name == "AGENTS.md"
+        else (b"# llm-handoff:begin", b"# llm-handoff:end")
+    )
+    content = path.read_bytes()
+    body = original if name == "AGENTS.md" else original.replace(b"\r\n", b"\n")
+    assert content == begin + b"\n" + body.rstrip(b"\r\n") + b"\n" + end + b"\n"
+    second = init_reference_workflow(tmp_path)
+    assert second.copied == second.merged == second.conflicts == ()
+    assert path.read_bytes() == content
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize(
+    "name", ["AGENTS.md", ".gitignore", ".geminiignore", ".claude/settings.json"]
+)
+@pytest.mark.parametrize("dangling", [False, True])
+def test_linked_managed_file_conflicts(
+    tmp_path: Path, name: str, force: bool, dangling: bool
+) -> None:
+    root = tmp_path / "repo"
+    path = root / name
+    path.parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    original = b"{}" if name.endswith(".json") else b"private content\n"
+    if not dangling:
+        outside.write_bytes(original)
+    try:
+        path.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"Symlink creation unavailable: {exc}")
+    assert Path(name) in init_reference_workflow(root, dry_run=True, force=force).conflicts
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(root, force=force)
+    assert Path(name) in error.value.conflicts
+    assert path.is_symlink()
+    assert outside.exists() is not dangling
+    if not dangling:
+        assert outside.read_bytes() == original
+    assert not (root / "dispatch_config.yaml").exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize(
+    "name", ["AGENTS.md", ".gitignore", ".geminiignore", ".claude/settings.json"]
+)
+def test_hard_linked_managed_file_conflicts(
+    tmp_path: Path, name: str, force: bool
+) -> None:
+    root = tmp_path / "repo"
+    path = root / name
+    path.parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    original = b"{}" if name.endswith(".json") else b"private content\n"
+    outside.write_bytes(original)
+    path.hardlink_to(outside)
+    assert path.stat().st_nlink == 2
+
+    preview = init_reference_workflow(root, dry_run=True, force=force)
+    assert preview.conflicts == (Path(name),)
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(root, force=force)
+    assert error.value.conflicts == preview.conflicts
+    assert path.read_bytes() == outside.read_bytes() == original
+    assert path.stat().st_nlink == 2
+    assert not (root / "dispatch_config.yaml").exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("parent", [".claude", ".claude/agents", "docs/handoff"])
+def test_non_directory_destination_parent_conflicts(
+    tmp_path: Path, parent: str, force: bool
+) -> None:
+    root = tmp_path / "repo"
+    path = root / parent
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"keep this file\n")
+    expected = tuple(p for p in template_files() if Path(parent) in p.parents)
+    assert expected
+
+    preview = init_reference_workflow(root, dry_run=True, force=force)
+    assert preview.conflicts == expected
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(root, force=force)
+    assert error.value.conflicts == expected
+    assert path.read_bytes() == b"keep this file\n"
+    assert not (root / "AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_linked_settings_parent_conflicts(tmp_path: Path, force: bool) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    settings = outside / "settings.json"
+    settings.write_bytes(b"{}")
+    try:
+        (root / ".claude").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symlink creation unavailable: {exc}")
+    preview = init_reference_workflow(root, dry_run=True, force=force)
+    assert Path(".claude/settings.json") in preview.conflicts
+    with pytest.raises(InitConflictError):
+        init_reference_workflow(root, force=force)
+    assert settings.read_bytes() == b"{}"
+    assert list(outside.iterdir()) == [settings]
+    assert not (root / "AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_junction_settings_parent_without_pathlib_support(
+    tmp_path: Path, force: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Exercise the Python 3.11 API surface even on newer interpreters.
+    monkeypatch.delattr(Path, "is_junction", raising=False)
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    settings = outside / "settings.json"
+    settings.write_bytes(b"{}")
+    junction = root / ".claude"
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=True, capture_output=True,
+    )
+    try:
+        preview = init_reference_workflow(root, dry_run=True, force=force)
+        assert Path(".claude/settings.json") in preview.conflicts
+        with pytest.raises(InitConflictError) as error:
+            init_reference_workflow(root, force=force)
+        assert Path(".claude/settings.json") in error.value.conflicts
+        assert settings.read_bytes() == b"{}"
+        assert list(outside.iterdir()) == [settings]
+        assert not (root / "AGENTS.md").exists()
+    finally:
+        junction.rmdir()
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_managed_files_preserve_content_and_repeat(tmp_path: Path, force: bool) -> None:
+    originals = {
+        Path("AGENTS.md"): b"# Custom\r\nKeep these instructions.",
+        Path(".gitignore"): b"custom/\r\n",
+        Path(".geminiignore"): b"private/\n",
+    }
+    for path, content in originals.items():
+        (tmp_path / path).write_bytes(content)
+    settings = tmp_path / ".claude/settings.json"
+    settings.parent.mkdir()
+    custom = {
+        "permissions": {"deny": ["Custom", "WebFetch", "Custom"], "allow": ["Read"]},
+        "hooks": {"Stop": [{"custom": True}], "PreToolUse": []},
+        "custom": {"nested": [1, True, "keep"]},
+    }
+    settings.write_text(json.dumps(custom), encoding="utf-8")
+    result = init_reference_workflow(tmp_path, force=force)
+    assert set(result.merged) == {*originals, Path(".claude/settings.json")}
+    for path, content in originals.items():
+        assert (tmp_path / path).read_bytes().startswith(content)
+    merged = json.loads(settings.read_bytes())
+    template = json.loads((TEMPLATE_ROOT / ".claude/settings.json").read_bytes())
+    assert merged["permissions"]["deny"] == list(
+        dict.fromkeys(custom["permissions"]["deny"] + template["permissions"]["deny"])
+    )
+    assert merged["permissions"]["allow"] == ["Read"]
+    assert merged["custom"] == custom["custom"]
+    assert merged["hooks"]["Stop"] == custom["hooks"]["Stop"]
+    assert merged["hooks"]["PreToolUse"] == template["hooks"]["PreToolUse"]
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    second = init_reference_workflow(tmp_path)
+    assert second.copied == second.merged == second.conflicts == ()
+    assert all(p.read_bytes() == content for p, content in before.items())
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", ".gitignore", ".geminiignore"])
+def test_managed_block_replaced_in_place(tmp_path: Path, name: str) -> None:
+    begin, end = (
+        (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->")
+        if name == "AGENTS.md"
+        else (b"# llm-handoff:begin", b"# llm-handoff:end")
+    )
+    path = tmp_path / name
+    prefix, suffix = b"custom\r\n\r\n", b"\r\nuser suffix\r\n"
+    path.write_bytes(prefix + begin + b"\r\nstale\r\n" + end + suffix)
+    result = init_reference_workflow(tmp_path)
+    content = path.read_bytes()
+    assert Path(name) in result.merged
+    assert content.startswith(prefix + begin)
+    assert content.endswith(end + suffix)
+    assert b"\r\nstale\r\n" not in content
+    assert content.count(begin) == content.count(end) == 1
+    assert not init_reference_workflow(tmp_path).merged
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", ".gitignore", ".geminiignore"])
+@pytest.mark.parametrize(
+    "shape",
+    ["{b}", "{e}", "{e}\n{b}", "{b}\n{b}\n{e}", "{b}\n{e}\n{b}\n{e}", "text{b}\n{e}"],
+)
+@pytest.mark.parametrize("force", [False, True])
+def test_malformed_markers_conflict(
+    tmp_path: Path, name: str, shape: str, force: bool
+) -> None:
+    begin, end = (
+        ("<!-- llm-handoff:begin -->", "<!-- llm-handoff:end -->")
+        if name == "AGENTS.md"
+        else ("# llm-handoff:begin", "# llm-handoff:end")
+    )
+    path = tmp_path / name
+    original = shape.format(b=begin, e=end).encode()
+    path.write_bytes(original)
+    assert init_reference_workflow(tmp_path, dry_run=True, force=force).conflicts == (
+        Path(name),
+    )
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(tmp_path, force=force)
+    assert error.value.conflicts == (Path(name),)
+    assert path.read_bytes() == original
+    assert not (tmp_path / "dispatch_config.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"{",
+        b"[]",
+        b'{"permissions": null}',
+        b'{"permissions": {"deny": "bad"}}',
+        b'{"hooks": {"PreToolUse": [null]}}',
+        b'{"hooks": {"PreToolUse": [{"hooks": [null]}]}}',
+    ],
+)
+def test_invalid_settings_conflict(tmp_path: Path, content: bytes) -> None:
+    path = tmp_path / ".claude/settings.json"
+    path.parent.mkdir()
+    path.write_bytes(content)
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(tmp_path, force=True)
+    assert error.value.conflicts == (Path(".claude/settings.json"),)
+    assert path.read_bytes() == content
+
+
+def test_settings_hook_identity_uses_matcher_and_command(tmp_path: Path) -> None:
+    template = json.loads((TEMPLATE_ROOT / ".claude/settings.json").read_bytes())
+    entry = template["hooks"]["PreToolUse"][0]
+    entry["hooks"][0]["timeout"] = 99
+    path = tmp_path / ".claude/settings.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(template), encoding="utf-8")
+    init_reference_workflow(tmp_path)
+    assert json.loads(path.read_bytes()) == template
+
+
+def test_new_gitignore_matches_template(tmp_path: Path) -> None:
+    init_reference_workflow(tmp_path)
+    assert (tmp_path / ".gitignore").read_bytes() == (
+        TEMPLATE_ROOT / ".gitignore"
+    ).read_bytes()
 
 
 def test_init_reference_workflow_copies_template_files(tmp_path: Path) -> None:
@@ -72,26 +348,26 @@ def test_init_reference_workflow_skips_identical_files(tmp_path: Path) -> None:
 def test_init_reference_workflow_fails_on_existing_different_file(
     tmp_path: Path,
 ) -> None:
-    target_file = tmp_path / "AGENTS.md"
+    target_file = tmp_path / "PROJECT_STATE.md"
     target_file.write_text("custom repo instructions\n", encoding="utf-8")
 
     with pytest.raises(InitConflictError) as exc_info:
         init_reference_workflow(tmp_path)
 
-    assert Path("AGENTS.md") in exc_info.value.conflicts
+    assert Path("PROJECT_STATE.md") in exc_info.value.conflicts
     assert target_file.read_text(encoding="utf-8") == "custom repo instructions\n"
 
 
 def test_init_reference_workflow_force_overwrites_conflicts(tmp_path: Path) -> None:
-    target_file = tmp_path / "AGENTS.md"
+    target_file = tmp_path / "PROJECT_STATE.md"
     target_file.write_text("custom repo instructions\n", encoding="utf-8")
 
     result = init_reference_workflow(tmp_path, force=True)
 
-    assert Path("AGENTS.md") in result.copied
+    assert Path("PROJECT_STATE.md") in result.copied
     assert result.conflicts == ()
     assert target_file.read_text(encoding="utf-8") == (
-        TEMPLATE_ROOT / "AGENTS.md"
+        TEMPLATE_ROOT / "PROJECT_STATE.md"
     ).read_text(encoding="utf-8")
 
 
