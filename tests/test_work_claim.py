@@ -2273,6 +2273,50 @@ def test_planner_is_told_to_leave_the_handoff_uncommitted_in_dispatcher_mode(
     assert told is (commit_mode == "dispatcher")
 
 
+@pytest.mark.parametrize("commit_mode", ["dispatcher", "agent"])
+def test_post_dispatch_validation_is_told_the_commit_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    commit_mode: str,
+) -> None:
+    _init_repo(
+        tmp_path,
+        handoff_content=_claim(
+            "a" * 40, status="verified_pass", producer="auditor", next_agent="planner"
+        ),
+    )
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode=commit_mode)
+    validate_kwargs: list[dict[str, object]] = []
+
+    def fake_validate(*_args: object, **kwargs: object) -> ValidationResult:
+        validate_kwargs.append(kwargs)
+        return ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="planner"
+        )
+
+    monkeypatch.setattr(
+        orchestrator, "invoke_planner_role", lambda *_a, **_k: _dispatch_result()
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_support_role",
+        lambda *_args, **_kwargs: SubagentResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.01
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "validate_handoff", fake_validate)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    assert validate_kwargs
+    assert all(
+        kwargs.get("dispatcher_commit_mode") is (commit_mode == "dispatcher")
+        for kwargs in validate_kwargs
+    )
+
+
 def _run_planner_cycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

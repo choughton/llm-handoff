@@ -15,6 +15,9 @@ This project follows a simple pre-release changelog until the first public tag.
   Hard-linked files and non-directory destination parents are also conflicts,
   including during dry runs and with --force.
 
+- With `commit_mode: dispatcher`, a blocked or escalated implementer handback
+  that carries the `pending-dispatcher-commit` marker now gets a
+  `sha_pending` warning instead of a `sha_missing` validation error.
 - Isolated supervised child imports from the target working directory while preserving source-checkout launches.
 - Fixed Codex launches in target repositories by resolving the output schema from the installed package.
 - Seeded the `llm_handoff` extraction scaffold.

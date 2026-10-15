@@ -366,6 +366,122 @@ Let me first explore the codebase before writing the fix.
     assert any("RATIONALIZATION_DETECTED" in warning for warning in result.warnings)
 
 
+def _implementer_handback_without_sha(
+    *,
+    status: str,
+    next_agent: str,
+    commit_value: str = "pending-dispatcher-commit",
+) -> str:
+    return _with_frontmatter(
+        f"""# backend Handback
+
+**Agent:** backend
+
+The build tool named in the Work Packet is not installed, so the change
+could not be verified. Edits are left uncommitted in the working tree.
+
+## Verification Evidence
+
+- **Commands run:** `make build`
+- **Output summary:** command not found
+- **Commit SHA verified:** {commit_value}
+- **Files changed or reviewed:** llm_handoff/validator.py
+- **Unresolved concerns:** build tool missing
+""",
+        next_agent=next_agent,
+        reason="Backend cannot continue without user input.",
+        status=status,
+        producer="backend",
+    )
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["blocked_missing_context", "blocked_implementation_failure", "escalate_to_user"],
+)
+def test_dispatcher_mode_blocked_handback_with_pending_marker_warns_instead_of_sha_missing(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(status=status, next_agent="user"),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        "backend",
+        prior_handoff_sha="0" * 64,
+        dispatcher_commit_mode=True,
+    )
+
+    assert not any(error.startswith("sha_missing") for error in result.errors)
+    assert any(warning.startswith("sha_pending") for warning in result.warnings)
+    assert result.verdict == "WARNINGS-ONLY"
+
+
+def test_agent_mode_blocked_handback_with_pending_marker_still_requires_sha(
+    tmp_path: Path,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(
+            status="blocked_implementation_failure", next_agent="user"
+        ),
+    )
+
+    result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
+
+    assert result.verdict == "NO"
+    assert "sha_missing: Handoff is missing a git commit SHA." in result.errors
+    assert not any(warning.startswith("sha_pending") for warning in result.warnings)
+
+
+def test_dispatcher_mode_blocked_handback_without_pending_marker_still_requires_sha(
+    tmp_path: Path,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(
+            status="blocked_missing_context", next_agent="user", commit_value="none"
+        ),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        "backend",
+        prior_handoff_sha="0" * 64,
+        dispatcher_commit_mode=True,
+    )
+
+    assert result.verdict == "NO"
+    assert "sha_missing: Handoff is missing a git commit SHA." in result.errors
+
+
+def test_dispatcher_mode_ready_for_review_with_pending_marker_still_requires_sha(
+    tmp_path: Path,
+) -> None:
+    # The dispatcher replaces the marker with its commit before validation,
+    # so a ready_for_review claim that still carries it has no commit.
+    handoff_path = _write_handoff(
+        tmp_path,
+        _implementer_handback_without_sha(
+            status="ready_for_review", next_agent="auditor"
+        ),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        "backend",
+        prior_handoff_sha="0" * 64,
+        dispatcher_commit_mode=True,
+    )
+
+    assert result.verdict == "NO"
+    assert "sha_missing: Handoff is missing a git commit SHA." in result.errors
+    assert not any(warning.startswith("sha_pending") for warning in result.warnings)
+
+
 def test_validate_handoff_rejects_scope_sha_that_does_not_exist_in_git(
     tmp_path: Path,
 ) -> None:
