@@ -56,9 +56,9 @@ CODEX_SANDBOX_ARGS: tuple[str, ...] = (
 CODEX_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo",)
 GEMINI_SANDBOX_ARGS: tuple[str, ...] = ("--yolo", "--sandbox")
 GEMINI_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo", "--sandbox=false")
-CLAUDE_MODEL = "claude-opus-4-7"
+CLAUDE_MODEL = "claude-opus-5-5"
 NORMALIZER_PROVIDER = "claude"
-NORMALIZER_MODEL = "claude-haiku-4-5"
+NORMALIZER_MODEL = "claude-haiku-5-5"
 GEMINI_NORMALIZER_MODEL = "gemini-2.5-flash"
 OPENAI_NORMALIZER_MODEL = "gpt-5.4-mini"
 NORMALIZER_TIMEOUT_MS = 60_000

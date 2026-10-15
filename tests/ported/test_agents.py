@@ -78,7 +78,7 @@ def test_config_exposes_story_2_constants() -> None:
     assert config.GEMINI_FRONTEND_MENTION == "@frontend"
     assert config.CODEX_SKILL_NAME == "llm-handoff"
     assert config.CLAUDE_PERMISSIONS_FLAG == "--dangerously-skip-permissions"
-    assert config.CLAUDE_MODEL == "claude-opus-4-7"
+    assert config.CLAUDE_MODEL == "claude-opus-5-5"
     assert config.AGENT_TIMEOUT_MS == 1_200_000
     assert config.SUBAGENT_TIMEOUT_MS == 900_000
     assert config.GEMINI_MAX_RETRIES == 3

@@ -35,7 +35,7 @@ agents:
   auditor:
     provider: claude
     binary: claude
-    model: claude-opus-4-7
+    model: claude-opus-5-5
     resume: false
     timeout_ms: 900000
 ```
@@ -656,13 +656,13 @@ agents:
     provider: codex
     fallback:
       provider: claude
-      model: claude-sonnet-4-6
+      model: claude-sonnet-5-5
   auditor:
     provider: claude
-    model: claude-opus-4-7
+    model: claude-opus-5-5
     fallback:
       provider: claude
-      model: claude-sonnet-4-6
+      model: claude-sonnet-5-5
 ```
 
 A failure is fatal, and fails over, only when the primary could not do the
@@ -733,7 +733,7 @@ agents:
     idle_timeout_ms: 300000
     fallback:
       provider: claude
-      model: claude-sonnet-4-6
+      model: claude-sonnet-5-5
 ```
 
 The kill is reported as `Process timed out after <n> seconds without output
@@ -893,7 +893,7 @@ Config shape:
 ```yaml
 normalizer:
   provider: claude
-  model: claude-haiku-4-5
+  model: claude-haiku-5-5
   timeout_ms: 60000
   on_unknown: fail_closed
 ```

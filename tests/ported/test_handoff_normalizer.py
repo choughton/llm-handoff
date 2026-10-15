@@ -70,7 +70,7 @@ def test_normalize_next_agent_uses_instructor_for_freeform_values(
         == canonical
     )
     [call] = fake_instructed.messages.calls
-    assert call["model"] == "claude-haiku-4-5"
+    assert call["model"] == "claude-haiku-5-5"
     assert call["response_model"] is handoff_normalizer.NormalizedNextAgent
     assert call["max_retries"] == 3
     assert freeform in call["messages"][0]["content"]
@@ -144,7 +144,7 @@ def test_normalize_next_agent_uses_claude_cli_oauth_without_sdk_credentials(
     kwargs = call["kwargs"]
     assert isinstance(command, list)
     assert "--model" in command
-    assert "claude-haiku-4-5" in command
+    assert "claude-haiku-5-5" in command
     assert "--json-schema" in command
     assert "--bare" not in command
     assert "--dangerously-skip-permissions" not in command

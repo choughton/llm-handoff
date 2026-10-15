@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The default Claude model for roles with no `model` set is now
+  `claude-opus-5-5`, and the default Claude normalizer model is
+  `claude-haiku-5-5`. The `init` template, example configs, and
+  CONFIGURATION.md use the 5.5 models. Configs that set `model` explicitly
+  are unchanged.
+
 - Added a `pyproject.toml` (hatchling) so the dispatcher installs from a Git
   checkout with `pip install .` or `pip install git+https://...` and exposes an
   `llm-handoff` console command. The wheel bundles
