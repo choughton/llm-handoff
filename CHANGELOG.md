@@ -134,6 +134,10 @@ This project follows a simple pre-release changelog until the first public tag.
   request template (`.github/pull_request_template.md`): Summary, Changes,
   Reviewer notes, and Test plan, with the full reviews, Work Packet, and
   token usage folded underneath.
+- A blocked implementer handback in dispatcher commit mode may now add a
+  note after the `pending-dispatcher-commit` marker (for example
+  `pending-dispatcher-commit (nothing to commit)`); it still gets the
+  `sha_pending` warning instead of the `sha_missing` error.
 - In `commit_mode: dispatcher`, the planner is now told not to commit the
   handoff file, and the dispatcher enforces it: planner commits that change
   only the handoff are undone with `git reset --soft` (the handoff stays in

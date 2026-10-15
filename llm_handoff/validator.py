@@ -31,6 +31,9 @@ from llm_handoff.work_claim import work_packet_errors
 ValidationVerdict = Literal["YES", "NO", "WARNINGS-ONLY"]
 
 _VALID_RE = re.compile(r"(?im)^VALID:\s*(YES|NO|WARNINGS-ONLY)\s*$")
+_PENDING_COMMIT_RE = re.compile(
+    rf"`?{re.escape(PENDING_COMMIT_SHA)}`?(?:\s|$)"
+)
 _CHECK_LINE_RE = re.compile(
     r"(?im)^\s{2}([A-Z-]+):\s*(PASS|WARN|FAIL)\s*(?:-|—)\s*(.+)$"
 )
@@ -672,7 +675,9 @@ def _is_blocked_pending_commit_handback(
     if block is None:
         return False
     commit_value = _evidence_fields(block).get("Commit SHA verified", "")
-    return commit_value.strip().strip("`") == PENDING_COMMIT_SHA
+    # Agents often add a note after the marker, such as
+    # "pending-dispatcher-commit (nothing to commit)".
+    return _PENDING_COMMIT_RE.match(commit_value.strip()) is not None
 
 
 def _scope_claim_errors(
