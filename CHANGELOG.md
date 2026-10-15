@@ -13,7 +13,9 @@ This project follows a simple pre-release changelog until the first public tag.
   `no_changes` and post-dispatch validation failed
   `frontmatter_scope_sha_missing`. The gate now takes the base from the saved
   story state (`logs/dispatch/publish/story.json`) when it names the same
-  `story_id` and its branch is checked out. `local` mode and a story state for
+  `story_id` and its branch is checked out. The security audit range uses the
+  same saved base for the story's first dispatch after a restart, so the audit
+  still reviews the story's earlier commits. `local` mode and a story state for
   another story still use HEAD.
 
 - Fixed a work-claim loop that prose in a Work Packet caused. A

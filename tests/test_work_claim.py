@@ -3262,6 +3262,7 @@ def _audit_range_harness(
     backend_work,
     planner_handoff: str | None = None,
     audit_warnings: list[list[str]] | None = None,
+    publish: dict[str, object] | None = None,
 ) -> tuple[DispatchConfig, list[str], list[str | None]]:
     """Run real-git cycles with the fan-out replaced by a base-SHA recorder."""
 
@@ -3270,6 +3271,7 @@ def _audit_range_harness(
         tmp_path,
         commit_mode="dispatcher",
         audit={"reviewers": ["quality", "security"]},
+        **({"publish": publish} if publish is not None else {}),
     )
     backend_heads: list[str] = []
     audit_bases: list[str | None] = []
@@ -3334,6 +3336,37 @@ def test_audit_range_spans_every_attempt_after_a_gate_bounce(
     assert len(backend_heads) == 2
     assert backend_heads[0] == base
     assert backend_heads[1] != base, "the first attempt was not committed"
+    assert audit_bases == [base]
+
+
+def test_audit_range_survives_a_restart_mid_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    from llm_handoff.publish import PublishOutcome
+
+    base = _init_repo(tmp_path)
+
+    def backend_work(attempt: int) -> None:
+        if attempt == 1:
+            _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+
+    config, backend_heads, audit_bases = _audit_range_harness(
+        tmp_path, monkeypatch, backend_work=backend_work, publish={"mode": "pr"}
+    )
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(
+        orchestrator, "publish_story", lambda **_kwargs: PublishOutcome()
+    )
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+    # The dispatcher restarts before the committed story work is audited.
+    config.handoff_full_path.write_text(_assignment(), encoding="utf-8")
+    orchestrator.run_loop(config, max_cycles=2, log=_collecting_log([]))
+
+    assert len(backend_heads) == 2
+    assert backend_heads[1] != base, "the first dispatch was not committed"
     assert audit_bases == [base]
 
 

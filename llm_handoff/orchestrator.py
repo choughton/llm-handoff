@@ -650,18 +650,12 @@ def run_loop(
                     or gate_story_base is None
                     or gate_story_base[0] != story_key
                 ):
-                    story_base = pre_dispatch_state.head_sha
-                    if config.publish.mode != "local":
-                        # After a restart mid-story, HEAD may already hold the
-                        # story's earlier commits; the saved story branch base
-                        # outlives the run.
-                        story_base = (
-                            saved_story_base(
-                                config.repo_root, _handoff_story_id(handoff_content)
-                            )
-                            or story_base
-                        )
-                    gate_story_base = (story_key, story_base)
+                    gate_story_base = (
+                        story_key,
+                        _story_start_sha(
+                            config, handoff_content, pre_dispatch_state.head_sha
+                        ),
+                    )
                 if gate_story_base is not None and gate_story_base[0] == story_key:
                     story_base_sha = gate_story_base[1]
                 if pre_dispatch_state.carried_over:
@@ -691,6 +685,12 @@ def run_loop(
                         if pre_dispatch_state is not None
                         else _git_head(config.repo_root)
                     )
+                    if story_key != implementer_base_story_key:
+                        # The story's first dispatch in this run; after an
+                        # approval the range restarts at HEAD instead.
+                        implementer_base_sha = _story_start_sha(
+                            config, handoff_content, implementer_base_sha
+                        )
                     implementer_base_story_key = story_key
             planner_git_before = (
                 git_position(config.repo_root)
@@ -2293,6 +2293,22 @@ def _parse_frontmatter_or_none(handoff_content: str):
 def _handoff_story_id(handoff_content: str) -> str | None:
     frontmatter = _parse_frontmatter_or_none(handoff_content)
     return frontmatter.story_id if frontmatter is not None else None
+
+
+def _story_start_sha(
+    config: DispatchConfig, handoff_content: str, head: str | None
+) -> str | None:
+    """Return where the handoff's story started, or ``head`` when unknown.
+
+    The story bases kept in memory reset when the dispatcher restarts
+    mid-story, and HEAD may already hold the story's earlier commits. Outside
+    ``local`` publish mode the saved story branch base outlives the run.
+    """
+
+    if head is None or config.publish.mode == "local":
+        return head
+    saved = saved_story_base(config.repo_root, _handoff_story_id(handoff_content))
+    return saved or head
 
 
 def _work_claim_gate_applies(config: DispatchConfig, route: RouteName) -> bool:
