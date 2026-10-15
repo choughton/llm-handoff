@@ -94,7 +94,10 @@ block with these six fields:
 - **Expected next route:** role after success
 ```
 
-Do not omit `Files out of bounds`, even when the value is `none`.
+Do not omit `Files out of bounds`, even when the value is `none`. Do not list
+the same path under both fields; the validator rejects that packet as
+`work_packet_unparseable`. To limit edits within a file, keep it in `Files in
+scope` and state the limit in the Objective.
 
 The validator enforces this contract on every planner handoff that is not
 routed to `user`:

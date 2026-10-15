@@ -264,6 +264,7 @@ class WorkClaimResult:
     work_packet: WorkPacket | None
     work_packet_text: str | None
     scanner_runs: tuple[ScannerRun, ...] = ()
+    dispatcher_commit_mode: bool = False
 
     @property
     def passed(self) -> bool:
@@ -315,6 +316,22 @@ def parse_work_packet(handoff_content: str) -> WorkPacket:
         problems.append("missing Verification command")
     elif not verification_commands:
         problems.append("empty Verification command")
+    # The narrowest entry decides scope, so an entry listed under both fields
+    # resolves to out of bounds: the implementer may not change it, and the
+    # dispatcher will not commit it. A packet cannot limit edits within a file;
+    # the planner must pick one list and state any limit in the Objective.
+    # ``src`` and ``src/`` name the same directory, so compare without the slash.
+    out_of_bounds_entries = {entry.rstrip("/") for entry in files_out_of_bounds}
+    conflicts = [
+        path for path in files_in_scope if path.rstrip("/") in out_of_bounds_entries
+    ]
+    if conflicts:
+        problems.append(
+            "listed under both Files in scope and Files out of bounds: "
+            + ", ".join(f"`{path}`" for path in conflicts)
+            + " (keep each path in one list; state limits within a file in "
+            "the Objective)"
+        )
     if problems:
         raise WorkPacketError(
             WORK_PACKET_UNPARSEABLE_PREFIX,
@@ -1083,6 +1100,8 @@ def verify_work_claim(
     verification_timeout_seconds: int,
     scanners: Sequence[ScannerConfig] = (),
     require_new_commit: bool = False,
+    dispatcher_commit_mode: bool = False,
+    story_base_sha: str | None = None,
 ) -> WorkClaimResult:
     """Check an implementer's ``ready_for_review`` claim against the packet.
 
@@ -1092,6 +1111,11 @@ def verify_work_claim(
     verification command; every scanner runs even when an earlier one fails.
     ``require_new_commit`` fails a claim whose commits since dispatch change
     no file other than the handoff (``no_changes``).
+    ``dispatcher_commit_mode`` says the dispatcher, not the implementer, commits
+    and records ``scope_sha``, so failure guidance never asks for a commit.
+    ``story_base_sha`` is HEAD before the story's first dispatch; with it,
+    ``no_changes`` counts commits from earlier dispatches of the same story, so
+    a retry that only reverts a forbidden file can pass.
     """
 
     handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
@@ -1144,18 +1168,48 @@ def verify_work_claim(
             )
         )
 
-    scope_check, scope_error, resolved_scope_sha = _scope_sha_check(
-        repo_root,
-        scope_sha=scope_sha,
-        producer=producer,
-        head_sha=head_sha,
-        handoff_rel_path=handoff_rel_path,
+    changed_files = git_changed_files(repo_root, pre_dispatch_head, head_sha)
+    # Files the story's commits changed: since this dispatch, or since the
+    # story's first dispatch when an earlier one already committed work.
+    story_files = changed_files
+    if (
+        story_base_sha
+        and story_base_sha != pre_dispatch_head
+        and changed_files is not None
+        and not any(path != handoff_rel_path for path in changed_files)
+    ):
+        story_files = git_changed_files(repo_root, story_base_sha, head_sha)
+    has_story_work = story_files is not None and any(
+        path != handoff_rel_path for path in story_files
     )
+
+    if (
+        dispatcher_commit_mode
+        and not scope_sha
+        and story_files is not None
+        and not has_story_work
+    ):
+        # The dispatcher records scope_sha only when it commits; with nothing
+        # committed there is no SHA to claim, and no_changes reports why.
+        scope_check = WorkClaimCheck(
+            "scope_sha",
+            "SKIP",
+            "scope_sha is empty because the dispatcher committed nothing for "
+            "this claim.",
+        )
+        scope_error, resolved_scope_sha = None, None
+    else:
+        scope_check, scope_error, resolved_scope_sha = _scope_sha_check(
+            repo_root,
+            scope_sha=scope_sha,
+            producer=producer,
+            head_sha=head_sha,
+            handoff_rel_path=handoff_rel_path,
+        )
     checks.append(scope_check)
     if scope_error is not None:
         errors.append(scope_error)
 
-    changed_files = git_changed_files(repo_root, pre_dispatch_head, head_sha)
     if changed_files is None:
         detail = (
             f"git diff {_short(pre_dispatch_head)}..{_short(head_sha)} failed; "
@@ -1181,9 +1235,7 @@ def verify_work_claim(
         checks.append(diff_check)
         errors.extend(diff_errors)
 
-    if require_new_commit and not any(
-        path != handoff_rel_path for path in changed_files
-    ):
+    if require_new_commit and not has_story_work:
         detail = (
             "no file other than the handoff changed in commits since dispatch "
             f"({_short(pre_dispatch_head)}..{_short(head_sha)})."
@@ -1191,20 +1243,21 @@ def verify_work_claim(
         checks.append(WorkClaimCheck("new_commit", "FAIL", detail))
         errors.append(f"{NO_CHANGES_PREFIX}: {detail}")
 
-    worktree_check, worktree_error = _worktree_check(
+    worktree_check, worktree_errors = _worktree_check(
         repo_root,
         pre_dispatch_state=pre_dispatch_state,
         handoff_rel_path=handoff_rel_path,
+        packet=packet,
+        dispatcher_commit_mode=dispatcher_commit_mode,
     )
     checks.append(worktree_check)
-    if worktree_error is not None:
-        errors.append(worktree_error)
+    errors.extend(worktree_errors)
 
     scanner_runs: list[ScannerRun] = []
     if scanners:
         scope_checks_passed = (
             scope_error is None
-            and worktree_error is None
+            and not worktree_errors
             and resolved_scope_sha is not None
             and any(
                 check.name == "diff_scope" and check.outcome == "PASS"
@@ -1265,6 +1318,7 @@ def verify_work_claim(
         work_packet=packet,
         work_packet_text=work_packet_text,
         scanner_runs=tuple(scanner_runs),
+        dispatcher_commit_mode=dispatcher_commit_mode,
     )
 
 
@@ -1369,19 +1423,29 @@ def _worktree_check(
     *,
     pre_dispatch_state: PreDispatchState,
     handoff_rel_path: str,
-) -> tuple[WorkClaimCheck, str | None]:
+    packet: WorkPacket | None = None,
+    dispatcher_commit_mode: bool = False,
+) -> tuple[WorkClaimCheck, list[str]]:
     dirty_now = git_dirty_files(repo_root)
     if dirty_now is None:
         detail = "git status failed; uncommitted changes could not be listed."
         return (
             WorkClaimCheck("worktree", "FAIL", detail),
-            f"{GIT_STATE_UNAVAILABLE_PREFIX}: {detail}",
+            [f"{GIT_STATE_UNAVAILABLE_PREFIX}: {detail}"],
         )
     new_dirty = tuple(
         path
         for path in dirty_now
         if path != handoff_rel_path and path not in pre_dispatch_state.dirty_files
     )
+    # Committing a file the Work Packet does not allow cannot fix the claim, and
+    # the dispatcher never commits one, so those files are a scope problem.
+    not_allowed = tuple(
+        path
+        for path in new_dirty
+        if packet is not None and not path_is_in_scope(path, packet)
+    )
+    uncommitted = tuple(path for path in new_dirty if path not in not_allowed)
     # A file that was already dirty before dispatch is only acceptable if its
     # working-tree content is unchanged; otherwise the verification command
     # would run against edits that scope_sha does not contain.
@@ -1393,11 +1457,30 @@ def _worktree_check(
         and path in before
         and working_tree_fingerprint(repo_root, path) != before[path]
     )
+    details: list[str] = []
+    errors: list[str] = []
+    if not_allowed and packet is not None:
+        labelled = ", ".join(
+            f"{path} ("
+            + (
+                "listed under Files out of bounds"
+                if path_is_out_of_bounds(path, packet)
+                else "outside Files in scope"
+            )
+            + ")"
+            for path in not_allowed
+        )
+        detail = (
+            "uncommitted changes to files the Work Packet does not allow: "
+            f"{labelled}; revert them, because they cannot be part of this claim."
+        )
+        details.append(detail)
+        errors.append(f"{SCOPE_VIOLATION_PREFIX}: {detail}")
     problems: list[str] = []
-    if new_dirty:
+    if uncommitted:
         problems.append(
             f"working tree has uncommitted changes outside {handoff_rel_path}: "
-            f"{', '.join(new_dirty)}"
+            f"{', '.join(uncommitted)}"
         )
     if altered_dirty:
         problems.append(
@@ -1405,21 +1488,27 @@ def _worktree_check(
             f"further without being committed: {', '.join(altered_dirty)}"
         )
     if problems:
-        detail = (
-            "; ".join(problems)
-            + "; commit them so scope_sha contains the claimed work."
-        )
-        return (
-            WorkClaimCheck("worktree", "FAIL", detail),
-            f"{UNCOMMITTED_CHANGES_PREFIX}: {detail}",
-        )
+        if dispatcher_commit_mode:
+            remedy = (
+                "; the dispatcher commits only in-scope files that changed during "
+                "this dispatch, so it did not commit these. Revert edits to files "
+                "that were dirty before dispatch, and check the dispatcher log "
+                "for a failed commit."
+            )
+        else:
+            remedy = "; commit them so scope_sha contains the claimed work."
+        detail = "; ".join(problems) + remedy
+        details.append(detail)
+        errors.append(f"{UNCOMMITTED_CHANGES_PREFIX}: {detail}")
+    if errors:
+        return WorkClaimCheck("worktree", "FAIL", " ".join(details)), errors
     return (
         WorkClaimCheck(
             "worktree",
             "PASS",
             f"no new uncommitted changes outside {handoff_rel_path}.",
         ),
-        None,
+        [],
     )
 
 
@@ -1540,12 +1629,23 @@ def _dispatcher_verification_section(
 ) -> str:
     lines = [DISPATCHER_VERIFICATION_HEADING, ""]
     if route.next_agent == implementer:
+        if result.dispatcher_commit_mode:
+            remedy = (
+                "Fix every FAIL below, leave the fix uncommitted with "
+                "`scope_sha` empty, and claim again with "
+                "`status: ready_for_review`; the dispatcher commits the in-scope "
+                "files and records `scope_sha`."
+            )
+        else:
+            remedy = (
+                "Fix every FAIL below, commit the fix, set `scope_sha` to the new "
+                "`git rev-parse HEAD`, and claim again with "
+                "`status: ready_for_review`."
+            )
         lines.append(
             f"The dispatcher checked the `ready_for_review` claim from "
             f"`{implementer}` before dispatching the auditor and rejected it. "
-            "Fix every FAIL below, commit the fix, set `scope_sha` to the new "
-            "`git rev-parse HEAD`, and claim again with "
-            "`status: ready_for_review`."
+            + remedy
         )
     elif route.next_agent == "planner":
         lines.append(

@@ -69,6 +69,9 @@ applicable.
 ```
 
 Never omit `Files out of bounds`; write `none` if no extra boundary is needed.
+Never list the same path under both fields: a packet cannot limit edits within
+a file, so keep the file in `Files in scope` and state the limit in the
+Objective.
 
 Do not use vague placeholders in the Work Packet:
 

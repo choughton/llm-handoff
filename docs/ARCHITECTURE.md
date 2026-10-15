@@ -159,7 +159,11 @@ hash, touch only the handoff file, preserve critical frontmatter, leave dirty
 state unchanged except for the handoff, and pass validation. With
 `commit_mode: dispatcher` the handoff is never committed: the repair must leave
 HEAD where it was (handoff-only commits are undone with `git reset --soft`) and
-keep the handoff uncommitted. If that producer
+keep the handoff uncommitted. When the dispatcher committed nothing for a
+`ready_for_review` claim and the only validation errors are the missing
+`scope_sha` or commit SHA, it skips the repair: a repair could only cite a
+commit the implementer did not make, so the work-claim gate reports the claim
+instead. If that producer
 repair fails, the planner gets one cleanup-only attempt. If the planner cannot
 operationalize the handoff, the dispatcher aborts to the user.
 
@@ -177,18 +181,28 @@ for a `status: ready_for_review` handoff from `backend` or `frontend`:
 1. Parse the `## Work Packet` from the handoff the implementer received:
    `Files in scope`, `Files out of bounds`, and `Verification command`. A
    missing or unparseable packet is an error (`work_packet_missing`,
-   `work_packet_unparseable`), not a skip.
+   `work_packet_unparseable`), not a skip. A path listed under both fields is
+   unparseable: the narrowest entry decides scope, so the tie would make the
+   file out of bounds while the packet says to change it.
 2. Require `scope_sha` to resolve to the current HEAD of `repo_root`
    (`scope_sha_not_head`). A pre-existing commit pasted as `scope_sha` fails.
    Commits above `scope_sha` that touch only the handoff file are tolerated,
    because some repository protocols commit the handoff after writing the SHA
-   into it.
+   into it. With `commit_mode: dispatcher`, an empty `scope_sha` is skipped
+   when no commit since dispatch changed a file other than the handoff, because
+   the dispatcher had nothing to commit and `no_changes` reports that.
+   `no_changes` counts commits since the story's first dispatch, so a retry
+   that only reverts a forbidden file passes on the work an earlier dispatch
+   of the story committed; the dispatcher records that HEAD as `scope_sha`.
 3. Diff the pre-dispatch HEAD against the current HEAD and require every
    changed path to be inside `Files in scope` or to be the handoff file. Any
-   changed path under `Files out of bounds` is a `scope_violation`. New
-   uncommitted changes outside the handoff file are `uncommitted_changes`,
-   because the verification command runs against the working tree and the
-   claim must be reproducible from `scope_sha`.
+   changed path under `Files out of bounds` is a `scope_violation`, and so is
+   a new uncommitted change to a file outside `Files in scope` or under `Files
+   out of bounds`: committing it cannot fix the claim, so the bounce says to
+   revert it. Other new uncommitted changes outside the handoff file are
+   `uncommitted_changes`, because the verification command runs against the
+   working tree and the claim must be reproducible from `scope_sha`. With
+   `commit_mode: dispatcher` neither bounce asks the implementer to commit.
 4. Run the configured `scanners` (for example gitleaks, semgrep, bandit, and
    pip-audit) in config order, each through the shell in `repo_root` with its
    own `timeout_ms`, with `{diff_range}`, `{changed_files}`,
