@@ -32,6 +32,7 @@ from llm_handoff.config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_HANDOFF_PATH,
     AgentRole,
+    DispatchConfig,
     detect_repo_root,
     load_dispatch_config,
 )
@@ -805,11 +806,17 @@ def _run_preflight(
     agents_path = config.repo_root / "AGENTS.md"
     # The child dispatcher reads handoff_path from dispatch_config.yaml, so
     # preflight must check the same file (for example a flat HANDOFF.md).
+    # Validation must also know the child's commit mode, so a blocked handback
+    # awaiting a dispatcher commit is not reported as missing its SHA.
     try:
-        handoff_path = _load_dispatch_handoff_path(config)
+        dispatch_config = _load_supervised_dispatch_config(config)
     except _DISPATCH_CONFIG_ERRORS as exc:
         errors.append(f"dispatch config could not be loaded: {exc}")
         handoff_path = (config.repo_root / DEFAULT_HANDOFF_PATH).resolve()
+        dispatcher_commit_mode = False
+    else:
+        handoff_path = dispatch_config.handoff_full_path
+        dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
     snapshot = _repo_snapshot(config.repo_root, handoff_path=handoff_path)
 
     if not agents_path.exists():
@@ -857,6 +864,7 @@ def _run_preflight(
                 handoff_content,
                 frontmatter.producer or "unknown producer",
                 git_cwd=config.repo_root,
+                dispatcher_commit_mode=dispatcher_commit_mode,
             )
             for error in validation.errors:
                 _add_handoff_preflight_issue(
@@ -920,12 +928,15 @@ def _log_preflight(preflight: PreflightResult, log: LogFn) -> None:
 _DISPATCH_CONFIG_ERRORS = (OSError, ValueError, yaml.YAMLError)
 
 
-def _load_dispatch_handoff_path(config: SupervisorConfig) -> Path:
-    dispatch_config = load_dispatch_config(
+def _load_supervised_dispatch_config(config: SupervisorConfig) -> DispatchConfig:
+    return load_dispatch_config(
         repo_root=config.repo_root,
         config_path=config.config_path_full_path,
     )
-    return dispatch_config.handoff_full_path
+
+
+def _load_dispatch_handoff_path(config: SupervisorConfig) -> Path:
+    return _load_supervised_dispatch_config(config).handoff_full_path
 
 
 def _dispatch_handoff_path(config: SupervisorConfig) -> Path:

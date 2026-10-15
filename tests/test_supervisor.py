@@ -580,6 +580,90 @@ def test_supervisor_preflight_reports_unloadable_dispatch_config(
     )
 
 
+BLOCKED_PENDING_COMMIT_HANDOFF = """---
+next_agent: user
+reason: Backend cannot continue without user input.
+producer: backend
+status: blocked_implementation_failure
+---
+
+# backend Handback
+
+The build tool named in the Work Packet is not installed, so the change
+could not be verified. Edits are left uncommitted in the working tree.
+
+## Verification Evidence
+
+- **Commands run:** `make build`
+- **Output summary:** command not found
+- **Commit SHA verified:** pending-dispatcher-commit
+- **Files changed or reviewed:** src/example.py
+- **Unresolved concerns:** build tool missing
+"""
+
+
+def _run_doctor_on_blocked_pending_commit_handoff(
+    tmp_path: Path,
+    commit_mode_config: str,
+) -> tuple[int, list[tuple[str, str]]]:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    (repo_root / "docs" / "handoff" / "HANDOFF.md").write_text(
+        BLOCKED_PENDING_COMMIT_HANDOFF,
+        encoding="utf-8",
+    )
+    (repo_root / "dispatch_config.yaml").write_text(
+        commit_mode_config,
+        encoding="utf-8",
+    )
+    config = supervisor.SupervisorConfig(repo_root=repo_root, doctor=True)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = supervisor.run_supervised_dispatch(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+        dispatch_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("doctor mode must not dispatch"),
+        ),
+    )
+    return exit_code, log_messages
+
+
+def test_supervisor_doctor_accepts_blocked_handback_pending_dispatcher_commit(
+    tmp_path: Path,
+) -> None:
+    exit_code, log_messages = _run_doctor_on_blocked_pending_commit_handoff(
+        tmp_path,
+        "commit_mode: dispatcher\nenforce_work_packet: true\n",
+    )
+
+    assert exit_code == 0
+    assert not any(
+        level == "ERROR" and "sha_missing" in message
+        for level, message in log_messages
+    )
+    assert any(
+        level == "WARN" and message.startswith("Preflight warning: sha_pending")
+        for level, message in log_messages
+    )
+
+
+def test_supervisor_doctor_requires_sha_for_pending_marker_in_agent_commit_mode(
+    tmp_path: Path,
+) -> None:
+    exit_code, log_messages = _run_doctor_on_blocked_pending_commit_handoff(
+        tmp_path,
+        "commit_mode: agent\n",
+    )
+
+    assert exit_code == 1
+    assert (
+        "ERROR",
+        "Preflight error: sha_missing: Handoff is missing a git commit SHA.",
+    ) in log_messages
+    assert not any("sha_pending" in message for _level, message in log_messages)
+
+
 class _ExitedChild:
     # A child that produces no output and exits immediately; enough to see
     # which command line the supervisor built.
