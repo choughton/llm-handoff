@@ -138,6 +138,8 @@ normalizer:
   # Registered normalizer providers: claude, codex, gemini, openai.
   # Claude can fall back to CLI auth; Codex always uses the Codex CLI
   # login; Gemini and OpenAI are API-key only.
+  # The model above is a Claude model. When you change the provider, change
+  # or remove `model` too; omitting it selects that provider's default.
 
 # Optional audit fan-out. The defaults keep the single quality auditor.
 # Add `security` to run a read-only security reviewer next to it; the
