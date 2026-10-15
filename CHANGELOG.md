@@ -75,6 +75,12 @@ This project follows a simple pre-release changelog until the first public tag.
   sandbox (Codex keeps `.git` read-only inside it) and forbids `git push` and
   `git commit --amend`. The Codex backend skill documents the exact command
   forms, so the backend no longer needs `unsafe_bypass` to commit.
+- Added `commit_mode: dispatcher`: implementers leave their changes
+  uncommitted, and the dispatcher stages only files inside the Work Packet's
+  scope, commits them with `--no-verify --only`, and records the commit as
+  `scope_sha` before validation and the work-claim gate. In that mode the gate
+  also fails claims with no new commit (`no_changes`). Requires
+  `enforce_work_packet: true`.
 
 ## 0.0.0
 

@@ -46,6 +46,11 @@ from llm_handoff.handoff_normalizer import (
     normalize_handoff_next_agent_text,
     normalize_next_agent,
 )
+from llm_handoff.dispatcher_commit import (
+    COMMIT_MODE_INSTRUCTION,
+    commit_implementer_changes,
+    stamp_commit_sha,
+)
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
@@ -681,6 +686,13 @@ def run_loop(
                     return 1
                 continue
 
+            _commit_for_implementer(
+                config=config,
+                route=current_cycle.route,
+                assignment_content=handoff_content,
+                pre_dispatch_state=pre_dispatch_state,
+                log=log_fn,
+            )
             _log(
                 log_fn,
                 "AGENT",
@@ -909,7 +921,9 @@ def _dispatch_route(
             handoff_path,
             log=log,
             use_resume=config.backend_resume_enabled,
-            additional_instruction=additional_instruction,
+            additional_instruction=_with_commit_mode_instruction(
+                config, additional_instruction
+            ),
             agent_config=config.agents["backend"],
             repo_root=config.repo_root,
         ), "backend"
@@ -945,7 +959,9 @@ def _dispatch_route(
                 handoff_path,
                 use_manual_frontend=config.use_manual_frontend,
                 use_api_key_env=config.planner_api_key_env_enabled,
-                additional_instruction=additional_instruction,
+                additional_instruction=_with_commit_mode_instruction(
+                    config, additional_instruction
+                ),
                 log=log,
                 agent_config=config.agents["frontend"],
                 repo_root=config.repo_root,
@@ -2015,6 +2031,79 @@ def _work_claim_gate_applies(config: DispatchConfig, route: RouteName) -> bool:
     return config.enforce_work_packet and route in {"backend", "frontend"}
 
 
+def _with_commit_mode_instruction(
+    config: DispatchConfig,
+    additional_instruction: str | None,
+) -> str | None:
+    """Tell implementers not to touch ``.git`` when the dispatcher commits."""
+
+    if config.commit_mode != "dispatcher":
+        return additional_instruction
+    if additional_instruction and additional_instruction.strip():
+        return "\n\n".join((COMMIT_MODE_INSTRUCTION, additional_instruction.strip()))
+    return COMMIT_MODE_INSTRUCTION
+
+
+def _commit_for_implementer(
+    *,
+    config: DispatchConfig,
+    route: RouteName,
+    assignment_content: str,
+    pre_dispatch_state: PreDispatchState | None,
+    log: LogFn,
+) -> None:
+    """Commit an implementer's in-scope changes in ``dispatcher`` commit mode.
+
+    Runs before handoff validation so the recorded ``scope_sha`` and evidence
+    SHA are real. Anything left uncommitted is reported by the work-claim gate.
+    """
+
+    if (
+        config.commit_mode != "dispatcher"
+        or route not in {"backend", "frontend"}
+        or pre_dispatch_state is None
+    ):
+        return
+    claim_content = _read_required_text(config.handoff_full_path)
+    if claim_content is None:
+        return
+    result = commit_implementer_changes(
+        repo_root=config.repo_root,
+        handoff_path=config.handoff_path,
+        assignment_content=assignment_content,
+        claim_content=claim_content,
+        pre_dispatch_state=pre_dispatch_state,
+        role=route,
+    )
+    if result.error is not None:
+        _log(log, "ERROR", f"Dispatcher commit for {route} failed: {result.error}.")
+    elif result.sha is None:
+        _log(
+            log,
+            "INFO",
+            f"Dispatcher commit for {route} skipped: {result.skipped_reason}.",
+        )
+    else:
+        config.handoff_full_path.write_text(
+            stamp_commit_sha(claim_content, result.sha),
+            encoding="utf-8",
+        )
+        _log(
+            log,
+            "AGENT",
+            f"Dispatcher committed {len(result.committed)} in-scope file(s) for "
+            f"{route} as {result.sha[:12]}: {', '.join(result.committed)}.",
+        )
+    if result.left_uncommitted:
+        _log(
+            log,
+            "WARN",
+            "Left uncommitted (outside Files in scope or out of bounds): "
+            f"{', '.join(result.left_uncommitted)}. The work-claim gate will "
+            "report them.",
+        )
+
+
 def _run_work_claim_gate(
     *,
     config: DispatchConfig,
@@ -2051,6 +2140,7 @@ def _run_work_claim_gate(
         pre_dispatch_state=pre_dispatch_state,
         verification_timeout_seconds=config.work_packet_verification_timeout_seconds,
         scanners=config.scanners,
+        require_new_commit=config.commit_mode == "dispatcher",
     )
     _log_work_claim_result(result, log)
     if result.passed:

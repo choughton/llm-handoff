@@ -58,6 +58,7 @@ SCANNER_FAILED_PREFIX = "scanner_failed"
 SCANNER_MISSING_PREFIX = "scanner_missing"
 SCANNER_TIMEOUT_PREFIX = "scanner_timeout"
 SCANNER_CONFIG_INVALID_PREFIX = "scanner_config_invalid"
+NO_CHANGES_PREFIX = "no_changes"
 
 WORK_PACKET_ERROR_PREFIXES = frozenset(
     {WORK_PACKET_MISSING_PREFIX, WORK_PACKET_UNPARSEABLE_PREFIX}
@@ -76,6 +77,7 @@ WORK_CLAIM_ERROR_PREFIXES = frozenset(
         SCANNER_MISSING_PREFIX,
         SCANNER_TIMEOUT_PREFIX,
         SCANNER_CONFIG_INVALID_PREFIX,
+        NO_CHANGES_PREFIX,
     }
 )
 # POSIX sh and cmd.exe exit codes for "command not found".
@@ -892,6 +894,7 @@ def verify_work_claim(
     pre_dispatch_state: PreDispatchState,
     verification_timeout_seconds: int,
     scanners: Sequence[ScannerConfig] = (),
+    require_new_commit: bool = False,
 ) -> WorkClaimResult:
     """Check an implementer's ``ready_for_review`` claim against the packet.
 
@@ -899,6 +902,8 @@ def verify_work_claim(
     the Work Packet); ``claim_content`` is the handoff it wrote back.
     ``scanners`` run in order after the scope checks pass and before the
     verification command; every scanner runs even when an earlier one fails.
+    ``require_new_commit`` fails a claim whose commits since dispatch change
+    no file other than the handoff (``no_changes``).
     """
 
     handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
@@ -987,6 +992,16 @@ def verify_work_claim(
         )
         checks.append(diff_check)
         errors.extend(diff_errors)
+
+    if require_new_commit and not any(
+        path != handoff_rel_path for path in changed_files
+    ):
+        detail = (
+            "no file other than the handoff changed in commits since dispatch "
+            f"({_short(pre_dispatch_head)}..{_short(head_sha)})."
+        )
+        checks.append(WorkClaimCheck("new_commit", "FAIL", detail))
+        errors.append(f"{NO_CHANGES_PREFIX}: {detail}")
 
     worktree_check, worktree_error = _worktree_check(
         repo_root,

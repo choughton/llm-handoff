@@ -74,6 +74,12 @@ Do not use stale command output from a previous session.
 
 ## Git Inside The Sandbox
 
+If the dispatcher's instruction says dispatcher commit mode is on, do not
+stage or commit at all: leave your changes in the working tree, leave
+`scope_sha` empty, and write `pending-dispatcher-commit` as the
+`Commit SHA verified` value. The dispatcher commits the in-scope files for you.
+The rest of this section applies only when you commit yourself.
+
 Codex keeps `.git` read-only inside its sandbox. The repository's
 `.codex/rules/llm-handoff.rules` lets exactly two command forms run outside it:
 

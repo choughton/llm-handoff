@@ -151,6 +151,36 @@ the way you review any agent-written instruction. The command is bounded by
 timeout, and the command, exit code, and a bounded output tail are written to
 the dispatch log.
 
+### Dispatcher Commits
+
+```yaml
+enforce_work_packet: true
+commit_mode: dispatcher   # agent (default) | dispatcher
+```
+
+With `commit_mode: dispatcher`, implementers (`backend`, `frontend`) never
+write to `.git`. The dispatcher adds an instruction to each implementer launch
+telling it to leave changes uncommitted, leave `scope_sha` empty, and write
+`pending-dispatcher-commit` as the evidence commit SHA. After a
+`ready_for_review` handback, and before handoff validation, the dispatcher:
+
+1. lists files changed since dispatch, skipping the handoff file and every file
+   that was already dirty before dispatch;
+2. stages only files inside the Work Packet's `Files in scope` and outside
+   `Files out of bounds`;
+3. commits exactly those paths with `git commit --no-verify --only`, under your
+   Git identity, so other staged changes and repository hooks are not involved;
+4. writes the new commit into the handoff as `scope_sha` and as the
+   `Commit SHA verified` value.
+
+Files it did not stage stay in the working tree and fail the gate's worktree
+check, which sends the claim back to the implementer. The gate also fails a
+claim whose commits since dispatch change nothing but the handoff
+(`no_changes`). This mode requires `enforce_work_packet: true`.
+
+Use it when an implementer runs in a sandbox that keeps `.git` read-only (Codex
+`workspace-write`), or simply to keep agents out of Git history.
+
 ### Scanners
 
 The gate can also run operator-configured scanners before the verification

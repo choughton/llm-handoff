@@ -142,6 +142,9 @@ UnknownNormalizerPolicy = Literal["fail_closed"]
 AuditReviewer = Literal["quality", "security"]
 SecurityReviewProvider = Literal["claude", "gemini", "codex"]
 BlockSeverity = Literal["critical", "high", "medium", "low"]
+# Who commits an implementer's work: the agent itself, or the dispatcher after
+# checking every changed file against the Work Packet's scope.
+CommitMode = Literal["agent", "dispatcher"]
 DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality",)
 # Order used to pick a security reviewer vendor that differs from the
 # implementer's provider when `audit.security_provider` is not set.
@@ -481,6 +484,17 @@ class DispatchConfig(BaseModel):
     )
     scanners: tuple[ScannerConfig, ...] = ()
     protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
+    commit_mode: CommitMode = "agent"
+
+    @model_validator(mode="after")
+    def _validate_commit_mode(self) -> DispatchConfig:
+        if self.commit_mode == "dispatcher" and not self.enforce_work_packet:
+            raise ValueError(
+                "commit_mode: dispatcher requires enforce_work_packet: true; the "
+                "dispatcher only commits files the Work Packet puts in scope, "
+                "and the work-claim gate checks what it committed."
+            )
+        return self
 
     @field_validator("protected_paths", mode="after")
     @classmethod

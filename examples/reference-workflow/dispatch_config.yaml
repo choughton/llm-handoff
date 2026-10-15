@@ -14,6 +14,9 @@ auto_push: false
 # before the auditor is dispatched. The Verification command is agent-written
 # text executed in repo_root; see CONFIGURATION.md.
 enforce_work_packet: false
+# Who commits implementer work: agent (default) or dispatcher. dispatcher
+# keeps agents out of .git and needs enforce_work_packet: true.
+commit_mode: agent
 work_packet_verification_timeout_seconds: 600
 # Optional scanners for the work-claim gate (gitleaks, semgrep, bandit,
 # pip-audit, or any tool the target repo installs). See CONFIGURATION.md for
