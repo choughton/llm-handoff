@@ -801,9 +801,21 @@ independent one, and the dispatcher logs a warning saying so.
 
 Whether Codex's `workspace-write` sandbox lets a role run `git add` and
 `git commit` is unverified. The skills tell a sandboxed role not to work
-around the sandbox. `commit_mode: dispatcher` (see
-[Dispatcher Commits](#dispatcher-commits)) avoids the question, because the
-dispatcher commits implementer work and roles never write to `.git`.
+around the sandbox. For the planner, backend, and frontend roles,
+`commit_mode: dispatcher` (see [Dispatcher Commits](#dispatcher-commits))
+avoids the question, because the dispatcher commits their work and they never
+write to `.git`. It does not cover the finalizer: the dispatcher does not
+commit the finalizer's `PROJECT_STATE.md` and `HANDOFF.md` update. If the
+sandbox blocks the finalizer's commit, the finalizer reports no commit SHA,
+the dispatcher pauses, and you commit those files yourself.
+
+Known limitation: the Codex adapter returns the role's final message as a
+`{status, summary}` JSON envelope, and the dispatcher does not yet unwrap it
+before parsing the validator's `VALID:` report or the finalizer's
+`PROJECT STATE UPDATED` report. Under this mapping, expect handoff validation
+output to be reported as unparseable and epic closes to pause until that
+unwrapping lands. Map `validator` and `finalizer` to Claude if both CLIs are
+available.
 
 ### Fallback Agents
 

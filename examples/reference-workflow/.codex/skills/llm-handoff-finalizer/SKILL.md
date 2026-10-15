@@ -80,17 +80,21 @@ Run `git rev-parse HEAD` for concrete SHAs. Do not write `scope_sha: HEAD`.
 
 ## Git Inside The Sandbox
 
-If the dispatcher's instruction says dispatcher commit mode is on, do not
-stage or commit at all: leave your changes in the working tree and follow the
-dispatcher's instruction for what to report.
+`commit_mode: dispatcher` does not cover the finalizer. The dispatcher
+commits planner, backend, and frontend work in that mode, but it does not
+commit the finalizer's state and handoff update and sends the finalizer no
+commit-mode instruction. The finalizer commits its own update whatever
+`commit_mode` is set to.
 
-Otherwise, Codex keeps `.git` read-only inside its sandbox, so `git add` and
+Codex keeps `.git` read-only inside its sandbox, so `git add` and
 `git commit` fail there. The repository's `.codex/rules/llm-handoff.rules`
 does not let git writes out of the sandbox, and it forbids `git push`. If you
-are sandboxed and the protocol asks you to commit, do not work around the
-sandbox: leave the changes uncommitted, do not invent a commit SHA, and say
-under `CHANGES MADE` that the sandbox blocked the commit and that the operator
-should enable `commit_mode: dispatcher` or commit the files.
+are sandboxed and the commit fails, do not work around the sandbox: leave the
+changes uncommitted, do not invent a commit SHA, write `COMMIT SHA: NONE`,
+and say under `CHANGES MADE` that the sandbox blocked the commit and that the
+operator must commit `PROJECT_STATE.md` and `docs/handoff/HANDOFF.md`. The
+dispatcher pauses when the commit SHA is missing, so a person commits the
+files before the loop continues.
 
 Read-only git commands (`status`, `diff`, `log`, `rev-parse`) stay in the
 sandbox. On Windows the sandbox runs as a separate account, so add

@@ -14,8 +14,12 @@ This project follows a simple pre-release changelog until the first public tag.
   with its `skill_name`, `audit.security_provider: codex`, and
   `normalizer.provider: codex`. Without `--provider`, `init` picks this
   mapping when `codex` is the only provider CLI on `PATH`. Whether Codex's
-  `workspace-write` sandbox lets a role commit is unverified; use
-  `commit_mode: dispatcher` to avoid the question.
+  `workspace-write` sandbox lets a role commit is unverified;
+  `commit_mode: dispatcher` avoids the question for the planner, backend, and
+  frontend, but not for the finalizer, which still commits its own state
+  update. Known limitation: the dispatcher does not yet unwrap the Codex JSON
+  envelope before parsing validator and finalizer reports, so under this
+  mapping validation output reads as unparseable and epic closes pause.
 
 - Added the optional `verification_allowed_prefixes` config key. When set,
   the work-claim gate runs a Work Packet Verification command only if its
