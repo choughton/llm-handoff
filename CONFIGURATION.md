@@ -284,7 +284,10 @@ The outcomes:
   to the same pull request and updates its report. It posts each response as
   the reply on that finding's review thread and resolves the thread. A
   finding without a response keeps its thread unresolved, which blocks the
-  merge.
+  merge. A response that starts with `Deferred:` (or `**Deferred:**`) marks
+  a real finding left unfixed for later work: the dispatcher posts the
+  reply, logs a `WARN` naming the finding, and leaves the thread unresolved,
+  so the merge pauses for a person to decide.
 - One correction round by default (`max_review_rounds: 1`). The first review
   should surface what matters most; each review of a fix tends to find new
   edge cases in the new code, so the dispatcher does not wait for another

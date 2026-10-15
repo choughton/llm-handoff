@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from llm_handoff.pr_review import (
+    is_deferred_response,
     parse_gh_json_pages,
     parse_review_responses,
     read_codex_review,
@@ -252,6 +253,14 @@ def test_parse_review_responses_reads_numbered_findings() -> None:
         3: "Left as is: out of scope.",
     }
     assert parse_review_responses("no section") == {}
+
+
+def test_is_deferred_response_needs_the_marker_at_the_start() -> None:
+    assert is_deferred_response("Deferred: out of scope for this story.")
+    assert is_deferred_response("**Deferred:** needs its own Work Packet.")
+    assert is_deferred_response("deferred : later")
+    assert not is_deferred_response("Left as is: out of scope.")
+    assert not is_deferred_response("Fixed; nothing deferred: see the test.")
 
 
 USAGE_LIMIT_COMMENT = {

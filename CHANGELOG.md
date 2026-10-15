@@ -13,8 +13,22 @@ This project follows a simple pre-release changelog until the first public tag.
   command. A claim whose Verification command fails again with the same command
   as the previous bounce, with no other failed check and no new commit changing
   a file other than the handoff, now bounces to the planner instead of the
-  implementer. The gate
-  runs the packet from the assignment, so the implementer could not fix it.
+  implementer. The gate runs the packet from the assignment, so the
+  implementer could not fix it.
+
+- A pull request review response that starts with `Deferred:` now keeps its
+  finding's review thread open. The dispatcher still posts the reply, logs a
+  `WARN` naming the deferred finding, and does not resolve the thread, so the
+  unresolved-thread rule pauses the merge for a person. Before, any response
+  resolved its thread, so a real finding the implementer left unfixed was
+  closed silently and the pull request merged.
+
+- Fixed a stale Work Packet in the branch publish modes. The story state kept
+  the packet from when the story branch was created, so a planner revision
+  made later was lost: the review correction handoff and the pull request
+  report brought the old packet back, and the gate failed on the defect the
+  planner had fixed. Each implementer dispatch on the story branch now
+  refreshes the saved packet from the assignment.
 
 - Added a `codex` next-agent normalizer provider. `normalizer.provider: codex`
   runs `codex exec --sandbox read-only` on the user's Codex CLI login, so an
