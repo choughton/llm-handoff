@@ -156,7 +156,10 @@ For narrow post-dispatch handoff hygiene failures, the dispatcher has a bounded
 repair lane. The producer gets one repair-only dispatch constrained to
 `docs/handoff/HANDOFF.md`; the repair must create a commit, change the handoff
 hash, touch only the handoff file, preserve critical frontmatter, leave dirty
-state unchanged except for the handoff, and pass validation. If that producer
+state unchanged except for the handoff, and pass validation. With
+`commit_mode: dispatcher` the handoff is never committed: the repair must leave
+HEAD where it was (handoff-only commits are undone with `git reset --soft`) and
+keep the handoff uncommitted. If that producer
 repair fails, the planner gets one cleanup-only attempt. If the planner cannot
 operationalize the handoff, the dispatcher aborts to the user.
 
@@ -332,7 +335,8 @@ that route into a read-only fan-out:
 1. The dispatcher computes a concrete Git range: the `HEAD` recorded before
    the story's first implementer dispatch, through the handoff's `scope_sha`.
    Retries after a `verified_fail` bounce keep that base, so the range covers
-   commits from every attempt; it restarts when the `story_id` changes or the
+   commits from every attempt; it restarts when the story changes (its
+   `story_id`, or its `## Work Packet` when there is no `story_id`) or the
    story reaches `verified_pass`. The base lives in memory, so after a
    dispatcher restart the next implementer dispatch records a new one. Without
    a recorded base it falls back to `scope_sha~1`. Reviewers are never asked

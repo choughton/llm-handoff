@@ -80,11 +80,15 @@ from llm_handoff.validator import (
     validate_handoff,
 )
 from llm_handoff.work_claim import (
+    ImplementerLeftovers,
     PreDispatchState,
     WorkClaimResult,
     bounce_route_for,
     build_bounce_handoff,
+    capture_implementer_leftovers,
     capture_pre_dispatch_state,
+    carry_over_key,
+    git_dirty_files,
     passed_verification_section,
     record_passed_verification,
     verify_work_claim,
@@ -177,8 +181,18 @@ POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE = (
     "{errors}. Preserve the current frontmatter next_agent, producer, scope_sha, "
     "prior_sha, close_type, epic_id, story_id, story_title, and "
     "remaining_stories unless the listed validation error explicitly names that "
-    "field. Commit exactly {handoff_path} before finishing. Failing to "
-    "edit HANDOFF.md or failing to commit the edit is a critical failure."
+    "field. {commit_rule}"
+)
+POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_COMMIT_RULE = (
+    "Commit exactly {handoff_path} before finishing. Failing to edit "
+    "HANDOFF.md or failing to commit the edit is a critical failure."
+)
+# In dispatcher commit mode the handoff is live state that never gets
+# committed, so the repair must leave it in the working tree.
+POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_UNCOMMITTED_RULE = (
+    "Dispatcher commit mode is on: leave {handoff_path} uncommitted and do not "
+    "run `git add`, `git commit`, or any other command that writes to `.git`. "
+    "Failing to edit HANDOFF.md is a critical failure."
 )
 POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE = (
     "The producer failed one-shot HANDOFF hygiene repair after post-dispatch "
@@ -325,7 +339,8 @@ def run_loop(
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
     implementer_base_sha: str | None = None
-    implementer_base_story_id: str | None = None
+    implementer_base_story_key: str | None = None
+    implementer_leftovers: ImplementerLeftovers | None = None
 
     while True:
         cycle_number += 1
@@ -616,8 +631,22 @@ def run_loop(
                     _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
                     return 1
             pre_dispatch_state: PreDispatchState | None = None
+            story_key = carry_over_key(handoff_content)
             if _work_claim_gate_applies(config, current_cycle.route):
-                pre_dispatch_state = capture_pre_dispatch_state(config.repo_root)
+                pre_dispatch_state = capture_pre_dispatch_state(
+                    config.repo_root,
+                    leftovers=implementer_leftovers,
+                    story_key=story_key,
+                )
+                if pre_dispatch_state.carried_over:
+                    story_id = _handoff_story_id(handoff_content)
+                    _log(
+                        log_fn,
+                        "INFO",
+                        "Carrying over uncommitted work from the previous "
+                        f"{story_id or 'same Work Packet'} dispatch: "
+                        f"{', '.join(pre_dispatch_state.carried_over)}.",
+                    )
             if config.audit.security_enabled and current_cycle.route in {
                 "backend",
                 "frontend",
@@ -626,22 +655,17 @@ def run_loop(
                 # remember where the implementer started. A retry of the same
                 # story keeps the first dispatch's base so the audit still
                 # covers commits from earlier, bounced attempts.
-                story_id = (
-                    cycle_frontmatter.story_id
-                    if cycle_frontmatter is not None
-                    else None
-                )
                 if (
                     implementer_base_sha is None
-                    or story_id is None
-                    or story_id != implementer_base_story_id
+                    or story_key is None
+                    or story_key != implementer_base_story_key
                 ):
                     implementer_base_sha = (
                         pre_dispatch_state.head_sha
                         if pre_dispatch_state is not None
                         else _git_head(config.repo_root)
                     )
-                    implementer_base_story_id = story_id
+                    implementer_base_story_key = story_key
             planner_git_before = (
                 git_position(config.repo_root)
                 if current_cycle.route == "planner"
@@ -671,6 +695,15 @@ def run_loop(
                     implementer_base_sha=implementer_base_sha,
                 ),
             )
+            if pre_dispatch_state is not None:
+                # Whatever this dispatch leaves uncommitted is this story's
+                # work, so a later dispatch for the story can still commit it.
+                implementer_leftovers = capture_implementer_leftovers(
+                    config.repo_root,
+                    handoff_path=config.handoff_path,
+                    pre_dispatch_state=pre_dispatch_state,
+                    story_key=story_key,
+                )
             if planner_git_before is not None:
                 planner_check = undo_planner_handoff_commits(
                     config.repo_root, config.handoff_path, planner_git_before
@@ -1249,12 +1282,37 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         f"Running one-shot producer repair for {config.handoff_path.as_posix()} only.",
     )
     protected_before = _capture_protected_snapshot(config)
+    dispatcher_commit_mode = config.commit_mode == "dispatcher"
+    git_before = git_position(config.repo_root) if dispatcher_commit_mode else None
     repair_result = _dispatch_handoff_hygiene_repair(
         config=config,
         previous_agent=previous_agent,
         validation_result=validation_result,
         log=log,
     )
+    if git_before is not None:
+        undo = undo_planner_handoff_commits(
+            config.repo_root,
+            config.handoff_path,
+            git_before,
+            role=f"{previous_agent} handoff repair",
+        )
+        if undo.error is not None:
+            _log(log, "ERROR", f"Dispatcher commit mode: {undo.error}.")
+            return HandoffRepairAttempt(
+                attempted=True,
+                succeeded=False,
+                failure_reason=undo.error,
+            )
+        if undo.undone:
+            _log(
+                log,
+                "WARN",
+                f"The {previous_agent} handoff repair committed the handoff ("
+                + ", ".join(sha[:12] for sha in undo.undone)
+                + ") despite dispatcher commit mode; undid it with "
+                "`git reset --soft`. The handoff stays uncommitted.",
+            )
     if repair_result is not None and _enforce_protected_files(
         config=config,
         before=protected_before,
@@ -1293,6 +1351,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         before_state=before_state,
         after_state=after_state,
         validation_result=validation_result,
+        dispatcher_commit_mode=dispatcher_commit_mode,
     )
     if postcondition_error is not None:
         _log(log, "ERROR", f"Producer repair failed invariant: {postcondition_error}")
@@ -1369,6 +1428,12 @@ def _dispatch_handoff_hygiene_repair(
         POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE,
         config.handoff_path,
         errors=_format_validation_repair_issues(validation_result),
+        commit_rule=_render_prompt(
+            POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_UNCOMMITTED_RULE
+            if config.commit_mode == "dispatcher"
+            else POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_COMMIT_RULE,
+            config.handoff_path,
+        ),
     )
     previous_agent_lower = previous_agent.lower()
     if "auditor" in previous_agent_lower and "audit" in previous_agent_lower:
@@ -1425,30 +1490,43 @@ def _handoff_repair_postcondition_error(
     before_state: HandoffRepairState,
     after_state: HandoffRepairState,
     validation_result: ValidationResult,
+    dispatcher_commit_mode: bool = False,
 ) -> str | None:
     handoff_path = config.handoff_path.as_posix()
     if after_state.head_sha is None:
         return "git HEAD could not be resolved after repair"
-    if after_state.head_sha == before_state.head_sha:
+    if dispatcher_commit_mode:
+        # Handoff-only commits were already undone, so HEAD must not move.
+        if after_state.head_sha != before_state.head_sha:
+            return "HEAD changed; repair must not commit in dispatcher commit mode"
+    elif after_state.head_sha == before_state.head_sha:
         return "HEAD did not change; repair did not create a commit"
     if after_state.handoff_sha == before_state.handoff_sha:
         return "HANDOFF.md hash did not change"
 
-    changed_files = _git_changed_files_since(
-        config.repo_root,
-        before_state.head_sha or "",
-        after_state.head_sha,
-    )
-    if changed_files != (handoff_path,):
-        return (
-            f"repair commit touched files outside {handoff_path}: "
-            f"{', '.join(changed_files) or '<none>'}"
+    if not dispatcher_commit_mode:
+        changed_files = _git_changed_files_since(
+            config.repo_root,
+            before_state.head_sha or "",
+            after_state.head_sha,
         )
+        if changed_files != (handoff_path,):
+            return (
+                f"repair commit touched files outside {handoff_path}: "
+                f"{', '.join(changed_files) or '<none>'}"
+            )
 
+    # Outside the handoff, the working tree must not change. In dispatcher
+    # commit mode the handoff stays dirty; otherwise it must be committed.
     expected_dirty = tuple(
         path for path in before_state.dirty_files if path != handoff_path
     )
-    if after_state.dirty_files != expected_dirty:
+    after_dirty = (
+        tuple(path for path in after_state.dirty_files if path != handoff_path)
+        if dispatcher_commit_mode
+        else after_state.dirty_files
+    )
+    if after_dirty != expected_dirty:
         return (
             "repair changed dirty worktree state outside the handoff: "
             f"before={before_state.dirty_files}, after={after_state.dirty_files}"
@@ -1553,22 +1631,9 @@ def _git_head(repo_root: Path) -> str | None:
 
 
 def _git_dirty_files(repo_root: Path) -> tuple[str, ...]:
-    output = _run_git_stdout(
-        repo_root,
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-    )
-    if output is None:
-        return ()
-    files: list[str] = []
-    for line in output.splitlines():
-        if len(line) < 4:
-            continue
-        path = line[3:].strip()
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1].strip()
-        if path:
-            files.append(Path(path).as_posix())
-    return tuple(sorted(files))
+    # The NUL-separated parser keeps each entry's two-column status intact;
+    # stripping the porcelain text would eat the first path's leading space.
+    return git_dirty_files(repo_root) or ()
 
 
 def _git_changed_files_since(
@@ -2139,6 +2204,11 @@ def _parse_frontmatter_or_none(handoff_content: str):
         return parse_handoff_frontmatter_text(handoff_content)
     except HandoffFrontmatterError:
         return None
+
+
+def _handoff_story_id(handoff_content: str) -> str | None:
+    frontmatter = _parse_frontmatter_or_none(handoff_content)
+    return frontmatter.story_id if frontmatter is not None else None
 
 
 def _work_claim_gate_applies(config: DispatchConfig, route: RouteName) -> bool:

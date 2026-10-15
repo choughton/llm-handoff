@@ -26,9 +26,13 @@ from llm_handoff.work_claim import (
     WorkPacketError,
     bounce_route_for,
     build_bounce_handoff,
+    capture_implementer_leftovers,
     capture_pre_dispatch_state,
+    carry_over_key,
     extract_work_packet_section,
     parse_work_packet,
+    path_is_in_scope,
+    path_is_out_of_bounds,
     path_matches_entry,
     render_scanner_command,
     shell_quote,
@@ -1975,6 +1979,215 @@ def test_dispatcher_commit_skips_handbacks_that_are_not_ready_for_review(
     assert _git(tmp_path, "rev-parse", "HEAD") == base
 
 
+# A planner-written boundary in prose, wrapped across lines the way Markdown
+# editors and agents wrap long bullets.
+PROSE_OUT_OF_BOUNDS = (
+    "`docs/handoff/`, `AGENTS.md`, every file in `src/` other than\n"
+    "  `src/app.py`, every file in `tests/` other than `tests/test_app.py`"
+)
+
+
+def test_parse_work_packet_ignores_prose_words_and_exceptions_in_out_of_bounds() -> (
+    None
+):
+    packet = parse_work_packet(
+        _assignment(
+            files_in_scope="`src/app.py`, `tests/test_app.py`",
+            files_out_of_bounds=PROSE_OUT_OF_BOUNDS,
+        )
+    )
+
+    assert packet.files_out_of_bounds == (
+        "docs/handoff/",
+        "AGENTS.md",
+        "src/",
+        "tests/",
+    )
+
+
+def test_parse_work_packet_keeps_bare_paths_next_to_backticked_prose() -> None:
+    packet = parse_work_packet(
+        _assignment(files_out_of_bounds="`frontend/` and also vendor/lib.py, Makefile")
+    )
+
+    # Prose mode keeps bare words only when they look like paths.
+    assert packet.files_out_of_bounds == ("frontend/", "vendor/lib.py")
+
+
+def test_path_is_out_of_bounds_lets_the_narrowest_entry_decide() -> None:
+    packet = parse_work_packet(
+        _assignment(
+            files_in_scope="src/app.py, src/pkg/",
+            files_out_of_bounds="src/, src/pkg/private.py",
+        )
+    )
+
+    assert path_is_in_scope("src/app.py", packet)
+    assert path_is_out_of_bounds("src/api.py", packet)
+    assert path_is_in_scope("src/pkg/mod.py", packet)
+    assert path_is_out_of_bounds("src/pkg/private.py", packet)
+
+
+def test_path_is_out_of_bounds_wins_a_tie() -> None:
+    packet = parse_work_packet(
+        _assignment(files_in_scope="src/app.py", files_out_of_bounds="src/app.py")
+    )
+
+    assert path_is_out_of_bounds("src/app.py", packet)
+    assert not path_is_in_scope("src/app.py", packet)
+
+
+def test_dispatcher_commit_includes_in_scope_files_inside_out_of_bounds_directories(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment(
+        files_in_scope="`src/app.py`, `tests/test_app.py`",
+        files_out_of_bounds=PROSE_OUT_OF_BOUNDS,
+    )
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    pass\n")
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+
+    result = commit_implementer_changes(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=assignment,
+        claim_content=_pending_claim(),
+        pre_dispatch_state=state,
+        role="backend",
+    )
+
+    assert result.committed == ("src/app.py", "tests/test_app.py")
+    assert result.left_uncommitted == ("src/api.py",)
+    verify = _verify(
+        tmp_path,
+        assignment=assignment,
+        claim=_claim(result.sha),
+        state=state,
+    )
+    assert verify.failed_prefixes == ("uncommitted_changes",)
+    assert "src/api.py" in verify.errors[0]
+
+
+def test_dispatcher_commit_commits_work_the_previous_story_dispatch_left_behind(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    first_state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    leftovers = capture_implementer_leftovers(
+        tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        pre_dispatch_state=first_state,
+        story_key=STORY_ID,
+    )
+
+    second_state = capture_pre_dispatch_state(
+        tmp_path, leftovers=leftovers, story_key=STORY_ID
+    )
+    result = commit_implementer_changes(
+        repo_root=tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        assignment_content=_assignment(),
+        claim_content=_pending_claim(),
+        pre_dispatch_state=second_state,
+        role="backend",
+    )
+
+    assert second_state.carried_over == ("src/app.py",)
+    assert second_state.dirty_files == ()
+    assert result.committed == ("src/app.py",)
+
+
+def test_carried_over_work_left_uncommitted_fails_the_gate(tmp_path: Path) -> None:
+    head = _init_repo(tmp_path)
+    first_state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    leftovers = capture_implementer_leftovers(
+        tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        pre_dispatch_state=first_state,
+        story_key=STORY_ID,
+    )
+    second_state = capture_pre_dispatch_state(
+        tmp_path, leftovers=leftovers, story_key=STORY_ID
+    )
+
+    # Before the carry-over, an untouched pre-dispatch file was ignored and a
+    # claim whose scope_sha lacked the story's code passed the gate.
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=second_state
+    )
+
+    assert "uncommitted_changes" in result.failed_prefixes
+    assert "src/app.py" in " ".join(result.errors)
+
+
+def test_pre_dispatch_state_does_not_carry_over_edited_or_other_story_files(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    first_state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    leftovers = capture_implementer_leftovers(
+        tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        pre_dispatch_state=first_state,
+        story_key=STORY_ID,
+    )
+    _write(tmp_path / "src" / "api.py", "API = 'operator edit'\n")
+
+    same_story = capture_pre_dispatch_state(
+        tmp_path, leftovers=leftovers, story_key=STORY_ID
+    )
+    other_story = capture_pre_dispatch_state(
+        tmp_path, leftovers=leftovers, story_key="EPIC-1-S2"
+    )
+
+    assert same_story.carried_over == ("src/app.py",)
+    assert same_story.dirty_files == ("src/api.py",)
+    assert other_story.carried_over == ()
+    assert other_story.dirty_files == ("src/api.py", "src/app.py")
+
+
+def test_carry_over_key_falls_back_to_the_work_packet_without_story_id() -> None:
+    assignment = _assignment()
+    without_story = assignment.replace(f"story_id: {STORY_ID}\n", "")
+    other_packet = without_story.replace("Set VALUE to 2.", "Set VALUE to 3.")
+
+    assert carry_over_key(assignment) == f"story:{STORY_ID}"
+    packet_key = carry_over_key(without_story)
+    assert packet_key is not None and packet_key.startswith("work-packet:")
+    # A bounce carries the Work Packet verbatim under a new handoff body.
+    bounced = without_story.replace("## Task Assignment", "## Dispatcher Verification")
+    assert carry_over_key(bounced) == packet_key
+    assert carry_over_key(other_packet) != packet_key
+    no_packet = _assignment_without_packet().replace(f"story_id: {STORY_ID}\n", "")
+    assert carry_over_key(no_packet) is None
+
+
+def test_implementer_leftovers_exclude_operator_edits_and_the_handoff(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "PROJECT_STATE.md", "# PROJECT STATE\noperator note\n")
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _pending_claim())
+
+    leftovers = capture_implementer_leftovers(
+        tmp_path,
+        handoff_path=HANDOFF_RELATIVE_PATH,
+        pre_dispatch_state=state,
+        story_key=STORY_ID,
+    )
+
+    assert [path for path, _ in leftovers.fingerprints] == ["src/app.py"]
+
+
 def test_stamp_commit_sha_fills_scope_sha_and_evidence() -> None:
     sha = "a" * 40
 
@@ -2093,6 +2306,121 @@ def test_run_loop_bounces_out_of_scope_leftovers_in_dispatcher_mode(
         level == "ERROR" and message.startswith("uncommitted_changes:")
         for level, message in messages
     )
+
+
+REASON_LINE = 'reason: "Backend work complete; audit requested."\n'
+
+
+def test_run_loop_handoff_repair_keeps_the_handoff_uncommitted_in_dispatcher_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    repair_prompts: list[str] = []
+
+    def fake_backend(path: Path, **kwargs: object) -> DispatchResult:
+        instruction = str(kwargs.get("additional_instruction") or "")
+        if "Repair only" not in instruction:
+            _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+            path.write_text(_pending_claim().replace(REASON_LINE, ""), encoding="utf-8")
+            return _dispatch_result()
+        repair_prompts.append(instruction)
+        stamped = path.read_text(encoding="utf-8")
+        path.write_text(
+            stamped.replace("epic_id:", REASON_LINE + "epic_id:", 1),
+            encoding="utf-8",
+        )
+        # The repair ignores the prompt and commits the handoff anyway.
+        _git(tmp_path, "add", "--", HANDOFF_RELATIVE_PATH.as_posix())
+        _git(tmp_path, "commit", "-q", "-m", "repair handoff")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert len(repair_prompts) == 1, " | ".join(f"{l} {m}" for l, m in messages[22:])
+    assert "leave docs/handoff/HANDOFF.md uncommitted" in repair_prompts[0]
+    assert "Commit exactly" not in repair_prompts[0]
+    assert _commit_files(tmp_path, "HEAD") == ["src/app.py"]
+    assert _git(tmp_path, "diff", "--name-only") == HANDOFF_RELATIVE_PATH.as_posix()
+    assert _git(tmp_path, "diff", "--cached", "--name-only") == ""
+    assert any(
+        level == "WARN" and "handoff repair committed the handoff" in message
+        for level, message in messages
+    )
+    assert ("AGENT", "Producer handoff hygiene repair passed post-checks.") in messages
+
+
+def test_git_dirty_files_keeps_the_first_porcelain_path_whole(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    # An unstaged edit lists as " M path"; stripping the whole porcelain output
+    # used to eat that leading space and the path's first character.
+    _write(tmp_path / "AGENTS.md", "edited\n")
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+
+    assert orchestrator._git_dirty_files(tmp_path) == ("AGENTS.md", "src/app.py")
+
+
+STORY_ID_LINE = f"story_id: {STORY_ID}\n"
+
+
+@pytest.mark.parametrize("with_story_id", [True, False])
+def test_run_loop_commits_work_a_bounced_dispatch_left_uncommitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    with_story_id: bool,
+) -> None:
+    # Replays the W1.5 self-host stall: the first commit dropped an in-scope
+    # file, the gate bounced to backend, and the retry could never commit it
+    # because it was already dirty before the retry's dispatch. story_id is
+    # optional, so carry-over must also work without one.
+    def strip(content: str) -> str:
+        return content if with_story_id else content.replace(STORY_ID_LINE, "")
+
+    _init_repo(tmp_path, strip(_assignment()))
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    dispatches: list[int] = []
+    real_commit = orchestrator.commit_implementer_changes
+
+    def dropping_commit(**kwargs: Any):
+        if len(dispatches) == 1:
+            kwargs["assignment_content"] = _assignment(
+                files_in_scope="tests/test_app.py"
+            )
+        return real_commit(**kwargs)
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append(1)
+        if len(dispatches) == 1:
+            _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+            _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    pass\n")
+        path.write_text(strip(_pending_claim()), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "commit_implementer_changes", dropping_commit)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=2, log=_collecting_log(messages))
+
+    assert len(dispatches) == 2
+    assert _commit_files(tmp_path, "HEAD") == ["src/app.py"]
+    assert "src/app.py" not in _git(tmp_path, "status", "--porcelain")
+    label = STORY_ID if with_story_id else "same Work Packet"
+    carried = (
+        f"Carrying over uncommitted work from the previous {label} "
+        "dispatch: src/app.py."
+    )
+    assert ("INFO", carried) in messages
+    assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
 
 
 # ---------------------------------------------------------------------------
