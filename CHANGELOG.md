@@ -107,6 +107,13 @@ This project follows a simple pre-release changelog until the first public tag.
   gate result, audit verdicts, token usage and cost), merging it when
   `auto_merge` is on. Agents never branch, push, or merge. Default stays
   `local`; the branch modes need `commit_mode: dispatcher`.
+- Added `publish.wait_for_reviewers: [codex]` for `pr` mode with
+  `auto_merge`. Before merging, the dispatcher waits for the Codex GitHub
+  review of the pushed commit. No findings merges. Findings bounce to the
+  story's implementer as a `verified_fail` handoff; the fix goes to the same
+  pull request with an `@codex review` request, for up to
+  `max_review_rounds` rounds. A review that does not finish within
+  `review_timeout_seconds` stops the loop with the pull request left open.
 
 ## 0.0.0
 

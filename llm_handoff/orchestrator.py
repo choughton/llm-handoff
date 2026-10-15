@@ -52,6 +52,7 @@ from llm_handoff.dispatcher_commit import (
     stamp_commit_sha,
 )
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
+from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import ensure_story_branch, publish_story, save_gate_section
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
@@ -600,6 +601,7 @@ def run_loop(
                     base_branch=config.publish.base_branch,
                     assignment_content=handoff_content,
                     log_file=getattr(log_fn, "log_file_path", None),
+                    implementer=current_cycle.route,
                 )
                 if branch_error is not None:
                     _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
@@ -924,7 +926,12 @@ def run_loop(
                             _read_required_text(config.handoff_full_path) or ""
                         ),
                         log=log_fn,
+                        review=_review_gate(config),
                     )
+                    if outcome.handoff is not None:
+                        config.handoff_full_path.write_text(
+                            outcome.handoff, encoding="utf-8"
+                        )
                     if outcome.stop:
                         return outcome.exit_code
 
@@ -933,6 +940,19 @@ def run_loop(
 
         _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
         _log(log_fn, "INFO", "")
+
+
+def _review_gate(config: DispatchConfig) -> ReviewGate | None:
+    publish = config.publish
+    if not publish.wait_for_reviewers:
+        return None
+    return ReviewGate(
+        reviewers=publish.wait_for_reviewers,
+        timeout_seconds=publish.review_timeout_seconds,
+        poll_seconds=publish.review_poll_seconds,
+        max_rounds=publish.max_review_rounds,
+        codex_bot_login=publish.codex_bot_login,
+    )
 
 
 def _dispatch_route(
@@ -2766,6 +2786,14 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
                 f"; push to {publish.remote} and open a PR after the audit passes; "
                 + ("auto-merge" if publish.auto_merge else "operator merges")
                 + ("; waits for PR checks" if publish.wait_for_checks else "")
+                + (
+                    "; waits for the "
+                    + ", ".join(publish.wait_for_reviewers)
+                    + f" review (up to {publish.review_timeout_seconds}s, "
+                    f"{publish.max_review_rounds} rounds)"
+                    if publish.wait_for_reviewers
+                    else ""
+                )
             )
         else:
             detail += "; merge with a report commit after the audit passes"

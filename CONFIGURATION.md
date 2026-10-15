@@ -192,6 +192,11 @@ publish:
   remote: origin         # pr mode
   auto_merge: true       # pr mode: merge once the audit passes
   wait_for_checks: false # pr mode: wait for the PR's CI checks before merging
+  wait_for_reviewers: [] # pr mode + auto_merge: [codex] waits for Codex review
+  review_timeout_seconds: 1200
+  review_poll_seconds: 30
+  max_review_rounds: 3
+  codex_bot_login: chatgpt-codex-connector[bot]
 ```
 
 - `local`: commits stay on the branch you have checked out.
@@ -210,6 +215,40 @@ publish:
   `wait_for_checks: true` it waits for the pull request's checks
   (`gh pr checks --watch`) before merging and stops if they fail; only enable
   this when the repository has CI.
+
+#### Waiting For The Codex Pull Request Review
+
+With `wait_for_reviewers: [codex]`, `pr` mode with `auto_merge: true` waits
+for the Codex code review (the ChatGPT Codex connector for GitHub) of the
+exact commit it pushed before merging. Set this only when Codex reviews pull
+requests in the repository. The dispatcher polls the pull request with
+`gh api` every `review_poll_seconds`. It counts only activity from
+`codex_bot_login`, and only for the pushed commit's SHA:
+
+- The review is finished when the Codex summary comment's `Code Review` row
+  shows `Completed` for that commit, when Codex posts a pull request review
+  on that commit, or when Codex adds a +1 reaction after the push.
+- Inline review comments on that commit are findings.
+
+The outcomes:
+
+- No findings: the dispatcher merges the pull request as usual.
+- Findings: the pull request stays open and is not merged. The dispatcher
+  rewrites `HANDOFF.md` as a `verified_fail` bounce to the story's implementer.
+  The bounce lists each finding (file, line, text, link) and carries the Work
+  Packet. The implementer fixes the findings on the same story branch, and
+  the gate and audit run again. The dispatcher then pushes to the same pull
+  request, updates its report, comments `@codex review` to request a new
+  review, and waits again. After `max_review_rounds` rounds that still have
+  findings, the loop stops and leaves the pull request open for you.
+- No finished review within `review_timeout_seconds`, a failed review, or a
+  `gh` error: the loop stops and leaves the pull request open. It never
+  merges without a finished review.
+
+Finding text comes from the pull request and is untrusted. The bounce tells
+the implementer to check each finding and to fix only what holds up inside
+the Work Packet's scope. The work-claim gate and the audit still apply to
+the fix.
 
 Agents never branch, push, or merge: the dispatcher does all of it, and only
 after the work-claim gate and both reviewers pass. `pr` mode pushes with your

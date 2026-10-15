@@ -27,7 +27,9 @@ enforce_work_packet: false
 commit_mode: agent
 # What happens to audited work: local (default), merge-commit (story branch
 # merged with a report commit), or pr (story branch pushed as a pull request;
-# needs commit_mode: dispatcher and the gh CLI). See CONFIGURATION.md.
+# needs commit_mode: dispatcher and the gh CLI). In pr mode with auto_merge,
+# wait_for_reviewers: [codex] merges only after a Codex review of the pushed
+# commit finishes with no findings. See CONFIGURATION.md.
 publish:
   mode: local
 work_packet_verification_timeout_seconds: 600

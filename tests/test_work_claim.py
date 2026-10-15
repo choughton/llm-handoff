@@ -2178,3 +2178,50 @@ def test_run_loop_puts_implementer_work_on_a_story_branch(
     assert _git(tmp_path, "log", "-1", "--format=%s").startswith(STORY_ID)
     assert (tmp_path / "logs" / "dispatch" / "publish" / "gate.md").is_file()
     assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+
+
+def test_run_loop_writes_the_review_bounce_from_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    from llm_handoff.publish import PublishOutcome
+
+    _init_repo(tmp_path, handoff_content=_claim("a" * 40))
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path,
+        commit_mode="dispatcher",
+        publish={"mode": "pr", "wait_for_reviewers": ["codex"]},
+    )
+    bounce = _claim(None, status="verified_fail", producer="validator", next_agent="backend")
+    published: list[dict[str, object]] = []
+
+    def fake_support(subagent_name: str, prompt: str, **_kwargs: object) -> SubagentResult:
+        config.handoff_full_path.write_text(
+            _claim(None, status="verified_pass", producer="auditor", next_agent="planner"),
+            encoding="utf-8",
+        )
+        return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def fake_publish(**kwargs: object) -> PublishOutcome:
+        published.append(kwargs)
+        return PublishOutcome(handoff=bounce)
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_args, **_kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="planner"
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "publish_story", fake_publish)
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    assert exit_code == 0
+    assert len(published) == 1
+    review = published[0]["review"]
+    assert review.reviewers == ("codex",) and review.max_rounds == 3
+    assert config.handoff_full_path.read_text(encoding="utf-8") == bounce

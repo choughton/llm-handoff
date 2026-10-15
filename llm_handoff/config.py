@@ -148,6 +148,10 @@ CommitMode = Literal["agent", "dispatcher"]
 # What happens to audited work: stay local, merge a story branch with a report
 # commit, or push it and open a pull request.
 PublishMode = Literal["local", "merge-commit", "pr"]
+# GitHub pull request reviewers whose review of the head commit must finish,
+# without findings, before the dispatcher merges a story's pull request.
+PublishReviewer = Literal["codex"]
+DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality",)
 # Order used to pick a security reviewer vendor that differs from the
 # implementer's provider when `audit.security_provider` is not set.
@@ -318,6 +322,30 @@ class PublishConfig(BaseModel):
     remote: str = "origin"
     auto_merge: bool = True
     wait_for_checks: bool = False
+    wait_for_reviewers: tuple[PublishReviewer, ...] = ()
+    review_timeout_seconds: int = 1200
+    review_poll_seconds: int = 30
+    max_review_rounds: int = 3
+    codex_bot_login: str = DEFAULT_CODEX_BOT_LOGIN
+
+    @model_validator(mode="after")
+    def _validate_reviewers(self) -> PublishConfig:
+        if not self.wait_for_reviewers:
+            return self
+        if self.mode != "pr" or not self.auto_merge:
+            raise ValueError(
+                "publish.wait_for_reviewers only applies to `mode: pr` with "
+                "`auto_merge: true`; without auto-merge the operator reviews "
+                "and merges the pull request."
+            )
+        if len(set(self.wait_for_reviewers)) != len(self.wait_for_reviewers):
+            raise ValueError("publish.wait_for_reviewers must not repeat a reviewer.")
+        for name in ("review_timeout_seconds", "review_poll_seconds", "max_review_rounds"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"publish.{name} must be at least 1.")
+        if not self.codex_bot_login.strip():
+            raise ValueError("publish.codex_bot_login must not be empty.")
+        return self
 
     @field_validator("branch_prefix", mode="after")
     @classmethod
