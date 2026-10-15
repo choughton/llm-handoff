@@ -645,7 +645,6 @@ def test_verify_work_claim_rejects_new_uncommitted_changes(tmp_path: Path) -> No
     _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
     head = _commit_paths(tmp_path, "set value", "src/app.py")
     _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    assert 1\n")
-    _write(tmp_path / "src" / "api.py", "API = 'still dirty'\n")
     _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(head))
 
     result = _verify(
@@ -1773,3 +1772,73 @@ def test_docs_describe_scanners() -> None:
     assert "operator" in security
     assert "sandbox" in security.lower()
     assert "requirements-dev" not in configuration
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups
+# ---------------------------------------------------------------------------
+
+
+def test_parse_work_packet_keeps_quoted_paths_with_spaces_whole() -> None:
+    packet = parse_work_packet(
+        _assignment(
+            files_in_scope='`src/my file.py`, "docs/user guide.md" tests/test_app.py',
+            files_out_of_bounds="'vendor/third party/'; src/api.py",
+        )
+    )
+
+    assert packet.files_in_scope == (
+        "src/my file.py",
+        "docs/user guide.md",
+        "tests/test_app.py",
+    )
+    assert packet.files_out_of_bounds == ("vendor/third party/", "src/api.py")
+
+
+def test_verify_work_claim_accepts_change_to_quoted_path_with_space(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment(files_in_scope="`src/my file.py`")
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "my file.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "add spaced file")
+
+    result = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+
+    assert result.passed, result.errors
+
+
+def test_verify_work_claim_rejects_further_edits_to_pre_existing_dirty_file(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "src" / "api.py", "API = 'dirty before dispatch'\n")
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_paths(tmp_path, "set value", "src/app.py")
+    _write(tmp_path / "src" / "api.py", "API = 'edited again during dispatch'\n")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=state
+    )
+
+    assert result.failed_prefixes == ("uncommitted_changes",)
+    assert "already uncommitted before dispatch" in result.errors[0]
+    assert "src/api.py" in result.errors[0]
+
+
+def test_verify_work_claim_ignores_untouched_pre_existing_dirty_file(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "src" / "api.py", "API = 'dirty before dispatch'\n")
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_paths(tmp_path, "set value", "src/app.py")
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=state
+    )
+
+    assert result.passed, result.errors

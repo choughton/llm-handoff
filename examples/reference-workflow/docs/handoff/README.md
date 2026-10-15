@@ -108,6 +108,8 @@ routed to `user`:
   emits a `task_assignment_deprecated` warning.
 
 Keep the paths concrete and the command runnable from the repository root.
+Separate multiple paths with commas; wrap a path that contains spaces in
+backticks, for example `` `docs/user guide.md` ``.
 When the dispatcher runs with `enforce_work_packet: true`, it parses exactly
 these fields, diffs the implementer's commits against `Files in scope` and
 `Files out of bounds`, and runs `Verification command` itself before the

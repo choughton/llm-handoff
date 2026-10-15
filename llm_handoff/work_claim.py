@@ -25,19 +25,20 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import time
 from typing import Literal
 
 import yaml
 
+from llm_handoff.agent_process import _kill_process_tree, _process_group_popen_kwargs
 from llm_handoff.config import ScannerConfig, scanner_command_placeholders
 from llm_handoff.router import (
     HandoffFrontmatterError,
@@ -95,7 +96,10 @@ _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+")
 _PACKET_FIELD_RE = re.compile(r"^\s*[-*+]\s+\*\*([^*]+?):?\*\*:?\s*(.*?)\s*$")
 _LIST_MARKER_RE = re.compile(r"^[-*+]\s+")
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
-_PATH_SPLIT_RE = re.compile(r"[,;\n]+")
+# A Work Packet path entry is either a quoted span (backticks, double or single
+# quotes), kept verbatim so paths may contain spaces, or a bare token that ends
+# at whitespace, a comma, or a semicolon.
+_PATH_TOKEN_RE = re.compile(r"`([^`]+)`|\"([^\"]+)\"|'([^']+)'|([^\s,;`\"']+)")
 _NONE_VALUES = frozenset({"none", "(none)", "none.", "n/a", "na", "-", "--"})
 _GLOB_CHARS = frozenset("*?[")
 
@@ -137,6 +141,9 @@ class WorkPacket:
 class PreDispatchState:
     head_sha: str | None
     dirty_files: tuple[str, ...]
+    # Working-tree content fingerprint of each pre-existing dirty file, so the
+    # gate can tell when an implementer altered one further without committing.
+    dirty_fingerprints: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -361,16 +368,21 @@ def _parse_packet_fields(section: str) -> dict[str, list[str]]:
 
 
 def _split_path_list(values: list[str]) -> tuple[str, ...]:
+    """Split Work Packet path values into entries.
+
+    Quoted entries such as `` `src/my file.py` `` are kept whole; bare entries
+    are separated by commas, semicolons, or whitespace.
+    """
+
     paths: list[str] = []
     for raw_value in values:
-        for token in _PATH_SPLIT_RE.split(raw_value):
-            cleaned = token.strip().strip("`'\"").strip()
-            if not cleaned or cleaned.lower() in _NONE_VALUES:
-                continue
-            for raw_part in cleaned.split():
-                part = raw_part.strip("`'\",;")
-                if part and part.lower() not in _NONE_VALUES:
-                    paths.append(normalize_repo_path(part))
+        for match in _PATH_TOKEN_RE.finditer(raw_value):
+            quoted = next(
+                (group for group in match.groups()[:3] if group is not None), None
+            )
+            part = quoted.strip() if quoted is not None else match.group(4)
+            if part and part.lower() not in _NONE_VALUES:
+                paths.append(normalize_repo_path(part))
     return tuple(dict.fromkeys(path for path in paths if path))
 
 
@@ -423,12 +435,30 @@ def _matches_any(path: str, entries: tuple[str, ...]) -> bool:
 
 
 def capture_pre_dispatch_state(repo_root: Path) -> PreDispatchState:
-    """Record HEAD and dirty files before an implementer dispatch."""
+    """Record HEAD, dirty files, and their content before an implementer dispatch."""
 
+    dirty_files = git_dirty_files(repo_root) or ()
     return PreDispatchState(
         head_sha=git_head(repo_root),
-        dirty_files=git_dirty_files(repo_root) or (),
+        dirty_files=dirty_files,
+        dirty_fingerprints=tuple(
+            (path, working_tree_fingerprint(repo_root, path)) for path in dirty_files
+        ),
     )
+
+
+def working_tree_fingerprint(repo_root: Path, path: str) -> str:
+    """Hash a working-tree file's bytes; marks absent or unreadable files."""
+
+    full_path = repo_root / path
+    try:
+        return hashlib.sha256(full_path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return "<absent>"
+    except IsADirectoryError:
+        return "<directory>"
+    except OSError:
+        return "<unreadable>"
 
 
 def git_head(repo_root: Path) -> str | None:
@@ -574,9 +604,8 @@ def run_shell_command(
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
+        **_process_group_popen_kwargs(),
     }
-    if os.name != "nt":
-        popen_kwargs["start_new_session"] = True
     try:
         process = subprocess.Popen(command, **popen_kwargs)  # type: ignore[call-overload]
     except OSError as exc:
@@ -611,28 +640,6 @@ def run_shell_command(
 
 
 run_verification_command = run_shell_command
-
-
-def _kill_process_tree(process: subprocess.Popen[str]) -> None:
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
-                check=False,
-                capture_output=True,
-                timeout=15,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
-    try:
-        process.kill()
-    except OSError:
-        pass
 
 
 def _output_tail(output: str) -> str:
@@ -1173,11 +1180,32 @@ def _worktree_check(
         for path in dirty_now
         if path != handoff_rel_path and path not in pre_dispatch_state.dirty_files
     )
+    # A file that was already dirty before dispatch is only acceptable if its
+    # working-tree content is unchanged; otherwise the verification command
+    # would run against edits that scope_sha does not contain.
+    before = dict(pre_dispatch_state.dirty_fingerprints)
+    altered_dirty = tuple(
+        path
+        for path in dirty_now
+        if path != handoff_rel_path
+        and path in before
+        and working_tree_fingerprint(repo_root, path) != before[path]
+    )
+    problems: list[str] = []
     if new_dirty:
-        detail = (
+        problems.append(
             f"working tree has uncommitted changes outside {handoff_rel_path}: "
-            f"{', '.join(new_dirty)}; commit them so scope_sha contains the "
-            "claimed work."
+            f"{', '.join(new_dirty)}"
+        )
+    if altered_dirty:
+        problems.append(
+            "files that were already uncommitted before dispatch were modified "
+            f"further without being committed: {', '.join(altered_dirty)}"
+        )
+    if problems:
+        detail = (
+            "; ".join(problems)
+            + "; commit them so scope_sha contains the claimed work."
         )
         return (
             WorkClaimCheck("worktree", "FAIL", detail),
