@@ -7,11 +7,18 @@ import subprocess
 import pytest
 
 from llm_handoff import __main__ as main_module
+from llm_handoff import config as config_module
 from llm_handoff import doctor
 from llm_handoff import supervisor
 
 ROLES = ("planner", "backend", "frontend", "auditor", "validator", "finalizer")
 REAL_WHICH = shutil.which
+NORMALIZER_KEY_NAMES = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+)
 
 VALID_HANDOFF = """---
 next_agent: backend
@@ -63,6 +70,7 @@ def _make_repo(
     *,
     handoff: str | None = VALID_HANDOFF,
     commit: bool = True,
+    normalizer_provider: str | None = None,
 ) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -73,6 +81,9 @@ def _make_repo(
         lines.append(f"  {role}:")
         lines.append(f"    provider: {provider}")
         lines.append(f"    binary: fake-{provider}")
+    if normalizer_provider is not None:
+        lines.append("normalizer:")
+        lines.append(f"  provider: {normalizer_provider}")
     (repo / "dispatch_config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
     if handoff is not None:
         handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
@@ -94,6 +105,11 @@ def _stub_which(monkeypatch: pytest.MonkeyPatch, available: set[str]) -> None:
 
     monkeypatch.setattr(shutil, "which", fake_which)
     monkeypatch.delenv("GEMINI_SANDBOX", raising=False)
+    # The default claude normalizer is runnable with an Anthropic key; tests
+    # of the normalizer check clear it and choose their own provider inputs.
+    for name in NORMALIZER_KEY_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "doctor-test-key")
 
 
 def _run(repo: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
@@ -131,6 +147,7 @@ def test_doctor_happy_path_passes_every_check(
         "PASS git repository:",
         "PASS git working tree:",
         "PASS container runtime:",
+        "PASS normalizer:",
         "PASS handoff route: routes to backend",
         "PASS handoff validation:",
     ):
@@ -395,6 +412,103 @@ def test_doctor_reports_unloadable_explicit_config(
 
     assert exit_code == 1
     assert "FAIL config: dispatch config could not be loaded" in capsys.readouterr().out
+
+
+def _normalizer_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if " normalizer:" in line]
+
+
+def test_doctor_passes_codex_normalizer_without_calling_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="codex")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude", config_module.CODEX_BINARY})
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    real_run = subprocess.run
+
+    def git_only_run(args: object, *a: object, **k: object) -> object:
+        assert isinstance(args, list) and args[0] == "git", args
+        return real_run(args, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", git_only_run)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _normalizer_lines(output) == [
+        f"PASS normalizer: provider codex binary `{config_module.CODEX_BINARY}` "
+        "is on PATH (auth not verified)"
+    ]
+
+
+def test_doctor_fails_codex_normalizer_without_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="codex")
+    # The role binaries resolve; only the normalizer's codex CLI is missing.
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    # An OpenAI key does not make the CLI-only codex normalizer runnable.
+    monkeypatch.setenv("OPENAI_API_KEY", "doctor-test-key")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert _normalizer_lines(output) == [
+        "FAIL normalizer: provider codex cannot run: the "
+        f"`{config_module.CODEX_BINARY}` binary is not available"
+    ]
+    lines = output.strip().splitlines()
+    for prefix in ("PASS config:", "PASS git:", "PASS handoff validation:"):
+        assert any(line.startswith(prefix) for line in lines), prefix
+    assert lines[-1].startswith("Doctor FAIL: 1 error(s)")
+
+
+def test_doctor_fails_openai_normalizer_without_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="openai")
+    _stub_which(
+        monkeypatch, {"fake-codex", "fake-claude", config_module.CODEX_BINARY}
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert _normalizer_lines(output) == [
+        "FAIL normalizer: provider openai cannot run: OPENAI_API_KEY is not available"
+    ]
+    assert output.strip().splitlines()[-1].startswith("Doctor FAIL:")
+
+
+def test_doctor_fails_claude_normalizer_without_key_or_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert _normalizer_lines(output) == [
+        "FAIL normalizer: provider claude cannot run: neither ANTHROPIC_API_KEY "
+        f"nor the `{config_module.CLAUDE_BINARY}` binary is available"
+    ]
+
+
+def test_doctor_passes_gemini_normalizer_with_google_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="gemini")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    monkeypatch.setenv("GOOGLE_API_KEY", "doctor-test-key")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _normalizer_lines(output) == [
+        "PASS normalizer: provider gemini can use GOOGLE_API_KEY (auth not verified)"
+    ]
 
 
 def test_doctor_does_not_write_files(

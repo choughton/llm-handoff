@@ -152,18 +152,26 @@ def test_load_dispatch_config_rejects_unsupported_normalizer_provider(
     config_path = tmp_path / "dispatch_config.yaml"
     config_path.write_text(
         """normalizer:
-  provider: codex
+  provider: mistral
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="no next-agent normalizer adapter"):
+    with pytest.raises(ValueError, match="normalizer"):
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_normalizer_adapters_and_default_models_cover_the_same_providers() -> None:
+    assert config_module.NORMALIZER_PROVIDER_ADAPTERS == frozenset(
+        config_module.NORMALIZER_PROVIDER_MODELS
+    )
+    assert "codex" in config_module.NORMALIZER_PROVIDER_ADAPTERS
 
 
 @pytest.mark.parametrize(
     ("provider", "expected_model"),
     [
+        ("codex", config_module.CODEX_NORMALIZER_MODEL),
         ("gemini", config_module.GEMINI_NORMALIZER_MODEL),
         ("openai", config_module.OPENAI_NORMALIZER_MODEL),
     ],

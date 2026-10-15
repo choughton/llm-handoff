@@ -2,8 +2,10 @@
 
 The doctor command checks a checkout before the dispatcher runs: Git, the
 provider CLI binaries the configured roles launch, the container runtime
-Gemini CLI roles need for their sandbox, and the current handoff file. It does
-not start a dispatch, contact the network, or write any files.
+Gemini CLI roles need for their sandbox, whether the configured next-agent
+normalizer has an API key or CLI to run with, and the current handoff file. It
+does not start a dispatch, call a provider, contact the network, or write any
+files.
 
 `_command_available` and `_command_binary_name` live here so the supervisor's
 `--doctor` mode and this command share one PATH lookup, including the Windows
@@ -26,6 +28,8 @@ from llm_handoff.agent_providers.gemini import (
     gemini_sandbox_unavailable_message,
 )
 from llm_handoff.config import (
+    CLAUDE_BINARY,
+    CODEX_BINARY,
     DEFAULT_CONFIG_PATH,
     DEFAULT_HANDOFF_PATH,
     AgentConfig,
@@ -116,6 +120,7 @@ def run_doctor(
     if dispatch_config is not None:
         _check_role_binaries(dispatch_config, resolved_root, checks)
         _check_container_runtime(dispatch_config, checks)
+        _check_normalizer(dispatch_config, resolved_root, checks)
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
     else:
@@ -329,6 +334,73 @@ def _check_container_runtime(
                 gemini_sandbox_unavailable_message(role),
             )
         )
+
+
+_NORMALIZER_API_KEY_NAMES: dict[str, tuple[str, ...]] = {
+    "claude": ("ANTHROPIC_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "openai": ("OPENAI_API_KEY",),
+}
+# Providers whose normalizer can run through a local CLI login. The codex
+# normalizer is CLI-only, so it has no API key entry above.
+_NORMALIZER_CLI_BINARIES: dict[str, str] = {
+    "claude": CLAUDE_BINARY,
+    "codex": CODEX_BINARY,
+}
+
+
+def _check_normalizer(
+    dispatch_config: DispatchConfig,
+    repo_root: Path,
+    checks: list[DoctorCheck],
+) -> None:
+    """Report whether the configured normalizer has a key or CLI to run with.
+
+    The provider is never called, so auth is reported as not verified.
+    """
+    provider = dispatch_config.normalizer.provider
+    key_names = _NORMALIZER_API_KEY_NAMES.get(provider, ())
+    binary = _NORMALIZER_CLI_BINARIES.get(provider)
+
+    present_key = next((name for name in key_names if os.environ.get(name)), None)
+    if present_key is not None:
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                "normalizer",
+                f"provider {provider} can use {present_key} (auth not verified)",
+            )
+        )
+        return
+    if binary is not None and _role_binary_available(binary, repo_root):
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                "normalizer",
+                f"provider {provider} binary `{binary}` is on PATH "
+                "(auth not verified)",
+            )
+        )
+        return
+
+    missing = [*key_names]
+    if binary is not None:
+        missing.append(f"the `{binary}` binary")
+    checks.append(
+        DoctorCheck(
+            "FAIL",
+            "normalizer",
+            f"provider {provider} cannot run: {_describe_missing(missing)}",
+        )
+    )
+
+
+def _describe_missing(names: list[str]) -> str:
+    if len(names) == 1:
+        return f"{names[0]} is not available"
+    if len(names) == 2:
+        return f"neither {names[0]} nor {names[1]} is available"
+    return "none of " + ", ".join(names) + " is available"
 
 
 def _check_handoff(

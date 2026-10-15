@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added a `codex` next-agent normalizer provider. `normalizer.provider: codex`
+  runs `codex exec --sandbox read-only` on the user's Codex CLI login, so an
+  all-Codex setup does not need `OPENAI_API_KEY`; the adapter never passes
+  that key. It runs from a private temp directory rather than the checkout,
+  and a timeout terminates the whole Codex process tree. Launch failures and
+  unusable output fail closed. `llm-handoff
+  doctor` now prints a `normalizer` line that fails when the configured
+  normalizer has no usable binary or API key, without calling the provider.
+
 - Added an `llm-handoff doctor` subcommand that checks a checkout before a
   run: Git, each configured role's provider CLI binary, a container runtime
   when a Gemini CLI role runs sandboxed, and the current handoff file. It
