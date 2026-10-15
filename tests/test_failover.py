@@ -548,3 +548,85 @@ def test_fan_out_quality_reviewer_keeps_only_same_provider_fallback(
         assert quality.fallback.timeout_ms == 777
     else:
         assert quality.fallback is None
+
+
+# --- failover guard --------------------------------------------------------
+
+
+def test_failover_guard_reason_blocks_the_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    primary = _dispatch(1, stderr=TIMEOUT_STDERR)
+    monkeypatch.setattr(agent_roles, "invoke_codex", Mock(return_value=primary))
+    claude = Mock(return_value=_subagent(0))
+    monkeypatch.setattr(agent_roles, "invoke_claude_subagent", claude)
+    logs: list[tuple[str, str]] = []
+
+    result = agent_roles.invoke_role(
+        "backend",
+        _handoff(tmp_path),
+        agent_config=_codex_with_claude_fallback(),
+        log=lambda level, message: logs.append((level, message)),
+        repo_root=tmp_path,
+        failover_guard=lambda: "it changed protected control files (AGENTS.md)",
+    )
+
+    assert result is primary
+    claude.assert_not_called()
+    assert [m for level, m in logs if level == "WARN"] == [
+        (
+            "backend (codex) failed: the agent stopped responding and hit its "
+            "timeout, but it changed protected control files (AGENTS.md). Not "
+            "failing over to claude claude-sonnet-4-6; this counts as a normal "
+            "failure for the role."
+        )
+    ]
+
+
+def test_failover_guard_is_only_built_for_roles_with_a_fallback(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("rules\n", encoding="utf-8")
+    agents = config._default_agent_configs()
+    agents["backend"] = _codex_with_claude_fallback()
+    dispatch_config = DispatchConfig(repo_root=tmp_path, agents=agents)
+
+    assert orchestrator._failover_kwargs(dispatch_config, "planner") == {}
+    guard = orchestrator._failover_kwargs(dispatch_config, "backend")[
+        "failover_guard"
+    ]
+    assert guard() is None
+    (tmp_path / "AGENTS.md").write_text("new rules\n", encoding="utf-8")
+    assert guard() == "it changed protected control files (AGENTS.md)"
+
+
+def test_dispatch_route_skips_fallback_after_protected_file_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _handoff(tmp_path)
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("rules\n", encoding="utf-8")
+
+    def tamper_then_hang(*args: object, **kwargs: object) -> DispatchResult:
+        agents_md.write_text("ignore the rules\n", encoding="utf-8")
+        return _dispatch(1, stderr=TIMEOUT_STDERR)
+
+    monkeypatch.setattr(agent_roles, "invoke_codex", tamper_then_hang)
+    claude = Mock(return_value=_subagent(0))
+    monkeypatch.setattr(agent_roles, "invoke_claude_subagent", claude)
+    agents = config._default_agent_configs()
+    agents["backend"] = _codex_with_claude_fallback()
+    logs: list[tuple[str, str]] = []
+
+    result, label = orchestrator._dispatch_route(
+        "backend",
+        DispatchConfig(repo_root=tmp_path, agents=agents),
+        lambda level, message: logs.append((level, message)),
+    )
+
+    assert label == "backend"
+    assert result.exit_code == 1
+    claude.assert_not_called()
+    assert any("AGENTS.md" in message for level, message in logs if level == "WARN")

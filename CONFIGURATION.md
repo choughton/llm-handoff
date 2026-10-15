@@ -128,6 +128,17 @@ dispatches the auditor. The checks are deterministic and run against the
 | Working tree | `uncommitted_changes` | no new uncommitted changes exist outside the handoff file |
 | Verification | `verification_failed` | the `Verification command` exits 0 within the timeout |
 
+Path lists accept files, directories (`src/`), and globs, separated by commas,
+semicolons, or whitespace. A value that uses backticks or an exception phrase is
+read as prose: only backticked entries and bare words that look like paths
+(containing `/`, `.`, or a glob character) count. In `Files out of bounds`,
+entries after "other than", "except", "excluding", "apart from", or "but not"
+are dropped up to the next comma or semicolon, so "every file in `src/` other
+than `src/app.py`" puts `src/` out of bounds and leaves `src/app.py` alone.
+When a file matches both lists, the narrowest entry decides: an exact file
+beats a directory or glob, and a longer entry beats a shorter one. A tie goes
+to `Files out of bounds`.
+
 On failure the dispatcher does not dispatch the auditor. It rewrites
 `HANDOFF.md` with `status: verified_fail`, `producer: validator`, a quoted
 `reason` naming the failed checks, and a `## Dispatcher Verification` section
@@ -177,6 +188,21 @@ Files it did not stage stay in the working tree and fail the gate's worktree
 check, which sends the claim back to the implementer. The gate also fails a
 claim whose commits since dispatch change nothing but the handoff
 (`no_changes`). This mode requires `enforce_work_packet: true`.
+
+Files an implementer dispatch leaves uncommitted are the story's work, not
+operator edits. The dispatcher remembers their content hashes, and the next
+implementer dispatch for the same `story_id` (or, when the handoff has no
+`story_id`, the same `## Work Packet` text, which a bounce carries forward
+verbatim) treats any of them that are still unchanged as its own changes: the
+commit step can stage them, and the worktree check fails the claim if they stay
+uncommitted. A file edited in between, a different story, or a dispatcher
+restart puts a file back in the "already dirty before dispatch" group, which is
+never committed.
+
+The one-shot handoff repair follows the same rule: in dispatcher mode its
+prompt says to leave the handoff uncommitted, and if the repair commits the
+handoff anyway, the dispatcher undoes that commit with `git reset --soft`, the
+same way it does for the planner.
 
 Use it when an implementer runs in a sandbox that keeps `.git` read-only (Codex
 `workspace-write`), or simply to keep agents out of Git history.
@@ -650,10 +676,19 @@ work at all:
 | Timeout | The process ran past the role's `timeout_ms`, or its optional `idle_timeout_ms`, and was killed. |
 
 Any other non-zero exit is the agent's own failure: the fallback does not run
-and the failure counts toward `max_consecutive_failures` as before. The
-dispatcher also skips the fallback when the primary rewrote `HANDOFF.md`
-before it failed, because the role already handed off and the next cycle
-routes the new handoff.
+and the failure counts toward `max_consecutive_failures` as before.
+
+The dispatcher also skips the fallback when the primary failed after it:
+
+- rewrote `HANDOFF.md`, because running the role again could repeat a
+  finished handoff; or
+- changed a file under `protected_paths`, because the fallback would read the
+  changed file as instructions. The protected-file gate then handles the
+  change as usual.
+
+In both cases the run counts as a normal failure, exactly as it would without
+a fallback. The next cycle reads the new handoff unless that failure stops the
+loop, for example a sign-in failure or `max_consecutive_failures` reached.
 
 Rules and limits:
 

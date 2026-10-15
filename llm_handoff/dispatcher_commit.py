@@ -32,7 +32,7 @@ from llm_handoff.work_claim import (
     git_head,
     normalize_repo_path,
     parse_work_packet,
-    path_matches_entry,
+    path_is_in_scope,
 )
 
 
@@ -125,14 +125,7 @@ def commit_implementer_changes(
     # A file that was dirty before dispatch holds edits the implementer did not
     # make, so it is never staged; if the implementer changed it further, the
     # gate's worktree check reports it.
-    to_commit = tuple(
-        path
-        for path in candidates
-        if any(path_matches_entry(path, entry) for entry in packet.files_in_scope)
-        and not any(
-            path_matches_entry(path, entry) for entry in packet.files_out_of_bounds
-        )
-    )
+    to_commit = tuple(path for path in candidates if path_is_in_scope(path, packet))
     left_uncommitted = tuple(path for path in candidates if path not in to_commit)
     if not to_commit:
         return DispatcherCommitResult(
@@ -242,15 +235,19 @@ def git_position(repo_root: Path) -> GitPosition:
 
 
 def undo_planner_handoff_commits(
-    repo_root: Path, handoff_path: Path, before: GitPosition
+    repo_root: Path,
+    handoff_path: Path,
+    before: GitPosition,
+    *,
+    role: str = "planner",
 ) -> PlannerCommitCheck:
-    """Enforce that the planner leaves ``.git`` alone in dispatcher commit mode.
+    """Enforce that ``role`` leaves ``.git`` alone in dispatcher commit mode.
 
-    The planner prompt says not to commit, but prompts are advisory. When the
-    planner added commits that change only the handoff file, they are reset
-    with ``git reset --soft`` and the handoff is unstaged, so it stays in the
-    working tree uncommitted. Anything else (other files, a branch switch, or
-    rewritten history) is reported as an error for the operator.
+    The planner and handoff-repair prompts say not to commit, but prompts are
+    advisory. When the role added commits that change only the handoff file,
+    they are reset with ``git reset --soft`` and the handoff is unstaged, so it
+    stays in the working tree uncommitted. Anything else (other files, a branch
+    switch, or rewritten history) is reported as an error for the operator.
     """
 
     after = git_position(repo_root)
@@ -259,7 +256,7 @@ def undo_planner_handoff_commits(
     if after.branch != before.branch:
         return PlannerCommitCheck(
             error=(
-                f"the planner moved the checkout from `{before.branch or 'detached HEAD'}` "
+                f"the {role} moved the checkout from `{before.branch or 'detached HEAD'}` "
                 f"to `{after.branch or 'detached HEAD'}`"
             )
         )
@@ -267,7 +264,7 @@ def undo_planner_handoff_commits(
         repo_root, ["merge-base", "--is-ancestor", before.head, after.head]
     ).returncode != 0:
         return PlannerCommitCheck(
-            error=f"the planner rewrote history on `{after.branch}` (HEAD was {before.head[:12]})"
+            error=f"the {role} rewrote history on `{after.branch}` (HEAD was {before.head[:12]})"
         )
     commits = tuple(
         _git(repo_root, ["rev-list", "--reverse", f"{before.head}..{after.head}"])
@@ -281,14 +278,14 @@ def undo_planner_handoff_commits(
     if others:
         return PlannerCommitCheck(
             error=(
-                f"the planner committed {', '.join(c[:12] for c in commits)} with "
+                f"the {role} committed {', '.join(c[:12] for c in commits)} with "
                 f"files other than the handoff: {', '.join(others)}"
             )
         )
     reset = _git(repo_root, ["reset", "--soft", before.head])
     if reset.returncode != 0:
         return PlannerCommitCheck(
-            error=f"could not undo the planner's handoff commit: {_first_line(reset)}"
+            error=f"could not undo the {role}'s handoff commit: {_first_line(reset)}"
         )
     if changed:
         _git(repo_root, ["restore", "--staged", "--", handoff])

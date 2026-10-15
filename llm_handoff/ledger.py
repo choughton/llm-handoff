@@ -8,7 +8,7 @@ import re
 from typing import Callable, Literal
 
 from llm_handoff.agent_types import HandoffStatus
-from llm_handoff.agent_roles import invoke_support_role
+from llm_handoff.agent_roles import FailoverGuard, invoke_support_role
 from llm_handoff.config import DEFAULT_HANDOFF_PATH, DispatchConfig
 
 
@@ -220,6 +220,7 @@ def run_epic_close(
     *,
     config: DispatchConfig | None = None,
     log: LogFn | None = None,
+    failover_guard: FailoverGuard | None = None,
 ) -> EpicCloseResult:
     kwargs = {}
     prompt = LEDGER_UPDATER_PROMPT
@@ -231,6 +232,8 @@ def run_epic_close(
             "agent_config": config.agents["finalizer"],
             "repo_root": config.repo_root,
         }
+        if failover_guard is not None:
+            kwargs["failover_guard"] = failover_guard
     subagent_result = invoke_support_role(
         "ledger-updater",
         prompt,
