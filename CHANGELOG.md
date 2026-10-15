@@ -9,7 +9,8 @@ This project follows a simple pre-release changelog until the first public tag.
 - Added the optional `verification_allowed_prefixes` config key. When set,
   the work-claim gate runs a Work Packet Verification command only if its
   whitespace-split words start with a listed prefix's words and it contains
-  none of `&`, `|`, `;`, `<`, `>`, `$`, backtick, `(`, `)`, or a line break.
+  none of `&`, `|`, `;`, `<`, `>`, `$`, backtick, `(`, `)`, `%`, `!`, or a
+  line break (`%` and `!` block `cmd.exe` variable expansion on Windows).
   Otherwise no Verification command runs, the claim fails the new
   `verification_not_allowed` check, and the bounce routes to `planner`. An
   empty or whitespace-only entry, or an entry with one of those characters,

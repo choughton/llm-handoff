@@ -237,9 +237,11 @@ verification_allowed_prefixes: ["python -m pytest", "npm test"]
   case-sensitively. `python -m pytest` allows `python -m pytest tests -q` and
   rejects `python -m pytestx` and `python -c "..."`.
 - Once the list is set, a command containing any of `&`, `|`, `;`, `<`, `>`,
-  `$`, backtick, `(`, `)`, a carriage return, or a newline is rejected even if
-  its first words match, so an allowed prefix cannot be chained to a second
-  command. Entries are stripped of surrounding whitespace; an empty entry or
+  `$`, backtick, `(`, `)`, `%`, `!`, a carriage return, or a newline is
+  rejected even if its first words match, so an allowed prefix cannot be
+  chained to a second command. `%` and `!` are included because on Windows
+  the command runs through `cmd.exe`, which expands `%NAME%` (and `!NAME!`
+  with delayed expansion) before parsing. Entries are stripped of surrounding whitespace; an empty entry or
   an entry containing one of these characters fails config load.
 - The gate checks every Verification command in the packet before it runs
   any. If one is rejected, none runs, the claim fails

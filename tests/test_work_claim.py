@@ -2182,6 +2182,8 @@ def test_verification_command_allowed_accepts_any_listed_prefix() -> None:
         ("python -m pytest `whoami`", "'`'"),
         ("python -m pytest (x)", "'('"),
         ("python -m pytest x)", "')'"),
+        ("python -m pytest %CD%", "'%'"),
+        ("python -m pytest !CD!", "'!'"),
         ("python -m pytest\rwhoami", "'\\r'"),
         ("python -m pytest\nwhoami", "'\\n'"),
     ],

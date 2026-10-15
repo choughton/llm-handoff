@@ -76,8 +76,12 @@ WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS = 600
 # `verification_allowed_prefixes` entry) must not contain once the allowlist
 # is set. A prefix match alone would otherwise allow chaining, piping,
 # redirection, substitution, or a second line after an allowed prefix.
+# `%` and `!` cover cmd.exe variable and delayed expansion: on Windows the
+# command runs through cmd.exe, which expands `%NAME%` (and `!NAME!` when
+# delayed expansion is on) before parsing, so an expanded value could inject
+# `&` or another control character the literal scan never saw.
 VERIFICATION_FORBIDDEN_CHARS: frozenset[str] = frozenset(
-    {"&", "|", ";", "<", ">", "$", "`", "(", ")", "\r", "\n"}
+    {"&", "|", ";", "<", ">", "$", "`", "(", ")", "%", "!", "\r", "\n"}
 )
 SCANNER_TIMEOUT_MS = 300_000
 SCANNER_PLACEHOLDERS = frozenset(

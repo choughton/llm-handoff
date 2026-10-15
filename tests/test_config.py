@@ -278,7 +278,7 @@ def test_work_claim_env_passthrough_rejects_invalid_entries(
 
 def test_verification_forbidden_chars_is_exactly_the_shell_control_set() -> None:
     assert config_module.VERIFICATION_FORBIDDEN_CHARS == frozenset(
-        {"&", "|", ";", "<", ">", "$", "`", "(", ")", "\r", "\n"}
+        {"&", "|", ";", "<", ">", "$", "`", "(", ")", "%", "!", "\r", "\n"}
     )
     assert isinstance(config_module.VERIFICATION_FORBIDDEN_CHARS, frozenset)
 

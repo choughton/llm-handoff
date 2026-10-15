@@ -46,7 +46,9 @@ After the first tagged release, supported versions will be listed here.
   Set `verification_allowed_prefixes` to narrow what runs: with the list set,
   a Verification command runs only if its leading words match a listed
   prefix and it contains none of `&`, `|`, `;`, `<`, `>`, `$`, backtick, `(`,
-  `)`, or a line break; otherwise the gate runs nothing, fails the claim
+  `)`, `%`, `!`, or a line break (`%` and `!` block `cmd.exe` variable
+  expansion, which could otherwise inject a control character on Windows);
+  otherwise the gate runs nothing, fails the claim
   `verification_not_allowed`, and routes it to `planner`. A prefix such as
   `python -m pytest` still runs whatever tests and plugins the repository
   holds, so the allowlist limits the command line, not what the allowed tool

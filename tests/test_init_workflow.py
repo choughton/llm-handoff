@@ -554,6 +554,7 @@ def test_no_verification_command_leaves_the_allowlist_unset(
         ("pytest > out.txt", ">"),
         ("pytest $(whoami)", "$"),
         ("pytest `whoami`", "`"),
+        ("pytest %CD%", "%"),
         ("pytest\nwhoami", "\n"),
     ],
 )

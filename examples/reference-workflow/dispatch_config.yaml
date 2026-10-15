@@ -29,7 +29,7 @@ publish:
 # Optional Verification command allowlist (recommended). When set, the gate
 # runs a Work Packet Verification command only if its leading words match one
 # of these prefixes and it has no shell control character (& | ; < > $ ` ( )
-# or a line break); otherwise the claim fails verification_not_allowed and
+# % ! or a line break); otherwise the claim fails verification_not_allowed and
 # routes to planner. Empty runs any command, with a warning at every start and
 # in `llm-handoff doctor`. `llm-handoff init --verification-command` writes the
 # confirmed command here.

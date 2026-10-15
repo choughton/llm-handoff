@@ -220,7 +220,8 @@ for a `status: ready_for_review` handoff from `backend` or `frontend`:
 5. When `verification_allowed_prefixes` is set, check every `Verification
    command` before running any: each must start with the words of a listed
    prefix (whitespace-split, case-sensitive) and contain none of `&`, `|`,
-   `;`, `<`, `>`, `$`, backtick, `(`, `)`, or a line break. If one fails, no
+   `;`, `<`, `>`, `$`, backtick, `(`, `)`, `%`, `!`, or a line break (`%`
+   and `!` block `cmd.exe` variable expansion on Windows). If one fails, no
    command runs and the claim fails `verification_not_allowed`. With the list
    empty every command runs, and the dispatcher start and
    `llm-handoff doctor` warn. Then run the `Verification command` through the
