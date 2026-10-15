@@ -43,7 +43,6 @@ REQUIRED_TEMPLATE_FILES = (
 )
 
 COPIED_TEMPLATE_FILES = (
-    "docs/handoff/HANDOFF.md",
     "docs/handoff/HANDBOOK.md",
     "docs/handoff/README.md",
     "docs/handoff/SHARED_REPO_INIT_PROMPT.md",
