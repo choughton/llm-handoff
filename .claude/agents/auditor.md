@@ -101,3 +101,11 @@ APPROVED | APPROVED WITH NITS | BLOCKED
 ## Next Step
 - **<role>:** <exact next action>
 ```
+
+## Fan-Out Mode
+
+When the dispatcher runs the audit fan-out (`audit.reviewers` includes
+`security`), the dispatcher prompt replaces the output rules above. Do not edit
+`docs/handoff/HANDOFF.md`, do not commit, and return only the JSON verdict the
+prompt describes. The dispatcher writes the handoff from your verdict and the
+security reviewer's verdict.

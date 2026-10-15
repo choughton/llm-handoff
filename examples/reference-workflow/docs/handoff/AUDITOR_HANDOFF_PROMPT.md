@@ -60,3 +60,11 @@ Use `next_agent: finalizer` only for an approved epic close. Use `next_agent: us
 Emit a `## Verification Evidence` block for every `verified_pass` or
 `verified_fail` handoff. Do not claim `verified_pass` without that block.
 Reference the schema in `docs/handoff/README.md`; do not invent another format.
+
+## Fan-Out Mode
+
+When the dispatcher runs the audit fan-out (`audit.reviewers` includes
+`security`), the dispatcher prompt replaces the output rules above. Do not edit
+`docs/handoff/HANDOFF.md`, do not commit, and return only the JSON verdict the
+prompt describes. The dispatcher writes the handoff from your verdict and the
+security reviewer's verdict.

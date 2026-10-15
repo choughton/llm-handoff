@@ -190,6 +190,79 @@ Gemini-specific fields:
 - `use_api_key_env`: whether to preserve `GEMINI_API_KEY` for a Gemini-backed
   role. `GOOGLE_API_KEY` is always stripped by the current adapter.
 
+## Audit Fan-Out
+
+The auditor route can optionally run a security reviewer next to the normal
+quality reviewer. The feature is off by default; the defaults below keep the
+single-auditor path exactly as it was.
+
+```yaml
+audit:
+  reviewers: [quality]          # add `security` to enable the fan-out
+  security_provider: null       # claude | gemini | codex; null = auto
+  block_severity: high          # critical | high | medium | low
+  review_timeout_ms: 900000
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `audit.reviewers` | `[quality]` | Reviewers on the auditor route. Must include `quality`. Supported values are `quality` and `security`. |
+| `audit.security_provider` | auto | CLI used for the security reviewer. When unset, the first of `claude`, `codex`, `gemini` that differs from the implementer role's provider. |
+| `audit.block_severity` | `high` | A finding at or above this severity routes the story back to the implementer. |
+| `audit.review_timeout_ms` | `900000` | Process timeout for each reviewer in fan-out mode. |
+
+With `security` enabled, the auditor route works differently:
+
+- The dispatcher records `git rev-parse HEAD` before each backend or frontend
+  dispatch. The review scope is that commit through the handoff's `scope_sha`.
+  If the pre-dispatch commit is unknown, for example after a dispatcher
+  restart, the scope falls back to `scope_sha~1..scope_sha`.
+- The quality reviewer (the configured `auditor` agent) and the security
+  reviewer run concurrently on that range. Both are told not to write
+  `HANDOFF.md` and must return a JSON verdict.
+- The dispatcher, not a reviewer, rewrites `HANDOFF.md`. Any finding at or
+  above `block_severity`, or a `fail` verdict from either reviewer, produces
+  `status: verified_fail` routed back to the implementer with a
+  `## Security Findings` section. Otherwise the handoff routes where the
+  quality reviewer directed, with sub-threshold findings under
+  `## Security Notes`.
+- `verified_fail` results increment the story's bounce count, so the
+  three-fix circuit breaker still applies.
+- Each reviewer's raw stdout and stderr, exit code, elapsed time, and parsed
+  verdict are written under `logs/dispatch/audit/<timestamp>-cycle<N>/`. The
+  timestamp prefix keeps a restarted dispatcher from overwriting earlier
+  cycles.
+
+Security reviewer invocation by provider:
+
+- `claude`: `claude -p` in `dontAsk` permission mode with an allow-list of
+  read and `git diff`/`git show`/`git log` tools, edit tools denied, and
+  `--json-schema` structured output. The prompt asks for Claude Code's
+  built-in security review restricted to the given range.
+- `gemini`: `gemini -p "/security:analyze ..."` in `--approval-mode plan`.
+  The target repository's Gemini CLI must have the security extension
+  installed:
+
+  ```bash
+  gemini extensions install https://github.com/gemini-cli-extensions/security
+  ```
+
+  The dispatcher checks `gemini extensions list` first and fails closed with
+  `security_extension_missing:` when the extension is absent. The extension
+  documents its analyze command as interactive-first, so headless results
+  depend on the installed extension version.
+- `codex`: when `codex-security` is on `PATH` and `scope_sha` is the
+  checked-out `HEAD`, the dispatcher runs `codex-security scan . --diff <base>
+  --json`. Otherwise it runs `codex exec --sandbox read-only --json
+  --output-schema <schema>` with a security-review prompt. Codex Security was
+  in beta as of mid-2026 and may require plan-level or approved access; its
+  JSON output shape is parsed defensively, and an unrecognized severity is
+  treated as `high`.
+
+A missing, malformed, or timed-out reviewer verdict, and any reviewer that
+changes `HANDOFF.md`, fails the audit dispatch. The dispatcher restores the
+pre-review handoff and counts the cycle as a dispatch failure.
+
 ## Next-Agent Normalizer
 
 The dispatcher has an internal next-agent normalizer for non-canonical
