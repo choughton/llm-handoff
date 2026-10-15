@@ -196,6 +196,24 @@ def ensure_story_branch(
     return None
 
 
+def saved_story_base(repo_root: Path, story_id: str | None) -> str | None:
+    """Return the saved base commit of the story branch that is checked out.
+
+    The saved story state outlives a dispatcher restart, so the work-claim
+    gate can use it to recover where the story started. Returns None unless
+    the state belongs to ``story_id`` and its branch is the current branch.
+    """
+
+    if not story_id or not story_id.strip():
+        return None
+    state = _load_state(repo_root)
+    if state is None or state.story_id != story_id.strip():
+        return None
+    if _current_branch(repo_root) != state.branch:
+        return None
+    return state.base_sha
+
+
 def _refresh_work_packet(repo_root: Path, branch: str, assignment_content: str) -> None:
     """Keep the saved Work Packet in step with the latest assignment.
 
