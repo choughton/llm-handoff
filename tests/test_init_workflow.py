@@ -21,6 +21,80 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = REPO_ROOT / "examples" / "reference-workflow"
 
 
+@pytest.mark.parametrize("name", ["AGENTS.md", ".geminiignore"])
+def test_unmarked_template_migrates_without_duplication(tmp_path: Path, name: str) -> None:
+    path = tmp_path / name
+    original = (TEMPLATE_ROOT / name).read_bytes()
+    path.write_bytes(original)
+    preview = init_reference_workflow(tmp_path, dry_run=True)
+    assert Path(name) in preview.merged
+    assert path.read_bytes() == original
+    result = init_reference_workflow(tmp_path)
+    assert Path(name) in result.merged
+    begin, end = (
+        (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->")
+        if name == "AGENTS.md"
+        else (b"# llm-handoff:begin", b"# llm-handoff:end")
+    )
+    content = path.read_bytes()
+    body = original if name == "AGENTS.md" else original.replace(b"\r\n", b"\n")
+    assert content == begin + b"\n" + body.rstrip(b"\r\n") + b"\n" + end + b"\n"
+    second = init_reference_workflow(tmp_path)
+    assert second.copied == second.merged == second.conflicts == ()
+    assert path.read_bytes() == content
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize(
+    "name", ["AGENTS.md", ".gitignore", ".geminiignore", ".claude/settings.json"]
+)
+@pytest.mark.parametrize("dangling", [False, True])
+def test_linked_managed_file_conflicts(
+    tmp_path: Path, name: str, force: bool, dangling: bool
+) -> None:
+    root = tmp_path / "repo"
+    path = root / name
+    path.parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    original = b"{}" if name.endswith(".json") else b"private content\n"
+    if not dangling:
+        outside.write_bytes(original)
+    try:
+        path.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"Symlink creation unavailable: {exc}")
+    assert Path(name) in init_reference_workflow(root, dry_run=True, force=force).conflicts
+    with pytest.raises(InitConflictError) as error:
+        init_reference_workflow(root, force=force)
+    assert Path(name) in error.value.conflicts
+    assert path.is_symlink()
+    assert outside.exists() is not dangling
+    if not dangling:
+        assert outside.read_bytes() == original
+    assert not (root / "dispatch_config.yaml").exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_linked_settings_parent_conflicts(tmp_path: Path, force: bool) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    settings = outside / "settings.json"
+    settings.write_bytes(b"{}")
+    try:
+        (root / ".claude").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symlink creation unavailable: {exc}")
+    preview = init_reference_workflow(root, dry_run=True, force=force)
+    assert Path(".claude/settings.json") in preview.conflicts
+    with pytest.raises(InitConflictError):
+        init_reference_workflow(root, force=force)
+    assert settings.read_bytes() == b"{}"
+    assert list(outside.iterdir()) == [settings]
+    assert not (root / "AGENTS.md").exists()
+
+
 @pytest.mark.parametrize("force", [False, True])
 def test_managed_files_preserve_content_and_repeat(tmp_path: Path, force: bool) -> None:
     originals = {

@@ -233,6 +233,7 @@ def _marker_span(content: bytes, begin: bytes, end: bytes) -> tuple[int, int] | 
 
 def _merge_text(path: Path, existing: bytes, source: bytes) -> bytes:
     begin, end = _TEXT_MARKERS[path]
+    unmarked_template = existing == source
     if path == Path(".geminiignore"):
         source = _GEMINIIGNORE_BLOCK
     source_span = _marker_span(source, begin, end)
@@ -244,6 +245,8 @@ def _merge_text(path: Path, existing: bytes, source: bytes) -> bytes:
     span = _marker_span(existing, begin, end)
     if span:
         return existing[: span[0]] + block + existing[span[1] :]
+    if unmarked_template:
+        return block + b"\n"
     separator = b"\n" if existing and not existing.endswith(b"\n") else b""
     return existing + separator + block + b"\n"
 
@@ -287,6 +290,18 @@ def _merge_settings(existing: bytes, source: bytes) -> bytes:
     return (json.dumps(target, indent=2) + "\n").encode("utf-8")
 
 
+def _has_linked_destination(target_root: Path, relative_path: Path) -> bool:
+    """Reject links in the destination, including dangling links and parents."""
+    current = target_root
+    for part in relative_path.parts:
+        current = current / part
+        if current.is_symlink() or (
+            hasattr(current, "is_junction") and current.is_junction()
+        ):
+            return True
+    return False
+
+
 def init_reference_workflow(
     target_root: Path,
     *,
@@ -317,7 +332,7 @@ def init_reference_workflow(
         target_path = target_root / relative_path
         source = _source_bytes(relative_path, mapping)
         managed = relative_path in _TEXT_MARKERS or relative_path == _SETTINGS_PATH
-        if target_path.is_dir():
+        if _has_linked_destination(target_root, relative_path) or target_path.is_dir():
             conflicts.append(relative_path)
             continue
         if managed:

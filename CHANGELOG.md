@@ -9,6 +9,8 @@ This project follows a simple pre-release changelog until the first public tag.
 - `init` preserves user content through managed sections in AGENTS.md and
   ignore files, merges Claude settings, and reports merge actions separately.
   Added a .gitignore template for dispatcher logs and the lock file.
+  Identical unmarked templates migrate without duplication; linked destination
+  files and directories are rejected as conflicts, including with --force.
 
 - Isolated supervised child imports from the target working directory while preserving source-checkout launches.
 - Fixed Codex launches in target repositories by resolving the output schema from the installed package.
