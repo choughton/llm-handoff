@@ -53,27 +53,27 @@ agents:
   auditor:
     provider: claude
     binary: claude
-    model: claude-opus-4-7
+    model: claude-opus-5-5
     resume: false
     timeout_ms: 900000
 
   validator:
     provider: claude
     binary: claude
-    model: claude-haiku-4-5
+    model: claude-haiku-5-5
     resume: false
     timeout_ms: 900000
 
   finalizer:
     provider: claude
     binary: claude
-    model: claude-opus-4-7
+    model: claude-opus-5-5
     resume: false
     timeout_ms: 900000
 
 normalizer:
   provider: claude
-  model: claude-haiku-4-5
+  model: claude-haiku-5-5
   timeout_ms: 60000
   on_unknown: fail_closed
   # Registered normalizer providers: claude, gemini, openai.

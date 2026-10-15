@@ -66,7 +66,6 @@ def _normalize_next_agent_with_instructor(
         response_model=NormalizedNextAgent,
         max_retries=max_retries,
         max_tokens=64,
-        temperature=0,
         messages=[
             {
                 "role": "user",
