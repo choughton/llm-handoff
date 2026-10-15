@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -252,7 +255,7 @@ def test_codex_normalizer_runs_read_only_codex_exec_without_openai_key(
 ) -> None:
     fake_run = _FakeCodexRun()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(codex_normalizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(codex_normalizer, "_run_codex_process", fake_run)
 
     assert (
         handoff_normalizer.normalize_next_agent(
@@ -268,13 +271,20 @@ def test_codex_normalizer_runs_read_only_codex_exec_without_openai_key(
     assert len(fake_run.calls) == 1
     command, kwargs = fake_run.calls[0]
     assert command[1:4] == ["exec", "--sandbox", "read-only"]
+    assert "--skip-git-repo-check" in command
     assert command[command.index("--model") + 1] == "gpt-codex-test"
     # The raw value travels on stdin, never on the command line.
     assert command[-1] == "-"
     assert not any("implementer" in arg for arg in command)
     assert "implementer" in str(kwargs["input"])
     assert kwargs["timeout"] == pytest.approx(12.345)
-    assert kwargs["cwd"] == str(tmp_path)
+    # The turn runs from the private temp directory that holds the schema,
+    # never from the target repository.
+    cwd = Path(str(kwargs["cwd"]))
+    assert cwd != tmp_path
+    assert tmp_path not in cwd.parents
+    schema_path = Path(command[command.index("--output-schema") + 1])
+    assert schema_path.parent == cwd
     assert kwargs.get("shell", False) is False
     assert "OPENAI_API_KEY" not in kwargs["env"]
     assert fake_run.schema is not None
@@ -288,7 +298,7 @@ def test_codex_normalizer_withholds_openai_key_from_cli(
 ) -> None:
     fake_run = _FakeCodexRun(last_message='{"normalized": "auditor"}')
     monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-pass")
-    monkeypatch.setattr(codex_normalizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(codex_normalizer, "_run_codex_process", fake_run)
 
     assert (
         codex_normalizer.normalize_next_agent_with_codex(
@@ -310,7 +320,7 @@ def test_codex_normalizer_falls_back_to_stdout_when_last_message_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_run = _FakeCodexRun(last_message="", stdout='{"normalized": "planner"}\n')
-    monkeypatch.setattr(codex_normalizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(codex_normalizer, "_run_codex_process", fake_run)
 
     assert (
         codex_normalizer.normalize_next_agent_with_codex(
@@ -333,7 +343,7 @@ def test_codex_normalizer_raises_on_unusable_cli_result(
     fake_run: _FakeCodexRun,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_normalizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(codex_normalizer, "_run_codex_process", fake_run)
 
     with pytest.raises(RuntimeError, match="Codex CLI"):
         codex_normalizer.normalize_next_agent_with_codex(
@@ -345,7 +355,7 @@ def test_codex_normalizer_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> 
     def timeout_run(command: list[str], **kwargs: object) -> object:
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
-    monkeypatch.setattr(codex_normalizer.subprocess, "run", timeout_run)
+    monkeypatch.setattr(codex_normalizer, "_run_codex_process", timeout_run)
 
     with pytest.raises(RuntimeError, match="Codex CLI next_agent normalization failed"):
         codex_normalizer.normalize_next_agent_with_codex(
@@ -353,7 +363,74 @@ def test_codex_normalizer_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> 
         )
 
 
-_FREEFORM_HANDOFF = """---
+class _HangingPopen:
+    """A Popen stand-in whose first communicate() call times out."""
+
+    instances: list["_HangingPopen"] = []
+
+    def __init__(self, command: list[str], **kwargs: object) -> None:
+        self.command = command
+        self.kwargs = kwargs
+        self.communicate_timeouts: list[object] = []
+        self.returncode: int | None = None
+        _HangingPopen.instances.append(self)
+
+    def communicate(
+        self, input: str | None = None, timeout: float | None = None
+    ) -> tuple[str, str]:
+        self.communicate_timeouts.append(timeout)
+        if len(self.communicate_timeouts) == 1:
+            raise subprocess.TimeoutExpired(self.command, timeout or 0)
+        return "", ""
+
+
+def test_codex_process_timeout_kills_the_process_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    killed: list[object] = []
+    _HangingPopen.instances = []
+    monkeypatch.setattr(codex_normalizer.subprocess, "Popen", _HangingPopen)
+    monkeypatch.setattr(codex_normalizer, "_kill_process_tree", killed.append)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        codex_normalizer._run_codex_process(
+            ["codex", "exec", "-"],
+            cwd=".",
+            env={},
+            input="prompt",
+            timeout=2.5,
+        )
+
+    (process,) = _HangingPopen.instances
+    assert killed == [process]
+    assert process.kwargs.get("shell", False) is False
+    for key, value in codex_normalizer._process_group_popen_kwargs().items():
+        assert process.kwargs[key] == value
+    # The post-kill drain is bounded, so the call cannot outlive the deadline
+    # by more than the drain window.
+    assert process.communicate_timeouts == [
+        2.5,
+        codex_normalizer._POST_KILL_DRAIN_TIMEOUT_SECONDS,
+    ]
+
+
+def test_codex_process_timeout_bounds_a_real_hung_child() -> None:
+    script = "import sys, time; sys.stdin.read(); time.sleep(60)"
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        codex_normalizer._run_codex_process(
+            [sys.executable, "-c", script],
+            cwd=".",
+            env=dict(os.environ),
+            input="prompt",
+            timeout=0.5,
+        )
+
+    assert time.monotonic() - started < 30
+
+
+_FREEFORM_HANDOFF ="""---
 next_agent: the implementer please
 reason: "Work assigned."
 producer: planner
@@ -407,8 +484,8 @@ def test_codex_normalizer_unparseable_output_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        codex_normalizer.subprocess,
-        "run",
+        codex_normalizer,
+        "_run_codex_process",
         _FakeCodexRun(last_message="I think the backend role."),
     )
 

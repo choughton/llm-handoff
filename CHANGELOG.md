@@ -9,7 +9,9 @@ This project follows a simple pre-release changelog until the first public tag.
 - Added a `codex` next-agent normalizer provider. `normalizer.provider: codex`
   runs `codex exec --sandbox read-only` on the user's Codex CLI login, so an
   all-Codex setup does not need `OPENAI_API_KEY`; the adapter never passes
-  that key. Launch failures and unusable output fail closed. `llm-handoff
+  that key. It runs from a private temp directory rather than the checkout,
+  and a timeout terminates the whole Codex process tree. Launch failures and
+  unusable output fail closed. `llm-handoff
   doctor` now prints a `normalizer` line that fails when the configured
   normalizer has no usable binary or API key, without calling the provider.
 

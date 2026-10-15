@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -9,13 +8,22 @@ import tempfile
 from pydantic import ValidationError
 
 from llm_handoff import config
-from llm_handoff.agent_process import _resolve_command_binary, build_agent_env
+from llm_handoff.agent_process import (
+    _kill_process_tree,
+    _process_group_popen_kwargs,
+    _resolve_command_binary,
+    build_agent_env,
+)
 from llm_handoff.normalizer_models import NormalizedNextAgent, normalizer_prompt
 
 # Reading the prompt from stdin keeps the raw next_agent text from HANDOFF.md
 # off the command line, where a Windows `.cmd` shim would pass it through
 # cmd.exe argument parsing.
 _STDIN_PROMPT_ARG = "-"
+
+# After a timeout kills the process tree, wait at most this long for the
+# pipes to close before giving up on the remaining output.
+_POST_KILL_DRAIN_TIMEOUT_SECONDS = 1.0
 
 
 def normalize_next_agent_with_codex(
@@ -57,6 +65,8 @@ def build_codex_normalizer_command(
         "exec",
         "--sandbox",
         "read-only",
+        # The turn runs from a temp directory, which is not a Git checkout.
+        "--skip-git-repo-check",
         "-c",
         f'web_search="{config.CODEX_WEB_SEARCH_MODE}"',
         "--model",
@@ -76,11 +86,12 @@ def _normalize_next_agent_with_codex_cli(
     timeout_ms: int,
     repo_root: Path | None = None,
 ) -> str:
-    # Launch inside the target repo so project-level Codex settings come from
-    # the repo being dispatched, not the dispatcher's own checkout.
-    cwd = str(repo_root) if repo_root is not None else os.getcwd()
-    # The schema and last-message files live in a private temp directory so
-    # the normalizer never writes into the target repository.
+    # The normalizer needs no repository access. The read-only sandbox only
+    # blocks writes, so the turn runs from a private temp directory instead of
+    # the target repo: agent-authored next_agent text must not be able to
+    # steer Codex into reading checkout files. The same directory holds the
+    # schema and last-message files, so nothing is written into the repo.
+    del repo_root
     with tempfile.TemporaryDirectory(prefix="llm-handoff-normalizer-") as tmp:
         tmp_dir = Path(tmp)
         schema_path = tmp_dir / "normalizer.schema.json"
@@ -96,15 +107,11 @@ def _normalize_next_agent_with_codex_cli(
             last_message_path=last_message_path,
         )
         try:
-            completed = subprocess.run(
+            completed = _run_codex_process(
                 command,
-                cwd=cwd,
+                cwd=str(tmp_dir),
                 env=_codex_cli_login_env(),
                 input=normalizer_prompt(raw_value),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 timeout=timeout_ms / 1000,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -124,6 +131,53 @@ def _normalize_next_agent_with_codex_cli(
         last_message = _read_text(last_message_path)
 
     return _parse_codex_cli_normalization_output(last_message or completed.stdout)
+
+
+def _run_codex_process(
+    command: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    input: str,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``command`` with ``input`` on stdin, bounded by ``timeout`` seconds.
+
+    ``subprocess.run`` kills only the immediate child on a timeout and then
+    waits for the pipes to close, so a Codex tool process or the inner
+    ``node`` behind a Windows ``.cmd`` shim could outlive the deadline. This
+    starts the child in its own process group and, on a timeout, terminates
+    the whole tree with the same helper the role adapters use.
+    """
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **_process_group_popen_kwargs(),
+    )
+    try:
+        stdout, stderr = process.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        try:
+            process.communicate(timeout=_POST_KILL_DRAIN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # A descendant that escaped the tree kill still holds the pipes;
+            # do not wait on it past the configured timeout.
+            pass
+        raise
+    except BaseException:
+        _kill_process_tree(process)
+        raise
+    return subprocess.CompletedProcess(
+        command, process.returncode, stdout=stdout, stderr=stderr
+    )
 
 
 def _parse_codex_cli_normalization_output(output: str) -> str:

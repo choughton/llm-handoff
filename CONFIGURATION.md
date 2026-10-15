@@ -923,12 +923,19 @@ normalizer:
   # model defaults to gpt-5.4-mini; set it to a model your Codex login can use.
 ```
 
-The `codex` adapter runs `codex exec --sandbox read-only` from the target
-repository with the arguments passed as a list and no shell. The prompt is
-sent on stdin, and the run is limited to `timeout_ms`. It never reads or passes
-`OPENAI_API_KEY`, even when that variable is set; use `provider: openai` for
-API-key auth. The JSON schema and last-message files go to a temporary
-directory outside the repository. A missing `codex` binary, a launch error, a
+The `codex` adapter runs `codex exec --sandbox read-only --skip-git-repo-check`
+with the arguments passed as a list and no shell. The prompt is sent on stdin.
+It never reads or passes `OPENAI_API_KEY`, even when that variable is set; use
+`provider: openai` for API-key auth. The normalizer needs no repository
+access, and the read-only sandbox still permits file reads, so the run starts
+from a private temporary directory outside the repository instead of the
+checkout. That directory also holds the JSON schema and last-message files.
+Project-level `.codex/` settings in the target repository therefore do not
+apply to the normalizer. The sandbox does not block reads by absolute path, so
+this limits, but does not remove, what an injected `next_agent` value could
+ask Codex to read. `timeout_ms` bounds the whole process tree: on a timeout
+the dispatcher terminates Codex and its descendants, including the process
+behind a Windows `.cmd` shim. A missing `codex` binary, a launch error, a
 timeout, a nonzero exit, or output that is not a valid role fails closed and
 leaves the handoff unchanged.
 
