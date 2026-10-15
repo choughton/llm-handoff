@@ -13,7 +13,7 @@ producer: user
 ## Current State
 
 llm-handoff is now developed with its own dispatch loop. A pinned dispatcher
-(a separate clone, detached at `4e6c352`) runs against this checkout on branch
+(a separate clone, detached at `352927d`) runs against this checkout on branch
 `selfhost/phase-1`, with every role on Claude, the work-claim gate on, and the
 security reviewer on.
 
