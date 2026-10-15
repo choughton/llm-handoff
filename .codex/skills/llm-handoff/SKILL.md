@@ -72,6 +72,31 @@ Run `git rev-parse HEAD` and use the concrete 7-40 character hex SHA. Do not wri
 Include the `## Verification Evidence` block from `docs/handoff/README.md`.
 Do not use stale command output from a previous session.
 
+## Git Inside The Sandbox
+
+Codex keeps `.git` read-only inside its sandbox. The repository's
+`.codex/rules/llm-handoff.rules` lets exactly two command forms run outside it:
+
+- Stage with `git add -- <path> [<path> ...]`, listing only files in the Work
+  Packet's `Files in scope`.
+- Commit with `git commit --no-verify -m "<message>"`.
+
+Type them exactly that way: no `-c` options, no `-C <dir>`, and no other
+prefix, or the rule does not match and the command fails inside the sandbox.
+`git commit --amend` and `git push` are forbidden.
+
+Read-only git commands (`status`, `diff`, `log`, `rev-parse`) stay in the
+sandbox. On Windows the sandbox runs as a separate account, so add
+`-c safe.directory=<repository root>` to those if git reports dubious
+ownership.
+
+If a test needs temporary directories the sandbox cannot create (for example
+pytest's `tmp_path` on Windows), do not move them into the repository. Run
+what you can, record the sandbox error under `Unresolved concerns`, and hand
+back as `ready_for_review` once the change is committed: the dispatcher's
+work-claim gate re-runs the Work Packet's Verification command outside the
+sandbox before any audit.
+
 ## Handling Audit Feedback
 
 Before acting on auditor feedback, verify the finding against the changed files,
@@ -84,7 +109,7 @@ contract, document the contradiction and route with
 
 - Verify the requested backend scope is complete.
 - Run the focused tests or checks that cover the change.
-- Commit the backend change if the repository protocol asks agents to commit locally.
+- Commit the backend change with the exact `git add` and `git commit --no-verify` forms above if the repository protocol asks agents to commit locally.
 - Rewrite `docs/handoff/HANDOFF.md` with concrete files changed, checks run, blockers if any, and the next role.
 - Preserve the assignment's `## Work Packet` section in the handback; the auditor and the dispatcher's work-claim gate read it.
-- Leave `git push` to the repository's authorization rules.
+- Never run `git push`; remote pushes are the operator's call.

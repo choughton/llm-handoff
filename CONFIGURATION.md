@@ -329,9 +329,27 @@ list is a guardrail, not a sandbox: `Bash(python:*)` still lets the agent run
 arbitrary Python. `git push` is not on the list.
 
 Codex keeps its `workspace-write` sandbox: writes are limited to the
-workspace and network access is off by default. The Codex native Windows
-sandbox is experimental; if Codex cannot start or cannot commit in your
-setup, check its sandbox settings before reaching for `unsafe_bypass`.
+workspace and network access is off by default. The sandbox always keeps
+`.git` read-only, even when `.git` is listed under
+`sandbox_workspace_write.writable_roots`, so a sandboxed role cannot commit on
+its own. The reference workflow ships `.codex/rules/llm-handoff.rules`, a
+Codex rules file (an experimental Codex feature) that lets exactly
+`git add ...` and `git commit --no-verify ...` run outside the sandbox and
+forbids `git push` and `git commit --amend`. Commits skip hooks because hooks
+would otherwise run outside the sandbox. Everything else the role runs stays
+sandboxed.
+
+Codex applies the strictest matching rule, but a project rule cannot override
+an `allow` rule in `~/.codex/rules/` that matches the full shell command (for
+example a remembered `pwsh -Command "git push origin main"` approval). Review
+your user-level rules before relying on the push ban.
+
+On Windows the sandbox runs commands as a separate local account. Read-only git
+commands may need `-c safe.directory=<repository root>`, and pytest's per-user
+temp directory is not usable from the sandbox; the work-claim gate re-runs the
+Verification command outside the sandbox. If Codex still cannot start or
+commit in your setup, check its sandbox settings before reaching for
+`unsafe_bypass`.
 
 Gemini CLI keeps `--yolo` so tool calls do not prompt, but runs inside its
 container sandbox. That needs Docker or Podman on `PATH` (macOS can use

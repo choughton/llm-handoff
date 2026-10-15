@@ -1,0 +1,40 @@
+# llm-handoff rules for Codex roles.
+#
+# Codex keeps .git read-only inside its workspace-write sandbox, so a
+# sandboxed role cannot stage or commit. These rules let exactly two command
+# forms run outside the sandbox; everything else stays sandboxed.
+#
+# Commits must use --no-verify: git hooks would otherwise run outside the
+# sandbox, driven by hook configuration the agent can edit. The work-claim
+# gate and the audit do the checking instead.
+#
+# When several rules match, the strictest decision wins
+# (forbidden > prompt > allow).
+
+prefix_rule(
+    pattern = ["git", "add"],
+    decision = "allow",
+    justification = "Stage the assigned files; .git is read-only in the sandbox.",
+    match = ["git add -- tests/test_example.py"],
+)
+
+prefix_rule(
+    pattern = ["git", "commit", "--no-verify"],
+    decision = "allow",
+    justification = "Commit the assigned change without running repository hooks.",
+    match = ["git commit --no-verify -m 'Fix the example'"],
+    not_match = ["git commit -m 'Fix the example'"],
+)
+
+prefix_rule(
+    pattern = ["git", "commit", "--no-verify", "--amend"],
+    decision = "forbidden",
+    justification = "Do not rewrite commits the dispatcher already recorded.",
+)
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "forbidden",
+    justification = "llm-handoff never pushes; remote pushes are the operator's call.",
+    match = ["git push origin main"],
+)

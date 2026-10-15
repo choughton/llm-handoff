@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from llm_handoff.config import load_dispatch_config
 from llm_handoff.router import parse_handoff_frontmatter, route
@@ -26,6 +27,7 @@ REQUIRED_TEMPLATE_FILES = (
     "docs/handoff/FINALIZER_HANDOFF_PROMPT.md",
     ".codex/skills/llm-handoff/SKILL.md",
     ".codex/skills/llm-handoff/agents/openai.yaml",
+    ".codex/rules/llm-handoff.rules",
     ".gemini/agents/planner.md",
     ".gemini/agents/frontend.md",
     ".gemini/policies/planner_guardrails.toml",
@@ -53,6 +55,7 @@ COPIED_TEMPLATE_FILES = (
     "docs/handoff/FINALIZER_HANDOFF_PROMPT.md",
     ".codex/skills/llm-handoff/SKILL.md",
     ".codex/skills/llm-handoff/agents/openai.yaml",
+    ".codex/rules/llm-handoff.rules",
     ".gemini/agents/planner.md",
     ".gemini/agents/frontend.md",
     ".gemini/policies/planner_guardrails.toml",
@@ -159,3 +162,19 @@ def test_claude_role_agents_do_not_point_at_dispatcher_docs() -> None:
         )
         assert "CONFIGURATION.md" not in content
         assert "docs/ARCHITECTURE.md" not in content
+
+
+def test_codex_rules_let_only_staging_and_hookless_commits_out_of_the_sandbox() -> None:
+    rules = (REFERENCE_WORKFLOW / ".codex" / "rules" / "llm-handoff.rules").read_text(
+        encoding="utf-8"
+    )
+    allowed = re.findall(
+        r'pattern = (\[[^\]]*\]),\s*decision = "allow"', rules
+    )
+    forbidden = re.findall(
+        r'pattern = (\[[^\]]*\]),\s*decision = "forbidden"', rules
+    )
+
+    assert allowed == ['["git", "add"]', '["git", "commit", "--no-verify"]']
+    assert '["git", "push"]' in forbidden
+    assert '["git", "commit", "--no-verify", "--amend"]' in forbidden

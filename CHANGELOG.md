@@ -70,6 +70,11 @@ This project follows a simple pre-release changelog until the first public tag.
 - Agent launches now keep the account name (`USERNAME`, `USER`, `LOGNAME`).
   Without it, pytest in an agent run fell back to a shared
   `pytest-of-unknown` temp directory that another account could own.
+- The reference workflow ships `.codex/rules/llm-handoff.rules`, which lets a
+  sandboxed Codex role run `git add` and `git commit --no-verify` outside the
+  sandbox (Codex keeps `.git` read-only inside it) and forbids `git push` and
+  `git commit --amend`. The Codex backend skill documents the exact command
+  forms, so the backend no longer needs `unsafe_bypass` to commit.
 
 ## 0.0.0
 
