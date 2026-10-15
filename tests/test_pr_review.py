@@ -252,3 +252,64 @@ def test_parse_review_responses_reads_numbered_findings() -> None:
         3: "Left as is: out of scope.",
     }
     assert parse_review_responses("no section") == {}
+
+
+USAGE_LIMIT_COMMENT = {
+    "user": {"login": BOT},
+    "created_at": "2026-10-15T09:04:12Z",
+    "body": "You have reached your Codex usage limits for code reviews. You can "
+    "see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/"
+    "cloud/settings/usage).",
+}
+
+
+def test_a_failed_review_after_a_usage_limit_says_so() -> None:
+    # The shapes Codex posted when it ran out of review usage: a failed
+    # marker that still claims unresolved findings, a Failed table row, and a
+    # separate usage-limit comment.
+    state = read(
+        issue_comments=[
+            summary(
+                HEAD[:7],
+                status="\u26a0\ufe0f **Failed**",
+                marker=state_marker(HEAD, "failed", unresolved=True),
+            ),
+            USAGE_LIMIT_COMMENT,
+        ]
+    )
+
+    assert state.failed is True
+    assert state.findings == ()
+    assert "usage limit" in state.detail
+
+
+def test_a_usage_limit_comment_ends_the_wait_before_the_summary_fails() -> None:
+    state = read(
+        issue_comments=[
+            summary(HEAD[:7], status="\U0001f504 **Running**", marker=state_marker(HEAD, "running")),
+            USAGE_LIMIT_COMMENT,
+        ]
+    )
+
+    assert state.failed is True
+    assert "usage limit" in state.detail
+
+
+def test_an_old_usage_limit_comment_does_not_fail_a_new_review() -> None:
+    old = {**USAGE_LIMIT_COMMENT, "created_at": "2026-10-15T05:00:00Z"}
+    impostor = {**USAGE_LIMIT_COMMENT, "user": {"login": "someone"}}
+
+    state = read(issue_comments=[summary(HEAD[:7]), old, impostor])
+
+    assert state.failed is False
+    assert state.completed is True
+
+
+def test_a_usage_limit_comment_without_a_review_of_this_head_is_ignored() -> None:
+    # A late usage-limit comment from a review of an earlier commit must not
+    # fail the new head, which Codex may not have started reviewing yet.
+    for summaries in ([], [summary(OLD[:7], status="**Failed**")]):
+        state = read(issue_comments=[*summaries, USAGE_LIMIT_COMMENT])
+
+        assert state.failed is False
+        assert state.completed is False
