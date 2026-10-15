@@ -615,6 +615,9 @@ class DispatchConfig(BaseModel):
     work_packet_verification_timeout_seconds: int = (
         WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS
     )
+    # Extra environment variable names the Verification command and scanners
+    # receive on top of the allowlisted base and platform variables.
+    work_claim_env_passthrough: tuple[str, ...] = ()
     scanners: tuple[ScannerConfig, ...] = ()
     protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
     commit_mode: CommitMode = "agent"
@@ -736,6 +739,34 @@ class DispatchConfig(BaseModel):
                 "work_packet_verification_timeout_seconds must be at least 1."
             )
         return value
+
+    @field_validator("work_claim_env_passthrough", mode="after")
+    @classmethod
+    def _validate_work_claim_env_passthrough(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for entry in value:
+            name = entry.strip()
+            if not name:
+                raise ValueError(
+                    "work_claim_env_passthrough entries must be non-empty "
+                    "environment variable names."
+                )
+            if not _ENV_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    f"work_claim_env_passthrough entry `{entry}` is not a valid "
+                    "environment variable name."
+                )
+            if name.upper() in VENDOR_API_KEY_ENV_NAMES:
+                raise ValueError(
+                    "work_claim_env_passthrough must not name the vendor API key "
+                    f"`{name}`; Verification commands and scanners never receive "
+                    "vendor API keys."
+                )
+            normalized.append(name)
+        return tuple(normalized)
 
     @field_validator("scanners", mode="after")
     @classmethod

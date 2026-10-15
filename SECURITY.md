@@ -34,20 +34,24 @@ After the first tagged release, supported versions will be listed here.
 - The work-claim gate (`enforce_work_packet`) is on by default. It makes the
   dispatcher itself run the planner's Work Packet `Verification command`
   through the shell in the target repository. This is execution of
-  agent-written text, and it currently runs with the dispatcher's full
-  inherited environment, not the allowlisted environment provider CLIs get
-  (see [Credential inheritance](#credential-inheritance)). A planner steered by
-  prompt injection could write a verification command that reads secrets the
-  provider CLIs never see. Review the handoff files of a repository before you
-  run the dispatcher there, and do not start the dispatcher from a shell that
-  holds credentials it does not need. Turning the gate off needs
+  agent-written text. The command gets an allowlisted environment: the base
+  and platform process variables provider CLIs also get, plus any names listed
+  in `work_claim_env_passthrough`, and never a vendor API key (see
+  [Credential inheritance](#credential-inheritance)). A planner steered by
+  prompt injection can still write a verification command that runs arbitrary
+  code with your user account, including reading credential files or using a
+  credential manager outside the environment. Review the handoff files of a
+  repository before you run the dispatcher there, and do not start the
+  dispatcher from a shell or account that holds credentials it does not need.
+  Turning the gate off needs
   `enforce_work_packet: false` plus a non-empty `work_packet_opt_out_reason`,
   which every dispatcher start and `llm-handoff doctor` report as a warning.
 - `scanners` entries in `dispatch_config.yaml` are operator-authored commands,
   so they are trusted operator input rather than agent-written text. The
   dispatcher does not sandbox scanners any more than it sandboxes agents; a
-  scanner runs with the dispatcher's permissions in the target repository.
-  Review the config the same way you review any script the repository runs.
+  scanner runs with the dispatcher's permissions in the target repository,
+  with the same allowlisted environment as the Verification command. Review
+  the config the same way you review any script the repository runs.
 - If `.dispatch.lock` exists, confirm no other dispatcher is active before
   removing it manually.
 
@@ -85,8 +89,12 @@ They catch mistakes and simple injections, not a determined attacker.
 Each provider CLI gets an allowlisted environment, so `GITHUB_TOKEN`, cloud
 credentials, and other secrets in the dispatcher's shell are not passed on.
 Vendor API keys only reach their own provider, and only when a role opts in.
-The work-claim gate's Verification command and configured `scanners` are the
-exception: the dispatcher runs them itself with its own full environment.
+The work-claim gate's Verification command and configured `scanners` run in
+the dispatcher itself, also with an allowlisted environment: the base and
+platform process variables plus the names listed in
+`work_claim_env_passthrough`. Vendor API keys and provider-owned variables
+(`CLAUDE_`, `CODEX_`, `GEMINI_`) never reach them. The Verification command
+is still agent-written shell text that runs as your user account.
 
 This does not cover credentials that live outside environment variables. The
 agents run as your user account. A Git credential manager, an SSH agent, an

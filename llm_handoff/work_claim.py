@@ -39,12 +39,22 @@ import shlex
 import shutil
 import subprocess
 import time
-from typing import Literal
+from typing import Literal, Mapping
 
 import yaml
 
-from llm_handoff.agent_process import _kill_process_tree, _process_group_popen_kwargs
-from llm_handoff.config import ScannerConfig, scanner_command_placeholders
+from llm_handoff.agent_process import (
+    BASE_AGENT_ENV_NAMES,
+    PLATFORM_AGENT_ENV_NAMES,
+    PROVIDER_AGENT_ENV_PREFIXES,
+    _kill_process_tree,
+    _process_group_popen_kwargs,
+)
+from llm_handoff.config import (
+    VENDOR_API_KEY_ENV_NAMES,
+    ScannerConfig,
+    scanner_command_placeholders,
+)
 from llm_handoff.router import (
     HandoffFrontmatterError,
     HandoffRouting,
@@ -862,24 +872,72 @@ def evidence_sha_token(value: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+_WORK_CLAIM_ENV_NAMES = BASE_AGENT_ENV_NAMES | PLATFORM_AGENT_ENV_NAMES
+# Provider-owned auth and config prefixes never reach gate shell commands,
+# even when an operator lists such a name as a passthrough.
+_WORK_CLAIM_BLOCKED_ENV_PREFIXES = tuple(
+    sorted(
+        {
+            prefix
+            for prefixes in PROVIDER_AGENT_ENV_PREFIXES.values()
+            for prefix in prefixes
+        }
+    )
+)
+
+
+def build_work_claim_env(
+    passthrough: tuple[str, ...] = (),
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return the environment for a work-claim gate shell command.
+
+    Only the base and platform process-plumbing names from
+    ``agent_process`` plus the ``passthrough`` names are kept. Names are
+    compared case-insensitively, as Windows environment names are, and the
+    original key spelling is preserved. Vendor API keys and provider-owned
+    variables (``CLAUDE_``, ``CODEX_``, ``GEMINI_``) are never passed, even
+    when listed in ``passthrough``.
+    """
+
+    source = os.environ if environ is None else environ
+    allowed_names = _WORK_CLAIM_ENV_NAMES | {name.upper() for name in passthrough}
+    env: dict[str, str] = {}
+    for key, value in source.items():
+        upper_key = key.upper()
+        if upper_key in VENDOR_API_KEY_ENV_NAMES:
+            continue
+        if upper_key.startswith(_WORK_CLAIM_BLOCKED_ENV_PREFIXES):
+            continue
+        if upper_key in allowed_names:
+            env[key] = value
+    return env
+
+
 def run_shell_command(
     command: str,
     *,
     cwd: Path,
     timeout_seconds: float,
+    env_passthrough: tuple[str, ...] = (),
 ) -> CommandRun:
     """Run one command through the shell in ``cwd`` with a bounded timeout.
 
     The Work Packet verification command is agent-written text; scanner
     commands are operator-authored config. Either way the command runs in the
     target repository with the dispatcher's own permissions, bounded by
-    ``timeout_seconds``, and its process tree is killed on timeout.
+    ``timeout_seconds``, and its process tree is killed on timeout. The
+    command gets the allowlisted environment from
+    :func:`build_work_claim_env`, not the dispatcher's full environment;
+    ``env_passthrough`` names extra variables to pass through.
     """
 
     started = time.monotonic()
     popen_kwargs: dict[str, object] = {
         "shell": True,
         "cwd": str(cwd),
+        "env": build_work_claim_env(env_passthrough),
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -986,11 +1044,14 @@ def run_scanner(
     context: ScannerContext | None,
     *,
     runner: Callable[..., CommandRun] = run_shell_command,
+    env_passthrough: tuple[str, ...] = (),
 ) -> tuple[ScannerRun, str | None]:
     """Run one configured scanner and return its record plus any gate error.
 
     ``context`` is ``None`` when the scope checks did not pass; the scanner is
-    then recorded as skipped. A non-zero exit is ``scanner_failed:<name>``, a
+    then recorded as skipped. ``env_passthrough`` is handed to ``runner`` so
+    the scanner gets the allowlisted gate environment plus those names. A
+    non-zero exit is ``scanner_failed:<name>``, a
     timeout is ``scanner_timeout:<name>``, and a missing executable is
     ``scanner_missing:<name>`` when the scanner is required or a skip when it
     is optional.
@@ -1047,6 +1108,7 @@ def run_scanner(
         rendered.command,
         cwd=context.repo_root,
         timeout_seconds=scanner.timeout_ms / 1000,
+        env_passthrough=env_passthrough,
     )
     detail = f"`{run.command}` {run.describe_outcome()}."
     if run.timed_out:
@@ -1177,6 +1239,7 @@ def verify_work_claim(
     require_new_commit: bool = False,
     dispatcher_commit_mode: bool = False,
     story_base_sha: str | None = None,
+    env_passthrough: tuple[str, ...] = (),
 ) -> WorkClaimResult:
     """Check an implementer's ``ready_for_review`` claim against the packet.
 
@@ -1191,6 +1254,9 @@ def verify_work_claim(
     ``story_base_sha`` is HEAD before the story's first dispatch; with it,
     ``no_changes`` counts commits from earlier dispatches of the same story, so
     a retry that only reverts a forbidden file can pass.
+    ``env_passthrough`` names extra environment variables that the scanners
+    and the verification command receive on top of the allowlisted gate
+    environment (see :func:`build_work_claim_env`).
     """
 
     handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
@@ -1363,7 +1429,11 @@ def verify_work_claim(
             else None
         )
         for scanner in scanners:
-            scanner_run, scanner_error = run_scanner(scanner, context)
+            scanner_run, scanner_error = run_scanner(
+                scanner,
+                context,
+                env_passthrough=env_passthrough,
+            )
             scanner_runs.append(scanner_run)
             checks.append(
                 WorkClaimCheck(
@@ -1391,6 +1461,7 @@ def verify_work_claim(
             repo_root=repo_root,
             timeout_seconds=verification_timeout_seconds,
             runs=verification_runs,
+            env_passthrough=env_passthrough,
         )
         checks.append(verification_check)
         if verification_error is not None:
@@ -1696,12 +1767,14 @@ def _verification_check(
     repo_root: Path,
     timeout_seconds: int,
     runs: list[CommandRun],
+    env_passthrough: tuple[str, ...] = (),
 ) -> tuple[WorkClaimCheck, str | None]:
     for command in packet.verification_commands:
         run = run_shell_command(
             command,
             cwd=repo_root,
             timeout_seconds=timeout_seconds,
+            env_passthrough=env_passthrough,
         )
         runs.append(run)
         if not run.succeeded:
@@ -2023,6 +2096,7 @@ __all__ = [
     "bounce_reason",
     "bounce_route_for",
     "build_bounce_handoff",
+    "build_work_claim_env",
     "passed_verification_section",
     "record_passed_verification",
     "capture_implementer_leftovers",

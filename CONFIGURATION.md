@@ -120,6 +120,7 @@ work_packet_verification_timeout_seconds: 600
 | `enforce_work_packet` | `true` | Runs the work-claim gate. Setting it to `false` needs `work_packet_opt_out_reason`. |
 | `work_packet_opt_out_reason` | unset | Required, non-empty text when `enforce_work_packet` is `false`; rejected while the gate is on. |
 | `work_packet_verification_timeout_seconds` | `600` | Timeout in seconds for the Verification command. |
+| `work_claim_env_passthrough` | `[]` | Extra environment variable names the Verification command and scanners receive. They always get only `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`, `USERNAME`, `USER`, `LOGNAME`, `COMSPEC`, `PATHEXT`, `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, and `SHELL`, plus these names. Names match case-insensitively. Vendor API keys are rejected at config load; `CLAUDE_*`, `CODEX_*`, and `GEMINI_*` names are never passed. |
 
 To turn the gate off, set `enforce_work_packet: false` and say why:
 
@@ -200,6 +201,24 @@ the way you review any agent-written instruction. The command is bounded by
 `work_packet_verification_timeout_seconds`; its process tree is killed on
 timeout, and the command, exit code, and a bounded output tail are written to
 the dispatch log.
+
+The Verification command and every scanner run with an allowlisted
+environment, not the dispatcher's own environment: the base and platform
+variables listed for `work_claim_env_passthrough` above, plus the names that
+key lists. Tokens such as `GITHUB_TOKEN` in the shell that started the
+dispatcher do not reach them. A Verification command or scanner that needs
+another variable, such as a proxy setting or a tool's cache directory, needs
+that name listed:
+
+```yaml
+work_claim_env_passthrough: [HTTPS_PROXY, SSL_CERT_FILE]
+```
+
+Entries must be valid environment variable names (`^[A-Za-z_][A-Za-z0-9_]*$`)
+after surrounding whitespace is stripped; an empty entry or a vendor API key
+name such as `OPENAI_API_KEY` fails config load. This limits what the command
+can read from the environment only. It still runs as your user account and can
+use credentials stored outside the environment.
 
 ### Dispatcher Commits
 
@@ -425,7 +444,10 @@ fails, so a single bounce reports every finding:
 Scanner commands are operator-authored configuration, so they are trusted
 operator input, unlike the Work Packet verification command, which is
 agent-written. The dispatcher does not sandbox scanners any more than it
-sandboxes agents.
+sandboxes agents. Scanners get the same allowlisted environment as the
+Verification command; list any variable a scanner needs, such as a
+`SEMGREP_APP_TOKEN` or a proxy setting, under `work_claim_env_passthrough`.
+
 ## Agent Environment
 
 Each provider CLI is launched with an explicit environment built from an
