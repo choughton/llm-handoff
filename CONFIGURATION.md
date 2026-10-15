@@ -238,7 +238,8 @@ started the dispatcher do not reach the agents.
 In the default `env_mode: allowlist`, a launch receives only:
 
 - process basics: `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`,
-  `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`;
+  `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`, and the account name (`USERNAME`,
+  `USER`, `LOGNAME`), which tools such as pytest use for per-user directories;
 - non-secret process plumbing the CLIs need to start: `COMSPEC`, `PATHEXT`,
   `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, `SHELL`;
 - the provider's own configuration variables: `CLAUDE_*` for Claude Code,

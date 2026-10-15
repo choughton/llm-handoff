@@ -20,6 +20,9 @@ AUTH_FAILURE_MARKERS = (
     "not logged in",
     "please run /login",
     "401 Unauthorized",
+    # Gemini CLI: Google no longer accepts personal Gemini Code Assist sign-ins.
+    "IneligibleTierError",
+    "no longer supported for Gemini Code Assist",
 )
 AUTH_FAILURE_PATTERNS = (
     re.compile(r"\bplease\s+run\b.*\bauth\s+login\b", re.IGNORECASE),
@@ -37,9 +40,12 @@ _FIX_INSTRUCTIONS = {
         'Check it with: codex exec "Reply with OK"'
     ),
     "gemini": (
-        "Run `gemini` in a terminal and finish signing in, or set "
-        "GEMINI_API_KEY and start the dispatcher with "
-        '--use-planner-api-key-env. Check it with: gemini -p "Reply with OK"'
+        "Run `gemini` in a terminal and finish signing in. If Google reports "
+        "IneligibleTierError, personal Gemini Code Assist sign-ins no longer "
+        "work: set GEMINI_API_KEY (from Google AI Studio) and add "
+        "`use_api_key_env: true` to each Gemini role in dispatch_config.yaml, "
+        "or map those roles to another provider. "
+        'Check it with: gemini -p "Reply with OK"'
     ),
 }
 

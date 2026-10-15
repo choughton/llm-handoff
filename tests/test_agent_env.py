@@ -185,6 +185,16 @@ def test_allowlist_matches_names_case_insensitively() -> None:
     assert env == {"Path": "C:/bin", "SystemRoot": "C:/Windows"}
 
 
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
+def test_allowlist_keeps_the_account_name(provider: str) -> None:
+    env = build_agent_env(
+        AgentConfig(provider=provider),
+        environ={"USERNAME": "hough", "USER": "hough", "LOGNAME": "hough"},
+    )
+
+    assert env == {"USERNAME": "hough", "USER": "hough", "LOGNAME": "hough"}
+
+
 def test_env_passthrough_rejects_vendor_api_keys() -> None:
     with pytest.raises(ValueError, match="use_api_key_env"):
         AgentConfig(provider="gemini", env_passthrough=("OPENAI_API_KEY",))

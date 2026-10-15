@@ -29,6 +29,7 @@ from llm_handoff.agent_process import (
 )
 from llm_handoff.agent_streams import _LiveAgentOutputMonitor
 from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
+from llm_handoff.provider_auth import find_auth_failure
 
 
 GeminiRole = str
@@ -686,6 +687,10 @@ def _should_retry_gemini_result(
     if stop_on_resume_recoverable_failure and _is_gemini_resume_recoverable_failure(
         result
     ):
+        return False
+    # A sign-in failure repeats on every attempt; hand it back at once so the
+    # orchestrator can stop with the fix instead of waiting out the backoff.
+    if find_auth_failure(result.stdout, result.stderr) is not None:
         return False
     return True
 

@@ -118,3 +118,81 @@ def test_run_loop_stops_on_the_first_sign_in_failure(
     assert any("backend could not start" in message for message in errors)
     assert any(message.startswith("Fix: Run `codex login`") for message in errors)
     assert not any("Failure count" in message for _, message in logs)
+
+
+GEMINI_INELIGIBLE = (
+    "Error authenticating: IneligibleTierError: This client is no longer "
+    "supported for Gemini Code Assist for individuals. To continue using Gemini, "
+    "please migrate to the Antigravity suite of products."
+)
+
+
+def test_find_auth_failure_recognizes_gemini_ineligible_tier() -> None:
+    assert find_auth_failure("", "stack noise\n" + GEMINI_INELIGIBLE) == (
+        GEMINI_INELIGIBLE
+    )
+
+
+def test_gemini_fix_instructions_point_at_an_api_key() -> None:
+    text = auth_fix_instructions("gemini")
+
+    assert "IneligibleTierError" in text
+    assert "GEMINI_API_KEY" in text
+    assert "use_api_key_env: true" in text
+
+
+def test_gemini_does_not_retry_a_sign_in_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_handoff.agent_providers import gemini
+    from llm_handoff.agent_types import _ProcessResult
+
+    attempts: list[int] = []
+
+    def ineligible(*_args, **kwargs) -> _ProcessResult:
+        attempts.append(kwargs["attempt_number"])
+        return _ProcessResult(stdout="", stderr=GEMINI_INELIGIBLE, exit_code=1)
+
+    monkeypatch.setattr(gemini, "_run_gemini_command", ineligible)
+    monkeypatch.setattr(gemini.time, "sleep", lambda _seconds: None)
+
+    result = gemini._run_gemini_with_retries(
+        ["gemini"],
+        repo_root=Path("."),
+        use_api_key_env=False,
+        stop_on_resume_recoverable_failure=False,
+        max_retries=3,
+        retry_base_seconds=0,
+        log=None,
+    )
+
+    assert attempts == [1]
+    assert result.exit_code == 1
+
+
+def test_gemini_still_retries_ordinary_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_handoff.agent_providers import gemini
+    from llm_handoff.agent_types import _ProcessResult
+
+    attempts: list[int] = []
+
+    def flaky(*_args, **kwargs) -> _ProcessResult:
+        attempts.append(kwargs["attempt_number"])
+        return _ProcessResult(stdout="", stderr="network hiccup", exit_code=1)
+
+    monkeypatch.setattr(gemini, "_run_gemini_command", flaky)
+    monkeypatch.setattr(gemini.time, "sleep", lambda _seconds: None)
+
+    gemini._run_gemini_with_retries(
+        ["gemini"],
+        repo_root=Path("."),
+        use_api_key_env=False,
+        stop_on_resume_recoverable_failure=False,
+        max_retries=2,
+        retry_base_seconds=0,
+        log=None,
+    )
+
+    assert attempts == [1, 2, 3]

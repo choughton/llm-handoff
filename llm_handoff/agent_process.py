@@ -35,6 +35,12 @@ BASE_AGENT_ENV_NAMES = frozenset(
         "LANG",
         "LC_ALL",
         "TERM",
+        # Account name, not a secret. Tools such as pytest name per-user
+        # directories after it; without it they fall back to a shared
+        # "unknown" directory another account may own.
+        "USERNAME",
+        "USER",
+        "LOGNAME",
     }
 )
 # Non-secret process plumbing the CLIs need to start at all: Windows `.cmd`

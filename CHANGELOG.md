@@ -63,6 +63,13 @@ This project follows a simple pre-release changelog until the first public tag.
   Code's "OAuth session expired"), the dispatcher now stops at once and logs
   the sign-in steps for that CLI, instead of retrying until the failure limit.
   The supervisor recognizes the same sign-in failures.
+- Gemini CLI's `IneligibleTierError` (Google no longer accepts personal Gemini
+  Code Assist sign-ins) is treated as a sign-in failure: the dispatcher stops
+  with steps to switch to an API key, and the Gemini adapter no longer waits
+  out its retry backoff on any sign-in failure.
+- Agent launches now keep the account name (`USERNAME`, `USER`, `LOGNAME`).
+  Without it, pytest in an agent run fell back to a shared
+  `pytest-of-unknown` temp directory that another account could own.
 
 ## 0.0.0
 
