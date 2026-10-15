@@ -13,6 +13,8 @@ from llm_handoff.publish import (
     RESPONSES_PATH,
     STATE_PATH,
     PublishOutcome,
+    StoryState,
+    build_review_bounce_handoff,
     ensure_story_branch,
     publish_story,
     save_gate_section,
@@ -229,6 +231,55 @@ def test_ensure_story_branch_creates_then_reuses_the_branch(tmp_path: Path) -> N
         is None
     )
     assert _git(tmp_path, "branch", "--show-current") == BRANCH
+
+
+def test_a_revised_work_packet_reaches_the_review_bounce(tmp_path: Path) -> None:
+    _init(tmp_path)
+    revised = ASSIGNMENT.replace('"print(1)"', '"print(2)"')
+    assert revised != ASSIGNMENT
+    # The planner revises the packet while the story branch is checked out.
+    for content in (ASSIGNMENT, revised):
+        assert (
+            ensure_story_branch(
+                repo_root=tmp_path,
+                prefix="llm-handoff/",
+                base_branch=None,
+                assignment_content=content,
+                log_file=None,
+            )
+            is None
+        )
+    state = StoryState(**json.loads((tmp_path / STATE_PATH).read_text(encoding="utf-8")))
+
+    handoff = build_review_bounce_handoff(
+        state=state,
+        findings=[],
+        url="https://example.invalid/pull/7",
+        head_sha="0" * 40,
+        review_round=1,
+        max_rounds=1,
+    )
+
+    assert "print(2)" in handoff
+    assert "print(1)" not in handoff
+
+    # Switching back to the existing branch refreshes it too, and an
+    # assignment without a Work Packet keeps the saved one.
+    _git(tmp_path, "switch", "-q", "main")
+    no_packet = ASSIGNMENT.split("## Work Packet")[0]
+    for content in (ASSIGNMENT, no_packet):
+        assert (
+            ensure_story_branch(
+                repo_root=tmp_path,
+                prefix="llm-handoff/",
+                base_branch=None,
+                assignment_content=content,
+                log_file=None,
+            )
+            is None
+        )
+    state = json.loads((tmp_path / STATE_PATH).read_text(encoding="utf-8"))
+    assert 'print(1)' in state["work_packet"]
 
 
 def test_ensure_story_branch_refuses_to_start_from_another_story(
@@ -562,6 +613,7 @@ def test_codex_findings_get_one_correction_round_then_merge(
         {"number": 1, "comment_id": 4279958834, "location": "src/widget.py:1"}
     ]
     assert "## Review Responses" in handoff
+    assert "`Deferred:`" in handoff
 
     # The implementer fixes the finding on the same branch. The dispatcher
     # answers and resolves the thread and merges without another review.
@@ -794,6 +846,88 @@ def test_a_finding_without_a_response_keeps_its_thread_and_blocks_the_merge(
     assert "replies" not in _gh_state(tmp_path)
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
     assert any("No review response for finding 1" in m for _l, m in entries)
+
+
+def test_a_deferred_finding_gets_a_reply_but_keeps_its_thread_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    _set_api(tmp_path, comments=[_codex_summary(_git(repo, "rev-parse", "HEAD"))])
+    save_review_responses(
+        repo,
+        "## Review Responses\n\n### Finding 1: `src/widget.py:1`\n"
+        "**Deferred:** out of scope for this story; needs its own packet.\n",
+    )
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "1 review thread(s)" in outcome.message
+    gh_state = _gh_state(tmp_path)
+    [reply] = gh_state["replies"]
+    assert reply["body"].startswith("**Deferred:** out of scope")
+    assert gh_state["threads"][0]["isResolved"] is False
+    assert not any(
+        call[-1] == "graphql" and any("resolveReviewThread" in a for a in call)
+        for call in _gh_calls(tmp_path)
+    )
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any(
+        level == "WARN" and "Finding 1 (src/widget.py:1) was deferred" in message
+        for level, message in entries
+    )
+
+
+def test_a_retry_keeps_a_replied_deferred_finding_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    # An earlier attempt already posted the deferred reply and saved that in
+    # the story state; the saved responses are gone (a later gate pass
+    # without responses removes them). The finding must still stay open.
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    state["open_findings"][0].update(replied=True, deferred=True)
+    (repo / STATE_PATH).write_text(json.dumps(state), encoding="utf-8")
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    _set_api(tmp_path, comments=[_codex_summary(_git(repo, "rev-parse", "HEAD"))])
+    assert not (repo / RESPONSES_PATH).exists()
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and "1 review thread(s)" in outcome.message
+    assert "replies" not in _gh_state(tmp_path)
+    assert _gh_state(tmp_path)["threads"][0]["isResolved"] is False
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any("was deferred" in message for _level, message in entries)
 
 
 def test_auto_merge_waits_for_every_review_thread_to_be_resolved(

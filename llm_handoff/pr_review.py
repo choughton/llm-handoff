@@ -52,6 +52,8 @@ _USAGE_LIMIT_RE = re.compile(r"usage limits? for code reviews", re.IGNORECASE)
 _RESPONSE_RE = re.compile(
     r"(?ms)^### Finding (\d+)\b[^\n]*\n(.*?)(?=^### |\Z)"
 )
+# "Deferred:" or "**Deferred:**" at the start of a response.
+_DEFERRED_RE = re.compile(r"(?:\*\*|__)?deferred\s*:", re.IGNORECASE)
 
 ReviewOutcome = Literal["clean", "findings", "timeout", "failed"]
 
@@ -277,6 +279,16 @@ def parse_review_responses(text: str) -> dict[int, str]:
         if body:
             responses[int(match.group(1))] = body
     return responses
+
+
+def is_deferred_response(body: str) -> bool:
+    """Whether a review response starts with the ``Deferred:`` marker.
+
+    A deferred finding is real but left unfixed in this story, so its review
+    thread gets the reply but stays unresolved for a person to decide.
+    """
+
+    return _DEFERRED_RE.match(body) is not None
 
 
 def parse_gh_json_pages(text: str) -> list[dict[str, Any]] | None:
