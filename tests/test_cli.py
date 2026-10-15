@@ -100,6 +100,30 @@ def test_init_command_provider_claude_writes_all_claude_mapping(
     assert "provider: codex" not in text
 
 
+def test_init_command_provider_codex_writes_all_codex_mapping(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    exit_code = main_module.main(["init", str(tmp_path), "--provider", "codex"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Provider mapping: all roles on codex" in output
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "provider: gemini" not in text
+    assert "provider: claude" not in text
+    assert "skill_name: llm-handoff-planner" in text
+
+
+def test_init_help_names_both_single_provider_mappings(capsys) -> None:
+    assert main_module.main(["init", "--help"]) == 0
+
+    # Drop the help panel borders so wrapped help text reads as one line.
+    output = " ".join(capsys.readouterr().out.replace("│", " ").split())
+    assert "claude or codex" in output
+    assert "codex when Codex is the only provider CLI on PATH" in output
+
+
 def _node_fixture(root: Path) -> None:
     (root / "package.json").write_text(
         '{"scripts": {"test": "jest", "build": "tsc"}}', encoding="utf-8"

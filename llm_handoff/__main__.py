@@ -218,9 +218,10 @@ def init_command(
         None,
         "--provider",
         help=(
-            "Put every role on one provider CLI (currently: claude). "
+            "Put every role on one provider CLI: claude or codex. "
             "Default: claude when Claude Code is the only provider CLI on "
-            "PATH, otherwise the reference mapping."
+            "PATH, codex when Codex is the only provider CLI on PATH, "
+            "otherwise the reference mapping."
         ),
     ),
     verification_command: str | None = typer.Option(

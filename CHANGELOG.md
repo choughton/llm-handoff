@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added an all-Codex mapping. The reference workflow now ships a Codex repo
+  skill for every role (`llm-handoff-planner`, `llm-handoff-frontend`,
+  `llm-handoff-auditor`, `llm-handoff-validator`, and
+  `llm-handoff-finalizer`, with `llm-handoff` staying the backend skill).
+  `llm-handoff init --provider codex` writes every role as `provider: codex`
+  with its `skill_name`, `audit.security_provider: codex`, and
+  `normalizer.provider: codex`. Without `--provider`, `init` picks this
+  mapping when `codex` is the only provider CLI on `PATH`. Whether Codex's
+  `workspace-write` sandbox lets a role commit is unverified; use
+  `commit_mode: dispatcher` to avoid the question.
+
 - Added the optional `verification_allowed_prefixes` config key. When set,
   the work-claim gate runs a Work Packet Verification command only if its
   whitespace-split words start with a listed prefix's words and it contains

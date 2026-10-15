@@ -767,6 +767,44 @@ With every role on Claude, the security reviewer runs on the same vendor as
 the implementer, so it is a second read-only review rather than an
 independent one, and each dispatcher start logs a warning saying so.
 
+### All-Codex Mapping
+
+The reference workflow ships a Codex repo skill for every role, so a machine
+with only the Codex CLI installed can run the whole loop. Each role names its
+skill in `skill_name`, and the Codex adapter tells Codex to use that skill:
+
+| Role | Codex skill |
+| --- | --- |
+| `planner` | `.codex/skills/llm-handoff-planner/SKILL.md` |
+| `backend` | `.codex/skills/llm-handoff/SKILL.md` |
+| `frontend` | `.codex/skills/llm-handoff-frontend/SKILL.md` |
+| `auditor` | `.codex/skills/llm-handoff-auditor/SKILL.md` |
+| `validator` | `.codex/skills/llm-handoff-validator/SKILL.md` |
+| `finalizer` | `.codex/skills/llm-handoff-finalizer/SKILL.md` |
+
+The validator skill covers both the handoff validation and handoff routing
+tasks; the dispatcher's prompt names which one applies.
+
+`llm-handoff init --provider codex` writes this mapping into
+`dispatch_config.yaml`, with every role on `provider: codex`,
+`audit.security_provider: codex`, and `normalizer.provider: codex` (the
+normalizer runs through the Codex CLI login, so no API key is needed).
+Without `--provider`, `init` writes it automatically when `codex` is the only
+provider CLI on `PATH`. If both `claude` and `codex` are on `PATH`, `init`
+keeps the reference mapping; pass `--provider` to choose one.
+`--verification-command` changes no `agents:` entry under this mapping,
+because it only adds `allowed_tools` to Claude roles.
+
+With every role on Codex, the security reviewer runs on the same vendor as
+the implementer, so it is a second read-only review rather than an
+independent one, and the dispatcher logs a warning saying so.
+
+Whether Codex's `workspace-write` sandbox lets a role run `git add` and
+`git commit` is unverified. The skills tell a sandboxed role not to work
+around the sandbox. `commit_mode: dispatcher` (see
+[Dispatcher Commits](#dispatcher-commits)) avoids the question, because the
+dispatcher commits implementer work and roles never write to `.git`.
+
 ### Fallback Agents
 
 A role can name one fallback agent. When the primary agent fails fatally, the
