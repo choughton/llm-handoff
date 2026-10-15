@@ -7,6 +7,7 @@ import threading
 from typing import Any
 
 import pytest
+import yaml
 
 from llm_handoff import audit_review
 from llm_handoff import config as config_module
@@ -995,6 +996,67 @@ def test_fan_out_records_raw_outputs_and_timing(
     for name in ("quality", "security"):
         assert summary["reviewers"][name]["exit_code"] == 0
         assert "elapsed_seconds" in summary["reviewers"][name]
+
+
+def test_fan_out_quotes_yaml_special_identifiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base = _init_repo(tmp_path)
+    head = _commit_file(repo, "src/app.py", "x = 1\n", "feature")
+    prior = _commit_file(repo, "src/app.py", "x = 2\n", "fix")
+    handoff = (
+        _backend_handoff(prior)
+        .replace(f"story_id: {STORY_ID}", "story_id: '001'\nepic_id: 'on'")
+        .replace(
+            "producer: backend",
+            f"prior_sha: '{head[:7]}'\nremaining_stories:\n  - 'no'\n  - '1e3'\n"
+            "producer: backend",
+        )
+    )
+    _write_handoff(repo, handoff)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(_security_payload())
+        ),
+    )
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    loaded = yaml.safe_load(written.split("---")[1])
+    assert loaded["story_id"] == "001"
+    assert loaded["epic_id"] == "on"
+    assert loaded["prior_sha"] == head[:7]
+    assert loaded["remaining_stories"] == ["no", "1e3"]
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert (frontmatter.story_id, frontmatter.epic_id) == ("001", "on")
+
+
+def test_audit_log_directory_is_unique_within_the_same_second(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(audit_review.time, "strftime", lambda *_args: "20260101T000000")
+
+    first = audit_review._create_audit_log_directory(tmp_path, 1)
+    (first / "review.json").write_text("first run", encoding="utf-8")
+    second = audit_review._create_audit_log_directory(tmp_path, 1)
+    third = audit_review._create_audit_log_directory(tmp_path, 1)
+
+    assert first.name == "20260101T000000-cycle1"
+    assert second.name == "20260101T000000-cycle1-2"
+    assert third.name == "20260101T000000-cycle1-3"
+    assert (first / "review.json").read_text(encoding="utf-8") == "first run"
 
 
 @pytest.mark.parametrize("writer", ["quality", "security"])

@@ -94,7 +94,7 @@ _SECURITY_PROVIDER_ROLE_ORDER: tuple[AgentRole, ...] = (
     "backend",
     "frontend",
 )
-_PLAIN_YAML_SCALAR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_MAX_LOG_DIRECTORY_ATTEMPTS = 100
 _MAX_EVIDENCE_FILES = 40
 _MAX_REASON_LENGTH = 190
 
@@ -468,12 +468,11 @@ def run_audit_fan_out(
             "preferred.",
         )
 
-    log_dir = _audit_log_directory(config.repo_root, context.cycle_number)
     try:
-        log_dir.mkdir(parents=True, exist_ok=True)
+        log_dir = _create_audit_log_directory(config.repo_root, context.cycle_number)
     except OSError as exc:
         return _failed_dispatch(
-            f"audit_fan_out_error: could not create {log_dir}: {exc}",
+            f"audit_fan_out_error: could not create an audit log directory: {exc}",
             start_time,
             log,
         )
@@ -1417,9 +1416,29 @@ def _resolve_head_sha(
     return _git_rev_parse(repo_root, "HEAD")
 
 
-def _audit_log_directory(repo_root: Path, cycle_number: int) -> Path:
+def _create_audit_log_directory(repo_root: Path, cycle_number: int) -> Path:
+    """Create a fresh per-cycle audit log directory.
+
+    Cycle numbers restart with each dispatcher process, so the name carries a
+    timestamp, and creation uses ``exist_ok=False`` with a numeric suffix so a
+    restart within the same second never reuses an earlier run's directory.
+    """
+    parent = repo_root / AUDIT_LOG_DIRECTORY
+    parent.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-    return repo_root / AUDIT_LOG_DIRECTORY / f"{stamp}-cycle{cycle_number}"
+    base_name = f"{stamp}-cycle{cycle_number}"
+    for attempt in range(_MAX_LOG_DIRECTORY_ATTEMPTS):
+        name = base_name if attempt == 0 else f"{base_name}-{attempt + 1}"
+        candidate = parent / name
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError(
+        f"{_MAX_LOG_DIRECTORY_ATTEMPTS} audit log directories named "
+        f"{base_name} already exist under {parent}"
+    )
 
 
 def _write_review_logs(
@@ -1539,16 +1558,10 @@ def _demote_headings(report: str) -> str:
 
 
 def _yaml_scalar(value: str) -> str:
-    text = str(value)
-    if _PLAIN_YAML_SCALAR_RE.match(text) and text.lower() not in {
-        "true",
-        "false",
-        "null",
-        "yes",
-        "no",
-    }:
-        return text
-    return json.dumps(text)
+    # Always emit a double-quoted scalar: a JSON string is valid YAML, and
+    # quoting keeps identifiers such as `on`, `001`, or `1e3` from being read
+    # back as booleans or numbers.
+    return json.dumps(str(value))
 
 
 def _truncate_reason(reason: str) -> str:
