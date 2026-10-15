@@ -6,7 +6,7 @@ from typing import Callable, TypeVar
 
 from llm_handoff import config as config_module
 from llm_handoff.agent_providers.claude import invoke_claude_subagent
-from llm_handoff.agent_providers.codex import invoke_codex
+from llm_handoff.agent_providers.codex import invoke_codex, unwrap_codex_final_message
 from llm_handoff.agent_providers.gemini import invoke_gemini
 from llm_handoff.agent_providers.manual import invoke_manual_frontend
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
@@ -19,6 +19,14 @@ _Result = TypeVar("_Result", DispatchResult, SubagentResult)
 # Called after a fatal primary failure, before the fallback starts. Returns
 # why the fallback must not run, or None to let it run.
 FailoverGuard = Callable[[], str | None]
+# A fresh `codex exec` must answer in the output schema's {status, summary}
+# envelope; the dispatcher parses `summary`, so the report has to be all of it.
+CODEX_SUPPORT_REPORT_INSTRUCTION = (
+    "Your final message must fit the output schema's `status` and `summary` "
+    "fields. Set `status` to a one-word result, and put the complete report "
+    "these instructions ask for in `summary`, exactly as specified and with "
+    "its line breaks. Do not shorten or paraphrase it."
+)
 
 
 def invoke_role(
@@ -318,6 +326,7 @@ def _invoke_support_provider(
             agent_config=agent_config,
         )
 
+    codex = agent_config.provider == "codex"
     result = _invoke_role_provider(
         role,
         handoff_path,
@@ -329,12 +338,19 @@ def _invoke_support_provider(
         session_id=None,
         previous_handoff_sha=None,
         current_handoff_sha=None,
-        support_prompt=prompt,
+        support_prompt=(
+            f"{prompt}\n\n{CODEX_SUPPORT_REPORT_INSTRUCTION}" if codex else prompt
+        ),
         subagent_name=subagent_name,
         repo_root=repo_root,
     )
+    stdout = result.stdout
+    if codex:
+        # The validator and ledger parsers read the report itself, not the
+        # JSON envelope that Codex's output schema wraps it in.
+        stdout = unwrap_codex_final_message(stdout)
     return SubagentResult(
-        stdout=result.stdout,
+        stdout=stdout,
         stderr=result.stderr,
         exit_code=result.exit_code,
         elapsed_seconds=result.elapsed_seconds,

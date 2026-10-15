@@ -499,3 +499,16 @@ def _parse_codex_structured_message(text: str) -> dict[str, str] | None:
     if isinstance(status, str) and isinstance(summary, str):
         return {"status": status, "summary": summary}
     return None
+
+
+def unwrap_codex_final_message(text: str) -> str:
+    """Return the ``summary`` of a ``{status, summary}`` final message.
+
+    A fresh ``codex exec`` run must answer in the output schema's JSON
+    envelope, so a support role's report (a validation verdict or a ledger
+    update) arrives inside ``summary``. Text that is not an envelope, such as
+    a resumed session's plain answer, is returned unchanged.
+    """
+
+    structured = _parse_codex_structured_message(text.strip())
+    return structured["summary"] if structured is not None else text

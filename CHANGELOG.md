@@ -17,9 +17,9 @@ This project follows a simple pre-release changelog until the first public tag.
   `workspace-write` sandbox lets a role commit is unverified;
   `commit_mode: dispatcher` avoids the question for the planner, backend, and
   frontend, but not for the finalizer, which still commits its own state
-  update. Known limitation: the dispatcher does not yet unwrap the Codex JSON
-  envelope before parsing validator and finalizer reports, so under this
-  mapping validation output reads as unparseable and epic closes pause.
+  update. When the validator or finalizer runs on Codex, the dispatcher
+  parses the `summary` of Codex's `{status, summary}` JSON envelope, so their
+  reports are read instead of being reported as unparseable.
 
 - Added the optional `verification_allowed_prefixes` config key. When set,
   the work-claim gate runs a Work Packet Verification command only if its
