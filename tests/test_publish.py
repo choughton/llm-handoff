@@ -117,19 +117,30 @@ elif args[0] == "api":
     endpoint = args[-1]
     threads = state.setdefault("threads", [])
     if endpoint == "graphql" and "resolveReviewThread" in fields["query"]:
+        if state.get("fail_resolve"):
+            sys.exit("resolveReviewThread failed")
         for thread in threads:
             if thread["id"] == fields["id"]:
                 thread["isResolved"] = True
         save()
         print(json.dumps({"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}}))
     elif endpoint == "graphql":
+        # Like `gh api --paginate`: one JSON object per page, back to back.
+        # Only fullDatabaseId carries the comment ID, as for 64-bit IDs.
         nodes = [
             {"id": t["id"], "isResolved": t["isResolved"],
-             "comments": {"nodes": [{"databaseId": t["comment_id"]}]}}
+             "comments": {"nodes": [{"databaseId": None,
+                                     "fullDatabaseId": str(t["comment_id"])}]}}
             for t in threads
         ]
-        print(json.dumps({"data": {"repository": {"pullRequest": {
-            "reviewThreads": {"nodes": nodes}}}}}))
+        size = state.get("page_size", 100)
+        pages = [nodes[i:i + size] for i in range(0, len(nodes), size)] or [[]]
+        for index, page in enumerate(pages):
+            print(json.dumps({"data": {"repository": {"pullRequest": {
+                "reviewThreads": {
+                    "pageInfo": {"hasNextPage": index < len(pages) - 1,
+                                 "endCursor": f"c{index}"},
+                    "nodes": page}}}}}))
     elif endpoint.endswith("/replies"):
         state.setdefault("replies", []).append(
             {"endpoint": endpoint, "body": fields["body"]})
@@ -444,7 +455,7 @@ def _codex_summary(sha: str) -> dict:
 
 def _codex_finding(sha: str) -> dict:
     return {
-        "id": 101,
+        "id": 4279958834,
         "user": {"login": BOT},
         "commit_id": sha,
         "original_commit_id": sha,
@@ -528,7 +539,7 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
         comments=[_codex_summary(first)],
         review_comments=[_codex_finding(first)],
     )
-    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 101})
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
     _entries, log = _logs()
 
     outcome = _publish_with_review(repo, gh, log)
@@ -548,7 +559,7 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
     state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
     assert state["review_rounds"] == 1
     assert state["open_findings"] == [
-        {"number": 1, "comment_id": 101, "location": "src/widget.py:1"}
+        {"number": 1, "comment_id": 4279958834, "location": "src/widget.py:1"}
     ]
     assert "## Review Responses" in handoff
 
@@ -574,7 +585,7 @@ def test_codex_findings_bounce_to_the_implementer_then_rereview_and_merge(
     gh_state = _gh_state(tmp_path)
     assert gh_state["threads"][0]["isResolved"] is True
     [reply] = gh_state["replies"]
-    assert reply["endpoint"].endswith("/pulls/7/comments/101/replies")
+    assert reply["endpoint"].endswith("/pulls/7/comments/4279958834/replies")
     assert reply["body"].startswith("Defaulted WIDGET when it is unset")
     assert "@codex" not in reply["body"]
     assert second[:12] in reply["body"]
@@ -756,7 +767,7 @@ def test_a_finding_without_a_response_keeps_its_thread_and_blocks_the_merge(
         comments=[_codex_summary(first)],
         review_comments=[_codex_finding(first)],
     )
-    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 101})
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
     entries, log = _logs()
     assert _publish_with_review(repo, gh, log).handoff is not None
 
@@ -815,3 +826,123 @@ def test_save_review_responses_keeps_only_claims_with_responses(
 
     save_review_responses(tmp_path, "# Handback\n\nNo responses here.\n")
     assert not (tmp_path / RESPONSES_PATH).exists()
+
+
+def _set_gh(tmp_path: Path, **values: object) -> None:
+    path = tmp_path / "gh_state.json"
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    state.update(values)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def test_merge_check_reads_every_page_of_review_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    threads = [
+        {"id": f"T{i}", "isResolved": i != 120, "comment_id": 5_000_000_000 + i}
+        for i in range(150)
+    ]
+    _set_threads(tmp_path, *threads)
+    _set_gh(tmp_path, page_size=100)
+    _entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=repo,
+        mode="pr",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+        gh_command=gh,
+    )
+
+    assert outcome.stop is True
+    assert "1 review thread(s)" in outcome.message
+    graphql = [call for call in _gh_calls(tmp_path) if call[-1] == "graphql"]
+    assert all("--paginate" in call for call in graphql)
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_a_retry_after_a_failed_resolve_does_not_reply_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(
+        tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834}
+    )
+    _entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    second = _git(repo, "rev-parse", "HEAD")
+    _set_api(tmp_path, comments=[_codex_summary(second)])
+    save_review_responses(
+        repo, "## Review Responses\n\n### Finding 1\nDefaulted WIDGET.\n"
+    )
+    _set_gh(tmp_path, fail_resolve=True)
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert "could not resolve the review thread for finding 1" in outcome.message
+    assert len(_gh_state(tmp_path)["replies"]) == 1
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["open_findings"][0]["replied"] is True
+
+    _set_gh(tmp_path, fail_resolve=False)
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    assert len(_gh_state(tmp_path)["replies"]) == 1
+    assert _gh_state(tmp_path)["threads"][0]["isResolved"] is True
+    assert _gh_calls(tmp_path)[-1][:2] == ["pr", "merge"]
+
+
+def test_an_already_resolved_thread_gets_no_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(
+        tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834}
+    )
+    _entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    _set_api(tmp_path, comments=[_codex_summary(_git(repo, "rev-parse", "HEAD"))])
+    _set_threads(
+        tmp_path, {"id": "T1", "isResolved": True, "comment_id": 4279958834}
+    )
+    save_review_responses(
+        repo, "## Review Responses\n\n### Finding 1\nDefaulted WIDGET.\n"
+    )
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    assert "replies" not in _gh_state(tmp_path)

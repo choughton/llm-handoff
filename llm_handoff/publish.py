@@ -56,10 +56,11 @@ GATE_SECTION_PATH = Path("logs") / "dispatch" / "publish" / "gate.md"
 MESSAGE_PATH = Path("logs") / "dispatch" / "publish" / "message.md"
 RESPONSES_PATH = Path("logs") / "dispatch" / "publish" / "responses.md"
 _THREADS_QUERY = (
-    "query($owner: String!, $name: String!, $number: Int!) { "
+    "query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { "
     "repository(owner: $owner, name: $name) { pullRequest(number: $number) { "
-    "reviewThreads(first: 100) { nodes { id isResolved "
-    "comments(first: 1) { nodes { databaseId } } } } } } }"
+    "reviewThreads(first: 100, after: $endCursor) { "
+    "pageInfo { hasNextPage endCursor } nodes { id isResolved "
+    "comments(first: 1) { nodes { databaseId fullDatabaseId } } } } } } }"
 )
 _RESOLVE_MUTATION = (
     "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) "
@@ -97,7 +98,8 @@ class StoryState:
     log_offset: int
     implementer: str = "backend"
     review_rounds: int = 0
-    # Findings from the last review bounce: {"number", "comment_id", "location"}.
+    # Findings from the last review bounce: {"number", "comment_id", "location"},
+    # plus "replied" / "resolved" progress while their threads are answered.
     open_findings: tuple[dict[str, object], ...] = ()
 
 
@@ -600,7 +602,10 @@ def _answer_findings(
     """Reply to and resolve the review threads of the last bounce's findings.
 
     Returns an error message when a ``gh`` call fails, else ``None``. A finding
-    without an implementer response keeps its thread unresolved.
+    without an implementer response keeps its thread unresolved. Progress is
+    saved after every reply and resolution, so a retry after a failure never
+    posts the same reply twice, and a thread that is already resolved gets
+    no reply.
     """
 
     if not state.open_findings:
@@ -618,53 +623,77 @@ def _answer_findings(
         f"_Response from the `{state.implementer}` role, commit "
         f"`{head_sha[:12]}`. Posted by the llm-handoff dispatcher._"
     )
-    for finding in state.open_findings:
+    pending = [dict(finding) for finding in state.open_findings]
+
+    def save_progress() -> None:
+        _save_state(repo_root, replace(state, open_findings=tuple(pending)))
+
+    for finding in pending:
         number = finding.get("number")
         comment_id = finding.get("comment_id")
         location = finding.get("location") or "pull request"
-        if not isinstance(comment_id, int):
+        if not isinstance(comment_id, int) or finding.get("resolved"):
             continue
-        response = responses.get(number) if isinstance(number, int) else None
-        if not response:
-            log(
-                "WARN",
-                f"No review response for finding {number} ({location}); its "
-                "review thread stays unresolved.",
-            )
-            continue
-        replied = _run(
-            [
-                *gh_command,
-                "api",
-                "-f",
-                f"body={_without_mentions(response)}\n\n{footer}",
-                f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies",
-            ],
-            repo_root,
-            _GH_TIMEOUT_SECONDS,
-        )
-        if replied.returncode != 0:
-            return f"could not reply to finding {number} ({location}): {_first_line(replied)}"
         thread = by_comment.get(comment_id)
-        if thread is not None and not thread["resolved"]:
-            resolved = _run(
+        if thread is not None and thread["resolved"]:
+            finding["resolved"] = True
+            save_progress()
+            continue
+        if not finding.get("replied"):
+            response = responses.get(number) if isinstance(number, int) else None
+            if not response:
+                log(
+                    "WARN",
+                    f"No review response for finding {number} ({location}); its "
+                    "review thread stays unresolved.",
+                )
+                continue
+            replied = _run(
                 [
                     *gh_command,
                     "api",
                     "-f",
-                    f"query={_RESOLVE_MUTATION}",
-                    "-f",
-                    f"id={thread['id']}",
-                    "graphql",
+                    f"body={_without_mentions(response)}\n\n{footer}",
+                    f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/"
+                    f"{comment_id}/replies",
                 ],
                 repo_root,
                 _GH_TIMEOUT_SECONDS,
             )
-            if resolved.returncode != 0:
+            if replied.returncode != 0:
                 return (
-                    f"could not resolve the review thread for finding {number} "
-                    f"({location}): {_first_line(resolved)}"
+                    f"could not reply to finding {number} ({location}): "
+                    f"{_first_line(replied)}"
                 )
+            finding["replied"] = True
+            save_progress()
+        if thread is None:
+            log(
+                "WARN",
+                f"Replied to finding {number} ({location}), but its review "
+                "thread was not found, so it stays unresolved.",
+            )
+            continue
+        resolved = _run(
+            [
+                *gh_command,
+                "api",
+                "-f",
+                f"query={_RESOLVE_MUTATION}",
+                "-f",
+                f"id={thread['id']}",
+                "graphql",
+            ],
+            repo_root,
+            _GH_TIMEOUT_SECONDS,
+        )
+        if resolved.returncode != 0:
+            return (
+                f"could not resolve the review thread for finding {number} "
+                f"({location}): {_first_line(resolved)}"
+            )
+        finding["resolved"] = True
+        save_progress()
         log("AGENT", f"Replied to and resolved review finding {number} ({location}).")
     _save_state(repo_root, replace(state, open_findings=()))
     responses_path.unlink(missing_ok=True)
@@ -674,12 +703,18 @@ def _answer_findings(
 def _review_threads(
     gh_command: Sequence[str], repo_root: Path, pr_number: int
 ) -> list[dict[str, object]] | None:
-    """Return ``{"id", "resolved", "comment_id"}`` per review thread."""
+    """Return ``{"id", "resolved", "comment_id"}`` for every review thread.
+
+    Pages through all threads (``gh api --paginate`` follows ``endCursor``) and
+    matches comments by ``fullDatabaseId``: review comment IDs no longer fit
+    the 32-bit ``databaseId``.
+    """
 
     fetched = _run(
         [
             *gh_command,
             "api",
+            "--paginate",
             "-F",
             "owner={owner}",
             "-F",
@@ -695,23 +730,36 @@ def _review_threads(
     )
     if fetched.returncode != 0:
         return None
-    try:
-        nodes = json.loads(fetched.stdout or "")["data"]["repository"]["pullRequest"][
-            "reviewThreads"
-        ]["nodes"]
-    except (ValueError, KeyError, TypeError):
+    pages = parse_gh_json_pages(fetched.stdout or "")
+    if not pages:
         return None
     threads: list[dict[str, object]] = []
-    for node in nodes or []:
-        comments = ((node or {}).get("comments") or {}).get("nodes") or [{}]
-        threads.append(
-            {
-                "id": node.get("id"),
-                "resolved": bool(node.get("isResolved")),
-                "comment_id": comments[0].get("databaseId"),
-            }
-        )
+    for page in pages:
+        try:
+            connection = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+            nodes = connection["nodes"] or []
+        except (KeyError, TypeError):
+            return None
+        for node in nodes:
+            comments = ((node or {}).get("comments") or {}).get("nodes") or [{}]
+            threads.append(
+                {
+                    "id": node.get("id"),
+                    "resolved": bool(node.get("isResolved")),
+                    "comment_id": _comment_id(comments[0]),
+                }
+            )
     return threads
+
+
+def _comment_id(comment: dict[str, object]) -> int | None:
+    for key in ("fullDatabaseId", "databaseId"):
+        value = comment.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
 
 
 def _pause(repo_root: Path, log: LogFn, message: str) -> PublishOutcome:
