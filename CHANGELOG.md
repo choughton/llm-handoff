@@ -11,6 +11,13 @@ This project follows a simple pre-release changelog until the first public tag.
   dispatcher reruns that dispatch once on the fallback. Ordinary failures and
   runs that already rewrote the handoff do not fail over.
 
+- The audit fan-out range now starts at the story's first implementer
+  dispatch. A retry after a work-claim or audit bounce no longer moves the
+  base to the earlier attempt's commit, so the reviewers see every attempt.
+  The base resets when the story changes (its `story_id`, or its Work Packet
+  when there is no `story_id`) or the dispatcher accepts the story's
+  approval; a `verified_pass` that fails validation or recovery keeps it.
+
 - `init` preserves user content through managed sections in AGENTS.md and
   ignore files, merges Claude settings, and reports merge actions separately.
   Added a .gitignore template for dispatcher logs and the lock file.
@@ -19,6 +26,21 @@ This project follows a simple pre-release changelog until the first public tag.
   Windows reparse-point detection also protects junctions on Python 3.11.
   Hard-linked files and non-directory destination parents are also conflicts,
   including during dry runs and with --force.
+
+- Work Packet path lists written as prose no longer turn words like "every",
+  "file", or "than" into out-of-bounds entries, and entries after "other than"
+  or "except" are not out of bounds. When a file matches both lists, the
+  narrowest entry decides, so an in-scope file inside an out-of-bounds
+  directory is committed instead of left in the working tree.
+- With `commit_mode: dispatcher`, work an implementer dispatch left uncommitted
+  is carried into the next dispatch for the same story, so a bounce can commit
+  it. Before, it counted as an operator edit: it was never committed, and the
+  gate could pass a claim whose `scope_sha` left it out.
+- The one-shot handoff repair no longer misreads `git status` (the first path
+  lost a character), and in dispatcher commit mode it leaves the handoff
+  uncommitted instead of being required to commit it.
+- A Work Packet field written as nested bullets under its label, such as
+  `**Context:**`, no longer gets an "is empty" warning.
 
 - With `commit_mode: dispatcher`, a blocked or escalated implementer handback
   that carries the `pending-dispatcher-commit` marker now gets a

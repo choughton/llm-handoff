@@ -1681,6 +1681,37 @@ def test_validate_handoff_warns_for_missing_or_empty_work_packet_fields() -> Non
     )
 
 
+def test_validate_handoff_reads_nested_bullets_as_work_packet_field_values() -> None:
+    handoff_content = _with_frontmatter(
+        """# Handoff: Nested work packet fields
+
+## Work Packet
+
+- **Objective:** Reject empty `name` values in `create_widget`.
+- **Files in scope:** `src/widgets.py`, `tests/test_widgets.py`
+- **Files out of bounds:** none
+- **Context:**
+  - Preserve the existing `WidgetError` contract.
+  - Keep the change inside `create_widget`.
+- **Verification command:**
+  `python -m pytest tests/test_widgets.py -q`
+- **Expected next route:** auditor
+- **Notes:**
+Not part of any field.
+""",
+        next_agent="backend",
+        reason="Dispatch a work packet with nested field values.",
+        producer="planner",
+    )
+
+    result = validator.validate_handoff_text(handoff_content, "planner")
+
+    assert result.errors == []
+    assert all(
+        "acceptance_coverage_unclear" not in warning for warning in result.warnings
+    ), result.warnings
+
+
 def test_validate_handoff_accepts_legacy_task_assignment_with_deprecation_warning() -> (
     None
 ):
