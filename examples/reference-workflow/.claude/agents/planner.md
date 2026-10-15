@@ -82,4 +82,4 @@ verification commands.
 
 ## Finishing
 
-Commit exactly `docs/handoff/HANDOFF.md` if the repository protocol asks agents to commit locally, then return control. Do not start the assigned work yourself.
+Commit exactly `docs/handoff/HANDOFF.md` if the repository protocol asks agents to commit locally and the dispatcher has not said that dispatcher commit mode is on; in that mode, leave it uncommitted. Then return control. Do not start the assigned work yourself.

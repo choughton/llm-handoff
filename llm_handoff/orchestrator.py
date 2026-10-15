@@ -48,7 +48,10 @@ from llm_handoff.handoff_normalizer import (
 )
 from llm_handoff.dispatcher_commit import (
     COMMIT_MODE_INSTRUCTION,
+    PLANNER_COMMIT_MODE_INSTRUCTION,
     commit_implementer_changes,
+    git_position,
+    undo_planner_handoff_commits,
     stamp_commit_sha,
 )
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
@@ -625,6 +628,12 @@ def run_loop(
                     if pre_dispatch_state is not None
                     else _git_head(config.repo_root)
                 )
+            planner_git_before = (
+                git_position(config.repo_root)
+                if current_cycle.route == "planner"
+                and config.commit_mode == "dispatcher"
+                else None
+            )
             protected_before = _capture_protected_snapshot(config)
             dispatch_result, previous_agent = _dispatch_route(
                 current_cycle.route,
@@ -648,6 +657,28 @@ def run_loop(
                     implementer_base_sha=implementer_base_sha,
                 ),
             )
+            if planner_git_before is not None:
+                planner_check = undo_planner_handoff_commits(
+                    config.repo_root, config.handoff_path, planner_git_before
+                )
+                if planner_check.error is not None:
+                    _log(
+                        log_fn,
+                        "ERROR",
+                        "Dispatcher commit mode: "
+                        f"{planner_check.error}. Fix the checkout, then start "
+                        "the dispatcher again.",
+                    )
+                    return 1
+                if planner_check.undone:
+                    _log(
+                        log_fn,
+                        "WARN",
+                        "The planner committed the handoff ("
+                        + ", ".join(sha[:12] for sha in planner_check.undone)
+                        + ") despite dispatcher commit mode; undid it with "
+                        "`git reset --soft`. The handoff stays uncommitted.",
+                    )
             if _enforce_protected_files(
                 config=config,
                 before=protected_before,
@@ -994,7 +1025,11 @@ def _dispatch_route(
                 invoke_planner_role,
                 handoff_path,
                 use_api_key_env=config.planner_api_key_env_enabled,
-                additional_instruction=additional_instruction,
+                additional_instruction=_with_commit_mode_instruction(
+                    config,
+                    additional_instruction,
+                    instruction=PLANNER_COMMIT_MODE_INSTRUCTION,
+                ),
                 use_resume=config.planner_resume_enabled,
                 session_id=planner_session_id,
                 previous_handoff_sha=planner_previous_handoff_sha,
@@ -2093,14 +2128,17 @@ def _work_claim_gate_applies(config: DispatchConfig, route: RouteName) -> bool:
 def _with_commit_mode_instruction(
     config: DispatchConfig,
     additional_instruction: str | None,
+    *,
+    instruction: str = COMMIT_MODE_INSTRUCTION,
 ) -> str | None:
-    """Tell implementers not to touch ``.git`` when the dispatcher commits."""
+    """Tell implementers and the planner not to touch ``.git`` when the
+    dispatcher commits."""
 
     if config.commit_mode != "dispatcher":
         return additional_instruction
     if additional_instruction and additional_instruction.strip():
-        return "\n\n".join((COMMIT_MODE_INSTRUCTION, additional_instruction.strip()))
-    return COMMIT_MODE_INSTRUCTION
+        return "\n\n".join((instruction, additional_instruction.strip()))
+    return instruction
 
 
 def _commit_for_implementer(
