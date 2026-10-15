@@ -139,7 +139,10 @@ with the `commit_mode: dispatcher requires enforce_work_packet: true` error even
 when a reason is set. When the gate is off, every dispatcher start logs a
 `WARN` line with `enforce_work_packet: false` and the reason, and
 `llm-handoff doctor` prints `WARN work-claim gate:` with it. When it is on,
-the doctor prints `PASS work-claim gate:`.
+the doctor prints `PASS work-claim gate:`. The doctor validates the current
+handoff with the same Work Packet requirement as the dispatch loop, so a
+planner assignment the dispatcher would reject for an unparseable Work Packet
+also fails `llm-handoff doctor` while the gate is on.
 
 When `enforce_work_packet` is `true`, the dispatcher verifies every
 `status: ready_for_review` handoff from `backend` or `frontend` before it

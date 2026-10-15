@@ -476,6 +476,75 @@ def test_doctor_fails_on_work_claim_gate_opt_out_without_a_reason(
     assert "work_packet_opt_out_reason" in output
 
 
+# A Work Packet section the gate cannot parse: it has no Files in scope or
+# Verification command.
+HANDOFF_WITHOUT_WORK_PACKET = """---
+next_agent: backend
+reason: "Planner assigns the first story."
+epic_id: "E1"
+story_id: "S1"
+story_title: "First story"
+producer: planner
+---
+
+# Handoff: S1 First story
+
+## Work Packet
+
+- **Objective:** Add a small feature.
+- **Expected next route:** auditor
+
+## Next Step
+
+- **backend:** Implement the Work Packet.
+"""
+
+
+def test_doctor_fails_handoff_without_work_packet_when_gate_is_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=HANDOFF_WITHOUT_WORK_PACKET)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    fail_lines = [
+        line
+        for line in output.splitlines()
+        if line.startswith("FAIL handoff validation:")
+    ]
+    assert any(
+        "while enforce_work_packet is enabled" in line for line in fail_lines
+    ), output
+    assert "PASS handoff validation:" not in output
+
+
+def test_doctor_accepts_handoff_without_work_packet_when_gate_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(
+        tmp_path, NO_GEMINI, handoff=HANDOFF_WITHOUT_WORK_PACKET, commit=False
+    )
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "enforce_work_packet: false\n"
+        + 'work_packet_opt_out_reason: "Planner prompts do not emit packets yet."\n',
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "initial")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert "FAIL handoff validation:" not in output
+    assert "enforce_work_packet is enabled" not in output
+    assert "PASS handoff validation:" in output
+
+
 def test_doctor_warns_on_dirty_tree_and_falls_back_to_default_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

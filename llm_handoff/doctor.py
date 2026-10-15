@@ -6,7 +6,8 @@ Gemini CLI roles need for their sandbox, whether the configured next-agent
 normalizer has an API key or CLI to run with, whether the audit runs the
 security reviewer (with the opt-out reason when it does not), whether the
 work-claim gate is on (with the opt-out reason when it is not), and the
-current handoff file. It does not start a dispatch, call a provider, contact the network, or write any
+current handoff file, validated with the same Work Packet requirement the
+dispatch loop applies. It does not start a dispatch, call a provider, contact the network, or write any
 files.
 
 `_command_available` and `_command_binary_name` live here so the supervisor's
@@ -127,13 +128,18 @@ def run_doctor(
         _check_work_claim_gate(dispatch_config, checks)
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
+        require_work_packet = dispatch_config.enforce_work_packet
     else:
         handoff_path = (resolved_root / DEFAULT_HANDOFF_PATH).resolve()
         dispatcher_commit_mode = False
+        # The config did not load (already a FAIL); validate against the
+        # built-in default, which runs the work-claim gate.
+        require_work_packet = True
     _check_handoff(
         resolved_root,
         handoff_path,
         dispatcher_commit_mode=dispatcher_commit_mode,
+        require_work_packet=require_work_packet,
         git_available=git_available,
         checks=checks,
     )
@@ -468,7 +474,13 @@ def _check_handoff(
     dispatcher_commit_mode: bool,
     git_available: bool,
     checks: list[DoctorCheck],
+    require_work_packet: bool = True,
 ) -> None:
+    """Validate the current handoff the way the dispatch loop does.
+
+    ``require_work_packet`` mirrors ``enforce_work_packet`` so a handoff the
+    dispatcher would reject for a missing Work Packet also fails here.
+    """
     if not handoff_path.exists():
         checks.append(
             DoctorCheck(
@@ -528,6 +540,7 @@ def _check_handoff(
             handoff_content,
             producer,
             git_cwd=repo_root if git_available else None,
+            require_work_packet=require_work_packet,
             dispatcher_commit_mode=dispatcher_commit_mode,
         )
     except (OSError, subprocess.SubprocessError) as exc:

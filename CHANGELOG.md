@@ -17,7 +17,10 @@ This project follows a simple pre-release changelog until the first public tag.
   gate is off, every dispatcher start logs a WARN with
   `enforce_work_packet: false` and the reason instead of the old INFO line,
   and `llm-handoff doctor` prints `WARN work-claim gate:` with the reason; with
-  the gate on it prints `PASS work-claim gate:`. Configs that omit
+  the gate on it prints `PASS work-claim gate:`. The doctor's handoff
+  validation now applies the same Work Packet requirement as the dispatch
+  loop, so a planner assignment the dispatcher would reject for an
+  unparseable Work Packet also fails `llm-handoff doctor`. Configs that omit
   `enforce_work_packet` now run the gate: planner assignments to `backend` or
   `frontend` must carry a parseable `## Work Packet`, and post-dispatch
   validation rejects them otherwise. To keep the old behavior, opt out with a
