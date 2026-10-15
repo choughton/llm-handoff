@@ -61,6 +61,8 @@ NORMALIZER_PROVIDER = "claude"
 NORMALIZER_MODEL = "claude-haiku-5-5"
 GEMINI_NORMALIZER_MODEL = "gemini-2.5-flash"
 OPENAI_NORMALIZER_MODEL = "gpt-5.4-mini"
+# The codex normalizer runs through the Codex CLI login instead of the API.
+CODEX_NORMALIZER_MODEL = OPENAI_NORMALIZER_MODEL
 NORMALIZER_TIMEOUT_MS = 60_000
 
 AGENT_TIMEOUT_MS = 1_200_000
@@ -170,9 +172,10 @@ DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "finalizer": "claude",
 }
 RUNTIME_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini"})
-NORMALIZER_PROVIDER_ADAPTERS = frozenset({"claude", "gemini", "openai"})
+NORMALIZER_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini", "openai"})
 NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
     "claude": NORMALIZER_MODEL,
+    "codex": CODEX_NORMALIZER_MODEL,
     "gemini": GEMINI_NORMALIZER_MODEL,
     "openai": OPENAI_NORMALIZER_MODEL,
 }

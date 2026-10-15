@@ -898,9 +898,9 @@ normalizer:
   on_unknown: fail_closed
 ```
 
-The registered normalizer adapters are `claude`, `gemini`, and `openai`.
-`claude` is the reference default. If `provider` changes and `model` is omitted,
-the loader fills a provider-specific default model.
+The registered normalizer adapters are `claude`, `codex`, `gemini`, and
+`openai`. `claude` is the reference default. If `provider` changes and `model`
+is omitted, the loader fills a provider-specific default model.
 
 The normalizer has two runtime auth shapes:
 
@@ -909,8 +909,35 @@ The normalizer has two runtime auth shapes:
   `GOOGLE_API_KEY`; OpenAI requires `OPENAI_API_KEY`; Claude uses
   `ANTHROPIC_API_KEY` when present.
 - CLI auth path: Claude may fall back to the local Claude Code CLI session when
-  no Anthropic API key is available. Gemini and OpenAI normalizer adapters are
-  API-only in the current scaffold.
+  no Anthropic API key is available. The `codex` adapter always uses the local
+  Codex CLI login. Gemini and OpenAI normalizer adapters are API-only in the
+  current scaffold.
+
+Choose `provider: codex` when the machine has the Codex CLI signed in (for
+example with a ChatGPT account) but no `OPENAI_API_KEY`, such as an all-Codex
+setup:
+
+```yaml
+normalizer:
+  provider: codex
+  # model defaults to gpt-5.4-mini; set it to a model your Codex login can use.
+```
+
+The `codex` adapter runs `codex exec --sandbox read-only` from the target
+repository with the arguments passed as a list and no shell. The prompt is
+sent on stdin, and the run is limited to `timeout_ms`. It never reads or passes
+`OPENAI_API_KEY`, even when that variable is set; use `provider: openai` for
+API-key auth. The JSON schema and last-message files go to a temporary
+directory outside the repository. A missing `codex` binary, a launch error, a
+timeout, a nonzero exit, or output that is not a valid role fails closed and
+leaves the handoff unchanged.
+
+`llm-handoff doctor` prints one `normalizer` line. It fails when the
+configured normalizer cannot run: for `codex`, the `codex` binary is not
+found; for `claude`, neither `ANTHROPIC_API_KEY` nor the `claude` binary is
+available; for `openai`, `OPENAI_API_KEY` is not set; for `gemini`, neither
+`GEMINI_API_KEY` nor `GOOGLE_API_KEY` is set. The doctor never calls the
+provider, so a passing line reports auth as not verified.
 
 The API path should not silently fall back to CLI auth after selecting an API
 key. If the structured API call fails, the dispatcher should fail closed and
