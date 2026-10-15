@@ -175,6 +175,8 @@ python -m llm_handoff init path/to/your-project --template reference-workflow --
 - A Python CLI for serially dispatching work between AI coding CLIs.
 - A file-based operating protocol centered on `HANDOFF.md`.
 - A deterministic router with validator-backed failure handling.
+- An opt-in deterministic work-claim gate that checks an implementer's
+  `scope_sha`, diff scope, and verification command before an audit session.
 - A reference workflow that users can inspect, copy, fork, or adapt.
 - An optional supervised wrapper for operator evidence, heartbeat output, and
   bounded repair-role handoff when explicitly enabled.
@@ -200,7 +202,8 @@ python -m llm_handoff init path/to/your-project --template reference-workflow --
 4. If the role is non-canonical, a constrained model-backed normalizer may
    rewrite obvious values or return `unknown`.
 5. The configured provider CLI runs one role.
-6. The updated handoff is validated.
+6. The updated handoff is validated. With `enforce_work_packet` enabled, a
+   completion claim is also checked against the Work Packet before audit.
 7. The loop continues, pauses, or escalates to the user.
 
 ```text

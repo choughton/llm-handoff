@@ -50,6 +50,14 @@ from llm_handoff.validator import (
     parse_validation_output,
     validate_handoff,
 )
+from llm_handoff.work_claim import (
+    PreDispatchState,
+    WorkClaimResult,
+    bounce_route_for,
+    build_bounce_handoff,
+    capture_pre_dispatch_state,
+    verify_work_claim,
+)
 
 
 # Prompt templates name the handoff file through {handoff_path} so the
@@ -518,13 +526,20 @@ def run_loop(
             previous_cycle = current_cycle
             consecutive_failures = 0
         else:
+            pre_dispatch_state: PreDispatchState | None = None
+            if _work_claim_gate_applies(config, current_cycle.route):
+                pre_dispatch_state = capture_pre_dispatch_state(config.repo_root)
             if config.audit.security_enabled and current_cycle.route in {
                 "backend",
                 "frontend",
             }:
                 # The audit fan-out reviews pre-dispatch HEAD..scope_sha, so
                 # remember where the implementer started.
-                implementer_base_sha = _git_head(config.repo_root)
+                implementer_base_sha = (
+                    pre_dispatch_state.head_sha
+                    if pre_dispatch_state is not None
+                    else _git_head(config.repo_root)
+                )
             dispatch_result, previous_agent = _dispatch_route(
                 current_cycle.route,
                 config,
@@ -599,6 +614,7 @@ def run_loop(
                 config.handoff_full_path,
                 previous_agent,
                 prior_handoff_sha=current_cycle.handoff_sha,
+                require_work_packet=config.enforce_work_packet,
             )
             _record_post_dispatch_status_transition(
                 config=config,
@@ -657,6 +673,14 @@ def run_loop(
                         ),
                     )
                     if validation_result.verdict != "NO":
+                        _run_work_claim_gate(
+                            config=config,
+                            route=current_cycle.route,
+                            previous_agent=previous_agent,
+                            assignment_content=handoff_content,
+                            pre_dispatch_state=pre_dispatch_state,
+                            log=log_fn,
+                        )
                         previous_cycle = current_cycle
                         consecutive_failures = 0
                         if max_cycles is not None and cycle_number >= max_cycles:
@@ -743,7 +767,17 @@ def run_loop(
                     continue
                 return 1
 
-            if _has_rationalization_warning(validation_result):
+            if _run_work_claim_gate(
+                config=config,
+                route=current_cycle.route,
+                previous_agent=previous_agent,
+                assignment_content=handoff_content,
+                pre_dispatch_state=pre_dispatch_state,
+                log=log_fn,
+            ):
+                previous_cycle = current_cycle
+                consecutive_failures = 0
+            elif _has_rationalization_warning(validation_result):
                 _log(
                     log_fn,
                     "WARN",
@@ -764,9 +798,9 @@ def run_loop(
                 previous_cycle = current_cycle
                 consecutive_failures = 0
                 continue
-
-            previous_cycle = current_cycle
-            consecutive_failures = 0
+            else:
+                previous_cycle = current_cycle
+                consecutive_failures = 0
 
         if max_cycles is not None and cycle_number >= max_cycles:
             return 0
@@ -1049,6 +1083,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         config.handoff_full_path,
         previous_agent,
         prior_handoff_sha=before_state.handoff_sha,
+        require_work_packet=config.enforce_work_packet,
     )
     if repaired_validation.verdict == "NO":
         _log(
@@ -1084,6 +1119,8 @@ def _is_repairable_handoff_hygiene_failure(
         "frontmatter_producer_missing:",
         "scope_claim_missing:",
         "scope_claim_mismatch:",
+        "work_packet_missing:",
+        "work_packet_unparseable:",
     )
     for error in result.errors:
         if error.startswith("frontmatter_scope_sha_missing:"):
@@ -1555,6 +1592,121 @@ def _parse_frontmatter_or_none(handoff_content: str):
         return None
 
 
+def _work_claim_gate_applies(config: DispatchConfig, route: RouteName) -> bool:
+    return config.enforce_work_packet and route in {"backend", "frontend"}
+
+
+def _run_work_claim_gate(
+    *,
+    config: DispatchConfig,
+    route: RouteName,
+    previous_agent: str,
+    assignment_content: str,
+    pre_dispatch_state: PreDispatchState | None,
+    log: LogFn,
+) -> bool:
+    """Verify a ``ready_for_review`` claim deterministically before audit.
+
+    Returns True when the claim failed and the handoff was rewritten into a
+    bounce, False when the gate passed or did not apply.
+    """
+
+    if not _work_claim_gate_applies(config, route) or pre_dispatch_state is None:
+        return False
+    claim_content = _read_required_text(config.handoff_full_path)
+    if claim_content is None:
+        return False
+    frontmatter = _parse_frontmatter_or_none(claim_content)
+    if (
+        frontmatter is None
+        or _handoff_status(frontmatter.status) != HandoffStatus.READY_FOR_REVIEW
+    ):
+        return False
+
+    _log(log, "AGENT", f"Running deterministic work-claim gate for {previous_agent}...")
+    result = verify_work_claim(
+        repo_root=config.repo_root,
+        handoff_path=config.handoff_path,
+        assignment_content=assignment_content,
+        claim_content=claim_content,
+        pre_dispatch_state=pre_dispatch_state,
+        verification_timeout_seconds=config.work_packet_verification_timeout_seconds,
+        scanners=config.scanners,
+    )
+    _log_work_claim_result(result, log)
+    if result.passed:
+        _log(log, "AGENT", f"Work-claim gate PASSED for {previous_agent}.")
+        return False
+
+    for error in result.errors:
+        _log(log, "ERROR", error)
+    bounce_route = bounce_route_for(result, implementer=route)
+    count = record_status_transition(
+        frontmatter.story_id,
+        _handoff_status(bounce_route.status),
+    )
+    bounce_content = build_bounce_handoff(
+        claim_content=claim_content,
+        result=result,
+        implementer=route,
+        route=bounce_route,
+        bounce_count=count if frontmatter.story_id else None,
+    )
+    config.handoff_full_path.write_text(bounce_content, encoding="utf-8")
+    _log(
+        log,
+        "AGENT",
+        f"Work-claim gate FAILED for {previous_agent}; HANDOFF.md now routes to "
+        f"{bounce_route.next_agent} with status {bounce_route.status} "
+        f"(checks: {', '.join(result.failed_prefixes)}).",
+    )
+    if frontmatter.story_id and bounce_route.status == "verified_fail":
+        _log(
+            log,
+            "INFO",
+            f"Bounce count for story_id={frontmatter.story_id} is now {count}.",
+        )
+    return True
+
+
+def _log_work_claim_result(result: WorkClaimResult, log: LogFn) -> None:
+    _log(
+        log,
+        "INFO",
+        "work-claim: pre-dispatch HEAD "
+        f"{_short_sha_preview(result.pre_dispatch_head or 'unknown')}; HEAD "
+        f"{_short_sha_preview(result.head_sha or 'unknown')}; scope_sha "
+        f"{result.scope_sha or 'missing'}",
+    )
+    _log(
+        log,
+        "INFO",
+        "work-claim: changed files since dispatch: "
+        f"{', '.join(result.changed_files) or 'none'}",
+    )
+    for check in result.checks:
+        _log(log, "INFO", f"work-claim: {check.outcome} {check.name}: {check.detail}")
+    for scanner_run in result.scanner_runs:
+        if scanner_run.missing and not scanner_run.required:
+            _log(
+                log,
+                "WARN",
+                f"work-claim: optional scanner {scanner_run.name} skipped: "
+                f"{scanner_run.detail}",
+            )
+        if scanner_run.run is not None:
+            for line in scanner_run.run.output_tail_lines():
+                _log(log, "INFO", f"work-claim | {scanner_run.name} | {line}")
+    for run in result.verification_runs:
+        _log(
+            log,
+            "INFO",
+            f"work-claim: verification command `{run.command}` {run.describe_outcome()}",
+        )
+        for line in run.output_tail_lines():
+            _log(log, "INFO", f"work-claim | {line}")
+
+
 def _record_post_dispatch_status_transition(
     *,
     config: DispatchConfig,
@@ -1995,6 +2147,24 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         "Smart router:       ON (frontmatter primary; legacy fallback warning)",
     )
     _log(log, "INFO", "Handoff validation: ON (hard gate)")
+    _log(
+        log,
+        "INFO",
+        "Work-claim gate:    ON (runs the Work Packet verification command)"
+        if config.enforce_work_packet
+        else "Work-claim gate:    OFF (enforce_work_packet: false)",
+    )
+    if config.scanners:
+        scanner_names = ", ".join(scanner.name for scanner in config.scanners)
+        if config.enforce_work_packet:
+            _log(log, "INFO", f"Scanners:           {scanner_names}")
+        else:
+            _log(
+                log,
+                "WARN",
+                f"Scanners configured ({scanner_names}) but enforce_work_packet is "
+                "false; they will not run.",
+            )
     _log(log, "INFO", "Finalizer route:    ON")
     _log(log, "INFO", "Chaining:           NONE (single dispatch per cycle)")
     _log(log, "INFO", f"Frontend agent:     {frontend_mode}")

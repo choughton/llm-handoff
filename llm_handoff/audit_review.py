@@ -42,6 +42,7 @@ from llm_handoff.config import AgentConfig, AgentRole, DispatchConfig
 from llm_handoff.roles import normalize_agent_label
 from llm_handoff.router import HandoffRouting
 from llm_handoff.text_io import read_dispatch_text
+from llm_handoff.work_claim import extract_work_packet_section
 
 
 Severity = Literal["critical", "high", "medium", "low", "info"]
@@ -594,6 +595,7 @@ def run_audit_fan_out(
         decision=decision,
         implementer_role=implementer_role,
         block_severity=config.audit.block_severity,
+        source_handoff=context.handoff_content,
     )
     handoff_path.write_text(handoff_text, encoding="utf-8")
     if decision.blocked:
@@ -905,6 +907,7 @@ def render_audit_handoff(
     decision: MergeDecision,
     implementer_role: str,
     block_severity: str,
+    source_handoff: str = "",
 ) -> str:
     quality_run = runs["quality"]
     security_run = runs["security"]
@@ -1010,6 +1013,14 @@ def render_audit_handoff(
             lines.append("- none")
         lines.append("")
 
+    work_packet = (
+        extract_work_packet_section(source_handoff) if decision.blocked else None
+    )
+    if work_packet:
+        # Carry the assignment forward verbatim so the next implementation
+        # round and the work-claim gate can still read it.
+        lines.append(work_packet.rstrip())
+        lines.append("")
     lines.append("## Verification Evidence")
     lines.append("")
     lines.append(f"- **Commands run:** {_commands_run_text(quality, runs)}")

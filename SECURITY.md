@@ -30,6 +30,16 @@ After the first tagged release, supported versions will be listed here.
   guarantee. It is not hardened against prompt injection in repository
   content. See the Audit Fan-Out section of `docs/ARCHITECTURE.md`.
 - Treat generated handoff instructions as untrusted until validated.
+- `enforce_work_packet` makes the dispatcher itself run the planner's Work
+  Packet `Verification command` through the shell in the target repository.
+  The agents already run there with provider permissions disabled, so this
+  adds no new exposure, but it is still execution of agent-written text. Leave
+  it off for repositories whose handoff files you have not reviewed.
+- `scanners` entries in `dispatch_config.yaml` are operator-authored commands,
+  so they are trusted operator input rather than agent-written text. The
+  dispatcher does not sandbox scanners any more than it sandboxes agents; a
+  scanner runs with the dispatcher's permissions in the target repository.
+  Review the config the same way you review any script the repository runs.
 - If `.dispatch.lock` exists, confirm no other dispatcher is active before
   removing it manually.
 

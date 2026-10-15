@@ -24,9 +24,11 @@ from llm_handoff.audit_review import (
 )
 from llm_handoff.config import DispatchConfig, load_dispatch_config
 from llm_handoff.router import parse_handoff_frontmatter_text
+from llm_handoff.validator import validate_handoff_text
 
 
 STORY_ID = "AUDIT-S1"
+NL = chr(10)
 ORIGINAL_AUDIT_PROMPT_TEMPLATE = (
     "Use the auditor agent to audit the work described in "
     "{handoff_path}. Read the repository instructions and relevant "
@@ -1057,6 +1059,67 @@ def test_audit_log_directory_is_unique_within_the_same_second(
     assert second.name == "20260101T000000-cycle1-2"
     assert third.name == "20260101T000000-cycle1-3"
     assert (first / "review.json").read_text(encoding="utf-8") == "first run"
+
+
+WORK_PACKET = (
+    "## Work Packet"
+    + NL
+    + NL
+    + "- **Objective:** Add the app entry point."
+    + NL
+    + "- **Files in scope:** src/app.py"
+    + NL
+    + "- **Files out of bounds:** none"
+    + NL
+    + "- **Context:** AGENTS.md"
+    + NL
+    + "- **Verification command:** python -m pytest -q"
+    + NL
+    + "- **Expected next route:** auditor"
+    + NL
+)
+
+
+@pytest.mark.parametrize("security_findings", [["high"], ["low"]])
+def test_blocked_fan_out_carries_work_packet_forward(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    security_findings: list[str],
+) -> None:
+    repo, base, head, _handoff = _fan_out_repo(tmp_path)
+    handoff = _backend_handoff(head) + NL + WORK_PACKET
+    _write_handoff(repo, handoff)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(
+                _security_payload(findings=[_finding(sev) for sev in security_findings])
+            )
+        ),
+    )
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    blocked = security_findings == ["high"]
+    assert (WORK_PACKET in written) is blocked
+    if blocked:
+        validation = validate_handoff_text(
+            written,
+            "auditor (audit)",
+            git_cwd=repo,
+            require_work_packet=True,
+        )
+        assert not [e for e in validation.errors if e.startswith("work_packet")], (
+            validation.errors
+        )
 
 
 @pytest.mark.parametrize("writer", ["quality", "security"])
