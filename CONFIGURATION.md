@@ -198,7 +198,11 @@ pause reason, that a person at the dispatcher console dispatched it from the
 operator prompt, and the operator's message (`Operator instruction: ...`), or,
 with no message, a request to continue the assignment in the handoff. It also
 tells the role to stay within its boundaries and the Work Packet's Files in
-scope and to write its normal handback. `@planner <message>` is the same as
+scope and to write its normal handback. When `audit.reviewers` includes
+`security`, `@auditor` runs the read-only audit fan-out instead, so its
+instruction keeps the operator's message but tells the reviewer not to edit
+`HANDOFF.md` and to return only the structured JSON the review requests.
+`@planner <message>` is the same as
 typing the message as planner guidance, and `@planner` alone is the same as
 pressing Enter. Any other target, such as `@user`, `@finalizer`, or
 `@validator`, is rejected with a message that lists the accepted targets, and

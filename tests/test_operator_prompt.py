@@ -905,6 +905,39 @@ def test_auditor_target_without_message_continues_the_assignment(
     ) in harness.logs
 
 
+def test_auditor_target_in_audit_fan_out_keeps_the_review_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch, handoff_path, operator_lines=["@auditor check {x}", "quit"]
+    )
+    fan_out_calls: list[str] = []
+
+    def fake_fan_out(config: DispatchConfig, **kwargs: Any) -> DispatchResult:
+        fan_out_calls.append("fan-out")
+        kwargs["quality_invoker"](
+            "QUALITY FAN-OUT PROMPT", config.agents["auditor"]
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "run_audit_fan_out", fake_fan_out)
+    config = _config(tmp_path, audit={"reviewers": ["quality", "security"]})
+    assert config.audit.security_enabled
+
+    assert harness.run(config) == 0
+
+    assert fan_out_calls == ["fan-out"]
+    assert len(harness.auditor_prompts) == 1
+    prompt = harness.auditor_prompts[0]
+    assert prompt.startswith("QUALITY FAN-OUT PROMPT")
+    assert "Operator instruction: check {x}" in prompt
+    assert "This review stays read-only" in prompt
+    assert "return only the structured JSON object" in prompt
+    assert "write your normal handback" not in prompt
+    assert prompt.isascii()
+
+
 def test_frontend_target_dispatches_frontend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

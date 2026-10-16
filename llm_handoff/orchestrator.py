@@ -292,6 +292,17 @@ OPERATOR_ROLE_INSTRUCTION_TEMPLATE = (
     "boundaries and the Work Packet's Files in scope, and write your normal "
     "handback to {handoff_path}."
 )
+# An `@auditor` dispatch runs the read-only audit fan-out when
+# `audit.security_enabled` is true. The reviewer must not write the handoff
+# there, so it gets this instruction instead of the normal-handback one.
+OPERATOR_ROLE_AUDIT_FAN_OUT_INSTRUCTION_TEMPLATE = (
+    "The dispatcher paused instead of dispatching. Pause reason: "
+    "{pause_reason} A person at the dispatcher console dispatched you directly "
+    "from the operator prompt. {operator_request} Apply the operator's "
+    "message within the review above. This review stays read-only: do not "
+    "edit {handoff_path} or any other file, and return only the structured "
+    "JSON object the review instructions request."
+)
 OPERATOR_ROLE_NO_MESSAGE_REQUEST = (
     "The operator gave no message: continue the assignment in the handoff."
 )
@@ -3243,10 +3254,17 @@ def _pause_at_dispatcher_pause(
         else:
             operator_request = OPERATOR_ROLE_INSTRUCTION_PREFIX + result.text
             summary = "the operator's message"
+        # The audit fan-out reviewer is read-only and answers in JSON, so it
+        # must not be told to write a normal handback.
+        template = (
+            OPERATOR_ROLE_AUDIT_FAN_OUT_INSTRUCTION_TEMPLATE
+            if role == "auditor" and config.audit.security_enabled
+            else OPERATOR_ROLE_INSTRUCTION_TEMPLATE
+        )
         role_pending = PendingPlannerRecovery(
             handoff_sha=_content_sha(current_handoff_content),
             additional_instruction=_render_prompt(
-                OPERATOR_ROLE_INSTRUCTION_TEMPLATE,
+                template,
                 config.handoff_path,
                 pause_reason=reason,
                 operator_request=operator_request,
