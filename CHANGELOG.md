@@ -27,6 +27,7 @@ This project follows a simple pre-release changelog until the first public tag.
   and makes no `gh` call; the message lists up to five offending commits. A
   story state saved by an older version has no recorded head, so it pauses
   instead of resuming.
+
 - In dispatcher commit mode the live handoff no longer leaks into pull
   requests. The finalizer is told to commit only project state, and a
   finalizer commit that holds only the handoff is undone with
