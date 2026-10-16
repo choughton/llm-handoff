@@ -72,6 +72,11 @@ Rules:
 - Include changed files, verification commands, and the exact next step.
 - Preserve the assignment's `## Work Packet` section in the handback; the
   auditor and the dispatcher's work-claim gate read it.
+- Keep `epic_id`, `story_id`, `story_title`, and `remaining_stories` from
+  the assignment unchanged in the handback. If the assignment has
+  `remaining_stories: []`, write `remaining_stories: []`; do not drop it or
+  replace it with the template's placeholder item. The auditor reads that
+  explicit empty list as the epic's last story.
 - Do not use stale commands or results from a previous session as evidence.
 - If blocked, pick the status by who must act next and explain the blocker:
   - A question only a person can answer: `status: blocked_missing_context`
