@@ -357,6 +357,41 @@ publish:
   (`gh pr checks --watch`) before merging and stops if they fail; only enable
   this when the repository has CI.
 
+#### Keeping The Story Branch Up To Date
+
+The base branch can move while a story is in progress, for example when
+another pull request merges. In `pr` mode, before every push of the story
+branch (the first push and each correction round), the dispatcher runs
+`git fetch <remote> <base_branch>` and merges `<remote>/<base_branch>` into the
+story branch (`git merge --no-edit`). The review then sees the merged result.
+If `gh pr merge` later reports that the pull request is not mergeable,
+because the base branch moved again during the review, the dispatcher does
+the same merge once more, pushes it, and retries the merge once.
+
+When that merge conflicts, the dispatcher runs `git merge --abort` and pauses
+(exit code 0). It names the conflicting files and keeps the story state in
+`logs/dispatch/publish/story.json`. To resume, on the story branch run
+`git merge <remote>/<base_branch>`, resolve the conflicts, and commit the
+merge, then start the dispatcher again. At startup it pushes the story
+branch and carries on from where it paused. If it paused at the merge, it
+merges the pull request without waiting for another review. If the retried
+`gh pr merge` fails again, the dispatcher pauses the same way and leaves the
+pull request open. The next start retries the merge, or you can merge it
+yourself.
+
+Many stories add a bullet at the top of the same changelog section, which
+conflicts whenever two of them are open at once. A line in the target
+repository's `.gitattributes` lets the local merge keep both sides:
+
+```gitattributes
+CHANGELOG.md merge=union
+```
+
+A union merge keeps every line from both sides without checking that the
+result makes sense, so only use it for files where that is safe. `init` does
+not add it: the reference workflow does not ship a changelog, and
+`.gitattributes` belongs to the target repository.
+
 #### Waiting For The Codex Pull Request Review
 
 With `wait_for_reviewers: [codex]`, `pr` mode with `auto_merge: true` waits
@@ -437,8 +472,10 @@ the fix.
 Agents never branch, push, or merge: the dispatcher does all of it, and only
 after the work-claim gate and both reviewers pass. `pr` mode pushes with your
 Git credentials and needs the GitHub CLI (`gh`) signed in. Both branch modes
-require `commit_mode: dispatcher`. A failed push, merge, or `gh` call stops the
-loop with the error instead of retrying.
+require `commit_mode: dispatcher`. A failed fetch, push, merge, or `gh` call
+stops the loop with the error instead of retrying. The exceptions are a
+conflicting base branch merge, which pauses, and a pull request that is not
+mergeable, which is retried once after a base branch merge.
 
 ### Scanners
 

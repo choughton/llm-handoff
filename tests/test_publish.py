@@ -17,6 +17,7 @@ from llm_handoff.publish import (
     build_review_bounce_handoff,
     ensure_story_branch,
     publish_story,
+    resume_paused_publish,
     save_review_responses,
     saved_story_base,
     settle_deferred_findings,
@@ -104,13 +105,31 @@ elif args[:2] == ["pr", "view"]:
                       "state": state["pr"]}))
 elif args[:2] == ["pr", "merge"]:
     branch = args[2]
+    git_dir = ["git", "--git-dir", os.environ["FAKE_GH_REMOTE"]]
+    # Stands in for GitHub's merge: only a branch that has main merges.
+    behind = subprocess.run(
+        [*git_dir, "merge-base", "--is-ancestor", "refs/heads/main",
+         f"refs/heads/{branch}"],
+    ).returncode
+    if behind:
+        sys.exit("X Pull request acme/repo#7 is not mergeable: the merge "
+                 "commit cannot be cleanly created.")
     subprocess.run(
-        ["git", "--git-dir", os.environ["FAKE_GH_REMOTE"], "update-ref",
-         "refs/heads/main", f"refs/heads/{branch}"],
+        [*git_dir, "update-ref", "refs/heads/main", f"refs/heads/{branch}"],
         check=True,
     )
     state["pr"] = "MERGED"
     save()
+elif args[:2] == ["pr", "checks"]:
+    # Lets a test move main on the remote while the pull request is open.
+    move = state.pop("move_main_to", None)
+    if move:
+        subprocess.run(
+            ["git", "--git-dir", os.environ["FAKE_GH_REMOTE"], "update-ref",
+             "refs/heads/main", move],
+            check=True,
+        )
+        save()
 elif args[0] == "api":
     fields = {}
     for flag, value in zip(args, args[1:]):
@@ -437,7 +456,7 @@ def test_pr_mode_with_auto_merge_merges_and_returns_to_base(
     assert BRANCH not in _git(repo, "branch", "--list")
 
 
-def test_pr_mode_stops_when_the_push_fails(tmp_path: Path) -> None:
+def test_pr_mode_stops_when_the_base_branch_cannot_be_fetched(tmp_path: Path) -> None:
     _init(tmp_path)
     _start_story(tmp_path)
     entries, log = _logs()
@@ -454,7 +473,277 @@ def test_pr_mode_stops_when_the_push_fails(tmp_path: Path) -> None:
     )
 
     assert outcome.stop is True and outcome.exit_code == 1
+    assert any(level == "ERROR" and "git fetch" in msg for level, msg in entries)
+
+
+def test_pr_mode_stops_when_the_push_fails(tmp_path: Path) -> None:
+    repo, _remote, _gh, _env = _with_remote(tmp_path)
+    _git(repo, "config", "remote.origin.pushurl", str(tmp_path / "missing.git"))
+    _start_story(repo)
+    entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=repo,
+        mode="pr",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=VERIFIED,
+        log=log,
+        gh_command=["gh-should-not-run"],
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 1
     assert any(level == "ERROR" and "git push" in msg for level, msg in entries)
+
+
+CHANGELOG = "# Changelog\n\n## Unreleased\n\n- Started the project.\n"
+
+
+def _commit_all(repo: Path, files: dict[str, str], message: str) -> None:
+    for name, text in files.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+
+
+def _commit_on_remote(
+    tmp_path: Path, remote: Path, ref: str, files: dict[str, str], message: str
+) -> None:
+    """Commit on top of the remote's main from another clone; push it to ``ref``."""
+
+    clone = tmp_path / f"clone-{ref.replace('/', '-')}"
+    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True)
+    _git(clone, "config", "user.name", "llm-handoff tests")
+    _git(clone, "config", "user.email", "tests@example.invalid")
+    _git(clone, "config", "core.autocrlf", "false")
+    _commit_all(clone, files, message)
+    _git(clone, "push", "-q", "origin", f"HEAD:refs/heads/{ref}")
+
+
+def _publish_pr(repo: Path, gh: list[str], log, **kwargs: object) -> PublishOutcome:
+    options: dict[str, object] = {
+        "repo_root": repo,
+        "mode": "pr",
+        "remote": "origin",
+        "auto_merge": True,
+        "wait_for_checks": False,
+        "handoff_content": VERIFIED,
+        "log": log,
+        "gh_command": gh,
+    }
+    options.update(kwargs)
+    return publish_story(**options)
+
+
+def _resume(repo: Path, gh: list[str], log, **kwargs: object) -> PublishOutcome:
+    options: dict[str, object] = {
+        "repo_root": repo,
+        "remote": "origin",
+        "auto_merge": True,
+        "wait_for_checks": False,
+        "handoff_content": VERIFIED,
+        "log": log,
+        "gh_command": gh,
+    }
+    options.update(kwargs)
+    return resume_paused_publish(**options)
+
+
+def _resolve_readme_conflict(repo: Path) -> None:
+    """What the pause message asks the operator to do."""
+
+    merged = subprocess.run(
+        ["git", "-C", str(repo), "merge", "origin/main"],
+        capture_output=True,
+        text=True,
+    )
+    assert merged.returncode != 0
+    (repo / "README.md").write_text("resolved readme\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-q", "--no-edit")
+
+
+def _saved_state(repo: Path) -> dict:
+    return json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+
+
+def test_pr_mode_merges_a_moved_base_branch_before_pushing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _commit_all(
+        repo,
+        {".gitattributes": "CHANGELOG.md merge=union\n", "CHANGELOG.md": CHANGELOG},
+        "Add a changelog",
+    )
+    _git(repo, "push", "-q", "origin", "main")
+    _start_story(repo)
+    unreleased = "## Unreleased\n\n"
+    _commit_all(
+        repo,
+        {"CHANGELOG.md": CHANGELOG.replace(unreleased, unreleased + "- Added the widget.\n\n")},
+        "W9.9 changelog",
+    )
+    # Another pull request merges while the story is in progress, with its
+    # own bullet in the same place.
+    _commit_on_remote(
+        tmp_path,
+        remote,
+        "main",
+        {
+            "CHANGELOG.md": CHANGELOG.replace(
+                unreleased, unreleased + "- Fixed the gadget.\n\n"
+            ),
+            "docs/gadget.md": "gadget\n",
+        },
+        "Fix the gadget",
+    )
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    merges = [call for call in _gh_calls(tmp_path) if call[:2] == ["pr", "merge"]]
+    assert len(merges) == 1
+    assert _git(repo, "branch", "--show-current") == "main"
+    changelog = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "- Added the widget." in changelog and "- Fixed the gadget." in changelog
+    assert (repo / "docs" / "gadget.md").exists()
+    assert (repo / "src" / "widget.py").exists()
+    assert any(
+        level == "AGENT" and "Merged origin/main into" in message
+        for level, message in entries
+    )
+
+
+def test_a_conflicting_base_branch_pauses_before_the_push_and_keeps_the_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _commit_all(repo, {"README.md": "story readme\n"}, "W9.9 readme")
+    _commit_on_remote(tmp_path, remote, "main", {"README.md": "base readme\n"}, "Readme")
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "`README.md`" in outcome.message
+    assert "git merge origin/main" in outcome.message
+    assert any(level == "PAUSE" for level, _message in entries)
+    assert not any(level == "ERROR" for level, _message in entries)
+    assert _saved_state(repo)["paused_publish"] == "push"
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert _git(repo, "status", "--porcelain") == ""
+    assert _gh_calls(tmp_path) == []
+    remote_branches = _git(repo, "ls-remote", "--heads", "origin")
+    assert BRANCH not in remote_branches
+
+    _resolve_readme_conflict(repo)
+    outcome = _resume(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert (repo / "README.md").read_text(encoding="utf-8") == "resolved readme\n"
+    assert not (repo / STATE_PATH).exists()
+
+
+def test_a_pull_request_that_is_not_mergeable_merges_after_a_base_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _commit_on_remote(
+        tmp_path, remote, "next-main", {"docs/gadget.md": "gadget\n"}, "Gadget"
+    )
+    # main moves on the remote after the push, while the checks run.
+    _set_gh(tmp_path, move_main_to="refs/heads/next-main")
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, wait_for_checks=True)
+
+    assert outcome == PublishOutcome()
+    merges = [call for call in _gh_calls(tmp_path) if call[:2] == ["pr", "merge"]]
+    assert len(merges) == 2
+    assert any(
+        level == "WARN" and "not mergeable" in message for level, message in entries
+    )
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert (repo / "docs" / "gadget.md").exists()
+    assert (repo / "src" / "widget.py").exists()
+
+
+def test_a_conflict_at_the_merge_pauses_and_resumes_without_another_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _commit_all(repo, {"README.md": "story readme\n"}, "W9.9 readme")
+    _commit_on_remote(
+        tmp_path, remote, "next-main", {"README.md": "base readme\n"}, "Readme"
+    )
+    _set_gh(tmp_path, move_main_to="refs/heads/next-main")
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, wait_for_checks=True)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "`README.md`" in outcome.message and "left open" in outcome.message
+    assert _saved_state(repo)["paused_publish"] == "merge"
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert not any(level == "ERROR" for level, _message in entries)
+
+    _resolve_readme_conflict(repo)
+    before = len(_gh_calls(tmp_path))
+    outcome = _resume(
+        repo, gh, log, wait_for_checks=True, review=GATE, sleep=lambda seconds: None
+    )
+
+    assert outcome == PublishOutcome()
+    resumed = _gh_calls(tmp_path)[before:]
+    # No wait for a Codex review: only the review threads are read.
+    assert not any(call[0] == "api" and call[-1] != "graphql" for call in resumed)
+    assert [call[:2] for call in resumed if call[0] == "pr"][-1] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert (repo / "README.md").read_text(encoding="utf-8") == "resolved readme\n"
+
+
+def test_resume_does_nothing_without_a_paused_publish(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _start_story(tmp_path)
+    entries, log = _logs()
+
+    outcome = _resume(tmp_path, ["gh-should-not-run"], log)
+
+    assert outcome == PublishOutcome()
+    assert entries == []
+
+
+def test_resume_skips_a_paused_publish_off_its_branch(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _start_story(tmp_path)
+    state = _saved_state(tmp_path)
+    state["paused_publish"] = "push"
+    (tmp_path / STATE_PATH).write_text(json.dumps(state), encoding="utf-8")
+    _git(tmp_path, "switch", "-q", "main")
+    entries, log = _logs()
+
+    outcome = _resume(tmp_path, ["gh-should-not-run"], log)
+
+    assert outcome == PublishOutcome()
+    assert [level for level, _message in entries] == ["WARN"]
+    assert _saved_state(tmp_path)["paused_publish"] == ""
 
 
 def test_publish_ignores_handoffs_that_are_not_verified_pass(tmp_path: Path) -> None:

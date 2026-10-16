@@ -26,7 +26,12 @@
   dispatcher never asks Codex for a review.
 
 In ``pr`` mode the dispatcher only auto-merges a pull request whose review
-threads are all resolved.
+threads are all resolved. Before each push it merges the remote base branch
+into the story branch, so the review sees the merged result. When ``gh pr
+merge`` reports the pull request is not mergeable, it does that once more,
+pushes, and retries. A base merge that does not go through is aborted and
+pauses the loop with the story state kept; after the operator merges the base
+branch into the story branch, the next start resumes publishing.
 
 Agents never push, branch, or merge: the dispatcher does all of it, and only
 after the work-claim gate and the audit have passed. Requires
@@ -112,6 +117,9 @@ class StoryState:
     deferred_findings: tuple[dict[str, object], ...] = ()
     # Whether the planner already had its one pass at deferred findings.
     deferral_planner_pass: bool = False
+    # "push" or "merge" when publishing paused because the base branch did not
+    # merge cleanly into the story branch; the next start resumes from there.
+    paused_publish: str = ""
 
 
 @dataclass(frozen=True)
@@ -327,6 +335,14 @@ def publish_story(
     title = _without_mentions(title)
     body = _without_mentions(body)
     message_path.write_text(body, encoding="utf-8")
+    # A publish that paused at the merge already had its review.
+    skip_review = state.paused_publish == "merge"
+    if state.paused_publish:
+        state = replace(state, paused_publish="")
+        _save_state(repo_root, state)
+    synced = _sync_with_base(repo_root, remote, state, log, step="push")
+    if synced is not None:
+        return synced
     requested_at = utc_now()
     pushed = _git(repo_root, ["push", "-u", remote, state.branch])
     if pushed.returncode != 0:
@@ -389,7 +405,7 @@ def publish_story(
                 f"pull request checks did not pass for {url or state.branch}: "
                 f"{_first_line(checks)}; it was left open",
             )
-    if review is not None and review.reviewers:
+    if review is not None and review.reviewers and not skip_review:
         verdict = _wait_for_reviewers(
             repo_root=repo_root,
             state=state,
@@ -442,13 +458,49 @@ def _merge_pull_request(
     url: str,
     log: LogFn,
 ) -> PublishOutcome:
-    """Merge the story's pull request and continue on the updated base branch."""
+    """Merge the story's pull request and continue on the updated base branch.
 
-    merged = _run(
-        [*gh_command, "pr", "merge", state.branch, "--merge", "--delete-branch"],
-        repo_root,
-        _GH_TIMEOUT_SECONDS,
-    )
+    When the base branch moved during the review and the pull request is no
+    longer mergeable, the base branch is merged into the story branch, pushed,
+    and the merge is tried once more.
+    """
+
+    merge_command = [
+        *gh_command, "pr", "merge", state.branch, "--merge", "--delete-branch"
+    ]
+    merged = _run(merge_command, repo_root, _GH_TIMEOUT_SECONDS)
+    if merged.returncode != 0 and _not_mergeable(merged):
+        log(
+            "WARN",
+            f"{url or state.branch} is not mergeable, likely because "
+            f"`{state.base_branch}` moved during the review. Merging "
+            f"{remote}/{state.base_branch} into `{state.branch}` and trying once more.",
+        )
+        # Answering review findings saved progress, so read the state again.
+        state = _load_state(repo_root) or state
+        synced = _sync_with_base(repo_root, remote, state, log, step="merge", url=url)
+        if synced is not None:
+            return synced
+        pushed = _git(repo_root, ["push", "-u", remote, state.branch])
+        if pushed.returncode != 0:
+            return _stop(
+                log, f"git push {remote} {state.branch} failed: {_first_line(pushed)}"
+            )
+        merged = _run(merge_command, repo_root, _GH_TIMEOUT_SECONDS)
+        if merged.returncode != 0:
+            _save_state(repo_root, replace(state, paused_publish="merge"))
+            return _pause(
+                repo_root,
+                log,
+                f"gh pr merge failed again for {url or state.branch} after "
+                f"{remote}/{state.base_branch} was merged into `{state.branch}` "
+                f"and pushed: {_first_line(merged)}. The pull request was left "
+                "open and the story state was kept. Check the pull request, "
+                "then start the dispatcher again to retry the merge; or merge "
+                f"it yourself, run `git switch {state.base_branch}` and "
+                "`git pull`, then start the dispatcher again.",
+                keep_state=True,
+            )
     if merged.returncode != 0:
         return _stop(
             log, f"gh pr merge failed for {url or state.branch}: {_first_line(merged)}"
@@ -465,6 +517,126 @@ def _merge_pull_request(
     _clear_state(repo_root)
     log("AGENT", f"Merged pull request {url or state.branch} into {state.base_branch}.")
     return PublishOutcome()
+
+
+def _sync_with_base(
+    repo_root: Path,
+    remote: str,
+    state: StoryState,
+    log: LogFn,
+    *,
+    step: str,
+    url: str = "",
+) -> PublishOutcome | None:
+    """Merge the remote base branch into the story branch before a push.
+
+    Returns ``None`` when the story branch is up to date or the merge is
+    clean. A merge that does not go through is aborted, and the dispatcher
+    pauses with the story state kept, so a start after the operator's merge
+    resumes publishing at ``step`` ("push" or "merge").
+    """
+
+    upstream = f"{remote}/{state.base_branch}"
+    fetched = _git(
+        repo_root,
+        [
+            "fetch",
+            remote,
+            f"+refs/heads/{state.base_branch}:refs/remotes/{upstream}",
+        ],
+    )
+    if fetched.returncode != 0:
+        return _stop(
+            log,
+            f"git fetch {remote} {state.base_branch} failed: {_first_line(fetched)}",
+        )
+    before = git_head(repo_root)
+    merged = _git(repo_root, ["merge", "--no-edit", "--no-verify", upstream])
+    if merged.returncode == 0:
+        after = git_head(repo_root)
+        if after != before:
+            log(
+                "AGENT",
+                f"Merged {upstream} into `{state.branch}` as "
+                f"{(after or '')[:12]} so the pull request has the latest "
+                f"`{state.base_branch}`.",
+            )
+        return None
+    unmerged = _git(repo_root, ["diff", "--name-only", "--diff-filter=U"])
+    conflicts = [line.strip() for line in unmerged.stdout.splitlines() if line.strip()]
+    if _git(repo_root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode == 0:
+        _git(repo_root, ["merge", "--abort"])
+    problem = (
+        f"conflicts in {', '.join(f'`{path}`' for path in conflicts)}"
+        if conflicts
+        else f"failed: {_first_line(merged)}"
+    )
+    if step == "merge":
+        outcome = f"the pull request {url or state.branch} was left open"
+        resume = "pushes the merge and merges the pull request without another review"
+    else:
+        outcome = f"`{state.branch}` was not pushed"
+        resume = "pushes the story branch and continues"
+    _save_state(repo_root, replace(state, paused_publish=step))
+    return _pause(
+        repo_root,
+        log,
+        f"Merging {upstream} into `{state.branch}` {problem}, so {outcome}. The "
+        "merge was aborted and the story state was kept. To resume: on "
+        f"`{state.branch}`, run `git merge {upstream}`, resolve the conflicts, "
+        "and commit the merge; then start the dispatcher again. It "
+        f"{resume}.",
+        keep_state=True,
+    )
+
+
+def _not_mergeable(result: subprocess.CompletedProcess[str]) -> bool:
+    output = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return "not mergeable" in output
+
+
+def resume_paused_publish(
+    *,
+    repo_root: Path,
+    remote: str,
+    auto_merge: bool,
+    wait_for_checks: bool,
+    handoff_content: str,
+    log: LogFn,
+    gh_command: Sequence[str] = ("gh",),
+    review: ReviewGate | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> PublishOutcome:
+    """Publish again a ``pr`` story that paused on a base-branch merge.
+
+    Runs once when the dispatcher starts. Does nothing unless the saved story
+    state says publishing paused and its story branch is checked out.
+    """
+
+    state = _load_state(repo_root)
+    if state is None or not state.paused_publish:
+        return PublishOutcome()
+    if _current_branch(repo_root) != state.branch:
+        _save_state(repo_root, replace(state, paused_publish=""))
+        log(
+            "WARN",
+            f"Publishing `{state.branch}` paused on a base-branch merge, but "
+            "the checkout is on another branch, so it was not resumed.",
+        )
+        return PublishOutcome()
+    log("INFO", f"Resuming the paused publish of `{state.branch}`.")
+    return publish_story(
+        repo_root=repo_root,
+        mode="pr",
+        remote=remote,
+        auto_merge=auto_merge,
+        wait_for_checks=wait_for_checks,
+        handoff_content=handoff_content,
+        log=log,
+        gh_command=gh_command,
+        review=review,
+        sleep=sleep,
+    )
 
 
 def _unresolved_message(state: StoryState, count: int, url: str) -> str:
@@ -1186,8 +1358,11 @@ def _comment_id(comment: dict[str, object]) -> int | None:
     return None
 
 
-def _pause(repo_root: Path, log: LogFn, message: str) -> PublishOutcome:
-    _clear_state(repo_root)
+def _pause(
+    repo_root: Path, log: LogFn, message: str, *, keep_state: bool = False
+) -> PublishOutcome:
+    if not keep_state:
+        _clear_state(repo_root)
     log("PAUSE", message)
     return PublishOutcome(stop=True, exit_code=0, message=message)
 

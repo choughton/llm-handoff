@@ -4,6 +4,10 @@
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 
+# Story branches often add a bullet at the top of the same changelog section;
+# keep both sides when the dispatcher merges the base branch in.
+CHANGELOG.md merge=union
+
 *.gif binary
 *.ico binary
 *.jpeg binary

@@ -61,6 +61,7 @@ from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
     ensure_story_branch,
     publish_story,
+    resume_paused_publish,
     save_review_responses,
     saved_story_base,
     settle_deferred_findings,
@@ -336,6 +337,22 @@ def run_loop(
     mark_startup_complete = getattr(log_fn, "mark_startup_complete", None)
     if callable(mark_startup_complete):
         mark_startup_complete()
+    if config.publish.mode == "pr" and not config.dry_run:
+        # A publish that paused on a base-branch merge resumes once the
+        # operator has merged the base branch into the story branch.
+        outcome = resume_paused_publish(
+            repo_root=config.repo_root,
+            remote=config.publish.remote,
+            auto_merge=config.publish.auto_merge,
+            wait_for_checks=config.publish.wait_for_checks,
+            handoff_content=_read_required_text(config.handoff_full_path) or "",
+            log=log_fn,
+            review=_review_gate(config),
+        )
+        if outcome.handoff is not None:
+            config.handoff_full_path.write_text(outcome.handoff, encoding="utf-8")
+        if outcome.stop:
+            return outcome.exit_code
 
     consecutive_failures = 0
     previous_cycle: Cycle | None = None
