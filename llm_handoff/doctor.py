@@ -10,7 +10,9 @@ work-claim gate is on (with the opt-out reason when it is not), and the
 current handoff file, validated with the same Work Packet requirement the
 dispatch loop applies. When a role or fallback runs on Antigravity without
 `unsafe_bypass`, it also checks the `agy` user settings file for the required
-`permissions.allow` and `permissions.deny` entries, reading that file only.
+`permissions.allow` and `permissions.deny` entries, and for `permissions.deny`
+or `permissions.ask` rules that override a required allow entry, reading that
+file only.
 It does not start a dispatch, call a provider, contact the network, or write
 any files.
 
@@ -22,9 +24,11 @@ any files.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fnmatch
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Literal
@@ -418,12 +422,12 @@ _GIT_PUSH_GRANT_PREFIXES = ("command(git push", "unsandboxed(git push")
 
 def _read_antigravity_permissions(
     path: Path,
-) -> tuple[list[str], list[str]] | str | None:
-    """Read ``permissions.allow`` and ``permissions.deny`` from ``path``.
+) -> tuple[list[str], list[str], list[str]] | str | None:
+    """Read ``permissions.allow``, ``.deny``, and ``.ask`` from ``path``.
 
-    Returns the two lists, None when the file does not exist, or a reason
-    string when the file cannot be read or has the wrong shape. The file is
-    only read, never opened for writing.
+    Returns the three lists, None when the file does not exist, or a reason
+    string when the file cannot be read or has the wrong shape. A missing key
+    counts as an empty list. The file is only read, never opened for writing.
     """
     try:
         raw = path.read_bytes()
@@ -441,14 +445,64 @@ def _read_antigravity_permissions(
     if not isinstance(permissions, dict):
         return 'has no "permissions" object'
     lists: list[list[str]] = []
-    for key in ("allow", "deny"):
+    for key in ("allow", "deny", "ask"):
         value = permissions.get(key, [])
         if not isinstance(value, list) or not all(
             isinstance(item, str) for item in value
         ):
             return f'has a "permissions.{key}" value that is not a list of strings'
         lists.append(value)
-    return lists[0], lists[1]
+    return lists[0], lists[1], lists[2]
+
+
+def _command_rule_shadows(rule: str, command: str) -> bool:
+    """Return True when the ``command(...)`` ``rule`` may match ``command``.
+
+    Antigravity's exact matching rules are not documented in full, so this
+    errs toward reporting: an exact match, a word prefix (``command(git)``
+    for ``git status``), a ``*``/``?`` wildcard pattern, or a ``regex:``
+    pattern that matches the command. Rules that are not ``command(...)``,
+    and regex rules that do not compile, are not counted.
+    """
+    if not (rule.startswith("command(") and rule.endswith(")")):
+        return False
+    pattern = rule[len("command(") : -1].strip()
+    if not pattern:
+        return False
+    if pattern.startswith("regex:"):
+        try:
+            return re.search(pattern[len("regex:") :], command) is not None
+        except re.error:
+            return False
+    if pattern == command or command.startswith(pattern + " "):
+        return True
+    return fnmatch.fnmatchcase(command, pattern)
+
+
+def _shadowing_rules(
+    rules: list[str], allow_required: tuple[str, ...]
+) -> list[tuple[str, list[str]]]:
+    """Pair each rule in ``rules`` with the required allow entries it shadows."""
+    shadowed: list[tuple[str, list[str]]] = []
+    for rule in rules:
+        hits = [
+            entry
+            for entry in allow_required
+            if _command_rule_shadows(rule, entry[len("command(") : -1])
+        ]
+        if hits:
+            shadowed.append((rule, hits))
+    return shadowed
+
+
+def _ascii_entry(entry: str) -> str:
+    return entry.encode("unicode_escape").decode("ascii")
+
+
+def _describe_shadowing(shadowed: list[tuple[str, list[str]]]) -> str:
+    return "; ".join(
+        f"`{_ascii_entry(rule)}` shadows {', '.join(hits)}" for rule, hits in shadowed
+    )
 
 
 def _check_antigravity_permissions(
@@ -498,7 +552,7 @@ def _check_antigravity_permissions(
             )
         )
         return
-    allow, deny = result
+    allow, deny, ask = result
     found = False
     for entry in allow:
         if entry.startswith(_GIT_PUSH_GRANT_PREFIXES):
@@ -508,9 +562,28 @@ def _check_antigravity_permissions(
                     "FAIL",
                     _ANTIGRAVITY_CHECK_NAME,
                     f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow grants "
-                    f"`{entry.encode('unicode_escape').decode('ascii')}` "
+                    f"`{_ascii_entry(entry)}` "
                     f"{covers}; remove it, because agents must not "
                     "push",
+                )
+            )
+    # Antigravity applies Deny > Ask > Allow, and a headless `agy -p` run
+    # soft-denies any command that needs approval, so a deny or ask rule that
+    # matches a required allow entry blocks that command despite the grant.
+    for key, rules in (("deny", deny), ("ask", ask)):
+        shadowed = _shadowing_rules(rules, allow_required)
+        if shadowed:
+            found = True
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    _ANTIGRAVITY_CHECK_NAME,
+                    f"{ANTIGRAVITY_SETTINGS_PATH} permissions.{key} has rules "
+                    f"that override required allow entries: "
+                    f"{_describe_shadowing(shadowed)} {covers}; Antigravity "
+                    "applies Deny > Ask > Allow and headless `agy -p` runs "
+                    "deny commands that need approval, so narrow or remove "
+                    "these rules",
                 )
             )
     missing_allow = [entry for entry in allow_required if entry not in allow]

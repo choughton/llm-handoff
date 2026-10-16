@@ -15,8 +15,9 @@ This project follows a simple pre-release changelog until the first public tag.
   provider mapping. `llm-handoff doctor` reads that file when a role or
   fallback runs on Antigravity without `unsafe_bypass` and reports an
   `antigravity permissions` result: FAIL for a `git push` allow grant, WARN
-  for a missing, unreadable, or malformed file or missing entries, PASS
-  otherwise. Neither command writes the settings file.
+  for a missing, unreadable, or malformed file, missing entries, or a
+  `permissions.deny` or `permissions.ask` rule that overrides a required allow
+  entry (Antigravity applies Deny > Ask > Allow), PASS otherwise. Neither command writes the settings file.
 
 - Added Antigravity agent files under `.agents/agents/` for each `--agent`
   name the `antigravity` adapter passes: `planner`, `backend`, `frontend`,

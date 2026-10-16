@@ -1187,6 +1187,107 @@ def test_doctor_antigravity_warns_on_missing_deny_entries(
     ]
 
 
+@pytest.mark.parametrize(
+    ("rule", "shadowed"),
+    [
+        ("command(*)", "command(git status), command(git diff)"),
+        ("command(git)", "command(git status), command(git diff)"),
+        ("command(git *)", "command(git status), command(git diff)"),
+        ("command(regex:^py)", "command(python), command(python3), command(pytest)"),
+        ("command(git status)", "command(git status)"),
+        ("command(npm test)", "command(npm test)"),
+    ],
+)
+def test_doctor_antigravity_warns_when_ask_rules_shadow_required_allows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    rule: str,
+    shadowed: str,
+) -> None:
+    repo = _agy_repo(
+        tmp_path,
+        monkeypatch,
+        extra_config='verification_allowed_prefixes: ["npm test"]\n',
+    )
+    settings = _complete_agy_settings(extra_allow=("command(npm test)",))
+    settings["permissions"]["ask"] = [rule, "command(git push)"]  # type: ignore[index]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    line = lines[0]
+    assert line.startswith(f"WARN {AGY_CHECK}:")
+    assert "permissions.ask has rules that override required allow entries" in line
+    assert f"`{rule}` shadows {shadowed}" in line
+    assert "`command(git push)`" not in line
+    assert "Deny > Ask > Allow" in line
+    assert "(covers planner, backend fallback)" in line
+    assert "PASS" not in line
+
+
+def test_doctor_antigravity_warns_when_deny_rules_shadow_required_allows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    settings = _complete_agy_settings()
+    settings["permissions"]["deny"].append("command(pytest)")  # type: ignore[index]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"WARN {AGY_CHECK}:")
+    assert "permissions.deny has rules that override required allow entries" in lines[0]
+    assert "`command(pytest)` shadows command(pytest)" in lines[0]
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        ["command(npm publish)", "command(regex:^curl)", "unsandboxed(*)"],
+        ["command(regex:[)"],
+        [],
+    ],
+)
+def test_doctor_antigravity_passes_with_non_shadowing_ask_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, ask: list[str]
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    settings = _complete_agy_settings()
+    settings["permissions"]["ask"] = ask  # type: ignore[index]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"PASS {AGY_CHECK}:")
+
+
+def test_doctor_antigravity_warns_when_ask_is_not_a_list_of_strings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    settings = _complete_agy_settings()
+    settings["permissions"]["ask"] = "command(*)"  # type: ignore[index]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(f"WARN {AGY_CHECK}:")
+    assert '"permissions.ask" value that is not a list of strings' in lines[0]
+
+
 def test_doctor_antigravity_passes_with_a_complete_settings_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

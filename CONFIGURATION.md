@@ -803,12 +803,21 @@ entries plus `verification_allowed_prefixes`:
 - WARN when the file is missing (the message lists every entry to add), cannot
   be read, is not valid JSON, or is not shaped as
   `{"permissions": {"allow": [...], "deny": [...]}}` (a missing `allow` or
-  `deny` key counts as an empty list).
+  `deny` key counts as an empty list; an optional `ask` key must also be a
+  list of strings).
 - FAIL when a `permissions.allow` entry starts with `command(git push` or
   `unsandboxed(git push`.
 - WARN for each required allow entry or deny entry that is missing. Entries
   match by exact string, so grants written another way, such as regex grants,
   are not recognized.
+- WARN when a `permissions.deny` or `permissions.ask` rule overrides a
+  required allow entry. Antigravity applies Deny > Ask > Allow, and a headless
+  `agy -p` run denies any command that needs approval, so a rule such as
+  `"ask": ["command(*)"]` blocks every required command. The doctor counts a
+  `command(...)` rule as overriding when it matches exactly, is a word prefix
+  (`command(git)` for `git status`), is a `*` or `?` wildcard pattern that
+  matches, or is a `regex:` pattern that matches. This errs toward warning;
+  the exact `agy` matching rules have not been checked against a live CLI.
 - PASS when none of the above applies.
 
 Roles with `unsafe_bypass: true` launch with `--dangerously-skip-permissions`
