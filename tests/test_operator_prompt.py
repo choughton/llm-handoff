@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 import pytest
 
+from llm_handoff import config as config_module
 from llm_handoff import operator_prompt, orchestrator
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
@@ -1023,6 +1024,54 @@ def test_discarded_role_dispatch_names_the_route(
         "Dropped the scheduled operator_role dispatch to backend because "
         "HANDOFF.md changed before it ran; routing the current handoff normally."
     ]
+
+
+CLAUDE_SCOPE_HANDOFF = """---
+next_agent: backend
+reason: "Sync the helper files."
+producer: planner
+---
+
+## Work Packet
+
+- **Objective:** Sync the helper files.
+- **Files in scope:** `.agents/agents/x.md`, `examples/app/.claude/agents/x.md`
+- **Files out of bounds:** none
+- **Context:** none
+- **Verification command:** `python -m pytest tests -q`
+- **Expected next route:** auditor
+
+## Next Step
+
+- **backend:** Sync the helper files.
+"""
+
+
+def test_backend_target_overrides_the_claude_protected_scope_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, CLAUDE_SCOPE_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@backend edit only the .agents copy", "quit"],
+        backend_writes=[USER_HANDOFF],
+    )
+    agents = {
+        role: agent.model_dump(exclude_none=True)
+        for role, agent in config_module._default_agent_configs().items()
+    }
+    agents["backend"] = {**agents["backend"], "provider": "claude"}
+
+    assert harness.run(_config(tmp_path, agents=agents)) == 0
+
+    assert harness.backend_calls == 1
+    pauses = [message for level, message in harness.logs if level == "PAUSE"]
+    assert pauses[0].startswith("CLAUDE PROTECTED PATHS IN SCOPE: the backend role")
+    instruction = harness.backend_instructions[0]
+    assert instruction is not None
+    assert "CLAUDE PROTECTED PATHS IN SCOPE" in instruction
+    assert "Operator instruction: edit only the .agents copy" in instruction
 
 
 def test_tty_without_console_adapter_keeps_the_old_poll(

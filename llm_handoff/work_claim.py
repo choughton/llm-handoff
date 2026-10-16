@@ -113,6 +113,8 @@ PRIOR_HANDBACK_HEADING = "## Prior Handback"
 VERIFICATION_OUTPUT_TAIL_CHARS = 4000
 VERIFICATION_OUTPUT_LOG_LINES = 20
 HANDOFF_ONLY_COMMIT_WALK_LIMIT = 10
+# Claude Code's protected directory: dontAsk mode denies every write under it.
+CLAUDE_PROTECTED_DIRECTORY = ".claude"
 _GIT_TIMEOUT_SECONDS = 30
 _SHORT_SHA_LENGTH = 12
 
@@ -670,6 +672,25 @@ def path_is_in_scope(path: str, packet: WorkPacket) -> bool:
 
     return _matches_any(path, packet.files_in_scope) and not path_is_out_of_bounds(
         path, packet
+    )
+
+
+def claude_protected_scope_entries(packet: WorkPacket) -> tuple[str, ...]:
+    """Return the ``Files in scope`` entries that sit under a ``.claude`` folder.
+
+    Claude Code treats any ``.claude`` directory as a protected path, at the
+    repository root or nested such as ``examples/app/.claude/agents/x.md``. In
+    ``dontAsk`` mode it denies writes there before it reads the allow rules, so
+    a Claude role launched that way cannot change these entries. The match is
+    on whole path segments and ignores case, so ``.claude-notes/`` does not
+    count.
+    """
+
+    return tuple(
+        entry
+        for entry in packet.files_in_scope
+        if CLAUDE_PROTECTED_DIRECTORY
+        in (segment.lower() for segment in entry.split("/"))
     )
 
 

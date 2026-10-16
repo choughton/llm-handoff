@@ -857,6 +857,26 @@ SHAs with it. Setting `allowed_tools` on a role replaces the whole list. The
 list is a guardrail, not a sandbox: `Bash(python:*)` still lets the agent run
 arbitrary Python. `git push` is not on the list.
 
+Claude Code also protects some paths, and `dontAsk` mode denies every write
+to them before it reads `allowed_tools` or settings allow rules. One of them
+is any `.claude` directory, at the repository root or nested such as
+`examples/app/.claude/agents/x.md`; see Claude Code's
+[protected paths](https://code.claude.com/docs/en/permission-modes#protected-paths)
+for the full list. A `provider: claude` implementer launched this way cannot
+change those files, so before it dispatches `backend` or `frontend` the
+dispatcher checks the Work Packet. When an entry in `Files in scope` has a
+`.claude` path segment (any case) and the role is `provider: claude` without
+`unsafe_bypass: true`, it pauses with a `CLAUDE PROTECTED PATHS IN SCOPE`
+reason that names the entries, instead of launching a role that would hand
+back `blocked_missing_context`. With `pause_recovery: planner` the planner
+gets one attempt to rewrite the packet first. To resolve it, apply those
+edits yourself and drop them from the packet, or have the planner give them
+to a role whose provider is not `claude` (the `.agents/` and `.codex/`
+folders are not protected). An `@backend` or `@frontend` dispatch from the
+operator prompt skips the check. `--dry-run` logs the pause it would take.
+Only `.claude` is checked; a packet that scopes another protected path, such
+as `.git/` or `.vscode/`, still dispatches and the writes are refused.
+
 `llm-handoff init` reads the target repository's CI workflows,
 `package.json`, `pyproject.toml`, `Makefile`, `Cargo.toml`, and `go.mod`,
 and prints the build and test commands it finds, each with the file it came

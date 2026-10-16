@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The dispatcher now pauses before dispatching `backend` or `frontend` when
+  the role is `provider: claude` in the default `dontAsk` mode and the Work
+  Packet's `Files in scope` names a path under a `.claude` directory, at the
+  root or nested. Claude Code denies those writes in `dontAsk` mode, so the
+  role could only hand back `blocked_missing_context`. The pause reason names
+  the entries and says to apply the edits by hand or move them to a role with
+  another provider; `--dry-run` logs it. The planner prompts and helper files
+  now say not to scope `.claude/` paths to a Claude role.
 - The supervisor's default repair allowlist is now `docs/` plus the provider
   helper folders `.claude/agents/`, `.codex/skills/llm-handoff/`, and
   `.gemini/agents/`. Dispatcher source, tests, top-level docs, and scripts
