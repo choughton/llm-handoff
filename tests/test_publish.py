@@ -682,8 +682,9 @@ def test_a_pull_request_that_is_not_mergeable_merges_after_a_base_sync(
     assert (repo / "src" / "widget.py").exists()
 
 
-def test_a_conflict_at_the_merge_pauses_and_resumes_without_another_review(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("with_review", [False, True])
+def test_a_conflict_at_the_merge_pauses_and_resumes_after_the_operator_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_review: bool
 ) -> None:
     repo, remote, gh, env = _with_remote(tmp_path)
     for name, value in env.items():
@@ -705,18 +706,30 @@ def test_a_conflict_at_the_merge_pauses_and_resumes_without_another_review(
     assert not any(level == "ERROR" for level, _message in entries)
 
     _resolve_readme_conflict(repo)
+    resolution = _git(repo, "rev-parse", "HEAD")
     before = len(_gh_calls(tmp_path))
     outcome = _resume(
-        repo, gh, log, wait_for_checks=True, review=GATE, sleep=lambda seconds: None
+        repo, gh, log, wait_for_checks=True,
+        review=GATE if with_review else None,
+        sleep=lambda seconds: None
     )
 
-    assert outcome == PublishOutcome()
     resumed = _gh_calls(tmp_path)[before:]
-    # No wait for a Codex review: only the review threads are read.
-    assert not any(call[0] == "api" and call[-1] != "graphql" for call in resumed)
-    assert [call[:2] for call in resumed if call[0] == "pr"][-1] == ["pr", "merge"]
-    assert _git(repo, "branch", "--show-current") == "main"
-    assert (repo / "README.md").read_text(encoding="utf-8") == "resolved readme\n"
+    pushed = _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}").split()
+    if not with_review:
+        assert outcome == PublishOutcome()
+        assert [call[:2] for call in resumed if call[0] == "pr"][-1] == ["pr", "merge"]
+        assert _git(repo, "branch", "--show-current") == "main"
+        assert (repo / "README.md").read_text(encoding="utf-8") == "resolved readme\n"
+        return
+    # Codex reviews only new pull requests and the dispatcher never asks for
+    # a review, so the operator's merge is pushed and left for a person.
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "left open" in outcome.message and "merge it yourself" in outcome.message
+    assert pushed and pushed[0] == resolution
+    assert not any(call[:2] == ["pr", "merge"] for call in resumed)
+    assert not any(call[0] == "api" for call in resumed)
+    assert not (repo / STATE_PATH).exists()
 
 
 def test_resume_does_nothing_without_a_paused_publish(tmp_path: Path) -> None:

@@ -117,8 +117,9 @@ class StoryState:
     deferred_findings: tuple[dict[str, object], ...] = ()
     # Whether the planner already had its one pass at deferred findings.
     deferral_planner_pass: bool = False
-    # "push" or "merge" when publishing paused because the base branch did not
-    # merge cleanly into the story branch; the next start resumes from there.
+    # "push" or "merge": the step where publishing paused because the base
+    # branch did not merge cleanly into the story branch. The next start on
+    # the story branch publishes it again.
     paused_publish: str = ""
 
 
@@ -335,8 +336,10 @@ def publish_story(
     title = _without_mentions(title)
     body = _without_mentions(body)
     message_path.write_text(body, encoding="utf-8")
-    # A publish that paused at the merge already had its review.
-    skip_review = state.paused_publish == "merge"
+    # A publish that paused at the merge resumes with the operator's merge on
+    # an open pull request. Codex reviews new pull requests, not later pushes,
+    # and the dispatcher never asks for a review, so that merge stays unreviewed.
+    resumed_at_merge = state.paused_publish == "merge"
     if state.paused_publish:
         state = replace(state, paused_publish="")
         _save_state(repo_root, state)
@@ -393,6 +396,18 @@ def publish_story(
         log("PAUSE", message)
         return PublishOutcome(stop=True, exit_code=0, message=message)
 
+    if resumed_at_merge and review is not None and review.reviewers:
+        return _pause(
+            repo_root,
+            log,
+            f"Pushed the merge of {remote}/{state.base_branch} into "
+            f"`{state.branch}` to {url or 'its pull request'}. No one has "
+            "reviewed that merge and the dispatcher never asks for a review, "
+            "so the pull request was left open. Review it and merge it "
+            f"yourself, run `git switch {state.base_branch}` and `git pull`, "
+            "then start the dispatcher again.",
+        )
+
     if wait_for_checks:
         checks = _run(
             [*gh_command, "pr", "checks", state.branch, "--watch", "--fail-fast"],
@@ -405,7 +420,7 @@ def publish_story(
                 f"pull request checks did not pass for {url or state.branch}: "
                 f"{_first_line(checks)}; it was left open",
             )
-    if review is not None and review.reviewers and not skip_review:
+    if review is not None and review.reviewers:
         verdict = _wait_for_reviewers(
             repo_root=repo_root,
             state=state,
@@ -573,10 +588,14 @@ def _sync_with_base(
     )
     if step == "merge":
         outcome = f"the pull request {url or state.branch} was left open"
-        resume = "pushes the merge and merges the pull request without another review"
+        resume = (
+            "pushes your merge to the pull request, then merges it; with "
+            "`wait_for_reviewers` it leaves the pull request open for you to "
+            "review and merge instead"
+        )
     else:
         outcome = f"`{state.branch}` was not pushed"
-        resume = "pushes the story branch and continues"
+        resume = "pushes the story branch and publishes it as usual"
     _save_state(repo_root, replace(state, paused_publish=step))
     return _pause(
         repo_root,
@@ -584,8 +603,7 @@ def _sync_with_base(
         f"Merging {upstream} into `{state.branch}` {problem}, so {outcome}. The "
         "merge was aborted and the story state was kept. To resume: on "
         f"`{state.branch}`, run `git merge {upstream}`, resolve the conflicts, "
-        "and commit the merge; then start the dispatcher again. It "
-        f"{resume}.",
+        f"and commit the merge; then start the dispatcher again. It {resume}.",
         keep_state=True,
     )
 

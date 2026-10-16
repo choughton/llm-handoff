@@ -373,8 +373,12 @@ When that merge conflicts, the dispatcher runs `git merge --abort` and pauses
 `logs/dispatch/publish/story.json`. To resume, on the story branch run
 `git merge <remote>/<base_branch>`, resolve the conflicts, and commit the
 merge, then start the dispatcher again. At startup it pushes the story
-branch and carries on from where it paused. If it paused at the merge, it
-merges the pull request without waiting for another review. If the retried
+branch and publishes it as usual. If it paused at the merge, your merge
+commit lands on the open pull request. Codex reviews new pull requests, not
+later pushes, and the dispatcher never asks for a review. So with
+`wait_for_reviewers: [codex]` the dispatcher pushes that commit and pauses,
+leaving the pull request open for you to review and merge; without it, the
+dispatcher merges the pull request. If the retried
 `gh pr merge` fails again, the dispatcher pauses the same way and leaves the
 pull request open. The next start retries the merge, or you can merge it
 yourself.
