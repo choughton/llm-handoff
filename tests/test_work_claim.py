@@ -4159,6 +4159,27 @@ def test_the_finalizer_is_told_to_leave_the_handoff_uncommitted_in_dispatcher_mo
     assert f"Commit PROJECT_STATE.md and {HANDOFF_RELATIVE_PATH.as_posix()}" in agent
 
 
+@pytest.mark.parametrize("commit_mode", ["agent", "dispatcher"])
+def test_epic_close_sends_the_finalizer_the_configured_commit_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    commit_mode: str,
+) -> None:
+    prompts: list[str] = []
+
+    def fake_invoke_support_role(_name: str, prompt: str, **_kwargs: object):
+        prompts.append(prompt)
+        return SubagentResult(stdout="", stderr="", exit_code=1, elapsed_seconds=0)
+
+    monkeypatch.setattr(ledger, "invoke_support_role", fake_invoke_support_role)
+
+    ledger.run_epic_close(config=_dispatch_config(tmp_path, commit_mode=commit_mode))
+
+    assert prompts == [ledger.ledger_updater_prompt(HANDOFF_RELATIVE_PATH, commit_mode)]
+    told = "Dispatcher commit mode is on" in prompts[0]
+    assert told is (commit_mode == "dispatcher")
+
+
 def test_planner_commits_are_left_alone_in_agent_commit_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
