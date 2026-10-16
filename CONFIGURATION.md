@@ -776,6 +776,45 @@ it as a sign-in failure: the loop stops and logs `agy` sign-in steps (run
 Only the Antigravity adapter checks for that phrase; output from other
 providers that says `authentication required` gets normal failure handling.
 
+Antigravity-mapped roles need these entries in
+`~/.gemini/antigravity-cli/settings.json`. Under `permissions.allow`:
+`command(git status)`, `command(git diff)`, `command(git log)`,
+`command(git show)`, `command(git cat-file)`, `command(git add)`,
+`command(git commit)`, `command(git rev-parse)`, `command(python)`,
+`command(python3)`, and `command(pytest)` (the same commands as the default
+Claude `Bash(...)` rules), plus `command(<cmd>)` for each Work Packet
+Verification command you expect. Under `permissions.deny`:
+`command(git push)` and `unsandboxed(git push)`. This is the minimal
+recommended set: it grants no `git push` and no wildcard or regex shell grant.
+The grants are user-wide: they apply to every `agy` run for that user, in any
+repository, and since the adapter passes no `--sandbox` flag they are the
+only shell guardrail. Whether `command(git diff)` also covers
+`git diff --stat` has not been checked against a live `agy`.
+
+When `agy` is on `PATH`, `llm-handoff init` (including `--dry-run`) prints
+this list, adds `command(<cmd>)` for `--verification-command` when given, and
+asks you to add the entries yourself and then run `llm-handoff doctor`.
+`agy` does not change the provider mapping `init` picks. When any role or
+fallback has `provider: antigravity` without `unsafe_bypass: true`,
+`llm-handoff doctor` reads the settings file and reports one
+`antigravity permissions` result, with the allow list built from the default
+entries plus `verification_allowed_prefixes`:
+
+- WARN when the file is missing (the message lists every entry to add), cannot
+  be read, is not valid JSON, or is not shaped as
+  `{"permissions": {"allow": [...], "deny": [...]}}` (a missing `allow` or
+  `deny` key counts as an empty list).
+- FAIL when a `permissions.allow` entry starts with `command(git push` or
+  `unsandboxed(git push`.
+- WARN for each required allow entry or deny entry that is missing. Entries
+  match by exact string, so grants written another way, such as regex grants,
+  are not recognized.
+- PASS when none of the above applies.
+
+Roles with `unsafe_bypass: true` launch with `--dangerously-skip-permissions`
+and are not checked. Neither `init` nor `doctor` writes the `agy` settings
+file.
+
 `permissions_flag` now only applies together with `unsafe_bypass: true`. It
 replaces `--dangerously-skip-permissions` for that role. Setting it without
 `unsafe_bypass` fails at config load.

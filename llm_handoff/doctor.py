@@ -8,8 +8,11 @@ normalizer has an API key or CLI to run with, whether the audit runs the
 security reviewer (with the opt-out reason when it does not), whether the
 work-claim gate is on (with the opt-out reason when it is not), and the
 current handoff file, validated with the same Work Packet requirement the
-dispatch loop applies. It does not start a dispatch, call a provider, contact the network, or write any
-files.
+dispatch loop applies. When a role or fallback runs on Antigravity without
+`unsafe_bypass`, it also checks the `agy` user settings file for the required
+`permissions.allow` and `permissions.deny` entries, reading that file only.
+It does not start a dispatch, call a provider, contact the network, or write
+any files.
 
 `_command_available` and `_command_binary_name` live here so the supervisor's
 `--doctor` mode and this command share one PATH lookup, including the Windows
@@ -19,6 +22,7 @@ files.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import shutil
@@ -31,6 +35,11 @@ from llm_handoff.agent_providers.gemini import (
     detect_gemini_sandbox_runtime,
     gemini_sandbox_unavailable_message,
 )
+from llm_handoff.antigravity_permissions import (
+    ANTIGRAVITY_REQUIRED_DENY,
+    antigravity_allow_entries,
+    antigravity_settings_path,
+)
 from llm_handoff.config import (
     CLAUDE_BINARY,
     CODEX_BINARY,
@@ -41,6 +50,7 @@ from llm_handoff.config import (
     detect_repo_root,
     load_dispatch_config,
 )
+from llm_handoff.provider_auth import ANTIGRAVITY_SETTINGS_PATH
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.router import route as route_handoff
 from llm_handoff.text_io import read_dispatch_text
@@ -124,6 +134,7 @@ def run_doctor(
     if dispatch_config is not None:
         _check_role_binaries(dispatch_config, resolved_root, checks)
         _check_container_runtime(dispatch_config, checks)
+        _check_antigravity_permissions(dispatch_config, checks)
         _check_normalizer(dispatch_config, resolved_root, checks)
         _check_security_review(dispatch_config, checks)
         _check_work_claim_gate(dispatch_config, checks)
@@ -397,6 +408,142 @@ def _check_container_runtime(
                 "FAIL",
                 "container runtime",
                 gemini_sandbox_unavailable_message(role),
+            )
+        )
+
+
+_ANTIGRAVITY_CHECK_NAME = "antigravity permissions"
+_GIT_PUSH_GRANT_PREFIXES = ("command(git push", "unsandboxed(git push")
+
+
+def _read_antigravity_permissions(
+    path: Path,
+) -> tuple[list[str], list[str]] | str | None:
+    """Read ``permissions.allow`` and ``permissions.deny`` from ``path``.
+
+    Returns the two lists, None when the file does not exist, or a reason
+    string when the file cannot be read or has the wrong shape. The file is
+    only read, never opened for writing.
+    """
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return f"could not be read ({exc})"
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        return f"is not valid JSON ({exc})"
+    if not isinstance(data, dict):
+        return "is not a JSON object"
+    permissions = data.get("permissions")
+    if not isinstance(permissions, dict):
+        return 'has no "permissions" object'
+    lists: list[list[str]] = []
+    for key in ("allow", "deny"):
+        value = permissions.get(key, [])
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            return f'has a "permissions.{key}" value that is not a list of strings'
+        lists.append(value)
+    return lists[0], lists[1]
+
+
+def _check_antigravity_permissions(
+    dispatch_config: DispatchConfig,
+    checks: list[DoctorCheck],
+) -> None:
+    """Check the `agy` user settings file for the required grants.
+
+    Covers every Antigravity role and fallback without ``unsafe_bypass``
+    (``unsafe_bypass`` launches skip permission prompts and need no grants).
+    Grants are user-wide, so the union of entries is checked once. The file
+    is read only; the doctor never writes it.
+    """
+    labels = [
+        label
+        for label, agent_config in _role_launches(dispatch_config)
+        if agent_config.provider == "antigravity" and not agent_config.unsafe_bypass
+    ]
+    if not labels:
+        return
+    covers = f"(covers {', '.join(labels)})"
+    allow_required = antigravity_allow_entries(
+        dispatch_config.verification_allowed_prefixes
+    )
+    path = antigravity_settings_path()
+    result = _read_antigravity_permissions(path)
+    if result is None:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} was not found {covers}; add "
+                "permissions.allow entries: "
+                + ", ".join(allow_required)
+                + "; add permissions.deny entries: "
+                + ", ".join(ANTIGRAVITY_REQUIRED_DENY),
+            )
+        )
+        return
+    if isinstance(result, str):
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} {result} {covers}; expected "
+                '{"permissions": {"allow": [...], "deny": [...]}}',
+            )
+        )
+        return
+    allow, deny = result
+    found = False
+    for entry in allow:
+        if entry.startswith(_GIT_PUSH_GRANT_PREFIXES):
+            found = True
+            checks.append(
+                DoctorCheck(
+                    "FAIL",
+                    _ANTIGRAVITY_CHECK_NAME,
+                    f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow grants "
+                    f"`{entry.encode('unicode_escape').decode('ascii')}` "
+                    f"{covers}; remove it, because agents must not "
+                    "push",
+                )
+            )
+    missing_allow = [entry for entry in allow_required if entry not in allow]
+    if missing_allow:
+        found = True
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow is missing "
+                f"{', '.join(missing_allow)} {covers}; only exact entries are "
+                "recognized, so grants written another way (for example regex "
+                "grants) are not counted",
+            )
+        )
+    missing_deny = [entry for entry in ANTIGRAVITY_REQUIRED_DENY if entry not in deny]
+    if missing_deny:
+        found = True
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} permissions.deny is missing "
+                f"{', '.join(missing_deny)} {covers}",
+            )
+        )
+    if not found:
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} has every required allow and deny "
+                f"entry {covers}",
             )
         )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -8,6 +9,7 @@ import subprocess
 import pytest
 
 from llm_handoff import __main__ as main_module
+from llm_handoff import antigravity_permissions as agy_perms
 from llm_handoff import config as config_module
 from llm_handoff import doctor
 from llm_handoff import supervisor
@@ -924,3 +926,300 @@ def test_supervisor_command_available_is_shared_with_doctor(
 
     monkeypatch.setattr(shutil, "which", lambda name, *a, **k: None)
     assert supervisor._command_available("toolx") is False
+
+
+# --- Antigravity permissions -------------------------------------------------
+
+AGY_CHECK = "antigravity permissions"
+
+
+def _agy_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    planner_extra: str = "",
+    backend_fallback: bool = True,
+    extra_config: str = "",
+) -> Path:
+    """Put planner (and a backend fallback) on Antigravity; home is tmp_path."""
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None, commit=False)
+    config_path = repo / "dispatch_config.yaml"
+    text = config_path.read_text(encoding="utf-8").replace(
+        "  planner:\n    provider: claude\n    binary: fake-claude\n",
+        "  planner:\n    provider: antigravity\n    binary: fake-agy\n" + planner_extra,
+    )
+    if backend_fallback:
+        text = text.replace(
+            "  backend:\n    provider: codex\n    binary: fake-codex\n",
+            "  backend:\n    provider: codex\n    binary: fake-codex\n"
+            "    fallback:\n      provider: antigravity\n      binary: fake-agy\n",
+        )
+    config_path.write_text(text + extra_config, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    _stub_which(monkeypatch, {"fake-agy", "fake-codex", "fake-claude"})
+    return repo
+
+
+def _agy_settings_path(tmp_path: Path) -> Path:
+    return tmp_path / "home" / ".gemini" / "antigravity-cli" / "settings.json"
+
+
+def _write_agy_settings(tmp_path: Path, content: object) -> Path:
+    path = _agy_settings_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, str):
+        path.write_text(content, encoding="utf-8")
+    else:
+        path.write_text(json.dumps(content, indent=2), encoding="utf-8")
+    return path
+
+
+def _complete_agy_settings(extra_allow: tuple[str, ...] = ()) -> dict[str, object]:
+    return {
+        "permissions": {
+            "allow": [*agy_perms.ANTIGRAVITY_REQUIRED_ALLOW, *extra_allow],
+            "deny": list(agy_perms.ANTIGRAVITY_REQUIRED_DENY),
+        }
+    }
+
+
+def _agy_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if f" {AGY_CHECK}:" in line]
+
+
+def test_doctor_antigravity_check_absent_without_antigravity_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _agy_lines(output) == []
+
+
+def test_doctor_antigravity_check_absent_for_unsafe_bypass_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(
+        tmp_path,
+        monkeypatch,
+        planner_extra="    unsafe_bypass: true\n",
+        backend_fallback=False,
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert "PASS role planner: provider antigravity" in output
+    assert _agy_lines(output) == []
+
+
+def test_doctor_antigravity_warns_when_settings_file_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.startswith(f"WARN {AGY_CHECK}:")
+    assert "~/.gemini/antigravity-cli/settings.json was not found" in line
+    assert "(covers planner, backend fallback)" in line
+    for entry in (
+        *agy_perms.ANTIGRAVITY_REQUIRED_ALLOW,
+        *agy_perms.ANTIGRAVITY_REQUIRED_DENY,
+    ):
+        assert entry in line
+    assert not _agy_settings_path(tmp_path).exists()
+
+
+def test_doctor_antigravity_warns_on_invalid_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, "{not json")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(f"WARN {AGY_CHECK}:")
+    assert "is not valid JSON" in lines[0]
+    assert "(covers planner, backend fallback)" in lines[0]
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        ([], "is not a JSON object"),
+        ({"other": 1}, 'has no "permissions" object'),
+        ({"permissions": []}, 'has no "permissions" object'),
+        (
+            {"permissions": {"allow": "command(git status)"}},
+            '"permissions.allow" value that is not a list of strings',
+        ),
+        (
+            {"permissions": {"allow": [], "deny": [1]}},
+            '"permissions.deny" value that is not a list of strings',
+        ),
+    ],
+)
+def test_doctor_antigravity_warns_on_wrong_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    content: object,
+    reason: str,
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, content)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(f"WARN {AGY_CHECK}:")
+    assert reason in lines[0]
+
+
+def test_doctor_antigravity_warns_when_settings_file_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    # A directory at the settings path cannot be read as a file.
+    _agy_settings_path(tmp_path).mkdir(parents=True)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(f"WARN {AGY_CHECK}:")
+    assert "could not be read" in lines[0]
+
+
+def test_doctor_antigravity_missing_keys_count_as_empty_lists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, {"permissions": {}})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 2
+    assert all(line.startswith(f"WARN {AGY_CHECK}:") for line in lines)
+    assert "permissions.allow is missing" in lines[0]
+    assert "permissions.deny is missing" in lines[1]
+
+
+@pytest.mark.parametrize(
+    "grant", ["command(git push)", "command(git push origin main)", "unsandboxed(git push)"]
+)
+def test_doctor_antigravity_fails_when_allow_grants_git_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, grant: str
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(grant,)))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    lines = _agy_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(f"FAIL {AGY_CHECK}:")
+    assert f"`{grant}`" in lines[0]
+    assert "(covers planner, backend fallback)" in lines[0]
+
+
+def test_doctor_antigravity_warns_on_missing_allow_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(
+        tmp_path,
+        monkeypatch,
+        extra_config='verification_allowed_prefixes: ["npm test"]\n',
+    )
+    settings = _complete_agy_settings()
+    allow = settings["permissions"]["allow"]  # type: ignore[index]
+    allow.remove("command(git diff)")
+    allow.append("command(regex:^npm test$)")
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.startswith(f"WARN {AGY_CHECK}:")
+    assert "permissions.allow is missing command(git diff), command(npm test)" in line
+    assert "regex grants" in line
+    assert "(covers planner, backend fallback)" in line
+
+
+def test_doctor_antigravity_warns_on_missing_deny_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    settings = _complete_agy_settings()
+    settings["permissions"]["deny"] = ["command(git push)"]  # type: ignore[index]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert lines == [
+        f"WARN {AGY_CHECK}: ~/.gemini/antigravity-cli/settings.json "
+        "permissions.deny is missing unsandboxed(git push) (covers planner)"
+    ]
+
+
+def test_doctor_antigravity_passes_with_a_complete_settings_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(
+        tmp_path,
+        monkeypatch,
+        extra_config='verification_allowed_prefixes: ["npm test"]\n',
+    )
+    _write_agy_settings(
+        tmp_path, _complete_agy_settings(extra_allow=("command(npm test)",))
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(f"PASS {AGY_CHECK}:")
+    assert "(covers planner, backend fallback)" in lines[0]
+
+
+def test_doctor_antigravity_leaves_the_settings_file_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    settings_path = _write_agy_settings(tmp_path, {"permissions": {"allow": []}})
+    os.utime(settings_path, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+    before_bytes = settings_path.read_bytes()
+    before_mtime = settings_path.stat().st_mtime_ns
+
+    doctor.run_doctor(repo_root=repo)
+    _run(repo, capsys)
+
+    assert settings_path.read_bytes() == before_bytes
+    assert settings_path.stat().st_mtime_ns == before_mtime
+    assert sorted(p.name for p in settings_path.parent.iterdir()) == ["settings.json"]

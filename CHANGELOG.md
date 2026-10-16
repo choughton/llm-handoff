@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added one shared list of the `agy` permission entries Antigravity-mapped
+  roles need (`llm_handoff/antigravity_permissions.py`): the default
+  `command(...)` allow entries, `command(<cmd>)` per Verification command,
+  and deny entries for `command(git push)` and `unsandboxed(git push)`. When
+  `agy` is on `PATH`, `llm-handoff init` prints the list and asks you to add
+  it to `~/.gemini/antigravity-cli/settings.json`; `agy` does not change the
+  provider mapping. `llm-handoff doctor` reads that file when a role or
+  fallback runs on Antigravity without `unsafe_bypass` and reports an
+  `antigravity permissions` result: FAIL for a `git push` allow grant, WARN
+  for a missing, unreadable, or malformed file or missing entries, PASS
+  otherwise. Neither command writes the settings file.
+
 - Added Antigravity agent files under `.agents/agents/` for each `--agent`
   name the `antigravity` adapter passes: `planner`, `backend`, `frontend`,
   `auditor`, `handoff-validator`, `handoff-router`, and `ledger-updater`. They

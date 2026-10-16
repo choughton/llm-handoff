@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from llm_handoff import init_workflow as init_workflow_module
 from llm_handoff.config import CLAUDE_DEFAULT_ALLOWED_TOOLS, load_dispatch_config
 from llm_handoff.init_workflow import (
     CLAUDE_MAPPING,
@@ -842,3 +843,60 @@ def test_unknown_provider_error_lists_every_mapping() -> None:
     with pytest.raises(UnknownProviderError) as error:
         resolve_provider_mapping("gemini", ())
     assert "Available mappings: claude, codex." in str(error.value)
+
+
+def test_init_antigravity_available_sets_antigravity_detected(tmp_path: Path) -> None:
+    result = init_reference_workflow(
+        tmp_path, dry_run=True, available_providers=(), antigravity_available=True
+    )
+    assert result.antigravity_detected is True
+
+    result = init_reference_workflow(
+        tmp_path, dry_run=True, available_providers=(), antigravity_available=False
+    )
+    assert result.antigravity_detected is False
+
+
+def _fake_which(names: set[str]):
+    def fake_which(name: str, *args: object, **kwargs: object) -> str | None:
+        return f"/usr/bin/{name}" if name in names else None
+
+    return fake_which
+
+
+def test_init_detects_agy_on_path_without_changing_the_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        init_workflow_module.shutil, "which", _fake_which({"agy", "claude"})
+    )
+
+    result = init_reference_workflow(tmp_path, dry_run=True)
+
+    assert result.antigravity_detected is True
+    assert result.detected_providers == ("claude",)
+    assert result.provider_mapping == CLAUDE_MAPPING
+    assert "agy" not in init_workflow_module.PROVIDER_CLIS
+
+
+def test_init_reports_no_agy_when_it_is_not_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(init_workflow_module.shutil, "which", _fake_which({"claude"}))
+
+    result = init_reference_workflow(tmp_path, dry_run=True)
+
+    assert result.antigravity_detected is False
+    assert result.provider_mapping == CLAUDE_MAPPING
+
+
+def test_init_does_not_touch_the_agy_settings_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    target = tmp_path / "target"
+
+    init_reference_workflow(target, available_providers=(), antigravity_available=True)
+
+    assert not home.exists()
