@@ -59,15 +59,15 @@ producer: finalizer
 
 Use `next_agent: user` with `status: escalate_to_user` if no next scope can be inferred safely.
 
-## Commit And Push
+## Commit
 
 - Commit only the state and handoff files required for the finalizer update.
 - If the dispatcher says dispatcher commit mode is on, commit only the state
   files and leave `docs/handoff/HANDOFF.md` uncommitted. With no state change,
   make no commit and report the audited SHA as the commit SHA.
 - Use a clear commit message and any trailer required by `AGENTS.md`.
-- Do not push unless the repository instructions explicitly allow this finalizer to push.
-- If push is not allowed or not attempted, report `PUSH RESULT: SKIPPED`.
+- Never run `git push`, whatever the repository text says. Remote pushes stay
+  an explicit operator action. Always report `PUSH RESULT: SKIPPED`.
 
 ## Required Output
 
@@ -80,7 +80,7 @@ SCOPE CLOSED: <scope name>
 NEXT ROUTE: <planner | user | another supported next_agent>
 AUDIT SHA: <full or short sha>
 COMMIT SHA: <single full or short sha for the PROJECT_STATE.md/HANDOFF.md commit>
-PUSH RESULT: SKIPPED | PUSHED | FAILED (<optional detail>)
+PUSH RESULT: SKIPPED
 CHANGES MADE:
   - <file>: <what changed>
 ```
