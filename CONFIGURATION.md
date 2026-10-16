@@ -388,6 +388,26 @@ dispatcher merges the pull request. If the retried
 pull request open. The next start retries the merge, or you can merge it
 yourself.
 
+Before a resume pushes anything, the dispatcher fetches the base branch and
+checks what was added to the story branch since the pause:
+
+- Only merge commits, or commits already on the base branch, were added. Any
+  other commit has passed neither the work-claim gate nor the audit.
+- Each added merge commit is a two-parent merge whose second parent is on
+  `<remote>/<base_branch>`, and it holds only the conflict resolution: its
+  tree differs from the automatic merge of its parents
+  (`git merge-tree --write-tree`, git 2.38 or later) only in files that the
+  automatic merge left conflicted.
+
+If either check fails, or a `git` command it runs fails (including an older
+git without `merge-tree --write-tree`), the dispatcher pauses again with the
+story state kept, pushes nothing, and names the offending commits or files.
+Redo the merge so it holds only the conflict resolution, or publish the
+branch yourself. The conflicted files themselves are not inspected beyond
+that: an edit inside a conflicted file that goes past the conflict
+resolution is not detected, so review those files before you start the
+dispatcher again.
+
 Many stories add a bullet at the top of the same changelog section, which
 conflicts whenever two of them are open at once. A line in the target
 repository's `.gitattributes` lets the local merge keep both sides:

@@ -33,8 +33,10 @@ pushes, and retries. A base merge that does not go through is aborted and
 pauses the loop with the story state kept; after the operator merges the base
 branch into the story branch, the next start resumes publishing. A resume
 pushes only when the story branch gained nothing but merge commits (or
-commits already on the base branch) since the pause; otherwise it pauses
-again and pushes nothing.
+commits already on the base branch) since the pause, and each such merge
+commit merges the base branch and contains only the conflict resolution: it
+differs from the automatic merge of its parents only in the files that merge
+left conflicted. Otherwise it pauses again and pushes nothing.
 
 Agents never push, branch, or merge: the dispatcher does all of it, and only
 after the work-claim gate and the audit have passed. Requires
@@ -126,7 +128,7 @@ class StoryState:
     paused_publish: str = ""
     # The story branch head when publishing paused. A resume pushes only when
     # every commit added since then is a merge commit or is already on the
-    # base branch.
+    # base branch, and each such merge holds only the conflict resolution.
     paused_head: str = ""
 
 
@@ -800,7 +802,7 @@ def _resume_blocker(repo_root: Path, remote: str, state: StoryState) -> str | No
         )
     added = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
     if not added:
-        return None
+        return _merge_commit_blocker(repo_root, upstream, state, paused, lead)
     shown = _git(
         repo_root,
         ["show", "-s", "--format=%h %s", *added[:_RESUME_LISTED_COMMITS]],
@@ -821,6 +823,143 @@ def _resume_blocker(repo_root: Path, remote: str, state: StoryState) -> str | No
         "the work-claim gate or the audit. The story state was kept. "
         + continue_hint
     )
+
+
+_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def _merge_commit_blocker(
+    repo_root: Path, upstream: str, state: StoryState, paused: str, lead: str
+) -> str | None:
+    """Return why a merge added since the pause blocks the resume, or ``None``.
+
+    Each merge commit added since the pause must be a two-parent merge of the
+    base branch whose tree differs from the automatic merge of its parents
+    only in paths that automatic merge left conflicted. Edits inside a
+    conflicted file are not inspected. Any git failure keeps the publish
+    paused.
+    """
+
+    publish_yourself = (
+        "Publish the branch yourself, run "
+        f"`git switch {state.base_branch}` and `git pull`, then start the "
+        "dispatcher again."
+    )
+    listed = _git(
+        repo_root,
+        ["rev-list", "--reverse", "--merges", f"{paused}..HEAD", f"^{upstream}"],
+    )
+    if listed.returncode != 0:
+        return (
+            lead
+            + f"git rev-list --merges failed ({_first_line(listed)}), so the "
+            "merge commits added since the pause could not be checked. "
+            + publish_yourself
+        )
+    merges = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    for merge in merges:
+        blocker = _merge_content_problem(repo_root, upstream, merge)
+        if blocker is None:
+            continue
+        reason, failed = blocker
+        described = _describe_commit(repo_root, merge)
+        if failed:
+            return (
+                lead
+                + f"{reason} for the merge `{described}`, so the merge commits "
+                "added since the pause could not be checked. The story state "
+                "was kept. " + publish_yourself
+            )
+        return (
+            lead
+            + f"the merge `{described}` added since the pause {reason}. Those "
+            "changes have not passed the work-claim gate or the audit. The "
+            "story state was kept. To continue: redo the merge of "
+            f"{upstream} on `{state.branch}` so it holds only the conflict "
+            "resolution, then start the dispatcher again; or publish the "
+            f"branch yourself, run `git switch {state.base_branch}` and "
+            "`git pull`, then start the dispatcher again."
+        )
+    return None
+
+
+def _merge_content_problem(
+    repo_root: Path, upstream: str, merge: str
+) -> tuple[str, bool] | None:
+    """Check one merge commit; return ``(reason, command_failed)`` or ``None``."""
+
+    parents_run = _git(repo_root, ["rev-list", "--parents", "-n", "1", merge])
+    if parents_run.returncode != 0:
+        return f"git rev-list --parents failed ({_first_line(parents_run)})", True
+    words = parents_run.stdout.split()
+    if not words or not all(_OBJECT_ID_RE.fullmatch(word) for word in words):
+        return "git rev-list --parents printed no parents", True
+    parents = words[1:]
+    if len(parents) != 2:
+        return (
+            f"has {len(parents)} parents; only a two-parent merge of {upstream} "
+            "can be resumed",
+            False,
+        )
+    first, second = parents
+    ancestor = _git(repo_root, ["merge-base", "--is-ancestor", second, upstream])
+    if ancestor.returncode == 1:
+        return (
+            f"does not merge {upstream}: its second parent {second[:12]} is not "
+            f"on {upstream}",
+            False,
+        )
+    if ancestor.returncode != 0:
+        return (
+            f"git merge-base --is-ancestor {second[:12]} {upstream} failed "
+            f"({_first_line(ancestor)})",
+            True,
+        )
+    automatic = _git(
+        repo_root,
+        ["merge-tree", "--write-tree", "--no-messages", "--name-only", first, second],
+    )
+    if automatic.returncode not in (0, 1):
+        return f"git merge-tree failed ({_first_line(automatic)})", True
+    lines = (automatic.stdout or "").splitlines()
+    tree = lines[0].strip() if lines else ""
+    if not _OBJECT_ID_RE.fullmatch(tree):
+        return (
+            f"git merge-tree printed no tree ({_first_line(automatic)})",
+            True,
+        )
+    conflicted: set[str] = set()
+    if automatic.returncode == 1:
+        for line in lines[1:]:
+            if not line.strip():
+                break
+            conflicted.add(line)
+    diffed = _git(repo_root, ["diff", "--no-renames", "--name-only", tree, merge])
+    if diffed.returncode != 0:
+        return f"git diff failed ({_first_line(diffed)})", True
+    changed = [line for line in diffed.stdout.splitlines() if line.strip()]
+    extra = [path for path in changed if path not in conflicted]
+    if not extra:
+        return None
+    more = len(extra) - _RESUME_LISTED_COMMITS
+    listing = ", ".join(f"`{path}`" for path in extra[:_RESUME_LISTED_COMMITS]) + (
+        f", and {more} more" if more > 0 else ""
+    )
+    return (
+        f"changes {listing} beyond the conflict resolution: the automatic merge "
+        "of its parents did not leave "
+        + ("that path" if len(extra) == 1 else "those paths")
+        + " conflicted",
+        False,
+    )
+
+
+def _describe_commit(repo_root: Path, sha: str) -> str:
+    shown = _git(repo_root, ["show", "-s", "--format=%h %s", sha])
+    line = (shown.stdout or "").strip().splitlines()
+    if shown.returncode != 0 or not line or not line[0].strip():
+        return sha[:12]
+    return line[0].strip()
 
 
 def _unresolved_message(state: StoryState, count: int, url: str) -> str:

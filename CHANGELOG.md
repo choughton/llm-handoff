@@ -15,6 +15,14 @@ This project follows a simple pre-release changelog until the first public tag.
   the packet had to go back to the planner. The planner prompts and agent
   files now say to write one command per nested list item, with no prose.
 
+- A resumed `pr` publish now also checks the content of each merge commit
+  added since the pause. Each must be a two-parent merge that brings in the
+  base branch, and its tree may differ from the automatic merge of its parents
+  (`git merge-tree --write-tree`) only in files that merge left conflicted.
+  An operator merge that carries other edits, a merge of another branch, an
+  octopus merge, or a failed or unsupported `git merge-tree` pauses with the
+  story state kept and pushes nothing; the message names the merge and up to
+  five offending files. Edits inside conflicted files are not inspected.
 - A resumed `pr` publish now checks what was added to the story branch while
   publishing was paused. The pause records the story branch head, and on the
   next start the dispatcher fetches the base branch and pushes only when every
