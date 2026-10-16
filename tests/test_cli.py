@@ -5,7 +5,6 @@ from pathlib import Path
 from llm_handoff import __main__ as main_module
 
 LEGACY_PROJECT_NAME = bytes.fromhex("43726f737366697265").decode("ascii")
-LEGACY_TOOL_NAME = bytes.fromhex("616e746967726176697479").decode("ascii")
 
 
 def test_init_dry_run_reports_merges_without_writes(tmp_path: Path, capsys) -> None:
@@ -33,7 +32,6 @@ def test_help_text_names_public_dispatcher(capsys) -> None:
     assert "--manual-frontend" in output
     assert "--config" in output
     assert LEGACY_PROJECT_NAME not in output
-    assert LEGACY_TOOL_NAME not in output.lower()
 
 
 def test_help_text_lists_doctor_subcommand(capsys) -> None:

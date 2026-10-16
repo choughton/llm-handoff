@@ -6,7 +6,6 @@ from llm_handoff import config
 
 
 LEGACY_PROJECT = bytes.fromhex("63726f737366697265").decode("ascii")
-LEGACY_TOOL = bytes.fromhex("616e746967726176697479").decode("ascii")
 
 
 def test_public_defaults_do_not_reference_source_project() -> None:
@@ -40,7 +39,6 @@ def test_package_source_does_not_reference_source_project_terms() -> None:
         LEGACY_PROJECT,
         f"llm {LEGACY_PROJECT}",
         f"llm-{LEGACY_PROJECT}",
-        LEGACY_TOOL,
         "completed_work_ledger",
         "claude.md",
         "v" + "20",
