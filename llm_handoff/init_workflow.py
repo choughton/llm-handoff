@@ -242,6 +242,10 @@ class InitResult:
     merged: tuple[Path, ...] = ()
     candidates: tuple[Candidate, ...] = ()
     verification_command: str | None = None
+    # Whether the Antigravity CLI (`agy`) is on PATH. It only decides whether
+    # `init` prints the agy permission entries; the provider mapping
+    # auto-detect does not use it.
+    antigravity_detected: bool = False
 
 
 class InitWorkflowError(RuntimeError):
@@ -681,6 +685,7 @@ def init_reference_workflow(
     provider: str | None = None,
     available_providers: Iterable[str] | None = None,
     verification_command: str | None = None,
+    antigravity_available: bool | None = None,
 ) -> InitResult:
     if template != REFERENCE_TEMPLATE:
         raise UnknownTemplateError(template)
@@ -696,6 +701,11 @@ def init_reference_workflow(
         detect_provider_clis() if available_providers is None else available_providers
     )
     mapping = resolve_provider_mapping(provider, detected)
+    antigravity_detected = (
+        shutil.which("agy") is not None
+        if antigravity_available is None
+        else antigravity_available
+    )
 
     target_root = target_root.expanduser().resolve()
     # Detect before anything is copied, so the template never shows up as a
@@ -760,6 +770,7 @@ def init_reference_workflow(
         merged=tuple(merged),
         candidates=candidates,
         verification_command=verification_command,
+        antigravity_detected=antigravity_detected,
     )
 
     if conflicts and not dry_run:

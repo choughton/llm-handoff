@@ -16,6 +16,11 @@ from llm_handoff.agent_providers.codex import (
     _cleanup_codex_output_artifacts,
     _codex_artifact_paths,
 )
+from llm_handoff.antigravity_permissions import (
+    ANTIGRAVITY_REQUIRED_DENY,
+    antigravity_allow_entries,
+    format_antigravity_permissions,
+)
 from llm_handoff.config import (
     DISPATCH_WINDOW_TITLE,
     detect_repo_root,
@@ -279,6 +284,21 @@ def init_command(
                 "Review conflicts; --force only overwrites non-managed files."
             )
     _echo_candidates(result.candidates, result.verification_command)
+    if result.antigravity_detected:
+        _echo_antigravity_permissions(result.verification_command)
+
+
+def _echo_antigravity_permissions(verification_command: str | None) -> None:
+    """Print the agy permission entries; init never touches the settings file."""
+    commands = () if verification_command is None else (verification_command,)
+    for line in format_antigravity_permissions(
+        antigravity_allow_entries(commands), ANTIGRAVITY_REQUIRED_DENY
+    ):
+        typer.echo(line)
+    typer.echo(
+        "Add these entries to that settings file yourself, then run "
+        "`llm-handoff doctor` to check them."
+    )
 
 
 _UNSAFE_TERMINAL_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})

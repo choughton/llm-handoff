@@ -125,7 +125,12 @@ From a source checkout, use `python -m llm_handoff doctor`. The command checks
 that `git` is on PATH and the root is inside a Git repository, that each
 configured role's provider CLI binary is on PATH, that Docker or Podman
 (`sandbox-exec` on macOS) is available when a Gemini CLI role runs sandboxed,
-and that the handoff file routes and validates. It prints one `PASS`, `FAIL`,
+and that the handoff file routes and validates. When a role runs on
+Antigravity without `unsafe_bypass`, it also checks
+`~/.gemini/antigravity-cli/settings.json` for the required `agy`
+`permissions.allow` and `permissions.deny` entries and for `deny` or `ask`
+rules that override them, reading that file only
+(see [CONFIGURATION.md](CONFIGURATION.md)). It prints one `PASS`, `FAIL`,
 or `WARN` line per check and a summary. It exits `0` when there are no errors
 (warnings such as a dirty working tree or a missing handoff file are allowed)
 and `1` when any check fails. It does not check provider sign-in, start a

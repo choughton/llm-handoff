@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from llm_handoff import __main__ as main_module
+from llm_handoff import antigravity_permissions as agy_perms
+from llm_handoff import init_workflow
 
 LEGACY_PROJECT_NAME = bytes.fromhex("43726f737366697265").decode("ascii")
 
@@ -232,3 +236,78 @@ def test_init_command_rejects_unknown_provider(tmp_path: Path, capsys) -> None:
     assert exit_code == 2
     assert "Unknown provider mapping" in capsys.readouterr().err
     assert not (tmp_path / "AGENTS.md").exists()
+
+
+def _stub_provider_which(monkeypatch: pytest.MonkeyPatch, names: set[str]) -> None:
+    def fake_which(name: str, *args: object, **kwargs: object) -> str | None:
+        return f"/usr/bin/{name}" if name in names else None
+
+    monkeypatch.setattr(init_workflow.shutil, "which", fake_which)
+
+
+AGY_HEADER = "Antigravity (agy) permissions for ~/.gemini/antigravity-cli/settings.json:"
+AGY_FOOTER = (
+    "Add these entries to that settings file yourself, then run "
+    "`llm-handoff doctor` to check them."
+)
+
+
+def test_init_dry_run_prints_agy_permissions_when_agy_is_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _stub_provider_which(monkeypatch, {"agy", "claude"})
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    target = tmp_path / "target"
+
+    assert main_module.main(["init", str(target), "--dry-run"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert "Provider mapping: all roles on claude; provider CLIs found: claude" in lines
+    start = lines.index(AGY_HEADER)
+    assert lines[-1] == AGY_FOOTER
+    block = lines[start:]
+    expected_entries = [
+        f"    - {entry}"
+        for entry in (
+            *agy_perms.ANTIGRAVITY_REQUIRED_ALLOW,
+            *agy_perms.ANTIGRAVITY_REQUIRED_DENY,
+        )
+    ]
+    for entry in expected_entries:
+        assert entry in block
+    assert "    - command(npm test)" not in block
+    assert not home.exists()
+    assert not target.exists()
+
+
+def test_init_prints_the_verification_command_agy_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _stub_provider_which(monkeypatch, {"agy"})
+
+    exit_code = main_module.main(
+        ["init", str(tmp_path), "--verification-command", "npm test"]
+    )
+
+    assert exit_code == 0
+    lines = capsys.readouterr().out.splitlines()
+    start = lines.index(AGY_HEADER)
+    deny_index = lines.index("  permissions.deny:")
+    assert lines[deny_index - 1] == "    - command(npm test)"
+    assert start < deny_index
+    assert lines[-1] == AGY_FOOTER
+
+
+def test_init_omits_agy_permissions_when_agy_is_not_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _stub_provider_which(monkeypatch, {"claude"})
+
+    assert main_module.main(["init", str(tmp_path), "--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Antigravity" not in output
+    assert "permissions.allow" not in output
+    assert "llm-handoff doctor" not in output
+    assert output.splitlines()[-1] == "Candidate commands: none found"

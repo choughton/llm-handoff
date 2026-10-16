@@ -8,8 +8,13 @@ normalizer has an API key or CLI to run with, whether the audit runs the
 security reviewer (with the opt-out reason when it does not), whether the
 work-claim gate is on (with the opt-out reason when it is not), and the
 current handoff file, validated with the same Work Packet requirement the
-dispatch loop applies. It does not start a dispatch, call a provider, contact the network, or write any
-files.
+dispatch loop applies. When a role or fallback runs on Antigravity without
+`unsafe_bypass`, it also checks the `agy` user settings file for the required
+`permissions.allow` and `permissions.deny` entries, and for `permissions.deny`
+or `permissions.ask` rules that override a required allow entry, reading that
+file only.
+It does not start a dispatch, call a provider, contact the network, or write
+any files.
 
 `_command_available` and `_command_binary_name` live here so the supervisor's
 `--doctor` mode and this command share one PATH lookup, including the Windows
@@ -19,8 +24,11 @@ files.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fnmatch
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Literal
@@ -30,6 +38,11 @@ import yaml
 from llm_handoff.agent_providers.gemini import (
     detect_gemini_sandbox_runtime,
     gemini_sandbox_unavailable_message,
+)
+from llm_handoff.antigravity_permissions import (
+    ANTIGRAVITY_REQUIRED_DENY,
+    antigravity_allow_entries,
+    antigravity_settings_path,
 )
 from llm_handoff.config import (
     CLAUDE_BINARY,
@@ -41,6 +54,7 @@ from llm_handoff.config import (
     detect_repo_root,
     load_dispatch_config,
 )
+from llm_handoff.provider_auth import ANTIGRAVITY_SETTINGS_PATH
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.router import route as route_handoff
 from llm_handoff.text_io import read_dispatch_text
@@ -124,6 +138,7 @@ def run_doctor(
     if dispatch_config is not None:
         _check_role_binaries(dispatch_config, resolved_root, checks)
         _check_container_runtime(dispatch_config, checks)
+        _check_antigravity_permissions(dispatch_config, checks)
         _check_normalizer(dispatch_config, resolved_root, checks)
         _check_security_review(dispatch_config, checks)
         _check_work_claim_gate(dispatch_config, checks)
@@ -397,6 +412,211 @@ def _check_container_runtime(
                 "FAIL",
                 "container runtime",
                 gemini_sandbox_unavailable_message(role),
+            )
+        )
+
+
+_ANTIGRAVITY_CHECK_NAME = "antigravity permissions"
+_GIT_PUSH_GRANT_PREFIXES = ("command(git push", "unsandboxed(git push")
+
+
+def _read_antigravity_permissions(
+    path: Path,
+) -> tuple[list[str], list[str], list[str]] | str | None:
+    """Read ``permissions.allow``, ``.deny``, and ``.ask`` from ``path``.
+
+    Returns the three lists, None when the file does not exist, or a reason
+    string when the file cannot be read or has the wrong shape. A missing key
+    counts as an empty list. The file is only read, never opened for writing.
+    """
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return f"could not be read ({exc})"
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        return f"is not valid JSON ({exc})"
+    if not isinstance(data, dict):
+        return "is not a JSON object"
+    permissions = data.get("permissions")
+    if not isinstance(permissions, dict):
+        return 'has no "permissions" object'
+    lists: list[list[str]] = []
+    for key in ("allow", "deny", "ask"):
+        value = permissions.get(key, [])
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            return f'has a "permissions.{key}" value that is not a list of strings'
+        lists.append(value)
+    return lists[0], lists[1], lists[2]
+
+
+def _command_rule_shadows(rule: str, command: str) -> bool:
+    """Return True when the ``command(...)`` ``rule`` may match ``command``.
+
+    Antigravity's exact matching rules are not documented in full, so this
+    errs toward reporting: an exact match, a word prefix (``command(git)``
+    for ``git status``), a ``*``/``?`` wildcard pattern, or a ``regex:``
+    pattern that matches the command. Rules that are not ``command(...)``,
+    and regex rules that do not compile, are not counted.
+    """
+    if not (rule.startswith("command(") and rule.endswith(")")):
+        return False
+    pattern = rule[len("command(") : -1].strip()
+    if not pattern:
+        return False
+    if pattern.startswith("regex:"):
+        try:
+            return re.search(pattern[len("regex:") :], command) is not None
+        except re.error:
+            return False
+    if pattern == command or command.startswith(pattern + " "):
+        return True
+    return fnmatch.fnmatchcase(command, pattern)
+
+
+def _shadowing_rules(
+    rules: list[str], allow_required: tuple[str, ...]
+) -> list[tuple[str, list[str]]]:
+    """Pair each rule in ``rules`` with the required allow entries it shadows."""
+    shadowed: list[tuple[str, list[str]]] = []
+    for rule in rules:
+        hits = [
+            entry
+            for entry in allow_required
+            if _command_rule_shadows(rule, entry[len("command(") : -1])
+        ]
+        if hits:
+            shadowed.append((rule, hits))
+    return shadowed
+
+
+def _ascii_entry(entry: str) -> str:
+    return entry.encode("unicode_escape").decode("ascii")
+
+
+def _describe_shadowing(shadowed: list[tuple[str, list[str]]]) -> str:
+    return "; ".join(
+        f"`{_ascii_entry(rule)}` shadows {', '.join(hits)}" for rule, hits in shadowed
+    )
+
+
+def _check_antigravity_permissions(
+    dispatch_config: DispatchConfig,
+    checks: list[DoctorCheck],
+) -> None:
+    """Check the `agy` user settings file for the required grants.
+
+    Covers every Antigravity role and fallback without ``unsafe_bypass``
+    (``unsafe_bypass`` launches skip permission prompts and need no grants).
+    Grants are user-wide, so the union of entries is checked once. The file
+    is read only; the doctor never writes it.
+    """
+    labels = [
+        label
+        for label, agent_config in _role_launches(dispatch_config)
+        if agent_config.provider == "antigravity" and not agent_config.unsafe_bypass
+    ]
+    if not labels:
+        return
+    covers = f"(covers {', '.join(labels)})"
+    allow_required = antigravity_allow_entries(
+        dispatch_config.verification_allowed_prefixes
+    )
+    path = antigravity_settings_path()
+    result = _read_antigravity_permissions(path)
+    if result is None:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} was not found {covers}; add "
+                "permissions.allow entries: "
+                + ", ".join(allow_required)
+                + "; add permissions.deny entries: "
+                + ", ".join(ANTIGRAVITY_REQUIRED_DENY),
+            )
+        )
+        return
+    if isinstance(result, str):
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} {result} {covers}; expected "
+                '{"permissions": {"allow": [...], "deny": [...]}}',
+            )
+        )
+        return
+    allow, deny, ask = result
+    found = False
+    for entry in allow:
+        if entry.startswith(_GIT_PUSH_GRANT_PREFIXES):
+            found = True
+            checks.append(
+                DoctorCheck(
+                    "FAIL",
+                    _ANTIGRAVITY_CHECK_NAME,
+                    f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow grants "
+                    f"`{_ascii_entry(entry)}` "
+                    f"{covers}; remove it, because agents must not "
+                    "push",
+                )
+            )
+    # Antigravity applies Deny > Ask > Allow, and a headless `agy -p` run
+    # soft-denies any command that needs approval, so a deny or ask rule that
+    # matches a required allow entry blocks that command despite the grant.
+    for key, rules in (("deny", deny), ("ask", ask)):
+        shadowed = _shadowing_rules(rules, allow_required)
+        if shadowed:
+            found = True
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    _ANTIGRAVITY_CHECK_NAME,
+                    f"{ANTIGRAVITY_SETTINGS_PATH} permissions.{key} has rules "
+                    f"that override required allow entries: "
+                    f"{_describe_shadowing(shadowed)} {covers}; Antigravity "
+                    "applies Deny > Ask > Allow and headless `agy -p` runs "
+                    "deny commands that need approval, so narrow or remove "
+                    "these rules",
+                )
+            )
+    missing_allow = [entry for entry in allow_required if entry not in allow]
+    if missing_allow:
+        found = True
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow is missing "
+                f"{', '.join(missing_allow)} {covers}; only exact entries are "
+                "recognized, so grants written another way (for example regex "
+                "grants) are not counted",
+            )
+        )
+    missing_deny = [entry for entry in ANTIGRAVITY_REQUIRED_DENY if entry not in deny]
+    if missing_deny:
+        found = True
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} permissions.deny is missing "
+                f"{', '.join(missing_deny)} {covers}",
+            )
+        )
+    if not found:
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} has every required allow and deny "
+                f"entry {covers}",
             )
         )
 
