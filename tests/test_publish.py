@@ -943,17 +943,24 @@ def test_a_resume_with_a_non_merge_commit_after_a_merge_pause_does_not_merge(
     assert state["paused_publish"] == "merge" and state["paused_head"] == head
 
 
+_MISSING = object()
+
+
+@pytest.mark.parametrize("paused_head", [_MISSING, 1234567, ["abc1234"]])
 def test_a_resume_from_a_state_without_a_paused_head_pauses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paused_head: object
 ) -> None:
     repo, _remote, gh, env = _with_remote(tmp_path)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     _start_story(repo)
-    # A state saved by an older version, before paused_head existed.
+    # A state saved by an older version, before paused_head existed, or a
+    # hand-edited one whose paused_head is not a string.
     state = _saved_state(repo)
     state["paused_publish"] = "push"
     state.pop("paused_head", None)
+    if paused_head is not _MISSING:
+        state["paused_head"] = paused_head
     (repo / STATE_PATH).write_text(json.dumps(state), encoding="utf-8")
     entries, log = _logs()
 

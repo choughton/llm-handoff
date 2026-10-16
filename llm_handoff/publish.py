@@ -741,7 +741,9 @@ def _resume_blocker(repo_root: Path, remote: str, state: StoryState) -> str | No
         "dispatcher again."
     )
     lead = f"`{state.branch}` was not pushed: "
-    if not re.fullmatch(r"[0-9a-f]{7,64}", state.paused_head or ""):
+    # A hand-edited or migrated state file can hold any JSON value here.
+    paused_head = state.paused_head if isinstance(state.paused_head, str) else ""
+    if not re.fullmatch(r"[0-9a-f]{7,64}", paused_head):
         return (
             lead
             + "the saved story state does not record a valid branch head at "
@@ -763,7 +765,7 @@ def _resume_blocker(repo_root: Path, remote: str, state: StoryState) -> str | No
             f"`git switch {state.base_branch}` and `git pull`, then start the "
             "dispatcher again."
         )
-    paused = state.paused_head
+    paused = paused_head
     ancestor = _git(repo_root, ["merge-base", "--is-ancestor", paused, "HEAD"])
     if ancestor.returncode == 1:
         return (
