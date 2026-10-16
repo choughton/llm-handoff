@@ -874,6 +874,12 @@ edits yourself and drop them from the packet, or have the planner give them
 to a role whose provider is not `claude` (the `.agents/` and `.codex/`
 folders are not protected). An `@backend` or `@frontend` dispatch from the
 operator prompt skips the check. `--dry-run` logs the pause it would take.
+The check leaves out the writable exceptions Claude Code documents under the
+repository root's `.claude` folder: its git worktrees under
+`.claude/worktrees/`, and Markdown entries (ending in `.md`) under the
+subagent memory folders `.claude/agent-memory/` and
+`.claude/agent-memory-local/`. A directory entry such as
+`.claude/agent-memory/` still pauses, because it can cover other files.
 Only `.claude` is checked; a packet that scopes another protected path, such
 as `.git/` or `.vscode/`, still dispatches and the writes are refused.
 

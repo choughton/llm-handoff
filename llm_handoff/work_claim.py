@@ -115,6 +115,9 @@ VERIFICATION_OUTPUT_LOG_LINES = 20
 HANDOFF_ONLY_COMMIT_WALK_LIMIT = 10
 # Claude Code's protected directory: dontAsk mode denies every write under it.
 CLAUDE_PROTECTED_DIRECTORY = ".claude"
+# Documented writable exceptions under the project's own `.claude` folder.
+CLAUDE_WORKTREES_DIRECTORY = "worktrees"
+CLAUDE_AGENT_MEMORY_DIRECTORIES = frozenset({"agent-memory", "agent-memory-local"})
 _GIT_TIMEOUT_SECONDS = 30
 _SHORT_SHA_LENGTH = 12
 
@@ -683,14 +686,31 @@ def claude_protected_scope_entries(packet: WorkPacket) -> tuple[str, ...]:
     ``dontAsk`` mode it denies writes there before it reads the allow rules, so
     a Claude role launched that way cannot change these entries. The match is
     on whole path segments and ignores case, so ``.claude-notes/`` does not
-    count.
+    count. The writable exceptions Claude Code documents under the project's
+    own ``.claude`` folder (the repository root, where the role runs) are left
+    out: its git worktrees under ``.claude/worktrees/`` and Markdown entries
+    in a subagent memory folder (``.claude/agent-memory/`` or
+    ``.claude/agent-memory-local/``).
     """
 
     return tuple(
         entry
         for entry in packet.files_in_scope
-        if CLAUDE_PROTECTED_DIRECTORY
-        in (segment.lower() for segment in entry.split("/"))
+        if _claude_protected_entry(entry)
+    )
+
+
+def _claude_protected_entry(entry: str) -> bool:
+    segments = [segment.lower() for segment in entry.split("/")]
+    if CLAUDE_PROTECTED_DIRECTORY not in segments:
+        return False
+    if segments[0] != CLAUDE_PROTECTED_DIRECTORY or len(segments) < 3:
+        return True
+    if segments[1] == CLAUDE_WORKTREES_DIRECTORY:
+        return False
+    return not (
+        segments[1] in CLAUDE_AGENT_MEMORY_DIRECTORIES
+        and segments[-1].endswith(".md")
     )
 
 

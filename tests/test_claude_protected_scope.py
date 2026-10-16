@@ -178,6 +178,13 @@ class _Harness:
         ".claude/**",
         "examples/*/.claude/agents/*.md",
         "pkg/.Claude/settings.json",
+        # Memory exceptions cover Markdown files only, and only in the
+        # project's own `.claude` folder.
+        ".claude/agent-memory/",
+        ".claude/agent-memory/reviewer/notes.json",
+        "examples/app/.claude/agent-memory/reviewer/MEMORY.md",
+        "examples/app/.claude/worktrees/feature/src/app.py",
+        ".claude/agents/agent-memory/x.md",
     ],
 )
 def test_entries_with_a_claude_segment_are_protected(entry: str) -> None:
@@ -193,9 +200,16 @@ def test_entries_with_a_claude_segment_are_protected(entry: str) -> None:
         "docs/claude/notes.md",
         "src/settings.claude",
         "examples/reference-workflow/",
+        # Writable exceptions Claude Code documents under the project's
+        # `.claude` folder.
+        ".claude/agent-memory/reviewer/MEMORY.md",
+        ".claude/agent-memory-local/reviewer/notes.md",
+        ".claude/agent-memory/**/*.md",
+        ".claude/worktrees/feature/src/app.py",
+        ".claude/worktrees/",
     ],
 )
-def test_entries_without_a_claude_segment_are_not_protected(entry: str) -> None:
+def test_entries_outside_a_protected_claude_folder_pass(entry: str) -> None:
     assert claude_protected_scope_entries(_packet(entry)) == ()
 
 
