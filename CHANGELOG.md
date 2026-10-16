@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An audit fan-out reviewer that fails to start (missing binary, CLI argument
+  error, sign-in failure, missing Gemini sandbox or security extension) now
+  stops the run with exit 1 after one attempt and logs its stderr in an
+  `audit_reviewer_start_failed:` line, instead of retrying until
+  `max_consecutive_failures`. Other reviewer errors still count toward
+  `max_consecutive_failures`. Either way no audit verdict is written, so a
+  missing verdict is never a pass.
+
 - Each audit fan-out cycle now writes `usage.json` next to `review.json` in
   `logs/dispatch/audit/<timestamp>-cycle<N>/`, with each reviewer's provider,
   token counts, and cost, plus a `total_cost_usd`. Reviewers that report no

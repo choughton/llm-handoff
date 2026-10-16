@@ -51,6 +51,7 @@ from llm_handoff.agent_providers.codex import _build_codex_env, _run_codex_json_
 from llm_handoff.agent_providers.gemini import _build_gemini_env
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
 from llm_handoff.config import AgentConfig, AgentRole, DispatchConfig
+from llm_handoff.failover import classify_fatal_failure
 from llm_handoff.roles import normalize_agent_label
 from llm_handoff.router import HandoffRouting
 from llm_handoff.text_io import read_dispatch_text
@@ -414,6 +415,9 @@ class ReviewerRun:
     verdict: ReviewVerdict | None = None
     error: str | None = None
     usage: dict[str, object] | None = None
+    # Why the reviewer could not start ("launch", "auth", "argument", or
+    # "preflight"); None when it started, even if it later failed.
+    start_failure: str | None = None
 
     @property
     def command_summary(self) -> str:
@@ -607,11 +611,19 @@ def run_audit_fan_out(
 
     errors = [run.error for run in runs.values() if run.error is not None]
     if errors:
+        # No audit handoff is written on any reviewer error: a missing
+        # verdict is never a pass.
+        start_failed = [
+            run for run in runs.values() if run.start_failure is not None
+        ]
+        for run in start_failed:
+            _log(log, "ERROR", _start_failure_message(run))
         return DispatchResult(
             stdout="",
             stderr="\n".join(errors),
             exit_code=1,
             elapsed_seconds=time.monotonic() - start_time,
+            stop_loop=bool(start_failed),
         )
 
     quality_verdict = runs["quality"].verdict
@@ -1222,6 +1234,50 @@ def parse_codex_security_output(stdout: str) -> ReviewVerdict:
     )
 
 
+_ARGUMENT_ERROR_MARKERS: tuple[str, ...] = (
+    "unknown option",
+    "unknown flag",
+    "unknown argument",
+    "unexpected argument",
+    "unrecognized option",
+    "unrecognized argument",
+    "invalid option",
+)
+
+
+def _reviewer_start_failure(exit_code: int, stdout: str, stderr: str) -> str | None:
+    """Return why a reviewer CLI could not start, or None.
+
+    A start failure ("launch", "auth", or "argument") is deterministic, so a
+    retry only spends time and tokens. Timeouts, rate limits, and other
+    non-zero exits return None and keep the failure-count path.
+    """
+
+    if exit_code == 0:
+        return None
+    reason = classify_fatal_failure(exit_code=exit_code, stdout=stdout, stderr=stderr)
+    if reason in ("launch", "auth"):
+        return reason
+    stderr_text = (stderr or "").lower()
+    if not (stdout or "").strip() and any(
+        marker in stderr_text for marker in _ARGUMENT_ERROR_MARKERS
+    ):
+        return "argument"
+    return None
+
+
+_START_FAILURE_STDERR_CHARS = 2000
+
+
+def _start_failure_message(run: ReviewerRun) -> str:
+    stderr_text = run.stderr.strip()[-_START_FAILURE_STDERR_CHARS:]
+    return (
+        f"audit_reviewer_start_failed: the {run.name} reviewer ({run.provider}) "
+        f"could not start ({run.start_failure}); exit code {run.exit_code}. "
+        f"stderr: {stderr_text or '(empty)'}"
+    )
+
+
 def _guarded(
     name: str,
     provider: str,
@@ -1276,8 +1332,12 @@ def _run_quality_reviewer(
     after_sha = _handoff_sha(handoff_path)
     verdict: ReviewVerdict | None = None
     error: str | None = None
+    start_failure: str | None = None
     if result.exit_code != 0:
         error = f"quality_reviewer_failed: exit code {result.exit_code}."
+        start_failure = _reviewer_start_failure(
+            result.exit_code, result.stdout, result.stderr
+        )
     else:
         try:
             verdict = parse_quality_verdict(result.stdout)
@@ -1295,6 +1355,7 @@ def _run_quality_reviewer(
             verdict=verdict,
             error=error,
             usage=result.usage,
+            start_failure=start_failure,
         ),
         handoff_sha_after=after_sha,
     )
@@ -1355,6 +1416,7 @@ def _run_security_reviewer(
                 stdout="",
                 stderr=plan.preflight_error,
                 error=plan.preflight_error,
+                start_failure="preflight",
             ),
             handoff_sha_after=_handoff_sha(handoff_path),
         )
@@ -1396,6 +1458,7 @@ def _run_security_reviewer(
                     stdout=precheck.stdout,
                     stderr=precheck.stderr,
                     error=precheck_error,
+                    start_failure="preflight",
                 ),
                 handoff_sha_after=_handoff_sha(handoff_path),
             )
@@ -1437,11 +1500,13 @@ def _run_security_reviewer(
 
     verdict: ReviewVerdict | None = None
     error: str | None = None
+    start_failure: str | None = None
     if exit_code != 0:
         error = (
             f"security_reviewer_failed: {plan.kind} exited with code {exit_code}"
             + (f": {_single_line(stderr)[:300]}" if stderr.strip() else ".")
         )
+        start_failure = _reviewer_start_failure(exit_code, stdout, stderr)
     else:
         try:
             if plan.kind == "claude":
@@ -1464,6 +1529,7 @@ def _run_security_reviewer(
             verdict=verdict,
             error=error,
             usage=usage,
+            start_failure=start_failure,
         ),
         handoff_sha_after=after_sha,
     )
@@ -2083,6 +2149,7 @@ def _with_error(run: ReviewerRun, error: str) -> ReviewerRun:
         verdict=run.verdict,
         error=error,
         usage=run.usage,
+        start_failure=run.start_failure,
     )
 
 
