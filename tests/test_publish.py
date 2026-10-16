@@ -1518,7 +1518,9 @@ def test_pr_epic_close_with_everything_pushed_publishes_nothing(
         monkeypatch.setenv(key, value)
     entries, log = _logs()
 
-    outcome = _publish_pr(repo, gh, log, handoff_content=EPIC_CLOSE)
+    outcome = _publish_pr(
+        repo, gh, log, handoff_content=EPIC_CLOSE, branch_prefix="llm-handoff/"
+    )
 
     assert outcome.stop is False
     assert _gh_calls(tmp_path) == []
@@ -1538,7 +1540,9 @@ def test_pr_epic_close_with_an_unpushed_commit_still_stops(
     _commit_all(repo, {"src/widget.py": "WIDGET = 1\n"}, "unpublished work")
     _entries, log = _logs()
 
-    outcome = _publish_pr(repo, gh, log, handoff_content=EPIC_CLOSE)
+    outcome = _publish_pr(
+        repo, gh, log, handoff_content=EPIC_CLOSE, branch_prefix="llm-handoff/"
+    )
 
     assert outcome.stop is True and outcome.exit_code == 1
     assert "no story state" in outcome.message
@@ -1560,10 +1564,62 @@ def test_merge_commit_epic_close_without_story_state_publishes_nothing(
         wait_for_checks=False,
         handoff_content=EPIC_CLOSE,
         log=log,
+        base_branch="main",
     )
 
     assert outcome.stop is False
     assert _git(tmp_path, "rev-parse", "HEAD") == head
+
+
+def test_pr_epic_close_on_a_pushed_story_branch_without_state_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    _start_story(repo)
+    _git(repo, "push", "-q", "-u", "origin", BRANCH)
+    (repo / STATE_PATH).unlink()
+    _entries, log = _logs()
+
+    outcome = _publish_pr(
+        repo, gh, log, handoff_content=EPIC_CLOSE, branch_prefix="llm-handoff/"
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert "no story state" in outcome.message
+    assert _gh_calls(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("checkout", "options"),
+    [
+        ("side", {"base_branch": "main", "branch_prefix": "llm-handoff/"}),
+        ("main", {}),
+    ],
+    ids=["not-the-base-branch", "base-branch-unknown"],
+)
+def test_merge_commit_epic_close_off_the_base_branch_stops(
+    tmp_path: Path, checkout: str, options: dict[str, str]
+) -> None:
+    _init(tmp_path)
+    if checkout != "main":
+        _git(tmp_path, "switch", "-q", "-c", checkout)
+    _entries, log = _logs()
+
+    outcome = publish_story(
+        repo_root=tmp_path,
+        mode="merge-commit",
+        remote="origin",
+        auto_merge=True,
+        wait_for_checks=False,
+        handoff_content=EPIC_CLOSE,
+        log=log,
+        **options,
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert "no story state" in outcome.message
 
 
 def test_publish_stops_when_the_checkout_is_not_the_story_branch(

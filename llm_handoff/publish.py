@@ -320,8 +320,15 @@ def publish_story(
     gh_command: Sequence[str] = ("gh",),
     review: ReviewGate | None = None,
     sleep: Callable[[float], None] | None = None,
+    base_branch: str | None = None,
+    branch_prefix: str | None = None,
 ) -> PublishOutcome:
-    """Merge or open a pull request for an audited story."""
+    """Merge or open a pull request for an audited story.
+
+    ``base_branch`` and ``branch_prefix`` (``publish.base_branch`` and
+    ``publish.branch_prefix``) identify the base branch for an epic close
+    that has no story state.
+    """
 
     try:
         frontmatter = parse_handoff_frontmatter_text(handoff_content)
@@ -332,7 +339,13 @@ def publish_story(
     state = _load_state(repo_root)
     current = _current_branch(repo_root)
     if state is None and _is_merged_epic_close(
-        repo_root, mode, remote, current, frontmatter.close_type
+        repo_root,
+        mode,
+        remote,
+        current,
+        frontmatter.close_type,
+        base_branch=base_branch,
+        branch_prefix=branch_prefix,
     ):
         log(
             "INFO",
@@ -1934,16 +1947,27 @@ def _is_merged_epic_close(
     remote: str,
     current: str | None,
     close_type: str | None,
+    *,
+    base_branch: str | None,
+    branch_prefix: str | None,
 ) -> bool:
     """Whether a passing audit with no story state is an epic close.
 
     The planner routes an epic's close review to the auditor after its last
     story merged, so no story branch exists and the checkout is the base
-    branch. In ``pr`` mode the checkout must also have nothing that is not on
-    ``remote``: a commit only here would be unpublished work.
+    branch. The checkout must be ``base_branch`` when it is set, and otherwise
+    a branch without the story ``branch_prefix``: a story branch whose state
+    file was lost still has work to publish. In ``pr`` mode the checkout must
+    also have nothing that is not on ``remote``: a commit only here would be
+    unpublished work.
     """
 
     if close_type != "epic" or current is None:
+        return False
+    if base_branch:
+        if current != base_branch:
+            return False
+    elif not branch_prefix or current.startswith(branch_prefix):
         return False
     if mode != "pr":
         return True

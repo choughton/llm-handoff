@@ -10,8 +10,9 @@ This project follows a simple pre-release changelog until the first public tag.
   (`close_type: epic`) with no story branch no longer stops the loop with
   "the audited work is not on a story branch". The epic's stories are already
   merged, so the dispatcher publishes nothing and continues to the finalizer.
-  In `pr` mode it still stops if the checked-out branch has commits that are
-  not on the remote.
+  It still stops when the checkout is not the base branch (or is a branch with
+  `branch_prefix` when `base_branch` is null), and in `pr` mode when the
+  branch has commits that are not on the remote.
 
 - An audit fan-out reviewer that fails to start (missing binary, CLI argument
   error, sign-in failure, missing Gemini sandbox or security extension) now
