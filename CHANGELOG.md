@@ -16,7 +16,10 @@ This project follows a simple pre-release changelog until the first public tag.
   `frontmatter_status_route_conflict`. The handbook and the backend and
   frontend prompts now pair `blocked_missing_context` and `escalate_to_user`
   with `next_agent: user`, and `blocked_implementation_failure` (re-scope)
-  with `next_agent: planner`.
+  with `next_agent: planner`. A passing audit fan-out now always writes
+  `next_agent: planner` (or `finalizer` for an epic close) to match its
+  `verified_pass` status, which is where it already routed, and the auditor
+  and finalizer prompts pair each status with its route.
 
 - A resumed `pr` publish now checks what was added to the story branch while
   publishing was paused. The pause records the story branch head, and on the

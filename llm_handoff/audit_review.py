@@ -162,7 +162,7 @@ SECURITY_VERDICT_SHAPE_HINT = (
 )
 QUALITY_VERDICT_SHAPE_HINT = (
     '{"verdict": "pass" | "fail", "summary": "<one line>", '
-    '"next_agent": "planner" | "backend" | "frontend" | "finalizer" | "validator" | "user", '
+    '"next_agent": "planner" | "finalizer", '
     '"reason": "<one-line routing reason>", "close_type": "story" | "epic" | null, '
     '"commands_run": ["<verbatim command>"], '
     '"output_summary": "<one line per command with exit codes>", '
@@ -217,10 +217,10 @@ QUALITY_FAN_OUT_PROMPT_TEMPLATE = (
     "push any file, and do NOT edit {handoff_path}. Return ONLY one JSON object "
     "as your final message, with no Markdown fences or prose, of this shape: "
     '{shape_hint}. Set verdict "fail" when phase-1 spec compliance or phase-2 '
-    "code quality is not acceptable. Set next_agent to the role that should run "
-    "next if the work is accepted (planner, backend, frontend, finalizer, "
-    "validator, or user), never auditor; use finalizer only with close_type "
-    '"epic". reason must be one line. commands_run, output_summary, and '
+    "code quality is not acceptable. If the work is accepted, set next_agent to "
+    'planner, or to finalizer with close_type "epic" for an approved epic '
+    "close; the dispatcher routes every accepted audit to one of those two. "
+    "reason must be one line. commands_run, output_summary, and "
     "files_reviewed must come from commands you ran in this audit."
 )
 CODEX_QUALITY_ENVELOPE_SUFFIX = (
@@ -1028,10 +1028,12 @@ def render_audit_handoff(
         status = "verified_fail"
         close_type: str | None = None
     else:
-        next_agent = quality.next_agent
+        # verified_pass routes to the finalizer for an epic close and to the
+        # planner otherwise, so next_agent must name that same route.
+        close_type = quality.close_type
+        next_agent = "finalizer" if close_type == "epic" else "planner"
         reason = _truncate_reason(quality.reason)
         status = "verified_pass"
-        close_type = quality.close_type
 
     lines: list[str] = ["---"]
     lines.append(f"next_agent: {next_agent}")
