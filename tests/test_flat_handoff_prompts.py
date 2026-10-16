@@ -107,9 +107,13 @@ def test_no_prompt_hardcodes_the_nested_handoff_path() -> None:
         "PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE",
         "RATIONALIZATION_RECOVERY_INSTRUCTION_TEMPLATE",
     }
-    assert [name for name, _ in _handoff_path_templates(ledger)] == [
-        "LEDGER_UPDATER_PROMPT_TEMPLATE"
-    ]
+    assert {name for name, _ in _handoff_path_templates(ledger)} == {
+        "LEDGER_UPDATER_PROMPT_TEMPLATE",
+        "_AGENT_COMMIT_INSTRUCTION",
+        "_DISPATCHER_COMMIT_INSTRUCTION",
+    }
+    for commit_mode in ("agent", "dispatcher"):
+        _assert_flat(ledger.ledger_updater_prompt(Path("HANDOFF.md"), commit_mode))
 
 
 def test_render_prompt_uses_posix_relative_handoff_path() -> None:

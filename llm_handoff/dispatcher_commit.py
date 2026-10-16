@@ -243,6 +243,7 @@ def undo_planner_handoff_commits(
     before: GitPosition,
     *,
     role: str = "planner",
+    may_commit_other_files: bool = False,
 ) -> PlannerCommitCheck:
     """Enforce that ``role`` leaves ``.git`` alone in dispatcher commit mode.
 
@@ -251,6 +252,9 @@ def undo_planner_handoff_commits(
     they are reset with ``git reset --soft`` and the handoff is unstaged, so it
     stays in the working tree uncommitted. Anything else (other files, a branch
     switch, or rewritten history) is reported as an error for the operator.
+    With ``may_commit_other_files`` (the finalizer, which commits project
+    state), commits that leave the handoff out are accepted, and only commits
+    that mix the handoff with other files are an error.
     """
 
     after = git_position(repo_root)
@@ -278,6 +282,15 @@ def undo_planner_handoff_commits(
     ).stdout.split()
     handoff = handoff_path.as_posix()
     others = sorted(set(changed) - {handoff})
+    if may_commit_other_files and handoff not in changed:
+        return PlannerCommitCheck()
+    if others and may_commit_other_files:
+        return PlannerCommitCheck(
+            error=(
+                f"the {role} committed {', '.join(c[:12] for c in commits)} with "
+                f"the handoff {handoff} alongside: {', '.join(others)}"
+            )
+        )
     if others:
         return PlannerCommitCheck(
             error=(

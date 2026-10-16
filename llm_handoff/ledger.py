@@ -21,8 +21,7 @@ LEDGER_UPDATER_PROMPT_TEMPLATE = (
     "Rewrite {handoff_path} so YAML frontmatter routes the next cycle "
     "to planner for the next phase or to user if blocked; do not leave it "
     "routing to finalizer after the state update is complete. "
-    "Commit PROJECT_STATE.md and {handoff_path} atomically with a "
-    "clear message and any required Co-Authored-By trailer. Do not push unless "
+    "{commit_instruction} Do not push unless "
     "the repository instructions explicitly allow this finalizer to push. "
     "Return ONLY this exact machine-readable format, one field per line: "
     "PROJECT STATE UPDATED: YES or NO; "
@@ -39,11 +38,36 @@ LEDGER_UPDATER_PROMPT_TEMPLATE = (
 )
 
 
-def ledger_updater_prompt(handoff_path: Path = DEFAULT_HANDOFF_PATH) -> str:
+_AGENT_COMMIT_INSTRUCTION = (
+    "Commit PROJECT_STATE.md and {handoff_path} atomically with a "
+    "clear message and any required Co-Authored-By trailer."
+)
+# In dispatcher commit mode the handoff is live dispatch state that stays out
+# of commits; a committed copy lands on the base branch and in the next story
+# branch's pull request.
+_DISPATCHER_COMMIT_INSTRUCTION = (
+    "Dispatcher commit mode is on: commit only PROJECT_STATE.md, with a clear "
+    "message and any required Co-Authored-By trailer, and leave {handoff_path} "
+    "uncommitted even if the repository protocol asks you to commit it. If "
+    "PROJECT_STATE.md did not change, make no commit; then keep the audited "
+    "SHA as scope_sha and report it on the COMMIT SHA line."
+)
+
+
+def ledger_updater_prompt(
+    handoff_path: Path = DEFAULT_HANDOFF_PATH, commit_mode: str = "agent"
+) -> str:
     # The finalizer prompt names the handoff file by its configured relative
     # path so the flat HANDOFF.md layout gets correct instructions too.
+    path = Path(handoff_path).as_posix()
+    commit_instruction = (
+        _DISPATCHER_COMMIT_INSTRUCTION
+        if commit_mode == "dispatcher"
+        else _AGENT_COMMIT_INSTRUCTION
+    )
     return LEDGER_UPDATER_PROMPT_TEMPLATE.format(
-        handoff_path=Path(handoff_path).as_posix()
+        handoff_path=path,
+        commit_instruction=commit_instruction.format(handoff_path=path),
     )
 
 
@@ -225,7 +249,7 @@ def run_epic_close(
     kwargs = {}
     prompt = LEDGER_UPDATER_PROMPT
     if config is not None:
-        prompt = ledger_updater_prompt(config.handoff_path)
+        prompt = ledger_updater_prompt(config.handoff_path, config.commit_mode)
         kwargs = {
             "role": "finalizer",
             "handoff_path": config.handoff_full_path,

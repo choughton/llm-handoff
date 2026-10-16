@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In dispatcher commit mode the live handoff no longer leaks into pull
+  requests. The finalizer is told to commit only project state, and a
+  finalizer commit that holds only the handoff is undone with
+  `git reset --soft` (one that mixes the handoff with other files stops the
+  loop). A new story branch is refused when the base branch has commits that
+  are not on the remote and change the handoff file. After a pull request
+  correction round, the audit now reviews the whole story branch instead of
+  an empty range when the round made no new commit.
+
 - `pr` publish mode now keeps the story branch up to date with the base
   branch. Before each push it fetches the base branch and merges it into the
   story branch, so a pull request that merged during the story no longer

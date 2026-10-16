@@ -75,6 +75,9 @@ Run `git rev-parse HEAD` for concrete SHAs. Do not write `scope_sha: HEAD`.
 ## Commit And Push
 
 - Commit only the state and handoff files required for the finalizer update.
+- If the dispatcher says dispatcher commit mode is on, commit only the state
+  files and leave `docs/handoff/HANDOFF.md` uncommitted. With no state change,
+  make no commit and report the audited SHA as the commit SHA.
 - Use a clear commit message and any trailer required by `AGENTS.md`.
 - Never run `git push`; remote pushes are the operator's call. Report `PUSH RESULT: SKIPPED`.
 

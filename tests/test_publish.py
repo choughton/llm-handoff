@@ -313,6 +313,45 @@ def test_ensure_story_branch_refuses_to_start_from_another_story(
     assert error is not None and "llm-handoff/other-story" in error
 
 
+def test_a_story_branch_is_not_cut_from_an_unpushed_handoff_commit(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    handoff = Path("docs/handoff/HANDOFF.md")
+    (tmp_path / "docs" / "handoff").mkdir(parents=True)
+    (tmp_path / handoff).write_text("live state\n", encoding="utf-8")
+    _git(tmp_path, "add", handoff.as_posix())
+    _git(tmp_path, "commit", "-q", "-m", "finalizer committed the live handoff")
+    live = _git(tmp_path, "rev-parse", "--short", "HEAD")
+
+    def start() -> str | None:
+        return ensure_story_branch(
+            repo_root=tmp_path,
+            prefix="llm-handoff/",
+            base_branch="main",
+            assignment_content=ASSIGNMENT,
+            remote="origin",
+            handoff_path=handoff,
+        )
+
+    error = start()
+
+    assert error is not None
+    assert live in error and "origin/main" in error
+    assert handoff.as_posix() in error
+    assert _git(tmp_path, "branch", "--show-current") == "main"
+    assert not (tmp_path / STATE_PATH).exists()
+
+    # Unpushed commits that leave the handoff alone are not the problem.
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-q", "-am", "local readme change")
+
+    assert start() is None
+    assert _git(tmp_path, "branch", "--show-current") == BRANCH
+
+
 def test_saved_story_base_needs_the_same_story_on_its_branch(tmp_path: Path) -> None:
     _init(tmp_path)
     base = _git(tmp_path, "rev-parse", "HEAD")
