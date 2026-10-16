@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The work-claim gate no longer runs a Verification command line written as
+  prose. A line such as `` `cmd1`, then `` or `` `cmd1` and `cmd2` `` now runs
+  each backticked command. A line with other text around a backticked command,
+  or with `or` between two of them, is reported as prose
+  (`work_packet_unparseable`) and nothing runs. Before this, the gate ran the
+  whole line, failed a correct implementation with `verification_failed`, and
+  the packet had to go back to the planner. The planner prompts and agent
+  files now say to write one command per nested list item, with no prose.
+
 - In dispatcher commit mode the live handoff no longer leaks into pull
   requests. The finalizer is told to commit only project state, and a
   finalizer commit that holds only the handoff is undone with
