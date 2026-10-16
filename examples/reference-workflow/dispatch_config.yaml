@@ -6,7 +6,6 @@
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
-auto_push: false
 # Bounded planner recovery at dispatcher pauses (not next_agent: user): one
 # planner attempt per pause streak, then the dispatcher waits for a HANDOFF.md
 # edit. "off" (quoted; YAML reads a bare off as false) always waits.
