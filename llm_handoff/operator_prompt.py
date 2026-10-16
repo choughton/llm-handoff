@@ -3,7 +3,8 @@
 When the dispatcher pauses and waits for ``HANDOFF.md`` to change, and an
 operator is at a terminal, the orchestrator shows this prompt. The operator
 can send the planner a best-judgment instruction, send the planner free-text
-guidance, retry the cycle, or quit. Editing ``HANDOFF.md`` still resumes.
+guidance, dispatch a role directly with ``@<role> <message>``, retry the
+cycle, or quit. Editing ``HANDOFF.md`` still resumes.
 
 This module must not import ``llm_handoff.orchestrator``.
 """
@@ -17,6 +18,7 @@ from hashlib import sha256
 import os
 from pathlib import Path
 import queue
+import re
 import threading
 import time
 from typing import Any, Callable, Literal, Protocol, TextIO
@@ -24,12 +26,15 @@ from typing import Any, Callable, Literal, Protocol, TextIO
 from llm_handoff.text_io import read_dispatch_text
 
 
-OperatorActionKind = Literal["planner", "retry", "quit", "invalid"]
+OperatorActionKind = Literal["planner", "role", "retry", "quit", "invalid"]
 LogFn = Callable[[str, str], None]
 
-ROLE_TARGETING_UNAVAILABLE = (
-    "Role targeting with @<role> is not available yet. Press Enter, type "
-    "guidance for the planner, `retry`, or `quit`."
+# Roles an operator can dispatch directly with `@<role> <message>`.
+TARGETABLE_ROLES: frozenset[str] = frozenset({"backend", "frontend", "auditor"})
+ROLE_TARGET_INVALID = (
+    "Unknown @<role> target. Use @backend, @frontend, or @auditor with an "
+    "optional message to dispatch that role, or @planner <message> to send the "
+    "planner guidance."
 )
 PROMPT_HELP_LINES: tuple[str, ...] = (
     "Operator prompt: press Enter to send the planner a best judgment "
@@ -38,14 +43,18 @@ PROMPT_HELP_LINES: tuple[str, ...] = (
     "guidance.",
     "Operator prompt: type `retry` to re-run the cycle, or `quit` to stop the "
     "dispatcher.",
+    "Operator prompt: type `@backend|@frontend|@auditor <message>` to dispatch "
+    "that role directly with an optional message.",
     "Operator prompt: editing HANDOFF.md also resumes the dispatch loop.",
 )
+_ROLE_TARGET_RE = re.compile(r"@(\S*)(.*)", re.DOTALL)
 
 
 @dataclass(frozen=True, slots=True)
 class OperatorAction:
     kind: OperatorActionKind
     text: str | None = None
+    role: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,8 +72,21 @@ def parse_operator_input(line: str) -> OperatorAction:
     if lowered == "quit":
         return OperatorAction(kind="quit")
     if stripped.startswith("@"):
-        return OperatorAction(kind="invalid", text=ROLE_TARGETING_UNAVAILABLE)
+        return _parse_role_target(stripped)
     return OperatorAction(kind="planner", text=stripped)
+
+
+def _parse_role_target(stripped: str) -> OperatorAction:
+    """Parse `@<role> <message>`; the role name ends at the first whitespace."""
+
+    match = _ROLE_TARGET_RE.fullmatch(stripped)
+    name = match.group(1).lower() if match else ""
+    message = match.group(2).strip() if match else ""
+    if name in TARGETABLE_ROLES:
+        return OperatorAction(kind="role", role=name, text=message or None)
+    if name == "planner":
+        return OperatorAction(kind="planner", text=message or None)
+    return OperatorAction(kind="invalid", text=ROLE_TARGET_INVALID)
 
 
 _EOF = object()
@@ -158,16 +180,20 @@ class _PosixConsole:
             return None
 
 
+def _stream_is_tty(stream: Any) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    if isatty is None:
+        return False
+    try:
+        return bool(isatty())
+    except (OSError, ValueError):
+        return False
+
+
 def _console_for_stream(stream: Any) -> ConsoleInput | None:
     """Return terminal input for ``stream`` when it is a TTY, else None."""
 
-    isatty = getattr(stream, "isatty", None)
-    if isatty is None:
-        return None
-    try:
-        if not isatty():
-            return None
-    except (OSError, ValueError):
+    if not _stream_is_tty(stream):
         return None
     if os.name == "nt":
         try:
@@ -198,6 +224,10 @@ class OperatorInputReader:
     thread calls ``stream.readline()`` in a loop and puts each line on a
     queue. The thread starts on the first ``read_line`` call; lines queued
     between prompts are type-ahead that ``drain`` discards.
+
+    A terminal stream with no console adapter (no ``fileno``, ``termios``, or
+    ``msvcrt``) gets neither: ``console_unavailable`` is True, no thread
+    starts, and the caller falls back to polling ``HANDOFF.md``.
     """
 
     def __init__(
@@ -205,6 +235,7 @@ class OperatorInputReader:
     ) -> None:
         self._stream = stream
         self._console = console if console is not None else _console_for_stream(stream)
+        self._console_unavailable = self._console is None and _stream_is_tty(stream)
         self._queue: queue.Queue[object] = queue.Queue()
         self._eof = threading.Event()
         self._lock = threading.Lock()
@@ -222,11 +253,19 @@ class OperatorInputReader:
         return self._console is not None
 
     @property
+    def console_unavailable(self) -> bool:
+        """True for a terminal stream that has no console input adapter."""
+
+        return self._console_unavailable
+
+    @property
     def eof_reached(self) -> bool:
         return self._eof.is_set()
 
     def start(self) -> None:
-        if self._console is not None:
+        if self._console is not None or self._console_unavailable:
+            # A blocking readline() on a terminal would compete with a manual
+            # frontend keypress, so a terminal never gets the thread reader.
             return
         with self._lock:
             if self._thread is not None:
@@ -401,7 +440,7 @@ def wait_for_operator_or_handoff_change(
         if line is not None:
             action = parse_operator_input(line)
             if action.kind == "invalid":
-                log("PAUSE", action.text or ROLE_TARGETING_UNAVAILABLE)
+                log("PAUSE", action.text or ROLE_TARGET_INVALID)
                 continue
             return action
 

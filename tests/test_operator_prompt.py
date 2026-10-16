@@ -10,11 +10,12 @@ from typing import Any, Callable
 
 import pytest
 
-from llm_handoff import orchestrator
+from llm_handoff import operator_prompt, orchestrator
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
 from llm_handoff.operator_prompt import (
     PROMPT_HELP_LINES,
+    ROLE_TARGET_INVALID,
     HandoffChanged,
     OperatorAction,
     OperatorInputReader,
@@ -72,11 +73,40 @@ def test_retry_and_quit_match_case_insensitively(line: str, kind: str) -> None:
     assert action.text is None
 
 
-def test_role_targeting_is_invalid_for_now() -> None:
-    action = parse_operator_input("@backend fix it")
-    assert action.kind == "invalid"
-    assert action.text is not None
-    assert "not available yet" in action.text
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "@backend fix the import",
+            OperatorAction(kind="role", role="backend", text="fix the import"),
+        ),
+        (
+            "@Frontend   tidy layout",
+            OperatorAction(kind="role", role="frontend", text="tidy layout"),
+        ),
+        ("@auditor", OperatorAction(kind="role", role="auditor", text=None)),
+        ("  @AUDITOR   \n", OperatorAction(kind="role", role="auditor", text=None)),
+        ("@planner try smaller", OperatorAction(kind="planner", text="try smaller")),
+        ("@planner", OperatorAction(kind="planner", text=None)),
+    ],
+)
+def test_role_targets_parse(line: str, expected: OperatorAction) -> None:
+    assert parse_operator_input(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line", ["@user x", "@finalizer", "@validator check", "@foo bar", "@", "@ backend x"]
+)
+def test_unknown_role_targets_are_invalid(line: str) -> None:
+    action = parse_operator_input(line)
+    assert action == OperatorAction(kind="invalid", text=ROLE_TARGET_INVALID)
+    for target in ("@backend", "@frontend", "@auditor", "@planner"):
+        assert target in ROLE_TARGET_INVALID
+
+
+def test_help_lists_role_targeting_before_the_handoff_line() -> None:
+    assert "@backend|@frontend|@auditor <message>" in PROMPT_HELP_LINES[-2]
+    assert "editing HANDOFF.md" in PROMPT_HELP_LINES[-1]
 
 
 def test_free_text_is_planner_guidance() -> None:
@@ -328,6 +358,10 @@ def test_wait_returns_handoff_changed_when_file_is_rewritten(tmp_path: Path) -> 
         ("please split the story\n", OperatorAction(kind="planner", text="please split the story")),
         ("retry\n", OperatorAction(kind="retry")),
         ("quit\n", OperatorAction(kind="quit")),
+        (
+            "@backend fix it\n",
+            OperatorAction(kind="role", role="backend", text="fix it"),
+        ),
     ],
 )
 def test_wait_returns_each_action_kind(
@@ -352,7 +386,7 @@ def test_wait_logs_and_skips_invalid_actions(tmp_path: Path) -> None:
     logs, log = _logs()
 
     result = wait_for_operator_or_handoff_change(
-        OperatorInputReader(io.StringIO("@backend fix it\nquit\n")),
+        OperatorInputReader(io.StringIO("@foo fix it\nquit\n")),
         path,
         content_sha(USER_HANDOFF),
         0.01,
@@ -360,10 +394,7 @@ def test_wait_logs_and_skips_invalid_actions(tmp_path: Path) -> None:
     )
 
     assert result == OperatorAction(kind="quit")
-    assert any(
-        level == "PAUSE" and "not available yet" in message
-        for level, message in logs
-    )
+    assert ("PAUSE", ROLE_TARGET_INVALID) in logs
 
 
 def test_wait_keeps_polling_the_file_after_eof(tmp_path: Path) -> None:
@@ -444,6 +475,11 @@ class _PromptStream:
         self._release.release()
 
 
+class _TtyPromptStream(_PromptStream):
+    def isatty(self) -> bool:
+        return True
+
+
 class _StopPolling(Exception):
     pass
 
@@ -489,13 +525,18 @@ class _Harness:
         planner_writes: list[str] | None = None,
         backend_writes: list[str | None] | None = None,
         tty: bool = True,
+        stream_isatty: bool = False,
         on_log: Callable[[str, str], None] | None = None,
     ) -> None:
         self.handoff_path = handoff_path
         self.planner_instructions: list[str | None] = []
         self.backend_calls = 0
+        self.backend_instructions: list[str | None] = []
+        self.frontend_instructions: list[str | None] = []
+        self.auditor_prompts: list[str] = []
         self.logs: list[tuple[str, str]] = []
-        self.stream = _PromptStream(operator_lines or [])
+        stream_class = _TtyPromptStream if stream_isatty else _PromptStream
+        self.stream = stream_class(operator_lines or [])
         self._on_log = on_log
         self.stream_requests = 0
         planner_queue = list(planner_writes or [])
@@ -507,15 +548,22 @@ class _Harness:
                 path.write_text(planner_queue.pop(0), encoding="utf-8")
             return _dispatch_result()
 
-        def fake_backend(path: Path, **_kwargs: Any) -> DispatchResult:
+        def fake_backend(path: Path, **kwargs: Any) -> DispatchResult:
             self.backend_calls += 1
+            self.backend_instructions.append(kwargs.get("additional_instruction"))
             if backend_queue:
                 content = backend_queue.pop(0)
                 if content is not None:
                     path.write_text(content, encoding="utf-8")
             return _dispatch_result()
 
-        def fake_support(_name: str, _prompt: str, **_kwargs: Any) -> SubagentResult:
+        def fake_frontend(_path: Path, **kwargs: Any) -> DispatchResult:
+            self.frontend_instructions.append(kwargs.get("additional_instruction"))
+            return _dispatch_result()
+
+        def fake_support(name: str, prompt: str, **kwargs: Any) -> SubagentResult:
+            if name == "auditor" and kwargs.get("role") == "auditor":
+                self.auditor_prompts.append(prompt)
             return SubagentResult(
                 stdout="VALID: NO\n  ROUTING: FAIL - diagnosis fixture\n",
                 stderr="",
@@ -529,6 +577,7 @@ class _Harness:
 
         monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
         monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+        monkeypatch.setattr(orchestrator, "invoke_frontend_role", fake_frontend)
         monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
         monkeypatch.setattr(
             orchestrator,
@@ -800,6 +849,204 @@ def test_discarded_operator_recovery_logs_a_warning(
         "Dropped the scheduled operator planner recovery because HANDOFF.md "
         "changed before it ran; routing the current handoff normally."
     ]
+
+
+# --- @<role> targeting ----------------------------------------------------
+
+
+def test_backend_target_on_user_pause_dispatches_backend_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@backend fix the import", "quit"],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 1
+    assert harness.planner_instructions == []
+    instruction = harness.backend_instructions[0]
+    assert instruction is not None
+    assert "ESCALATION DETECTED in HANDOFF.md." in instruction
+    assert (
+        "A person at the dispatcher console dispatched you directly from the "
+        "operator prompt." in instruction
+    )
+    assert "Operator instruction: fix the import" in instruction
+    assert "Files in scope" in instruction
+    assert instruction.isascii()
+    assert (
+        "PAUSE",
+        "Operator prompt: scheduling a backend dispatch with the operator's message.",
+    ) in harness.logs
+    assert ("INFO", "Routing source: operator_role_dispatch") in harness.logs
+
+
+def test_auditor_target_without_message_continues_the_assignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["@auditor", "quit"])
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.planner_instructions == []
+    assert harness.backend_calls == 0
+    assert len(harness.auditor_prompts) == 1
+    prompt = harness.auditor_prompts[0]
+    assert orchestrator.OPERATOR_ROLE_NO_MESSAGE_REQUEST in prompt
+    assert "Operator instruction:" not in prompt
+    assert (
+        "PAUSE",
+        "Operator prompt: scheduling a auditor dispatch with no message.",
+    ) in harness.logs
+
+
+def test_frontend_target_dispatches_frontend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch, handoff_path, operator_lines=["@Frontend tidy layout", "quit"]
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert len(harness.frontend_instructions) == 1
+    assert "Operator instruction: tidy layout" in (
+        harness.frontend_instructions[0] or ""
+    )
+    assert harness.planner_instructions == []
+
+
+def test_targeted_backend_cycle_skips_stale_route_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, BACKEND_HANDOFF)
+    # Backend never rewrites the handoff: cycle 2 pauses as stale, the
+    # targeted cycle repeats backend on the same hash, and only the normal
+    # cycle after it pauses as stale again.
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@backend fix it", "quit"],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 2
+    assert harness.backend_instructions[0] is None
+    assert "Operator instruction: fix it" in (harness.backend_instructions[1] or "")
+    assert sum(
+        message.startswith("STALE ROUTING DETECTED")
+        for message in harness.pause_messages()
+    ) == 2
+
+
+def test_role_target_text_with_braces_reaches_the_role_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    text = "keep {handoff_path} and {0} and {{literal}} as typed"
+    harness = _Harness(
+        monkeypatch, handoff_path, operator_lines=[f"@backend {text}", "quit"]
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert f"Operator instruction: {text}" in (harness.backend_instructions[0] or "")
+
+
+def test_discarded_role_dispatch_names_the_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+
+    def edit_after_scheduling(level: str, message: str) -> None:
+        if level == "PAUSE" and message.startswith(
+            "Operator prompt: scheduling a backend dispatch"
+        ):
+            handoff_path.write_text(OTHER_USER_HANDOFF, encoding="utf-8")
+
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@backend fix it", "quit"],
+        on_log=edit_after_scheduling,
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 0
+    warnings = [
+        message
+        for level, message in harness.logs
+        if level == "WARN" and message.startswith("Dropped the scheduled")
+    ]
+    assert warnings == [
+        "Dropped the scheduled operator_role dispatch to backend because "
+        "HANDOFF.md changed before it ran; routing the current handoff normally."
+    ]
+
+
+def test_tty_without_console_adapter_keeps_the_old_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["quit"],
+        stream_isatty=True,
+    )
+    monkeypatch.setattr(operator_prompt, "_console_for_stream", lambda _stream: None)
+    readers: list[OperatorInputReader] = []
+
+    class _RecordingReader(OperatorInputReader):
+        def __init__(self, stream: Any) -> None:
+            super().__init__(stream)
+            readers.append(self)
+
+    monkeypatch.setattr(orchestrator, "OperatorInputReader", _RecordingReader)
+    sleeps: list[float] = []
+
+    def stop_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        raise _StopPolling
+
+    monkeypatch.setattr(orchestrator.time, "sleep", stop_sleep)
+
+    with pytest.raises(_StopPolling):
+        harness.run(_config(tmp_path))
+
+    assert len(readers) == 1
+    assert readers[0].console_unavailable is True
+    assert readers[0].uses_console is False
+    assert readers[0].started is False
+    assert (
+        "WARN",
+        "Operator prompt unavailable: no console input for this terminal; "
+        "waiting for HANDOFF.md to change.",
+    ) in harness.logs
+    assert sleeps == [1]
+    assert harness.prompt_count() == 0
+    assert harness.pause_messages()[-1] == (
+        "Waiting for HANDOFF.md to change; polling every 1s."
+    )
+
+
+def test_non_tty_stream_is_not_console_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(operator_prompt, "_console_for_stream", lambda _stream: None)
+    reader = OperatorInputReader(io.StringIO("line\n"))
+
+    assert reader.console_unavailable is False
+    assert reader.read_line(timeout=0.5) == "line"
+    assert reader.started is True
 
 
 @pytest.mark.parametrize(

@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Callable, Literal, TextIO
+from typing import Callable, Literal, TextIO, cast
 
 from llm_handoff.agent_providers import antigravity as antigravity_provider
 from llm_handoff.agent_providers import claude as claude_provider
@@ -282,6 +282,20 @@ OPERATOR_BEST_JUDGMENT_REQUEST = (
     "The operator gave no guidance: resolve the pause with your best judgment."
 )
 OPERATOR_GUIDANCE_PREFIX = "Operator guidance: "
+# Direct role dispatch requested with `@<role> <message>` at the operator
+# prompt. The operator text is passed as a keyword value, so braces in it are
+# not parsed again.
+OPERATOR_ROLE_INSTRUCTION_TEMPLATE = (
+    "The dispatcher paused instead of dispatching. Pause reason: "
+    "{pause_reason} A person at the dispatcher console dispatched you directly "
+    "from the operator prompt. {operator_request} Stay within your role's "
+    "boundaries and the Work Packet's Files in scope, and write your normal "
+    "handback to {handoff_path}."
+)
+OPERATOR_ROLE_NO_MESSAGE_REQUEST = (
+    "The operator gave no message: continue the assignment in the handoff."
+)
+OPERATOR_ROLE_INSTRUCTION_PREFIX = "Operator instruction: "
 THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
     "Story `{story_id}` has bounced between implementation and audit "
     "{bounce_count} times. Do not continue the same implementation loop. "
@@ -313,6 +327,9 @@ class PendingPlannerRecovery:
     handoff_sha: str
     additional_instruction: str
     kind: str = "routing"
+    # Every recovery dispatches the planner except an operator `@<role>`
+    # dispatch, which names its own route.
+    route: RouteName = "planner"
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,16 +460,29 @@ def run_loop(
             pending_planner_recovery is not None
             and pending_planner_recovery.handoff_sha == handoff_sha
         ):
-            decision = RoutingDecision(
-                route="planner",
-                confidence="HIGH",
-                source="post_dispatch_routing_recovery",
-                reasoning=(
-                    "The previous cycle ended with a non-dispatchable handoff, "
-                    "so the planner is repairing routing or escalating."
-                ),
-                warnings=[],
-            )
+            if pending_planner_recovery.route == "planner":
+                decision = RoutingDecision(
+                    route="planner",
+                    confidence="HIGH",
+                    source="post_dispatch_routing_recovery",
+                    reasoning=(
+                        "The previous cycle ended with a non-dispatchable handoff, "
+                        "so the planner is repairing routing or escalating."
+                    ),
+                    warnings=[],
+                )
+            else:
+                decision = RoutingDecision(
+                    route=pending_planner_recovery.route,
+                    confidence="HIGH",
+                    source="operator_role_dispatch",
+                    reasoning=(
+                        "The operator targeted the "
+                        f"{pending_planner_recovery.route} role at the pause "
+                        "prompt, so it runs directly on the current handoff."
+                    ),
+                    warnings=[],
+                )
             forced_additional_instruction = (
                 pending_planner_recovery.additional_instruction
             )
@@ -460,13 +490,20 @@ def run_loop(
             pending_planner_recovery = None
         else:
             if pending_planner_recovery is not None:
-                _log(
-                    log_fn,
-                    "WARN",
-                    f"Dropped the scheduled {pending_planner_recovery.kind} "
-                    "planner recovery because HANDOFF.md changed before it "
-                    "ran; routing the current handoff normally.",
-                )
+                if pending_planner_recovery.route == "planner":
+                    dropped_message = (
+                        f"Dropped the scheduled {pending_planner_recovery.kind} "
+                        "planner recovery because HANDOFF.md changed before it "
+                        "ran; routing the current handoff normally."
+                    )
+                else:
+                    dropped_message = (
+                        f"Dropped the scheduled {pending_planner_recovery.kind} "
+                        f"dispatch to {pending_planner_recovery.route} because "
+                        "HANDOFF.md changed before it ran; routing the current "
+                        "handoff normally."
+                    )
+                _log(log_fn, "WARN", dropped_message)
             pending_planner_recovery = None
             decision = route_handoff(
                 handoff_content,
@@ -576,6 +613,9 @@ def run_loop(
                         "THREE_FIX_CIRCUIT_BREAKER: "
                         f"story_id={story_id} bounce_count={count}; routing to planner for re-scoping.",
                     )
+                    # The breaker also overrides an operator `@<role>`
+                    # dispatch; its planner cycle is not that dispatch.
+                    active_planner_recovery_kind = None
                     forced_additional_instruction = (
                         THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE.format(
                             story_id=story_id,
@@ -621,10 +661,11 @@ def run_loop(
         )
 
         if (
-            # A pause-recovery or operator planner cycle may repeat a planner
-            # route on an unchanged handoff; checking it would pause on its
-            # own recovery.
-            active_planner_recovery_kind not in {"pause", "operator"}
+            # A pause-recovery, operator planner, or operator role cycle may
+            # repeat a route on an unchanged handoff; checking it would pause
+            # on its own recovery.
+            active_planner_recovery_kind
+            not in {"pause", "operator", "operator_role"}
             and previous_cycle is not None
             and previous_cycle.route == current_cycle.route
             and previous_cycle.handoff_sha == current_cycle.handoff_sha
@@ -1429,12 +1470,16 @@ def _dispatch_route(
                 config,
                 log,
                 audit_context=audit_context,
+                additional_instruction=additional_instruction,
             ), "auditor (audit)"
         _log(log, "DISPATCH", "Dispatching auditor for audit.")
         return _dispatch_from_subagent(
             _invoke_support_callable(
                 "auditor",
-                _render_prompt(AUDIT_PROMPT_TEMPLATE, config.handoff_path),
+                _with_additional_instruction(
+                    _render_prompt(AUDIT_PROMPT_TEMPLATE, config.handoff_path),
+                    additional_instruction,
+                ),
                 role="auditor",
                 handoff_path=handoff_path,
                 agent_config=config.agents["auditor"],
@@ -1467,6 +1512,7 @@ def _dispatch_audit_fan_out(
     log: LogFn,
     *,
     audit_context: AuditFanOutContext | None,
+    additional_instruction: str | None = None,
 ) -> DispatchResult:
     handoff_path = config.handoff_full_path
     if audit_context is None:
@@ -1480,7 +1526,7 @@ def _dispatch_audit_fan_out(
     def quality_invoker(prompt: str, agent_config: AgentConfig) -> SubagentResult:
         return _invoke_support_callable(
             "auditor",
-            prompt,
+            _with_additional_instruction(prompt, additional_instruction),
             role="auditor",
             handoff_path=handoff_path,
             agent_config=agent_config,
@@ -1496,6 +1542,14 @@ def _dispatch_audit_fan_out(
         quality_invoker=quality_invoker,
         log=log,
     )
+
+
+def _with_additional_instruction(prompt: str, additional_instruction: str | None) -> str:
+    """Append an operator instruction to a support-role prompt, if any."""
+
+    if additional_instruction and additional_instruction.strip():
+        return "\n\n".join((prompt, additional_instruction.strip()))
+    return prompt
 
 
 def _failover_kwargs(config: DispatchConfig, role: AgentRole) -> dict[str, object]:
@@ -3144,9 +3198,26 @@ def _pause_at_dispatcher_pause(
             return PauseOutcome(kind="resume")
         return PauseOutcome(kind="stop")
 
+    reader = operator_prompt.reader()
+    if reader.console_unavailable:
+        _log(
+            log,
+            "WARN",
+            "Operator prompt unavailable: no console input for this terminal; "
+            "waiting for HANDOFF.md to change.",
+        )
+        if _pause_until_handoff_changes(
+            config,
+            handoff_sha=handoff_sha,
+            reason=reason,
+            log=log,
+        ):
+            return PauseOutcome(kind="resume")
+        return PauseOutcome(kind="stop")
+
     _log(log, "PAUSE", reason)
     result = wait_for_operator_or_handoff_change(
-        operator_prompt.reader(),
+        reader,
         config.handoff_full_path,
         handoff_sha,
         config.poll_interval_seconds,
@@ -3163,13 +3234,39 @@ def _pause_at_dispatcher_pause(
         _log(log, "PAUSE", "The operator asked to retry; re-running the cycle.")
         return PauseOutcome(kind="retry")
 
+    current_handoff_content = _read_required_text(config.handoff_full_path) or ""
+    if result.kind == "role" and result.role is not None:
+        role = cast(RouteName, result.role)
+        if result.text is None:
+            operator_request = OPERATOR_ROLE_NO_MESSAGE_REQUEST
+            summary = "no message"
+        else:
+            operator_request = OPERATOR_ROLE_INSTRUCTION_PREFIX + result.text
+            summary = "the operator's message"
+        role_pending = PendingPlannerRecovery(
+            handoff_sha=_content_sha(current_handoff_content),
+            additional_instruction=_render_prompt(
+                OPERATOR_ROLE_INSTRUCTION_TEMPLATE,
+                config.handoff_path,
+                pause_reason=reason,
+                operator_request=operator_request,
+            ),
+            kind="operator_role",
+            route=role,
+        )
+        _log(
+            log,
+            "PAUSE",
+            f"Operator prompt: scheduling a {role} dispatch with {summary}.",
+        )
+        return PauseOutcome(kind="planner", pending_planner_recovery=role_pending)
+
     if result.text is None:
         operator_request = OPERATOR_BEST_JUDGMENT_REQUEST
         summary = "a best judgment instruction"
     else:
         operator_request = OPERATOR_GUIDANCE_PREFIX + result.text
         summary = "the operator's guidance"
-    current_handoff_content = _read_required_text(config.handoff_full_path) or ""
     pending = PendingPlannerRecovery(
         handoff_sha=_content_sha(current_handoff_content),
         additional_instruction=_render_prompt(

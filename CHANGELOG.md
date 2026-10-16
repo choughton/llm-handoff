@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The operator prompt now accepts `@backend`, `@frontend`, or `@auditor`
+  with an optional message. The dispatcher runs that role directly on the
+  current `HANDOFF.md`, with the pause reason and the operator's message as
+  its instruction. The targeted cycle skips the stale-route check; the
+  circuit breaker, work-claim gate, commits, and post-dispatch validation
+  still apply. `@planner <message>` is planner guidance, and other targets
+  are rejected with the list of accepted ones. On a terminal with no console
+  input adapter, the prompt now logs a `WARN` line and waits for a
+  `HANDOFF.md` edit instead of reading stdin on a thread.
 - New operator prompt at dispatcher pauses (`interactive_pause`, on by
   default; `--no-interactive-pause` turns it off for one run). When stdin is
   a TTY, outside `--dry-run`, and with `poll_interval_seconds` above 0, a
