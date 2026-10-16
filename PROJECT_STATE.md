@@ -6,8 +6,9 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** PAUSE-RECOVERY (next; PAUSE-1 not started).
-  PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER closed.
+- **Active Epic:** SCANNERS (next; SCAN-1 not started).
+  PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
+  closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -19,24 +20,6 @@ epic, or the first story of the next epic when the active one closes. Each
 story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
-
-### 4. PAUSE-RECOVERY - bounded planner recovery at pauses, then an operator prompt
-
-- PAUSE-1: Config `pause_recovery: planner | off` (default `planner`). At every
-  pause in `run_loop` except `next_agent: user` (unknown route, stale route,
-  low confidence, unparseable finalizer output, missing route after planner,
-  self-loops), schedule one planner recovery through the existing
-  `PendingPlannerRecovery` path with the validator's diagnosis. One automatic
-  attempt per pause streak; the streak resets only after a normal dispatch
-  passes validation. Skip the stale-route check for recovery cycles. Tests that
-  build `DispatchConfig` directly need `pause_recovery="off"`.
-- PAUSE-2: When recovery is used up or the route is `user`, show an
-  interactive prompt (TTY only; `--no-interactive-pause` disables it): Enter
-  sends the planner "best judgment", text is guidance for the planner,
-  `@backend` / `@frontend` / `@auditor <message>` targets a role, plus `retry`
-  and `quit`. Editing `HANDOFF.md` still resumes. Read stdin on a daemon thread
-  while polling the file.
-- Docs call this bounded planner recovery, not self-healing.
 
 ### 5. SCANNERS - make scanner setup explicit
 
@@ -128,6 +111,18 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   - (c) when the extension check exits 0 but the extension is missing, the
     start-failure line shows exit code 0 and empty stderr (~line 1275); show
     `run.error` for preflight failures.
+- From the PAUSE-RECOVERY close (low, `llm_handoff/orchestrator.py`):
+  - (a) the log line "scheduling a auditor dispatch" has an article error
+    (~line 3278); use a neutral form and update the test that asserts it.
+  - (b) no WARN or counter when the same role is targeted again on an unchanged
+    handoff SHA, since `operator_role` cycles skip the stale-route check
+    (~line 679).
+  - (c) the pause reason and operator text are not delimited in
+    `OPERATOR_ROLE_INSTRUCTION_TEMPLATE` (~line 3268); wrap them in labelled
+    delimiters.
+  - (d) an operator message appended to the `@auditor` reviewer prompts can
+    steer the audit (~line 1540); log the instruction with the audit result or
+    mark the verdict as operator-influenced.
 
 ## Completed Scope Ledger
 
@@ -162,6 +157,14 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   `cdb607a`. Audit approved with sub-threshold findings only (conflicted-files
   listing truncation untested; pause-message path escaping). Verification: full
   test suite.
+- **PAUSE-RECOVERY** - bounded planner recovery at pauses, then an operator
+  prompt. PAUSE-1 `pause_recovery` config and one planner recovery per pause
+  streak (PR #69 merge `62c5f72`); PAUSE-2a interactive operator prompt at
+  pauses (PR #70 merge `cde6212`); PAUSE-2b operator prompt role targeting
+  `@backend` / `@frontend` / `@auditor` (PR #71 merge
+  `b8511aafc6564dd3aa8f5bcaf89ea8520510b535`, audited at that SHA). Audit
+  approved with sub-threshold findings only (see Open Followups). Verification:
+  full test suite, 1718 passed, 18 skipped.
 
 ## Notes
 
