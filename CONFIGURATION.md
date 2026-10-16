@@ -142,7 +142,10 @@ exit code 0. A recovery cycle, or any other cycle with a forced planner
 instruction, never resets it.
 
 A handoff routed to `user` (`next_agent: user`) never triggers recovery; the
-dispatcher always waits for a person. `--dry-run` never schedules recovery.
+dispatcher always waits for a person. The same holds when the pause validator
+leaves `HANDOFF.md` routed to `user`, for example after it changed a protected
+file and the dispatcher wrote the protected-file escalation. `--dry-run` never
+schedules recovery.
 
 Set `pause_recovery: "off"` to skip recovery and pause at once, as earlier
 releases did. Quote the value: YAML reads a bare `off` as the boolean `false`,

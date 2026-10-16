@@ -492,7 +492,7 @@ def run_loop(
             pause_reason = (
                 "No routing instruction found in HANDOFF.md. Update the handoff; dispatch will resume after the file changes."
             )
-            if _pause_recovery_available(config, pause_recovery_used):
+            if _pause_recovery_available(config, pause_recovery_used, log_fn):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -589,7 +589,7 @@ def run_loop(
             pause_reason = (
                 f"STALE ROUTING DETECTED: same route ({current_cycle.route}) and unchanged HANDOFF hash."
             )
-            if _pause_recovery_available(config, pause_recovery_used):
+            if _pause_recovery_available(config, pause_recovery_used, log_fn):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -623,7 +623,7 @@ def run_loop(
             pause_reason = (
                 f"Routing instruction {decision.route} is only {decision.confidence} confidence. Update HANDOFF.md; dispatch will resume after the file changes."
             )
-            if _pause_recovery_available(config, pause_recovery_used):
+            if _pause_recovery_available(config, pause_recovery_used, log_fn):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -707,7 +707,7 @@ def run_loop(
                 pause_reason = (
                     "finalizer ledger-updater output was unparseable. Update HANDOFF.md; dispatch will resume after the file changes."
                 )
-                if _pause_recovery_available(config, pause_recovery_used):
+                if _pause_recovery_available(config, pause_recovery_used, log_fn):
                     pending_planner_recovery = _schedule_pause_recovery(
                         config,
                         pause_reason=pause_reason,
@@ -1109,7 +1109,7 @@ def run_loop(
                         log=log_fn,
                     )
                     pause_reason = _missing_route_pause_reason(previous_agent)
-                    if _pause_recovery_available(config, pause_recovery_used):
+                    if _pause_recovery_available(config, pause_recovery_used, log_fn):
                         pending_planner_recovery = _schedule_pause_recovery(
                             config,
                             pause_reason=pause_reason,
@@ -1141,7 +1141,7 @@ def run_loop(
                         previous_agent,
                         self_loop_kind,
                     )
-                    if _pause_recovery_available(config, pause_recovery_used):
+                    if _pause_recovery_available(config, pause_recovery_used, log_fn):
                         pending_planner_recovery = _schedule_pause_recovery(
                             config,
                             pause_reason=pause_reason,
@@ -3004,8 +3004,28 @@ def _pause_until_handoff_changes(
         return True
 
 
-def _pause_recovery_available(config: DispatchConfig, used: bool) -> bool:
-    return config.pause_recovery == "planner" and not config.dry_run and not used
+def _pause_recovery_available(
+    config: DispatchConfig, used: bool, log: LogFn
+) -> bool:
+    if config.pause_recovery != "planner" or config.dry_run or used:
+        return False
+    # The pause validator may have rewritten HANDOFF.md to route to `user`,
+    # for example the protected-file escalation. A user route never gets
+    # automatic recovery, so the pause stands for a person to review.
+    current_content = _read_required_text(config.handoff_full_path)
+    frontmatter = (
+        _parse_frontmatter_or_none(current_content)
+        if current_content is not None
+        else None
+    )
+    if frontmatter is not None and (frontmatter.next_agent or "").strip() == "user":
+        _log(
+            log,
+            "PAUSE",
+            "HANDOFF.md now routes to user; not scheduling planner recovery.",
+        )
+        return False
+    return True
 
 
 def _format_pause_diagnosis(result: ValidationResult | None) -> str:

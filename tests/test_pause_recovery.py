@@ -408,6 +408,36 @@ def test_user_route_never_dispatches_the_planner(
     )
 
 
+def test_protected_file_escalation_by_pause_validator_blocks_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, NO_ROUTE_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, planner_writes=[BACKEND_HANDOFF])
+
+    def protected_change(_name: str, prompt: str, **_kwargs: Any) -> SubagentResult:
+        harness.validator_prompts.append(prompt)
+        (tmp_path / "AGENTS.md").write_text("edited by validator\n", encoding="utf-8")
+        return _validator_output("protected fixture")
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", protected_change)
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.planner_instructions == []
+    assert harness.backend_calls == 0
+    handoff = handoff_path.read_text(encoding="utf-8")
+    assert "next_agent: user" in handoff
+    assert "protected_file_modified" in handoff
+    assert not any(
+        "bounded planner recovery" in message for message in harness.pause_messages()
+    )
+    assert (
+        "PAUSE",
+        "HANDOFF.md now routes to user; not scheduling planner recovery.",
+    ) in harness.logs
+
+
 def test_planner_route_stale_pause_dispatches_recovery_planner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
