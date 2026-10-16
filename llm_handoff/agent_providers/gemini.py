@@ -184,6 +184,7 @@ class _GeminiStreamJsonMonitor:
     tool_labels_by_id: dict[str, str] = field(default_factory=dict)
     assistant_chunks: list[str] = field(default_factory=list)
     _assistant_line_buffer: str = ""
+    usage: dict[str, object] | None = None
     _rate_limit_monitor: _GeminiLiveRateLimitMonitor | None = field(init=False)
 
     def __post_init__(self) -> None:
@@ -218,6 +219,7 @@ class _GeminiStreamJsonMonitor:
             stderr=result.stderr,
             exit_code=result.exit_code,
             session_id=self.session_id or result.session_id,
+            usage=dict(self.usage) if self.usage else None,
         )
 
     def _consume_stream(self, stream_name: str, chunk: str) -> None:
@@ -318,11 +320,12 @@ class _GeminiStreamJsonMonitor:
             )
 
     def _handle_result_event(self, event: dict[str, object]) -> None:
+        fields = _gemini_usage_fields(event.get("stats"))
+        self.usage = fields
         if self.log is None:
             return
         status = str(event.get("status", "unknown"))
         self.log("AGENT", f"{self.agent_name}: Gemini result (status={status})")
-        fields = _gemini_usage_fields(event.get("stats"))
         if fields:
             # Gemini reports tokens but no price. Log file only (DEBUG).
             self.log("DEBUG", format_usage_line(self.agent_name, "gemini", fields))
@@ -482,6 +485,7 @@ def invoke_gemini(
         elapsed_seconds=time.monotonic() - start_time,
         session_id=result_session_id,
         session_invalidated=session_invalidated,
+        usage=result.usage,
     )
 
 

@@ -378,6 +378,7 @@ def _invoke_support_provider(
         stderr=result.stderr,
         exit_code=result.exit_code,
         elapsed_seconds=result.elapsed_seconds,
+        usage=result.usage,
     )
 
 
@@ -523,6 +524,7 @@ def _dispatch_from_subagent(result: SubagentResult) -> DispatchResult:
         stderr=result.stderr,
         exit_code=result.exit_code,
         elapsed_seconds=result.elapsed_seconds,
+        usage=result.usage,
     )
 
 

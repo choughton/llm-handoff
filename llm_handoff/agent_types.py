@@ -49,6 +49,7 @@ class DispatchResult:
     elapsed_seconds: float
     session_id: str | None = None
     session_invalidated: bool = False
+    usage: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class SubagentResult:
     stderr: str
     exit_code: int
     elapsed_seconds: float
+    usage: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -65,3 +67,4 @@ class _ProcessResult:
     stderr: str
     exit_code: int
     session_id: str | None = None
+    usage: dict[str, object] | None = None

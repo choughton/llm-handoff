@@ -144,6 +144,7 @@ def invoke_antigravity(
         elapsed_seconds=time.monotonic() - start_time,
         session_id=result_session_id,
         session_invalidated=session_invalidated,
+        usage=result.usage,
     )
 
 
@@ -248,7 +249,8 @@ class _AntigravityStreamJsonMonitor:
             line, self._line_buffer = self._line_buffer, ""
             self._consume_line(line)
         self._flush_response_lines(flush_partial=True)
-        self._log_usage()
+        usage_fields = self._usage_fields()
+        self._log_usage(usage_fields)
 
         stdout = self._final_stdout(result.stdout)
         stderr = result.stderr
@@ -302,6 +304,7 @@ class _AntigravityStreamJsonMonitor:
             stderr=stderr,
             exit_code=exit_code,
             session_id=session_id,
+            usage=dict(usage_fields) if usage_fields else None,
         )
 
     def _final_stdout(self, raw_stdout: str) -> str:
@@ -372,13 +375,15 @@ class _AntigravityStreamJsonMonitor:
         self._flush_response_lines(flush_partial=True)
         self._emit("AGENT", f"{self.agent_name}: Antigravity result (status={status})")
 
-    def _log_usage(self) -> None:
+    def _usage_fields(self) -> dict[str, object]:
         usage = (
             self.result_event.get("usage") if self.result_event is not None else None
         )
         if usage is None:
             usage = self.last_step_usage
-        fields = _antigravity_usage_fields(usage)
+        return _antigravity_usage_fields(usage)
+
+    def _log_usage(self, fields: dict[str, object]) -> None:
         if fields:
             self._emit(
                 "DEBUG",

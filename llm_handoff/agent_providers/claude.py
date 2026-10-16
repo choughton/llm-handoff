@@ -34,6 +34,7 @@ class _ClaudeStreamJsonMonitor:
     _assistant_line_buffer: str = ""
     final_result_text: str | None = None
     model: str | None = None
+    usage: dict[str, object] | None = None
 
     def consume_stdout(self, chunk: str) -> None:
         if not chunk:
@@ -69,10 +70,14 @@ class _ClaudeStreamJsonMonitor:
         final_stdout = self.final_result_text
         if final_stdout is None:
             final_stdout = "".join(self.assistant_chunks)
+        usage = self.usage
+        if usage is not None and not any(key != "model" for key in usage):
+            usage = None
         return _ProcessResult(
             stdout=final_stdout,
             stderr=result.stderr,
             exit_code=result.exit_code,
+            usage=dict(usage) if usage is not None else None,
         )
 
     def _handle_event(self, event: dict[str, object]) -> None:
@@ -152,6 +157,9 @@ class _ClaudeStreamJsonMonitor:
         if isinstance(result_text, str):
             self.final_result_text = result_text
 
+        usage_fields = {"model": self.model, **usage_fields_from_claude_result(event)}
+        self.usage = usage_fields
+
         if self.log is None:
             return
 
@@ -163,11 +171,7 @@ class _ClaudeStreamJsonMonitor:
         # Token usage and cost go to the log file only (DEBUG).
         self.log(
             "DEBUG",
-            format_usage_line(
-                self.agent_name,
-                "claude",
-                {"model": self.model, **usage_fields_from_claude_result(event)},
-            ),
+            format_usage_line(self.agent_name, "claude", usage_fields),
         )
 
     def _handle_tool_use(self, item: dict[str, object]) -> None:
@@ -300,11 +304,20 @@ def invoke_claude_subagent(
             log=log,
             stream_all_stdout=True,
         )
+        # Buffered text mode carries no usage events.
+        return SubagentResult(
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+            elapsed_seconds=time.monotonic() - start_time,
+            usage=None,
+        )
     return SubagentResult(
         stdout=result.stdout,
         stderr=result.stderr,
         exit_code=result.exit_code,
         elapsed_seconds=time.monotonic() - start_time,
+        usage=result.usage,
     )
 
 
