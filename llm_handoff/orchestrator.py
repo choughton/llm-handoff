@@ -98,6 +98,7 @@ from llm_handoff.work_claim import (
     capture_implementer_leftovers,
     capture_pre_dispatch_state,
     carry_over_key,
+    claude_protected_scope_entries,
     git_changed_files,
     git_dirty_files,
     parse_work_packet_scope,
@@ -715,8 +716,25 @@ def run_loop(
         for warning in decision.warnings:
             _log(log_fn, "WARN", warning)
 
+        # An operator `@<role>` dispatch already saw this pause reason and
+        # chose to run the role anyway, for example on the other files.
+        protected_scope_reason = (
+            None
+            if active_planner_recovery_kind == "operator_role"
+            else _claude_protected_scope_pause_reason(
+                config, current_cycle.route, handoff_content
+            )
+        )
+
         if config.dry_run:
-            _log_dry_run(config, current_cycle.route, log_fn)
+            if protected_scope_reason is not None:
+                _log(
+                    log_fn,
+                    "WARN",
+                    f"[DRY RUN] Would pause: {protected_scope_reason}",
+                )
+            else:
+                _log_dry_run(config, current_cycle.route, log_fn)
             _log(log_fn, "INFO", "[DRY RUN] Single cycle complete. Exiting.")
             return 0
 
@@ -740,6 +758,31 @@ def run_loop(
                 config,
                 handoff_sha=current_cycle.handoff_sha,
                 reason=pause_reason,
+                log=log_fn,
+                operator_prompt=operator_prompt,
+            )
+            if pause.stop:
+                return 0
+            if pause.kind == "retry":
+                previous_cycle = None
+            elif pause.pending_planner_recovery is not None:
+                pending_planner_recovery = pause.pending_planner_recovery
+            continue
+
+        if protected_scope_reason is not None:
+            if _pause_recovery_available(config, pause_recovery_used, log_fn):
+                pending_planner_recovery = _schedule_pause_recovery(
+                    config,
+                    pause_reason=protected_scope_reason,
+                    validation_result=None,
+                    log=log_fn,
+                )
+                pause_recovery_used = True
+                continue
+            pause = _pause_at_dispatcher_pause(
+                config,
+                handoff_sha=current_cycle.handoff_sha,
+                reason=protected_scope_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
             )
@@ -2611,6 +2654,42 @@ def _story_start_sha(
         return head
     saved = saved_story_base(config.repo_root, _handoff_story_id(handoff_content))
     return saved or head
+
+
+def _claude_protected_scope_pause_reason(
+    config: DispatchConfig, route: RouteName, handoff_content: str
+) -> str | None:
+    """Explain why a Claude implementer cannot do this Work Packet, or None.
+
+    Claude Code denies writes under any ``.claude`` directory in ``dontAsk``
+    mode, before it reads the allow rules, so dispatching the packet would
+    only end in ``blocked_missing_context``. ``unsafe_bypass`` launches with
+    ``--dangerously-skip-permissions``, which allows those writes.
+    """
+
+    if route not in {"backend", "frontend"}:
+        return None
+    if route == "frontend" and config.use_manual_frontend:
+        return None
+    agent_config = config.agents[route]
+    if agent_config.provider != "claude" or agent_config.unsafe_bypass:
+        return None
+    packet = parse_work_packet_scope(handoff_content)
+    if packet is None:
+        return None
+    entries = claude_protected_scope_entries(packet)
+    if not entries:
+        return None
+    return (
+        f"CLAUDE PROTECTED PATHS IN SCOPE: the {route} role runs Claude Code "
+        "in --permission-mode dontAsk, which denies every write under a "
+        "`.claude` directory, so it cannot change these Files in scope: "
+        + ", ".join(f"`{entry}`" for entry in entries)
+        + ". Either an operator applies those edits and the planner drops them "
+        "from the Work Packet, or the planner moves them to a role whose "
+        "provider is not claude. Update HANDOFF.md; dispatch will resume after "
+        "the file changes."
+    )
 
 
 def _work_claim_gate_applies(config: DispatchConfig, route: RouteName) -> bool:

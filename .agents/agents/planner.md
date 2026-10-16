@@ -91,6 +91,13 @@ Never list the same path under both fields: a packet cannot limit edits within
 a file, so keep the file in `Files in scope` and state the limit in the
 Objective.
 
+Do not put a path under a `.claude/` directory, at the root or nested such
+as `examples/app/.claude/agents/x.md`, in `Files in scope` for a role whose
+`provider` in the dispatch config is `claude` (unless it sets
+`unsafe_bypass: true`). Claude Code's default `dontAsk` mode refuses every
+write there, so the dispatcher pauses instead of dispatching. Give those
+edits to a role with another provider, or route them to `user`.
+
 Write `Verification command` as commands only: one command per nested list
 item (`  - <command>` under the field), with no prose before, after, or
 between them. The gate runs every line as its own command, so do not join
