@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added the `antigravity` provider adapter (binary `agy`). A role with
+  `provider: antigravity` launches `agy -p` with stream-json output, an
+  explicit `--print-timeout`, optional `--model`, and `--conversation` resume
+  (one fresh rerun if a resumed run fails). A non-`SUCCESS` result status or a
+  missing result event fails the dispatch. The launch gets no provider
+  environment variables and no API key, and passes no permission flag unless
+  `unsafe_bypass: true` adds `--dangerously-skip-permissions`. It is a runtime
+  adapter only, not a normalizer or security reviewer. Antigravity agent files
+  and soft-deny and sign-in failure detection follow in later stories.
+
 - Package source may now name the Antigravity (`agy`) CLI. The extraction-era
   scrub test banned the word because the source dispatcher hard-coded it as a
   manual GUI frontend step, which is now the generic `use_manual_frontend`.

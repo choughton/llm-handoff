@@ -132,6 +132,105 @@ def test_load_dispatch_config_rejects_provider_without_runtime_adapter(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
+def test_antigravity_is_a_runtime_adapter_only() -> None:
+    assert "antigravity" in config_module.RUNTIME_PROVIDER_ADAPTERS
+    assert "antigravity" not in config_module.NORMALIZER_PROVIDER_ADAPTERS
+    assert config_module.ANTIGRAVITY_BINARY == config_module._binary_name("agy")
+    assert config_module.DEFAULT_AGENT_PROVIDERS["planner"] == "gemini"
+    assert ".agents/**" not in config_module.DEFAULT_PROTECTED_PATHS
+
+
+@pytest.mark.parametrize(
+    ("role", "resume"),
+    [("planner", True), ("backend", False), ("frontend", False), ("validator", False)],
+)
+def test_antigravity_agent_defaults(role: str, resume: bool) -> None:
+    assert config_module._agent_defaults_for_provider(role, "antigravity") == {
+        "provider": "antigravity",
+        "binary": config_module.ANTIGRAVITY_BINARY,
+        "resume": resume,
+        "timeout_ms": config_module.AGENT_TIMEOUT_MS,
+    }
+
+
+def test_load_dispatch_config_fills_antigravity_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """agents:
+  planner:
+    provider: antigravity
+  frontend:
+    provider: antigravity
+    model: pro
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    planner = loaded.agents["planner"]
+    assert planner.provider == "antigravity"
+    assert planner.binary == config_module.ANTIGRAVITY_BINARY
+    assert planner.resume is True
+    assert planner.mention is None
+    assert planner.retries is None
+    assert loaded.agents["frontend"].resume is False
+    assert loaded.agents["frontend"].model == "pro"
+
+
+def test_load_dispatch_config_rejects_antigravity_normalizer(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("normalizer:\n  provider: antigravity\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="normalizer"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_load_dispatch_config_rejects_antigravity_security_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "audit:\n  security_provider: antigravity\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="security_provider"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_antigravity_fallback_without_binary_matches_default_agy_binary() -> None:
+    with pytest.raises(ValueError, match="fallback must launch a different"):
+        config_module.AgentConfig(
+            provider="antigravity",
+            binary=config_module.ANTIGRAVITY_BINARY,
+            fallback={"provider": "antigravity"},
+        )
+
+    agent = config_module.AgentConfig(
+        provider="antigravity",
+        binary="agy-beta",
+        fallback={"provider": "antigravity"},
+    )
+    assert agent.fallback is not None
+
+
+def test_antigravity_fallback_with_different_model_is_a_distinct_launch() -> None:
+    agent = config_module.AgentConfig(
+        provider="antigravity",
+        model="pro",
+        fallback={"provider": "antigravity", "model": "flash"},
+    )
+    assert agent.fallback is not None
+    assert agent.fallback.model == "flash"
+
+    with pytest.raises(ValueError, match="fallback must launch a different"):
+        config_module.AgentConfig(
+            provider="antigravity",
+            model="pro",
+            fallback={"provider": "antigravity", "model": "pro"},
+        )
+
+
 def test_dispatch_config_rejects_missing_required_agent_roles(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="required reference roles"):
         DispatchConfig.model_validate(
