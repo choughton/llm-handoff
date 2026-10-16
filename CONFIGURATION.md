@@ -751,6 +751,17 @@ for that user. The adapter passes no `--sandbox` flag. A `result` event whose
 `status` is not `SUCCESS`, or a run that ends without a `result` event, counts
 as a failed dispatch.
 
+When print mode auto-denies a shell command (or another tool permission it
+cannot prompt for), `agy` prints a notice on stderr and still exits 0. The
+adapter treats that run as a failed dispatch, and the log names the denied
+permission and the entry to add under `permissions.allow` in the `agy` user
+settings file (`~/.gemini/antigravity-cli/settings.json`), for example
+`command(<target>)`. A resumed run that was soft-denied is not rerun in a
+fresh conversation, since the rerun would hit the same denial. When `agy`
+output contains `authentication required`, the dispatcher treats it as a
+sign-in failure: the loop stops and logs `agy` sign-in steps (run `agy` once
+in a terminal, finish signing in, then check `agy -p "Reply with OK"`).
+
 `permissions_flag` now only applies together with `unsafe_bypass: true`. It
 replaces `--dangerously-skip-permissions` for that role. Setting it without
 `unsafe_bypass` fails at config load.

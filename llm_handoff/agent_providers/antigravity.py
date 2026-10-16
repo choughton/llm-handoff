@@ -18,6 +18,10 @@ from llm_handoff.agent_process import (
     _run_command_streaming,
 )
 from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
+from llm_handoff.provider_auth import (
+    find_permission_soft_deny,
+    permission_soft_deny_message,
+)
 from llm_handoff.usage_log import format_usage_line
 
 
@@ -101,7 +105,13 @@ def invoke_antigravity(
     result = run(build(session_id if should_resume else None))
     session_invalidated = False
 
-    if should_resume and result.exit_code != 0:
+    if (
+        should_resume
+        and result.exit_code != 0
+        and find_permission_soft_deny(result.stderr) is None
+    ):
+        # A soft-denied run would hit the same denial in a fresh conversation,
+        # so only other resume failures get the one fresh rerun.
         session_invalidated = True
         if log is not None:
             role_phrase = str(role).strip().lower() or "agent"
@@ -255,6 +265,14 @@ class _AntigravityStreamJsonMonitor:
                 "Antigravity stream-json output had no result event; the run "
                 "did not report a final status.",
             )
+
+        soft_deny = find_permission_soft_deny(result.stderr)
+        if soft_deny is not None:
+            # agy exits 0 after auto-denying a tool, but the work was not done.
+            exit_code = exit_code or 1
+            message = permission_soft_deny_message(soft_deny)
+            stderr = _append_line(stderr, message)
+            self._emit("ERROR", f"{self.agent_name}: {message}")
 
         result_session = (
             self.result_event.get("conversation_id")

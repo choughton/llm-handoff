@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The `antigravity` adapter now detects two `agy` failure modes. A run whose
+  stderr reports that print mode auto-denied a tool permission it cannot
+  prompt for fails the dispatch even when `agy` exits 0; the adapter logs one
+  ERROR line naming the permission and the `permissions.allow` entry to add
+  in `~/.gemini/antigravity-cli/settings.json`, and a soft-denied resume is
+  not rerun fresh. `authentication required` is now a sign-in failure marker,
+  so an unsigned `agy` stops the loop with `agy` sign-in steps, and sign-in
+  messages for a role without a `binary` name the provider's default CLI
+  (`agy` for `antigravity`).
+
 - Added the `antigravity` provider adapter (binary `agy`). A role with
   `provider: antigravity` launches `agy -p` with stream-json output, an
   explicit `--print-timeout`, optional `--model`, and `--conversation` resume
