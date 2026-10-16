@@ -159,8 +159,14 @@ def ensure_story_branch(
     base_branch: str | None,
     assignment_content: str,
     implementer: str = "backend",
+    remote: str | None = None,
+    handoff_path: Path | None = None,
 ) -> str | None:
     """Check out the story's branch before an implementer runs.
+
+    A new branch is refused when the base has commits that ``remote`` does not
+    and that change ``handoff_path``: the branch would carry that live handoff
+    state into the pull request.
 
     Returns an error message when the dispatcher must stop, else ``None``.
     """
@@ -202,6 +208,16 @@ def ensure_story_branch(
     base_sha = git_head(repo_root)
     if base_sha is None:
         return "git rev-parse HEAD failed"
+    if remote and handoff_path is not None:
+        unpushed = _unpushed_handoff_commits(repo_root, remote, base, handoff_path)
+        if unpushed:
+            return (
+                f"`{base}` has commit(s) {', '.join(unpushed)} that are not on "
+                f"`{remote}/{base}` and change {handoff_path.as_posix()}; a story "
+                "branch cut here would put that live handoff state in the pull "
+                f"request. Drop them from `{base}` (keep the handoff file "
+                "uncommitted) or push them, then start the dispatcher again"
+            )
     created = _git(repo_root, ["switch", "-c", branch])
     if created.returncode != 0:
         return f"git switch -c {branch} failed: {_first_line(created)}"
@@ -220,6 +236,24 @@ def ensure_story_branch(
     )
     (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
     return None
+
+
+def _unpushed_handoff_commits(
+    repo_root: Path, remote: str, base: str, handoff_path: Path
+) -> tuple[str, ...]:
+    """Return short SHAs of HEAD commits missing from ``remote/base`` that
+    change the handoff file. Empty when the remote-tracking ref is unknown."""
+
+    tracking = f"refs/remotes/{remote}/{base}"
+    if _git(repo_root, ["rev-parse", "--verify", "--quiet", tracking]).returncode != 0:
+        return ()
+    listed = _git(
+        repo_root,
+        ["log", "--format=%h", f"{tracking}..HEAD", "--", handoff_path.as_posix()],
+    )
+    if listed.returncode != 0:
+        return ()
+    return tuple(listed.stdout.split())
 
 
 def saved_story_base(repo_root: Path, story_id: str | None) -> str | None:

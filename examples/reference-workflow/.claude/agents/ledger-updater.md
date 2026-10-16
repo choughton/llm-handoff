@@ -69,6 +69,9 @@ Use `next_agent: user` if no next scope can be inferred safely.
 ## Commit And Push
 
 - Commit only the state and handoff files required for the finalizer update.
+- If the dispatcher says dispatcher commit mode is on, commit only the state
+  files and leave `docs/handoff/HANDOFF.md` uncommitted. With no state change,
+  make no commit and report the audited SHA as the commit SHA.
 - Use a clear commit message and any trailer required by `AGENTS.md`.
 - Do not push unless the repository instructions explicitly allow this finalizer to push.
 - If push is not allowed or not attempted, report `PUSH RESULT: SKIPPED`.
