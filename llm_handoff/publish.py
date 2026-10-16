@@ -343,7 +343,11 @@ def publish_story(
     if state.paused_publish:
         state = replace(state, paused_publish="")
         _save_state(repo_root, state)
-    synced = _sync_with_base(repo_root, remote, state, log, step="push")
+    # A second conflict on that resume must keep the merge-step marker, or the
+    # next resume loses the "left open for a person" pause below.
+    synced = _sync_with_base(
+        repo_root, remote, state, log, step="merge" if resumed_at_merge else "push"
+    )
     if synced is not None:
         return synced
     requested_at = utc_now()
