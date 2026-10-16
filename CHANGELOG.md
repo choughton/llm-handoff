@@ -12,6 +12,7 @@ This project follows a simple pre-release changelog until the first public tag.
   assignment has it. An implementer that rewrote the frontmatter from its
   template could drop the explicit empty list, so the auditor could not
   close the epic on its last story and routed it back to the planner.
+
 - The planner prompts no longer offer `next_agent: finalizer`. The validator
   and router accept that route only from `producer: auditor`, so a planner
   that followed the old "approved epic closeout" line was rejected and the run
