@@ -88,25 +88,11 @@ _TRANSIENT_FAILURE_MARKERS = (
 )
 _DEFAULT_ALLOWED_REPAIR_DIRECTORIES = (
     "docs/",
-    "examples/reference-workflow/",
-    "llm_handoff/",
-    "tests/",
     ".claude/agents/",
     ".codex/skills/llm-handoff/",
     ".gemini/agents/",
 )
-_DEFAULT_ALLOWED_REPAIR_FILES = (
-    "CONFIGURATION.md",
-    "INSTALL.md",
-    "QUICKSTART.md",
-    "README.md",
-    "WALKTHROUGH.md",
-    "dispatch_config.example.yaml",
-    "scripts/dispatch.cmd",
-    "scripts/dispatch.ps1",
-    "scripts/dispatch-supervised.cmd",
-    "scripts/dispatch-supervised.ps1",
-)
+_DEFAULT_ALLOWED_REPAIR_FILES: tuple[str, ...] = ()
 _REPAIR_ROLE_CHOICES = (
     "planner",
     "backend",

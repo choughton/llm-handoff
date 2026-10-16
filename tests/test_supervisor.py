@@ -296,8 +296,57 @@ def test_supervisor_repair_scope_prefixes_are_exact() -> None:
             "scripts/dispatch-supervised.ps1",
             "scripts/dispatch-other.ps1",
             "docs/handoff/HANDOFF.md",
-        )
+        ),
+        allowed_repair_paths=("scripts/dispatch-supervised.ps1",),
     ) == ("scripts/dispatch-other.ps1",)
+
+
+_GENERIC_REPAIR_SCOPE_FILES = (
+    "llm_handoff/supervisor.py",
+    "tests/test_supervisor.py",
+    "README.md",
+    "examples/reference-workflow/AGENTS.md",
+    "docs/handoff/HANDOFF.md",
+    ".claude/agents/planner.md",
+)
+
+
+def test_supervisor_default_repair_scope_excludes_target_source_and_tests() -> None:
+    supervisor = _load_supervisor_module()
+
+    assert supervisor._out_of_scope_repair_files(_GENERIC_REPAIR_SCOPE_FILES) == (
+        "llm_handoff/supervisor.py",
+        "tests/test_supervisor.py",
+        "README.md",
+        "examples/reference-workflow/AGENTS.md",
+    )
+
+
+def test_supervisor_repair_allow_paths_widen_default_scope() -> None:
+    supervisor = _load_supervisor_module()
+
+    assert supervisor._out_of_scope_repair_files(
+        _GENERIC_REPAIR_SCOPE_FILES,
+        allowed_repair_paths=("llm_handoff/", "tests/", "README.md"),
+    ) == ("examples/reference-workflow/AGENTS.md",)
+
+
+def test_supervisor_repair_prompt_lists_generic_default_paths(
+    tmp_path: Path,
+) -> None:
+    supervisor = _load_supervisor_module()
+    config = supervisor.SupervisorConfig(repo_root=tmp_path)
+
+    prompt = supervisor._build_supervisor_repair_prompt(
+        config,
+        tmp_path / "failure-packet.md",
+    )
+
+    assert (
+        "Allowed paths: docs/, .claude/agents/, .codex/skills/llm-handoff/, "
+        ".gemini/agents/." in prompt
+    )
+    assert "llm_handoff/" not in prompt
 
 
 def test_supervisor_main_parses_options_and_forwards_dispatch_args(
