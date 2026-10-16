@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `pr` publish mode now keeps the story branch up to date with the base
+  branch. Before each push it fetches the base branch and merges it into the
+  story branch, so a pull request that merged during the story no longer
+  stops the loop at `gh pr merge`. When `gh pr merge` reports the pull
+  request is not mergeable, the dispatcher merges the base branch once more,
+  pushes, and retries the merge once. A conflicting merge is aborted and
+  pauses the loop with the conflicting files named and the story state kept;
+  after you merge and commit on the story branch, the next start resumes
+  publishing. This repository's `.gitattributes` now merges `CHANGELOG.md`
+  with `merge=union`, so two new bullets in the same section merge cleanly.
+
 - The files `llm-handoff init` copies no longer point at llm-handoff's own
   `CONFIGURATION.md` or `docs/ARCHITECTURE.md`, which a target repository
   does not have. The planner, Gemini planner, and Codex backend prompts now

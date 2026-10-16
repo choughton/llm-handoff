@@ -3689,6 +3689,68 @@ def test_run_loop_writes_the_review_bounce_from_publish(
     assert config.handoff_full_path.read_text(encoding="utf-8") == bounce
 
 
+@pytest.mark.parametrize(
+    ("mode", "dry_run", "resumes"),
+    [("pr", False, True), ("pr", True, False), ("merge-commit", False, False)],
+)
+def test_run_loop_resumes_a_paused_publish_before_the_first_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    mode: str,
+    dry_run: bool,
+    resumes: bool,
+) -> None:
+    from llm_handoff.publish import PublishOutcome
+
+    verified = _claim(
+        "a" * 40, status="verified_pass", producer="auditor", next_agent="planner"
+    )
+    _init_repo(tmp_path, handoff_content=verified)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path,
+        commit_mode="dispatcher",
+        dry_run=dry_run,
+        publish={"mode": mode, "wait_for_reviewers": ["codex"]}
+        if mode == "pr"
+        else {"mode": mode},
+    )
+    resumed: list[dict[str, object]] = []
+
+    def fake_resume(**kwargs: object) -> PublishOutcome:
+        resumed.append(kwargs)
+        return PublishOutcome(stop=True, exit_code=0, message="paused again")
+
+    def fail_planner(*_args: object, **_kwargs: object) -> DispatchResult:
+        raise AssertionError("the planner must not run before the resume")
+
+    monkeypatch.setattr(orchestrator, "resume_paused_publish", fake_resume)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_planner_role",
+        fail_planner if resumes else lambda *_args, **_kwargs: _dispatch_result(),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_args, **_kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="planner"
+        ),
+    )
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    assert exit_code == 0
+    if not resumes:
+        assert resumed == []
+        return
+    [call] = resumed
+    assert call["handoff_content"] == verified
+    assert call["remote"] == "origin"
+    assert call["review"].reviewers == ("codex",)
+
+
 @pytest.mark.parametrize("mode", ["pr", "local"])
 def test_run_loop_settles_deferred_findings_after_a_planner_cycle(
     tmp_path: Path,
