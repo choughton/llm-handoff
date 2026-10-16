@@ -171,5 +171,6 @@ normalizer:
 audit:
   reviewers: [quality, security]
   # security_provider: claude   # claude | gemini | codex; unset = auto
+  # security_model: <model>   # claude reviewer only; unset = borrow the first claude role's model
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000

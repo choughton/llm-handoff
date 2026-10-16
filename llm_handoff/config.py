@@ -449,6 +449,7 @@ class AuditConfig(BaseModel):
     reviewers: tuple[AuditReviewer, ...] = DEFAULT_AUDIT_REVIEWERS
     security_provider: SecurityReviewProvider | None = None
     security_opt_out_reason: str | None = None
+    security_model: str | None = None
     block_severity: BlockSeverity = "high"
     review_timeout_ms: int = AUDIT_REVIEW_TIMEOUT_MS
 
@@ -456,6 +457,38 @@ class AuditConfig(BaseModel):
     @classmethod
     def _strip_security_opt_out_reason(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
+
+    @field_validator("security_model", mode="after")
+    @classmethod
+    def _validate_security_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError(
+                "audit.security_model must not be empty; remove it to borrow "
+                "the first claude role's model."
+            )
+        return stripped
+
+    @model_validator(mode="after")
+    def _validate_security_model_scope(self) -> AuditConfig:
+        if self.security_model is None:
+            return self
+        if not self.security_enabled:
+            raise ValueError(
+                "audit.security_model only applies when audit.reviewers "
+                "includes `security`; remove it or add `security` to "
+                "audit.reviewers."
+            )
+        if self.security_provider in ("gemini", "codex"):
+            raise ValueError(
+                "audit.security_model applies only to the claude security "
+                f"reviewer, but audit.security_provider is "
+                f"`{self.security_provider}`; remove audit.security_model or "
+                "set audit.security_provider to claude."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_security_opt_out(self) -> AuditConfig:

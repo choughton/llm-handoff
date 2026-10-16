@@ -26,6 +26,7 @@ from llm_handoff.agent_roles import (
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.audit_review import (
     AuditFanOutContext,
+    describe_security_reviewer_model,
     run_audit_fan_out,
     security_reviewer_startup_error,
 )
@@ -3148,6 +3149,7 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
             "INFO",
             "Audit reviewers:    quality + security (read-only fan-out; "
             f"security provider: {config.audit.security_provider or 'auto'}; "
+            f"security model: {describe_security_reviewer_model(config)}; "
             f"block severity: {config.audit.block_severity})",
         )
     else:
