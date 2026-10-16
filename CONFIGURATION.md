@@ -522,6 +522,15 @@ stops the loop with the error instead of retrying. The exceptions are a
 conflicting base branch merge, which pauses, and a pull request that is not
 mergeable, which is retried once after a base branch merge.
 
+A passing audit with no story branch also stops the loop, because the work
+would be left unpublished. The exception is an epic close
+(`close_type: epic`): the planner sends it to the auditor after the epic's
+last story merged, so the checkout is the base branch and there is nothing to
+publish. The exception needs the checkout to be `base_branch` (or, when
+`base_branch` is null, a branch without `branch_prefix`). In `pr` mode it also
+needs every commit on that branch to be on `<remote>` already. Otherwise the
+loop still stops.
+
 ### Scanners
 
 The gate can also run operator-configured scanners before the verification

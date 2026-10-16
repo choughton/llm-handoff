@@ -15,6 +15,13 @@ This project follows a simple pre-release changelog until the first public tag.
   `CONFIGURATION.md` now explains that `git merge-tree` runs the repository's
   configured merge drivers during the resume check and that a merge driver
   such as `union` can make the resume pause.
+- In `merge-commit` and `pr` publish modes, a passing epic-close audit
+  (`close_type: epic`) with no story branch no longer stops the loop with
+  "the audited work is not on a story branch". The epic's stories are already
+  merged, so the dispatcher publishes nothing and continues to the finalizer.
+  It still stops when the checkout is not the base branch (or is a branch with
+  `branch_prefix` when `base_branch` is null), and in `pr` mode when the
+  branch has commits that are not on the remote.
 
 - An audit fan-out reviewer that fails to start (missing binary, CLI argument
   error, sign-in failure, missing Gemini sandbox or security extension) now
