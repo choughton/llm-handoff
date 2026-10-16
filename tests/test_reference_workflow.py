@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+import yaml
+
 from llm_handoff.config import load_dispatch_config
 from llm_handoff.init_workflow import template_files
 from llm_handoff.router import parse_handoff_frontmatter, route
@@ -46,6 +48,13 @@ REQUIRED_TEMPLATE_FILES = (
     ".claude/agents/frontend.md",
     ".claude/settings.json",
     ".claude/hooks/block_dangerous_commands.py",
+    ".agents/agents/planner.md",
+    ".agents/agents/backend.md",
+    ".agents/agents/frontend.md",
+    ".agents/agents/auditor.md",
+    ".agents/agents/handoff-validator.md",
+    ".agents/agents/handoff-router.md",
+    ".agents/agents/ledger-updater.md",
 )
 
 COPIED_TEMPLATE_FILES = (
@@ -76,7 +85,26 @@ COPIED_TEMPLATE_FILES = (
     ".claude/agents/planner.md",
     ".claude/agents/backend.md",
     ".claude/agents/frontend.md",
+    ".agents/agents/planner.md",
+    ".agents/agents/backend.md",
+    ".agents/agents/frontend.md",
+    ".agents/agents/auditor.md",
+    ".agents/agents/handoff-validator.md",
+    ".agents/agents/handoff-router.md",
+    ".agents/agents/ledger-updater.md",
     ".geminiignore",
+)
+
+# The Antigravity agent files, named for the `--agent` value the adapter
+# passes: the role, or the support subagent name for validator and finalizer.
+ANTIGRAVITY_AGENT_FILES = (
+    ".agents/agents/planner.md",
+    ".agents/agents/backend.md",
+    ".agents/agents/frontend.md",
+    ".agents/agents/auditor.md",
+    ".agents/agents/handoff-validator.md",
+    ".agents/agents/handoff-router.md",
+    ".agents/agents/ledger-updater.md",
 )
 
 # The Claude subagent each role launches when it is mapped to `claude`.
@@ -178,6 +206,22 @@ def test_reference_workflow_ships_a_claude_agent_for_every_role() -> None:
             assert f"`{role}` role" in content, relative_path
 
 
+def test_reference_workflow_ships_an_antigravity_agent_for_every_role() -> None:
+    for relative_path in ANTIGRAVITY_AGENT_FILES:
+        template_path = REFERENCE_WORKFLOW / relative_path
+        assert template_path.is_file(), relative_path
+        assert template_path.read_bytes() == (REPO_ROOT / relative_path).read_bytes()
+        content = template_path.read_text(encoding="utf-8")
+        assert content.startswith("---\n"), relative_path
+        frontmatter = yaml.safe_load(content.split("---\n", 2)[1])
+        assert isinstance(frontmatter, dict), relative_path
+        assert frontmatter.get("name") == Path(relative_path).stem, relative_path
+        description = frontmatter.get("description")
+        assert isinstance(description, str) and description.strip(), relative_path
+        assert "tools" not in frontmatter, relative_path
+        assert set(frontmatter) == {"name", "description"}, relative_path
+
+
 def test_claude_role_agents_do_not_point_at_dispatcher_docs() -> None:
     for name in ("planner", "backend", "frontend"):
         content = (REFERENCE_WORKFLOW / ".claude" / "agents" / f"{name}.md").read_text(
@@ -269,11 +313,20 @@ PLANNER_PROMPT_FILES = (
     ".gemini/agents/planner.md",
     "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
     "docs/handoff/PLANNER_INITIAL_PROMPT.md",
+    ".agents/agents/planner.md",
+)
+# PLANNER_INITIAL_PROMPT.md seeds the first assignment and never sees an
+# epic close, so it is the one planner prompt without the epic-close rules.
+PLANNER_EPIC_CLOSE_PROMPT_FILES = tuple(
+    relative_path
+    for relative_path in PLANNER_PROMPT_FILES
+    if relative_path != "docs/handoff/PLANNER_INITIAL_PROMPT.md"
 )
 AUDITOR_PROMPT_FILES = (
     ".claude/agents/auditor.md",
     ".codex/skills/llm-handoff-auditor/SKILL.md",
     "docs/handoff/AUDITOR_HANDOFF_PROMPT.md",
+    ".agents/agents/auditor.md",
 )
 
 
@@ -290,7 +343,8 @@ def test_planner_prompts_do_not_offer_a_finalizer_route() -> None:
 
 
 def test_planner_prompts_send_an_epic_close_to_the_auditor() -> None:
-    for relative_path in PLANNER_PROMPT_FILES[:4]:
+    assert len(PLANNER_EPIC_CLOSE_PROMPT_FILES) == 5
+    for relative_path in PLANNER_EPIC_CLOSE_PROMPT_FILES:
         content = (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8")
         assert "`close_type: epic` and a concrete `scope_sha`" in content, relative_path
         assert "is not evidence of a missing audit" in content, relative_path
@@ -332,6 +386,8 @@ IMPLEMENTER_PROMPT_FILES = (
     Path(".gemini") / "agents" / "frontend.md",
     Path("docs") / "handoff" / "BACKEND_HANDOFF_PROMPT.md",
     Path("docs") / "handoff" / "FRONTEND_HANDOFF_PROMPT.md",
+    Path(".agents") / "agents" / "backend.md",
+    Path(".agents") / "agents" / "frontend.md",
 )
 
 

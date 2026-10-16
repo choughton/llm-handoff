@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added Antigravity agent files under `.agents/agents/` for each `--agent`
+  name the `antigravity` adapter passes: `planner`, `backend`, `frontend`,
+  `auditor`, `handoff-validator`, `handoff-router`, and `ledger-updater`. They
+  ship in this repository and in the `reference-workflow` template. Each body
+  is adapted from the matching Claude agent; the frontmatter carries only
+  `name` and `description`, with no `tools` list, and the shell section
+  explains that print-mode `agy` runs only commands a `permissions.allow`
+  grant covers. Loading through `agy -p --agent <name>` has not been checked
+  against a live CLI. `.agents/**` is now a default protected path.
+
 - The `antigravity` adapter now detects two `agy` failure modes. A run whose
   stderr reports that print mode auto-denied a tool permission it cannot
   prompt for fails the dispatch even when `agy` exits 0; the adapter logs one

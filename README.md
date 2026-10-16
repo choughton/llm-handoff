@@ -90,6 +90,13 @@ are parser fixtures, not user-facing docs.
 | [.claude/agents/handoff-router.md](.claude/agents/handoff-router.md) | Claude routing clarification agent. |
 | [.claude/agents/handoff-validator.md](.claude/agents/handoff-validator.md) | Claude handoff validator agent. |
 | [.claude/agents/ledger-updater.md](.claude/agents/ledger-updater.md) | Claude finalizer compatibility agent. |
+| [.agents/agents/planner.md](.agents/agents/planner.md) | Antigravity planner agent template. |
+| [.agents/agents/backend.md](.agents/agents/backend.md) | Antigravity backend agent template. |
+| [.agents/agents/frontend.md](.agents/agents/frontend.md) | Antigravity frontend agent template. |
+| [.agents/agents/auditor.md](.agents/agents/auditor.md) | Antigravity auditor agent template. |
+| [.agents/agents/handoff-validator.md](.agents/agents/handoff-validator.md) | Antigravity handoff validator agent. |
+| [.agents/agents/handoff-router.md](.agents/agents/handoff-router.md) | Antigravity routing clarification agent. |
+| [.agents/agents/ledger-updater.md](.agents/agents/ledger-updater.md) | Antigravity finalizer compatibility agent. |
 
 <details>
 <summary>Reference Workflow Template Markdown</summary>
@@ -115,6 +122,13 @@ are parser fixtures, not user-facing docs.
 | [examples/reference-workflow/.claude/agents/handoff-router.md](examples/reference-workflow/.claude/agents/handoff-router.md) | Template Claude router agent. |
 | [examples/reference-workflow/.claude/agents/handoff-validator.md](examples/reference-workflow/.claude/agents/handoff-validator.md) | Template Claude validator agent. |
 | [examples/reference-workflow/.claude/agents/ledger-updater.md](examples/reference-workflow/.claude/agents/ledger-updater.md) | Template Claude finalizer compatibility agent. |
+| [examples/reference-workflow/.agents/agents/planner.md](examples/reference-workflow/.agents/agents/planner.md) | Template Antigravity planner agent. |
+| [examples/reference-workflow/.agents/agents/backend.md](examples/reference-workflow/.agents/agents/backend.md) | Template Antigravity backend agent. |
+| [examples/reference-workflow/.agents/agents/frontend.md](examples/reference-workflow/.agents/agents/frontend.md) | Template Antigravity frontend agent. |
+| [examples/reference-workflow/.agents/agents/auditor.md](examples/reference-workflow/.agents/agents/auditor.md) | Template Antigravity auditor agent. |
+| [examples/reference-workflow/.agents/agents/handoff-validator.md](examples/reference-workflow/.agents/agents/handoff-validator.md) | Template Antigravity validator agent. |
+| [examples/reference-workflow/.agents/agents/handoff-router.md](examples/reference-workflow/.agents/agents/handoff-router.md) | Template Antigravity router agent. |
+| [examples/reference-workflow/.agents/agents/ledger-updater.md](examples/reference-workflow/.agents/agents/ledger-updater.md) | Template Antigravity finalizer compatibility agent. |
 
 </details>
 

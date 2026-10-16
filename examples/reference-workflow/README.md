@@ -27,6 +27,13 @@ docs/handoff/*.md
 .claude/agents/ledger-updater.md
 .claude/settings.json
 .claude/hooks/block_dangerous_commands.py
+.agents/agents/planner.md
+.agents/agents/backend.md
+.agents/agents/frontend.md
+.agents/agents/auditor.md
+.agents/agents/handoff-validator.md
+.agents/agents/handoff-router.md
+.agents/agents/ledger-updater.md
 ```
 
 ## Guardrails

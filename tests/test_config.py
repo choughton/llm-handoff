@@ -137,7 +137,7 @@ def test_antigravity_is_a_runtime_adapter_only() -> None:
     assert "antigravity" not in config_module.NORMALIZER_PROVIDER_ADAPTERS
     assert config_module.ANTIGRAVITY_BINARY == config_module._binary_name("agy")
     assert config_module.DEFAULT_AGENT_PROVIDERS["planner"] == "gemini"
-    assert ".agents/**" not in config_module.DEFAULT_PROTECTED_PATHS
+    assert ".agents/**" in config_module.DEFAULT_PROTECTED_PATHS
 
 
 @pytest.mark.parametrize(
