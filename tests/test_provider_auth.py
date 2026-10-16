@@ -8,8 +8,10 @@ from llm_handoff import orchestrator
 from llm_handoff.agent_types import DispatchResult
 from llm_handoff.config import AgentConfig, DispatchConfig
 from llm_handoff.provider_auth import (
+    antigravity_auth_failure_line,
     auth_failure_messages,
     auth_fix_instructions,
+    find_antigravity_auth_failure,
     find_auth_failure,
     find_permission_soft_deny,
     permission_soft_deny_message,
@@ -216,8 +218,37 @@ AGY_SOFT_DENY = (
     "text",
     [AGY_SIGNED_OUT, "AUTHENTICATION REQUIRED: sign in first"],
 )
-def test_find_auth_failure_recognizes_agy_sign_in_failure(text: str) -> None:
-    assert find_auth_failure("", "noise\n" + text) == text
+def test_find_antigravity_auth_failure_recognizes_agy_sign_in_failure(
+    text: str,
+) -> None:
+    assert find_antigravity_auth_failure("", "noise\n" + text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        AGY_SIGNED_OUT,
+        "authentication required for deployment",
+        "AUTHENTICATION REQUIRED: sign in first",
+    ],
+)
+def test_shared_matcher_does_not_treat_authentication_required_as_sign_in(
+    text: str,
+) -> None:
+    # Claude, Codex, and Gemini output can say this about anything; only the
+    # agy adapter treats it as a sign-in failure.
+    assert find_auth_failure(text) is None
+
+
+def test_find_antigravity_auth_failure_ignores_ordinary_failures() -> None:
+    assert find_antigravity_auth_failure("Traceback: KeyError", None, "") is None
+
+
+def test_antigravity_auth_failure_line_is_recognized_by_the_shared_matcher() -> None:
+    line = antigravity_auth_failure_line(AGY_SIGNED_OUT)
+
+    assert AGY_SIGNED_OUT in line
+    assert find_auth_failure("", AGY_SIGNED_OUT + "\n" + line) == line
 
 
 def test_antigravity_fix_instructions() -> None:
@@ -343,3 +374,25 @@ def test_stop_on_auth_failure_names_agy_for_an_antigravity_role(
     errors = [message for level, message in logs if level == "ERROR"]
     assert any("the `agy` CLI is not signed in" in message for message in errors)
     assert any(message.startswith("Fix: Run `agy`") for message in errors)
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
+def test_stop_on_auth_failure_ignores_authentication_required_for_other_providers(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    dispatch_config = DispatchConfig(repo_root=tmp_path)
+    dispatch_config.agents["backend"] = AgentConfig(provider=provider)
+    logs: list[tuple[str, str]] = []
+
+    stopped = orchestrator._stop_on_auth_failure(
+        dispatch_config,
+        role="backend",
+        exit_code=1,
+        stdout="Deploy step failed: authentication required for deployment",
+        stderr="",
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert stopped is False
+    assert logs == []
