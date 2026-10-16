@@ -710,6 +710,7 @@ def resume_paused_publish(
 
 
 _RESUME_LISTED_COMMITS = 5
+_RESUME_LISTED_PATHS = 5
 
 
 def _fetch_base(
@@ -906,7 +907,10 @@ def _merge_content_problem(
     if ancestor.returncode == 1:
         return (
             f"does not merge {upstream}: its second parent {second[:12]} is not "
-            f"on {upstream}",
+            f"on {upstream}. Parent order matters: the base branch must be the "
+            f"merge's second parent, as when `git merge {upstream}` is run "
+            "while on the story branch; a merge made the other way round, with "
+            "the base branch as its first parent, is refused",
             False,
         )
     if ancestor.returncode != 0:
@@ -941,17 +945,30 @@ def _merge_content_problem(
     extra = [path for path in changed if path not in conflicted]
     if not extra:
         return None
-    more = len(extra) - _RESUME_LISTED_COMMITS
-    listing = ", ".join(f"`{path}`" for path in extra[:_RESUME_LISTED_COMMITS]) + (
-        f", and {more} more" if more > 0 else ""
-    )
-    return (
-        f"changes {listing} beyond the conflict resolution: the automatic merge "
-        "of its parents did not leave "
+
+    def path_listing(paths: list[str]) -> str:
+        more = len(paths) - _RESUME_LISTED_PATHS
+        return ", ".join(f"`{path}`" for path in paths[:_RESUME_LISTED_PATHS]) + (
+            f", and {more} more" if more > 0 else ""
+        )
+
+    reason = (
+        f"changes {path_listing(extra)} beyond the conflict resolution: the "
+        "automatic merge of its parents did not leave "
         + ("that path" if len(extra) == 1 else "those paths")
-        + " conflicted",
-        False,
+        + " conflicted"
     )
+    resolved = [path for path in changed if path in conflicted]
+    if resolved:
+        reason += (
+            ". It also changes the conflicted "
+            + ("path " if len(resolved) == 1 else "paths ")
+            + f"{path_listing(resolved)}; this check does not inspect edits "
+            "inside conflicted files, so review "
+            + ("it" if len(resolved) == 1 else "them")
+            + " too"
+        )
+    return reason, False
 
 
 def _describe_commit(repo_root: Path, sha: str) -> str:

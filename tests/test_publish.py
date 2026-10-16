@@ -1041,10 +1041,96 @@ def test_a_resume_whose_merge_adds_an_unrelated_file_pauses(
         tmp_path, repo, step, head, outcome, entries, before, remote_head
     )
     assert f"`{merge}`" in outcome.message
-    assert "`src/extra.py`" in outcome.message
-    assert "`README.md`" not in outcome.message
+    beyond, _sep, conflicted = outcome.message.partition(
+        "It also changes the conflicted"
+    )
+    assert conflicted, outcome.message
+    assert "changes `src/extra.py` beyond the conflict resolution" in beyond
+    assert "`README.md`" not in beyond
+    assert conflicted.startswith(" path `README.md`;")
+    assert "does not inspect edits inside conflicted files" in conflicted
+    assert "review it" in conflicted
+    assert "`src/extra.py`" not in conflicted
     assert "only the conflict resolution" in outcome.message
     assert "git switch main" in outcome.message
+
+
+def _merge_keeping_the_automatic_readme(repo: Path, files: dict[str, str]) -> str:
+    """Merge origin/main, keep merge-tree's README.md as is, and add ``files``.
+
+    The merge changes no conflicted path relative to the automatic merge of
+    its parents; only ``files`` differ from it. Return ``%h %s`` of the merge.
+    """
+
+    # The resume check passes full object IDs, which merge-tree also uses as
+    # the conflict marker labels, so pass the same here.
+    automatic = subprocess.run(
+        [
+            "git", "-C", str(repo), "merge-tree", "--write-tree", "--no-messages",
+            _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "origin/main"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert automatic.returncode == 1, automatic.stderr
+    tree = automatic.stdout.splitlines()[0].strip()
+    merged = subprocess.run(
+        ["git", "-C", str(repo), "merge", "origin/main"],
+        capture_output=True,
+        text=True,
+    )
+    assert merged.returncode != 0
+    _git(repo, "checkout", tree, "--", "README.md")
+    for name, text in files.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        _git(repo, "add", name)
+    _git(repo, "commit", "-q", "--no-edit")
+    return _git(repo, "show", "-s", "--format=%h %s", "HEAD")
+
+
+def test_a_resume_whose_merge_adds_a_file_but_keeps_conflicted_files_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, "push")
+    merge = _merge_keeping_the_automatic_readme(
+        repo, {"src/extra.py": "EXTRA = 1\n"}
+    )
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log)
+
+    _assert_resume_paused(tmp_path, repo, "push", head, outcome, entries, 0, "")
+    assert f"`{merge}`" in outcome.message
+    assert "changes `src/extra.py` beyond the conflict resolution" in outcome.message
+    assert "`README.md`" not in outcome.message
+    assert "It also changes the conflicted" not in outcome.message
+    assert "does not inspect edits" not in outcome.message
+
+
+def test_a_resume_lists_paths_up_to_the_path_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import llm_handoff.publish as publish_module
+
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, "push")
+    extra = {f"src/extra{index}.py": f"EXTRA = {index}\n" for index in range(4)}
+    _merge_keeping_the_automatic_readme(repo, extra)
+    monkeypatch.setattr(publish_module, "_RESUME_LISTED_PATHS", 2)
+    assert publish_module._RESUME_LISTED_COMMITS == 5
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log)
+
+    _assert_resume_paused(tmp_path, repo, "push", head, outcome, entries, 0, "")
+    assert (
+        "changes `src/extra0.py`, `src/extra1.py`, and 2 more beyond the "
+        "conflict resolution: the automatic merge of its parents did not leave "
+        "those paths conflicted"
+    ) in outcome.message
+    assert "`src/extra2.py`" not in outcome.message
+    assert "`src/extra3.py`" not in outcome.message
 
 
 @pytest.mark.parametrize("step", ["push", "merge"])
@@ -1089,6 +1175,10 @@ def test_a_resume_whose_merge_does_not_bring_in_the_base_branch_pauses(
     assert "Merge a side branch" in outcome.message
     assert "does not merge origin/main" in outcome.message
     assert side[:12] in outcome.message
+    assert "Parent order matters" in outcome.message
+    assert "must be the merge's second parent" in outcome.message
+    assert "`git merge origin/main`" in outcome.message
+    assert "base branch as its first parent, is refused" in outcome.message
 
 
 @pytest.mark.parametrize("step", ["push", "merge"])

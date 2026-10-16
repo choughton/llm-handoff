@@ -397,7 +397,9 @@ checks what was added to the story branch since the pause:
   `<remote>/<base_branch>`, and it holds only the conflict resolution: its
   tree differs from the automatic merge of its parents
   (`git merge-tree --write-tree`, git 2.38 or later) only in files that the
-  automatic merge left conflicted.
+  automatic merge left conflicted. Parent order matters: run
+  `git merge <remote>/<base_branch>` while on the story branch. A merge made
+  the other way round, with the base branch as its first parent, is refused.
 
 If either check fails, or a `git` command it runs fails (including an older
 git without `merge-tree --write-tree`), the dispatcher pauses again with the
@@ -406,7 +408,20 @@ Redo the merge so it holds only the conflict resolution, or publish the
 branch yourself. The conflicted files themselves are not inspected beyond
 that: an edit inside a conflicted file that goes past the conflict
 resolution is not detected, so review those files before you start the
-dispatcher again.
+dispatcher again. When the pause names files changed beyond the conflict
+resolution, it also names the conflicted files the merge changed, for that
+review.
+
+The check compares your merge with what `git merge-tree` produces for the
+same two parents, so merge drivers matter. `git merge-tree` runs the merge
+drivers configured for the repository (`.gitattributes` plus
+`merge.<driver>.driver` in Git config) during the resume check, so any custom
+merge driver command runs on dispatcher start when a paused publish resumes.
+A merge driver set in `.gitattributes`, such as the built-in `union` or a
+custom one, can also make the resume pause: if it
+resolves a file in `git merge-tree` that your merge resolved differently, or
+the reverse, the two disagree on that file and the check reports it. To
+continue, redo the merge or publish the branch yourself.
 
 Many stories add a bullet at the top of the same changelog section, which
 conflicts whenever two of them are open at once. A line in the target

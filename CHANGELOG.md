@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Resume check pause messages say more. A merge refused because its second
+  parent is not on the base branch now explains that parent order matters
+  (run `git merge <remote>/<base_branch>` on the story branch). A merge that
+  changes files beyond the conflict resolution now also names the conflicted
+  files it changed, which the check does not inspect, and asks you to review
+  them. Changed-path listings use their own limit of five paths.
+  `CONFIGURATION.md` now explains that `git merge-tree` runs the repository's
+  configured merge drivers during the resume check and that a merge driver
+  such as `union` can make the resume pause.
+
 - An audit fan-out reviewer that fails to start (missing binary, CLI argument
   error, sign-in failure, missing Gemini sandbox or security extension) now
   stops the run with exit 1 after one attempt and logs its stderr in an
