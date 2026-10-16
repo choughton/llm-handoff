@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The `auto_push` config key has been removed; the dispatcher never read it.
+  A config with `auto_push: false` still loads and the key is ignored.
+  `auto_push: true`, or any value other than `false`, now fails at load with
+  an error that says to delete the key and points to `publish.mode`, which
+  controls whether the dispatcher pushes. `dispatch_config.example.yaml` and
+  the reference workflow config no longer set it.
 - `llm-handoff doctor` now reports configured scanners. With none
   configured it prints one `PASS` line. With scanners configured and the
   work-claim gate off it prints one `WARN` line saying none of them run.

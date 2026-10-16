@@ -6,9 +6,9 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** SCANNERS (next; SCAN-1 not started).
-  PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
-  closed.
+- **Active Epic:** CONFIG-CLEANUP (next; CLEAN-1 not started).
+  SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and
+  ANTIGRAVITY-ADAPTER closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -20,14 +20,6 @@ epic, or the first story of the next epic when the active one closes. Each
 story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
-
-### 5. SCANNERS - make scanner setup explicit
-
-- SCAN-1: `doctor` checks that each configured scanner's binary is on `PATH`
-  and reports which scanners will run. The example configs say plainly that a
-  scanner runs only when it is listed and installed, and recommend `bandit`,
-  `pip-audit`, and `gitleaks` for Python repositories (`semgrep` only with a
-  pinned local ruleset).
 
 ### 6. CONFIG-CLEANUP - known gaps from the portability review
 
@@ -123,6 +115,17 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   - (d) an operator message appended to the `@auditor` reviewer prompts can
     steer the audit (~line 1540); log the instruction with the audit result or
     mark the verdict as operator-influenced.
+- From the SCANNERS close (low/info, SCAN-1):
+  - (a) `CHANGELOG.md` line 19 is over-long; rewrap it.
+  - (b) a scanner command that starts with a placeholder gets the generic
+    "does not start with a plain program name" WARN
+    (`llm_handoff/doctor.py` ~line 806); mention the placeholder case.
+  - (c) on Windows, `shutil.which` may find a program in the current directory
+    instead of on `PATH`, in both doctor (`llm_handoff/doctor.py` ~line 817)
+    and the gate (`llm_handoff/work_claim.py` ~line 1155); pass an explicit
+    `path=` in both or document it.
+  - (d) `CONFIGURATION.md` (~line 674) does not recommend pinning scanner
+    versions; add one line.
 
 ## Completed Scope Ledger
 
@@ -165,6 +168,13 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   `b8511aafc6564dd3aa8f5bcaf89ea8520510b535`, audited at that SHA). Audit
   approved with sub-threshold findings only (see Open Followups). Verification:
   full test suite, 1718 passed, 18 skipped.
+- **SCANNERS** - make scanner setup explicit. SCAN-1 `doctor` reports each
+  configured scanner (PASS, FAIL, or WARN per scanner, lookup only, never runs
+  one); example configs say a scanner runs only when listed and installed, and
+  the active `semgrep --config auto` entry is removed (PR #72 merge
+  `d1bbd817a0e5f0c279d205befcf0a7ef511333c7`, audited at that SHA). Audit
+  approved with sub-threshold findings only (see Open Followups). Verification:
+  full test suite, 1726 passed, 18 skipped.
 
 ## Notes
 

@@ -13,7 +13,6 @@ for a copyable example shape.
 ```yaml
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
-auto_push: false
 backend_resume: true
 planner_resume: true
 planner_api_key_env: false
@@ -71,19 +70,16 @@ at an existing file if their workflow already uses one.
 
 ## Auto Push
 
-Default:
+The `auto_push` key has been removed. The dispatcher never read it. An
+existing `auto_push: false` line is still accepted and ignored, so older
+configs keep loading. `auto_push: true`, or any value other than `false`, is
+rejected when the config loads; delete the key.
 
-```yaml
-auto_push: false
-```
+The dispatcher pushes only through `publish.mode`. With the default
+`publish.mode: local`, it never pushes, and it publishes to a remote only when
+a user sets `publish.mode` to opt in.
 
-Remote pushes should be explicit. The dispatcher may create local commits as
-part of a finalizer workflow, but it should not publish to a remote unless a
-user explicitly opts in.
-
-`auto_push` is parsed but not read by the current dispatcher. The dispatcher
-itself never pushes, and setting `auto_push: true` has no effect. Agents are
-told not to push, and the reference workflow denies `git push` through
+Agents are told not to push, and the reference workflow denies `git push` through
 provider guardrails, but neither is a hard boundary. Keep push credentials out
 of the dispatch environment; see [SECURITY.md](SECURITY.md#threat-model).
 

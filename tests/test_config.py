@@ -56,6 +56,32 @@ agents:
     assert loaded.agents["frontend"].provider == "gemini"
     assert loaded.agents["validator"].provider == "claude"
     assert loaded.agents["finalizer"].provider == "claude"
+    assert not hasattr(loaded, "auto_push")
+
+
+def test_load_dispatch_config_rejects_auto_push_true(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("auto_push: true\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    message = str(excinfo.value)
+    assert "auto_push" in message
+    assert "publish.mode" in message
+
+
+def test_dispatch_config_accepts_auto_push_false_without_attribute(
+    tmp_path: Path,
+) -> None:
+    loaded = DispatchConfig.model_validate({"repo_root": tmp_path, "auto_push": False})
+
+    assert not hasattr(loaded, "auto_push")
+
+
+def test_dispatch_config_rejects_auto_push_true(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="auto_push"):
+        DispatchConfig.model_validate({"repo_root": tmp_path, "auto_push": True})
 
 
 def test_load_dispatch_config_uses_defaults_when_file_is_absent(

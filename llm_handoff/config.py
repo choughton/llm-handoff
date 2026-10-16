@@ -666,7 +666,6 @@ class DispatchConfig(BaseModel):
     repo_root: Path
     handoff_path: Path = DEFAULT_HANDOFF_PATH
     project_state_path: Path = DEFAULT_PROJECT_STATE_PATH
-    auto_push: bool = False
     agents: dict[AgentRole, AgentConfig] = Field(default_factory=_default_agent_configs)
     normalizer: NormalizerConfig = Field(default_factory=NormalizerConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
@@ -696,6 +695,21 @@ class DispatchConfig(BaseModel):
     protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
     commit_mode: CommitMode = "agent"
     publish: PublishConfig = PublishConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_auto_push(cls, value: object) -> object:
+        # `auto_push` was parsed but never read. Accept the old `false` value so
+        # existing configs keep loading; reject anything else.
+        if not isinstance(value, dict) or "auto_push" not in value:
+            return value
+        if value["auto_push"] is False:
+            return {key: item for key, item in value.items() if key != "auto_push"}
+        raise ValueError(
+            "auto_push has been removed: the dispatcher never read it. Delete "
+            "the auto_push key from the config; publish.mode controls whether "
+            "the dispatcher pushes."
+        )
 
     @model_validator(mode="after")
     def _validate_commit_mode(self) -> DispatchConfig:

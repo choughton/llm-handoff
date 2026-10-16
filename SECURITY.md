@@ -27,9 +27,11 @@ After the first tagged release, supported versions will be listed here.
 - The optional audit security reviewer is an LLM review, not a security
   guarantee. It is not hardened against prompt injection in repository
   content. See the Audit Fan-Out section of `docs/ARCHITECTURE.md`.
-- `auto_push` is reserved and not read by the current dispatcher, which never
-  pushes. Agents can still push if a push credential is reachable from the
-  dispatch environment; see [Threat Model](#threat-model).
+- The `auto_push` key has been removed; the dispatcher never read it.
+  `auto_push: false` is still accepted and ignored, and `auto_push: true` is
+  rejected at load. The dispatcher pushes only through `publish.mode`. Agents
+  can still push if a push credential is reachable from the dispatch
+  environment; see [Threat Model](#threat-model).
 - Treat generated handoff instructions as untrusted until validated.
 - The work-claim gate (`enforce_work_packet`) is on by default. It makes the
   dispatcher itself run the planner's Work Packet `Verification command`
