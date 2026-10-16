@@ -6,8 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** AUDIT-COST (next; COST-1 not started). ANTIGRAVITY-ADAPTER
-  closed.
+- **Active Epic:** PUBLISH-RESUME-NITS (next; NITS-1 not started). AUDIT-COST
+  and ANTIGRAVITY-ADAPTER closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -19,19 +19,6 @@ epic, or the first story of the next epic when the active one closes. Each
 story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
-
-### 2. AUDIT-COST - audit cost controls
-
-- COST-1: Optional `audit.security_model`. When set, the security reviewer uses
-  it (`--model`); when unset, keep borrowing the first matching role's model and
-  log once at startup which model the security reviewer uses.
-- COST-2: Save each reviewer's raw output (`quality.output.json`,
-  `security.output.json`) and a `usage.json` with per-reviewer tokens and cost
-  in the cycle's `logs/dispatch/audit/` folder.
-- COST-3: A reviewer that fails to start (argument error, missing binary,
-  sign-in failure) stops the loop with exit 1 after one attempt, logging its
-  stderr, instead of a failed dispatch that re-runs the whole audit. Still fail
-  closed: a missing verdict is never a pass.
 
 ### 3. PUBLISH-RESUME-NITS - sub-threshold findings from the PUBLISH-RESUME audit
 
@@ -143,7 +130,16 @@ Before scoping INTAKE-1, route to `user` for a short design check.
 
 ## Open Followups
 
-- None outside the backlog.
+- From the AUDIT-COST close (low, `llm_handoff/audit_review.py`):
+  - (a) the start-failure ERROR line logs up to 2000 characters of raw reviewer
+    stderr without redaction and with newlines intact (~line 1273); redact it or
+    pass it through `_single_line`.
+  - (b) when `gemini extensions list` itself fails, the error still says the
+    extension is not installed (~line 1444); give the check failure its own
+    message.
+  - (c) when the extension check exits 0 but the extension is missing, the
+    start-failure line shows exit code 0 and empty stderr (~line 1275); show
+    `run.error` for preflight failures.
 
 ## Completed Scope Ledger
 
@@ -164,6 +160,14 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   `8d8a4c08cc84487a995086943347ff26fa9bc3de`). Audit approved with sub-threshold
   findings only (doctor output escaping, push-grant detection breadth, deny/ask
   shadowing heuristic not checked against a live `agy`).
+- **AUDIT-COST** - audit cost controls. COST-1 optional `audit.security_model`
+  (PR #63 merge `b1443a4`); COST-2a provider adapters return usage (PR #64
+  merge `44afa59`); COST-2b `usage.json` and raw reviewer output per cycle
+  (PR #65 merge `3c924b8`); COST-3 a reviewer that fails to start stops the loop
+  with exit 1 after one attempt (PR #66 merge
+  `2e9a99c6a7950cc227bf351edc2b8503234d8122`, audited at that SHA). Audit
+  approved with low findings only (see Open Followups). Verification: full test
+  suite, 1615 passed, 18 skipped.
 
 ## Notes
 

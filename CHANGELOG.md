@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Resume check pause messages say more. A merge refused because its second
+  parent is not on the base branch now explains that parent order matters
+  (run `git merge <remote>/<base_branch>` on the story branch). A merge that
+  changes files beyond the conflict resolution now also names the conflicted
+  files it changed, which the check does not inspect, and asks you to review
+  them. Changed-path listings use their own limit of five paths.
+  `CONFIGURATION.md` now explains that `git merge-tree` runs the repository's
+  configured merge drivers during the resume check and that a merge driver
+  such as `union` can make the resume pause.
 - In `merge-commit` and `pr` publish modes, a passing epic-close audit
   (`close_type: epic`) with no story branch no longer stops the loop with
   "the audited work is not on a story branch". The epic's stories are already
