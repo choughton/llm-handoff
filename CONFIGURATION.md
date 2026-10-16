@@ -388,7 +388,8 @@ CHANGELOG.md merge=union
 ```
 
 A union merge keeps every line from both sides without checking that the
-result makes sense, so only use it for files where that is safe. `init` does
+result makes sense, and a blank line that both sides added can appear only
+once, so only use it for files where that is safe. `init` does
 not add it: the reference workflow does not ship a changelog, and
 `.gitattributes` belongs to the target repository.
 
