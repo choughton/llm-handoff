@@ -41,11 +41,10 @@ CANONICAL_NEXT_AGENT_ROLES: tuple[DispatchRole, ...] = tuple(
 )
 CANONICAL_NEXT_AGENT_SET = frozenset(CANONICAL_NEXT_AGENT_ROLES)
 _SOURCE_PROJECT_LABEL = bytes.fromhex("63726f737366697265").decode("ascii")
-_SOURCE_TOOL_LABEL = bytes.fromhex("616e746967726176697479").decode("ascii")
 LEGACY_PROVIDER_LABELS = frozenset(
     {
         _SOURCE_PROJECT_LABEL,
-        _SOURCE_TOOL_LABEL,
+        "antigravity",
         "claude",
         "codex",
         "gemini",

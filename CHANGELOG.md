@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Package source may now name the Antigravity (`agy`) CLI. The extraction-era
+  scrub test banned the word because the source dispatcher hard-coded it as a
+  manual GUI frontend step, which is now the generic `use_manual_frontend`.
+  That reason does not cover a real provider adapter. `antigravity` stays in
+  `LEGACY_PROVIDER_LABELS`, written plainly, so it is still rejected as a
+  `next_agent` value like `claude`, `codex`, and `gemini`.
+
 - The backend and frontend implementer prompts now say to keep `epic_id`,
   `story_id`, `story_title`, and `remaining_stories` from the assignment
   unchanged in the handback, and to write `remaining_stories: []` when the
