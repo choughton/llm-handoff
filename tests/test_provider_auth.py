@@ -6,11 +6,15 @@ import pytest
 
 from llm_handoff import orchestrator
 from llm_handoff.agent_types import DispatchResult
-from llm_handoff.config import DispatchConfig
+from llm_handoff.config import AgentConfig, DispatchConfig
 from llm_handoff.provider_auth import (
+    antigravity_auth_failure_line,
     auth_failure_messages,
     auth_fix_instructions,
+    find_antigravity_auth_failure,
     find_auth_failure,
+    find_permission_soft_deny,
+    permission_soft_deny_message,
 )
 
 
@@ -47,6 +51,7 @@ def test_find_auth_failure_ignores_ordinary_failures() -> None:
         ("claude", "/login"),
         ("codex", "codex login"),
         ("gemini", "GEMINI_API_KEY"),
+        ("antigravity", "Run `agy` once in a terminal"),
         (None, "Sign in to the provider CLI"),
     ],
 )
@@ -196,3 +201,198 @@ def test_gemini_still_retries_ordinary_failures(
     )
 
     assert attempts == [1, 2, 3]
+
+
+# Antigravity (agy)
+
+AGY_SIGNED_OUT = "Error: authentication required"
+AGY_SOFT_DENY = (
+    'jetski: no output produced - a tool required the "command" permission '
+    "that headless mode cannot prompt for, so it was auto-denied. Add an "
+    "allow-rule under permissions.allow in settings.json (e.g. "
+    "command(<target>))."
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [AGY_SIGNED_OUT, "AUTHENTICATION REQUIRED: sign in first"],
+)
+def test_find_antigravity_auth_failure_recognizes_agy_sign_in_failure(
+    text: str,
+) -> None:
+    assert find_antigravity_auth_failure("", "noise\n" + text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        AGY_SIGNED_OUT,
+        "authentication required for deployment",
+        "AUTHENTICATION REQUIRED: sign in first",
+    ],
+)
+def test_shared_matcher_does_not_treat_authentication_required_as_sign_in(
+    text: str,
+) -> None:
+    # Claude, Codex, and Gemini output can say this about anything; only the
+    # agy adapter treats it as a sign-in failure.
+    assert find_auth_failure(text) is None
+
+
+def test_find_antigravity_auth_failure_ignores_ordinary_failures() -> None:
+    assert find_antigravity_auth_failure("Traceback: KeyError", None, "") is None
+
+
+def test_antigravity_auth_failure_line_is_recognized_by_the_shared_matcher() -> None:
+    line = antigravity_auth_failure_line(AGY_SIGNED_OUT)
+
+    assert AGY_SIGNED_OUT in line
+    assert find_auth_failure("", AGY_SIGNED_OUT + "\n" + line) == line
+
+
+def test_antigravity_fix_instructions() -> None:
+    text = auth_fix_instructions("antigravity")
+
+    assert text.startswith("Run `agy` once in a terminal and finish signing in.")
+    assert 'agy -p "Reply with OK"' in text
+
+
+def test_auth_failure_messages_map_antigravity_to_the_agy_cli() -> None:
+    messages = auth_failure_messages(
+        role="backend",
+        provider="antigravity",
+        binary=None,
+        detail=AGY_SIGNED_OUT,
+    )
+
+    assert messages[0] == (
+        f"backend could not start: the `agy` CLI is not signed in ({AGY_SIGNED_OUT})."
+    )
+    assert messages[1].startswith("Fix: Run `agy`")
+
+
+def test_auth_failure_messages_without_binary_fall_back_to_provider() -> None:
+    messages = auth_failure_messages(
+        role="planner", provider="claude", binary=None, detail="x"
+    )
+
+    assert "the `claude` CLI" in messages[0]
+
+
+def test_find_permission_soft_deny_matches_the_agy_notice() -> None:
+    assert find_permission_soft_deny(None, "", "noise\n  " + AGY_SOFT_DENY) == (
+        AGY_SOFT_DENY
+    )
+    assert find_permission_soft_deny(AGY_SOFT_DENY.upper()) == AGY_SOFT_DENY.upper()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        AGY_SIGNED_OUT,
+        CLAUDE_EXPIRED,
+        "Traceback: KeyError 'story_id'",
+        "the request was auto-denied",
+        "agy cannot prompt for input",
+        "",
+    ],
+)
+def test_find_permission_soft_deny_ignores_other_failures(text: str) -> None:
+    assert find_permission_soft_deny(text) is None
+
+
+def test_permission_soft_deny_message_for_the_observed_notice() -> None:
+    message = permission_soft_deny_message(AGY_SOFT_DENY)
+
+    assert "\n" not in message
+    assert '"command" permission' in message
+    assert "`command(<target>)`" in message
+    assert "permissions.allow" in message
+    assert "~/.gemini/antigravity-cli/settings.json" in message
+    assert "every agy run for that user" in message
+
+
+def test_permission_soft_deny_message_without_a_kind() -> None:
+    message = permission_soft_deny_message(
+        "a tool required a permission that headless mode cannot prompt for, "
+        "so it was auto-denied."
+    )
+
+    assert "a tool permission" in message
+    assert "`<kind>(<target>)`" in message
+    assert "permissions.allow" in message
+
+
+def test_permission_soft_deny_message_without_an_example() -> None:
+    message = permission_soft_deny_message(
+        'a tool required the "browser" permission that headless mode cannot '
+        "prompt for, so it was auto-denied."
+    )
+
+    assert '"browser" permission' in message
+    assert "`browser(<target>)`" in message
+    assert "permissions.allow" in message
+
+
+def test_stop_on_auth_failure_names_agy_for_an_antigravity_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_handoff.agent_providers import antigravity
+    from llm_handoff.agent_types import _ProcessResult
+
+    monkeypatch.setattr(
+        antigravity,
+        "_run_command_streaming",
+        lambda *_args, **_kwargs: _ProcessResult(
+            stdout="", stderr=AGY_SIGNED_OUT, exit_code=1
+        ),
+    )
+    agent_config = AgentConfig(provider="antigravity")
+    result = antigravity.invoke_antigravity(
+        "backend",
+        tmp_path / "HANDOFF.md",
+        repo_root=tmp_path,
+        agent_config=agent_config,
+    )
+    dispatch_config = DispatchConfig(repo_root=tmp_path)
+    dispatch_config.agents["backend"] = agent_config
+    logs: list[tuple[str, str]] = []
+
+    stopped = orchestrator._stop_on_auth_failure(
+        dispatch_config,
+        role="backend",
+        exit_code=result.exit_code,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert result.exit_code == 1
+    assert stopped is True
+    errors = [message for level, message in logs if level == "ERROR"]
+    assert any("the `agy` CLI is not signed in" in message for message in errors)
+    assert any(message.startswith("Fix: Run `agy`") for message in errors)
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
+def test_stop_on_auth_failure_ignores_authentication_required_for_other_providers(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    dispatch_config = DispatchConfig(repo_root=tmp_path)
+    dispatch_config.agents["backend"] = AgentConfig(provider=provider)
+    logs: list[tuple[str, str]] = []
+
+    stopped = orchestrator._stop_on_auth_failure(
+        dispatch_config,
+        role="backend",
+        exit_code=1,
+        stdout="Deploy step failed: authentication required for deployment",
+        stderr="",
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert stopped is False
+    assert logs == []

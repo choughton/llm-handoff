@@ -10,6 +10,7 @@ from llm_handoff import agent_process, config
 from llm_handoff.agent_providers import antigravity
 from llm_handoff.agent_types import _ProcessResult
 from llm_handoff.config import AgentConfig
+from llm_handoff.provider_auth import find_auth_failure
 
 
 def _event(**fields: object) -> str:
@@ -467,6 +468,87 @@ def test_nonzero_exit_without_result_is_returned_unchanged(
     assert result.stderr == "agy: crashed"
 
 
+# Permission soft-deny
+
+AGY_SOFT_DENY = (
+    'jetski: no output produced - a tool required the "command" permission '
+    "that headless mode cannot prompt for, so it was auto-denied. Add an "
+    "allow-rule under permissions.allow in settings.json (e.g. "
+    "command(<target>))."
+)
+
+
+def _soft_deny_errors(logs: list[tuple[str, str]]) -> list[str]:
+    return [m for level, m in logs if level == "ERROR"]
+
+
+def test_soft_deny_with_success_result_fails_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(
+        _ProcessResult(stdout=_success_stream(), stderr=AGY_SOFT_DENY, exit_code=0)
+    )
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    first, added = result.stderr.split("\n")
+    assert first == AGY_SOFT_DENY
+    assert '"command" permission' in added
+    assert "`command(<target>)`" in added
+    assert "permissions.allow" in added
+    [error] = _soft_deny_errors(logs)
+    assert error.endswith(added)
+    assert error.startswith("Antigravity planner: ")
+
+
+def test_soft_deny_without_result_event_fails_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(_ProcessResult(stdout="", stderr=AGY_SOFT_DENY, exit_code=0))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    assert "no result event" in result.stderr
+    assert "`command(<target>)`" in result.stderr
+    assert len(_soft_deny_errors(logs)) == 1
+
+
+def test_soft_deny_with_non_success_result_keeps_agy_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(_event(type="result", status="ERROR", error="denied"))
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr=AGY_SOFT_DENY, exit_code=4))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 4
+    assert "Antigravity result status=ERROR: denied" in result.stderr
+    assert result.stderr.rstrip().endswith(
+        "the entry applies to every agy run for that user."
+    )
+    assert len(_soft_deny_errors(logs)) == 1
+
+
+def test_clean_run_logs_no_soft_deny(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(
+        _ProcessResult(stdout=_success_stream(), stderr="agy notice", exit_code=0)
+    )
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 0
+    assert result.stderr == "agy notice"
+    assert _soft_deny_errors(logs) == []
+
+
 # Resume
 
 
@@ -528,6 +610,82 @@ def test_fresh_failure_is_not_retried(
     assert len(runner.commands) == 1
     assert result.exit_code == 1
     assert result.session_invalidated is False
+
+
+def test_soft_deny_on_failed_resume_is_not_rerun_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(
+        _ProcessResult(stdout=_success_stream(), stderr=AGY_SOFT_DENY, exit_code=0),
+        _ok(),
+    )
+
+    result, logs = _invoke(
+        monkeypatch, runner, tmp_path, use_resume=True, session_id="conv-old"
+    )
+
+    assert len(runner.commands) == 1
+    assert result.exit_code == 1
+    assert result.session_invalidated is False
+    assert "permissions.allow" in result.stderr
+    assert not any(level == "WARN" and "conv-old" in m for level, m in logs)
+
+
+AGY_SIGNED_OUT = "Error: authentication required"
+
+
+def test_sign_in_failure_gets_a_shared_auth_marker_line(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(_ProcessResult(stdout="", stderr=AGY_SIGNED_OUT, exit_code=1))
+
+    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    first, added = result.stderr.split("\n")
+    assert first == AGY_SIGNED_OUT
+    assert added == f"agy is not authenticated: {AGY_SIGNED_OUT}"
+    assert find_auth_failure(result.stdout, result.stderr) == added
+
+
+def test_successful_run_mentioning_authentication_required_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(
+        _ProcessResult(
+            stdout=_success_stream(response="authentication required for deploy"),
+            stderr="note: authentication required for deploy",
+            exit_code=0,
+        )
+    )
+
+    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 0
+    assert result.stderr == "note: authentication required for deploy"
+
+
+def test_sign_in_failure_on_failed_resume_is_not_rerun_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(
+        _ProcessResult(stdout="", stderr=AGY_SIGNED_OUT, exit_code=1),
+        _ok(),
+    )
+
+    result, logs = _invoke(
+        monkeypatch, runner, tmp_path, use_resume=True, session_id="conv-old"
+    )
+
+    assert len(runner.commands) == 1
+    assert result.exit_code == 1
+    assert result.session_invalidated is False
+    assert find_auth_failure(result.stderr) is not None
+    assert not any(level == "WARN" and "conv-old" in m for level, m in logs)
 
 
 def test_resumed_success_without_new_id_keeps_the_session(
