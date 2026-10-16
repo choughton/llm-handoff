@@ -238,14 +238,23 @@ PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE = (
     "source, tests, project-state files, ledger files, or completed work. Commit "
     "exactly {handoff_path} before finishing."
 )
-STALE_FINALIZER_RECOVERY_INSTRUCTION = (
+STALE_FINALIZER_RECOVERY_INSTRUCTION_TEMPLATE = (
     "The prior finalizer cycle already completed, but HANDOFF.md was not "
     "rewritten and still contains stale finalizer routing. Treat "
-    "PROJECT_STATE.md and Git history as the source of truth for the current "
-    "workflow phase. Evaluate the current repo state, scope the next phase, "
-    "and rewrite HANDOFF.md for the next cycle instead of repeating "
+    "{project_state_path} and Git history as the source of truth for the "
+    "current workflow phase. Evaluate the current repo state, scope the next "
+    "phase, and rewrite HANDOFF.md for the next cycle instead of repeating "
     "finalizer."
 )
+
+
+def stale_finalizer_recovery_instruction(project_state_path: Path) -> str:
+    """Render the stale-finalizer recovery instruction for a state file."""
+    return STALE_FINALIZER_RECOVERY_INSTRUCTION_TEMPLATE.format(
+        project_state_path=Path(project_state_path).as_posix()
+    )
+
+
 RATIONALIZATION_RECOVERY_INSTRUCTION_TEMPLATE = (
     "The validator detected completion-claim rationalization in HANDOFF.md: "
     "{warnings}. Do not modify source, tests, project-state files, ledger files, "
@@ -948,7 +957,9 @@ def run_loop(
                     forced_additional_instruction
                     if forced_additional_instruction is not None
                     else (
-                        STALE_FINALIZER_RECOVERY_INSTRUCTION
+                        stale_finalizer_recovery_instruction(
+                            config.project_state_path
+                        )
                         if decision.source == "stale_epic_close_recovery"
                         else None
                     )

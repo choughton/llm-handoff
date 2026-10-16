@@ -6,6 +6,9 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The shipped finalizer helper files and the stale-finalizer recovery
+  instruction now defer to the configured `project_state_path` instead of
+  always naming `PROJECT_STATE.md`.
 - The supervisor's default repair allowlist is now `docs/` plus the provider
   helper folders `.claude/agents/`, `.codex/skills/llm-handoff/`, and
   `.gemini/agents/`. Dispatcher source, tests, top-level docs, and scripts
