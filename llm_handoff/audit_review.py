@@ -520,6 +520,14 @@ def run_audit_fan_out(
         f"Audit review scope: {scope.range_text} ({len(scope.files)} file(s)); "
         f"security reviewer: {security_provider} ({provider_origin}).",
     )
+    if config.audit.security_model is not None and security_provider != "claude":
+        _log(
+            log,
+            "WARN",
+            f"audit.security_model `{config.audit.security_model}` was not "
+            f"applied: the security reviewer provider is `{security_provider}`, "
+            "and the setting applies only to the claude reviewer.",
+        )
 
     quality_prompt = build_quality_fan_out_prompt(
         scope,
@@ -867,9 +875,7 @@ def build_security_reviewer_plan(
         binary = (provider_config.binary if provider_config else None) or (
             config_module.CLAUDE_BINARY
         )
-        model = (provider_config.model if provider_config else None) or (
-            config_module.CLAUDE_MODEL
-        )
+        model, _model_origin = _claude_security_reviewer_model(config)
         command = [
             binary,
             "--permission-mode",
@@ -1585,6 +1591,42 @@ def _matching_brace(text: str, start: int) -> int | None:
     return None
 
 
+def _claude_security_reviewer_model(config: DispatchConfig) -> tuple[str, str]:
+    """Return the claude security reviewer's model and where it comes from.
+
+    ``audit.security_model`` wins; otherwise the model of the first role whose
+    provider is ``claude``; otherwise ``CLAUDE_MODEL``. No PATH lookup.
+    """
+    configured = config.audit.security_model
+    if configured:
+        return configured, "audit.security_model"
+    role = _provider_agent_role(config, "claude")
+    if role is not None:
+        borrowed = config.agents[role].model
+        if borrowed:
+            return borrowed, f"borrowed from the {role} role"
+    return config_module.CLAUDE_MODEL, "default"
+
+
+def describe_security_reviewer_model(config: DispatchConfig) -> str:
+    """Describe which model the security reviewer uses, for the startup log.
+
+    Does no PATH lookup. Only the claude reviewer passes a model flag; the
+    gemini and codex reviewers run with their CLI's own default model.
+    """
+    provider = config.audit.security_provider
+    if provider in ("gemini", "codex"):
+        return f"{provider} CLI default model (no model flag is passed)"
+    model, origin = _claude_security_reviewer_model(config)
+    text = f"{model} ({origin})"
+    if provider is None:
+        text += (
+            ", applies when the claude reviewer is chosen (gemini and codex "
+            "use their CLI's default model)"
+        )
+    return text
+
+
 def _provider_agent_config(config: DispatchConfig, provider: str) -> AgentConfig | None:
     role = _provider_agent_role(config, provider)
     return config.agents[role] if role is not None else None
@@ -2041,6 +2083,7 @@ __all__ = [
     "build_security_review_prompt",
     "build_security_reviewer_plan",
     "compute_review_scope",
+    "describe_security_reviewer_model",
     "extract_json_object",
     "merge_review_verdicts",
     "parse_claude_structured_verdict",

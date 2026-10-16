@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added an optional `audit.security_model` setting. When set, the claude
+  security reviewer launches with `--model <security_model>`; when unset, it
+  still borrows the model of the first `claude` role, else the built-in
+  default. The setting applies only to the claude reviewer: a config that
+  sets it with `audit.security_provider: gemini` or `codex`, or without the
+  security reviewer, fails to load, and an auto-chosen gemini or codex
+  reviewer logs a `WARN` per audit that it was not applied. Every dispatcher
+  start logs the security reviewer's model and its source in the
+  `Audit reviewers:` line.
+
 - Added one shared list of the `agy` permission entries Antigravity-mapped
   roles need (`llm_handoff/antigravity_permissions.py`): the default
   `command(...)` allow entries, `command(<cmd>)` per Verification command,

@@ -1164,6 +1164,7 @@ written reason.
 audit:
   reviewers: [quality, security]  # the default
   security_provider: null       # claude | gemini | codex; null = auto
+  security_model: null          # claude reviewer only; null = borrowed
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000
 ```
@@ -1173,6 +1174,7 @@ audit:
 | `audit.reviewers` | `[quality, security]` | Reviewers on the auditor route. Must include `quality`. Supported values are `quality` and `security`. Leaving out `security` needs `audit.security_opt_out_reason`. |
 | `audit.security_opt_out_reason` | unset | Required, non-empty text when `audit.reviewers` leaves out `security`; rejected while `security` is listed. |
 | `audit.security_provider` | auto | CLI used for the security reviewer. When unset, see the automatic choice below. |
+| `audit.security_model` | unset (borrowed from the first `claude` role, else the built-in Claude default) | Model the claude security reviewer passes as `--model`. Applies only to the claude reviewer; see below. |
 | `audit.block_severity` | `high` | A finding at or above this severity routes the story back to the implementer. |
 | `audit.review_timeout_ms` | `900000` | Process timeout for each reviewer in fan-out mode. |
 
@@ -1189,6 +1191,19 @@ validation error that names `security_opt_out_reason`. When security is
 opted out, every dispatcher start logs a `WARN` line with the reason, and
 `llm-handoff doctor` prints `WARN security review:` with it. The auditor
 route then uses the single-auditor path, which writes `HANDOFF.md` itself.
+
+`audit.security_model` sets the model for the claude security reviewer only.
+When it is unset, the claude reviewer borrows the `model` of the first role
+whose provider is `claude` (checked in the order `auditor`, `validator`,
+`finalizer`, `planner`, `backend`, `frontend`), else the built-in Claude
+default. The gemini and codex reviewers pass no model flag and run with their
+CLI's default model. A config that sets `audit.security_model` while
+`audit.security_provider` is `gemini` or `codex`, or while `audit.reviewers`
+leaves out `security`, fails to load. With `audit.security_provider` unset,
+the setting applies when the claude reviewer is chosen; when another vendor
+is chosen, each audit logs a `WARN` that `audit.security_model` was not
+applied. Every dispatcher start logs the security reviewer's model and its
+source in the `Audit reviewers:` line.
 
 With `audit.security_provider` unset, the dispatcher picks the security
 reviewer for each implementer role (`backend` and `frontend`) in this order:

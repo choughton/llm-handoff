@@ -816,6 +816,161 @@ def test_claude_security_command_is_read_only_structured_review(
     assert plan.env is not None and "ANTHROPIC_API_KEY" not in plan.env
 
 
+def _claude_plan_model(config: DispatchConfig, tmp_path: Path) -> str:
+    plan = audit_review.build_security_reviewer_plan(
+        config,
+        provider="claude",
+        scope=_scope(tmp_path),
+        handoff_display="docs/handoff/HANDOFF.md",
+        log_dir=tmp_path,
+    )
+    command = list(plan.command)
+    return command[command.index("--model") + 1]
+
+
+def test_claude_security_command_uses_audit_security_model_when_set(
+    tmp_path: Path,
+) -> None:
+    agents = _default_agents(auditor={"provider": "claude", "model": "role-model"})
+    unset = _fan_out_config(tmp_path, agents=agents)
+    configured = DispatchConfig(
+        repo_root=tmp_path,
+        agents=agents,
+        audit={
+            "reviewers": ["quality", "security"],
+            "security_provider": "claude",
+            "security_model": "security-model",
+        },
+    )
+
+    assert _claude_plan_model(unset, tmp_path) == "role-model"
+    assert _claude_plan_model(configured, tmp_path) == "security-model"
+    unset_plan = audit_review.build_security_reviewer_plan(
+        unset,
+        provider="claude",
+        scope=_scope(tmp_path),
+        handoff_display="docs/handoff/HANDOFF.md",
+        log_dir=tmp_path,
+    )
+    configured_plan = audit_review.build_security_reviewer_plan(
+        configured,
+        provider="claude",
+        scope=_scope(tmp_path),
+        handoff_display="docs/handoff/HANDOFF.md",
+        log_dir=tmp_path,
+    )
+    # Only the --model value differs between the two commands.
+    unset_command = list(unset_plan.command)
+    configured_command = list(configured_plan.command)
+    model_index = unset_command.index("--model") + 1
+    unset_command[model_index] = configured_command[model_index]
+    assert unset_command == configured_command
+
+
+def _security_model_config(
+    tmp_path: Path,
+    *,
+    security_provider: str | None = None,
+    security_model: str | None = None,
+    agents: dict[str, Any] | None = None,
+) -> DispatchConfig:
+    audit: dict[str, Any] = {"reviewers": ["quality", "security"]}
+    if security_provider is not None:
+        audit["security_provider"] = security_provider
+    if security_model is not None:
+        audit["security_model"] = security_model
+    return DispatchConfig(
+        repo_root=tmp_path,
+        agents=agents if agents is not None else _default_agents(),
+        audit=audit,
+    )
+
+
+def test_describe_security_reviewer_model_names_the_configured_model(
+    tmp_path: Path,
+) -> None:
+    config = _security_model_config(
+        tmp_path, security_provider="claude", security_model="security-model"
+    )
+
+    assert audit_review.describe_security_reviewer_model(config) == (
+        "security-model (audit.security_model)"
+    )
+
+
+def test_describe_security_reviewer_model_names_the_borrowed_role(
+    tmp_path: Path,
+) -> None:
+    config = _security_model_config(
+        tmp_path,
+        security_provider="claude",
+        agents=_default_agents(
+            auditor={"provider": "codex"},
+            validator={"provider": "claude", "model": "validator-model"},
+        ),
+    )
+
+    assert audit_review.describe_security_reviewer_model(config) == (
+        "validator-model (borrowed from the validator role)"
+    )
+
+
+def test_describe_security_reviewer_model_falls_back_to_the_default(
+    tmp_path: Path,
+) -> None:
+    agents = {
+        role: {"provider": "codex"}
+        for role in config_module._default_agent_configs()
+    }
+    config = _security_model_config(
+        tmp_path, security_provider="claude", agents=agents
+    )
+
+    assert audit_review.describe_security_reviewer_model(config) == (
+        f"{config_module.CLAUDE_MODEL} (default)"
+    )
+    assert _claude_plan_model(config, tmp_path) == config_module.CLAUDE_MODEL
+
+
+@pytest.mark.parametrize("provider", ["gemini", "codex"])
+def test_describe_security_reviewer_model_for_non_claude_provider(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    config = _security_model_config(tmp_path, security_provider=provider)
+
+    text = audit_review.describe_security_reviewer_model(config)
+
+    assert text.startswith(f"{provider} CLI default model")
+    assert text.isascii()
+
+
+def test_describe_security_reviewer_model_in_auto_mode(tmp_path: Path) -> None:
+    config = _security_model_config(tmp_path, security_model="security-model")
+
+    text = audit_review.describe_security_reviewer_model(config)
+
+    assert text.startswith("security-model (audit.security_model)")
+    assert "applies when the claude reviewer is chosen" in text
+    assert text.isascii()
+
+
+def test_describe_security_reviewer_model_does_no_path_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_which(*_args: Any, **_kwargs: Any) -> str | None:
+        raise AssertionError("describe_security_reviewer_model looked up PATH")
+
+    def fail_available(*_args: Any, **_kwargs: Any) -> bool:
+        raise AssertionError("describe_security_reviewer_model looked up PATH")
+
+    monkeypatch.setattr(audit_review.shutil, "which", fail_which)
+    monkeypatch.setattr(audit_review, "_reviewer_cli_available", fail_available)
+
+    audit_review.describe_security_reviewer_model(_security_model_config(tmp_path))
+
+
 def test_gemini_security_command_uses_extension_in_plan_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1633,6 +1788,99 @@ def test_fan_out_reads_codex_exec_last_message(
     ).read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("security_model", ["security-model", None])
+def test_fan_out_warns_once_when_security_model_is_not_applied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    security_model: str | None,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(audit_review.shutil, "which", lambda _name: None)
+    codex_commands: list[list[str]] = []
+
+    def fake_codex(
+        _name: str, command: list[str], **_kwargs: Any
+    ) -> _CodexCommandResult:
+        codex_commands.append(command)
+        return _CodexCommandResult(
+            result=_process('{"type":"turn.completed"}\n'),
+            thread_id="t1",
+            final_message=json.dumps(_security_payload()),
+        )
+
+    monkeypatch.setattr(audit_review, "_run_codex_json_command", fake_codex)
+    audit: dict[str, Any] = {"reviewers": ["quality", "security"]}
+    if security_model is not None:
+        audit["security_model"] = security_model
+    # The implementer is claude, so auto mode picks codex as the reviewer.
+    config = DispatchConfig(
+        repo_root=repo,
+        poll_interval_seconds=0,
+        agents=_default_agents(backend={"provider": "claude"}),
+        audit=audit,
+    )
+
+    result, log = _run_fan_out(
+        config,
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert "security reviewer: codex (auto)" in log.text()
+    warnings = [
+        message
+        for level, message in log.messages
+        if level == "WARN" and "audit.security_model" in message
+    ]
+    if security_model is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1
+        assert "`codex`" in warnings[0]
+        assert "was not applied" in warnings[0]
+    assert all("--model" not in command for command in codex_commands)
+
+
+def test_fan_out_does_not_warn_when_claude_uses_security_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    commands: list[list[str]] = []
+
+    def fake_security(_name: str, command: list[str], **_kwargs: Any) -> _ProcessResult:
+        commands.append(command)
+        return _process(_claude_envelope(_security_payload()))
+
+    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_security)
+    config = DispatchConfig(
+        repo_root=repo,
+        poll_interval_seconds=0,
+        audit={
+            "reviewers": ["quality", "security"],
+            "security_provider": "claude",
+            "security_model": "security-model",
+        },
+    )
+
+    result, log = _run_fan_out(
+        config,
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert not [
+        message
+        for level, message in log.messages
+        if level == "WARN" and "audit.security_model" in message
+    ]
+    assert commands[0][commands[0].index("--model") + 1] == "security-model"
+
+
 def test_fan_out_reports_reviewer_timeout_as_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1748,6 +1996,16 @@ def test_run_loop_fan_out_blocks_and_increments_bounce_count(
     assert ledger.bounce_count(STORY_ID) == 1
     assert "Post-dispatch gate PASSED for auditor (audit)." in log.text()
     assert "Audit reviewers:    quality + security" in log.text()
+    startup_lines = [
+        message
+        for _level, message in log.messages
+        if message.startswith("Audit reviewers:")
+    ]
+    assert len(startup_lines) == 1
+    assert (
+        f"security model: {config_module.CLAUDE_MODEL} "
+        "(borrowed from the auditor role)" in startup_lines[0]
+    )
     summary_path = (
         next((repo / "logs" / "dispatch" / "audit").iterdir()) / "review.json"
     )

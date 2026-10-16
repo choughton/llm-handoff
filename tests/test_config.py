@@ -198,6 +198,94 @@ def test_load_dispatch_config_rejects_antigravity_security_provider(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
+def test_load_dispatch_config_accepts_and_strips_audit_security_model(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "audit:\n  security_model: '  claude-sonnet-test  '\n", encoding="utf-8"
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.audit.security_model == "claude-sonnet-test"
+
+
+def test_load_dispatch_config_defaults_audit_security_model_to_unset(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("audit:\n  block_severity: high\n", encoding="utf-8")
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.audit.security_model is None
+
+
+@pytest.mark.parametrize("value", ["''", "'   '"])
+def test_load_dispatch_config_rejects_empty_audit_security_model(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        f"audit:\n  security_model: {value}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="audit.security_model"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_load_dispatch_config_rejects_security_model_without_security_reviewer(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "audit:\n"
+        "  reviewers: [quality]\n"
+        "  security_opt_out_reason: covered by an external review\n"
+        "  security_model: claude-sonnet-test\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="audit.security_model only applies"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+@pytest.mark.parametrize("provider", ["gemini", "codex"])
+def test_load_dispatch_config_rejects_security_model_for_non_claude_provider(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "audit:\n"
+        f"  security_provider: {provider}\n"
+        "  security_model: claude-sonnet-test\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="applies only to the claude security"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_load_dispatch_config_accepts_security_model_with_claude_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "audit:\n"
+        "  security_provider: claude\n"
+        "  security_model: claude-sonnet-test\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.audit.security_provider == "claude"
+    assert loaded.audit.security_model == "claude-sonnet-test"
+
+
 def test_antigravity_fallback_without_binary_matches_default_agy_binary() -> None:
     with pytest.raises(ValueError, match="fallback must launch a different"):
         config_module.AgentConfig(
