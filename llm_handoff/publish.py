@@ -31,7 +31,10 @@ into the story branch, so the review sees the merged result. When ``gh pr
 merge`` reports the pull request is not mergeable, it does that once more,
 pushes, and retries. A base merge that does not go through is aborted and
 pauses the loop with the story state kept; after the operator merges the base
-branch into the story branch, the next start resumes publishing.
+branch into the story branch, the next start resumes publishing. A resume
+pushes only when the story branch gained nothing but merge commits (or
+commits already on the base branch) since the pause; otherwise it pauses
+again and pushes nothing.
 
 Agents never push, branch, or merge: the dispatcher does all of it, and only
 after the work-claim gate and the audit have passed. Requires
@@ -121,6 +124,10 @@ class StoryState:
     # branch did not merge cleanly into the story branch. The next start on
     # the story branch publishes it again.
     paused_publish: str = ""
+    # The story branch head when publishing paused. A resume pushes only when
+    # every commit added since then is a merge commit or is already on the
+    # base branch.
+    paused_head: str = ""
 
 
 @dataclass(frozen=True)
@@ -341,7 +348,7 @@ def publish_story(
     # and the dispatcher never asks for a review, so that merge stays unreviewed.
     resumed_at_merge = state.paused_publish == "merge"
     if state.paused_publish:
-        state = replace(state, paused_publish="")
+        state = replace(state, paused_publish="", paused_head="")
         _save_state(repo_root, state)
     # A second conflict on that resume must keep the merge-step marker, or the
     # next resume loses the "left open for a person" pause below.
@@ -507,7 +514,14 @@ def _merge_pull_request(
             )
         merged = _run(merge_command, repo_root, _GH_TIMEOUT_SECONDS)
         if merged.returncode != 0:
-            _save_state(repo_root, replace(state, paused_publish="merge"))
+            _save_state(
+                repo_root,
+                replace(
+                    state,
+                    paused_publish="merge",
+                    paused_head=git_head(repo_root) or "",
+                ),
+            )
             return _pause(
                 repo_root,
                 log,
@@ -556,14 +570,7 @@ def _sync_with_base(
     """
 
     upstream = f"{remote}/{state.base_branch}"
-    fetched = _git(
-        repo_root,
-        [
-            "fetch",
-            remote,
-            f"+refs/heads/{state.base_branch}:refs/remotes/{upstream}",
-        ],
-    )
+    fetched = _fetch_base(repo_root, remote, state.base_branch)
     if fetched.returncode != 0:
         return _stop(
             log,
@@ -600,7 +607,9 @@ def _sync_with_base(
     else:
         outcome = f"`{state.branch}` was not pushed"
         resume = "pushes the story branch and publishes it as usual"
-    _save_state(repo_root, replace(state, paused_publish=step))
+    _save_state(
+        repo_root, replace(state, paused_publish=step, paused_head=before or "")
+    )
     return _pause(
         repo_root,
         log,
@@ -646,6 +655,9 @@ def resume_paused_publish(
             "the checkout is on another branch, so it was not resumed.",
         )
         return PublishOutcome()
+    blocked = _resume_blocker(repo_root, remote, state)
+    if blocked is not None:
+        return _pause(repo_root, log, blocked, keep_state=True)
     log("INFO", f"Resuming the paused publish of `{state.branch}`.")
     return publish_story(
         repo_root=repo_root,
@@ -658,6 +670,120 @@ def resume_paused_publish(
         gh_command=gh_command,
         review=review,
         sleep=sleep,
+    )
+
+
+_RESUME_LISTED_COMMITS = 5
+
+
+def _fetch_base(
+    repo_root: Path, remote: str, base_branch: str
+) -> subprocess.CompletedProcess[str]:
+    return _git(
+        repo_root,
+        [
+            "fetch",
+            remote,
+            f"+refs/heads/{base_branch}:refs/remotes/{remote}/{base_branch}",
+        ],
+    )
+
+
+def _resume_blocker(repo_root: Path, remote: str, state: StoryState) -> str | None:
+    """Return why a paused publish must not resume, or ``None`` to resume.
+
+    While publishing was paused, the operator was asked only to merge the
+    base branch into the story branch. Any other commit added in that window
+    has passed neither the work-claim gate nor the audit, so it must not be
+    pushed or merged. Every failure here keeps the publish paused.
+    """
+
+    upstream = f"{remote}/{state.base_branch}"
+    continue_hint = (
+        f"To continue: remove those commits from `{state.branch}` so only the "
+        f"merge of {upstream} remains, then start the dispatcher again; or "
+        "publish the branch yourself, run "
+        f"`git switch {state.base_branch}` and `git pull`, then start the "
+        "dispatcher again."
+    )
+    lead = f"`{state.branch}` was not pushed: "
+    if not re.fullmatch(r"[0-9a-f]{7,64}", state.paused_head or ""):
+        return (
+            lead
+            + "the saved story state does not record a valid branch head at "
+            "the pause (a state saved by an older version has none), so the "
+            "commits added since the pause cannot be checked. Check that only "
+            "the merge of "
+            f"{upstream} was added, then publish the branch yourself, run "
+            f"`git switch {state.base_branch}` and `git pull`, and start the "
+            "dispatcher again."
+        )
+    fetched = _fetch_base(repo_root, remote, state.base_branch)
+    if fetched.returncode != 0:
+        return (
+            lead
+            + f"git fetch {remote} {state.base_branch} failed "
+            f"({_first_line(fetched)}), so the commits added since the pause "
+            "could not be checked. Fix the fetch and start the dispatcher "
+            "again; or publish the branch yourself, run "
+            f"`git switch {state.base_branch}` and `git pull`, then start the "
+            "dispatcher again."
+        )
+    paused = state.paused_head
+    ancestor = _git(repo_root, ["merge-base", "--is-ancestor", paused, "HEAD"])
+    if ancestor.returncode == 1:
+        return (
+            lead
+            + f"its head at the pause ({paused[:12]}) is no longer in its "
+            "history, so the branch was reset or rewritten while publishing "
+            "was paused. Restore it so it builds on that commit and only the "
+            f"merge of {upstream} was added, then start the dispatcher again; "
+            "or publish the branch yourself, run "
+            f"`git switch {state.base_branch}` and `git pull`, then start the "
+            "dispatcher again."
+        )
+    if ancestor.returncode != 0:
+        return (
+            lead
+            + f"git merge-base --is-ancestor {paused[:12]} HEAD failed "
+            f"({_first_line(ancestor)}), so the commits added since the pause "
+            "could not be checked. Publish the branch yourself, run "
+            f"`git switch {state.base_branch}` and `git pull`, then start the "
+            "dispatcher again."
+        )
+    listed = _git(
+        repo_root, ["rev-list", "--no-merges", f"{paused}..HEAD", f"^{upstream}"]
+    )
+    if listed.returncode != 0:
+        return (
+            lead
+            + f"git rev-list failed ({_first_line(listed)}), so the commits "
+            "added since the pause could not be checked. Publish the branch "
+            f"yourself, run `git switch {state.base_branch}` and `git pull`, "
+            "then start the dispatcher again."
+        )
+    added = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if not added:
+        return None
+    shown = _git(
+        repo_root,
+        ["show", "-s", "--format=%h %s", *added[:_RESUME_LISTED_COMMITS]],
+    )
+    descriptions = [
+        line.strip() for line in (shown.stdout or "").splitlines() if line.strip()
+    ]
+    if shown.returncode != 0 or not descriptions:
+        descriptions = [sha[:12] for sha in added[:_RESUME_LISTED_COMMITS]]
+    more = len(added) - _RESUME_LISTED_COMMITS
+    listing = "; ".join(f"`{line}`" for line in descriptions) + (
+        f"; and {more} more" if more > 0 else ""
+    )
+    return (
+        lead
+        + f"{len(added)} commit(s) other than merges were added since the "
+        f"pause and are not on {upstream}: {listing}. They have not passed "
+        "the work-claim gate or the audit. The story state was kept. "
+        + continue_hint
     )
 
 

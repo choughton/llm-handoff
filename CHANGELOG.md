@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A resumed `pr` publish now checks what was added to the story branch while
+  publishing was paused. The pause records the story branch head, and on the
+  next start the dispatcher fetches the base branch and pushes only when every
+  commit added since the pause is a merge commit or is already on the base
+  branch. A non-merge commit, a branch that was reset or rewritten, or a
+  failed `git` check pauses again with the story state kept, pushes nothing,
+  and makes no `gh` call; the message lists up to five offending commits. A
+  story state saved by an older version has no recorded head, so it pauses
+  instead of resuming.
+
 - Fixed a resumed `pr` publish that had paused at the merge step forgetting
   that origin when the base branch conflicted a second time. The second pause
   now says the pull request was left open and keeps the merge-step marker, so
