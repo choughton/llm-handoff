@@ -214,6 +214,23 @@ def test_antigravity_fallback_without_binary_matches_default_agy_binary() -> Non
     assert agent.fallback is not None
 
 
+def test_antigravity_fallback_with_different_model_is_a_distinct_launch() -> None:
+    agent = config_module.AgentConfig(
+        provider="antigravity",
+        model="pro",
+        fallback={"provider": "antigravity", "model": "flash"},
+    )
+    assert agent.fallback is not None
+    assert agent.fallback.model == "flash"
+
+    with pytest.raises(ValueError, match="fallback must launch a different"):
+        config_module.AgentConfig(
+            provider="antigravity",
+            model="pro",
+            fallback={"provider": "antigravity", "model": "pro"},
+        )
+
+
 def test_dispatch_config_rejects_missing_required_agent_roles(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="required reference roles"):
         DispatchConfig.model_validate(

@@ -983,7 +983,8 @@ Rules and limits:
 - The fallback block takes the same fields as a role. Omitted fields come from
   the fallback provider's defaults, not from the primary.
 - The fallback must launch a different provider, a different `binary`, or,
-  for `claude`, a different `model`. The Codex and Gemini adapters do not pass
+  for `claude` or `antigravity`, a different `model`. The Codex and Gemini
+  adapters do not pass
   a model flag, so a second model on those providers needs a different binary
   or account.
 - One level only: a fallback cannot have its own fallback.

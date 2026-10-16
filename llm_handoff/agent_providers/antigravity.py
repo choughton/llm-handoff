@@ -295,13 +295,13 @@ class _AntigravityStreamJsonMonitor:
                 f"{self.agent_name}: ignored non-JSON output line: {line[:120]}",
             )
             return
-        event_type = str(event.get("type", ""))
+        event_type, payload = _unwrap_stream_event(event)
         if event_type == "init":
-            self._handle_init(event)
+            self._handle_init(payload)
         elif event_type == "step_update":
-            self._handle_step_update(event)
+            self._handle_step_update(payload)
         elif event_type == "result":
-            self._handle_result(event)
+            self._handle_result(payload)
 
     def _handle_init(self, event: dict[str, object]) -> None:
         summary = "Antigravity session started"
@@ -372,6 +372,31 @@ class _AntigravityStreamJsonMonitor:
     def _emit(self, level: str, message: str) -> None:
         if self.log is not None:
             self.log(level, message)
+
+
+def _unwrap_stream_event(event: dict[str, object]) -> tuple[str, dict[str, object]]:
+    """Return the event name and its payload for one stream-json line.
+
+    agy names each event with a top-level ``event`` discriminator and nests
+    the payload under the key it names, for example
+    ``{"event": "result", "result": {...}}``. A flat object with a ``type``
+    discriminator and inline fields is also accepted. Top-level fields
+    outside the nested payload are kept, and the nested payload wins on a
+    key collision.
+    """
+    discriminator = event.get("event")
+    discriminator_key = "event"
+    if not isinstance(discriminator, str) or not discriminator:
+        discriminator = event.get("type")
+        discriminator_key = "type"
+    if not isinstance(discriminator, str) or not discriminator:
+        return "", event
+    nested = event.get(discriminator)
+    payload = {key: value for key, value in event.items() if key != discriminator_key}
+    if isinstance(nested, dict):
+        del payload[discriminator]
+        payload.update(nested)
+    return discriminator, payload
 
 
 def _antigravity_usage_fields(usage: object) -> dict[str, object]:

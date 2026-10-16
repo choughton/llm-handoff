@@ -99,6 +99,8 @@ CLAUDE_BINARY = _binary_name("claude")
 ANTIGRAVITY_BINARY = _binary_name("agy")
 # Providers whose CLI command differs from the provider name.
 PROVIDER_DEFAULT_CLI_NAMES: dict[str, str] = {"antigravity": "agy"}
+# Runtime adapters that pass the role's `model` to the CLI as a launch flag.
+_MODEL_FLAG_PROVIDERS: frozenset[str] = frozenset({"claude", "antigravity"})
 
 DEFAULT_HANDOFF_PATH = Path("docs/handoff/HANDOFF.md")
 DEFAULT_PROJECT_STATE_PATH = Path("PROJECT_STATE.md")
@@ -311,7 +313,7 @@ class AgentConfig(BaseModel):
         if _launch_identity(fallback) == _launch_identity(self):
             raise ValueError(
                 "fallback must launch a different provider, binary, or (for "
-                "claude) model than the primary agent."
+                "claude and antigravity) model than the primary agent."
             )
         return self
 
@@ -327,13 +329,17 @@ AgentConfig.model_rebuild()
 
 
 def _launch_identity(agent_config: AgentConfig) -> tuple[object, ...]:
-    # Only the Claude adapter passes a model flag today, so a model change is
-    # a different launch for claude alone.
+    # Only the Claude and Antigravity adapters pass a model flag today, so a
+    # model change is a different launch for those providers alone.
     provider = agent_config.provider
     binary = agent_config.binary or _binary_name(
         PROVIDER_DEFAULT_CLI_NAMES.get(provider, provider)
     )
-    model = agent_config.model if agent_config.provider == "claude" else None
+    model = (
+        agent_config.model
+        if agent_config.provider in _MODEL_FLAG_PROVIDERS
+        else None
+    )
     return (agent_config.provider, binary, model)
 
 

@@ -13,6 +13,18 @@ from llm_handoff.config import AgentConfig
 
 
 def _event(**fields: object) -> str:
+    """Encode one stream-json line in agy's documented envelope.
+
+    ``type`` names the event; agy writes it as the top-level ``event``
+    discriminator and nests the payload under that name, for example
+    ``{"event": "result", "result": {...}}``.
+    """
+    name = fields.pop("type")
+    return json.dumps({"event": name, name: fields})
+
+
+def _flat_event(**fields: object) -> str:
+    """Encode one stream-json line as a flat object with a ``type`` key."""
     return json.dumps(fields)
 
 
@@ -297,6 +309,81 @@ def test_raw_stdout_is_returned_without_response_or_deltas(
     assert result.session_id == "c3"
 
 
+def test_documented_nested_envelope_is_unwrapped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(
+        json.dumps({"event": "init", "init": {"permission_mode": "default"}}),
+        json.dumps(
+            {
+                "event": "step_update",
+                "step_update": {
+                    "conversation_id": "nested-1",
+                    "step_type": "agent_response",
+                    "text_delta": "Working",
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "event": "result",
+                "result": {
+                    "conversation_id": "nested-1",
+                    "status": "SUCCESS",
+                    "response": "Nested done.",
+                },
+            }
+        ),
+    )
+    runner = _Runner(_ok(stdout))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == "Nested done."
+    assert result.session_id == "nested-1"
+    agent_logs = [m for level, m in logs if level == "AGENT"]
+    assert any("permission mode: default" in m for m in agent_logs)
+    assert any(m.endswith(": Working") for m in agent_logs)
+
+
+def test_nested_non_success_result_fails_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(
+        json.dumps(
+            {"event": "result", "result": {"status": "ERROR", "error": "denied"}}
+        )
+    )
+    runner = _Runner(_ok(stdout))
+
+    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    assert result.stderr == "Antigravity result status=ERROR: denied"
+
+
+def test_flat_type_events_are_still_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(
+        _flat_event(type="step_update", conversation_id="flat-1",
+                    step_type="agent_response", text_delta="x"),
+        _flat_event(type="result", conversation_id="flat-1", status="SUCCESS",
+                    response="Flat done."),
+    )
+    runner = _Runner(_ok(stdout))
+
+    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == "Flat done."
+    assert result.session_id == "flat-1"
+
+
 def test_malformed_lines_are_ignored_with_one_warning_each(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -467,11 +554,13 @@ def test_fake_agy_binary_end_to_end(
     script = tmp_path / "fake_agy.py"
     script.write_text(
         "import json, sys\n"
-        "print(json.dumps({'type': 'init'}))\n"
-        "print(json.dumps({'type': 'step_update', 'conversation_id': 'fake-1',"
-        " 'step_type': 'agent_response', 'text_delta': 'hi'}))\n"
-        "print(json.dumps({'type': 'result', 'conversation_id': 'fake-1',"
-        " 'status': 'SUCCESS', 'response': ' '.join(sys.argv[1:3])}))\n",
+        "print(json.dumps({'event': 'init', 'init': {'cwd': '.'}}))\n"
+        "print(json.dumps({'event': 'step_update', 'step_update':"
+        " {'conversation_id': 'fake-1', 'step_type': 'agent_response',"
+        " 'text_delta': 'hi'}}))\n"
+        "print(json.dumps({'event': 'result', 'result':"
+        " {'conversation_id': 'fake-1', 'status': 'SUCCESS',"
+        " 'response': ' '.join(sys.argv[1:3])}}))\n",
         encoding="utf-8",
     )
     real_run = agent_process._run_command_streaming
