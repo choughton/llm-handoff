@@ -6,7 +6,7 @@ import pytest
 
 from llm_handoff import agent_roles
 from llm_handoff.agent_process import build_agent_env
-from llm_handoff.agent_providers import claude, codex, gemini
+from llm_handoff.agent_providers import antigravity, claude, codex, gemini
 from llm_handoff.agent_types import _ProcessResult
 from llm_handoff.config import AgentConfig, load_dispatch_config
 from llm_handoff.normalizer_providers import claude as claude_normalizer
@@ -166,6 +166,61 @@ def test_claude_never_gets_an_api_key_even_when_opted_in(
     assert _upper(env).isdisjoint(VENDOR_KEYS)
 
 
+def test_antigravity_never_gets_an_api_key_even_when_opted_in(
+    secret_environ: None,
+) -> None:
+    env = build_agent_env(AgentConfig(provider="antigravity", use_api_key_env=True))
+    forced_env = build_agent_env(
+        AgentConfig(provider="antigravity"),
+        use_api_key_env=True,
+    )
+
+    assert _upper(env).isdisjoint(VENDOR_KEYS)
+    assert _upper(forced_env).isdisjoint(VENDOR_KEYS)
+
+
+def test_antigravity_allowlist_keeps_profile_dirs_and_drops_provider_vars() -> None:
+    profile = {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "USERPROFILE": "C:/Users/u",
+        "APPDATA": "C:/Users/u/AppData/Roaming",
+        "LOCALAPPDATA": "C:/Users/u/AppData/Local",
+    }
+    env = build_agent_env(
+        AgentConfig(provider="antigravity"),
+        environ={
+            **profile,
+            **VENDOR_KEYS,
+            **UNRELATED_SECRETS,
+            "GEMINI_SANDBOX": "docker",
+            "GEMINI_CLI_HOME": "x",
+            "CLAUDE_CONFIG_DIR": "x",
+            "CODEX_HOME": "x",
+            "GOOGLE_CLOUD_PROJECT": "p",
+        },
+    )
+
+    assert env == profile
+
+
+def test_antigravity_adapter_subprocess_gets_allowlisted_env_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    secret_environ: None,
+) -> None:
+    recorder = _EnvRecorder()
+    monkeypatch.setattr(antigravity, "_run_command_streaming", recorder)
+
+    antigravity.invoke_antigravity(
+        "planner", tmp_path / "HANDOFF.md", repo_root=tmp_path
+    )
+
+    env = _assert_no_unrelated_secrets(recorder.envs[0])
+    assert _upper(env).isdisjoint(VENDOR_KEYS)
+    assert _upper(env).isdisjoint(PROVIDER_VARS)
+
+
 def test_inherit_mode_restores_environment_copy_but_keeps_vendor_key_rule(
     secret_environ: None,
 ) -> None:
@@ -185,7 +240,7 @@ def test_allowlist_matches_names_case_insensitively() -> None:
     assert env == {"Path": "C:/bin", "SystemRoot": "C:/Windows"}
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
+@pytest.mark.parametrize("provider", ["claude", "codex", "gemini", "antigravity"])
 def test_allowlist_keeps_the_account_name(provider: str) -> None:
     env = build_agent_env(
         AgentConfig(provider=provider),

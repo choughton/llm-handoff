@@ -339,6 +339,53 @@ def test_detect_gemini_sandbox_runtime(
     assert REAL_DETECT_GEMINI_SANDBOX() == expected
 
 
+# Antigravity
+
+
+def test_antigravity_launch_args_follow_unsafe_bypass() -> None:
+    assert orchestrator._launch_args_for_agent(AgentConfig(provider="antigravity")) == []
+    assert orchestrator._launch_args_for_agent(
+        AgentConfig(provider="antigravity", unsafe_bypass=True)
+    ) == ["--dangerously-skip-permissions"]
+
+
+def test_startup_banner_describes_antigravity_safe_default(tmp_path: Path) -> None:
+    agents = config._default_agent_configs()
+    agents["planner"] = AgentConfig(provider="antigravity")
+    agents["frontend"] = AgentConfig(provider="antigravity")
+    logs: list[tuple[str, str]] = []
+
+    orchestrator._log_launch_posture(
+        DispatchConfig(repo_root=tmp_path, agents=agents),
+        lambda level, message: logs.append((level, message)),
+    )
+
+    [planner_line] = [
+        m for level, m in logs if level == "INFO" and m.startswith("Launch planner:")
+    ]
+    assert "antigravity" in planner_line
+    assert "permissions.allow" in planner_line
+    assert "agy user settings" in planner_line
+    assert not any(level == "WARN" for level, _m in logs)
+
+
+def test_startup_banner_warns_on_antigravity_unsafe_bypass(tmp_path: Path) -> None:
+    agents = config._default_agent_configs()
+    agents["planner"] = AgentConfig(provider="antigravity", unsafe_bypass=True)
+    logs: list[tuple[str, str]] = []
+
+    orchestrator._log_launch_posture(
+        DispatchConfig(repo_root=tmp_path, agents=agents),
+        lambda level, message: logs.append((level, message)),
+    )
+
+    assert [m for level, m in logs if level == "WARN"] == [
+        "UNSAFE BYPASS: planner (antigravity) launches with "
+        "--dangerously-skip-permissions; approvals and sandboxing are disabled. "
+        "Remove agents.planner.unsafe_bypass to restore the safe default."
+    ]
+
+
 # Orchestrator startup
 
 

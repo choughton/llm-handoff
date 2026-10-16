@@ -605,7 +605,10 @@ In the default `env_mode: allowlist`, a launch receives only:
   `CODEX_*` for Codex, and `GEMINI_*`, `GOOGLE_CLOUD_PROJECT`,
   `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, plus container sandbox
   variables (`DOCKER_HOST`, `DOCKER_CONTEXT`, `CONTAINER_HOST`,
-  `SANDBOX_FLAGS`, `SEATBELT_PROFILE`) for Gemini CLI;
+  `SANDBOX_FLAGS`, `SEATBELT_PROFILE`) for Gemini CLI. The Antigravity CLI
+  (`agy`) gets no provider variables: it reuses the sign-in stored under the
+  user profile, which `HOME`, `USERPROFILE`, `APPDATA`, and `LOCALAPPDATA`
+  already reach;
 - any extra names listed under the role's `env_passthrough`.
 
 Names are matched case-insensitively.
@@ -619,6 +622,8 @@ provider, and only when the role opts in:
 | `OPENAI_API_KEY` | Codex roles with `use_api_key_env: true` |
 | `GEMINI_API_KEY` | Gemini roles with `use_api_key_env: true` (or the planner flag above) |
 | `GOOGLE_API_KEY` | never |
+
+Antigravity roles receive no vendor API key, even with `use_api_key_env: true`.
 
 `env_passthrough` cannot name a vendor API key; config loading fails if it
 does.
@@ -651,6 +656,7 @@ The startup banner prints one `Launch <role>:` line per role and a
 | Claude Code | `--permission-mode dontAsk --tools <tool names> --strict-mcp-config --allowedTools <allowed_tools> --disallowedTools WebFetch,WebSearch` | `--dangerously-skip-permissions` |
 | Codex | `--sandbox workspace-write --ask-for-approval never` | `--yolo` |
 | Gemini CLI | `--yolo --sandbox` | `--yolo --sandbox=false` |
+| Antigravity (`agy`) | none | `--dangerously-skip-permissions` |
 
 Claude Code in `dontAsk` mode denies any tool call that `allowed_tools` does
 not allow instead of prompting. `--allowedTools` only pre-approves rules, so
@@ -735,6 +741,16 @@ the dispatcher refuses to start and names the key to set, for example
 before every Gemini launch. Inside the container, the role sees the mounted
 project directory; host tools and credentials outside it may be missing.
 
+The Antigravity adapter launches `agy -p <prompt> --agent <name>
+--output-format stream-json --print-timeout <seconds>s`, adding `--model` when
+the role sets `model` and `--conversation <id>` when it resumes. It passes no
+permission flag by default. In print mode `agy` allows workspace file reads
+and writes, but a shell command runs only when a `permissions.allow` grant in
+the `agy` user settings covers it, and those grants apply to every `agy` run
+for that user. The adapter passes no `--sandbox` flag. A `result` event whose
+`status` is not `SUCCESS`, or a run that ends without a `result` event, counts
+as a failed dispatch.
+
 `permissions_flag` now only applies together with `unsafe_bypass: true`. It
 replaces `--dangerously-skip-permissions` for that role. Setting it without
 `unsafe_bypass` fails at config load.
@@ -805,7 +821,9 @@ Public docs and templates should use generic role names:
 
 Provider names are adapter details. The runtime dispatch layer selects the
 adapter from each role's `provider` field. The currently registered runtime
-adapters are `codex`, `gemini`, and `claude`; providers without a registered
+adapters are `codex`, `gemini`, `claude`, and `antigravity` (binary `agy`);
+`antigravity` is a runtime adapter only and cannot be a normalizer or
+`audit.security_provider`. Providers without a registered
 adapter fail closed at config load.
 
 When a config file defines only some `agents` entries, the loader merges those

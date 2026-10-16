@@ -140,6 +140,107 @@ def test_invoke_support_role_dispatches_validator_to_configured_gemini(
     assert invoke_mock.call_args.kwargs["agent_config"].mention == "@validator"
 
 
+@pytest.mark.parametrize("role", ["planner", "backend", "frontend", "finalizer"])
+def test_invoke_role_dispatches_to_configured_antigravity(
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+) -> None:
+    invoke_mock = Mock(return_value=_dispatch_result())
+    monkeypatch.setattr(agent_roles, "invoke_antigravity", invoke_mock)
+
+    result = agent_roles.invoke_role(
+        role,
+        Path("docs/handoff/HANDOFF.md"),
+        agent_config=AgentConfig(
+            provider="antigravity",
+            binary="agy-custom",
+            model="pro",
+            timeout_ms=321,
+        ),
+        use_resume=True,
+        session_id="conv-1",
+        previous_handoff_sha="aaa",
+        current_handoff_sha="bbb",
+        additional_instruction="Stay in scope.",
+    )
+
+    assert result.exit_code == 0
+    invoke_mock.assert_called_once_with(
+        role,
+        Path("docs/handoff/HANDOFF.md"),
+        agent_name=f"Antigravity {role}",
+        binary="agy-custom",
+        model="pro",
+        timeout_ms=321,
+        additional_instruction="Stay in scope.",
+        support_prompt=None,
+        subagent_name=None,
+        use_resume=True,
+        session_id="conv-1",
+        previous_handoff_sha="aaa",
+        current_handoff_sha="bbb",
+        log=None,
+        repo_root=None,
+        agent_config=ANY,
+    )
+
+
+def test_invoke_support_role_dispatches_validator_to_configured_antigravity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invoke_mock = Mock(
+        return_value=DispatchResult(
+            stdout="VALID: YES", stderr="", exit_code=0, elapsed_seconds=0.01
+        )
+    )
+    monkeypatch.setattr(agent_roles, "invoke_antigravity", invoke_mock)
+
+    result = agent_roles.invoke_support_role(
+        "handoff-validator",
+        "Return ONLY the structured validation output.",
+        role="validator",
+        handoff_path=Path("docs/handoff/HANDOFF.md"),
+        agent_config=AgentConfig(provider="antigravity"),
+    )
+
+    assert isinstance(result, SubagentResult)
+    assert result.stdout == "VALID: YES"
+    kwargs = invoke_mock.call_args.kwargs
+    assert invoke_mock.call_args.args == ("validator", Path("docs/handoff/HANDOFF.md"))
+    assert kwargs["support_prompt"] == "Return ONLY the structured validation output."
+    assert kwargs["subagent_name"] == "handoff-validator"
+    assert kwargs["agent_name"] == "Antigravity handoff-validator"
+    assert kwargs["use_resume"] is False
+    assert kwargs["session_id"] is None
+
+
+@pytest.mark.parametrize(
+    ("binary", "label"),
+    [
+        (None, "antigravity"),
+        ("agy", "antigravity"),
+        ("agy.cmd", "antigravity"),
+        ("C:/tools/agy-beta.cmd", "antigravity via agy-beta"),
+    ],
+)
+def test_describe_agent_labels_default_agy_binary_plainly(
+    binary: str | None,
+    label: str,
+) -> None:
+    agent = AgentConfig(provider="antigravity", binary=binary)
+
+    assert agent_roles._describe_agent(agent) == label
+
+
+def test_describe_agent_still_names_custom_binaries_for_other_providers() -> None:
+    assert agent_roles._describe_agent(AgentConfig(provider="codex", binary="codex")) == (
+        "codex"
+    )
+    assert agent_roles._describe_agent(AgentConfig(provider="codex", binary="agy")) == (
+        "codex via agy"
+    )
+
+
 VALIDATION_REPORT = (
     "VALID: NO\n"
     "  ROUTING: FAIL - next_agent is missing.\n"

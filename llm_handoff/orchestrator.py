@@ -12,6 +12,7 @@ import subprocess
 import time
 from typing import Callable
 
+from llm_handoff.agent_providers import antigravity as antigravity_provider
 from llm_handoff.agent_providers import claude as claude_provider
 from llm_handoff.agent_providers import codex as codex_provider
 from llm_handoff.agent_providers import gemini as gemini_provider
@@ -3241,6 +3242,10 @@ def _launch_args_for_agent(agent_config: AgentConfig) -> list[str]:
         return gemini_provider.gemini_sandbox_args(
             unsafe_bypass=agent_config.unsafe_bypass
         )
+    if agent_config.provider == "antigravity":
+        return antigravity_provider.antigravity_permission_args(
+            unsafe_bypass=agent_config.unsafe_bypass
+        )
     return []
 
 
@@ -3264,6 +3269,11 @@ def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
             )
         if agent_config.provider == "gemini" and not agent_config.unsafe_bypass:
             summary = f"{summary} (sandbox runtime: {gemini_runtime or 'NOT FOUND'})"
+        if agent_config.provider == "antigravity" and not agent_config.unsafe_bypass:
+            summary = (
+                "(no permission flags; workspace edits allowed, shell commands "
+                "need permissions.allow grants in the agy user settings)"
+            )
         _log(log, "INFO", f"Launch {label + ':':<12}{agent_config.provider} {summary}")
         if agent_config.unsafe_bypass:
             _log(

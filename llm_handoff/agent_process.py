@@ -66,10 +66,15 @@ PROVIDER_AGENT_ENV_PREFIXES: dict[str, tuple[str, ...]] = {
     "claude": ("CLAUDE_",),
     "codex": ("CODEX_",),
     "gemini": ("GEMINI_",),
+    # agy reuses the sign-in stored by an interactive session under the user
+    # profile (HOME/USERPROFILE/APPDATA/LOCALAPPDATA), so it needs no
+    # provider variables.
+    "antigravity": (),
 }
 PROVIDER_AGENT_ENV_NAMES: dict[str, frozenset[str]] = {
     "claude": frozenset(),
     "codex": frozenset(),
+    "antigravity": frozenset(),
     "gemini": frozenset(
         {
             "GOOGLE_CLOUD_PROJECT",
@@ -141,7 +146,8 @@ def build_agent_env(
 
 def _granted_vendor_keys(provider: str, *, use_api_key_env: bool) -> frozenset[str]:
     # Claude CLI launches always use the CLI's own login, never an API key.
-    # GOOGLE_API_KEY is never passed to the Gemini CLI.
+    # GOOGLE_API_KEY is never passed to the Gemini CLI. The Antigravity CLI
+    # has no documented API key and never receives one.
     if not use_api_key_env:
         return frozenset()
     if provider == "gemini":

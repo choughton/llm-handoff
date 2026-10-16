@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from llm_handoff import config as config_module
+from llm_handoff.agent_providers.antigravity import invoke_antigravity
 from llm_handoff.agent_providers.claude import invoke_claude_subagent
 from llm_handoff.agent_providers.codex import invoke_codex, unwrap_codex_final_message
 from llm_handoff.agent_providers.gemini import invoke_gemini
@@ -173,6 +174,29 @@ def _invoke_role_provider(
                 repo_root=repo_root,
                 agent_config=agent_config,
             )
+        )
+
+    if provider == "antigravity":
+        return invoke_antigravity(
+            role,
+            handoff_path,
+            agent_name=_role_agent_name(
+                agent_config,
+                default=f"Antigravity {subagent_name or role}",
+            ),
+            binary=agent_config.binary,
+            model=agent_config.model,
+            timeout_ms=agent_config.timeout_ms,
+            additional_instruction=additional_instruction,
+            support_prompt=support_prompt,
+            subagent_name=subagent_name,
+            use_resume=use_resume,
+            session_id=session_id,
+            previous_handoff_sha=previous_handoff_sha,
+            current_handoff_sha=current_handoff_sha,
+            log=log,
+            repo_root=repo_root,
+            agent_config=agent_config,
         )
 
     raise ValueError(f"Unsupported provider `{provider}` for role `{role}`.")
@@ -461,7 +485,10 @@ def _describe_agent(agent_config: AgentConfig) -> str:
     if agent_config.provider == "claude" and agent_config.model:
         label = f"{label} {agent_config.model}"
     # Name a non-default binary so two agents on one provider read apart.
-    if agent_config.binary and Path(agent_config.binary).stem != agent_config.provider:
+    default_cli = config_module.PROVIDER_DEFAULT_CLI_NAMES.get(
+        agent_config.provider, agent_config.provider
+    )
+    if agent_config.binary and Path(agent_config.binary).stem != default_cli:
         cli = Path(agent_config.binary).stem
         label = f"{label} via {cli}"
     return label
