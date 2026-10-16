@@ -248,6 +248,19 @@ RATIONALIZATION_RECOVERY_INSTRUCTION_TEMPLATE = (
     "completion claim cannot be supported. Commit exactly {handoff_path} "
     "before finishing."
 )
+# Bounded planner recovery at a dispatcher pause: one planner attempt per
+# pause streak, carrying the pause reason and the validator's diagnosis.
+PAUSE_RECOVERY_INSTRUCTION_TEMPLATE = (
+    "The dispatcher paused instead of dispatching. Pause reason: "
+    "{pause_reason} Validator diagnosis: {diagnosis} This is a bounded "
+    "planner recovery: you get one attempt, and if the handoff is still not "
+    "dispatchable afterwards the dispatcher waits for a person. Do not modify "
+    "source, tests, project-state files, ledger files, or completed work. "
+    "Rewrite {handoff_path} so the next route is dispatchable. If you cannot "
+    "choose a route safely, route to user with `status: escalate_to_user` and "
+    "one specific question for the user."
+)
+PAUSE_RECOVERY_NO_DIAGNOSIS = "The validator returned no diagnosis."
 THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
     "Story `{story_id}` has bounced between implementation and audit "
     "{bounce_count} times. Do not continue the same implementation loop. "
@@ -360,6 +373,9 @@ def run_loop(
     previous_cycle: Cycle | None = None
     cycle_number = 0
     pending_planner_recovery: PendingPlannerRecovery | None = None
+    # One bounded planner recovery per pause streak. Only a cycle dispatched
+    # without a forced instruction that passes validation clears it.
+    pause_recovery_used = False
     breaker_planner_seen: set[str] = set()
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
@@ -472,13 +488,23 @@ def run_loop(
         _log(log_fn, "INFO", f"Routing source: {decision.source}")
 
         if decision.route == "unknown":
-            _run_unknown_route_validator(config, log_fn)
+            pause_diagnosis = _run_unknown_route_validator(config, log_fn)
+            pause_reason = (
+                "No routing instruction found in HANDOFF.md. Update the handoff; dispatch will resume after the file changes."
+            )
+            if _pause_recovery_available(config, pause_recovery_used):
+                pending_planner_recovery = _schedule_pause_recovery(
+                    config,
+                    pause_reason=pause_reason,
+                    validation_result=pause_diagnosis,
+                    log=log_fn,
+                )
+                pause_recovery_used = True
+                continue
             if not _pause_until_handoff_changes(
                 config,
                 handoff_sha=handoff_sha,
-                reason=(
-                    "No routing instruction found in HANDOFF.md. Update the handoff; dispatch will resume after the file changes."
-                ),
+                reason=pause_reason,
                 log=log_fn,
             ):
                 return 0
@@ -550,17 +576,32 @@ def run_loop(
         )
 
         if (
-            previous_cycle is not None
+            # A pause-recovery planner cycle may repeat a planner route on an
+            # unchanged handoff; checking it would pause on its own recovery.
+            active_planner_recovery_kind != "pause"
+            and previous_cycle is not None
             and previous_cycle.route == current_cycle.route
             and previous_cycle.handoff_sha == current_cycle.handoff_sha
         ):
-            _run_stale_route_validator(config, current_cycle.route, log_fn)
+            pause_diagnosis = _run_stale_route_validator(
+                config, current_cycle.route, log_fn
+            )
+            pause_reason = (
+                f"STALE ROUTING DETECTED: same route ({current_cycle.route}) and unchanged HANDOFF hash."
+            )
+            if _pause_recovery_available(config, pause_recovery_used):
+                pending_planner_recovery = _schedule_pause_recovery(
+                    config,
+                    pause_reason=pause_reason,
+                    validation_result=pause_diagnosis,
+                    log=log_fn,
+                )
+                pause_recovery_used = True
+                continue
             if not _pause_until_handoff_changes(
                 config,
                 handoff_sha=current_cycle.handoff_sha,
-                reason=(
-                    f"STALE ROUTING DETECTED: same route ({current_cycle.route}) and unchanged HANDOFF hash."
-                ),
+                reason=pause_reason,
                 log=log_fn,
             ):
                 return 0
@@ -576,13 +617,25 @@ def run_loop(
             return 0
 
         if decision.confidence != "HIGH":
-            _run_low_confidence_route_validator(config, decision, log_fn)
+            pause_diagnosis = _run_low_confidence_route_validator(
+                config, decision, log_fn
+            )
+            pause_reason = (
+                f"Routing instruction {decision.route} is only {decision.confidence} confidence. Update HANDOFF.md; dispatch will resume after the file changes."
+            )
+            if _pause_recovery_available(config, pause_recovery_used):
+                pending_planner_recovery = _schedule_pause_recovery(
+                    config,
+                    pause_reason=pause_reason,
+                    validation_result=pause_diagnosis,
+                    log=log_fn,
+                )
+                pause_recovery_used = True
+                continue
             if not _pause_until_handoff_changes(
                 config,
                 handoff_sha=current_cycle.handoff_sha,
-                reason=(
-                    f"Routing instruction {decision.route} is only {decision.confidence} confidence. Update HANDOFF.md; dispatch will resume after the file changes."
-                ),
+                reason=pause_reason,
                 log=log_fn,
             ):
                 return 0
@@ -648,13 +701,25 @@ def run_loop(
                 return 1
             parse_error = ledger_result.parse_error
             if parse_error:
-                _run_epic_close_validator(config, parse_error, log_fn)
+                pause_diagnosis = _run_epic_close_validator(
+                    config, parse_error, log_fn
+                )
+                pause_reason = (
+                    "finalizer ledger-updater output was unparseable. Update HANDOFF.md; dispatch will resume after the file changes."
+                )
+                if _pause_recovery_available(config, pause_recovery_used):
+                    pending_planner_recovery = _schedule_pause_recovery(
+                        config,
+                        pause_reason=pause_reason,
+                        validation_result=pause_diagnosis,
+                        log=log_fn,
+                    )
+                    pause_recovery_used = True
+                    continue
                 if not _pause_until_handoff_changes(
                     config,
                     handoff_sha=current_cycle.handoff_sha,
-                    reason=(
-                        "finalizer ledger-updater output was unparseable. Update HANDOFF.md; dispatch will resume after the file changes."
-                    ),
+                    reason=pause_reason,
                     log=log_fn,
                 ):
                     return 0
@@ -672,6 +737,8 @@ def run_loop(
 
             previous_cycle = current_cycle
             consecutive_failures = 0
+            if forced_additional_instruction is None:
+                pause_recovery_used = False
         else:
             if (
                 config.publish.mode != "local"
@@ -973,6 +1040,8 @@ def run_loop(
                         ),
                     )
                     if validation_result.verdict != "NO":
+                        if forced_additional_instruction is None:
+                            pause_recovery_used = False
                         _run_work_claim_gate(
                             config=config,
                             route=current_cycle.route,
@@ -1034,43 +1103,72 @@ def run_loop(
                     consecutive_failures = 0
                     continue
                 if _has_missing_route_error(validation_result):
-                    _run_post_dispatch_missing_route_validator(
+                    pause_diagnosis = _run_post_dispatch_missing_route_validator(
                         config=config,
                         previous_agent=previous_agent,
                         log=log_fn,
                     )
+                    pause_reason = _missing_route_pause_reason(previous_agent)
+                    if _pause_recovery_available(config, pause_recovery_used):
+                        pending_planner_recovery = _schedule_pause_recovery(
+                            config,
+                            pause_reason=pause_reason,
+                            validation_result=pause_diagnosis,
+                            log=log_fn,
+                        )
+                        pause_recovery_used = True
+                        previous_cycle = current_cycle
+                        consecutive_failures = 0
+                        continue
                     if not _pause_until_handoff_changes(
                         config,
                         handoff_sha=_content_sha(
                             _read_required_text(config.handoff_full_path) or ""
                         ),
-                        reason=_missing_route_pause_reason(previous_agent),
+                        reason=pause_reason,
                         log=log_fn,
                     ):
                         return 0
                     continue
                 if self_loop_kind is not None:
-                    _run_self_loop_validator(
+                    pause_diagnosis = _run_self_loop_validator(
                         config=config,
                         previous_agent=previous_agent,
                         self_loop_kind=self_loop_kind,
                         log=log_fn,
                     )
+                    pause_reason = _self_loop_pause_reason(
+                        previous_agent,
+                        self_loop_kind,
+                    )
+                    if _pause_recovery_available(config, pause_recovery_used):
+                        pending_planner_recovery = _schedule_pause_recovery(
+                            config,
+                            pause_reason=pause_reason,
+                            validation_result=pause_diagnosis,
+                            log=log_fn,
+                        )
+                        pause_recovery_used = True
+                        previous_cycle = current_cycle
+                        consecutive_failures = 0
+                        continue
                     if not _pause_until_handoff_changes(
                         config,
                         handoff_sha=_content_sha(
                             _read_required_text(config.handoff_full_path) or ""
                         ),
-                        reason=_self_loop_pause_reason(
-                            previous_agent,
-                            self_loop_kind,
-                        ),
+                        reason=pause_reason,
                         log=log_fn,
                     ):
                         return 0
                     continue
                 return 1
 
+            if (
+                validation_result.verdict != "NO"
+                and forced_additional_instruction is None
+            ):
+                pause_recovery_used = False
             if _run_work_claim_gate(
                 config=config,
                 route=current_cycle.route,
@@ -2160,7 +2258,13 @@ def _run_validator(
     prompt: str,
     label: str,
     log: LogFn,
-) -> None:
+) -> ValidationResult | None:
+    """Run a validator subagent and return its parsed diagnosis.
+
+    Returns None when the validator changed a protected file, exited nonzero,
+    printed nothing, or printed output that does not parse.
+    """
+
     handoff_content = _read_required_text(config.handoff_full_path) or ""
     protected_before = _capture_protected_snapshot(config)
     result = _invoke_support_callable(
@@ -2181,37 +2285,40 @@ def _run_validator(
         handoff_content=handoff_content,
         log=log,
     ):
-        return
+        return None
 
     if result.exit_code != 0:
         if result.stderr.strip():
             _log(log, "WARN", f"{label} stderr: {result.stderr.strip()}")
-        return
+        return None
 
     if not result.stdout.strip():
         _log(log, "WARN", f"{label} returned no stdout.")
-        return
+        return None
 
     try:
         validation_result = parse_validation_output(result.stdout)
     except ValueError:
         _log(log, "WARN", f"{label} returned unparseable output.")
-        return
+        return None
 
     _log(log, "AGENT", f"Handoff validation verdict: {validation_result.verdict}")
     for warning in validation_result.warnings:
         _log(log, "WARN", warning)
     for error in validation_result.errors:
         _log(log, "ERROR", error)
+    return validation_result
 
 
-def _run_unknown_route_validator(config: DispatchConfig, log: LogFn) -> None:
+def _run_unknown_route_validator(
+    config: DispatchConfig, log: LogFn
+) -> ValidationResult | None:
     _log(
         log,
         "AGENT",
         "No dispatchable route found. Invoking the validator role...",
     )
-    _run_validator(
+    return _run_validator(
         config,
         "handoff-validator",
         _render_prompt(HANDOFF_VALIDATOR_PROMPT_TEMPLATE, config.handoff_path),
@@ -2739,13 +2846,13 @@ def _run_stale_route_validator(
     config: DispatchConfig,
     route: RouteName,
     log: LogFn,
-) -> None:
+) -> ValidationResult | None:
     _log(
         log,
         "AGENT",
         f"Stale HANDOFF detected for route {route}. Invoking the validator role...",
     )
-    _run_validator(
+    return _run_validator(
         config,
         "handoff-validator",
         _render_prompt(
@@ -2762,13 +2869,13 @@ def _run_epic_close_validator(
     config: DispatchConfig,
     parse_error: str,
     log: LogFn,
-) -> None:
+) -> ValidationResult | None:
     _log(
         log,
         "AGENT",
         "finalizer produced unparseable ledger-updater output. Invoking the validator role...",
     )
-    _run_validator(
+    return _run_validator(
         config,
         "handoff-validator",
         _render_prompt(
@@ -2785,13 +2892,13 @@ def _run_low_confidence_route_validator(
     config: DispatchConfig,
     decision: RoutingDecision,
     log: LogFn,
-) -> None:
+) -> ValidationResult | None:
     _log(
         log,
         "AGENT",
         f"Routing decision for {decision.route} is only {decision.confidence} confidence. Invoking the validator role before dispatch...",
     )
-    _run_validator(
+    return _run_validator(
         config,
         "handoff-validator",
         _render_prompt(
@@ -2812,7 +2919,7 @@ def _run_self_loop_validator(
     previous_agent: str,
     self_loop_kind: str,
     log: LogFn,
-) -> None:
+) -> ValidationResult | None:
     if self_loop_kind == "planner":
         prompt = _render_prompt(
             PLANNER_SELF_LOOP_VALIDATOR_PROMPT_TEMPLATE,
@@ -2830,7 +2937,7 @@ def _run_self_loop_validator(
         )
 
     _log(log, "AGENT", message)
-    _run_validator(
+    return _run_validator(
         config,
         "handoff-validator",
         prompt,
@@ -2844,13 +2951,13 @@ def _run_post_dispatch_missing_route_validator(
     config: DispatchConfig,
     previous_agent: str,
     log: LogFn,
-) -> None:
+) -> ValidationResult | None:
     _log(
         log,
         "AGENT",
         f"{previous_agent} produced a handoff without a dispatchable route. Invoking the validator role...",
     )
-    _run_validator(
+    return _run_validator(
         config,
         "handoff-validator",
         _render_prompt(
@@ -2895,6 +3002,43 @@ def _pause_until_handoff_changes(
 
         _log(log, "PAUSE", "Detected HANDOFF.md change. Resuming dispatch loop.")
         return True
+
+
+def _pause_recovery_available(config: DispatchConfig, used: bool) -> bool:
+    return config.pause_recovery == "planner" and not config.dry_run and not used
+
+
+def _format_pause_diagnosis(result: ValidationResult | None) -> str:
+    if result is None:
+        return PAUSE_RECOVERY_NO_DIAGNOSIS
+    errors = "; ".join(result.errors) if result.errors else "none"
+    warnings = "; ".join(result.warnings) if result.warnings else "none"
+    return f"verdict {result.verdict}; errors: {errors}; warnings: {warnings}."
+
+
+def _schedule_pause_recovery(
+    config: DispatchConfig,
+    *,
+    pause_reason: str,
+    validation_result: ValidationResult | None,
+    log: LogFn,
+) -> PendingPlannerRecovery:
+    _log(
+        log,
+        "PAUSE",
+        f"{pause_reason} Pause recovery: scheduling one bounded planner recovery.",
+    )
+    current_handoff_content = _read_required_text(config.handoff_full_path) or ""
+    return PendingPlannerRecovery(
+        handoff_sha=_content_sha(current_handoff_content),
+        additional_instruction=_render_prompt(
+            PAUSE_RECOVERY_INSTRUCTION_TEMPLATE,
+            config.handoff_path,
+            pause_reason=pause_reason,
+            diagnosis=_format_pause_diagnosis(validation_result),
+        ),
+        kind="pause",
+    )
 
 
 def _self_loop_kind(result: ValidationResult) -> str | None:
@@ -3130,6 +3274,13 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
                 "false; they will not run.",
             )
     _log(log, "INFO", "Finalizer route:    ON")
+    _log(
+        log,
+        "INFO",
+        "Pause recovery:     planner (one bounded planner recovery per pause streak)"
+        if config.pause_recovery == "planner"
+        else "Pause recovery:     off (pauses wait for a HANDOFF.md edit)",
+    )
     _log(log, "INFO", "Chaining:           NONE (single dispatch per cycle)")
     _log(log, "INFO", f"Frontend agent:     {frontend_mode}")
     _log(

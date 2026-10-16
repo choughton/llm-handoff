@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- New `pause_recovery` config (`planner` by default, or `"off"`). At the six
+  non-user pauses in the run loop (unknown route, stale route, low
+  confidence, unparseable finalizer output, missing route after dispatch, and
+  self-loop) the dispatcher now schedules one bounded planner recovery that
+  carries the pause reason and the validator's diagnosis, instead of waiting
+  at once. Each pause streak gets one attempt; the streak resets after a
+  normal dispatch passes validation. A `user` route still always waits.
+  `"off"` keeps the old behavior. The startup banner shows the mode.
 - Resume check pause messages say more. A merge refused because its second
   parent is not on the base branch now explains that parent order matters
   (run `git merge <remote>/<base_branch>` on the story branch). A merge that

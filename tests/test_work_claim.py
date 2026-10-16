@@ -224,6 +224,8 @@ def _dispatch_config(repo_root: Path, **overrides: Any) -> DispatchConfig:
     kwargs: dict[str, Any] = {
         "repo_root": repo_root,
         "poll_interval_seconds": 0,
+        # Pauses exit here; pause recovery is covered in test_pause_recovery.py.
+        "pause_recovery": "off",
         "max_consecutive_failures": 3,
         "enforce_work_packet": True,
         "work_packet_verification_timeout_seconds": 60,

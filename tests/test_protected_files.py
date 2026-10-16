@@ -92,12 +92,15 @@ def _init_repo(
 
 
 def _config(repo: Path, **overrides: object) -> DispatchConfig:
-    return DispatchConfig(
-        repo_root=repo,
-        poll_interval_seconds=0,
-        max_consecutive_failures=1,
-        **overrides,
-    )
+    kwargs: dict[str, object] = {
+        "repo_root": repo,
+        "poll_interval_seconds": 0,
+        "max_consecutive_failures": 1,
+        # Pauses exit here; pause recovery is covered in test_pause_recovery.py.
+        "pause_recovery": "off",
+    }
+    kwargs.update(overrides)
+    return DispatchConfig(**kwargs)
 
 
 def _dispatch_result() -> DispatchResult:
@@ -376,7 +379,11 @@ def test_empty_protected_paths_disables_the_check(
         encoding="utf-8",
     )
     config = load_dispatch_config(repo_root=tmp_path).model_copy(
-        update={"poll_interval_seconds": 0, "max_consecutive_failures": 1}
+        update={
+            "poll_interval_seconds": 0,
+            "max_consecutive_failures": 1,
+            "pause_recovery": "off",
+        }
     )
 
     def backend_work(repo: Path) -> None:

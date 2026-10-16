@@ -423,6 +423,40 @@ normalizer:
     assert seen[0].normalizer.model == "claude-haiku-test"
 
 
+def test_pause_recovery_defaults_to_planner(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path).pause_recovery == "planner"
+    assert load_dispatch_config(repo_root=tmp_path).pause_recovery == "planner"
+
+
+def test_pause_recovery_accepts_off(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path, pause_recovery="off").pause_recovery == (
+        "off"
+    )
+
+
+def test_pause_recovery_rejects_unknown_value(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="pause_recovery"):
+        DispatchConfig(repo_root=tmp_path, pause_recovery="auto")
+
+
+def test_load_dispatch_config_reads_pause_recovery(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text('pause_recovery: "off"\n', encoding="utf-8")
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.pause_recovery == "off"
+
+
+def test_load_dispatch_config_rejects_unquoted_yaml_off(tmp_path: Path) -> None:
+    # YAML 1.1 reads a bare `off` as the boolean false.
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("pause_recovery: off\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match='pause_recovery: "off"'):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
 def test_work_claim_env_passthrough_defaults_to_empty(tmp_path: Path) -> None:
     assert DispatchConfig(repo_root=tmp_path).work_claim_env_passthrough == ()
     assert load_dispatch_config(repo_root=tmp_path).work_claim_env_passthrough == ()

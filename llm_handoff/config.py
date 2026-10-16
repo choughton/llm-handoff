@@ -170,6 +170,9 @@ PublishMode = Literal["local", "merge-commit", "pr"]
 # GitHub pull request reviewers whose review of the head commit must finish,
 # without findings, before the dispatcher merges a story's pull request.
 PublishReviewer = Literal["codex"]
+# What the dispatcher does at a non-user pause: schedule one bounded planner
+# recovery per pause streak, or pause and wait for a HANDOFF.md edit.
+PauseRecoveryMode = Literal["planner", "off"]
 DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 # The security reviewer runs by default. Leaving it out of `audit.reviewers`
 # also needs a non-empty `audit.security_opt_out_reason`.
@@ -674,6 +677,7 @@ class DispatchConfig(BaseModel):
     planner_resume: bool = GEMINI_RESUME_DEFAULT
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
+    pause_recovery: PauseRecoveryMode = "planner"
     enforce_work_packet: bool = True
     work_packet_opt_out_reason: str | None = None
     work_packet_verification_timeout_seconds: int = (
@@ -718,6 +722,17 @@ class DispatchConfig(BaseModel):
                 "dispatcher; the dispatcher owns the story branch and its commits."
             )
         return self
+
+    @field_validator("pause_recovery", mode="before")
+    @classmethod
+    def _reject_boolean_pause_recovery(cls, value: object) -> object:
+        # YAML 1.1 reads a bare `off` as the boolean false.
+        if isinstance(value, bool):
+            raise ValueError(
+                'pause_recovery must be "planner" or "off"; YAML reads a bare '
+                'off as a boolean, so write pause_recovery: "off" with quotes.'
+            )
+        return value
 
     @field_validator("work_packet_opt_out_reason", mode="after")
     @classmethod
