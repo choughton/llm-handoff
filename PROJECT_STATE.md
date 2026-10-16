@@ -6,8 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** PUBLISH-RESUME-NITS (next; NITS-1 not started). AUDIT-COST
-  and ANTIGRAVITY-ADAPTER closed.
+- **Active Epic:** PAUSE-RECOVERY (next; PAUSE-1 not started).
+  PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -19,18 +19,6 @@ epic, or the first story of the next epic when the active one closes. Each
 story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
-
-### 3. PUBLISH-RESUME-NITS - sub-threshold findings from the PUBLISH-RESUME audit
-
-- NITS-1: One story for all five:
-  - give the resume path list its own limit instead of reusing
-    `_RESUME_LISTED_COMMITS` (`llm_handoff/publish.py`);
-  - say that parent order matters in the swapped-parent pause message;
-  - document that custom merge drivers (for example `union`) can make
-    `merge-tree` disagree with the operator's merge and pause;
-  - list which conflicted files changed in the resume pause message;
-  - document that `merge-tree` runs configured custom merge drivers during the
-    resume check.
 
 ### 4. PAUSE-RECOVERY - bounded planner recovery at pauses, then an operator prompt
 
@@ -168,6 +156,12 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   `2e9a99c6a7950cc227bf351edc2b8503234d8122`, audited at that SHA). Audit
   approved with low findings only (see Open Followups). Verification: full test
   suite, 1615 passed, 18 skipped.
+- **PUBLISH-RESUME-NITS** - NITS-1 resume check nits: separate path list limit,
+  parent-order and conflicted-file text in resume pause messages, merge driver
+  docs. Audited at `e8973ed3e8d7673af0ab17dc0acad928272cd72e`, PR #68 merge
+  `cdb607a`. Audit approved with sub-threshold findings only (conflicted-files
+  listing truncation untested; pause-message path escaping). Verification: full
+  test suite.
 
 ## Notes
 
