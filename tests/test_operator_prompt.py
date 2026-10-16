@@ -124,6 +124,153 @@ def test_reader_starts_one_thread() -> None:
     assert reader._thread is first
 
 
+class _FakeConsole:
+    """Terminal input that is read only when the reader asks for it.
+
+    ``pending`` holds characters already typed; each ``read_chars`` call
+    returns all of them, or the next scripted chunk when nothing is pending.
+    """
+
+    def __init__(self, pending: str = "", chunks: list[str] | None = None) -> None:
+        self.pending = pending
+        self.chunks = list(chunks or [])
+        self.reads: list[tuple[float, bool]] = []
+        self.discards = 0
+        self.eof_after_chunks = False
+
+    def read_chars(self, timeout: float, *, echo: bool = True) -> str:
+        self.reads.append((timeout, echo))
+        if self.pending:
+            chars, self.pending = self.pending, ""
+            return chars
+        if timeout > 0 and self.chunks:
+            return self.chunks.pop(0)
+        if timeout > 0 and self.eof_after_chunks:
+            raise EOFError
+        return ""
+
+    def discard_unread(self) -> None:
+        self.discards += 1
+
+
+class _TtyStream(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def test_console_reader_never_reads_outside_a_prompt() -> None:
+    # Finding: a reader blocked in readline() between prompts competes with
+    # the manual frontend keypress. The console reader starts no thread and
+    # reads only inside drain/read_line.
+    console = _FakeConsole(chunks=["quit\n"])
+    before = {thread.name for thread in threading.enumerate()}
+    reader = OperatorInputReader(_TtyStream(""), console=console)
+
+    assert reader.uses_console is True
+    reader.start()
+    assert reader.started is False
+    assert console.reads == []
+    assert "llm-handoff-operator-input" not in {
+        thread.name for thread in threading.enumerate()
+    } - before
+
+    assert reader.read_line(timeout=0.05) == "quit"
+    reads_after_prompt = len(console.reads)
+    time.sleep(0.02)
+    assert len(console.reads) == reads_after_prompt
+
+
+def test_console_reader_discards_type_ahead_before_the_first_prompt(
+    tmp_path: Path,
+) -> None:
+    # Finding: lines typed while the first agent ran were taken as the first
+    # prompt's action. They must be discarded on entry to the prompt.
+    path = _handoff(tmp_path)
+    console = _FakeConsole(pending="quit\nmore\n", chunks=["retry\n"])
+    reader = OperatorInputReader(_TtyStream(""), console=console)
+    logs, log = _logs()
+
+    result = wait_for_operator_or_handoff_change(
+        reader, path, content_sha(USER_HANDOFF), 0.01, log
+    )
+
+    assert result == OperatorAction(kind="retry")
+    assert logs[0] == (
+        "PAUSE",
+        "Discarded 2 operator input line(s) typed before the prompt.",
+    )
+    assert console.reads[0] == (0, False)
+    assert console.discards == 1
+
+
+def test_console_reader_counts_a_partial_line_as_discarded() -> None:
+    console = _FakeConsole(pending="half")
+    reader = OperatorInputReader(_TtyStream(""), console=console)
+
+    assert reader.drain() == 1
+    assert reader.drain() == 0
+
+
+def test_console_reader_assembles_lines_across_chunks() -> None:
+    console = _FakeConsole(chunks=["plea", "sx\be\r", "\nquit\r\n"])
+    reader = OperatorInputReader(_TtyStream(""), console=console)
+
+    assert reader.read_line(timeout=0.5) == "please"
+    assert reader.read_line(timeout=0.5) == "quit"
+    assert reader.read_line(timeout=0.01) is None
+
+
+def test_console_reader_detects_eof() -> None:
+    console = _FakeConsole(chunks=["tail"])
+    console.eof_after_chunks = True
+    reader = OperatorInputReader(_TtyStream(""), console=console)
+
+    assert reader.read_line(timeout=0.5) == "tail"
+    assert reader.eof_reached is True
+    assert reader.read_line(timeout=0.5) is None
+
+
+class _FakeMsvcrt:
+    def __init__(self, keys: str) -> None:
+        self.keys = list(keys)
+        self.echoed: list[str] = []
+
+    def kbhit(self) -> bool:
+        return bool(self.keys)
+
+    def getwch(self) -> str:
+        return self.keys.pop(0)
+
+    def putwch(self, char: str) -> None:
+        self.echoed.append(char)
+
+
+def test_windows_console_skips_special_keys_and_echoes_only_at_the_prompt() -> None:
+    from llm_handoff.operator_prompt import _WindowsConsole
+
+    fake = _FakeMsvcrt("a\xe0Hb\r")
+    console = _WindowsConsole(fake)
+    assert console.read_chars(0, echo=False) == "ab\r"
+    assert fake.echoed == []
+
+    fake.keys = list("c\r")
+    assert console.read_chars(0.01) == "c\r"
+    assert "".join(fake.echoed) == "c\r\n"
+    assert console.read_chars(0.01) == ""
+
+
+def test_windows_console_ctrl_c_interrupts() -> None:
+    from llm_handoff.operator_prompt import _WindowsConsole
+
+    with pytest.raises(KeyboardInterrupt):
+        _WindowsConsole(_FakeMsvcrt("\x03")).read_chars(0)
+
+
+def test_non_tty_streams_use_the_thread_reader() -> None:
+    assert OperatorInputReader(io.StringIO("")).uses_console is False
+    assert OperatorInputReader(_BlockingStream()).uses_console is False  # type: ignore[arg-type]
+
+
 # --- wait_for_operator_or_handoff_change ----------------------------------
 
 

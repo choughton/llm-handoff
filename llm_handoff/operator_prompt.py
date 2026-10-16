@@ -10,13 +10,16 @@ This module must not import ``llm_handoff.orchestrator``.
 
 from __future__ import annotations
 
+import codecs
+from collections import deque
 from dataclasses import dataclass
 from hashlib import sha256
+import os
 from pathlib import Path
 import queue
 import threading
 import time
-from typing import Callable, Literal, TextIO
+from typing import Any, Callable, Literal, Protocol, TextIO
 
 from llm_handoff.text_io import read_dispatch_text
 
@@ -67,30 +70,164 @@ def parse_operator_input(line: str) -> OperatorAction:
 _EOF = object()
 
 
-class OperatorInputReader:
-    """One daemon thread that reads lines from ``stream`` into a queue.
+class ConsoleInput(Protocol):
+    """Non-blocking terminal input, read only while a prompt is shown."""
 
-    The thread starts on the first ``read_line`` call. Lines typed before it
-    starts stay in the stream and are read as ordinary input; lines queued
+    def read_chars(self, timeout: float, *, echo: bool = True) -> str:
+        """Return the characters typed within ``timeout`` seconds.
+
+        Returns ``""`` when nothing arrives in time and raises ``EOFError``
+        when the terminal input is closed.
+        """
+
+    def discard_unread(self) -> None:
+        """Drop input the terminal holds but ``read_chars`` cannot see yet."""
+
+
+class _WindowsConsole:
+    """Console input through ``msvcrt``; nothing is read between prompts."""
+
+    def __init__(self, msvcrt_module: Any) -> None:
+        self._msvcrt = msvcrt_module
+
+    def read_chars(self, timeout: float, *, echo: bool = True) -> str:
+        deadline = time.monotonic() + max(timeout, 0)
+        chars: list[str] = []
+        while True:
+            while self._msvcrt.kbhit():
+                char = self._msvcrt.getwch()
+                if char in ("\x00", "\xe0"):
+                    # Function and arrow keys arrive as a prefix plus a code.
+                    if self._msvcrt.kbhit():
+                        self._msvcrt.getwch()
+                    continue
+                if char == "\x03":
+                    raise KeyboardInterrupt
+                if echo:
+                    self._echo(char)
+                chars.append(char)
+            remaining = deadline - time.monotonic()
+            if chars or remaining <= 0:
+                return "".join(chars)
+            time.sleep(min(0.05, remaining))
+
+    def _echo(self, char: str) -> None:
+        if char == "\r":
+            self._msvcrt.putwch("\r")
+            self._msvcrt.putwch("\n")
+        elif char == "\b":
+            for echoed in "\b \b":
+                self._msvcrt.putwch(echoed)
+        else:
+            self._msvcrt.putwch(char)
+
+    def discard_unread(self) -> None:
+        return None
+
+
+class _PosixConsole:
+    """Terminal input through ``select`` and ``os.read`` on the stdin fd.
+
+    In canonical mode the terminal echoes and edits the line itself and
+    ``select`` reports the fd readable only once a full line is typed.
+    """
+
+    def __init__(self, fd: int, encoding: str | None) -> None:
+        self._fd = fd
+        self._decoder = codecs.getincrementaldecoder(encoding or "utf-8")(
+            errors="replace"
+        )
+
+    def read_chars(self, timeout: float, *, echo: bool = True) -> str:
+        import select
+
+        ready, _write, _error = select.select([self._fd], [], [], max(timeout, 0))
+        if not ready:
+            return ""
+        data = os.read(self._fd, 4096)
+        if not data:
+            raise EOFError
+        return self._decoder.decode(data)
+
+    def discard_unread(self) -> None:
+        try:
+            import termios
+
+            termios.tcflush(self._fd, termios.TCIFLUSH)
+        except (ImportError, OSError, ValueError):
+            return None
+
+
+def _console_for_stream(stream: Any) -> ConsoleInput | None:
+    """Return terminal input for ``stream`` when it is a TTY, else None."""
+
+    isatty = getattr(stream, "isatty", None)
+    if isatty is None:
+        return None
+    try:
+        if not isatty():
+            return None
+    except (OSError, ValueError):
+        return None
+    if os.name == "nt":
+        try:
+            import msvcrt
+        except ImportError:
+            return None
+        return _WindowsConsole(msvcrt)
+    try:
+        import select  # noqa: F401
+        import termios  # noqa: F401
+
+        fd = stream.fileno()
+    except (AttributeError, ImportError, OSError, ValueError):
+        return None
+    return _PosixConsole(fd, getattr(stream, "encoding", None))
+
+
+class OperatorInputReader:
+    """Reads operator input lines for the pause prompt.
+
+    For a terminal stream the reader polls the console only while a prompt
+    is shown, and no thread or blocking read stays active while agents run.
+    A manual frontend step can then read its own keypress from the same
+    console, and ``drain`` discards everything typed while no prompt was
+    shown, including before the first prompt.
+
+    For any other stream, such as a scripted stream in tests, one daemon
+    thread calls ``stream.readline()`` in a loop and puts each line on a
+    queue. The thread starts on the first ``read_line`` call; lines queued
     between prompts are type-ahead that ``drain`` discards.
     """
 
-    def __init__(self, stream: TextIO) -> None:
+    def __init__(
+        self, stream: TextIO, *, console: ConsoleInput | None = None
+    ) -> None:
         self._stream = stream
+        self._console = console if console is not None else _console_for_stream(stream)
         self._queue: queue.Queue[object] = queue.Queue()
         self._eof = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._console_lines: deque[str] = deque()
+        self._partial: list[str] = []
+        self._after_cr = False
 
     @property
     def started(self) -> bool:
         return self._thread is not None
 
     @property
+    def uses_console(self) -> bool:
+        return self._console is not None
+
+    @property
     def eof_reached(self) -> bool:
         return self._eof.is_set()
 
     def start(self) -> None:
+        if self._console is not None:
+            return
         with self._lock:
             if self._thread is not None:
                 return
@@ -113,9 +250,73 @@ class OperatorInputReader:
                 return
             self._queue.put(line.rstrip("\r\n"))
 
+    def _feed(self, chars: str) -> None:
+        """Assemble console characters into complete lines."""
+
+        for char in chars:
+            if char == "\n" and self._after_cr:
+                self._after_cr = False
+                continue
+            self._after_cr = char == "\r"
+            if char in ("\r", "\n"):
+                self._console_lines.append("".join(self._partial))
+                self._partial = []
+            elif char == "\b":
+                if self._partial:
+                    self._partial.pop()
+            else:
+                self._partial.append(char)
+
+    def _console_eof(self) -> None:
+        if self._partial:
+            self._console_lines.append("".join(self._partial))
+            self._partial = []
+        self._eof.set()
+
+    def _drain_console(self, console: ConsoleInput) -> int:
+        while not self._eof.is_set():
+            try:
+                chars = console.read_chars(0, echo=False)
+            except EOFError:
+                self._console_eof()
+                break
+            if not chars:
+                break
+            self._feed(chars)
+        discarded = len(self._console_lines) + (1 if self._partial else 0)
+        self._console_lines.clear()
+        self._partial = []
+        self._after_cr = False
+        try:
+            console.discard_unread()
+        except (OSError, ValueError):
+            pass
+        return discarded
+
+    def _read_console_line(self, console: ConsoleInput, timeout: float) -> str | None:
+        deadline = time.monotonic() + max(timeout, 0)
+        while True:
+            if self._console_lines:
+                return self._console_lines.popleft()
+            if self._eof.is_set():
+                return None
+            remaining = deadline - time.monotonic()
+            try:
+                chars = console.read_chars(max(remaining, 0))
+            except EOFError:
+                self._console_eof()
+                continue
+            self._feed(chars)
+            if self._console_lines:
+                return self._console_lines.popleft()
+            if time.monotonic() >= deadline:
+                return None
+
     def drain(self) -> int:
         """Discard queued lines and return how many were discarded."""
 
+        if self._console is not None:
+            return self._drain_console(self._console)
         discarded = 0
         while True:
             try:
@@ -132,6 +333,8 @@ class OperatorInputReader:
         lines are used up.
         """
 
+        if self._console is not None:
+            return self._read_console_line(self._console, timeout)
         self.start()
         while True:
             if self._eof.is_set() and self._queue.empty():

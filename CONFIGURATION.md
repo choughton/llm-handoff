@@ -181,8 +181,11 @@ with `status: escalate_to_user` and one specific question. The operator
 planner cycle skips the stale-route check and does not reset or use up the
 pause recovery streak.
 
-Lines typed while no prompt is shown, for example while an agent runs, are
-discarded when the next prompt appears; the dispatcher logs how many. A
+The dispatcher reads the terminal only while a prompt is shown, so nothing
+competes with the keypress a `--manual-frontend` step waits for. Lines typed
+while no prompt is shown, for example while an agent runs or before the first
+prompt, are discarded when the next prompt appears; the dispatcher logs how
+many. A
 `@role` line, such as `@backend`, is rejected for now: role targeting is not
 available yet.
 
