@@ -17,8 +17,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 4. `docs/handoff/HANDOFF.md`
 5. `docs/handoff/README.md`
 6. `README.md`
-7. `CONFIGURATION.md`
-8. `docs/ARCHITECTURE.md`
+7. Repository-specific architecture or requirements docs referenced by the handoff
 
 ## Role Boundary
 

@@ -12,9 +12,9 @@ auto_push: false
 # from backend or frontend is checked against the planner's Work Packet
 # (scope_sha at HEAD, diff inside Files in scope, Verification command exits 0)
 # before the auditor is dispatched. The Verification command is agent-written
-# text executed in repo_root; see CONFIGURATION.md. To turn the gate off, set
-# enforce_work_packet: false and give a reason, which every start and
-# `llm-handoff doctor` report as a warning:
+# text executed in repo_root; see llm-handoff's CONFIGURATION.md. To turn the
+# gate off, set enforce_work_packet: false and give a reason, which every
+# start and `llm-handoff doctor` report as a warning:
 #   enforce_work_packet: false
 #   work_packet_opt_out_reason: "<why>"
 enforce_work_packet: true
@@ -23,7 +23,8 @@ enforce_work_packet: true
 commit_mode: agent
 # What happens to audited work: local (default), merge-commit (story branch
 # merged with a report commit), or pr (story branch pushed as a pull request;
-# needs commit_mode: dispatcher and the gh CLI). See CONFIGURATION.md.
+# needs commit_mode: dispatcher and the gh CLI).
+# See llm-handoff's CONFIGURATION.md.
 publish:
   mode: local
 # Optional Verification command allowlist (recommended). When set, the gate
@@ -36,8 +37,9 @@ publish:
 #   verification_allowed_prefixes: ["python -m pytest"]
 work_packet_verification_timeout_seconds: 600
 # Optional scanners for the work-claim gate (gitleaks, semgrep, bandit,
-# pip-audit, or any tool the target repo installs). See CONFIGURATION.md for
-# the copyable example and the placeholder list.
+# pip-audit, or any tool the target repo installs). See
+# llm-handoff's CONFIGURATION.md for the copyable example and the placeholder
+# list.
 scanners: []
 
 agents:

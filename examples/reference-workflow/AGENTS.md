@@ -31,10 +31,9 @@ config explicitly maps them.
 ## Provider-Native Helpers
 
 Provider-native subagents, skills, and agent files are internal helper
-mechanisms, not additional dispatcher roles. See
-`docs/ARCHITECTURE.md#provider-native-subagents` in the `llm-handoff` source
-checkout for the boundary: only the active dispatcher role writes
-`HANDOFF.md`.
+mechanisms, not additional dispatcher roles. Only the active dispatcher role
+writes `HANDOFF.md`; a helper supports that role and must not rewrite the
+handoff on its own.
 
 ## Handoff Rules
 

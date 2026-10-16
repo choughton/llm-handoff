@@ -8,7 +8,8 @@ Use this prompt when a fresh agent session needs to load repository context befo
 2. Read `AGENTS.md`.
 3. Read `PROJECT_STATE.md` if present.
 4. Read `docs/handoff/HANDOFF.md`.
-5. Read `README.md`, `CONFIGURATION.md`, and `docs/ARCHITECTURE.md` as needed.
+5. Read `README.md` and any repository-specific architecture or requirements
+   docs the handoff references, as needed.
 6. Read only the extra files needed for the active assignment.
 
 ## State Model
