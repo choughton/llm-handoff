@@ -220,6 +220,11 @@ QUALITY_FAN_OUT_PROMPT_TEMPLATE = (
     "code quality is not acceptable. If the work is accepted, set next_agent to "
     'planner, or to finalizer with close_type "epic" for an approved epic '
     "close; the dispatcher routes every accepted audit to one of those two. "
+    "An approved story that finishes its epic is an epic close: when "
+    "{handoff_path} lists `remaining_stories: []` (an explicit empty list, "
+    "not an omitted field), otherwise names the story as the epic's last, or "
+    'already carries close_type "epic", set next_agent to finalizer with '
+    'close_type "epic" instead of sending it to planner to decide. '
     "reason must be one line. commands_run, output_summary, and "
     "files_reviewed must come from commands you ran in this audit."
 )
@@ -1050,6 +1055,10 @@ def render_audit_handoff(
             lines.extend(
                 f"  - {_yaml_scalar(story)}" for story in frontmatter.remaining_stories
             )
+        elif "remaining_stories" in frontmatter.model_fields_set:
+            # Keep an explicit empty list: it marks the epic's last story, and
+            # the next audit needs it to route an approval to the finalizer.
+            lines.append("remaining_stories: []")
     lines.append(f"status: {status}")
     lines.append(f"scope_sha: {scope.head_sha}")
     if close_type:

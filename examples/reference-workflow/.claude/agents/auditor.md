@@ -72,8 +72,8 @@ producer: auditor
 
 Routing guidance:
 
-- Approved story: `status: verified_pass`, route to `planner` with `close_type: story`. The planner assigns the next work.
-- Approved epic or final scope: `status: verified_pass`, route to `finalizer` with `close_type: epic`.
+- Approved story with work left in its epic: `status: verified_pass`, route to `planner` with `close_type: story`. The planner assigns the next work.
+- Approved epic, or an approved story that finishes its epic: `status: verified_pass`, route to `finalizer` with `close_type: epic`. A story finishes its epic when the handoff lists `remaining_stories: []` (an explicit empty list, not an omitted field), when it otherwise names the story as the epic's last, or when the planner routed it with `close_type: epic`. Route that approval to `finalizer` yourself; do not send it to `planner` to decide. Only the auditor may hand off to `finalizer`.
 - Rejected work: `status: verified_fail`, route back to the producing `backend` or `frontend` role, or to `planner` when the assignment itself is wrong. Omit `close_type`.
 - Human input required: `status: escalate_to_user` or `blocked_missing_context`, route to `user`. Omit `close_type`.
 - Ambiguous state: fail closed and route to `user` with `status: escalate_to_user`.

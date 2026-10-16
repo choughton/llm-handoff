@@ -33,7 +33,7 @@ Every handoff must start with YAML frontmatter:
 
 ```yaml
 ---
-next_agent: <enum>       # required: planner | backend | frontend | auditor | validator | finalizer | user
+next_agent: <enum>       # required: planner | backend | frontend | auditor | validator | user
 reason: <string>         # required: quote every `reason` value
 epic_id: <epic id>
 story_id: <story id>
