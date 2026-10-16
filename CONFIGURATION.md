@@ -877,10 +877,11 @@ around the sandbox. For the planner, backend, and frontend roles,
 `commit_mode: dispatcher` (see [Dispatcher Commits](#dispatcher-commits))
 avoids the question: the dispatcher commits backend and frontend work, and the
 planner writes nothing to `.git` because its handoff is left uncommitted on
-purpose. It does not cover the finalizer: the dispatcher does not
-commit the finalizer's `PROJECT_STATE.md` and `HANDOFF.md` update. If the
-sandbox blocks the finalizer's commit, the finalizer reports no commit SHA,
-the dispatcher pauses, and you commit those files yourself.
+purpose. It does not take the commit off the finalizer: in that mode the
+finalizer is told to commit only `PROJECT_STATE.md` and leave `HANDOFF.md`
+uncommitted, and the dispatcher does not commit the state update for it. If
+the sandbox blocks the finalizer's commit, the finalizer reports no commit
+SHA, the dispatcher pauses, and you commit `PROJECT_STATE.md` yourself.
 
 A fresh `codex exec` run returns the role's final message as a
 `{status, summary}` JSON envelope. For the `validator` and `finalizer`

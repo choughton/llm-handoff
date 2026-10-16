@@ -593,7 +593,38 @@ def run_loop(
                 "Dispatching auditor ledger-updater for epic close.",
             )
             protected_before = _capture_protected_snapshot(config)
+            finalizer_git_before = (
+                git_position(config.repo_root)
+                if config.commit_mode == "dispatcher"
+                else None
+            )
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
+            if finalizer_git_before is not None:
+                finalizer_check = undo_planner_handoff_commits(
+                    config.repo_root,
+                    config.handoff_path,
+                    finalizer_git_before,
+                    role="finalizer",
+                    may_commit_other_files=True,
+                )
+                if finalizer_check.error is not None:
+                    _log(
+                        log_fn,
+                        "ERROR",
+                        "Dispatcher commit mode: "
+                        f"{finalizer_check.error}. Take the handoff out of that "
+                        "commit, then start the dispatcher again.",
+                    )
+                    return 1
+                if finalizer_check.undone:
+                    _log(
+                        log_fn,
+                        "WARN",
+                        "The finalizer committed the handoff ("
+                        + ", ".join(sha[:12] for sha in finalizer_check.undone)
+                        + ") despite dispatcher commit mode; undid it with "
+                        "`git reset --soft`. The handoff stays uncommitted.",
+                    )
             if _enforce_protected_files(
                 config=config,
                 before=protected_before,
@@ -650,6 +681,8 @@ def run_loop(
                     base_branch=config.publish.base_branch,
                     assignment_content=handoff_content,
                     implementer=current_cycle.route,
+                    remote=config.publish.remote,
+                    handoff_path=config.handoff_path,
                 )
                 if branch_error is not None:
                     _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
@@ -704,8 +737,10 @@ def run_loop(
                         else _git_head(config.repo_root)
                     )
                     if story_key != implementer_base_story_key:
-                        # The story's first dispatch in this run; after an
-                        # approval the range restarts at HEAD instead.
+                        # The story's first dispatch in this run or since an
+                        # approval. A pull request correction round re-audits
+                        # the whole story branch; in `local` mode the range
+                        # restarts at HEAD.
                         implementer_base_sha = _story_start_sha(
                             config, handoff_content, implementer_base_sha
                         )
@@ -939,6 +974,7 @@ def run_loop(
                         )
                         if _accepted_approval(config):
                             implementer_base_sha = None
+                            implementer_base_story_key = None
                         previous_cycle = current_cycle
                         consecutive_failures = 0
                         if max_cycles is not None and cycle_number >= max_cycles:
@@ -1062,8 +1098,9 @@ def run_loop(
                 consecutive_failures = 0
                 if _accepted_approval(config):
                     # The story is approved; its next implementer dispatch
-                    # starts a new audit range.
+                    # starts a new audit range from where its story starts.
                     implementer_base_sha = None
+                    implementer_base_story_key = None
                 if (
                     config.publish.mode != "local"
                     and current_cycle.route == "auditor"

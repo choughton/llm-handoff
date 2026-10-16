@@ -3981,6 +3981,116 @@ def test_a_planner_commit_of_other_files_stops_the_loop(
     )
 
 
+def _run_finalizer_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    finalizer_work,
+) -> tuple[int, list[tuple[str, str]], str]:
+    audited = _init_repo(
+        tmp_path,
+        handoff_content=_claim(
+            "a" * 40, status="verified_pass", producer="auditor", next_agent="finalizer"
+        ).replace("close_type: story", "close_type: epic"),
+    )
+    from llm_handoff.ledger import EpicCloseResult
+
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    def fake_epic_close(**_kwargs: object) -> EpicCloseResult:
+        config.handoff_full_path.write_text(
+            _claim(audited, status="verified_pass", producer="finalizer", next_agent="planner"),
+            encoding="utf-8",
+        )
+        finalizer_work()
+        return EpicCloseResult(subagent_exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(orchestrator, "_invoke_epic_close", fake_epic_close)
+    exit_code = orchestrator.run_loop(
+        config, max_cycles=1, log=_collecting_log(messages)
+    )
+    return exit_code, messages, audited
+
+
+def test_a_finalizer_commit_of_only_the_handoff_is_undone_in_dispatcher_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    exit_code, messages, audited = _run_finalizer_cycle(
+        tmp_path,
+        monkeypatch,
+        lambda: _commit_paths(
+            tmp_path, "Close the epic", HANDOFF_RELATIVE_PATH.as_posix()
+        ),
+    )
+
+    assert exit_code == 0
+    assert _git(tmp_path, "rev-parse", "HEAD") == audited
+    assert _git(tmp_path, "status", "--porcelain") == f"M {HANDOFF_RELATIVE_PATH.as_posix()}"
+    assert any(
+        level == "WARN" and "The finalizer committed the handoff" in message
+        for level, message in messages
+    )
+
+
+def test_a_finalizer_project_state_commit_is_kept_in_dispatcher_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    def finalizer_work() -> None:
+        _write(tmp_path / "PROJECT_STATE.md", "# PROJECT STATE\n\nEPIC-1 closed.\n")
+        _commit_paths(tmp_path, "Close the epic", "PROJECT_STATE.md")
+
+    exit_code, messages, _audited = _run_finalizer_cycle(
+        tmp_path, monkeypatch, finalizer_work
+    )
+
+    assert exit_code == 0
+    assert _git(tmp_path, "log", "-1", "--format=%s") == "Close the epic"
+    assert not any(level == "ERROR" for level, _ in messages)
+
+
+def test_a_finalizer_commit_mixing_the_handoff_stops_the_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    def finalizer_work() -> None:
+        _write(tmp_path / "PROJECT_STATE.md", "# PROJECT STATE\n\nEPIC-1 closed.\n")
+        _commit_paths(
+            tmp_path,
+            "Close the epic",
+            "PROJECT_STATE.md",
+            HANDOFF_RELATIVE_PATH.as_posix(),
+        )
+
+    exit_code, messages, _audited = _run_finalizer_cycle(
+        tmp_path, monkeypatch, finalizer_work
+    )
+
+    assert exit_code == 1
+    assert any(
+        level == "ERROR"
+        and f"the handoff {HANDOFF_RELATIVE_PATH.as_posix()} alongside: PROJECT_STATE.md"
+        in message
+        for level, message in messages
+    )
+
+
+def test_the_finalizer_is_told_to_leave_the_handoff_uncommitted_in_dispatcher_mode() -> None:
+    from llm_handoff.ledger import ledger_updater_prompt
+
+    dispatcher = ledger_updater_prompt(HANDOFF_RELATIVE_PATH, "dispatcher")
+    agent = ledger_updater_prompt(HANDOFF_RELATIVE_PATH, "agent")
+
+    assert "Dispatcher commit mode is on" in dispatcher
+    assert f"leave {HANDOFF_RELATIVE_PATH.as_posix()} uncommitted" in dispatcher
+    assert f"Commit PROJECT_STATE.md and {HANDOFF_RELATIVE_PATH.as_posix()}" in agent
+
+
 def test_planner_commits_are_left_alone_in_agent_commit_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4144,6 +4254,41 @@ def test_audit_range_restarts_after_the_story_is_approved(
 
     assert len(backend_heads) == 2
     assert audit_bases == backend_heads
+
+
+def test_a_pull_request_correction_round_audits_the_whole_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    from llm_handoff.publish import PublishOutcome
+
+    base = _init_repo(tmp_path)
+
+    def backend_work(attempt: int) -> None:
+        # The correction round defers its finding and changes nothing.
+        if attempt == 1:
+            _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+
+    config, backend_heads, audit_bases = _audit_range_harness(
+        tmp_path,
+        monkeypatch,
+        backend_work=backend_work,
+        # Stands in for the review bounce: the approved story goes back to
+        # backend on its open branch.
+        planner_handoff=_assignment(),
+        publish={"mode": "pr"},
+    )
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(
+        orchestrator, "publish_story", lambda **_kwargs: PublishOutcome()
+    )
+
+    orchestrator.run_loop(config, max_cycles=5, log=_collecting_log([]))
+
+    assert len(backend_heads) == 2
+    assert backend_heads[1] != base, "the first dispatch was not committed"
+    assert audit_bases == [base, base]
 
 
 def test_audit_range_survives_a_rejected_approval(
