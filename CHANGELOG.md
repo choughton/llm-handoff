@@ -14,6 +14,11 @@ This project follows a simple pre-release changelog until the first public tag.
   are not on the remote and change the handoff file. After a pull request
   correction round, the audit now reviews the whole story branch instead of
   an empty range when the round made no new commit.
+- Fixed a resumed `pr` publish that had paused at the merge step forgetting
+  that origin when the base branch conflicted a second time. The second pause
+  now says the pull request was left open and keeps the merge-step marker, so
+  with `wait_for_reviewers` the next resume still leaves the operator's merge
+  for a person to review instead of waiting for a review that never comes.
 
 - `pr` publish mode now keeps the story branch up to date with the base
   branch. Before each push it fetches the base branch and merges it into the

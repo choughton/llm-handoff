@@ -771,6 +771,63 @@ def test_a_conflict_at_the_merge_pauses_and_resumes_after_the_operator_merge(
     assert not (repo / STATE_PATH).exists()
 
 
+def test_a_second_conflict_after_a_merge_step_resume_keeps_the_merge_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _commit_all(repo, {"README.md": "story readme\n"}, "W9.9 readme")
+    _commit_on_remote(
+        tmp_path, remote, "next-main", {"README.md": "base readme\n"}, "Readme"
+    )
+    _set_gh(tmp_path, move_main_to="refs/heads/next-main")
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, wait_for_checks=True)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert _saved_state(repo)["paused_publish"] == "merge"
+    _resolve_readme_conflict(repo)
+    # main moves again on the remote with another README change before the
+    # operator starts the dispatcher.
+    _commit_on_remote(
+        tmp_path, remote, "main", {"README.md": "second base readme\n"}, "Readme 2"
+    )
+    before = len(_gh_calls(tmp_path))
+
+    outcome = _resume(
+        repo, gh, log, wait_for_checks=True, review=GATE, sleep=lambda seconds: None
+    )
+
+    resumed = _gh_calls(tmp_path)[before:]
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "`README.md`" in outcome.message and "left open" in outcome.message
+    assert _saved_state(repo)["paused_publish"] == "merge"
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert not any(call[:2] == ["pr", "merge"] for call in resumed)
+    assert not any(level == "ERROR" for level, _message in entries)
+
+    _resolve_readme_conflict(repo)
+    resolution = _git(repo, "rev-parse", "HEAD")
+    before = len(_gh_calls(tmp_path))
+    outcome = _resume(
+        repo, gh, log, wait_for_checks=True, review=GATE, sleep=lambda seconds: None
+    )
+
+    # The reviewed-merge guard still fires: the operator's merge is pushed
+    # and left for a person instead of waiting for a review that never comes.
+    resumed = _gh_calls(tmp_path)[before:]
+    pushed = _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}").split()
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "left open" in outcome.message and "merge it yourself" in outcome.message
+    assert pushed and pushed[0] == resolution
+    assert not any(call[:2] == ["pr", "merge"] for call in resumed)
+    assert not any(call[0] == "api" for call in resumed)
+    assert not (repo / STATE_PATH).exists()
+
+
 def test_resume_does_nothing_without_a_paused_publish(tmp_path: Path) -> None:
     _init(tmp_path)
     _start_story(tmp_path)
