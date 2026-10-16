@@ -994,6 +994,185 @@ def test_a_resume_after_the_story_branch_was_reset_pauses(
     assert _gh_calls(tmp_path) == []
 
 
+def _assert_resume_paused(
+    tmp_path: Path,
+    repo: Path,
+    step: str,
+    head: str,
+    outcome: PublishOutcome,
+    entries: list[tuple[str, str]],
+    gh_before: int,
+    remote_head: str,
+) -> None:
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"`{BRANCH}` was not pushed" in outcome.message
+    assert [level for level, _message in entries] == ["PAUSE"]
+    state = _saved_state(repo)
+    assert state["paused_publish"] == step and state["paused_head"] == head
+    assert _gh_calls(tmp_path)[gh_before:] == []
+    assert _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}") == remote_head
+    if step == "push":
+        assert BRANCH not in _git(repo, "ls-remote", "--heads", "origin")
+
+
+@pytest.mark.parametrize("step", ["push", "merge"])
+def test_a_resume_whose_merge_adds_an_unrelated_file_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, step)
+    merged = subprocess.run(
+        ["git", "-C", str(repo), "merge", "origin/main"],
+        capture_output=True,
+        text=True,
+    )
+    assert merged.returncode != 0
+    (repo / "README.md").write_text("resolved readme\n", encoding="utf-8")
+    (repo / "src" / "extra.py").write_text("EXTRA = 1\n", encoding="utf-8")
+    _git(repo, "add", "README.md", "src/extra.py")
+    _git(repo, "commit", "-q", "--no-edit")
+    merge = _git(repo, "show", "-s", "--format=%h %s", "HEAD")
+    remote_head = _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}")
+    before = len(_gh_calls(tmp_path))
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, wait_for_checks=step == "merge")
+
+    _assert_resume_paused(
+        tmp_path, repo, step, head, outcome, entries, before, remote_head
+    )
+    assert f"`{merge}`" in outcome.message
+    assert "`src/extra.py`" in outcome.message
+    assert "`README.md`" not in outcome.message
+    assert "only the conflict resolution" in outcome.message
+    assert "git switch main" in outcome.message
+
+
+@pytest.mark.parametrize("step", ["push", "merge"])
+def test_a_resume_whose_merge_edits_only_the_conflicted_file_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    repo, gh, _head = _pause_on_readme_conflict(tmp_path, monkeypatch, step)
+    _resolve_readme_conflict(repo)
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, wait_for_checks=step == "merge")
+
+    assert outcome == PublishOutcome()
+    assert not any(level in {"PAUSE", "ERROR"} for level, _message in entries)
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert (repo / "README.md").read_text(encoding="utf-8") == "resolved readme\n"
+    assert not (repo / STATE_PATH).exists()
+
+
+@pytest.mark.parametrize("step", ["push", "merge"])
+def test_a_resume_whose_merge_does_not_bring_in_the_base_branch_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, step)
+    # A merge of a side branch whose commit is already on the story branch:
+    # no commit other than the merge is added, and the base is not merged.
+    side = _git(repo, "rev-parse", "HEAD~1")
+    merge = _git(
+        repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-p", side, "-m",
+        "Merge a side branch",
+    )
+    _git(repo, "merge", "-q", "--ff-only", merge)
+    remote_head = _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}")
+    before = len(_gh_calls(tmp_path))
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, wait_for_checks=step == "merge")
+
+    _assert_resume_paused(
+        tmp_path, repo, step, head, outcome, entries, before, remote_head
+    )
+    assert "Merge a side branch" in outcome.message
+    assert "does not merge origin/main" in outcome.message
+    assert side[:12] in outcome.message
+
+
+@pytest.mark.parametrize("step", ["push", "merge"])
+def test_a_resume_whose_merge_has_three_parents_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, step)
+    _resolve_readme_conflict(repo)
+    upstream = _git(repo, "rev-parse", "origin/main")
+    octopus = _git(
+        repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD^1", "-p", upstream,
+        "-p", "HEAD~2", "-m", "Octopus merge",
+    )
+    _git(repo, "reset", "-q", "--hard", octopus)
+    remote_head = _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}")
+    before = len(_gh_calls(tmp_path))
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, wait_for_checks=step == "merge")
+
+    _assert_resume_paused(
+        tmp_path, repo, step, head, outcome, entries, before, remote_head
+    )
+    assert "Octopus merge" in outcome.message
+    assert "has 3 parents" in outcome.message
+
+
+@pytest.mark.parametrize("step", ["push", "merge"])
+def test_a_resume_pauses_when_git_merge_tree_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    import llm_handoff.publish as publish_module
+
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, step)
+    _resolve_readme_conflict(repo)
+    remote_head = _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}")
+    before = len(_gh_calls(tmp_path))
+    real_git = publish_module._git
+
+    def failing_merge_tree(repo_root: Path, args: list[str]):
+        if args and args[0] == "merge-tree":
+            return subprocess.CompletedProcess(
+                ["git", *args], 129, "", "error: unknown option `write-tree'"
+            )
+        return real_git(repo_root, args)
+
+    monkeypatch.setattr(publish_module, "_git", failing_merge_tree)
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, wait_for_checks=step == "merge")
+
+    _assert_resume_paused(
+        tmp_path, repo, step, head, outcome, entries, before, remote_head
+    )
+    assert "git merge-tree failed" in outcome.message
+    assert "unknown option" in outcome.message
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"), [(1, ""), (0, "not a tree\n")]
+)
+def test_a_resume_pauses_when_git_merge_tree_prints_no_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str
+) -> None:
+    import llm_handoff.publish as publish_module
+
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, "push")
+    _resolve_readme_conflict(repo)
+    real_git = publish_module._git
+
+    def odd_merge_tree(repo_root: Path, args: list[str]):
+        if args and args[0] == "merge-tree":
+            return subprocess.CompletedProcess(["git", *args], returncode, stdout, "")
+        return real_git(repo_root, args)
+
+    monkeypatch.setattr(publish_module, "_git", odd_merge_tree)
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log)
+
+    _assert_resume_paused(tmp_path, repo, "push", head, outcome, entries, 0, "")
+    assert "git merge-tree printed no tree" in outcome.message
+
+
 def test_publish_ignores_handoffs_that_are_not_verified_pass(tmp_path: Path) -> None:
     _init(tmp_path)
     _start_story(tmp_path)
