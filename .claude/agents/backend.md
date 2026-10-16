@@ -100,3 +100,4 @@ contract, document the contradiction and route to `planner` with
 - Commit the backend change if the repository protocol asks agents to commit locally.
 - Rewrite `docs/handoff/HANDOFF.md` with concrete files changed, checks run, blockers if any, and the next role.
 - Preserve the assignment's `## Work Packet` section in the handback; the auditor and the dispatcher's work-claim gate read it.
+- Keep `epic_id`, `story_id`, `story_title`, and `remaining_stories` from the assignment unchanged in the handback. If the assignment has `remaining_stories: []`, write `remaining_stories: []`; do not drop it or replace it with the template's placeholder item. The auditor reads that explicit empty list as the epic's last story.

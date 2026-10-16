@@ -278,3 +278,30 @@ def test_codex_rules_allow_no_git_writes_and_forbid_push() -> None:
     # `git commit` would also allow `-a` and `--amend`.
     assert allowed == []
     assert '["git", "push"]' in forbidden
+
+
+IMPLEMENTER_PROMPT_FILES = (
+    Path(".claude") / "agents" / "backend.md",
+    Path(".claude") / "agents" / "frontend.md",
+    Path(".codex") / "skills" / "llm-handoff" / "SKILL.md",
+    Path(".codex") / "skills" / "llm-handoff-frontend" / "SKILL.md",
+    Path(".gemini") / "agents" / "frontend.md",
+    Path("docs") / "handoff" / "BACKEND_HANDOFF_PROMPT.md",
+    Path("docs") / "handoff" / "FRONTEND_HANDOFF_PROMPT.md",
+)
+
+
+def test_implementer_prompts_carry_story_fields_forward() -> None:
+    for relative_path in IMPLEMENTER_PROMPT_FILES:
+        content = " ".join(
+            (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8").split()
+        )
+
+        assert (
+            "Keep `epic_id`, `story_id`, `story_title`, and `remaining_stories` "
+            "from the assignment unchanged in the handback."
+        ) in content, relative_path
+        assert (
+            "If the assignment has `remaining_stories: []`, "
+            "write `remaining_stories: []`"
+        ) in content, relative_path

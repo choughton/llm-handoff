@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The backend and frontend implementer prompts now say to keep `epic_id`,
+  `story_id`, `story_title`, and `remaining_stories` from the assignment
+  unchanged in the handback, and to write `remaining_stories: []` when the
+  assignment has it. An implementer that rewrote the frontmatter from its
+  template could drop the explicit empty list, so the auditor could not
+  close the epic on its last story and routed it back to the planner.
+
 - The work-claim gate no longer runs a Verification command line written as
   prose. A line such as `` `cmd1`, then `` or `` `cmd1` and `cmd2` `` now runs
   each backticked command. A line with other text around a backticked command,
