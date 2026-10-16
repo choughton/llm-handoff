@@ -2780,6 +2780,74 @@ def test_parse_work_packet_keeps_commands_that_contain_connectives() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "command_lines",
+    [
+        # Replays the PR2 self-host loop: two commands as prose wrapped over
+        # two lines, so the gate ran "`cmd1`, then" and pytest exited 4.
+        "`python -m pytest tests/test_a.py -q`, then\n  `python -m pytest tests -q`",
+        "`python -m pytest tests/test_a.py -q` and `python -m pytest tests -q`",
+        "`python -m pytest tests/test_a.py -q`; `python -m pytest tests -q`.",
+        "`python -m pytest tests/test_a.py -q` and then `python -m pytest tests -q`",
+        (
+            "\n  - `python -m pytest tests/test_a.py -q`, then\n"
+            "  - `python -m pytest tests -q`"
+        ),
+    ],
+)
+def test_parse_work_packet_extracts_commands_from_backticked_prose(
+    command_lines: str,
+) -> None:
+    packet = parse_work_packet(_assignment(command_lines))
+
+    assert packet.verification_commands == (
+        "python -m pytest tests/test_a.py -q",
+        "python -m pytest tests -q",
+    )
+
+
+def test_parse_work_packet_keeps_backticks_inside_a_double_backtick_span() -> None:
+    packet = parse_work_packet(_assignment("``echo `date` ``"))
+
+    assert packet.verification_commands == ("echo `date`",)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # "or" names alternatives, so running both spans would not match.
+        "`python -m pytest -q` or `python -m pytest tests -q`",
+        "Run `python -m pytest -q` from the repo root",
+        "`python -m pytest` on `tests/`",
+        "`python -m pytest -q`, then `ruff check .",
+    ],
+)
+def test_parse_work_packet_rejects_ambiguous_backticked_prose(line: str) -> None:
+    assignment = _assignment(line)
+
+    with pytest.raises(WorkPacketError) as exc_info:
+        parse_work_packet(assignment)
+
+    assert exc_info.value.prefix == "work_packet_unparseable"
+    assert (
+        f"Verification command has lines that are not commands: `{line}`"
+        in exc_info.value.detail
+    )
+
+
+def test_verify_work_claim_runs_each_command_from_backticked_prose(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment(f"`{PASS_COMMAND}`, then\n  `{PASS_COMMAND} second`")
+    state, head = _passing_claim_setup(tmp_path, assignment)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(head))
+
+    result = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+
+    assert result.errors == ()
+    assert result.passed
+
+
 def _bounce_for(tmp_path: Path, claim: str, result) -> str:
     bounce = build_bounce_handoff(
         claim_content=claim,

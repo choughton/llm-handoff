@@ -189,7 +189,12 @@ rejects (`verification_not_allowed`).
 
 Every line of `Verification command` runs as its own command. A line that is
 only a connective (`and`, `or`, `then`, `plus`, `also`) or ends in `:` is prose,
-and the packet is `work_packet_unparseable`.
+and the packet is `work_packet_unparseable`. A line that quotes commands in
+backticks, such as `` `cmd1`, then `` or `` `cmd1` and `cmd2` ``, runs each
+quoted command when the text around them is only punctuation and `and`,
+`then`, `plus`, or `also`. Any other text around a quoted command, including
+`or`, makes the line prose. Planners should write one command per nested list
+item.
 
 With the gate enabled, post-dispatch validation also rejects any handoff that
 routes work to an implementer without a parseable Work Packet;

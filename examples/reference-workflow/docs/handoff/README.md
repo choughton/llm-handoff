@@ -121,6 +121,9 @@ routed to `user`:
 Keep the paths concrete and the command runnable from the repository root.
 Separate multiple paths with commas; wrap a path that contains spaces in
 backticks, for example `` `docs/user guide.md` ``.
+Write more than one verification command as one command per nested list
+item under `Verification command`, with no prose such as `then` or `and`
+between them; every line runs as its own command.
 When the dispatcher runs with `enforce_work_packet: true`, it parses exactly
 these fields, diffs the implementer's commits against `Files in scope` and
 `Files out of bounds`, and runs `Verification command` itself before the

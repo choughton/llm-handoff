@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The work-claim gate no longer runs a Verification command line written as
+  prose. A line such as `` `cmd1`, then `` or `` `cmd1` and `cmd2` `` now runs
+  each backticked command. A line with other text around a backticked command,
+  or with `or` between two of them, is reported as prose
+  (`work_packet_unparseable`) and nothing runs. Before this, the gate ran the
+  whole line, failed a correct implementation with `verification_failed`, and
+  the packet had to go back to the planner. The planner prompts and agent
+  files now say to write one command per nested list item, with no prose.
+
+- A resumed `pr` publish now also checks the content of each merge commit
+  added since the pause. Each must be a two-parent merge that brings in the
+  base branch, and its tree may differ from the automatic merge of its parents
+  (`git merge-tree --write-tree`) only in files that merge left conflicted.
+  An operator merge that carries other edits, a merge of another branch, an
+  octopus merge, or a failed or unsupported `git merge-tree` pauses with the
+  story state kept and pushes nothing; the message names the merge and up to
+  five offending files. Edits inside conflicted files are not inspected.
 - A handoff whose `status` contradicts its `next_agent` is now rejected as
   invalid frontmatter instead of silently following the status. Before, a
   backend handback with `next_agent: planner` and

@@ -78,6 +78,11 @@ Never list the same path under both fields: a packet cannot limit edits within
 a file, so keep the file in `Files in scope` and state the limit in the
 Objective.
 
+Write `Verification command` as commands only: one command per nested list
+item (`  - <command>` under the field), with no prose before, after, or
+between them. The gate runs every line as its own command, so do not join
+commands with words such as `then` or `and`.
+
 Do not use vague placeholders in the Work Packet: `add validation`, `handle
 errors appropriately`, `write tests`, `implement later`, or `as needed`.
 Rewrite them into concrete acceptance checks, exact files, and specific

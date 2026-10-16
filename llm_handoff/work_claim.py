@@ -139,6 +139,13 @@ _WRAPPED_PATH_FIELDS = frozenset({"files_in_scope", "files_out_of_bounds"})
 # A Verification command line that is only a connective joins two commands in
 # prose; it is not a command.
 _PROSE_COMMAND_RE = re.compile(r"(?i)^(?:and|or|then|plus|also)[,.;:]?$")
+# A Verification command line written as prose quotes its commands in code
+# spans, such as "`cmd1`, then" or "`cmd1` and `cmd2`". A span is a run of
+# backticks, its text, and a matching run.
+_COMMAND_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
+# Text around the spans that only joins commands. "or" is left out: it names
+# alternatives, so running every span would not match the prose.
+_COMMAND_JOINER_RE = re.compile(r"(?i)^(?:[\s,;.:]|\b(?:and|then|plus|also)\b)*$")
 # Only the top-level ``## Verification Evidence`` section counts; a bounce
 # demotes the headings of older handbacks under ``## Prior Handback``.
 _VERIFICATION_EVIDENCE_HEADING_RE = re.compile(
@@ -366,8 +373,8 @@ def parse_work_packet(handoff_content: str) -> WorkPacket:
         problems.append(
             "Verification command has lines that are not commands: "
             + ", ".join(f"`{line}`" for line in prose_lines)
-            + " (every line runs as a command; list only commands, and put "
-            "notes in the Context)"
+            + " (every line runs as a command; write one command per nested "
+            "list item with no prose around it, and put notes in the Context)"
         )
     # The narrowest entry decides scope, so an entry listed under both fields
     # resolves to out of bounds: the implementer may not change it, and the
@@ -557,21 +564,34 @@ def _split_commands(values: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]
     Every line becomes one command, so a line that is clearly prose (a lone
     connective such as ``and``, or a lead-in ending in ``:``) is returned in
     the second tuple instead; the gate would otherwise run it as a command.
+    A line that quotes commands in code spans, such as ``"`cmd1`, then"`` or
+    ``"`cmd1` and `cmd2`"``, yields each span as a command when the text
+    around the spans only joins them; any other text around a span makes the
+    line prose, because which part is the command is ambiguous.
     """
 
     commands: list[str] = []
     prose: list[str] = []
     for raw_value in values:
-        command = raw_value.strip()
-        if command.startswith(("```", "~~~")):
+        line = raw_value.strip()
+        if line.startswith(("```", "~~~")):
             continue
-        command = command.strip("`").strip()
-        if not command or command.lower() in _NONE_VALUES:
-            continue
-        if _PROSE_COMMAND_RE.match(command) or command.endswith(":"):
-            prose.append(command)
-            continue
-        commands.append(command)
+        spans = list(_COMMAND_SPAN_RE.finditer(line))
+        if spans:
+            around = _COMMAND_SPAN_RE.sub(" ", line)
+            if not _COMMAND_JOINER_RE.match(around):
+                prose.append(line)
+                continue
+            candidates = [span.group(2).strip() for span in spans]
+        else:
+            candidates = [line.strip("`").strip()]
+        for command in candidates:
+            if not command or command.lower() in _NONE_VALUES:
+                continue
+            if _PROSE_COMMAND_RE.match(command) or command.endswith(":"):
+                prose.append(command)
+                continue
+            commands.append(command)
     return tuple(dict.fromkeys(commands)), tuple(dict.fromkeys(prose))
 
 
