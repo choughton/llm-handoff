@@ -855,6 +855,145 @@ def test_resume_skips_a_paused_publish_off_its_branch(tmp_path: Path) -> None:
     assert _saved_state(tmp_path)["paused_publish"] == ""
 
 
+def _pause_on_readme_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> tuple[Path, list[str], str]:
+    """Pause a ``pr`` publish at ``step``; return the repo, gh, and the head."""
+
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _commit_all(repo, {"README.md": "story readme\n"}, "W9.9 readme")
+    if step == "merge":
+        _commit_on_remote(
+            tmp_path, remote, "next-main", {"README.md": "base readme\n"}, "Readme"
+        )
+        _set_gh(tmp_path, move_main_to="refs/heads/next-main")
+    else:
+        _commit_on_remote(
+            tmp_path, remote, "main", {"README.md": "base readme\n"}, "Readme"
+        )
+    head = _git(repo, "rev-parse", "HEAD")
+    _entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, wait_for_checks=step == "merge")
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert _saved_state(repo)["paused_publish"] == step
+    return repo, gh, head
+
+
+@pytest.mark.parametrize("step", ["push", "merge"])
+def test_a_publish_pause_records_the_story_branch_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    repo, _gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, step)
+
+    assert _saved_state(repo)["paused_head"] == head
+    assert _git(repo, "rev-parse", "HEAD") == head
+    if step == "merge":
+        pushed = _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}").split()
+        assert pushed and pushed[0] == head
+
+
+def test_a_resume_with_a_non_merge_commit_after_a_push_pause_pushes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, "push")
+    _resolve_readme_conflict(repo)
+    _commit_all(repo, {"src/extra.py": "EXTRA = 1\n"}, "Unreviewed change")
+    extra = _git(repo, "rev-parse", "--short", "HEAD")
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"`{extra} Unreviewed change`" in outcome.message
+    assert f"`{BRANCH}` was not pushed" in outcome.message
+    assert "git switch main" in outcome.message
+    # The base branch commit that the operator's merge brought in is allowed.
+    assert "1 commit(s) other than merges" in outcome.message
+    assert [level for level, _message in entries] == ["PAUSE"]
+    state = _saved_state(repo)
+    assert state["paused_publish"] == "push" and state["paused_head"] == head
+    assert BRANCH not in _git(repo, "ls-remote", "--heads", "origin")
+    assert _gh_calls(tmp_path) == []
+
+
+def test_a_resume_with_a_non_merge_commit_after_a_merge_pause_does_not_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, "merge")
+    _resolve_readme_conflict(repo)
+    _commit_all(repo, {"src/extra.py": "EXTRA = 1\n"}, "Unreviewed change")
+    extra = _git(repo, "rev-parse", "--short", "HEAD")
+    remote_head = _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}")
+    before = len(_gh_calls(tmp_path))
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, wait_for_checks=True)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert extra in outcome.message
+    assert [level for level, _message in entries] == ["PAUSE"]
+    assert _gh_calls(tmp_path)[before:] == []
+    assert _git(repo, "ls-remote", "origin", f"refs/heads/{BRANCH}") == remote_head
+    state = _saved_state(repo)
+    assert state["paused_publish"] == "merge" and state["paused_head"] == head
+
+
+_MISSING = object()
+
+
+@pytest.mark.parametrize("paused_head", [_MISSING, 1234567, ["abc1234"]])
+def test_a_resume_from_a_state_without_a_paused_head_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paused_head: object
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    # A state saved by an older version, before paused_head existed, or a
+    # hand-edited one whose paused_head is not a string.
+    state = _saved_state(repo)
+    state["paused_publish"] = "push"
+    state.pop("paused_head", None)
+    if paused_head is not _MISSING:
+        state["paused_head"] = paused_head
+    (repo / STATE_PATH).write_text(json.dumps(state), encoding="utf-8")
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"`{BRANCH}` was not pushed" in outcome.message
+    assert "older version" in outcome.message
+    assert [level for level, _message in entries] == ["PAUSE"]
+    assert _saved_state(repo) == state
+    assert _gh_calls(tmp_path) == []
+    assert BRANCH not in _git(repo, "ls-remote", "--heads", "origin")
+
+
+def test_a_resume_after_the_story_branch_was_reset_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _pause_on_readme_conflict(tmp_path, monkeypatch, "push")
+    _git(repo, "reset", "-q", "--hard", "HEAD~1")
+    _commit_all(repo, {"README.md": "rewritten readme\n"}, "Rewritten readme")
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert head[:12] in outcome.message and "reset or rewritten" in outcome.message
+    assert [level for level, _message in entries] == ["PAUSE"]
+    state = _saved_state(repo)
+    assert state["paused_publish"] == "push" and state["paused_head"] == head
+    assert BRANCH not in _git(repo, "ls-remote", "--heads", "origin")
+    assert _gh_calls(tmp_path) == []
+
+
 def test_publish_ignores_handoffs_that_are_not_verified_pass(tmp_path: Path) -> None:
     _init(tmp_path)
     _start_story(tmp_path)
