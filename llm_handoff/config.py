@@ -118,6 +118,7 @@ DEFAULT_PROTECTED_PATHS: tuple[str, ...] = (
     ".claude/**",
     ".codex/**",
     ".gemini/**",
+    ".agents/**",
     ".githooks/**",
 )
 CODEX_OUTPUT_SCHEMA_PATH = (

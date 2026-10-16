@@ -86,6 +86,7 @@ protected_paths:
   - .claude/**
   - .codex/**
   - .gemini/**
+  - .agents/**
   - .githooks/**
 
 agents:

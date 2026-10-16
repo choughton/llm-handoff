@@ -504,6 +504,8 @@ def test_escalation_handoff_preserves_prior_content_without_rerouting(
         (".claude/agents/auditor.md", ".claude/**", True),
         (".claude", ".claude/**", True),
         ("src/.claude/x.md", ".claude/**", False),
+        (".agents/agents/planner.md", ".agents/**", True),
+        ("src/.agents/x.md", ".agents/**", False),
         ("AGENTS.md", "AGENTS.md", True),
         ("docs/AGENTS.md", "AGENTS.md", False),
     ],
@@ -522,6 +524,7 @@ def test_default_protected_paths_cover_control_files() -> None:
         ".claude/**",
         ".codex/**",
         ".gemini/**",
+        ".agents/**",
         ".githooks/**",
     )
 

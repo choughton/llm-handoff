@@ -751,6 +751,17 @@ for that user. The adapter passes no `--sandbox` flag. A `result` event whose
 `status` is not `SUCCESS`, or a run that ends without a `result` event, counts
 as a failed dispatch.
 
+The reference workflow ships one agent file per `--agent` name under
+`.agents/agents/`: `planner`, `backend`, `frontend`, and `auditor`, plus
+`handoff-validator` and `handoff-router` for the validator and
+`ledger-updater` for the finalizer. Each file follows the documented `agy`
+custom-agent format, and its frontmatter carries only `name` and
+`description`; it sets no `tools` list, because unknown tool names can hang
+`agy`. Whether `agy -p --agent <name>` loads these files has not yet been
+checked against a live CLI. Setting `agent_name` on a role changes the
+`--agent` value, and so which file `agy` loads. `.agents/**` is a default
+protected path.
+
 When print mode auto-denies a shell command (or another tool permission it
 cannot prompt for), `agy` prints a notice on stderr and still exits 0. The
 adapter treats that run as a failed dispatch, and the log names the denied
@@ -788,6 +799,7 @@ protected_paths:
   - .claude/**
   - .codex/**
   - .gemini/**
+  - .agents/**
   - .githooks/**
 ```
 
