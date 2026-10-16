@@ -30,6 +30,16 @@ Work Packet may be split. Re-order, add, or drop epics by editing this list.
 - CLEAN-3: The supervisor's default repair allowlist
   (`llm_handoff/supervisor.py`) assumes this repository's layout; make the
   default generic for target repositories.
+- CLEAN-4: The shipped finalizer helper files still hard-code
+  `PROJECT_STATE.md` (read list, update rules, dispatcher-mode commit
+  rules, `COMMIT SHA` output line), so they conflict with the finalizer
+  prompt when `project_state_path` names another file. Make them defer to
+  the project state path named in the dispatcher prompt: the Codex
+  `llm-handoff-finalizer/SKILL.md` and the Claude and agy
+  `ledger-updater.md`, in both the repository root and
+  `examples/reference-workflow/` copies (`.agents/**` is a protected
+  path), plus `STALE_FINALIZER_RECOVERY_INSTRUCTION` in
+  `llm_handoff/orchestrator.py`. From the CLEAN-2 review (PR #74).
 
 ### 7. LINEAR-FOUNDATIONS - optional Linear mode, groundwork
 

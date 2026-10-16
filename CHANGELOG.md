@@ -6,6 +6,11 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The supervisor's default repair allowlist is now `docs/` plus the provider
+  helper folders `.claude/agents/`, `.codex/skills/llm-handoff/`, and
+  `.gemini/agents/`. Dispatcher source, tests, top-level docs, and scripts
+  are no longer allowed by default; pass `--repair-allow-path` for any other
+  path a repair may change.
 - The finalizer prompt now names the configured `project_state_path` when it
   tells the finalizer which file to update and commit, instead of always
   `PROJECT_STATE.md`. Its `COMMIT SHA` line now asks for the sha of the

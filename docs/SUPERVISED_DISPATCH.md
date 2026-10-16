@@ -209,15 +209,20 @@ scoped repair commit, the supervisor restarts the child dispatcher.
 The default allowed repair scope is deliberately narrow:
 
 - `docs/`
-- `examples/reference-workflow/`
-- `llm_handoff/`
-- `tests/`
-- provider helper template folders such as `.claude/agents/`,
-  `.codex/skills/llm-handoff/`, and `.gemini/agents/`
-- dispatcher scripts and public docs
+- `.claude/agents/`
+- `.codex/skills/llm-handoff/`
+- `.gemini/agents/`
+
+The default no longer includes dispatcher source, tests, or top-level docs,
+because in a target repository those paths hold that project's own code.
 
 Use `--repair-allow-path PATH` only when the target workflow has an additional
-known-safe repair surface.
+known-safe repair surface. A repository that develops the dispatcher itself
+can restore the wider surface, for example:
+
+```powershell
+.\scripts\dispatch-supervised.ps1 --repair-role validator --repair-allow-path llm_handoff/ --repair-allow-path tests/ -- --config dispatch_config.yaml
+```
 
 ## Failure Classification
 
