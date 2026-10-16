@@ -2256,3 +2256,47 @@ def test_quality_prompt_routes_the_last_story_of_an_epic_to_the_finalizer() -> N
     assert "`remaining_stories: []`" in template
     assert "not an omitted field" in template
     assert "instead of sending it to planner to decide" in template
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [("remaining_stories: []\n", []), ("", None)],
+    ids=["explicit-empty", "omitted"],
+)
+def test_blocked_fan_out_keeps_an_explicit_empty_remaining_stories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    declared: str,
+    expected: list[str] | None,
+) -> None:
+    # The next audit routes the epic's last story to the finalizer only when
+    # it sees an explicit `remaining_stories: []`, so a blocked audit must
+    # carry that marker back to the implementer instead of dropping it.
+    repo, base = _init_repo(tmp_path)
+    head = _commit_file(repo, "src/app.py", "query = 'SELECT ' + user\n", "feature")
+    handoff = _backend_handoff(head).replace(
+        "producer: backend", f"{declared}producer: backend"
+    )
+    _write_handoff(repo, handoff)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(
+                _security_payload(findings=[_finding("high", "SQL injection")])
+            )
+        ),
+    )
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    loaded = yaml.safe_load(written.split("---")[1])
+    assert loaded["status"] == "verified_fail"
+    assert loaded.get("remaining_stories") == expected

@@ -16,7 +16,9 @@ This project follows a simple pre-release changelog until the first public tag.
   the audit fan-out prompt now route an approved story that finishes its epic
   (an explicit `remaining_stories: []`, a handoff that names it the last
   story, or a planner-sent `close_type: epic`) straight to `finalizer` with
-  `close_type: epic` instead of back to the planner to decide.
+  `close_type: epic` instead of back to the planner to decide. A fan-out
+  handoff now keeps an explicit `remaining_stories: []` instead of dropping
+  it, so the marker survives a blocked audit and the implementer's retry.
 
 - The work-claim gate no longer runs a Verification command line written as
   prose. A line such as `` `cmd1`, then `` or `` `cmd1` and `cmd2` `` now runs

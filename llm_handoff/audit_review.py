@@ -1055,6 +1055,10 @@ def render_audit_handoff(
             lines.extend(
                 f"  - {_yaml_scalar(story)}" for story in frontmatter.remaining_stories
             )
+        elif "remaining_stories" in frontmatter.model_fields_set:
+            # Keep an explicit empty list: it marks the epic's last story, and
+            # the next audit needs it to route an approval to the finalizer.
+            lines.append("remaining_stories: []")
     lines.append(f"status: {status}")
     lines.append(f"scope_sha: {scope.head_sha}")
     if close_type:
