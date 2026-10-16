@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- New operator prompt at dispatcher pauses (`interactive_pause`, on by
+  default; `--no-interactive-pause` turns it off for one run). When stdin is
+  a TTY, outside `--dry-run`, and with `poll_interval_seconds` above 0, a
+  pause that waits for a `HANDOFF.md` edit also accepts Enter (planner
+  dispatch with a best-judgment instruction), free text (planner guidance),
+  `retry`, or `quit`. The dispatcher now also logs a `WARN` line when a
+  scheduled planner recovery is dropped because `HANDOFF.md` changed.
 - New `pause_recovery` config (`planner` by default, or `"off"`). At the six
   non-user pauses in the run loop (unknown route, stale route, low
   confidence, unparseable finalizer output, missing route after dispatch, and

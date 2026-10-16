@@ -457,6 +457,69 @@ def test_load_dispatch_config_rejects_unquoted_yaml_off(tmp_path: Path) -> None:
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
+def test_interactive_pause_defaults_to_true(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path).interactive_pause is True
+    assert load_dispatch_config(repo_root=tmp_path).interactive_pause is True
+
+
+def test_load_dispatch_config_reads_interactive_pause(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("interactive_pause: false\n", encoding="utf-8")
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.interactive_pause is False
+
+
+def test_load_dispatch_config_interactive_pause_argument_overrides_file(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("interactive_pause: true\n", encoding="utf-8")
+
+    overridden = load_dispatch_config(
+        repo_root=tmp_path,
+        config_path=config_path,
+        interactive_pause=False,
+    )
+    kept = load_dispatch_config(
+        repo_root=tmp_path,
+        config_path=config_path,
+        interactive_pause=None,
+    )
+
+    assert overridden.interactive_pause is False
+    assert kept.interactive_pause is True
+
+
+class _StopDispatch(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [(["--no-interactive-pause"], False), ([], None)],
+)
+def test_no_interactive_pause_flag_reaches_load_dispatch_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected: bool | None,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_load(**kwargs: object) -> DispatchConfig:
+        captured.update(kwargs)
+        raise _StopDispatch
+
+    monkeypatch.setattr(main_module, "load_dispatch_config", fake_load)
+
+    with pytest.raises(_StopDispatch):
+        main_module.main([*argv, "--repo-root", str(tmp_path)])
+
+    assert captured["interactive_pause"] is expected
+
+
 def test_work_claim_env_passthrough_defaults_to_empty(tmp_path: Path) -> None:
     assert DispatchConfig(repo_root=tmp_path).work_claim_env_passthrough == ()
     assert load_dispatch_config(repo_root=tmp_path).work_claim_env_passthrough == ()

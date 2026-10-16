@@ -268,7 +268,11 @@ agent to proceed. If the dispatcher pauses, it should log why.
 With the default `pause_recovery: planner`, the planner gets one recovery
 attempt at each of these pauses (except a `user` route) before the dispatcher
 waits for you to edit `HANDOFF.md`; see
-[CONFIGURATION.md](CONFIGURATION.md#pause-recovery).
+[CONFIGURATION.md](CONFIGURATION.md#pause-recovery). When the dispatcher then
+waits and you are at a terminal, an operator prompt lets you press Enter or
+type guidance to dispatch the planner, type `retry` or `quit`, or edit
+`HANDOFF.md` to resume; see
+[CONFIGURATION.md](CONFIGURATION.md#operator-prompt).
 
 `unknown` route:
 

@@ -11,6 +11,10 @@ auto_push: false
 # planner attempt per pause streak, then the dispatcher waits for a HANDOFF.md
 # edit. "off" (quoted; YAML reads a bare off as false) always waits.
 pause_recovery: planner
+# Operator prompt at pauses when stdin is a TTY (not in --dry-run or with
+# poll_interval_seconds: 0): Enter or text dispatches the planner, `retry`
+# re-runs the cycle, `quit` stops. --no-interactive-pause also turns it off.
+interactive_pause: true
 
 # Deterministic work-claim gate, on by default. A ready_for_review handoff
 # from backend or frontend is checked against the planner's Work Packet
