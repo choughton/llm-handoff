@@ -206,10 +206,11 @@ def _subagent(
     stdout: str,
     exit_code: int = 0,
     usage: dict[str, object] | None = None,
+    stderr: str = "",
 ) -> SubagentResult:
     return SubagentResult(
         stdout=stdout,
-        stderr="",
+        stderr=stderr,
         exit_code=exit_code,
         elapsed_seconds=0.01,
         usage=usage,
@@ -2363,6 +2364,259 @@ def test_run_loop_fan_out_reviewer_failure_counts_as_dispatch_failure(
         encoding="utf-8"
     ) == handoff
     assert "security_verdict_malformed:" in log.text()
+
+
+# --------------------------------------------------------------------------
+# reviewer start failures
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "stdout", "stderr", "expected"),
+    [
+        (0, "", "error: unknown option '--bogus'", None),
+        (1, "", "[WinError 2] The system cannot find the file specified", "launch"),
+        (2, "", "error: unknown option '--bogus'", "argument"),
+        (2, "", "error: unexpected argument '--bogus' found", "argument"),
+        (1, "", "Not logged in. Please run codex login.", "auth"),
+        (1, "", "Process timed out after 5 seconds.", None),
+        (2, "partial review output", "unknown option", None),
+    ],
+)
+def test_reviewer_start_failure_classifies_only_start_errors(
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+    expected: str | None,
+) -> None:
+    assert audit_review._reviewer_start_failure(exit_code, stdout, stderr) == expected
+
+
+def _run_loop_with_reviewers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    quality_result: SubagentResult,
+    security_result: _ProcessResult,
+) -> tuple[int, Path, bytes, _Recorder, dict[str, int]]:
+    repo, _base = _init_repo(tmp_path)
+    head = _commit_file(repo, "src/app.py", "x = 1\n", "feature")
+    handoff_bytes = _write_handoff(repo, _backend_handoff(head)).read_bytes()
+    config = _fan_out_config(repo).model_copy(update={"max_consecutive_failures": 3})
+    calls = {"quality": 0, "security": 0}
+
+    def fake_support(*_args: Any, **_kwargs: Any) -> SubagentResult:
+        calls["quality"] += 1
+        return quality_result
+
+    def fake_security(_name: str, _command: list[str], **_kwargs: Any) -> _ProcessResult:
+        calls["security"] += 1
+        return security_result
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_security)
+    log = _Recorder()
+
+    exit_code = orchestrator.run_loop(config, max_cycles=3, log=log)
+    return exit_code, repo, handoff_bytes, log, calls
+
+
+def test_run_loop_stops_after_one_attempt_when_security_reviewer_cannot_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exit_code, repo, handoff, log, calls = _run_loop_with_reviewers(
+        tmp_path,
+        monkeypatch,
+        quality_result=_subagent(json.dumps(_quality_payload())),
+        security_result=_process(
+            "", exit_code=2, stderr="error: unknown option '--bogus'"
+        ),
+    )
+
+    assert exit_code == 1
+    assert calls["security"] == 1
+    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_bytes() == handoff
+    text = log.text()
+    assert "audit_reviewer_start_failed: the security reviewer" in text
+    assert "could not start (argument); exit code 2." in text
+    assert "unknown option '--bogus'" in text
+    assert "An audit reviewer failed to start; stopping the dispatch loop." in text
+    assert "Failure count:" not in text
+
+
+def test_run_loop_stops_after_one_attempt_when_quality_reviewer_cannot_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exit_code, repo, handoff, log, calls = _run_loop_with_reviewers(
+        tmp_path,
+        monkeypatch,
+        quality_result=_subagent(
+            "",
+            exit_code=1,
+            stderr="[WinError 2] The system cannot find the file specified",
+        ),
+        security_result=_process(_claude_envelope(_security_payload())),
+    )
+
+    assert exit_code == 1
+    assert calls["quality"] == 1
+    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_bytes() == handoff
+    text = log.text()
+    assert "audit_reviewer_start_failed: the quality reviewer" in text
+    assert "could not start (launch)" in text
+    assert "WinError 2" in text
+    assert "Failure count:" not in text
+
+
+def test_start_failure_message_truncates_stderr_and_marks_empty() -> None:
+    long_run = ReviewerRun(
+        name="security",
+        provider="claude",
+        command=(),
+        exit_code=2,
+        elapsed_seconds=0.0,
+        stdout="",
+        stderr="x" * 2500 + "TAIL",
+        error="security_reviewer_failed: claude exited with code 2.",
+        start_failure="argument",
+    )
+    message = audit_review._start_failure_message(long_run)
+    assert message.endswith("stderr: " + ("x" * 2500 + "TAIL")[-2000:])
+
+    empty_run = ReviewerRun(
+        name="quality",
+        provider="codex",
+        command=(),
+        exit_code=1,
+        elapsed_seconds=0.0,
+        stdout="",
+        stderr="  ",
+        error="quality_reviewer_failed: exit code 1.",
+        start_failure="launch",
+    )
+    assert audit_review._start_failure_message(empty_run) == (
+        "audit_reviewer_start_failed: the quality reviewer (codex) could not "
+        "start (launch); exit code 1. stderr: (empty)"
+    )
+
+
+def test_security_reviewer_preflight_error_is_a_start_failure(
+    tmp_path: Path,
+) -> None:
+    handoff_path = _write_handoff(tmp_path, "handoff\n")
+    plan = audit_review.SecurityReviewerPlan(
+        provider="gemini",
+        kind="gemini",
+        command=(config_module.GEMINI_BINARY,),
+        preflight_error="security_reviewer_failed: no sandbox runtime for Gemini CLI.",
+    )
+
+    outcome = audit_review._run_security_reviewer(
+        plan,
+        timeout_ms=1000,
+        repo_root=tmp_path,
+        handoff_path=handoff_path,
+        log=None,
+    )
+
+    assert outcome.run.start_failure == "preflight"
+    assert outcome.run.error == plan.preflight_error
+
+
+def test_gemini_extension_missing_is_a_start_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process("No extensions installed."),
+    )
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo, security_provider="gemini"),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert result.stop_loop is True
+    assert "could not start (preflight)" in log.text()
+
+
+def test_security_reviewer_timeout_does_not_stop_the_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            "", exit_code=1, stderr="Process timed out after 5 seconds."
+        ),
+    )
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert result.stop_loop is False
+    assert "audit_reviewer_start_failed" not in log.text()
+    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
+        encoding="utf-8"
+    ) == handoff
+
+
+@pytest.mark.parametrize(
+    ("precheck_stderr", "expected_stop", "expected_start_failure"),
+    [
+        ("Process timed out after 5 seconds.", False, None),
+        ("429 Too Many Requests: rate limit exceeded", False, None),
+        ("[WinError 2] The system cannot find the file specified", True, "launch"),
+    ],
+)
+def test_gemini_extension_check_failure_stops_only_on_start_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    precheck_stderr: str,
+    expected_stop: bool,
+    expected_start_failure: str | None,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            "", exit_code=1, stderr=precheck_stderr
+        ),
+    )
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo, security_provider="gemini"),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert result.stop_loop is expected_stop
+    text = log.text()
+    if expected_start_failure is None:
+        assert "audit_reviewer_start_failed" not in text
+    else:
+        assert f"could not start ({expected_start_failure})" in text
+    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
+        encoding="utf-8"
+    ) == handoff
 
 
 # --------------------------------------------------------------------------

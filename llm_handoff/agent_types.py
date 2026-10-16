@@ -50,6 +50,9 @@ class DispatchResult:
     session_id: str | None = None
     session_invalidated: bool = False
     usage: dict[str, object] | None = None
+    # Set when a run failed in a way a retry cannot fix (for example, an
+    # audit reviewer CLI that could not start); run_loop stops with exit 1.
+    stop_loop: bool = False
 
 
 @dataclass(frozen=True)

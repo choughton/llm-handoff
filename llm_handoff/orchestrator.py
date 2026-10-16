@@ -859,6 +859,14 @@ def run_loop(
                 log=log_fn,
             ):
                 return 1
+            if dispatch_result.stop_loop:
+                _log(
+                    log_fn,
+                    "ERROR",
+                    "An audit reviewer failed to start; stopping the dispatch "
+                    "loop. Fix the reviewer CLI, then start the dispatcher again.",
+                )
+                return 1
             if dispatch_result.exit_code != 0:
                 consecutive_failures = _record_failure(
                     config,

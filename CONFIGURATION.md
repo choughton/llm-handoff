@@ -1250,6 +1250,14 @@ With `security` enabled, the auditor route works differently:
   reviewers. A reviewer whose CLI reports no usage (Gemini, `codex-security`,
   or Claude's buffered text mode) shows `null`, and when a provider retries,
   the counts cover only the last attempt.
+- A reviewer that fails to start (missing binary, CLI argument error, sign-in
+  failure, missing Gemini sandbox or security extension) stops the run with
+  exit 1 after one attempt and logs its stderr in an
+  `audit_reviewer_start_failed:` line. Other reviewer errors (timeout, rate
+  limit, other non-zero exits, malformed verdict, a Gemini extension check
+  that itself times out or hits a rate limit) count toward
+  `max_consecutive_failures`. Either way the dispatcher writes no audit
+  verdict, so a missing verdict is never a pass.
 
 Security reviewer invocation by provider:
 
