@@ -1448,6 +1448,16 @@ def _run_security_reviewer(
                     f"{GEMINI_SECURITY_EXTENSION_URL}` or set "
                     "audit.security_provider to another vendor."
                 )
+            # Only a check that ran and proved the extension absent or
+            # disabled is a start failure. A check that itself failed for a
+            # transient reason (timeout, rate limit) keeps the failure-count
+            # path; a launch, auth, or argument failure still stops the loop.
+            if precheck.exit_code == 0:
+                precheck_start_failure: str | None = "preflight"
+            else:
+                precheck_start_failure = _reviewer_start_failure(
+                    precheck.exit_code, precheck.stdout, precheck.stderr
+                )
             return _ReviewerOutcome(
                 run=ReviewerRun(
                     name="security",
@@ -1458,7 +1468,7 @@ def _run_security_reviewer(
                     stdout=precheck.stdout,
                     stderr=precheck.stderr,
                     error=precheck_error,
-                    start_failure="preflight",
+                    start_failure=precheck_start_failure,
                 ),
                 handoff_sha_after=_handoff_sha(handoff_path),
             )

@@ -2576,6 +2576,49 @@ def test_security_reviewer_timeout_does_not_stop_the_loop(
     ) == handoff
 
 
+@pytest.mark.parametrize(
+    ("precheck_stderr", "expected_stop", "expected_start_failure"),
+    [
+        ("Process timed out after 5 seconds.", False, None),
+        ("429 Too Many Requests: rate limit exceeded", False, None),
+        ("[WinError 2] The system cannot find the file specified", True, "launch"),
+    ],
+)
+def test_gemini_extension_check_failure_stops_only_on_start_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    precheck_stderr: str,
+    expected_stop: bool,
+    expected_start_failure: str | None,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            "", exit_code=1, stderr=precheck_stderr
+        ),
+    )
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo, security_provider="gemini"),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert result.stop_loop is expected_stop
+    text = log.text()
+    if expected_start_failure is None:
+        assert "audit_reviewer_start_failed" not in text
+    else:
+        assert f"could not start ({expected_start_failure})" in text
+    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
+        encoding="utf-8"
+    ) == handoff
+
+
 # --------------------------------------------------------------------------
 # reviewer subprocess environment (end to end)
 # --------------------------------------------------------------------------

@@ -1254,7 +1254,8 @@ With `security` enabled, the auditor route works differently:
   failure, missing Gemini sandbox or security extension) stops the run with
   exit 1 after one attempt and logs its stderr in an
   `audit_reviewer_start_failed:` line. Other reviewer errors (timeout, rate
-  limit, other non-zero exits, malformed verdict) count toward
+  limit, other non-zero exits, malformed verdict, a Gemini extension check
+  that itself times out or hits a rate limit) count toward
   `max_consecutive_failures`. Either way the dispatcher writes no audit
   verdict, so a missing verdict is never a pass.
 
