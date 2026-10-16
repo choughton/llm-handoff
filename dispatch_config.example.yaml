@@ -15,6 +15,10 @@ auto_push: false
 backend_resume: true
 planner_resume: true
 planner_api_key_env: false
+# Bounded planner recovery at dispatcher pauses (not next_agent: user): one
+# planner attempt per pause streak, then the dispatcher waits for a HANDOFF.md
+# edit. "off" (quoted; YAML reads a bare off as false) always waits.
+pause_recovery: planner
 
 # Deterministic work-claim gate, on by default. A ready_for_review handoff
 # from backend or frontend is checked against the planner's Work Packet

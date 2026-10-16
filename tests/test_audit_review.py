@@ -137,6 +137,8 @@ def _fan_out_config(
     kwargs: dict[str, Any] = {
         "repo_root": repo,
         "poll_interval_seconds": 0,
+        # Pauses exit here; pause recovery is covered in test_pause_recovery.py.
+        "pause_recovery": "off",
         "audit": audit,
     }
     if agents is not None:
@@ -669,7 +671,10 @@ def test_opted_out_run_loop_skips_fan_out_bookkeeping_and_warns(
     head = _commit_file(repo, "src/app.py", "print('hi')\n", "feature")
     _write_handoff(repo, _backend_handoff(head))
     config = DispatchConfig(
-        repo_root=repo, poll_interval_seconds=0, audit=QUALITY_ONLY_AUDIT
+        repo_root=repo,
+        poll_interval_seconds=0,
+        pause_recovery="off",
+        audit=QUALITY_ONLY_AUDIT,
     )
     prompts: list[str] = []
 

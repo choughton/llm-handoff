@@ -106,6 +106,51 @@ When `planner_api_key_env` is `false`, planner launches strip
 When `planner_api_key_env` is `true`, `GEMINI_API_KEY` is preserved, but
 `GOOGLE_API_KEY` is still stripped.
 
+## Pause Recovery
+
+`pause_recovery` controls what the dispatcher does when it pauses:
+
+```yaml
+pause_recovery: planner   # planner (default) | "off"
+```
+
+With `planner`, the dispatcher runs bounded planner recovery at these six
+pauses in the run loop:
+
+- unknown route: no routing instruction in `HANDOFF.md`;
+- stale route: the same route on an unchanged `HANDOFF.md`;
+- low confidence: a routing decision below `HIGH` confidence;
+- unparseable finalizer output from the ledger updater;
+- missing route after dispatch: the planner left no dispatchable route;
+- self-loop: a role routed the handoff back to itself.
+
+At each of these pauses the validator still runs first. The dispatcher then
+logs a `PAUSE` line and dispatches the planner on the next cycle instead of
+waiting. The planner's instruction carries the pause reason and the
+validator's verdict, errors, and warnings. The planner either rewrites
+`HANDOFF.md` with a dispatchable route or routes to `user` with
+`status: escalate_to_user` and one specific question. The recovery cycle skips
+the stale-route check, so a stale planner route cannot pause on its own
+recovery.
+
+Each pause streak gets one recovery attempt. If the handoff still pauses
+after it, the dispatcher pauses as it does with `off` and waits for
+`HANDOFF.md` to change. The streak resets only after a normal dispatch passes:
+one dispatched without a dispatcher-forced instruction whose post-dispatch
+validation verdict is not `NO`, or a finalizer run with parseable output and
+exit code 0. A recovery cycle, or any other cycle with a forced planner
+instruction, never resets it.
+
+A handoff routed to `user` (`next_agent: user`) never triggers recovery; the
+dispatcher always waits for a person. The same holds when the pause validator
+leaves `HANDOFF.md` routed to `user`, for example after it changed a protected
+file and the dispatcher wrote the protected-file escalation. `--dry-run` never
+schedules recovery.
+
+Set `pause_recovery: "off"` to skip recovery and pause at once, as earlier
+releases did. Quote the value: YAML reads a bare `off` as the boolean `false`,
+which the config rejects. The startup banner shows the active mode.
+
 ## Work-Claim Gate
 
 On by default:

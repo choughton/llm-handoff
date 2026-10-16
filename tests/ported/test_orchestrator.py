@@ -32,10 +32,14 @@ def _dispatch_config(
     poll_interval_seconds: int = 0,
     max_consecutive_failures: int = 3,
     agents: dict[str, Any] | None = None,
+    pause_recovery: str = "off",
 ):
     config_module = importlib.import_module("llm_handoff.config")
     kwargs: dict[str, Any] = {
         "repo_root": repo_root,
+        # These tests expect pauses to exit; bounded planner recovery at
+        # pauses is covered in tests/test_pause_recovery.py.
+        "pause_recovery": pause_recovery,
         "dry_run": dry_run,
         "use_manual_frontend": use_manual_frontend,
         "planner_api_key_env": planner_api_key_env,

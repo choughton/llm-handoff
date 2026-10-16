@@ -265,6 +265,11 @@ agent to proceed. If the dispatcher pauses, it should log why.
 
 ## Common Pauses
 
+With the default `pause_recovery: planner`, the planner gets one recovery
+attempt at each of these pauses (except a `user` route) before the dispatcher
+waits for you to edit `HANDOFF.md`; see
+[CONFIGURATION.md](CONFIGURATION.md#pause-recovery).
+
 `unknown` route:
 
 The dispatcher could not parse a safe next role. Fix `next_agent` or route to
