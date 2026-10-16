@@ -66,7 +66,9 @@ project_state_path: PROJECT_STATE.md
 ```
 
 This file is an optional durable project-status document. Consumers can point it
-at an existing file if their workflow already uses one.
+at an existing file if their workflow already uses one. The finalizer prompt
+names this configured path when it tells the finalizer which file to update
+and commit.
 
 ## Auto Push
 
@@ -1157,10 +1159,12 @@ around the sandbox. For the planner, backend, and frontend roles,
 avoids the question: the dispatcher commits backend and frontend work, and the
 planner writes nothing to `.git` because its handoff is left uncommitted on
 purpose. It does not take the commit off the finalizer: in that mode the
-finalizer is told to commit only `PROJECT_STATE.md` and leave `HANDOFF.md`
-uncommitted, and the dispatcher does not commit the state update for it. If
-the sandbox blocks the finalizer's commit, the finalizer reports no commit
-SHA, the dispatcher pauses, and you commit `PROJECT_STATE.md` yourself.
+finalizer is told to commit only the project state file
+(`project_state_path`) and leave `HANDOFF.md` uncommitted, and the dispatcher
+does not commit the state update for it. If the sandbox blocks the
+finalizer's commit, the finalizer reports no commit SHA, the dispatcher
+pauses, and you commit the project state file (`project_state_path`)
+yourself.
 
 A fresh `codex exec` run returns the role's final message as a
 `{status, summary}` JSON envelope. For the `validator` and `finalizer`

@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The finalizer prompt now names the configured `project_state_path` when it
+  tells the finalizer which file to update and commit, instead of always
+  `PROJECT_STATE.md`. Its `COMMIT SHA` line now asks for the sha of the
+  project state commit and no longer names `HANDOFF.md`.
 - The `auto_push` config key has been removed; the dispatcher never read it.
   A config with `auto_push: false` still loads and the key is ignored.
   `auto_push: true`, or any value other than `false`, now fails at load with
