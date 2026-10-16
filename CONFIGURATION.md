@@ -661,12 +661,15 @@ scanner runs only when it is listed under `scanners:` and its executable is on
 
 `llm-handoff doctor` reports each configured scanner and whether the gate will
 run it: `PASS` when its executable is on `PATH`, `FAIL` when a
-`required: true` scanner's executable is missing (every claim would fail with
-`scanner_missing:<name>`), and `WARN` when a `required: false` scanner's
-executable is missing, when the command does not start with a plain program
-name doctor can look up, or when scanners are configured but the gate is off.
-Doctor looks the executable up the same way the gate does and never runs a
-scanner command.
+`required: true` scanner's executable is missing (every claim the scanner
+applies to would fail with `scanner_missing:<name>`), and `WARN` when a
+`required: false` scanner's executable is missing, when the command does not
+start with a plain program name doctor can look up, or when scanners are
+configured but the gate is off. When the command uses `{changed_files}` or
+`{changed_py_files}`, the gate skips the scanner on claims where that list is
+empty, and doctor's message says the outcome applies only to claims where the
+list is nonempty. Doctor looks the executable up the same way the gate does
+and never runs a scanner command.
 
 For Python repositories, `bandit`, `pip-audit`, and `gitleaks` are the
 recommended starting set. Use `semgrep` only with a pinned local ruleset kept

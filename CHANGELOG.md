@@ -11,9 +11,12 @@ This project follows a simple pre-release changelog until the first public tag.
   work-claim gate off it prints one `WARN` line saying none of them run.
   With the gate on it prints one line per scanner: `PASS` when the leading
   executable is on `PATH`, `FAIL` when it is missing and `required: true`
-  (every claim would fail with `scanner_missing:<name>`), and `WARN` when it
-  is missing and `required: false` or when the command does not start with a
-  plain program name. Doctor uses the gate's executable lookup and never runs
+  (every claim the scanner applies to would fail with
+  `scanner_missing:<name>`), and `WARN` when it is missing and
+  `required: false` or when the command does not start with a plain program
+  name. For a command that uses `{changed_files}` or `{changed_py_files}`,
+  the `PASS` and `FAIL` messages say they apply only to claims where that
+  list is nonempty, since the gate skips the scanner otherwise. Doctor uses the gate's executable lookup and never runs
   a scanner command. `dispatch_config.example.yaml`, the reference workflow
   config, `CONFIGURATION.md`, and `README.md` now say that a scanner runs
   only when it is listed and its executable is installed, recommend bandit,

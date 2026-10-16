@@ -629,8 +629,14 @@ def test_doctor_reports_each_scanner_in_config_order_with_the_gate_on(
     ]
     assert "executable `gitleaks` is on PATH" in lines[0]
     assert "will run scanner gitleaks" in lines[0]
+    assert "skip it on other claims" not in lines[0]
     assert "executable `bandit` was not found on PATH" in lines[1]
-    assert "every claim will fail with scanner_missing:bandit" in lines[1]
+    # bandit uses {changed_py_files}; the gate skips it, before the PATH
+    # lookup, on claims without changed Python files.
+    assert (
+        "every claim where {changed_py_files} is nonempty will fail with "
+        "scanner_missing:bandit"
+    ) in lines[1]
     assert "required: false" in lines[1]
     assert "executable `pip-audit` was not found on PATH" in lines[2]
     assert "will skip scanner pip-audit" in lines[2]
@@ -658,8 +664,37 @@ def test_doctor_passes_every_scanner_whose_executable_is_on_path(
     lines = _scanner_lines(output)
     assert len(lines) == 2
     assert lines[0].startswith("PASS scanner bandit:")
+    assert (
+        "will run scanner bandit on claims where {changed_py_files} is "
+        "nonempty and skip it on other claims"
+    ) in lines[0]
     assert lines[1].startswith("PASS scanner pip-audit:")
     assert "executable `pip-audit`" in lines[1]
+    assert "will run scanner pip-audit" in lines[1]
+    assert "skip it on other claims" not in lines[1]
+
+
+def test_doctor_scanner_with_both_list_placeholders_names_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(
+        repo,
+        "scanners:\n"
+        "  - name: lint\n"
+        "    command: lint {changed_files} {changed_py_files}\n",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _scanner_lines(output)[0]
+    assert line.startswith("FAIL scanner lint:")
+    assert (
+        "every claim where {changed_files} and {changed_py_files} are nonempty "
+        "will fail with scanner_missing:lint"
+    ) in line
 
 
 def test_doctor_scanner_lookup_has_no_cmd_fallback(

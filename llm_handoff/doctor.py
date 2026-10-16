@@ -55,6 +55,7 @@ from llm_handoff.config import (
     DispatchConfig,
     detect_repo_root,
     load_dispatch_config,
+    scanner_command_placeholders,
 )
 from llm_handoff.provider_auth import ANTIGRAVITY_SETTINGS_PATH
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
@@ -814,22 +815,31 @@ def _check_scanners(
                 )
             )
             continue
+        condition = _scanner_applies_condition(scanner.command)
         if shutil.which(executable) is not None:
+            if condition:
+                outcome = (
+                    f"will run scanner {scanner.name} on claims {condition} "
+                    "and skip it on other claims"
+                )
+            else:
+                outcome = f"will run scanner {scanner.name}"
             checks.append(
                 DoctorCheck(
                     "PASS",
                     name,
                     f"executable `{executable}` is on PATH; the work-claim gate "
-                    f"will run scanner {scanner.name}",
+                    f"{outcome}",
                 )
             )
         elif scanner.required:
+            claims = f"every claim {condition}" if condition else "every claim"
             checks.append(
                 DoctorCheck(
                     "FAIL",
                     name,
-                    f"executable `{executable}` was not found on PATH; every "
-                    f"claim will fail with scanner_missing:{scanner.name} until "
+                    f"executable `{executable}` was not found on PATH; {claims} "
+                    f"will fail with scanner_missing:{scanner.name} until "
                     "the tool is installed or the scanner is set to "
                     "required: false",
                 )
@@ -844,6 +854,31 @@ def _check_scanners(
                     "(required: false)",
                 )
             )
+
+
+_SCANNER_LIST_PLACEHOLDERS = ("changed_files", "changed_py_files")
+
+
+def _scanner_applies_condition(command: str) -> str:
+    """Describe which claims a scanner applies to, or "" for every claim.
+
+    The gate skips a scanner, before it looks up the executable, when the
+    command references ``{changed_files}`` or ``{changed_py_files}`` and that
+    list is empty for the claim (``work_claim.render_scanner_command``).
+    """
+    try:
+        placeholders = scanner_command_placeholders(command)
+    except ValueError:
+        return ""
+    used = [
+        "{" + placeholder + "}"
+        for placeholder in _SCANNER_LIST_PLACEHOLDERS
+        if placeholder in placeholders
+    ]
+    if not used:
+        return ""
+    verb = "is" if len(used) == 1 else "are"
+    return f"where {' and '.join(used)} {verb} nonempty"
 
 
 def _describe_missing(names: list[str]) -> str:
