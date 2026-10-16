@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff doctor` now reports configured scanners. With none
+  configured it prints one `PASS` line. With scanners configured and the
+  work-claim gate off it prints one `WARN` line saying none of them run.
+  With the gate on it prints one line per scanner: `PASS` when the leading
+  executable is on `PATH`, `FAIL` when it is missing and `required: true`
+  (every claim the scanner applies to would fail with
+  `scanner_missing:<name>`), and `WARN` when it is missing and
+  `required: false` or when the command does not start with a plain program
+  name. For a command that uses `{changed_files}` or `{changed_py_files}`,
+  the `PASS` and `FAIL` messages say they apply only to claims where that
+  list is nonempty, since the gate skips the scanner otherwise. Doctor uses the gate's executable lookup and never runs
+  a scanner command. `dispatch_config.example.yaml`, the reference workflow
+  config, `CONFIGURATION.md`, and `README.md` now say that a scanner runs
+  only when it is listed and its executable is installed, recommend bandit,
+  pip-audit, and gitleaks for Python repositories, and show semgrep with a
+  pinned local ruleset. The example config's active `semgrep --config auto`
+  entry is now a commented-out entry with a local ruleset path.
 - The operator prompt now accepts `@backend`, `@frontend`, or `@auditor`
   with an optional message. The dispatcher runs that role directly on the
   current `HANDOFF.md`, with the pause reason and the operator's message as

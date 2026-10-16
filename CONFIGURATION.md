@@ -654,9 +654,27 @@ loop still stops.
 
 The gate can also run operator-configured scanners before the verification
 command. The list is empty by default, so nothing changes until you add
-entries, and scanners only run while `enforce_work_packet` is `true`. Each
-entry names a tool the target repository has installed; `llm-handoff` does not
-bundle or install any of them.
+entries, and scanners only run while `enforce_work_packet` is `true`. A
+scanner runs only when it is listed under `scanners:` and its executable is on
+`PATH`. Each entry names a tool the target repository has installed;
+`llm-handoff` does not bundle or install any of them.
+
+`llm-handoff doctor` reports each configured scanner and whether the gate will
+run it: `PASS` when its executable is on `PATH`, `FAIL` when a
+`required: true` scanner's executable is missing (every claim the scanner
+applies to would fail with `scanner_missing:<name>`), and `WARN` when a
+`required: false` scanner's executable is missing, when the command does not
+start with a plain program name doctor can look up, or when scanners are
+configured but the gate is off. When the command uses `{changed_files}` or
+`{changed_py_files}`, the gate skips the scanner on claims where that list is
+empty, and doctor's message says the outcome applies only to claims where the
+list is nonempty. Doctor looks the executable up the same way the gate does
+and never runs a scanner command.
+
+For Python repositories, `bandit`, `pip-audit`, and `gitleaks` are the
+recommended starting set. Use `semgrep` only with a pinned local ruleset kept
+in the repository (`--config <local ruleset path>`), not `--config auto`,
+which downloads whatever rules the registry serves at run time.
 
 ```yaml
 enforce_work_packet: true
@@ -666,7 +684,9 @@ scanners:
     timeout_ms: 300000
     required: true
   - name: semgrep
-    command: semgrep scan --config auto --error --quiet {changed_files}
+    # <local ruleset path> is a ruleset file committed to the repository,
+    # for example .semgrep/rules.yml.
+    command: semgrep scan --config <local ruleset path> --metrics off --error --quiet {changed_files}
     timeout_ms: 300000
     required: true
   - name: bandit
@@ -681,7 +701,10 @@ scanners:
 
 On gitleaks releases before 8.19 use
 `gitleaks detect --source {repo_root} --log-opts="{diff_range}"` instead of the
-`git` subcommand. `semgrep --config auto` and `pip-audit` need network access.
+`git` subcommand. `pip-audit` needs network access to query its vulnerability
+database. `semgrep` with a local ruleset and `--metrics off` does not need to
+download rules; `--config auto` would, and its results could change between
+runs without a commit.
 
 Fields:
 

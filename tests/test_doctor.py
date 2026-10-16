@@ -542,6 +542,212 @@ def test_doctor_omits_the_verification_allowlist_when_the_gate_is_off(
     assert "verification allowlist" not in output
 
 
+def _add_config(repo: Path, text: str) -> None:
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + text, encoding="utf-8"
+    )
+
+
+def _scanner_lines(output: str) -> list[str]:
+    return [
+        line
+        for line in output.splitlines()
+        if " scanners:" in line or " scanner " in line
+    ]
+
+
+SCANNER_CONFIG = """scanners:
+  - name: gitleaks
+    command: gitleaks git --redact --log-opts="{diff_range}" {repo_root}
+  - name: bandit
+    command: bandit -q {changed_py_files}
+  - name: pip-audit
+    command: pip-audit --strict
+    required: false
+  - name: envscan
+    command: FOO=1 envscan {changed_files}
+"""
+
+
+def test_doctor_passes_scanners_when_none_are_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _scanner_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith("PASS scanners: no scanners are configured")
+    assert "work-claim gate runs none" in lines[0]
+    assert "Scanners section of CONFIGURATION.md" in lines[0]
+
+
+def test_doctor_warns_when_scanners_are_configured_but_the_gate_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(
+        repo,
+        "enforce_work_packet: false\n"
+        'work_packet_opt_out_reason: "Planner prompts do not emit packets yet."\n'
+        + SCANNER_CONFIG,
+    )
+    # None of the scanner executables are on PATH; the per-scanner checks
+    # must be skipped, so no FAIL is reported for them.
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _scanner_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith("WARN scanners:")
+    assert "gitleaks, bandit, pip-audit, envscan" in lines[0]
+    assert "none of them run while the work-claim gate is off" in lines[0]
+
+
+def test_doctor_reports_each_scanner_in_config_order_with_the_gate_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(repo, SCANNER_CONFIG)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude", "gitleaks"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    lines = _scanner_lines(output)
+    assert [line.split(":", 1)[0] for line in lines] == [
+        "PASS scanner gitleaks",
+        "FAIL scanner bandit",
+        "WARN scanner pip-audit",
+        "WARN scanner envscan",
+    ]
+    assert "executable `gitleaks` is on PATH" in lines[0]
+    assert "will run scanner gitleaks" in lines[0]
+    assert "skip it on other claims" not in lines[0]
+    assert "executable `bandit` was not found on PATH" in lines[1]
+    # bandit uses {changed_py_files}; the gate skips it, before the PATH
+    # lookup, on claims without changed Python files.
+    assert (
+        "every claim where {changed_py_files} is nonempty will fail with "
+        "scanner_missing:bandit"
+    ) in lines[1]
+    assert "required: false" in lines[1]
+    assert "executable `pip-audit` was not found on PATH" in lines[2]
+    assert "will skip scanner pip-audit" in lines[2]
+    assert "doctor could not check the executable" in lines[3]
+
+
+def test_doctor_passes_every_scanner_whose_executable_is_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(
+        repo,
+        "scanners:\n"
+        "  - name: bandit\n"
+        "    command: bandit -q {changed_py_files}\n"
+        "  - name: pip-audit\n"
+        "    command: '\"pip-audit\" --strict'\n"
+        "    required: false\n",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude", "bandit", "pip-audit"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _scanner_lines(output)
+    assert len(lines) == 2
+    assert lines[0].startswith("PASS scanner bandit:")
+    assert (
+        "will run scanner bandit on claims where {changed_py_files} is "
+        "nonempty and skip it on other claims"
+    ) in lines[0]
+    assert lines[1].startswith("PASS scanner pip-audit:")
+    assert "executable `pip-audit`" in lines[1]
+    assert "will run scanner pip-audit" in lines[1]
+    assert "skip it on other claims" not in lines[1]
+
+
+def test_doctor_scanner_with_both_list_placeholders_names_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(
+        repo,
+        "scanners:\n"
+        "  - name: lint\n"
+        "    command: lint {changed_files} {changed_py_files}\n",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _scanner_lines(output)[0]
+    assert line.startswith("FAIL scanner lint:")
+    assert (
+        "every claim where {changed_files} and {changed_py_files} are nonempty "
+        "will fail with scanner_missing:lint"
+    ) in line
+
+
+def test_doctor_scanner_lookup_has_no_cmd_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # Role binaries also resolve `<name>.cmd`; the gate does not, so neither
+    # does the doctor's scanner check.
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(repo, "scanners:\n  - name: bandit\n    command: bandit -q\n")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude", "bandit.cmd"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    assert _scanner_lines(output)[0].startswith("FAIL scanner bandit:")
+
+
+def test_doctor_does_not_run_scanner_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    marker = tmp_path / "scanner-ran.txt"
+    _add_config(
+        repo,
+        "scanners:\n"
+        "  - name: marker\n"
+        f"    command: python -c \"open(r'{marker}', 'w').close()\"\n"
+        "  - name: shellmarker\n"
+        f"    command: X=1 python -c \"open(r'{marker}', 'w').close()\"\n",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude", "python"})
+    real_run = subprocess.run
+    calls: list[object] = []
+
+    def recording_run(args: object, *rest: object, **kwargs: object) -> object:
+        calls.append(args)
+        return real_run(args, *rest, **kwargs)
+
+    def refuse_popen(*args: object, **kwargs: object) -> object:
+        raise AssertionError(f"doctor started a process: {args!r}")
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    monkeypatch.setattr("llm_handoff.work_claim.run_shell_command", refuse_popen)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _scanner_lines(output)[0].startswith("PASS scanner marker:")
+    assert not marker.exists()
+    for args in calls:
+        assert isinstance(args, list) and args[0] == "git", args
+
+
 # A Work Packet section the gate cannot parse: it has no Files in scope or
 # Verification command.
 HANDOFF_WITHOUT_WORK_PACKET = """---

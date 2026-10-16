@@ -316,7 +316,8 @@ Notes on the gates:
   dispatcher's permissions. Scanner commands come from your config and are
   trusted operator input.
 - `llm-handoff` does not install scanners. A scanner marked `required` that
-  is not on `PATH` fails the claim.
+  is not on `PATH` fails the claim. `llm-handoff doctor` reports each
+  configured scanner and whether its executable is on `PATH`.
 - The security reviewer uses the first installed provider CLI that differs
   from the implementer's, and falls back to the implementer's own vendor with
   a warning that the review is not independent. When no reviewer CLI is
