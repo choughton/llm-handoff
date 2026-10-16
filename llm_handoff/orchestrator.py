@@ -226,7 +226,7 @@ PRE_DISPATCH_INVALID_PLANNER_FRONTMATTER_TEMPLATE = (
     "requested by the handoff body and produce the next dispatchable handoff. "
     "Do not stop after only fixing frontmatter. Do not route back to planner "
     "unless the result is an explicit user-facing pause/escalation that cannot "
-    "be assigned to backend, frontend, auditor, or finalizer. Do not modify "
+    "be assigned to backend, frontend, or auditor. Do not modify "
     "source, tests, project-state files, ledger files, or completed work. Commit "
     "exactly {handoff_path} before finishing."
 )

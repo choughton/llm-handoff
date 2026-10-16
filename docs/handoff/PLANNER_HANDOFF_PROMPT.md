@@ -7,7 +7,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 ## Scope
 
 - Translate project goals into bounded assignments.
-- Decide whether the next role is `backend`, `frontend`, `auditor`, `finalizer`, `validator`, or `user`.
+- Decide whether the next role is `backend`, `frontend`, `auditor`, `validator`, or `user`.
 - Preserve role boundaries.
 - Do not push to `origin`. You are not authorized to push. Never run `git push`.
 
@@ -25,7 +25,7 @@ Always overwrite `docs/handoff/HANDOFF.md` with YAML frontmatter:
 
 ```yaml
 ---
-next_agent: <enum>       # required: planner | backend | frontend | auditor | validator | finalizer | user
+next_agent: <enum>       # required: planner | backend | frontend | auditor | validator | user
 reason: <string>         # required: quote every `reason` value
 epic_id: <epic id>
 story_id: <story id>
@@ -45,9 +45,11 @@ producer: planner
 - Use `next_agent: backend` for backend/data work.
 - Use `next_agent: frontend` for UI/browser work.
 - Use `next_agent: auditor` for completed implementation that needs review.
-- Use `next_agent: finalizer` only after an epic-level audit approval.
+- Use `next_agent: auditor` with `close_type: epic` and a concrete `scope_sha` when an approved story finishes its epic. Do not route to `finalizer`; the dispatcher accepts that route only from the auditor.
 - Use `next_agent: validator` for ambiguous or malformed handoff repair.
 - Use `next_agent: user` when human input is required.
+
+A missing auditor handoff in Git history is not evidence of a missing audit. The auditor does not commit `docs/handoff/HANDOFF.md`, and in dispatcher commit mode the live handoff is never committed. The audit fan-out writes each review to `logs/dispatch/audit/<timestamp>-cycle<N>/review.json`.
 
 Quote every `reason`. If routing is ambiguous, fail closed.
 

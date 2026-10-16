@@ -32,7 +32,7 @@ Every assignment must begin with:
 
 ```yaml
 ---
-next_agent: <enum>       # planner | backend | frontend | auditor | validator | finalizer | user
+next_agent: <enum>       # planner | backend | frontend | auditor | validator | user
 reason: <string>         # quote every `reason` value
 epic_id: <string>
 story_id: <string>
@@ -47,7 +47,11 @@ producer: planner
 ---
 ```
 
-Use `next_agent: backend` for backend/data work, `next_agent: frontend` for UI work, `next_agent: auditor` for review, `next_agent: finalizer` for approved epic closeout, and `next_agent: user` when human input is required.
+Use `next_agent: backend` for backend/data work, `next_agent: frontend` for UI work, `next_agent: auditor` for review, and `next_agent: user` when human input is required.
+
+Do not route to `finalizer`; the dispatcher accepts `next_agent: finalizer` only from the auditor. When an approved story finishes its epic, route to `auditor` with `close_type: epic` and a concrete `scope_sha` so the auditor approves the epic close and hands off to `finalizer`.
+
+A missing auditor handoff in Git history is not evidence of a missing audit. The auditor does not commit `docs/handoff/HANDOFF.md`, and in dispatcher commit mode the live handoff is never committed. The audit fan-out writes each review to `logs/dispatch/audit/<timestamp>-cycle<N>/review.json`.
 
 Quote every `reason`. If the next route is ambiguous, fail closed and route to `user` with a specific question.
 
