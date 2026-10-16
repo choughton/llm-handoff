@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** ANTIGRAVITY-ADAPTER (AGY-1 in progress).
+- **Active Epic:** AUDIT-COST (next; COST-1 not started). ANTIGRAVITY-ADAPTER
+  closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -18,21 +19,6 @@ epic, or the first story of the next epic when the active one closes. Each
 story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
-
-### 1. ANTIGRAVITY-ADAPTER - provider adapter for the Antigravity `agy` CLI
-
-- AGY-1: Adapter core: `provider: antigravity`, binary `agy`, config
-  registration, launch arguments, environment handling, stream output parsing,
-  tests with a fake binary. (In progress.)
-- AGY-2: Detect `agy` soft-denies (a refused shell command that still exits 0)
-  and sign-in failures in `llm_handoff/provider_auth.py`; report a soft-deny as
-  a failure that names the `permissions.allow` entry to add.
-- AGY-3: Antigravity agent files under `.agents/agents/` (repository and
-  `examples/reference-workflow/`), and `.agents/**` in
-  `DEFAULT_PROTECTED_PATHS`.
-- AGY-4: `init` prints, and `doctor` checks, the `permissions.allow` and
-  `permissions.deny` entries each Antigravity-mapped role needs. Never edit the
-  user's settings file.
 
 ### 2. AUDIT-COST - audit cost controls
 
@@ -169,6 +155,15 @@ Before scoping INTAKE-1, route to `user` for a short design check.
 - **PUBLISH-RESUME** - a resumed publish pauses when the branch gained anything
   but merges, including edits carried inside an operator merge commit. PR3
   `e90ce96`, merged as `717b963`. Verification: full test suite.
+- **ANTIGRAVITY-ADAPTER** - `agy` provider adapter (AGY-1 core adapter; AGY-2
+  soft-deny and sign-in detection, PR #60 merge
+  `54cc38c0dc343fb07bb0b578bfdd243fe809d254`; AGY-3 agent files and protected
+  `.agents/**`, PR #61 merge `223053d5a1dac89d96c5273da674f42299b3b7de`; AGY-4
+  `init` prints and `doctor` checks `permissions.allow`/`deny`, audited at
+  `ba0a672c86213932a280bbe1f2b37748cb573336`, PR #62 merge
+  `8d8a4c08cc84487a995086943347ff26fa9bc3de`). Audit approved with sub-threshold
+  findings only (doctor output escaping, push-grant detection breadth, deny/ask
+  shadowing heuristic not checked against a live `agy`).
 
 ## Notes
 
