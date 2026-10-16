@@ -270,8 +270,9 @@ attempt at each of these pauses (except a `user` route) before the dispatcher
 waits for you to edit `HANDOFF.md`; see
 [CONFIGURATION.md](CONFIGURATION.md#pause-recovery). When the dispatcher then
 waits and you are at a terminal, an operator prompt lets you press Enter or
-type guidance to dispatch the planner, type `retry` or `quit`, or edit
-`HANDOFF.md` to resume; see
+type guidance to dispatch the planner, type `@backend`, `@frontend`, or
+`@auditor` with an optional message to dispatch that role directly, type
+`retry` or `quit`, or edit `HANDOFF.md` to resume; see
 [CONFIGURATION.md](CONFIGURATION.md#operator-prompt).
 
 `unknown` route:

@@ -163,11 +163,14 @@ When the dispatcher pauses and waits for `HANDOFF.md` to change, it logs the
 `PAUSE` reason line and then, if a person is at a terminal, shows an operator
 prompt. The prompt appears at every `next_agent: user` pause, and at the other
 pauses once bounded planner recovery is used up or unavailable (for example
-with `pause_recovery: "off"`). It accepts four actions:
+with `pause_recovery: "off"`). It accepts five actions:
 
 - Enter: dispatch the planner with an instruction to resolve the pause with
   its best judgment.
 - Any other text: dispatch the planner with that text as guidance.
+- `@backend`, `@frontend`, or `@auditor`, optionally followed by a message:
+  dispatch that role directly on the current `HANDOFF.md`, bypassing the
+  handoff's route. See "Role targeting" below.
 - `retry`: re-run the cycle. On a `user` route this re-reads `HANDOFF.md`,
   which still routes to `user`, so the dispatcher pauses again.
 - `quit`: stop the dispatcher with exit code 0.
@@ -185,12 +188,39 @@ The dispatcher reads the terminal only while a prompt is shown, so nothing
 competes with the keypress a `--manual-frontend` step waits for. Lines typed
 while no prompt is shown, for example while an agent runs or before the first
 prompt, are discarded when the next prompt appears; the dispatcher logs how
-many. A
-`@role` line, such as `@backend`, is rejected for now: role targeting is not
-available yet.
+many.
+
+Role targeting: a line that starts with `@` names a role, matched
+case-insensitively, up to the first space; the rest of the line is the
+message. `@backend`, `@frontend`, and `@auditor` schedule one dispatch of
+that role on the current `HANDOFF.md`. The role's instruction states the
+pause reason, that a person at the dispatcher console dispatched it from the
+operator prompt, and the operator's message (`Operator instruction: ...`), or,
+with no message, a request to continue the assignment in the handoff. It also
+tells the role to stay within its boundaries and the Work Packet's Files in
+scope and to write its normal handback. When `audit.reviewers` includes
+`security`, `@auditor` runs the read-only audit fan-out instead, so its
+instruction keeps the operator's message but tells the reviewer not to edit
+`HANDOFF.md` and to return only the structured JSON the review requests.
+`@planner <message>` is the same as
+typing the message as planner guidance, and `@planner` alone is the same as
+pressing Enter. Any other target, such as `@user`, `@finalizer`, or
+`@validator`, is rejected with a message that lists the accepted targets, and
+the prompt keeps waiting.
+
+A targeted dispatch skips the stale-route check, so it runs even when the
+same route already ran on an unchanged handoff. Everything else applies as
+for a normal dispatch of that route: the three-fix circuit breaker for
+`backend` and `frontend`, the story branch, the work-claim gate, dispatcher
+commits, the protected-file check, and post-dispatch validation. Like the
+operator planner cycle, it does not reset the pause recovery streak. If
+`HANDOFF.md` changes before the targeted dispatch runs, the dispatcher drops
+it, logs a `WARN` line, and routes the current handoff normally.
 
 The prompt never appears when stdin is not a TTY, in `--dry-run`, or with
-`poll_interval_seconds: 0`. In those cases the pause behaves as before. To
+`poll_interval_seconds: 0`. In those cases the pause behaves as before. When
+stdin is a TTY but the dispatcher has no console input for it, the
+dispatcher logs a `WARN` line and also waits for `HANDOFF.md` to change. To
 turn the prompt off, set `interactive_pause: false` or pass
 `--no-interactive-pause` on the command line. The startup banner shows
 whether the prompt is enabled.

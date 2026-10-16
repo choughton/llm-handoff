@@ -123,7 +123,7 @@ def _run_dispatch(
         planner_resume=planner_resume,
         interactive_pause=False if no_interactive_pause else None,
     )
-    lock =_try_acquire_dispatch_lock(config.repo_root)
+    lock = _try_acquire_dispatch_lock(config.repo_root)
     if lock is None:
         lock_path = _dispatch_lock_path(config.repo_root)
         print(
