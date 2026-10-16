@@ -528,6 +528,10 @@ def _frontmatter_route_errors(frontmatter: HandoffRouting) -> list[str]:
     if normalized_next_agent == "finalizer" and normalized_producer != "auditor":
         errors.append(f"next_agent `{next_agent}` requires producer `auditor`.")
 
+    conflict = status_next_agent_conflict(frontmatter)
+    if conflict is not None:
+        errors.append(conflict)
+
     return errors
 
 
@@ -548,6 +552,18 @@ def _route_from_status(frontmatter: HandoffRouting) -> RoutingDecision | None:
             ],
         )
 
+    route_name = _status_route(status, frontmatter)
+
+    return RoutingDecision(
+        route=route_name,
+        confidence="HIGH" if route_name != "unknown" else "LOW",
+        source=f"frontmatter.status.{status.value}",
+        reasoning=f"YAML routing status `{status.value}` routes work to {route_name}.",
+        warnings=_frontmatter_metadata_warnings(frontmatter),
+    )
+
+
+def _status_route(status: HandoffStatus, frontmatter: HandoffRouting) -> RouteName:
     route_name: RouteName
     if status == HandoffStatus.READY_FOR_REVIEW:
         route_name = "auditor"
@@ -564,13 +580,28 @@ def _route_from_status(frontmatter: HandoffRouting) -> RoutingDecision | None:
         route_name = "user"
     else:  # pragma: no cover - exhaustive for Enum, kept for type checkers.
         route_name = "unknown"
+    return route_name
 
-    return RoutingDecision(
-        route=route_name,
-        confidence="HIGH" if route_name != "unknown" else "LOW",
-        source=f"frontmatter.status.{status.value}",
-        reasoning=f"YAML routing status `{status.value}` routes work to {route_name}.",
-        warnings=_frontmatter_metadata_warnings(frontmatter),
+
+def status_next_agent_conflict(frontmatter: HandoffRouting) -> str | None:
+    """Describe a status whose implied route contradicts an explicit next_agent."""
+    if frontmatter.status is None:
+        return None
+    normalized_next_agent = normalize_next_agent_value(frontmatter.next_agent)
+    if normalized_next_agent is None:
+        return None
+    try:
+        status = HandoffStatus(frontmatter.status)
+    except ValueError:
+        return None
+    status_route = _status_route(status, frontmatter)
+    if status_route == normalized_next_agent:
+        return None
+    return (
+        f"status `{status.value}` routes to {status_route}, but next_agent is "
+        f"`{frontmatter.next_agent}`. Make them agree: blocked_missing_context "
+        "and escalate_to_user pause for user, blocked_implementation_failure "
+        "hands a re-scope to planner, and ready_for_review goes to auditor."
     )
 
 

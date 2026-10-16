@@ -1036,6 +1036,65 @@ Continue the intended backend route.
     assert ("DISPATCH", "Dispatching planner.") in log_messages
 
 
+def test_status_next_agent_conflict_dispatches_planner_instead_of_pausing() -> None:
+    orchestrator = _load_orchestrator_module()
+    from llm_handoff.router import route
+
+    handoff_content = """---
+next_agent: planner
+reason: "Work-claim gate failed; planner should re-scope."
+status: blocked_missing_context
+producer: backend
+---
+
+# backend Handback
+"""
+
+    decision = route(handoff_content)
+    recovery = orchestrator._pre_dispatch_invalid_frontmatter_recovery(
+        decision,
+        handoff_content,
+        handoff_path=Path("docs/handoff/HANDOFF.md"),
+    )
+
+    assert decision.route == "unknown"
+    assert recovery is not None
+    assert recovery.decision.route == "planner"
+    assert recovery.decision.source == "pre_dispatch_planner_frontmatter_repair"
+    assert (
+        "status `blocked_missing_context` routes to user, but next_agent is `planner`"
+        in recovery.additional_instruction
+    )
+
+
+def test_status_next_agent_conflict_naming_user_pauses() -> None:
+    orchestrator = _load_orchestrator_module()
+    from llm_handoff.router import route
+
+    handoff_content = """---
+next_agent: user
+reason: "Assignment needs re-scoping."
+status: blocked_implementation_failure
+producer: backend
+---
+
+# backend Handback
+"""
+
+    decision = route(handoff_content)
+
+    assert decision.route == "unknown"
+    assert decision.confidence == "LOW"
+    assert (
+        orchestrator._pre_dispatch_invalid_frontmatter_recovery(
+            decision,
+            handoff_content,
+            handoff_path=Path("docs/handoff/HANDOFF.md"),
+        )
+        is None
+    )
+
+
 def test_run_loop_routes_parseable_invalid_non_planner_frontmatter_to_planner_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

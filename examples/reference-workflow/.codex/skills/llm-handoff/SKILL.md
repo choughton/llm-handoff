@@ -103,7 +103,7 @@ sandbox before any audit.
 Before acting on auditor feedback, verify the finding against the changed files,
 run or inspect the focused command that proves it, and check the fix against
 repository architecture and role boundaries. If feedback conflicts with the
-contract, document the contradiction and route with
+contract, document the contradiction and route to `planner` with
 `status: blocked_implementation_failure`.
 
 ## Completion Checklist

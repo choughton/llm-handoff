@@ -99,6 +99,19 @@ required. Use `blocked_missing_context` when the missing input is specific and
 the next human question is clear. Use `blocked_implementation_failure` when an
 implementation path failed structurally and needs re-scoping.
 
+Each blocking status already names who acts next, so set `next_agent` to
+match it:
+
+- `blocked_missing_context` and `escalate_to_user` pause for a person. Pair
+  them with `next_agent: user` and state the one question that person must
+  answer.
+- `blocked_implementation_failure` goes to the planner. Pair it with
+  `next_agent: planner`. Use it when the Work Packet cannot be completed as
+  written, a work-claim gate failed, or the assignment needs re-scoping.
+
+To ask the planner for a re-scope, use `blocked_implementation_failure`, not
+`blocked_missing_context`.
+
 ## Common Failure Modes
 
 - Missing or malformed YAML frontmatter.

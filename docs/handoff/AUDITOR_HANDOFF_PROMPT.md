@@ -55,7 +55,7 @@ producer: auditor
 ---
 ```
 
-Use `next_agent: finalizer` only for an approved epic close. Use `next_agent: user` for unresolved risk or ambiguity.
+Use `next_agent: finalizer` only for an approved epic close. Use `next_agent: user` with `status: escalate_to_user` for unresolved risk or ambiguity. Match `status` to `next_agent`: `verified_pass` goes to `planner` (or `finalizer` with `close_type: epic`), and `verified_fail` goes to `backend`, `frontend`, or `planner`.
 
 Emit a `## Verification Evidence` block for every `verified_pass` or
 `verified_fail` handoff. Do not claim `verified_pass` without that block.

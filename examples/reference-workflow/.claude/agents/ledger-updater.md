@@ -64,7 +64,7 @@ producer: finalizer
 ---
 ```
 
-Use `next_agent: user` if no next scope can be inferred safely.
+Use `next_agent: user` with `status: escalate_to_user` if no next scope can be inferred safely.
 
 ## Commit And Push
 
