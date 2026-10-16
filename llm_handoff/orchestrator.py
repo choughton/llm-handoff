@@ -1126,6 +1126,8 @@ def run_loop(
                         ),
                         log=log_fn,
                         review=_review_gate(config),
+                        base_branch=config.publish.base_branch,
+                        branch_prefix=config.publish.branch_prefix,
                     )
                     if outcome.handoff is not None:
                         config.handoff_full_path.write_text(
