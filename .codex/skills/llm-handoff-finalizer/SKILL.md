@@ -83,21 +83,25 @@ Run `git rev-parse HEAD` for concrete SHAs. Do not write `scope_sha: HEAD`.
 
 ## Git Inside The Sandbox
 
-`commit_mode: dispatcher` does not cover the finalizer. The dispatcher
-commits backend and frontend work in that mode and leaves the planner's
-handoff uncommitted on purpose, but it does not commit the finalizer's state
-and handoff update and sends the finalizer no commit-mode instruction. The finalizer commits its own update whatever
-`commit_mode` is set to.
+The dispatcher does not commit the finalizer's state update; the finalizer
+commits it itself. What it commits depends on `commit_mode`:
+
+- `commit_mode: dispatcher`: the dispatcher says so in its prompt. Commit only
+  `PROJECT_STATE.md` and leave `docs/handoff/HANDOFF.md` uncommitted. The
+  dispatcher undoes a commit that holds only the handoff and stops the loop on
+  a commit that mixes the handoff with other files.
+- Otherwise: commit `PROJECT_STATE.md` and `docs/handoff/HANDOFF.md` together.
 
 Codex keeps `.git` read-only inside its sandbox, so `git add` and
 `git commit` fail there. The repository's `.codex/rules/llm-handoff.rules`
 does not let git writes out of the sandbox, and it forbids `git push`. If you
 are sandboxed and the commit fails, do not work around the sandbox: leave the
 changes uncommitted, do not invent a commit SHA, write `COMMIT SHA: NONE`,
-and say under `CHANGES MADE` that the sandbox blocked the commit and that the
-operator must commit `PROJECT_STATE.md` and `docs/handoff/HANDOFF.md`. The
-dispatcher pauses when the commit SHA is missing, so a person commits the
-files before the loop continues.
+and say under `CHANGES MADE` that the sandbox blocked the commit and which
+files the operator must commit: `PROJECT_STATE.md` alone in dispatcher commit
+mode, else `PROJECT_STATE.md` and `docs/handoff/HANDOFF.md`. The dispatcher
+pauses when the commit SHA is missing, so a person commits the files before
+the loop continues.
 
 Read-only git commands (`status`, `diff`, `log`, `rev-parse`) stay in the
 sandbox. On Windows the sandbox runs as a separate account, so add
