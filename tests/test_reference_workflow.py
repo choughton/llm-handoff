@@ -263,6 +263,50 @@ def test_codex_validator_skill_covers_validation_and_routing() -> None:
     assert "The dispatcher's prompt names which task applies." in content
 
 
+PLANNER_PROMPT_FILES = (
+    ".claude/agents/planner.md",
+    ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".gemini/agents/planner.md",
+    "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
+    "docs/handoff/PLANNER_INITIAL_PROMPT.md",
+)
+AUDITOR_PROMPT_FILES = (
+    ".claude/agents/auditor.md",
+    ".codex/skills/llm-handoff-auditor/SKILL.md",
+    "docs/handoff/AUDITOR_HANDOFF_PROMPT.md",
+)
+
+
+def test_planner_prompts_do_not_offer_a_finalizer_route() -> None:
+    # The validator and router accept `next_agent: finalizer` only from
+    # `producer: auditor`, so a planner prompt must not offer that route.
+    for relative_path in PLANNER_PROMPT_FILES:
+        content = (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8")
+        assert "approved epic closeout" not in content, relative_path
+        assert "Use `next_agent: finalizer`" not in content, relative_path
+        for line in content.splitlines():
+            if line.startswith("next_agent: <enum>"):
+                assert "finalizer" not in line, relative_path
+
+
+def test_planner_prompts_send_an_epic_close_to_the_auditor() -> None:
+    for relative_path in PLANNER_PROMPT_FILES[:4]:
+        content = (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8")
+        assert "`close_type: epic` and a concrete `scope_sha`" in content, relative_path
+        assert "is not evidence of a missing audit" in content, relative_path
+        assert "logs/dispatch/audit/<timestamp>-cycle<N>/review.json" in content, (
+            relative_path
+        )
+
+
+def test_auditor_prompts_route_the_last_story_of_an_epic_to_the_finalizer() -> None:
+    for relative_path in AUDITOR_PROMPT_FILES:
+        content = (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8")
+        assert "`remaining_stories: []`" in content, relative_path
+        assert "do not send it to `planner` to decide" in content, relative_path
+        assert "Only the auditor may hand off to `finalizer`." in content, relative_path
+
+
 def test_codex_rules_allow_no_git_writes_and_forbid_push() -> None:
     rules = (REFERENCE_WORKFLOW / ".codex" / "rules" / "llm-handoff.rules").read_text(
         encoding="utf-8"

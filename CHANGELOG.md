@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The planner prompts no longer offer `next_agent: finalizer`. The validator
+  and router accept that route only from `producer: auditor`, so a planner
+  that followed the old "approved epic closeout" line was rejected and the run
+  paused. The planner now routes a finished epic to `auditor` with
+  `close_type: epic` and a concrete `scope_sha`, and is told that a missing
+  auditor handoff in Git history is not evidence of a missing audit (audit
+  fan-out reviews live under `logs/dispatch/audit/`). The auditor prompts and
+  the audit fan-out prompt now route an approved story that finishes its epic
+  (an explicit `remaining_stories: []`, a handoff that names it the last
+  story, or a planner-sent `close_type: epic`) straight to `finalizer` with
+  `close_type: epic` instead of back to the planner to decide.
+
 - The work-claim gate no longer runs a Verification command line written as
   prose. A line such as `` `cmd1`, then `` or `` `cmd1` and `cmd2` `` now runs
   each backticked command. A line with other text around a backticked command,

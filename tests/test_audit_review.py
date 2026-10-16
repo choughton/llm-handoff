@@ -2245,3 +2245,14 @@ def test_quality_prompt_skips_a_verification_the_dispatcher_already_passed() -> 
     assert "Verdict: PASS" in template
     assert "do not run it again" in template
     assert "Run the configured verification commands when available" not in template
+
+
+def test_quality_prompt_routes_the_last_story_of_an_epic_to_the_finalizer() -> None:
+    # The fan-out writes the handoff from the reviewer's verdict, so the
+    # reviewer, not the planner, must turn an epic's last approved story into
+    # the epic close: the validator rejects a planner route to finalizer.
+    template = audit_review.QUALITY_FAN_OUT_PROMPT_TEMPLATE
+
+    assert "`remaining_stories: []`" in template
+    assert "not an omitted field" in template
+    assert "instead of sending it to planner to decide" in template

@@ -10,7 +10,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 - Run the relevant verification commands.
 - Report blocking defects before routing forward.
 - Route story-level success to `planner` or the next implementation role.
-- Route epic-level success to `finalizer`.
+- Route epic-level success, including an approved story that finishes its epic, to `finalizer`.
 
 ## Startup
 
@@ -55,7 +55,7 @@ producer: auditor
 ---
 ```
 
-Use `next_agent: finalizer` only for an approved epic close. Use `next_agent: user` with `status: escalate_to_user` for unresolved risk or ambiguity. Match `status` to `next_agent`: `verified_pass` goes to `planner` (or `finalizer` with `close_type: epic`), and `verified_fail` goes to `backend`, `frontend`, or `planner`.
+Use `next_agent: finalizer` only for an approved epic close. A story finishes its epic when the handoff lists `remaining_stories: []` (an explicit empty list, not an omitted field), when it otherwise names the story as the epic's last, or when the planner routed it with `close_type: epic`. Route that approval to `finalizer` yourself; do not send it to `planner` to decide. Only the auditor may hand off to `finalizer`. Use `next_agent: user` with `status: escalate_to_user` for unresolved risk or ambiguity. Match `status` to `next_agent`: `verified_pass` goes to `planner` (or `finalizer` with `close_type: epic`), and `verified_fail` goes to `backend`, `frontend`, or `planner`.
 
 Emit a `## Verification Evidence` block for every `verified_pass` or
 `verified_fail` handoff. Do not claim `verified_pass` without that block.
