@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from llm_handoff import config as config_module
 from llm_handoff import doctor as doctor_module
 from llm_handoff.usage_log import (
+    USAGE_FIELD_ORDER,
     format_usage_line,
     usage_fields_from_claude_result,
 )
@@ -412,6 +413,7 @@ class ReviewerRun:
     stderr: str
     verdict: ReviewVerdict | None = None
     error: str | None = None
+    usage: dict[str, object] | None = None
 
     @property
     def command_summary(self) -> str:
@@ -591,6 +593,7 @@ def run_audit_fan_out(
             _log(log, "ERROR", run.error)
 
     _write_review_logs(log_dir, scope, runs)
+    _write_usage_log(log_dir, runs)
     _log(log, "INFO", f"Audit reviewer outputs recorded under {log_dir}.")
 
     if _handoff_sha(handoff_path) != before_sha:
@@ -1291,6 +1294,7 @@ def _run_quality_reviewer(
             stderr=result.stderr,
             verdict=verdict,
             error=error,
+            usage=result.usage,
         ),
         handoff_sha_after=after_sha,
     )
@@ -1301,26 +1305,32 @@ def _log_claude_json_usage(
     stdout: str,
     command: Sequence[str],
     log: LogFn | None,
-) -> None:
-    """Log a ``--output-format json`` Claude run's usage to the log file only."""
+) -> dict[str, object] | None:
+    """Log a ``--output-format json`` Claude run's usage to the log file only.
 
-    if log is None:
-        return
+    Returns the logged fields (``model`` first), or ``None`` when stdout is
+    not a JSON object or carries no usage fields. The fields are returned
+    even when ``log`` is ``None``.
+    """
+
     try:
         envelope = json.loads(stdout)
     except json.JSONDecodeError:
-        return
+        return None
     if not isinstance(envelope, dict):
-        return
+        return None
     fields = usage_fields_from_claude_result(envelope)
     if not fields:
-        return
+        return None
     model = None
     if "--model" in command:
         index = list(command).index("--model")
         if index + 1 < len(command):
             model = command[index + 1]
-    log("DEBUG", format_usage_line(agent_name, "claude", {"model": model, **fields}))
+    usage: dict[str, object] = {"model": model, **fields}
+    if log is not None:
+        log("DEBUG", format_usage_line(agent_name, "claude", usage))
+    return usage
 
 
 def _run_security_reviewer(
@@ -1390,6 +1400,7 @@ def _run_security_reviewer(
                 handoff_sha_after=_handoff_sha(handoff_path),
             )
 
+    usage: dict[str, object] | None = None
     if plan.kind == "codex-exec":
         assert plan.last_message_path is not None
         codex_result = _run_codex_json_command(
@@ -1405,6 +1416,7 @@ def _run_security_reviewer(
         stderr = codex_result.result.stderr
         exit_code = codex_result.result.exit_code
         verdict_text = codex_result.final_message or stdout
+        usage = codex_result.usage
     else:
         process_result = _run_logged_agent_command(
             agent_name,
@@ -1419,7 +1431,7 @@ def _run_security_reviewer(
         exit_code = process_result.exit_code
         verdict_text = stdout
         if plan.kind == "claude":
-            _log_claude_json_usage(agent_name, stdout, plan.command, log)
+            usage = _log_claude_json_usage(agent_name, stdout, plan.command, log)
     elapsed = time.monotonic() - start
     after_sha = _handoff_sha(handoff_path)
 
@@ -1451,6 +1463,7 @@ def _run_security_reviewer(
             stderr=stderr,
             verdict=verdict,
             error=error,
+            usage=usage,
         ),
         handoff_sha_after=after_sha,
     )
@@ -1909,6 +1922,57 @@ def _write_review_logs(
         return
 
 
+def _clean_usage(usage: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Return a copy of ``usage`` holding only known, well-typed fields.
+
+    ``model`` is kept only as a non-empty string. Every other known field is
+    kept only as a non-negative int or float that is not a bool. Unknown keys
+    are dropped. An empty result becomes ``None``. The input is not mutated.
+    """
+
+    if not isinstance(usage, Mapping):
+        return None
+    cleaned: dict[str, object] = {}
+    for key in USAGE_FIELD_ORDER:
+        if key not in usage:
+            continue
+        value = usage[key]
+        if key == "model":
+            if isinstance(value, str) and value:
+                cleaned[key] = value
+            continue
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            continue
+        if value >= 0:
+            cleaned[key] = value
+    return cleaned or None
+
+
+def _write_usage_log(log_dir: Path, runs: Mapping[str, ReviewerRun]) -> None:
+    """Write ``usage.json`` with each reviewer's provider, tokens and cost.
+
+    Usage is what the provider reported for its last attempt; a retried run
+    reports only that final attempt.
+    """
+
+    reviewers: dict[str, object] = {}
+    total_cost: float | int | None = None
+    for name, run in runs.items():
+        usage = _clean_usage(run.usage)
+        reviewers[name] = {"provider": run.provider, "usage": usage}
+        cost = usage.get("cost_usd") if usage is not None else None
+        if isinstance(cost, int | float):
+            total_cost = cost if total_cost is None else total_cost + cost
+    payload = {"reviewers": reviewers, "total_cost_usd": total_cost}
+    try:
+        (log_dir / "usage.json").write_text(
+            json.dumps(payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
 def _finding_lines(findings: list[ReviewFinding]) -> list[str]:
     lines: list[str] = []
     for finding in findings:
@@ -2018,6 +2082,7 @@ def _with_error(run: ReviewerRun, error: str) -> ReviewerRun:
         stderr=run.stderr,
         verdict=run.verdict,
         error=error,
+        usage=run.usage,
     )
 
 
