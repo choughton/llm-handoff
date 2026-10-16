@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Provider adapters now return per-run token and cost usage on their result
+  objects (`usage` on `DispatchResult` and `SubagentResult`), as groundwork
+  for audit usage files. The `usage:` log lines are unchanged.
+
 - Added an optional `audit.security_model` setting. When set, the claude
   security reviewer launches with `--model <security_model>`; when unset, it
   still borrows the model of the first `claude` role, else the built-in

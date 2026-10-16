@@ -24,6 +24,7 @@ class _CodexCommandResult:
     result: _ProcessResult
     thread_id: str | None
     final_message: str
+    usage: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,15 @@ class _CodexJsonMonitor:
     thread_id: str | None = None
     last_agent_message: str = ""
     _stderr_state: _LiveAgentStreamState = field(default_factory=_LiveAgentStreamState)
+    usage_totals: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def usage(self) -> dict[str, object] | None:
+        """Token counts summed over every ``turn.completed`` event, or None."""
+
+        if not self.usage_totals:
+            return None
+        return dict(self.usage_totals)
 
     def consume_stdout(self, chunk: str) -> None:
         if not chunk:
@@ -100,6 +110,9 @@ class _CodexJsonMonitor:
 
         if event_type == "turn.completed":
             fields = usage_fields_from_codex_turn(event)
+            for key, value in fields.items():
+                if isinstance(value, int):
+                    self.usage_totals[key] = self.usage_totals.get(key, 0) + value
             if self.log is not None and fields:
                 # Codex reports tokens but no price. Log file only (DEBUG).
                 self.log(
@@ -274,6 +287,7 @@ def invoke_codex(
         stderr=result.result.stderr,
         exit_code=result.result.exit_code,
         elapsed_seconds=time.monotonic() - start_time,
+        usage=result.usage,
     )
 
 
@@ -469,6 +483,7 @@ def _run_codex_json_command(
         result=result,
         thread_id=monitor.thread_id,
         final_message=final_message,
+        usage=monitor.usage,
     )
 
 
