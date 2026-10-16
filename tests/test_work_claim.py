@@ -2426,6 +2426,25 @@ def test_docs_describe_scanners() -> None:
     assert "requirements-dev" not in configuration
 
 
+def test_example_config_has_no_active_semgrep_config_auto_entry() -> None:
+    config_path = REPO_ROOT / "dispatch_config.example.yaml"
+    content = config_path.read_text(encoding="utf-8")
+    active_lines = [
+        line for line in content.splitlines() if not line.lstrip().startswith("#")
+    ]
+
+    assert not any("--config auto" in line for line in active_lines)
+    assert not any("semgrep" in line for line in active_lines)
+    assert "#   command: semgrep scan --config .semgrep/rules.yml" in content
+    config = load_dispatch_config(repo_root=config_path.parent, config_path=config_path)
+    assert [scanner.name for scanner in config.scanners] == [
+        "gitleaks",
+        "bandit",
+        "pip-audit",
+    ]
+    assert all("--config auto" not in scanner.command for scanner in config.scanners)
+
+
 # ---------------------------------------------------------------------------
 # Review follow-ups
 # ---------------------------------------------------------------------------

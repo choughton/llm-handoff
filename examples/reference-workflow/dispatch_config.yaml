@@ -46,10 +46,13 @@ publish:
 # confirmed command here.
 #   verification_allowed_prefixes: ["python -m pytest"]
 work_packet_verification_timeout_seconds: 600
-# Optional scanners for the work-claim gate (gitleaks, semgrep, bandit,
-# pip-audit, or any tool the target repo installs). See
-# llm-handoff's CONFIGURATION.md for the copyable example and the placeholder
-# list.
+# Optional scanners for the work-claim gate. A scanner runs only when it is
+# listed here and its executable is on PATH; llm-handoff installs none.
+# `llm-handoff doctor` reports which configured scanners will run. For Python
+# repositories, bandit, pip-audit, and gitleaks are recommended; use semgrep
+# only with a pinned local ruleset (--config <path to a ruleset in the repo>),
+# not --config auto. See llm-handoff's CONFIGURATION.md for the copyable
+# example and the placeholder list.
 scanners: []
 
 agents:

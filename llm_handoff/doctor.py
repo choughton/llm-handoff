@@ -6,7 +6,9 @@ provider CLI binaries the configured roles launch, the container runtime
 Gemini CLI roles need for their sandbox, whether the configured next-agent
 normalizer has an API key or CLI to run with, whether the audit runs the
 security reviewer (with the opt-out reason when it does not), whether the
-work-claim gate is on (with the opt-out reason when it is not), and the
+work-claim gate is on (with the opt-out reason when it is not), each configured
+scanner and whether the gate will run it (its leading executable is looked up
+on PATH the way the gate does; scanner commands are never run), and the
 current handoff file, validated with the same Work Packet requirement the
 dispatch loop applies. When a role or fallback runs on Antigravity without
 `unsafe_bypass`, it also checks the `agy` user settings file for the required
@@ -59,6 +61,7 @@ from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatte
 from llm_handoff.router import route as route_handoff
 from llm_handoff.text_io import read_dispatch_text
 from llm_handoff.validator import validate_handoff_text
+from llm_handoff.work_claim import command_executable
 
 CheckStatus = Literal["PASS", "FAIL", "WARN"]
 
@@ -142,6 +145,7 @@ def run_doctor(
         _check_normalizer(dispatch_config, resolved_root, checks)
         _check_security_review(dispatch_config, checks)
         _check_work_claim_gate(dispatch_config, checks)
+        _check_scanners(dispatch_config, checks)
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
         require_work_packet = dispatch_config.enforce_work_packet
@@ -756,6 +760,90 @@ def _check_work_claim_gate(
                 "prefixes you expect (for example `python -m pytest`)",
             )
         )
+
+
+_SCANNERS_CHECK_NAME = "scanners"
+_SCANNERS_DOC_POINTER = "see the Scanners section of CONFIGURATION.md"
+
+
+def _check_scanners(
+    dispatch_config: DispatchConfig,
+    checks: list[DoctorCheck],
+) -> None:
+    """Report each configured scanner and whether the work-claim gate runs it.
+
+    The leading program comes from ``work_claim.command_executable`` and is
+    looked up with ``shutil.which`` only, the same lookup the gate uses (no
+    ``.cmd`` fallback). Scanner commands are never run.
+    """
+    scanners = dispatch_config.scanners
+    if not scanners:
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                _SCANNERS_CHECK_NAME,
+                "no scanners are configured, so the work-claim gate runs none; "
+                f"{_SCANNERS_DOC_POINTER} to add one",
+            )
+        )
+        return
+    names = ", ".join(scanner.name for scanner in scanners)
+    if not dispatch_config.enforce_work_packet:
+        checks.append(
+            DoctorCheck(
+                "WARN",
+                _SCANNERS_CHECK_NAME,
+                f"scanners are configured ({names}) but none of them run while "
+                "the work-claim gate is off (enforce_work_packet: false)",
+            )
+        )
+        return
+    for scanner in scanners:
+        name = f"scanner {scanner.name}"
+        executable = command_executable(scanner.command)
+        # A leading placeholder is only known once the gate renders the
+        # command, so doctor cannot check it either.
+        if executable is None or "{" in executable:
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    name,
+                    "doctor could not check the executable because the command "
+                    "does not start with a plain program name; the gate will run "
+                    "the command and treat a not-found exit as a missing scanner",
+                )
+            )
+            continue
+        if shutil.which(executable) is not None:
+            checks.append(
+                DoctorCheck(
+                    "PASS",
+                    name,
+                    f"executable `{executable}` is on PATH; the work-claim gate "
+                    f"will run scanner {scanner.name}",
+                )
+            )
+        elif scanner.required:
+            checks.append(
+                DoctorCheck(
+                    "FAIL",
+                    name,
+                    f"executable `{executable}` was not found on PATH; every "
+                    f"claim will fail with scanner_missing:{scanner.name} until "
+                    "the tool is installed or the scanner is set to "
+                    "required: false",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    name,
+                    f"executable `{executable}` was not found on PATH; the "
+                    f"work-claim gate will skip scanner {scanner.name} "
+                    "(required: false)",
+                )
+            )
 
 
 def _describe_missing(names: list[str]) -> str:

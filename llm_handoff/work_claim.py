@@ -1151,7 +1151,7 @@ def run_scanner(
             None,
         )
 
-    executable = _command_executable(rendered.command)
+    executable = command_executable(rendered.command)
     if executable is not None and shutil.which(executable) is None:
         return _missing_scanner(scanner, rendered.command, executable)
 
@@ -1239,8 +1239,12 @@ def _missing_scanner(
     )
 
 
-def _command_executable(command: str) -> str | None:
-    """Return the leading program of a shell command when it is a plain token."""
+def command_executable(command: str) -> str | None:
+    """Return the leading program of a shell command when it is a plain token.
+
+    ``llm-handoff doctor`` imports this so its scanner check finds the same
+    executable the gate looks up with ``shutil.which``.
+    """
 
     stripped = command.lstrip()
     if not stripped:
@@ -2277,6 +2281,7 @@ __all__ = [
     "capture_implementer_leftovers",
     "carry_over_key",
     "capture_pre_dispatch_state",
+    "command_executable",
     "evidence_commit_value",
     "evidence_sha_token",
     "extract_work_packet_section",
