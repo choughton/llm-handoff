@@ -6,6 +6,11 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Each audit fan-out cycle now writes `usage.json` next to `review.json` in
+  `logs/dispatch/audit/<timestamp>-cycle<N>/`, with each reviewer's provider,
+  token counts, and cost, plus a `total_cost_usd`. Reviewers that report no
+  usage show `null`; a retried run reports only its last attempt.
+
 - Provider adapters now return per-run token and cost usage on their result
   objects (`usage` on `DispatchResult` and `SubagentResult`), as groundwork
   for audit usage files. The `usage:` log lines are unchanged.

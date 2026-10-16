@@ -1245,7 +1245,11 @@ With `security` enabled, the auditor route works differently:
 - Each reviewer's raw stdout and stderr, exit code, elapsed time, and parsed
   verdict are written under `logs/dispatch/audit/<timestamp>-cycle<N>/`. The
   timestamp prefix keeps a restarted dispatcher from overwriting earlier
-  cycles.
+  cycles. The same folder holds `usage.json`, which records each reviewer's
+  provider, token counts, and cost, plus a `total_cost_usd` summed across
+  reviewers. A reviewer whose CLI reports no usage (Gemini, `codex-security`,
+  or Claude's buffered text mode) shows `null`, and when a provider retries,
+  the counts cover only the last attempt.
 
 Security reviewer invocation by provider:
 

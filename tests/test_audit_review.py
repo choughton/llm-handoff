@@ -202,9 +202,17 @@ def _claude_envelope(payload: dict[str, Any]) -> str:
     )
 
 
-def _subagent(stdout: str, exit_code: int = 0) -> SubagentResult:
+def _subagent(
+    stdout: str,
+    exit_code: int = 0,
+    usage: dict[str, object] | None = None,
+) -> SubagentResult:
     return SubagentResult(
-        stdout=stdout, stderr="", exit_code=exit_code, elapsed_seconds=0.01
+        stdout=stdout,
+        stderr="",
+        exit_code=exit_code,
+        elapsed_seconds=0.01,
+        usage=usage,
     )
 
 
@@ -230,13 +238,15 @@ def _run_fan_out(
     quality_stdout: str,
     base_sha: str | None = None,
     quality_side_effect=None,
+    quality_exit_code: int = 0,
+    quality_usage: dict[str, object] | None = None,
 ) -> tuple[DispatchResult, _Recorder]:
     log = _Recorder()
 
     def quality_invoker(prompt: str, agent_config) -> SubagentResult:
         if quality_side_effect is not None:
             quality_side_effect(prompt, agent_config)
-        return _subagent(quality_stdout)
+        return _subagent(quality_stdout, quality_exit_code, quality_usage)
 
     result = audit_review.run_audit_fan_out(
         config,
@@ -1477,6 +1487,296 @@ def test_fan_out_records_raw_outputs_and_timing(
     for name in ("quality", "security"):
         assert summary["reviewers"][name]["exit_code"] == 0
         assert "elapsed_seconds" in summary["reviewers"][name]
+
+
+CLAUDE_SECURITY_USAGE_ENVELOPE_FIELDS: dict[str, Any] = {
+    "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 5,
+        "cache_creation_input_tokens": 0,
+    },
+    "total_cost_usd": 0.25,
+    "num_turns": 3,
+    "duration_ms": 1200,
+}
+
+
+def _claude_envelope_with_usage(payload: dict[str, Any]) -> str:
+    envelope = json.loads(_claude_envelope(payload))
+    envelope.update(CLAUDE_SECURITY_USAGE_ENVELOPE_FIELDS)
+    return json.dumps(envelope)
+
+
+def _usage_json_text(repo: Path) -> str:
+    cycle_dirs = list((repo / "logs" / "dispatch" / "audit").iterdir())
+    assert len(cycle_dirs) == 1
+    return (cycle_dirs[0] / "usage.json").read_text(encoding="utf-8")
+
+
+def _expected_usage_text(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def test_fan_out_writes_usage_json_with_reviewer_usage_and_total_cost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    config = _fan_out_config(repo)
+    security_model = _claude_plan_model(config, tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope_with_usage(_security_payload())
+        ),
+    )
+
+    result, log = _run_fan_out(
+        config,
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+        quality_usage={"model": "m", "input_tokens": 10, "cost_usd": 0.5},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert _usage_json_text(repo) == _expected_usage_text(
+        {
+            "reviewers": {
+                "quality": {
+                    "provider": "claude",
+                    "usage": {"model": "m", "input_tokens": 10, "cost_usd": 0.5},
+                },
+                "security": {
+                    "provider": "claude",
+                    "usage": {
+                        "model": security_model,
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "cache_read_input_tokens": 5,
+                        "cache_creation_input_tokens": 0,
+                        "cost_usd": 0.25,
+                        "num_turns": 3,
+                        "duration_ms": 1200,
+                    },
+                },
+            },
+            "total_cost_usd": 0.75,
+        }
+    )
+    debug_lines = [
+        message
+        for level, message in log.messages
+        if level == "DEBUG" and message.startswith("usage:")
+    ]
+    assert debug_lines == [
+        "usage: Security reviewer (claude) provider=claude "
+        f"model={security_model} input_tokens=100 output_tokens=20 "
+        "cache_read_input_tokens=5 cache_creation_input_tokens=0 "
+        "cost_usd=0.25 num_turns=3 duration_ms=1200"
+    ]
+
+
+def test_fan_out_usage_json_records_null_when_no_usage_is_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(_security_payload())
+        ),
+    )
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+        quality_usage=None,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert _usage_json_text(repo) == _expected_usage_text(
+        {
+            "reviewers": {
+                "quality": {"provider": "claude", "usage": None},
+                "security": {"provider": "claude", "usage": None},
+            },
+            "total_cost_usd": None,
+        }
+    )
+    assert not any(message.startswith("usage:") for _level, message in log.messages)
+
+
+def test_clean_usage_drops_bad_values_without_mutating_the_source() -> None:
+    source: dict[str, object] = {
+        "model": None,
+        "input_tokens": True,
+        "output_tokens": -1,
+        "total_tokens": "12",
+        "unknown_key": 5,
+        "cached_input_tokens": 4,
+        "cost_usd": 0.0,
+    }
+    snapshot = dict(source)
+
+    cleaned = audit_review._clean_usage(source)
+
+    assert cleaned == {"cached_input_tokens": 4, "cost_usd": 0.0}
+    assert source == snapshot
+    assert audit_review._clean_usage({"model": "", "input_tokens": False}) is None
+    assert audit_review._clean_usage({"model": None}) is None
+    assert audit_review._clean_usage(None) is None
+    assert audit_review._clean_usage({"model": "m"}) == {"model": "m"}
+
+
+def test_usage_json_drops_model_none_and_keeps_runs_unmutated(
+    tmp_path: Path,
+) -> None:
+    usage: dict[str, object] = {"model": None, "input_tokens": 7, "flag": True}
+    run = ReviewerRun(
+        name="security",
+        provider="claude",
+        command=(),
+        exit_code=0,
+        elapsed_seconds=0.0,
+        stdout="",
+        stderr="",
+        usage=usage,
+    )
+
+    audit_review._write_usage_log(tmp_path, {"security": run})
+
+    assert (tmp_path / "usage.json").read_text(encoding="utf-8") == (
+        _expected_usage_text(
+            {
+                "reviewers": {
+                    "security": {"provider": "claude", "usage": {"input_tokens": 7}}
+                },
+                "total_cost_usd": None,
+            }
+        )
+    )
+    assert usage == {"model": None, "input_tokens": 7, "flag": True}
+
+
+def test_claude_json_usage_is_returned_without_a_log_function() -> None:
+    envelope = _claude_envelope_with_usage(_security_payload())
+
+    returned = audit_review._log_claude_json_usage(
+        "Security reviewer (claude)", envelope, ["claude", "-p", "x"], None
+    )
+
+    assert returned == {
+        "model": None,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 5,
+        "cache_creation_input_tokens": 0,
+        "cost_usd": 0.25,
+        "num_turns": 3,
+        "duration_ms": 1200,
+    }
+    assert (
+        audit_review._log_claude_json_usage("s", "not json", ["claude"], None) is None
+    )
+    assert audit_review._log_claude_json_usage("s", "[1]", ["claude"], None) is None
+    assert (
+        audit_review._log_claude_json_usage(
+            "s", _claude_envelope(_security_payload()), ["claude"], None
+        )
+        is None
+    )
+
+
+def test_fan_out_usage_json_records_codex_exec_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(audit_review.shutil, "which", lambda _name: None)
+
+    def fake_codex(
+        _name: str, _command: list[str], **_kwargs: Any
+    ) -> _CodexCommandResult:
+        return _CodexCommandResult(
+            result=_process('{"type":"turn.completed"}\n'),
+            thread_id="t1",
+            final_message=json.dumps(_security_payload()),
+            usage={
+                "model": "codex-model",
+                "input_tokens": 300,
+                "cached_input_tokens": 40,
+                "output_tokens": 60,
+            },
+        )
+
+    monkeypatch.setattr(audit_review, "_run_codex_json_command", fake_codex)
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo, security_provider="codex"),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+        quality_usage={"cost_usd": 0.1},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert _usage_json_text(repo) == _expected_usage_text(
+        {
+            "reviewers": {
+                "quality": {"provider": "claude", "usage": {"cost_usd": 0.1}},
+                "security": {
+                    "provider": "codex",
+                    "usage": {
+                        "model": "codex-model",
+                        "input_tokens": 300,
+                        "output_tokens": 60,
+                        "cached_input_tokens": 40,
+                    },
+                },
+            },
+            "total_cost_usd": 0.1,
+        }
+    )
+
+
+def test_fan_out_writes_usage_json_when_a_reviewer_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope_with_usage(_security_payload())
+        ),
+    )
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout="",
+        base_sha=base,
+        quality_exit_code=1,
+        quality_usage={"input_tokens": 9, "cost_usd": 0.05},
+    )
+
+    assert result.exit_code == 1
+    assert "quality_reviewer_failed" in result.stderr
+    payload = json.loads(_usage_json_text(repo))
+    assert payload["reviewers"]["quality"] == {
+        "provider": "claude",
+        "usage": {"input_tokens": 9, "cost_usd": 0.05},
+    }
+    assert payload["reviewers"]["security"]["usage"]["cost_usd"] == 0.25
+    assert payload["total_cost_usd"] == pytest.approx(0.3)
 
 
 def test_fan_out_quotes_yaml_special_identifiers(
