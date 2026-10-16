@@ -9,8 +9,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
-from typing import Callable
+from typing import Callable, Literal, TextIO
 
 from llm_handoff.agent_providers import antigravity as antigravity_provider
 from llm_handoff.agent_providers import claude as claude_provider
@@ -57,6 +58,11 @@ from llm_handoff.dispatcher_commit import (
     git_position,
     undo_planner_handoff_commits,
     stamp_commit_sha,
+)
+from llm_handoff.operator_prompt import (
+    HandoffChanged,
+    OperatorInputReader,
+    wait_for_operator_or_handoff_change,
 )
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
 from llm_handoff.pr_review import ReviewGate
@@ -261,6 +267,21 @@ PAUSE_RECOVERY_INSTRUCTION_TEMPLATE = (
     "one specific question for the user."
 )
 PAUSE_RECOVERY_NO_DIAGNOSIS = "The validator returned no diagnosis."
+# Planner dispatch requested by a person at the operator prompt. The operator
+# text is passed as a keyword value, so braces in it are not parsed again.
+OPERATOR_PAUSE_INSTRUCTION_TEMPLATE = (
+    "The dispatcher paused instead of dispatching. Pause reason: "
+    "{pause_reason} A person at the dispatcher console sent this instruction "
+    "from the operator prompt. {operator_request} Do not modify source, "
+    "tests, project-state files, ledger files, or completed work. Rewrite "
+    "{handoff_path} so the next route is dispatchable. If you cannot choose a "
+    "route safely, route to user with `status: escalate_to_user` and one "
+    "specific question for the user."
+)
+OPERATOR_BEST_JUDGMENT_REQUEST = (
+    "The operator gave no guidance: resolve the pause with your best judgment."
+)
+OPERATOR_GUIDANCE_PREFIX = "Operator guidance: "
 THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
     "Story `{story_id}` has bounced between implementation and audit "
     "{bounce_count} times. Do not continue the same implementation loop. "
@@ -376,6 +397,8 @@ def run_loop(
     # One bounded planner recovery per pause streak. Only a cycle dispatched
     # without a forced instruction that passes validation clears it.
     pause_recovery_used = False
+    # At most one operator input reader per run_loop call.
+    operator_prompt = _OperatorPromptState()
     breaker_planner_seen: set[str] = set()
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
@@ -436,6 +459,14 @@ def run_loop(
             active_planner_recovery_kind = pending_planner_recovery.kind
             pending_planner_recovery = None
         else:
+            if pending_planner_recovery is not None:
+                _log(
+                    log_fn,
+                    "WARN",
+                    f"Dropped the scheduled {pending_planner_recovery.kind} "
+                    "planner recovery because HANDOFF.md changed before it "
+                    "ran; routing the current handoff normally.",
+                )
             pending_planner_recovery = None
             decision = route_handoff(
                 handoff_content,
@@ -501,13 +532,19 @@ def run_loop(
                 )
                 pause_recovery_used = True
                 continue
-            if not _pause_until_handoff_changes(
+            pause = _pause_at_dispatcher_pause(
                 config,
                 handoff_sha=handoff_sha,
                 reason=pause_reason,
                 log=log_fn,
-            ):
+                operator_prompt=operator_prompt,
+            )
+            if pause.stop:
                 return 0
+            if pause.kind == "retry":
+                previous_cycle = None
+            elif pause.pending_planner_recovery is not None:
+                pending_planner_recovery = pause.pending_planner_recovery
             continue
 
         if decision.route in {"backend", "frontend"} and cycle_frontmatter is not None:
@@ -557,15 +594,23 @@ def run_loop(
                     )
 
         if decision.route == "user":
-            if not _pause_until_handoff_changes(
+            # `retry` on a user route re-reads the handoff, which still routes
+            # to user, so the dispatcher pauses again at once.
+            pause = _pause_at_dispatcher_pause(
                 config,
                 handoff_sha=handoff_sha,
                 reason=(
                     "ESCALATION DETECTED in HANDOFF.md. Resolve it manually; dispatch will resume after the file changes."
                 ),
                 log=log_fn,
-            ):
+                operator_prompt=operator_prompt,
+            )
+            if pause.stop:
                 return 0
+            if pause.kind == "retry":
+                previous_cycle = None
+            elif pause.pending_planner_recovery is not None:
+                pending_planner_recovery = pause.pending_planner_recovery
             continue
 
         current_cycle = Cycle(
@@ -576,9 +621,10 @@ def run_loop(
         )
 
         if (
-            # A pause-recovery planner cycle may repeat a planner route on an
-            # unchanged handoff; checking it would pause on its own recovery.
-            active_planner_recovery_kind != "pause"
+            # A pause-recovery or operator planner cycle may repeat a planner
+            # route on an unchanged handoff; checking it would pause on its
+            # own recovery.
+            active_planner_recovery_kind not in {"pause", "operator"}
             and previous_cycle is not None
             and previous_cycle.route == current_cycle.route
             and previous_cycle.handoff_sha == current_cycle.handoff_sha
@@ -598,13 +644,19 @@ def run_loop(
                 )
                 pause_recovery_used = True
                 continue
-            if not _pause_until_handoff_changes(
+            pause = _pause_at_dispatcher_pause(
                 config,
                 handoff_sha=current_cycle.handoff_sha,
                 reason=pause_reason,
                 log=log_fn,
-            ):
+                operator_prompt=operator_prompt,
+            )
+            if pause.stop:
                 return 0
+            if pause.kind == "retry":
+                previous_cycle = None
+            elif pause.pending_planner_recovery is not None:
+                pending_planner_recovery = pause.pending_planner_recovery
             continue
 
         _log(log_fn, "INFO", f"Routing instruction: {decision.route}")
@@ -632,13 +684,19 @@ def run_loop(
                 )
                 pause_recovery_used = True
                 continue
-            if not _pause_until_handoff_changes(
+            pause = _pause_at_dispatcher_pause(
                 config,
                 handoff_sha=current_cycle.handoff_sha,
                 reason=pause_reason,
                 log=log_fn,
-            ):
+                operator_prompt=operator_prompt,
+            )
+            if pause.stop:
                 return 0
+            if pause.kind == "retry":
+                previous_cycle = None
+            elif pause.pending_planner_recovery is not None:
+                pending_planner_recovery = pause.pending_planner_recovery
             continue
 
         if current_cycle.route == "finalizer":
@@ -716,13 +774,19 @@ def run_loop(
                     )
                     pause_recovery_used = True
                     continue
-                if not _pause_until_handoff_changes(
+                pause = _pause_at_dispatcher_pause(
                     config,
                     handoff_sha=current_cycle.handoff_sha,
                     reason=pause_reason,
                     log=log_fn,
-                ):
+                    operator_prompt=operator_prompt,
+                )
+                if pause.stop:
                     return 0
+                if pause.kind == "retry":
+                    previous_cycle = None
+                elif pause.pending_planner_recovery is not None:
+                    pending_planner_recovery = pause.pending_planner_recovery
                 continue
             exit_code = int(getattr(ledger_result, "subagent_exit_code", 0))
             if exit_code != 0:
@@ -1120,15 +1184,21 @@ def run_loop(
                         previous_cycle = current_cycle
                         consecutive_failures = 0
                         continue
-                    if not _pause_until_handoff_changes(
+                    pause = _pause_at_dispatcher_pause(
                         config,
                         handoff_sha=_content_sha(
                             _read_required_text(config.handoff_full_path) or ""
                         ),
                         reason=pause_reason,
                         log=log_fn,
-                    ):
+                        operator_prompt=operator_prompt,
+                    )
+                    if pause.stop:
                         return 0
+                    if pause.kind == "retry":
+                        previous_cycle = None
+                    elif pause.pending_planner_recovery is not None:
+                        pending_planner_recovery = pause.pending_planner_recovery
                     continue
                 if self_loop_kind is not None:
                     pause_diagnosis = _run_self_loop_validator(
@@ -1152,15 +1222,21 @@ def run_loop(
                         previous_cycle = current_cycle
                         consecutive_failures = 0
                         continue
-                    if not _pause_until_handoff_changes(
+                    pause = _pause_at_dispatcher_pause(
                         config,
                         handoff_sha=_content_sha(
                             _read_required_text(config.handoff_full_path) or ""
                         ),
                         reason=pause_reason,
                         log=log_fn,
-                    ):
+                        operator_prompt=operator_prompt,
+                    )
+                    if pause.stop:
                         return 0
+                    if pause.kind == "retry":
+                        previous_cycle = None
+                    elif pause.pending_planner_recovery is not None:
+                        pending_planner_recovery = pause.pending_planner_recovery
                     continue
                 return 1
 
@@ -3004,6 +3080,114 @@ def _pause_until_handoff_changes(
         return True
 
 
+def _operator_stdin_is_interactive() -> bool:
+    return sys.stdin is not None and sys.stdin.isatty()
+
+
+def _operator_input_stream() -> TextIO:
+    return sys.stdin
+
+
+class _OperatorPromptState:
+    """Holds the one operator input reader a run_loop call may create."""
+
+    def __init__(self) -> None:
+        self._reader: OperatorInputReader | None = None
+
+    def reader(self) -> OperatorInputReader:
+        if self._reader is None:
+            self._reader = OperatorInputReader(_operator_input_stream())
+        return self._reader
+
+
+PauseOutcomeKind = Literal["resume", "stop", "quit", "retry", "planner"]
+
+
+@dataclass(frozen=True, slots=True)
+class PauseOutcome:
+    kind: PauseOutcomeKind
+    pending_planner_recovery: PendingPlannerRecovery | None = None
+
+    @property
+    def stop(self) -> bool:
+        """True when run_loop should return 0."""
+
+        return self.kind in {"stop", "quit"}
+
+
+def _operator_prompt_enabled(config: DispatchConfig) -> bool:
+    return (
+        config.interactive_pause
+        and not config.dry_run
+        and config.poll_interval_seconds > 0
+        and _operator_stdin_is_interactive()
+    )
+
+
+def _pause_at_dispatcher_pause(
+    config: DispatchConfig,
+    *,
+    handoff_sha: str,
+    reason: str,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
+) -> PauseOutcome:
+    """Pause for a HANDOFF.md edit, or for the operator prompt at a TTY."""
+
+    if not _operator_prompt_enabled(config):
+        if _pause_until_handoff_changes(
+            config,
+            handoff_sha=handoff_sha,
+            reason=reason,
+            log=log,
+        ):
+            return PauseOutcome(kind="resume")
+        return PauseOutcome(kind="stop")
+
+    _log(log, "PAUSE", reason)
+    result = wait_for_operator_or_handoff_change(
+        operator_prompt.reader(),
+        config.handoff_full_path,
+        handoff_sha,
+        config.poll_interval_seconds,
+        log,
+        hash_content=_content_sha,
+    )
+    if isinstance(result, HandoffChanged):
+        _log(log, "PAUSE", "Detected HANDOFF.md change. Resuming dispatch loop.")
+        return PauseOutcome(kind="resume")
+    if result.kind == "quit":
+        _log(log, "PAUSE", "The operator stopped the dispatcher from the prompt.")
+        return PauseOutcome(kind="quit")
+    if result.kind == "retry":
+        _log(log, "PAUSE", "The operator asked to retry; re-running the cycle.")
+        return PauseOutcome(kind="retry")
+
+    if result.text is None:
+        operator_request = OPERATOR_BEST_JUDGMENT_REQUEST
+        summary = "a best judgment instruction"
+    else:
+        operator_request = OPERATOR_GUIDANCE_PREFIX + result.text
+        summary = "the operator's guidance"
+    current_handoff_content = _read_required_text(config.handoff_full_path) or ""
+    pending = PendingPlannerRecovery(
+        handoff_sha=_content_sha(current_handoff_content),
+        additional_instruction=_render_prompt(
+            OPERATOR_PAUSE_INSTRUCTION_TEMPLATE,
+            config.handoff_path,
+            pause_reason=reason,
+            operator_request=operator_request,
+        ),
+        kind="operator",
+    )
+    _log(
+        log,
+        "PAUSE",
+        f"Operator prompt: scheduling a planner dispatch with {summary}.",
+    )
+    return PauseOutcome(kind="planner", pending_planner_recovery=pending)
+
+
 def _pause_recovery_available(
     config: DispatchConfig, used: bool, log: LogFn
 ) -> bool:
@@ -3300,6 +3484,14 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         "Pause recovery:     planner (one bounded planner recovery per pause streak)"
         if config.pause_recovery == "planner"
         else "Pause recovery:     off (pauses wait for a HANDOFF.md edit)",
+    )
+    _log(
+        log,
+        "INFO",
+        "Interactive pause:  enabled (operator prompt at pauses; runs only "
+        "when stdin is a TTY)"
+        if config.interactive_pause
+        else "Interactive pause:  disabled (pauses wait for a HANDOFF.md edit)",
     )
     _log(log, "INFO", "Chaining:           NONE (single dispatch per cycle)")
     _log(log, "INFO", f"Frontend agent:     {frontend_mode}")

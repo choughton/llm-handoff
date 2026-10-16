@@ -151,6 +151,47 @@ Set `pause_recovery: "off"` to skip recovery and pause at once, as earlier
 releases did. Quote the value: YAML reads a bare `off` as the boolean `false`,
 which the config rejects. The startup banner shows the active mode.
 
+## Operator Prompt
+
+`interactive_pause` controls the operator prompt at dispatcher pauses:
+
+```yaml
+interactive_pause: true   # true (default) | false
+```
+
+When the dispatcher pauses and waits for `HANDOFF.md` to change, it logs the
+`PAUSE` reason line and then, if a person is at a terminal, shows an operator
+prompt. The prompt appears at every `next_agent: user` pause, and at the other
+pauses once bounded planner recovery is used up or unavailable (for example
+with `pause_recovery: "off"`). It accepts four actions:
+
+- Enter: dispatch the planner with an instruction to resolve the pause with
+  its best judgment.
+- Any other text: dispatch the planner with that text as guidance.
+- `retry`: re-run the cycle. On a `user` route this re-reads `HANDOFF.md`,
+  which still routes to `user`, so the dispatcher pauses again.
+- `quit`: stop the dispatcher with exit code 0.
+
+Editing `HANDOFF.md` still resumes the loop, as it does without the prompt.
+The planner instruction states the pause reason and that a person at the
+dispatcher console sent it. Like bounded planner recovery, it forbids changes
+to source, tests, project-state files, ledger files, and completed work: the
+planner rewrites `HANDOFF.md` with a dispatchable route, or routes to `user`
+with `status: escalate_to_user` and one specific question. The operator
+planner cycle skips the stale-route check and does not reset or use up the
+pause recovery streak.
+
+Lines typed while no prompt is shown, for example while an agent runs, are
+discarded when the next prompt appears; the dispatcher logs how many. A
+`@role` line, such as `@backend`, is rejected for now: role targeting is not
+available yet.
+
+The prompt never appears when stdin is not a TTY, in `--dry-run`, or with
+`poll_interval_seconds: 0`. In those cases the pause behaves as before. To
+turn the prompt off, set `interactive_pause: false` or pass
+`--no-interactive-pause` on the command line. The startup banner shows
+whether the prompt is enabled.
+
 ## Work-Claim Gate
 
 On by default:

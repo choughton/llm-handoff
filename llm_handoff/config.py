@@ -678,6 +678,9 @@ class DispatchConfig(BaseModel):
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
     pause_recovery: PauseRecoveryMode = "planner"
+    # Show the operator prompt at pauses when stdin is a TTY, the run is not a
+    # dry run, and poll_interval_seconds is above 0.
+    interactive_pause: bool = True
     enforce_work_packet: bool = True
     work_packet_opt_out_reason: str | None = None
     work_packet_verification_timeout_seconds: int = (
@@ -919,6 +922,7 @@ def load_dispatch_config(
     planner_api_key_env: bool = False,
     backend_resume: bool | None = None,
     planner_resume: bool | None = None,
+    interactive_pause: bool | None = None,
 ) -> DispatchConfig:
     resolved_repo_root = Path(repo_root).resolve()
     data = _read_config_file(resolved_repo_root, config_path)
@@ -931,6 +935,8 @@ def load_dispatch_config(
         data["backend_resume"] = backend_resume
     if planner_resume is not None:
         data["planner_resume"] = planner_resume
+    if interactive_pause is not None:
+        data["interactive_pause"] = interactive_pause
     return DispatchConfig.model_validate(data)
 
 

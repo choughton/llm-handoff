@@ -108,6 +108,7 @@ def _run_dispatch(
     planner_resume: bool = True,
     repo_root: Path | None = None,
     config_path: Path | None = None,
+    no_interactive_pause: bool = False,
 ) -> int:
     root_start = repo_root
     if root_start is None and config_path is not None:
@@ -120,8 +121,9 @@ def _run_dispatch(
         planner_api_key_env=planner_api_key_env,
         backend_resume=backend_resume,
         planner_resume=planner_resume,
+        interactive_pause=False if no_interactive_pause else None,
     )
-    lock = _try_acquire_dispatch_lock(config.repo_root)
+    lock =_try_acquire_dispatch_lock(config.repo_root)
     if lock is None:
         lock_path = _dispatch_lock_path(config.repo_root)
         print(
@@ -397,6 +399,14 @@ def _dispatch_callback(
             "statelessly for this dispatch."
         ),
     ),
+    no_interactive_pause: bool = typer.Option(
+        False,
+        "--no-interactive-pause",
+        help=(
+            "Do not show the operator prompt at pauses; wait for a HANDOFF.md "
+            "edit instead."
+        ),
+    ),
     repo_root: Path | None = typer.Option(None, "--repo-root"),
     config_path: Path | None = typer.Option(
         None,
@@ -416,6 +426,7 @@ def _dispatch_callback(
             planner_resume=planner_resume,
             repo_root=repo_root,
             config_path=config_path,
+            no_interactive_pause=no_interactive_pause,
         )
     )
 
