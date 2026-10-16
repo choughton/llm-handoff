@@ -584,7 +584,7 @@ BLOCKED_PENDING_COMMIT_HANDOFF = """---
 next_agent: user
 reason: Backend cannot continue without user input.
 producer: backend
-status: blocked_implementation_failure
+status: blocked_missing_context
 ---
 
 # backend Handback

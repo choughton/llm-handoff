@@ -67,7 +67,7 @@ producer: frontend
 
 Run `git rev-parse HEAD` and use the concrete 7-40 character hex SHA. Do not write `scope_sha: HEAD`, branch names, or placeholders.
 
-Quote every `reason`. Use `status: blocked_missing_context`, `blocked_implementation_failure`, or `escalate_to_user` instead of `ready_for_review` when the work cannot be completed.
+Quote every `reason`. Use `status: blocked_missing_context`, `blocked_implementation_failure`, or `escalate_to_user` instead of `ready_for_review` when the work cannot be completed. Pair `blocked_missing_context` and `escalate_to_user` with `next_agent: user`, and `blocked_implementation_failure` with `next_agent: planner`.
 
 Include the `## Verification Evidence` block from `docs/handoff/README.md`.
 Do not use stale command output from a previous session.
@@ -104,7 +104,7 @@ sandbox before any audit.
 Before acting on auditor feedback, verify the finding against the changed files,
 run or inspect the focused command that proves it, and check the fix against
 repository architecture and role boundaries. If feedback conflicts with the
-contract, document the contradiction and route with
+contract, document the contradiction and route to `planner` with
 `status: blocked_implementation_failure`.
 
 ## Completion Checklist

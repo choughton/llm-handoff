@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A handoff whose `status` contradicts its `next_agent` is now rejected as
+  invalid frontmatter instead of silently following the status. Before, a
+  backend handback with `next_agent: planner` and
+  `status: blocked_missing_context` became an escalation pause while the
+  post-dispatch validator still passed it. The router now reports the
+  conflict, so a handoff that names a non-`user` agent goes to the planner for
+  repair and one that names `user` pauses; the validator fails it with
+  `frontmatter_status_route_conflict`. The handbook and the backend and
+  frontend prompts now pair `blocked_missing_context` and `escalate_to_user`
+  with `next_agent: user`, and `blocked_implementation_failure` (re-scope)
+  with `next_agent: planner`.
+
 - In dispatcher commit mode the live handoff no longer leaks into pull
   requests. The finalizer is told to commit only project state, and a
   finalizer commit that holds only the handoff is undone with

@@ -55,6 +55,14 @@ audit outcome, or blocking state.
 | `blocked_implementation_failure` | Implementation was attempted but structurally failed. | backend, frontend |
 | `escalate_to_user` | Human decision is required. | any role |
 
+Each status implies a route, and `next_agent` must name the same one:
+`ready_for_review` goes to `auditor`; `verified_pass` goes to `planner`, or to
+`finalizer` with `close_type: epic`; `verified_fail` goes to `backend`,
+`frontend`, or `planner`; `blocked_implementation_failure` goes to `planner`;
+`blocked_missing_context` and `escalate_to_user` go to `user`. When they disagree, the router and the post-dispatch validator reject
+the frontmatter. A handoff whose `next_agent` is not `user` is sent to the
+planner to repair it, and one whose `next_agent` is `user` pauses the loop.
+
 Legacy handoffs without `status` are still parsed during extraction, but new
 handoffs should emit the enum verbatim. Do not invent synonyms such as `done`,
 `approved`, or `blocked`.
