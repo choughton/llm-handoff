@@ -331,6 +331,15 @@ def publish_story(
         return PublishOutcome()
     state = _load_state(repo_root)
     current = _current_branch(repo_root)
+    if state is None and _is_merged_epic_close(
+        repo_root, mode, remote, current, frontmatter.close_type
+    ):
+        log(
+            "INFO",
+            f"Epic-close audit passed on `{current}` with no story branch; "
+            "its stories are already published, so there is nothing to publish.",
+        )
+        return PublishOutcome()
     if state is None or current != state.branch:
         # Continuing would treat unpublished work as done and leave the
         # checkout on a branch the next story cannot start from.
@@ -1916,6 +1925,32 @@ def _without_mentions(text: str) -> str:
 def _demote(markdown: str, *, levels: int = 1) -> str:
     return re.sub(
         r"(?m)^(#{1,4}) ", lambda m: "#" * (len(m.group(1)) + levels) + " ", markdown
+    )
+
+
+def _is_merged_epic_close(
+    repo_root: Path,
+    mode: str,
+    remote: str,
+    current: str | None,
+    close_type: str | None,
+) -> bool:
+    """Whether a passing audit with no story state is an epic close.
+
+    The planner routes an epic's close review to the auditor after its last
+    story merged, so no story branch exists and the checkout is the base
+    branch. In ``pr`` mode the checkout must also have nothing that is not on
+    ``remote``: a commit only here would be unpublished work.
+    """
+
+    if close_type != "epic" or current is None:
+        return False
+    if mode != "pr":
+        return True
+    tracking = f"refs/remotes/{remote}/{current}"
+    return (
+        _git(repo_root, ["merge-base", "--is-ancestor", "HEAD", tracking]).returncode
+        == 0
     )
 
 

@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In `merge-commit` and `pr` publish modes, a passing epic-close audit
+  (`close_type: epic`) with no story branch no longer stops the loop with
+  "the audited work is not on a story branch". The epic's stories are already
+  merged, so the dispatcher publishes nothing and continues to the finalizer.
+  In `pr` mode it still stops if the checked-out branch has commits that are
+  not on the remote.
+
 - An audit fan-out reviewer that fails to start (missing binary, CLI argument
   error, sign-in failure, missing Gemini sandbox or security extension) now
   stops the run with exit 1 after one attempt and logs its stderr in an
