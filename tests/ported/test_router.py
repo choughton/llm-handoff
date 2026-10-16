@@ -296,6 +296,43 @@ producer: backend
     assert "status `done` is not recognized" in decision.warnings[0]
 
 
+@pytest.mark.parametrize(
+    ("status", "next_agent", "status_route"),
+    [
+        ("blocked_missing_context", "planner", "user"),
+        ("escalate_to_user", "backend", "user"),
+        ("ready_for_review", "planner", "auditor"),
+        ("blocked_implementation_failure", "user", "planner"),
+        ("verified_fail", "auditor", "planner"),
+        ("verified_pass", "backend", "planner"),
+    ],
+)
+def test_router_rejects_status_that_contradicts_next_agent(
+    status: str,
+    next_agent: str,
+    status_route: str,
+) -> None:
+    handoff_content = f"""---
+next_agent: {next_agent}
+reason: Contradictory status fixture.
+status: {status}
+producer: backend
+---
+
+# Handoff
+"""
+
+    decision = route(handoff_content)
+
+    assert decision.route == "unknown"
+    assert decision.confidence == "LOW"
+    assert decision.source == "frontmatter.invalid"
+    assert (
+        f"status `{status}` routes to {status_route}, but next_agent is `{next_agent}`"
+        in decision.warnings[0]
+    )
+
+
 def test_route_normalizes_frontend_frontmatter_alias() -> None:
     handoff_content = """---
 next_agent: frontend

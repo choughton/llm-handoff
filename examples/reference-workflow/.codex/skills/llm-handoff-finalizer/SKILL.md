@@ -68,7 +68,7 @@ producer: finalizer
 ---
 ```
 
-Keep `epic_id`, `story_id`, `story_title`, and `remaining_stories` from the previous handoff when they are known. Use `next_agent: user` if no next scope can be inferred safely.
+Keep `epic_id`, `story_id`, `story_title`, and `remaining_stories` from the previous handoff when they are known. Use `next_agent: user` with `status: escalate_to_user` if no next scope can be inferred safely.
 
 Run `git rev-parse HEAD` for concrete SHAs. Do not write `scope_sha: HEAD`.
 

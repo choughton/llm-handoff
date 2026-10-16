@@ -25,7 +25,7 @@ from llm_handoff.audit_review import (
     ReviewerRun,
 )
 from llm_handoff.config import DispatchConfig, load_dispatch_config
-from llm_handoff.router import parse_handoff_frontmatter_text
+from llm_handoff.router import parse_handoff_frontmatter_text, route
 from llm_handoff.validator import validate_handoff_text
 
 
@@ -1236,6 +1236,53 @@ def test_fan_out_passes_and_attaches_sub_threshold_notes(
     assert "## Security Notes" in written
     assert "[low] src/app.py:3 - Verbose error" in written
     assert "## Security Findings" not in written
+
+
+@pytest.mark.parametrize(
+    ("requested", "close_type", "expected"),
+    [
+        ("backend", "story", "planner"),
+        ("frontend", "story", "planner"),
+        ("validator", "story", "planner"),
+        ("user", None, "planner"),
+        ("finalizer", "epic", "finalizer"),
+        ("planner", "epic", "finalizer"),
+    ],
+)
+def test_passing_fan_out_routes_to_the_verified_pass_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    requested: str,
+    close_type: str | None,
+    expected: str,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(_security_payload())
+        ),
+    )
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(
+            _quality_payload(next_agent=requested, close_type=close_type)
+        ),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == expected
+    assert frontmatter.status == "verified_pass"
+    decision = route(written)
+    assert decision.route == expected
+    assert decision.confidence == "HIGH"
 
 
 def test_fan_out_records_raw_outputs_and_timing(

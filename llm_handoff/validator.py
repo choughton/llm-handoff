@@ -19,6 +19,7 @@ from llm_handoff.router import (
     HandoffRouting,
     parse_handoff_frontmatter_text,
     route as route_handoff,
+    status_next_agent_conflict,
 )
 from llm_handoff.roles import (
     normalize_agent_label,
@@ -229,6 +230,10 @@ def validate_handoff_frontmatter(
         errors.append(
             f"frontmatter_routing_rule: next_agent `{parsed.next_agent}` requires producer `auditor`."
         )
+
+    status_conflict = status_next_agent_conflict(parsed)
+    if status_conflict is not None:
+        errors.append(f"frontmatter_status_route_conflict: {status_conflict}")
 
     routing_instruction = normalized_next_agent
     return ValidationResult(

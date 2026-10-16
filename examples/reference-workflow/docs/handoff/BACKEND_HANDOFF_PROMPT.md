@@ -28,9 +28,9 @@ Before acting on auditor feedback:
 3. Check the requested fix against repository architecture and role boundaries.
 
 If the finding is technically wrong or conflicts with architecture/tests,
-document the contradiction in `HANDOFF.md` and route to `planner`, `validator`,
-or `user` with `status: blocked_implementation_failure` instead of patching
-around the contract.
+document the contradiction in `HANDOFF.md` and route to `planner` with
+`status: blocked_implementation_failure` instead of patching around the
+contract.
 
 ## Completion Handoff
 
@@ -73,4 +73,9 @@ Rules:
 - Preserve the assignment's `## Work Packet` section in the handback; the
   auditor and the dispatcher's work-claim gate read it.
 - Do not use stale commands or results from a previous session as evidence.
-- If blocked, set `status: blocked_missing_context` or `status: blocked_implementation_failure`, route to `planner`, `validator`, or `user`, and explain the blocker.
+- If blocked, pick the status by who must act next and explain the blocker:
+  - A question only a person can answer: `status: blocked_missing_context`
+    with `next_agent: user`, stating the one question.
+  - Work that needs re-scoping, including a failed work-claim gate:
+    `status: blocked_implementation_failure` with `next_agent: planner`.
+  See the Escalation Protocol in `docs/handoff/HANDBOOK.md`.

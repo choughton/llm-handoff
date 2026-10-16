@@ -72,11 +72,13 @@ producer: auditor
 
 Routing guidance:
 
-- Approved story with more work known: route to `planner`, `backend`, or `frontend` with `close_type: story`.
-- Approved story with unclear next work: route to `planner` with `close_type: story`.
-- Approved epic or final scope: route to `finalizer` with `close_type: epic`.
-- Blocked work: route back to the producing role or to `user` when human input is required. Omit `close_type`.
-- Ambiguous state: fail closed and route to `validator` or `user`.
+- Approved story: `status: verified_pass`, route to `planner` with `close_type: story`. The planner assigns the next work.
+- Approved epic or final scope: `status: verified_pass`, route to `finalizer` with `close_type: epic`.
+- Rejected work: `status: verified_fail`, route back to the producing `backend` or `frontend` role, or to `planner` when the assignment itself is wrong. Omit `close_type`.
+- Human input required: `status: escalate_to_user` or `blocked_missing_context`, route to `user`. Omit `close_type`.
+- Ambiguous state: fail closed and route to `user` with `status: escalate_to_user`.
+
+Each status names its route, and the dispatcher rejects a handoff whose `next_agent` disagrees with its `status`.
 
 Run `git rev-parse HEAD` for concrete SHAs. Do not write `scope_sha: HEAD`.
 

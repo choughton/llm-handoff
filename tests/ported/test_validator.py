@@ -396,16 +396,21 @@ could not be verified. Edits are left uncommitted in the working tree.
 
 
 @pytest.mark.parametrize(
-    "status",
-    ["blocked_missing_context", "blocked_implementation_failure", "escalate_to_user"],
+    ("status", "next_agent"),
+    [
+        ("blocked_missing_context", "user"),
+        ("blocked_implementation_failure", "planner"),
+        ("escalate_to_user", "user"),
+    ],
 )
 def test_dispatcher_mode_blocked_handback_with_pending_marker_warns_instead_of_sha_missing(
     tmp_path: Path,
     status: str,
+    next_agent: str,
 ) -> None:
     handoff_path = _write_handoff(
         tmp_path,
-        _implementer_handback_without_sha(status=status, next_agent="user"),
+        _implementer_handback_without_sha(status=status, next_agent=next_agent),
     )
 
     result = validate_handoff(
@@ -426,7 +431,7 @@ def test_agent_mode_blocked_handback_with_pending_marker_still_requires_sha(
     handoff_path = _write_handoff(
         tmp_path,
         _implementer_handback_without_sha(
-            status="blocked_implementation_failure", next_agent="user"
+            status="blocked_implementation_failure", next_agent="planner"
         ),
     )
 
@@ -788,6 +793,41 @@ producer: backend
     assert result.routing_instruction is None
     assert any("frontmatter_next_agent_missing" in error for error in result.errors)
     assert any("producer backend" in error for error in result.errors)
+
+
+def test_validate_handoff_frontmatter_rejects_status_that_contradicts_next_agent() -> None:
+    result = validator.validate_handoff_frontmatter(
+        HandoffRouting(
+            next_agent="planner",
+            reason="Work-claim gate failed; planner should re-scope.",
+            producer="backend",
+            status="blocked_missing_context",
+        )
+    )
+
+    assert result.verdict == "NO"
+    assert any(
+        error.startswith(
+            "frontmatter_status_route_conflict: status `blocked_missing_context` "
+            "routes to user, but next_agent is `planner`."
+        )
+        for error in result.errors
+    )
+
+
+def test_validate_handoff_frontmatter_accepts_status_that_matches_next_agent() -> None:
+    result = validator.validate_handoff_frontmatter(
+        HandoffRouting(
+            next_agent="planner",
+            reason="Work-claim gate failed; planner should re-scope.",
+            producer="backend",
+            status="blocked_implementation_failure",
+        )
+    )
+
+    assert not any(
+        error.startswith("frontmatter_status_route_conflict") for error in result.errors
+    )
 
 
 def test_validate_handoff_frontmatter_accepts_frontend_alias() -> None:
