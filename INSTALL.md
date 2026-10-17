@@ -18,9 +18,10 @@ with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
   `planner` and `frontend` on Gemini, the `backend` on Codex, and the
   `auditor`, `validator`, and `finalizer` on Claude Code, so it needs all
   three. A single-vendor setup (`init --provider claude`, `codex`, or
-  `gemini`) needs only that one CLI. All-Codex also needs
-  `commit_mode: dispatcher` in `dispatch_config.yaml` (see
-  [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits)); all-Gemini
+  `gemini`) needs only that one CLI. For all-Codex, `init` writes
+  `commit_mode: dispatcher` into `dispatch_config.yaml`; keep it, and keep
+  the work-claim gate on (see
+  [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits)). All-Gemini
   also needs the Gemini CLI security extension for the security reviewer and
   `GEMINI_API_KEY` for the next-agent normalizer.
 - Docker or Podman on `PATH` for any role mapped to Gemini CLI (macOS can use
