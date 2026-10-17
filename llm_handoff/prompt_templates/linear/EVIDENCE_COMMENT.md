@@ -15,7 +15,8 @@ Fields:
 - `status`: the handoff status, from the shared status enum.
 - `state_from`: optional. The issue state before this event changed it.
 - `state_to`: optional. The issue state after this event changed it.
-- `commit_sha`: the concrete commit SHA the evidence covers.
+- `commit_sha`: the concrete commit SHA the evidence covers. See the
+  dispatcher commit mode rule below for the one exception.
 - `commands_run`: a list of the commands run in this turn.
 - `output_summary`: a short summary of what those commands reported.
 - `unresolved_concerns`: a list of open concerns, or an empty list.
@@ -34,6 +35,14 @@ Events and the roles that may post them:
 The events `implementation_handoff`, `audit_passed`, and `audit_failed`
 require `commit_sha`, `commands_run`, `output_summary`, and
 `unresolved_concerns`. Evidence must come from the current turn.
+
+When `commit_mode` is `dispatcher`, an implementer's changes are still
+uncommitted when it posts `implementation_handoff`; the dispatcher creates the
+commit after the role returns. In that mode only, the `implementation_handoff`
+comment sets `commit_sha: pending-dispatcher-commit`. Never write a guessed or
+earlier SHA. The auditor reconciles it: the `audit_passed` or `audit_failed`
+comment always carries the concrete commit SHA it reviewed, which is the
+`scope_sha` the dispatcher wrote into `HANDOFF.md`.
 
 Post the comment before you rewrite `HANDOFF.md`. Never put credentials,
 API keys, or tokens in a comment.

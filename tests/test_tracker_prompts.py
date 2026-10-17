@@ -189,6 +189,20 @@ def test_contract_example_is_complete_yaml() -> None:
     assert example["producer"] in allowed
 
 
+def test_contract_allows_pending_marker_in_dispatcher_commit_mode() -> None:
+    contract = linear_evidence_contract()
+    assert "`commit_mode` is `dispatcher`" in contract
+    assert "`commit_sha: pending-dispatcher-commit`" in contract
+    for role in ("backend", "frontend"):
+        text = linear_role_section(role)
+        assert "`commit_mode` is `dispatcher`" in text, role
+        assert "`commit_sha: pending-dispatcher-commit`" in text, role
+    # The auditor reconciles the marker with the dispatcher-created SHA.
+    auditor = linear_role_section("auditor")
+    assert "`scope_sha`" in auditor
+    assert "`pending-dispatcher-commit`" in auditor
+
+
 @pytest.mark.parametrize("role", ["validator", "finalizer"])
 def test_read_only_roles_mention_no_write_tools(role: str) -> None:
     text = linear_role_section(role)
