@@ -14,6 +14,12 @@ This project follows a simple pre-release changelog until the first public tag.
   `blocked_implementation_failure`. The `claude` and reference mappings are
   unchanged, and `init` fails with a clear error if the template no longer
   has exactly one `commit_mode: agent` line.
+- Restructured `README.md` around getting started: a table of contents, a
+  five-step quick start, a section on choosing and switching between file
+  mode and Linear mode, a gotchas list, and a gates-and-scanners summary.
+  The file-by-file repository map moved to `docs/INVENTORY.md`, which now
+  also lists the all-Claude and all-Codex agent files, the Codex rules file,
+  the Linear-mode prompt templates, and the CLI commands.
 - In `publish.mode: pr`, the dispatcher now also saves the implementer's
   `## Review Responses` from the handoff it is about to send to the auditor,
   not only when the work-claim gate passes. A correction-round handback that
