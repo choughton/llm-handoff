@@ -1260,7 +1260,12 @@ role. The text names settings by their
 `tracker.*` keys and embeds no values. With `commit_mode: dispatcher`, the
 implementer's `implementation_handoff` comment records
 `pending-dispatcher-commit`, and the auditor's comment records the concrete
-commit SHA.
+commit SHA. The validator runs a read-only check that compares the latest
+evidence comment on the leased issue with `HANDOFF.md`, and routes any
+mismatch to `user` with `status: blocked_missing_context`, or reports it
+without editing files on a validation-only turn. The planner posts
+`user_attention_requested` when it routes a leased issue to `user` and
+`user_attention_cleared` when work resumes.
 
 `llm-handoff init --tracker linear` renders this text. It only sets up a
 fresh repository, one with no `dispatch_config.yaml` yet; if that path exists,
@@ -1320,7 +1325,7 @@ tracker:
 | `in_progress_state` | required | State an issue moves to when work starts. |
 | `success_state` | required | State the auditor moves an issue to on pass, for example a review state. |
 | `blocked_state` | optional | State for blocked issues. |
-| `user_attention_label` | optional | Label added when the loop routes to `user`. |
+| `user_attention_label` | optional | Label the planner adds when it routes a leased issue to `user` and removes when work resumes. |
 | `mcp_server` | required | Name of the Linear server in each CLI's MCP configuration. |
 | `claude_mcp_config` | optional | MCP configuration file for Claude roles. |
 
