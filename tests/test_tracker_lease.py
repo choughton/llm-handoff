@@ -491,6 +491,45 @@ def test_selection_callout_falls_back_to_story_id() -> None:
     ]
 
 
+def test_selection_callout_keeps_multiline_tracker_issue_on_one_line() -> None:
+    parsed = parse_handoff_frontmatter_text(
+        "---\n"
+        "next_agent: backend\n"
+        'reason: "Assign."\n'
+        'story_id: "ENG-42\\n[WARN] forged line\\r\\x1b[2K"\n'
+        'tracker_issue: "ENG-42\\n[WARN] forged line\\r\\x1b[2K"\n'
+        f"tracker_url: {URL}\n"
+        "selection_basis: manual_order\n"
+        "producer: planner\n"
+        "---\n"
+    )
+    assert parsed is not None
+    assert "\n" in (parsed.tracker_issue or "")
+
+    logged = _callout(parsed, "linear")
+
+    assert logged == [
+        (
+            "WARN",
+            "ENG-42 [WARN] forged line [2K was selected without a priority "
+            "(by manual order)",
+        )
+    ]
+    for _level, message in logged:
+        assert all(char.isprintable() for char in message)
+
+
+def test_selection_callout_names_unknown_issue_when_id_is_only_control_characters() -> None:
+    logged = _callout(
+        _routing(tracker_issue="\x1b\x07", story_id=None, selection_basis="created_at"),
+        "linear",
+    )
+
+    assert logged == [
+        ("WARN", "unknown issue was selected without a priority (by creation date)")
+    ]
+
+
 def test_selection_callout_silent_for_priority() -> None:
     assert _callout(_routing(selection_basis="priority"), "linear") == []
 

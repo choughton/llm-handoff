@@ -2669,8 +2669,27 @@ def _log_tracker_selection(
     callout = _SELECTION_BASIS_CALLOUTS.get(frontmatter.selection_basis or "")
     if callout is None:
         return
-    issue = frontmatter.tracker_issue or frontmatter.story_id or "unknown issue"
-    _log(log, "WARN", f"{issue} was selected without a priority ({callout})")
+    issue = _single_line_log_value(
+        frontmatter.tracker_issue or frontmatter.story_id or ""
+    )
+    _log(
+        log,
+        "WARN",
+        f"{issue or 'unknown issue'} was selected without a priority ({callout})",
+    )
+
+
+def _single_line_log_value(text: str) -> str:
+    """Collapse whitespace and drop control characters from handoff text.
+
+    Handoff values are agent-written or hand-edited, so a quoted YAML scalar
+    can carry escaped newlines that would otherwise forge extra log lines.
+    """
+
+    printable = "".join(
+        char if char.isprintable() or char.isspace() else " " for char in text
+    )
+    return " ".join(printable.split())
 
 
 def _parse_frontmatter_or_none(handoff_content: str):
