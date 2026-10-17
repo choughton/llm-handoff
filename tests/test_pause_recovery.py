@@ -465,6 +465,128 @@ def test_planner_route_stale_pause_dispatches_recovery_planner(
     ) == 1
 
 
+_UNREPAIRABLE_ERROR = (
+    "evidence_sha_unknown: Commit SHA verified `abc` names no commit SHA; "
+    "write the 7-40 character SHA of the verified commit."
+)
+_UNHANDLED_REASON = (
+    "Post-dispatch validation failed for planner and no automatic repair "
+    f"applies: {_UNREPAIRABLE_ERROR}."
+)
+
+
+def test_unhandled_post_dispatch_failure_schedules_planner_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, PLANNER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        planner_writes=["# Planner handback\n", USER_HANDOFF],
+        post_dispatch=_post_dispatch_error(_UNREPAIRABLE_ERROR),
+    )
+
+    exit_code = harness.run(_config(tmp_path))
+
+    assert exit_code == 0
+    assert any(
+        level == "ERROR" and message.startswith(_UNHANDLED_REASON)
+        for level, message in harness.logs
+    )
+    assert len(harness.recovery_instructions) == 1
+    assert _UNHANDLED_REASON in harness.recovery_instructions[0]
+
+
+def test_unhandled_post_dispatch_failure_pauses_with_an_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, PLANNER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        planner_writes=["# Planner handback\n"],
+        post_dispatch=_post_dispatch_error(_UNREPAIRABLE_ERROR),
+    )
+
+    exit_code = harness.run(_config(tmp_path, pause_recovery="off"))
+
+    # Without polling the pause cannot wait, so the failure still exits 1, but
+    # only after the reason is logged.
+    assert exit_code == 1
+    assert harness.planner_instructions == [None]
+    errors = [message for level, message in harness.logs if level == "ERROR"]
+    assert any(message.startswith(_UNHANDLED_REASON) for message in errors)
+    assert any(
+        message.startswith(_UNHANDLED_REASON) for message in harness.pause_messages()
+    )
+
+
+READY_FOR_REVIEW_CLAIM = """---
+next_agent: auditor
+reason: "Backend work complete; audit requested."
+status: ready_for_review
+producer: backend
+---
+
+# Backend Handback
+"""
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _UNREPAIRABLE_ERROR,
+        # Repairable, but the producer repair fails here (no git repository),
+        # which would otherwise schedule the hygiene planner recovery.
+        "EVIDENCE_MISSING: status ready_for_review requires populated evidence "
+        "fields at line 9: missing Commands run.",
+    ],
+)
+def test_failure_on_a_gated_claim_skips_planner_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: str,
+) -> None:
+    handoff_path = _write_repo(tmp_path, BACKEND_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        planner_writes=[USER_HANDOFF],
+        backend_writes=[READY_FOR_REVIEW_CLAIM],
+        post_dispatch=_post_dispatch_error(error),
+    )
+    config = _config(
+        tmp_path, enforce_work_packet=True, work_packet_opt_out_reason=None
+    )
+
+    exit_code = harness.run(config)
+
+    # The gate only checks a claim in the cycle that produced it, so a planner
+    # recovery would let the claim reach audit unchecked.
+    assert exit_code == 1
+    assert harness.backend_calls == 1
+    assert harness.planner_instructions == []
+    pauses = harness.pause_messages()
+    assert any(
+        orchestrator.UNGATED_CLAIM_PAUSE_NOTE.strip() in message for message in pauses
+    )
+    assert not any("bounded planner recovery" in message for message in pauses)
+
+
+def test_unhandled_failure_reason_names_the_dispatcher_commit() -> None:
+    result = ValidationResult(verdict="NO", warnings=[], errors=[_UNREPAIRABLE_ERROR])
+    commit = orchestrator.DispatcherCommitResult(sha="c" * 40, committed=("a.py",))
+
+    reason = orchestrator._post_dispatch_failure_pause_reason(
+        "backend", result, commit
+    )
+
+    assert "already committed backend's work as cccccccccccc" in reason
+    assert reason.isascii()
+
+
 def test_pause_recovery_off_keeps_the_pause(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

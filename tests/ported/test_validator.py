@@ -290,6 +290,89 @@ APPROVED.
     assert not any("EVIDENCE_MISSING" in error for error in result.errors)
 
 
+def _evidence_errors(tmp_path: Path, evidence: str) -> list[str]:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            f"""# Audit Report
+
+**Agent:** auditor
+**Latest verified repo SHA:** `877f54d07d06d033b6b3f6dded924d170e9e2116`
+
+## Verdict
+APPROVED.
+
+## Verification Evidence
+
+{evidence}""",
+            next_agent="planner",
+            reason="Audit passed; route to planner.",
+            status="verified_pass",
+            scope_sha="877f54d",
+            close_type="story",
+            producer="auditor",
+        ),
+    )
+    result = validate_handoff(handoff_path, "auditor", prior_handoff_sha="0" * 64)
+    return [error for error in result.errors if error.startswith("EVIDENCE_MISSING")]
+
+
+def test_evidence_field_accepts_indented_continuation_lines(tmp_path: Path) -> None:
+    evidence = """- **Commands run:**
+  - `python -m pytest tests -q`
+  - `python -m ruff check .`
+- **Output summary:**
+  - exit 0
+- **Commit SHA verified:** 877f54d07d06d033b6b3f6dded924d170e9e2116
+- **Files changed or reviewed:** llm_handoff/validator.py
+- **Unresolved concerns:** none
+"""
+
+    assert _evidence_errors(tmp_path, evidence) == []
+
+
+def test_evidence_field_label_accepts_one_parenthetical_note(tmp_path: Path) -> None:
+    evidence = """- **Commands run (this turn, 2026-10-16):**
+  - `python -m pytest tests -q`
+- **Output summary (this turn):** exit 0
+- **Commit SHA verified:** 877f54d07d06d033b6b3f6dded924d170e9e2116
+- **Files changed or reviewed:** llm_handoff/validator.py
+- **Unresolved concerns:** none
+"""
+
+    assert _evidence_errors(tmp_path, evidence) == []
+
+
+def test_empty_evidence_field_does_not_swallow_the_next_field(tmp_path: Path) -> None:
+    evidence = """- **Commands run:**
+- **Output summary:** exit 0
+- **Commit SHA verified:** 877f54d07d06d033b6b3f6dded924d170e9e2116
+- **Files changed or reviewed:** llm_handoff/validator.py
+- **Unresolved concerns:** none
+"""
+
+    errors = _evidence_errors(tmp_path, evidence)
+
+    assert len(errors) == 1
+    assert "empty Commands run" in errors[0]
+    assert "Output summary" not in errors[0]
+
+
+def test_evidence_commit_sha_must_be_on_the_label_line(tmp_path: Path) -> None:
+    evidence = """- **Commands run:** `python -m pytest tests -q`
+- **Output summary:** exit 0
+- **Commit SHA verified:**
+  - 877f54d07d06d033b6b3f6dded924d170e9e2116
+- **Files changed or reviewed:** llm_handoff/validator.py
+- **Unresolved concerns:** none
+"""
+
+    errors = _evidence_errors(tmp_path, evidence)
+
+    assert len(errors) == 1
+    assert "empty Commit SHA verified" in errors[0]
+
+
 def test_validator_rejects_invalid_status(tmp_path: Path) -> None:
     handoff_path = _write_handoff(
         tmp_path,

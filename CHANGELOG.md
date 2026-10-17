@@ -6,6 +6,34 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A post-dispatch validation failure no longer ends the run with exit code 1
+  and no stated reason. When no repair or existing pause applies, the
+  dispatcher logs an `ERROR` that names the validation errors and, in
+  dispatcher commit mode, the commit it already made, then pauses: one
+  bounded planner recovery when `pause_recovery: planner` is set, otherwise
+  the operator prompt or a wait for `HANDOFF.md` to change. Without polling
+  (`poll_interval_seconds: 0`) the run still exits 1 after logging the
+  reason.
+- When post-dispatch validation fails on a `ready_for_review` backend or
+  frontend claim that the work-claim gate has not yet checked
+  (`enforce_work_packet: true`), the dispatcher no longer schedules
+  automatic planner recovery, including after a failed producer hygiene
+  repair. A planner cycle would start a new dispatch and the claim would
+  reach audit without the gate. The dispatcher pauses instead, and the
+  pause reason says why.
+- `EVIDENCE_MISSING` validation errors, including a `Commit SHA verified`
+  of `HEAD`, now go through the one-shot producer handoff hygiene repair
+  instead of stopping the run.
+- Verification Evidence fields now accept indented continuation lines, as
+  Work Packet fields already did, so `- **Commands run:**` followed by
+  indented `- ...` bullets is not empty. A label may also carry one
+  parenthetical note before its colon, as in
+  `- **Commands run (this turn):**`. `Commit SHA verified` must still name
+  its SHA on the label line. An empty field no longer absorbs the field on
+  the next line.
+- In dispatcher commit mode, recording the commit SHA now replaces only the
+  `pending-dispatcher-commit` marker (with or without backticks) in
+  `Commit SHA verified` and keeps any note after it.
 - The package ships static Linear-mode prompt templates under
   `llm_handoff/prompt_templates/linear/` (a shared `AGENTS.md` section, the
   `llm_handoff_event` YAML evidence-comment contract, and one section per

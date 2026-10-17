@@ -83,6 +83,11 @@ five-field shape:
 - **Unresolved concerns:** list or `none`
 ```
 
+A field's value may continue on indented lines below the label, such as
+nested `- ...` bullets under `Commands run`. A label may carry one
+parenthetical note before its colon, as in `- **Commands run (this turn):**`.
+Write the `Commit SHA verified` SHA on the label line itself.
+
 Evidence must be fresh for the current handoff. Results from a previous session,
 assumptions, and stale command output do not satisfy the contract.
 
