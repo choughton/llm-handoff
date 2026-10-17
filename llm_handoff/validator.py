@@ -81,6 +81,12 @@ _REQUIRED_WORK_PACKET_FIELDS = (
     "Verification command",
     "Expected next route",
 )
+_SELECTION_BASIS_VALUES = ("priority", "manual_order", "created_at")
+_TRACKER_LEASE_FIELDS = ("tracker_issue", "tracker_url", "selection_basis")
+# Routes that hold a Linear issue lease: the implementer working the issue and
+# the auditor reviewing it. Planner, user, validator, and finalizer routes are
+# exempt because they do not work a single tracker issue.
+_TRACKER_LEASE_ROUTES = {"backend", "frontend", "auditor"}
 _TASK_ASSIGNMENT_DEPRECATION_WARNING = (
     "task_assignment_deprecated: ## Task Assignment is a legacy alias; use a "
     "## Work Packet section with the six bold fields instead."
@@ -127,6 +133,7 @@ def validate_handoff_frontmatter(
     parsed: HandoffRouting,
     *,
     git_cwd: Path | None = None,
+    tracker_provider: str = "none",
 ) -> ValidationResult:
     producer = parsed.producer or "unknown producer"
     errors: list[str] = []
@@ -235,6 +242,15 @@ def validate_handoff_frontmatter(
     if status_conflict is not None:
         errors.append(f"frontmatter_status_route_conflict: {status_conflict}")
 
+    tracker_errors, tracker_warnings = _tracker_lease_findings(
+        parsed,
+        tracker_provider=tracker_provider,
+        normalized_next_agent=normalized_next_agent,
+        normalized_producer=normalized_producer,
+    )
+    errors.extend(tracker_errors)
+    warnings.extend(tracker_warnings)
+
     routing_instruction = normalized_next_agent
     return ValidationResult(
         verdict=_derive_verdict(errors, warnings),
@@ -244,6 +260,83 @@ def validate_handoff_frontmatter(
     )
 
 
+def _tracker_lease_findings(
+    parsed: HandoffRouting,
+    *,
+    tracker_provider: str,
+    normalized_next_agent: str | None,
+    normalized_producer: str | None,
+) -> tuple[list[str], list[str]]:
+    producer = parsed.producer or "unknown producer"
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if (
+        parsed.selection_basis is not None
+        and parsed.selection_basis not in _SELECTION_BASIS_VALUES
+    ):
+        errors.append(
+            "frontmatter_selection_basis_invalid: "
+            f"producer {producer} used unsupported selection_basis "
+            f"`{parsed.selection_basis}`; expected one of "
+            f"{', '.join(_SELECTION_BASIS_VALUES)}."
+        )
+
+    if parsed.tracker_url is not None and (
+        not parsed.tracker_url or re.search(r"\s", parsed.tracker_url)
+    ):
+        errors.append(
+            "frontmatter_tracker_url_invalid: "
+            f"producer {producer} emitted tracker_url `{parsed.tracker_url}`; "
+            "expected a non-blank URL with no whitespace."
+        )
+
+    if tracker_provider != "linear":
+        present = [
+            name for name in _TRACKER_LEASE_FIELDS if getattr(parsed, name) is not None
+        ]
+        if present:
+            warnings.append(
+                "tracker_fields_ignored: "
+                f"producer {producer} set {', '.join(present)}, but tracker.provider "
+                "is not `linear`; the fields are ignored."
+            )
+        return errors, warnings
+
+    if normalized_next_agent in _TRACKER_LEASE_ROUTES:
+        if not parsed.tracker_issue:
+            errors.append(
+                "tracker_issue_missing: "
+                f"producer {producer} routed to `{normalized_next_agent}` in Linear "
+                "mode without tracker_issue."
+            )
+        if not parsed.tracker_url:
+            errors.append(
+                "tracker_url_missing: "
+                f"producer {producer} routed to `{normalized_next_agent}` in Linear "
+                "mode without tracker_url."
+            )
+        if parsed.tracker_issue and parsed.story_id != parsed.tracker_issue:
+            errors.append(
+                "tracker_story_id_mismatch: "
+                f"producer {producer} emitted story_id `{parsed.story_id or ''}` "
+                f"but tracker_issue `{parsed.tracker_issue}`; they must match."
+            )
+
+    if (
+        normalized_producer == "planner"
+        and normalized_next_agent in _IMPLEMENTER_ROUTES
+        and parsed.selection_basis is None
+    ):
+        errors.append(
+            "selection_basis_missing: "
+            f"planner routed to `{normalized_next_agent}` in Linear mode without "
+            "selection_basis."
+        )
+
+    return errors, warnings
+
+
 def validate_handoff(
     handoff_path: Path,
     previous_agent: str,
@@ -251,6 +344,7 @@ def validate_handoff(
     prior_handoff_sha: str | None = None,
     require_work_packet: bool = False,
     dispatcher_commit_mode: bool = False,
+    tracker_provider: str = "none",
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
     return validate_handoff_text(
@@ -260,6 +354,7 @@ def validate_handoff(
         git_cwd=handoff_path.parent,
         require_work_packet=require_work_packet,
         dispatcher_commit_mode=dispatcher_commit_mode,
+        tracker_provider=tracker_provider,
     )
 
 
@@ -271,6 +366,7 @@ def validate_handoff_text(
     git_cwd: Path | None = None,
     require_work_packet: bool = False,
     dispatcher_commit_mode: bool = False,
+    tracker_provider: str = "none",
 ) -> ValidationResult:
     normalized_content = handoff_content.lstrip("\ufeff")
     current_handoff_sha = sha256(normalized_content.encode("utf-8")).hexdigest()
@@ -312,6 +408,7 @@ def validate_handoff_text(
             frontmatter_result = validate_handoff_frontmatter(
                 frontmatter,
                 git_cwd=git_cwd,
+                tracker_provider=tracker_provider,
             )
             errors.extend(frontmatter_result.errors)
             warnings.extend(frontmatter_result.warnings)
