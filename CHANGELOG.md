@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff doctor --probe-tracker <ISSUE>` (opt-in, Linear mode only)
+  launches the first configured Claude CLI role or fallback once, with no
+  built-in tools, only the tracker server's `get_issue` and
+  `list_issue_statuses` tools approved, its write tools denied, project and
+  local Claude settings skipped, and all hooks disabled. It adds
+  one `tracker probe` line that passes when the issue can be read and every
+  configured state name is one of the team's workflow states; any other
+  result fails the doctor. Without the option, doctor output is unchanged and
+  no provider CLI runs.
 - New `llm-handoff stop` command asks a running dispatcher to stop without
   timing it. It writes `logs/dispatch/stop-request`; the dispatcher finishes
   the cycle in flight (the agent, the dispatcher commit, post-dispatch

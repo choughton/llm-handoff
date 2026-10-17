@@ -46,6 +46,37 @@ def test_help_text_lists_doctor_subcommand(capsys) -> None:
     output = capsys.readouterr().out
     assert "--repo-root" in output
     assert "--config" in output
+    assert "--probe-tracker" in output
+
+
+def test_doctor_probe_tracker_option_reaches_run_doctor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from llm_handoff import doctor
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_doctor(**kwargs: object) -> doctor.DoctorReport:
+        calls.append(kwargs)
+        return doctor.DoctorReport(repo_root=tmp_path, checks=())
+
+    monkeypatch.setattr(main_module, "run_doctor", fake_run_doctor)
+
+    exit_code = main_module.main(
+        ["doctor", "--probe-tracker", "ENG-1", "--repo-root", str(tmp_path)]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "repo_root": tmp_path,
+            "config_path": None,
+            "probe_tracker_issue": "ENG-1",
+        }
+    ]
+    assert main_module.main(["doctor", "--repo-root", str(tmp_path)]) == 0
+    assert calls[-1]["probe_tracker_issue"] is None
+    capsys.readouterr()
 
 
 def test_init_command_dry_run_previews_without_writing(

@@ -18,8 +18,17 @@ file only. In Linear mode (`tracker.provider: linear`) it reports, for each
 provider CLI the configured roles launch, whether that CLI's MCP config files
 define a server named `tracker.mcp_server`; it reads those MCP config files
 only, never prints a value from them, and never runs the provider CLI.
-It does not start a dispatch, call a provider, contact the network, or write
-any files.
+Unless `--probe-tracker` is given, it does not start a dispatch, call a
+provider, contact the network, or write any files.
+
+`--probe-tracker <ISSUE>` (Linear mode only) adds one `tracker probe` line.
+It launches the first configured Claude CLI role or fallback once, with no
+built-in tools and only the tracker server's `get_issue` and
+`list_issue_statuses` tools approved (write tools are denied), project and
+local Claude settings skipped, and all hooks disabled, asks it to read the
+issue and the team's workflow states, and checks that every configured state
+name exists. The probe still writes no file and starts at most one provider
+process.
 
 `_command_available` and `_command_binary_name` live here so the supervisor's
 `--doctor` mode and this command share one PATH lookup, including the Windows
@@ -41,6 +50,8 @@ from typing import Any, Literal
 
 import yaml
 
+from llm_handoff.agent_process import _run_logged_agent_command
+from llm_handoff.agent_providers.claude import _build_claude_env
 from llm_handoff.agent_providers.gemini import (
     detect_gemini_sandbox_runtime,
     gemini_sandbox_unavailable_message,
@@ -52,6 +63,8 @@ from llm_handoff.antigravity_permissions import (
 )
 from llm_handoff.config import (
     CLAUDE_BINARY,
+    CLAUDE_DISALLOWED_TOOLS,
+    CLAUDE_MODEL,
     CODEX_BINARY,
     DEFAULT_CONFIG_PATH,
     DEFAULT_HANDOFF_PATH,
@@ -136,8 +149,14 @@ def resolve_doctor_repo_root(
 def run_doctor(
     repo_root: Path | None = None,
     config_path: Path | None = None,
+    *,
+    probe_tracker_issue: str | None = None,
 ) -> DoctorReport:
-    """Run every preflight check and return the report without printing it."""
+    """Run every preflight check and return the report without printing it.
+
+    ``probe_tracker_issue`` (``--probe-tracker``) adds the opt-in tracker
+    probe, which launches the Claude CLI once; without it no provider runs.
+    """
     resolved_root = resolve_doctor_repo_root(repo_root, config_path)
     checks: list[DoctorCheck] = []
 
@@ -152,6 +171,10 @@ def run_doctor(
         _check_work_claim_gate(dispatch_config, checks)
         _check_scanners(dispatch_config, checks)
         _check_tracker_connectors(dispatch_config, resolved_root, checks)
+        if probe_tracker_issue is not None:
+            _check_tracker_probe(
+                dispatch_config, resolved_root, probe_tracker_issue, checks
+            )
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
         require_work_packet = dispatch_config.enforce_work_packet
@@ -1185,6 +1208,284 @@ def _check_tracker_connectors(
                     f"`{server}` is configured there {covers}",
                 )
             )
+
+
+_TRACKER_PROBE_CHECK_NAME = "tracker probe"
+_TRACKER_PROBE_TIMEOUT_MS = 180_000
+_TRACKER_PROBE_ISSUE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$")
+_TRACKER_PROBE_READ_TOOLS = ("get_issue", "list_issue_statuses")
+_TRACKER_PROBE_WRITE_TOOLS = (
+    "save_issue",
+    "save_comment",
+    "create_issue",
+    "update_issue",
+    "create_comment",
+)
+_TRACKER_PROBE_STATE_KEYS = (
+    "eligible_state",
+    "in_progress_state",
+    "success_state",
+    "blocked_state",
+)
+_TRACKER_PROBE_DETAIL_LIMIT = 200
+# The probe runs from the repository root, so a committed
+# `.claude/settings.json` could otherwise add hooks that run shell commands or
+# HTTP calls, or pre-approve other tools. `--setting-sources user` skips the
+# project and local settings files, and the inline `--settings` turns off
+# every hook (and any status line command) that remains. `--bare` is not used
+# because it never reads OAuth credentials and skips the user's MCP servers.
+_TRACKER_PROBE_SETTING_SOURCES = "user"
+_TRACKER_PROBE_SETTINGS: dict[str, Any] = {"disableAllHooks": True}
+# No "$schema" key: Claude Code's --json-schema validator rejects it.
+TRACKER_PROBE_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "issue_found": {"type": "boolean"},
+        "team_states": {"type": "array", "items": {"type": "string"}},
+        "error": {"type": "string"},
+    },
+    "required": ["issue_found", "team_states", "error"],
+    "additionalProperties": False,
+}
+TRACKER_PROBE_PROMPT = (
+    "This is a read-only Linear access check. Call the get_issue tool for the "
+    "Linear issue {issue}. Call the list_issue_statuses tool for the Linear "
+    "team {team}. Do not create, update, comment on, or change anything. "
+    "Answer with the requested JSON only: set issue_found to true only when "
+    "get_issue returned the issue; set team_states to the name of every "
+    "workflow state that list_issue_statuses returned for the team; set error "
+    "to a short reason when a tool is missing, is refused, or fails, "
+    "otherwise to an empty string."
+)
+
+
+def _probe_fail(message: str) -> DoctorCheck:
+    return DoctorCheck("FAIL", _TRACKER_PROBE_CHECK_NAME, message)
+
+
+def _probe_detail(text: str) -> str:
+    """One line, at most 200 characters, ASCII-escaped, no control bytes.
+
+    ``backslashreplace`` escapes only non-ASCII characters (which covers
+    Unicode format characters), so ASCII control bytes such as ESC, BEL, and
+    backspace are escaped separately; otherwise they would reach the terminal
+    and could rewrite or hide the doctor's report.
+    """
+    collapsed = " ".join(text.split())[:_TRACKER_PROBE_DETAIL_LIMIT]
+    escaped = collapsed.encode("ascii", "backslashreplace").decode("ascii")
+    return "".join(
+        f"\\x{ord(char):02x}" if ord(char) < 0x20 or ord(char) == 0x7F else char
+        for char in escaped
+    )
+
+
+def _first_claude_launch(
+    dispatch_config: DispatchConfig,
+) -> tuple[str, AgentConfig] | None:
+    for label, agent_config in _role_launches(dispatch_config):
+        if agent_config.provider == "claude":
+            return label, agent_config
+    return None
+
+
+def _tracker_probe_command(
+    dispatch_config: DispatchConfig,
+    binary: str,
+    model: str,
+    issue: str,
+) -> list[str]:
+    """Build the restricted one-shot Claude argv for the tracker probe."""
+    tracker = dispatch_config.tracker
+    prefix = f"mcp__{tracker.mcp_server}__"
+    allowed = [prefix + tool for tool in _TRACKER_PROBE_READ_TOOLS]
+    disallowed = [
+        *CLAUDE_DISALLOWED_TOOLS,
+        *(prefix + tool for tool in _TRACKER_PROBE_WRITE_TOOLS),
+    ]
+    command = [
+        binary,
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+        "--allowedTools",
+        ",".join(allowed),
+        "--disallowedTools",
+        ",".join(disallowed),
+        "--setting-sources",
+        _TRACKER_PROBE_SETTING_SOURCES,
+        "--settings",
+        json.dumps(_TRACKER_PROBE_SETTINGS),
+    ]
+    mcp_config_path = dispatch_config.tracker_claude_mcp_config_path
+    if mcp_config_path is not None:
+        command.extend(["--mcp-config", str(mcp_config_path), "--strict-mcp-config"])
+    command.extend(
+        [
+            "--model",
+            model,
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(TRACKER_PROBE_JSON_SCHEMA),
+            "--no-session-persistence",
+            "-p",
+            TRACKER_PROBE_PROMPT.format(issue=issue, team=tracker.team),
+        ]
+    )
+    return command
+
+
+def _parse_tracker_probe_output(stdout: str) -> dict[str, Any] | None:
+    """Return the schema-valid ``structured_output`` object, or None."""
+    try:
+        envelope = json.loads(stdout)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(envelope, dict) or envelope.get("is_error") is True:
+        return None
+    result = envelope.get("structured_output")
+    if not isinstance(result, dict):
+        return None
+    if set(result) != {"issue_found", "team_states", "error"}:
+        return None
+    if not isinstance(result["issue_found"], bool):
+        return None
+    if not isinstance(result["error"], str):
+        return None
+    states = result["team_states"]
+    if not isinstance(states, list) or not all(isinstance(s, str) for s in states):
+        return None
+    return result
+
+
+def _check_tracker_probe(
+    dispatch_config: DispatchConfig,
+    repo_root: Path,
+    issue: str,
+    checks: list[DoctorCheck],
+) -> None:
+    """Run the opt-in ``--probe-tracker`` check and append one line.
+
+    Gates run first and launch nothing on failure. When they pass, the first
+    Claude launch in ``_role_launches`` order runs once with no built-in
+    tools, only the tracker server's read tools approved, its write tools
+    denied, project and local settings skipped, and hooks disabled. Nothing
+    is written; the schema goes inline in argv.
+    """
+    tracker = dispatch_config.tracker
+    if not tracker.enabled or tracker.mcp_server is None:
+        checks.append(
+            _probe_fail(
+                "--probe-tracker needs tracker.provider: linear; the tracker "
+                "provider is none"
+            )
+        )
+        return
+    issue = issue.strip()
+    if _TRACKER_PROBE_ISSUE_RE.fullmatch(issue) is None:
+        checks.append(
+            _probe_fail(
+                "--probe-tracker expects a Linear issue identifier such as "
+                "ENG-123"
+            )
+        )
+        return
+    launch = _first_claude_launch(dispatch_config)
+    if launch is None:
+        checks.append(
+            _probe_fail(
+                "the probe runs through the Claude CLI and no configured role "
+                "or fallback uses provider claude"
+            )
+        )
+        return
+    label, agent_config = launch
+    binary = agent_config.binary or CLAUDE_BINARY
+    model = agent_config.model or CLAUDE_MODEL
+    could_not_start = f"could not start the probe with Claude CLI `{binary}`"
+    if not _role_binary_available(binary, repo_root):
+        checks.append(_probe_fail(f"{could_not_start}: binary was not found"))
+        return
+
+    command = _tracker_probe_command(dispatch_config, binary, model, issue)
+    try:
+        result = _run_logged_agent_command(
+            label,
+            command,
+            cwd=repo_root,
+            timeout_ms=_TRACKER_PROBE_TIMEOUT_MS,
+            env=_build_claude_env(agent_config),
+            log=None,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        checks.append(
+            _probe_fail(f"{could_not_start}: {type(exc).__name__}")
+        )
+        return
+    if result.exit_code != 0:
+        first_line = next(
+            (line for line in result.stderr.splitlines() if line.strip()), ""
+        )
+        if first_line.startswith("Process timed out after"):
+            checks.append(
+                _probe_fail(
+                    f"{could_not_start}: it timed out after "
+                    f"{_TRACKER_PROBE_TIMEOUT_MS // 1000} seconds"
+                )
+            )
+            return
+        detail = _probe_detail(first_line) if first_line else "no stderr output"
+        checks.append(
+            _probe_fail(
+                f"Claude CLI (launch {label}) exited with code "
+                f"{result.exit_code}: {detail}"
+            )
+        )
+        return
+    parsed = _parse_tracker_probe_output(result.stdout)
+    if parsed is None:
+        checks.append(
+            _probe_fail(
+                f"the Claude CLI (launch {label}) returned no usable probe "
+                "result"
+            )
+        )
+        return
+    if parsed["issue_found"] is not True:
+        detail = _probe_detail(parsed["error"]) or "no reason given"
+        checks.append(
+            _probe_fail(
+                f"the Claude CLI (launch {label}) could not read issue "
+                f"{issue}: {detail}"
+            )
+        )
+        return
+    configured: list[str] = []
+    for key in _TRACKER_PROBE_STATE_KEYS:
+        value = getattr(tracker, key)
+        if value is not None and value not in configured:
+            configured.append(value)
+    team_states = {state.strip() for state in parsed["team_states"]}
+    missing = [name for name in configured if name.strip() not in team_states]
+    if missing:
+        checks.append(
+            _probe_fail(
+                f"issue {issue} was read (launch {label}), but the team's "
+                "workflow states do not include the configured state name(s): "
+                + ", ".join(f"`{_probe_detail(name)}`" for name in missing)
+            )
+        )
+        return
+    checks.append(
+        DoctorCheck(
+            "PASS",
+            _TRACKER_PROBE_CHECK_NAME,
+            f"the Claude CLI (launch {label}) read issue {issue} and confirmed "
+            f"{len(configured)} of {len(configured)} configured state names in "
+            "the team's workflow states",
+        )
+    )
 
 
 def _describe_missing(names: list[str]) -> str:
