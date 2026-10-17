@@ -241,12 +241,16 @@ work-claim gate, and any publish step after an approval. The dispatcher then
 removes the file, releases
 `.dispatch.lock`, and exits with code 0 before it starts the next dispatch.
 It logs one `PAUSE` line when it first sees the request and one when it
-exits for it. Deleting the file before then cancels the request. A request
-the run never honored is removed when that run exits, and a dispatcher that
-finds one at startup removes it with a `WARN` line.
+exits for it. Deleting the file before then cancels the request. The request
+names the pid recorded in `.dispatch.lock`, and a dispatcher honors only a
+request for its own pid (or one that names no pid, such as a file created by
+hand). A request the run never honored is removed when that run exits. At
+startup the dispatcher removes, with a `WARN` line, any request that does not
+name its pid, so a request accepted for the new lock is kept.
 
 `llm-handoff stop` refuses, and writes nothing, when no `.dispatch.lock`
-exists, when the lock's pid is not running, or when Git does not ignore
+exists, when the lock records no pid (after giving a starting dispatcher a
+moment to write it), when the lock's pid is not running, or when Git does not ignore
 `logs/dispatch/stop-request`. An untracked file that Git does not ignore would
 show up as an uncommitted file in the work-claim gate of the dispatch in
 flight. `llm-handoff init` adds `/logs/dispatch/` to `.gitignore`.

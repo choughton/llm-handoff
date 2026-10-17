@@ -3231,7 +3231,7 @@ class _StopRequestWatch:
         self._seen = False
 
     def requested(self, log: LogFn) -> bool:
-        if not stop_requested(self._repo_root):
+        if not stop_requested(self._repo_root, pid=os.getpid()):
             return False
         if not self._seen:
             self._seen = True

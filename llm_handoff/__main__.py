@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Sequence
 import unicodedata
 
@@ -46,6 +47,8 @@ from llm_handoff.stack_detect import Candidate
 from llm_handoff.orchestrator import run_loop
 from llm_handoff.stop_request import (
     DISPATCH_LOCK_FILENAME,
+    DispatchLockInfo,
+    clear_stale_stop_request,
     clear_stop_request,
     describe_lock_holder,
     dispatch_lock_path,
@@ -158,9 +161,10 @@ def _run_dispatch(
             backend_resume=config.backend_resume,
             planner_resume=config.planner_resume,
         )
-        if clear_stop_request(config.repo_root):
-            # A request left by an earlier run, or written while no
-            # dispatcher held the lock, is not meant for this run.
+        if clear_stale_stop_request(config.repo_root, pid=os.getpid()):
+            # A request left by an earlier run is not meant for this one. A
+            # request `llm-handoff stop` wrote for this pid after the lock
+            # appeared is kept.
             logger(
                 "WARN",
                 "Removed a stop request left from before this run: "
@@ -441,6 +445,19 @@ def doctor_command(
     raise typer.Exit(report.exit_code)
 
 
+def _read_lock_with_pid(
+    root: Path, *, attempts: int = 10, delay_seconds: float = 0.1
+) -> DispatchLockInfo | None:
+    # A starting dispatcher creates the lock file before it writes its pid.
+    lock = read_dispatch_lock(root)
+    for _ in range(attempts):
+        if lock is None or lock.pid is not None:
+            break
+        time.sleep(delay_seconds)
+        lock = read_dispatch_lock(root)
+    return lock
+
+
 @app.command("stop")
 def stop_command(
     repo_root: Path | None = typer.Option(
@@ -452,7 +469,7 @@ def stop_command(
     """Ask the running dispatcher to exit after its current cycle."""
     _configure_stdio_encoding()
     root = detect_repo_root(repo_root)
-    lock = read_dispatch_lock(root)
+    lock = _read_lock_with_pid(root)
     if lock is None:
         typer.echo(
             f"No llm-handoff dispatcher is running for {root} "
@@ -460,7 +477,14 @@ def stop_command(
             err=True,
         )
         raise typer.Exit(1)
-    if lock.pid is not None and not process_is_running(lock.pid):
+    if lock.pid is None:
+        typer.echo(
+            f"No stop request written. {describe_lock_holder(lock)} Check "
+            "whether a dispatcher is running for this repo.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if not process_is_running(lock.pid):
         typer.echo(
             f"No stop request written. {describe_lock_holder(lock)} Remove "
             f"{lock.path} only after confirming no dispatcher is active.",
@@ -477,10 +501,9 @@ def stop_command(
             err=True,
         )
         raise typer.Exit(1)
-    path = request_stop(root)
-    holder = f" (pid {lock.pid})" if lock.pid is not None else ""
+    path = request_stop(root, target_pid=lock.pid)
     typer.echo(
-        f"Stop requested: wrote {path}. The dispatcher{holder} finishes its "
+        f"Stop requested: wrote {path}. The dispatcher (pid {lock.pid}) finishes its "
         "current cycle, including a running agent and the dispatcher commit, "
         "then exits with code 0 before the next dispatch. Delete the file "
         "to cancel."

@@ -23,7 +23,11 @@ from llm_handoff.operator_prompt import (
     content_sha,
     wait_for_operator_or_handoff_change,
 )
-from llm_handoff.stop_request import request_stop, stop_request_path
+from llm_handoff.stop_request import (
+    request_stop,
+    stop_request_path,
+    stop_requested,
+)
 
 
 USER_HANDOFF = """---
@@ -97,7 +101,9 @@ def test_stop_writes_a_request_for_a_running_dispatcher(
     assert exit_code == 0
     request = stop_request_path(repo)
     assert request.is_file()
-    assert "requested_at:" in request.read_text(encoding="utf-8")
+    text = request.read_text(encoding="utf-8")
+    assert "requested_at:" in text
+    assert f"target_pid: {os.getpid()}" in text
     out = capsys.readouterr().out
     assert f"pid {os.getpid()}" in out
     assert "exits with code 0 before the next dispatch" in out
@@ -185,7 +191,7 @@ def test_run_dispatch_discards_a_stop_request_from_before_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / ".git").mkdir()
-    request_stop(tmp_path)
+    request_stop(tmp_path, target_pid=os.getpid() + 1)
     logged: list[tuple[str, str]] = []
     captured: dict[str, bool] = {}
 
@@ -217,6 +223,63 @@ def test_run_dispatch_discards_a_stop_request_from_before_the_run(
     # A request the run did not honor does not outlive it.
     assert not stop_request_path(tmp_path).exists()
     assert not (tmp_path / ".dispatch.lock").exists()
+
+
+def test_stop_refuses_a_lock_that_never_records_a_pid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = _git_repo(tmp_path)
+    (repo / ".dispatch.lock").write_text("", encoding="utf-8")
+    sleeps: list[float] = []
+    monkeypatch.setattr(main_module.time, "sleep", sleeps.append)
+
+    exit_code = main_module.main(["stop", "--repo-root", str(repo)])
+
+    assert exit_code == 1
+    assert sleeps, "a starting dispatcher gets time to write its pid"
+    assert not stop_request_path(repo).exists()
+    assert "does not record a pid" in capsys.readouterr().err
+
+
+def test_run_dispatch_keeps_a_stop_request_for_its_own_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `llm-handoff stop` can accept the new lock before startup cleans up.
+    (tmp_path / ".git").mkdir()
+    request_stop(tmp_path, target_pid=os.getpid())
+    captured: dict[str, bool] = {}
+
+    class FakeDispatchLogger:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __call__(self, level: str, message: str) -> None:
+            pytest.fail(f"unexpected log line: {level} {message}")
+
+    def fake_run_loop(_config: object, *, log: object = None) -> int:
+        captured["request_during_run"] = stop_requested(tmp_path, pid=os.getpid())
+        return 0
+
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+
+    exit_code = main_module._run_dispatch(
+        dry_run=True, use_manual_frontend=False, repo_root=tmp_path
+    )
+
+    assert exit_code == 0
+    assert captured["request_during_run"] is True
+
+
+def test_stop_request_for_another_pid_does_not_apply(tmp_path: Path) -> None:
+    request_stop(tmp_path, target_pid=os.getpid() + 1)
+
+    assert stop_requested(tmp_path, pid=os.getpid()) is False
+    assert stop_requested(tmp_path, pid=os.getpid() + 1) is True
+    request_stop(tmp_path)
+    assert stop_requested(tmp_path, pid=os.getpid()) is True
 
 
 # --- run_loop stop points ---------------------------------------------------

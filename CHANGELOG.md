@@ -12,9 +12,11 @@ This project follows a simple pre-release changelog until the first public tag.
   validation, and the work-claim gate), then exits with code 0 and releases
   `.dispatch.lock` before the next dispatch. It also stops while waiting at a
   pause or the operator prompt. It logs one line when it sees the request
-  and one when it exits for it. The command refuses when no dispatcher holds
-  the lock, when the lock's pid is not running, or when Git does not ignore
-  `logs/dispatch/`. Ctrl+C is unchanged and still aborts at once.
+  and one when it exits for it. The request names the lock holder's pid, and
+  a dispatcher ignores a request for another pid. The command refuses when
+  no dispatcher holds the lock, when the lock records no pid or its pid is
+  not running, or when Git does not ignore `logs/dispatch/`. Ctrl+C is
+  unchanged and still aborts at once.
 - The implementer carry-over record (uncommitted files an implementer
   dispatch left for its story) is saved to `logs/dispatch/carry-over.json`
   and loaded at startup, so a dispatcher restart no longer turns that work

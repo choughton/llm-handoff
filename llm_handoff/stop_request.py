@@ -37,23 +37,30 @@ def read_dispatch_lock(repo_root: Path) -> DispatchLockInfo | None:
     """Return the pid and start time recorded in ``.dispatch.lock``, if any."""
 
     path = dispatch_lock_path(repo_root)
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
+    if not path.exists():
         return None
-    except OSError:
-        return DispatchLockInfo(path=path, pid=None, created_at=None)
-    fields: dict[str, str] = {}
-    for line in text.splitlines():
-        key, separator, value = line.partition(":")
-        if separator:
-            fields.setdefault(key.strip(), value.strip())
+    fields = _read_fields(path)
     raw_pid = fields.get("pid", "")
     return DispatchLockInfo(
         path=path,
         pid=int(raw_pid) if raw_pid.isdigit() else None,
         created_at=fields.get("created_at") or None,
     )
+
+
+def _read_fields(path: Path) -> dict[str, str]:
+    """Parse ``key: value`` lines; an unreadable or missing file has none."""
+
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(":")
+        if separator:
+            fields.setdefault(key.strip(), value.strip())
+    return fields
 
 
 def process_is_running(pid: int) -> bool:
@@ -100,19 +107,58 @@ def stop_request_is_ignored(repo_root: Path) -> bool:
     return git_path_is_ignored(Path(repo_root).resolve(), STOP_REQUEST_PATH.as_posix())
 
 
-def request_stop(repo_root: Path) -> Path:
+def request_stop(repo_root: Path, *, target_pid: int | None = None) -> Path:
+    """Write a stop request, for the dispatcher with ``target_pid`` when given.
+
+    A request without a target pid, such as a file created by hand, applies to
+    whichever dispatcher sees it.
+    """
+
     path = stop_request_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    target = f"target_pid: {target_pid}\n" if target_pid is not None else ""
     path.write_text(
         f"requested_at: {datetime.now().isoformat(timespec='seconds')}\n"
-        f"requested_by_pid: {os.getpid()}\n",
+        f"requested_by_pid: {os.getpid()}\n"
+        f"{target}",
         encoding="utf-8",
     )
     return path
 
 
-def stop_requested(repo_root: Path) -> bool:
-    return stop_request_path(repo_root).is_file()
+def stop_request_target_pid(repo_root: Path) -> int | None:
+    """The pid a stop request names; None when it names none or is missing."""
+
+    raw_pid = _read_fields(stop_request_path(repo_root)).get("target_pid", "")
+    return int(raw_pid) if raw_pid.isdigit() else None
+
+
+def stop_requested(repo_root: Path, *, pid: int | None = None) -> bool:
+    """True when a stop request applies to the dispatcher with ``pid``.
+
+    A request for another pid does not apply. Without ``pid`` any request does.
+    """
+
+    if not stop_request_path(repo_root).is_file():
+        return False
+    if pid is None:
+        return True
+    target_pid = stop_request_target_pid(repo_root)
+    return target_pid is None or target_pid == pid
+
+
+def clear_stale_stop_request(repo_root: Path, *, pid: int) -> bool:
+    """At startup, delete a stop request that is not for this dispatcher.
+
+    ``llm-handoff stop`` may accept this run's lock before startup gets here,
+    so a request naming this pid is kept. True when a request was deleted.
+    """
+
+    if not stop_request_path(repo_root).is_file():
+        return False
+    if stop_request_target_pid(repo_root) == pid:
+        return False
+    return clear_stop_request(repo_root)
 
 
 def clear_stop_request(repo_root: Path) -> bool:
