@@ -523,6 +523,58 @@ def test_unhandled_post_dispatch_failure_pauses_with_an_error(
     )
 
 
+READY_FOR_REVIEW_CLAIM = """---
+next_agent: auditor
+reason: "Backend work complete; audit requested."
+status: ready_for_review
+producer: backend
+---
+
+# Backend Handback
+"""
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _UNREPAIRABLE_ERROR,
+        # Repairable, but the producer repair fails here (no git repository),
+        # which would otherwise schedule the hygiene planner recovery.
+        "EVIDENCE_MISSING: status ready_for_review requires populated evidence "
+        "fields at line 9: missing Commands run.",
+    ],
+)
+def test_failure_on_a_gated_claim_skips_planner_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: str,
+) -> None:
+    handoff_path = _write_repo(tmp_path, BACKEND_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        planner_writes=[USER_HANDOFF],
+        backend_writes=[READY_FOR_REVIEW_CLAIM],
+        post_dispatch=_post_dispatch_error(error),
+    )
+    config = _config(
+        tmp_path, enforce_work_packet=True, work_packet_opt_out_reason=None
+    )
+
+    exit_code = harness.run(config)
+
+    # The gate only checks a claim in the cycle that produced it, so a planner
+    # recovery would let the claim reach audit unchecked.
+    assert exit_code == 1
+    assert harness.backend_calls == 1
+    assert harness.planner_instructions == []
+    pauses = harness.pause_messages()
+    assert any(
+        orchestrator.UNGATED_CLAIM_PAUSE_NOTE.strip() in message for message in pauses
+    )
+    assert not any("bounded planner recovery" in message for message in pauses)
+
+
 def test_unhandled_failure_reason_names_the_dispatcher_commit() -> None:
     result = ValidationResult(verdict="NO", warnings=[], errors=[_UNREPAIRABLE_ERROR])
     commit = orchestrator.DispatcherCommitResult(sha="c" * 40, committed=("a.py",))

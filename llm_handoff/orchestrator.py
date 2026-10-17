@@ -207,6 +207,12 @@ POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_UNCOMMITTED_RULE = (
     "run `git add`, `git commit`, or any other command that writes to `.git`. "
     "Failing to edit HANDOFF.md is a critical failure."
 )
+# A planner recovery would start a new dispatch, and the work-claim gate only
+# checks a claim in the cycle that produced it.
+UNGATED_CLAIM_PAUSE_NOTE = (
+    " The work-claim gate has not checked this ready_for_review claim, so the "
+    "dispatcher does not schedule automatic planner recovery."
+)
 POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE = (
     "The producer failed one-shot HANDOFF hygiene repair after post-dispatch "
     "validation errors: {errors}. Do not modify source, tests, project-state "
@@ -1178,6 +1184,11 @@ def run_loop(
                     )
                     return 1
 
+                # An implementer claim the gate has not checked gets no
+                # automatic planner recovery, only a pause.
+                ungated_claim = _has_ungated_implementer_claim(
+                    config, current_cycle.route
+                )
                 repair_attempt = _attempt_post_dispatch_handoff_hygiene_repair(
                     config=config,
                     validation_result=validation_result,
@@ -1232,7 +1243,11 @@ def run_loop(
                         _log(log_fn, "INFO", "")
                         continue
 
-                if repair_attempt.attempted and not repair_attempt.succeeded:
+                if (
+                    repair_attempt.attempted
+                    and not repair_attempt.succeeded
+                    and not ungated_claim
+                ):
                     _log(
                         log_fn,
                         "AGENT",
@@ -1254,7 +1269,9 @@ def run_loop(
                     consecutive_failures = 0
                     continue
 
-                if _should_schedule_planner_recovery(validation_result, previous_agent):
+                if not ungated_claim and _should_schedule_planner_recovery(
+                    validation_result, previous_agent
+                ):
                     _log(
                         log_fn,
                         "AGENT",
@@ -1302,7 +1319,9 @@ def run_loop(
                         commit_result,
                     )
                     _log(log_fn, "ERROR", pause_reason)
-                if _pause_recovery_available(config, pause_recovery_used, log_fn):
+                if ungated_claim:
+                    pause_reason += UNGATED_CLAIM_PAUSE_NOTE
+                elif _pause_recovery_available(config, pause_recovery_used, log_fn):
                     pending_planner_recovery = _schedule_pause_recovery(
                         config,
                         pause_reason=pause_reason,
@@ -3496,6 +3515,20 @@ def _self_loop_pause_reason(
 
 def _missing_route_pause_reason(previous_agent: str) -> str:
     return f"{previous_agent} produced HANDOFF.md without a dispatchable route. Update the handoff; dispatch will resume after the file changes."
+
+
+def _has_ungated_implementer_claim(config: DispatchConfig, route: RouteName) -> bool:
+    """True when HANDOFF.md holds a ready_for_review claim from an implementer
+    route that the work-claim gate must check but has not."""
+
+    if not _work_claim_gate_applies(config, route):
+        return False
+    content = _read_required_text(config.handoff_full_path)
+    frontmatter = _parse_frontmatter_or_none(content) if content else None
+    return (
+        frontmatter is not None
+        and _handoff_status(frontmatter.status) == HandoffStatus.READY_FOR_REVIEW
+    )
 
 
 def _post_dispatch_failure_pause_reason(

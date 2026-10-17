@@ -14,6 +14,13 @@ This project follows a simple pre-release changelog until the first public tag.
   the operator prompt or a wait for `HANDOFF.md` to change. Without polling
   (`poll_interval_seconds: 0`) the run still exits 1 after logging the
   reason.
+- When post-dispatch validation fails on a `ready_for_review` backend or
+  frontend claim that the work-claim gate has not yet checked
+  (`enforce_work_packet: true`), the dispatcher no longer schedules
+  automatic planner recovery, including after a failed producer hygiene
+  repair. A planner cycle would start a new dispatch and the claim would
+  reach audit without the gate. The dispatcher pauses instead, and the
+  pause reason says why.
 - `EVIDENCE_MISSING` validation errors, including a `Commit SHA verified`
   of `HEAD`, now go through the one-shot producer handoff hygiene repair
   instead of stopping the run.
