@@ -653,8 +653,11 @@ The outcomes:
   Packet. The implementer fixes the findings on the same story branch and
   writes a `## Review Responses` section with one `### Finding N` entry per
   finding: what it changed, or why it left the finding. The dispatcher saves
-  that section when the gate passes, because the auditor rewrites
-  `HANDOFF.md`. After the gate and audit pass again, the dispatcher pushes
+  that section when the gate passes and again before it dispatches the
+  auditor, because the auditor rewrites `HANDOFF.md`. The second save keeps
+  the responses when the claim reaches the auditor without a gate pass, for
+  example after a dispatcher restart or a handoff fixed by hand after a
+  validation pause. After the gate and audit pass again, the dispatcher pushes
   to the same pull request and updates its report. It posts each response as
   the reply on that finding's review thread and resolves the thread. A
   finding without a response keeps its thread unresolved, which blocks the
