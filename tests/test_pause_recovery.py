@@ -533,8 +533,20 @@ def test_linear_evidence_failure_without_linear_mode_keeps_recovery(
 
 @pytest.mark.parametrize(
     "evidence_row",
-    [None, "FAIL", "PASS"],
-    ids=["row-missing", "fail-without-detail", "pass-without-detail"],
+    [
+        None,
+        "FAIL",
+        "PASS",
+        "fail - evidence mismatch",
+        "Fail - evidence mismatch",
+    ],
+    ids=[
+        "row-missing",
+        "fail-without-detail",
+        "pass-without-detail",
+        "lowercase-fail",
+        "mixed-case-fail",
+    ],
 )
 def test_linear_evidence_row_missing_or_malformed_blocks_pause_recovery(
     tmp_path: Path,
