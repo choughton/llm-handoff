@@ -88,21 +88,32 @@ dependencies; Windows (`msvcrt`) and POSIX.
   keystrokes.
 - CHAT-2: A sent message holds the loop at the next safe point: after the
   current dispatch, its dispatcher commit, and its gates, and before the next
-  dispatch and before any publish or merge (reuse the graceful-stop check
-  points). A message about the running agent prints `Question queued until
-  after the current <role> run completes.` While held, print `Press Enter to
-  continue`; the loop never resumes on its own after a message. Queued
-  messages are saved under `logs/dispatch/` and survive `llm-handoff stop`.
+  dispatch. The graceful-stop check at the loop top is not enough, because
+  publishing runs inside the auditor's cycle: add explicit hold checks right
+  before `publish_story` in the cycle and before `resume_paused_publish` at
+  startup, so no push or merge happens while a message is pending or held. A
+  message about the running agent prints `Question queued until after the
+  current <role> run completes.` While held, print `Press Enter to continue`;
+  the loop never resumes on its own after a message. Queued messages are saved
+  under `logs/dispatch/` and survive `llm-handoff stop`; a saved message found
+  at startup holds the loop before the publish resume.
 - CHAT-3: Dispatch record and read-only answers. Save each dispatch in the run
   (role, story, provider, session id, time) under `logs/dispatch/`. A question
-  resumes that agent's own session read-only and prints the answer; follow-ups
-  stay in the same thread. Claude `--resume`; Codex `exec resume` in the
-  read-only sandbox; Gemini `--approval-mode plan` (confirm `--resume` accepts
-  a session id, else start sessions with `--session-id` and load them with
-  `--session-file`); agy `--conversation` with `--mode plan`. After each answer
-  the dispatcher checks that `HANDOFF.md` and the Git state are unchanged and
-  pauses with a warning if not. A provider that cannot resume says so and
-  offers the planner.
+  resumes that agent's own session and prints the answer; follow-ups stay in
+  the same thread. Each answer runs behind a read-only boundary the provider
+  enforces, not a prompt-level mode: Claude `--resume` with only read tools
+  (Read, Grep, Glob, read-only `git`); Codex `exec resume` in the read-only
+  sandbox. Gemini plan mode and agy plan mode are not boundaries (Gemini plan
+  mode auto-approves `exit_plan_mode` and switches to YOLO in non-interactive
+  runs; see `docs/ARCHITECTURE.md`), so Gemini and agy answer only once the
+  story establishes an enforced boundary for them (for example a sandbox with
+  the repository mounted read-only, or deny rules for every write and shell
+  tool); until then they say they cannot answer and offer the planner. For
+  Gemini, confirm `--resume` accepts a session id, else start sessions with
+  `--session-id` and load them with `--session-file`. After each answer the
+  dispatcher also checks that `HANDOFF.md` and the Git state are unchanged and
+  pauses with a warning if not; this check is a second layer, not the
+  boundary.
 - CHAT-4: Router and action path. `@role <message>` targets that role. Otherwise
   the normalizer model classifies the message against the dispatch record
   (target, question or action, confidence) and prints its pick before anything
