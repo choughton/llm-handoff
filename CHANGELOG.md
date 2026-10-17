@@ -6,6 +6,9 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The shipped finalizer helper files and the stale-finalizer recovery
+  instruction now defer to the configured `project_state_path` instead of
+  always naming `PROJECT_STATE.md`.
 - The dispatcher now pauses before dispatching `backend` or `frontend` when
   the role is `provider: claude` in the default `dontAsk` mode and the Work
   Packet's `Files in scope` names a path under a `.claude` directory, at the
