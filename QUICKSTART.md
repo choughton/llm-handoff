@@ -1,189 +1,148 @@
-# Quickstart
+# Quick Start Command Sheet
 
-This is the shortest source-checkout path for trying `llm-handoff` against a
-target repository.
+The five steps of the [README quick start](README.md#quick-start) with the
+commands written out for Windows PowerShell and for macOS or Linux. The README
+explains each step; this page only lists what to type. Replace
+`C:\path\to\your-project` or `/path/to/your-project` with your target
+repository.
 
-`llm-handoff` is not yet published to PyPI. Clone this repo, run it from source
-or install it from the checkout, and point it at the repository you want to
-coordinate.
+This is pre-release software. Read the [README status](README.md#status)
+before using it against a repository with sensitive or production work.
 
-To install it as a package instead of running from source, run
-`python -m pip install .` in the checkout, or
-`python -m pip install git+https://github.com/choughton/llm-handoff.git`.
-That adds an `llm-handoff` console command, and `llm-handoff ...` can replace
-`python -m llm_handoff ...` in every command below. The installed package
-bundles the reference workflow template, so `llm-handoff init` works from any
-directory.
+## 0. Check Prerequisites
 
-This is pre-release software. Read the [README status](README.md#status) before
-using it against a repository with sensitive or production work.
-
-## 1. Clone The Dispatcher
-
-Windows PowerShell:
-
-```powershell
-cd $env:USERPROFILE\Downloads
-git clone https://github.com/choughton/llm-handoff.git
-cd llm-handoff
-```
-
-macOS or Linux:
+Python 3.11 or newer, Git, and the provider CLIs your roles will use. Roles
+mapped to Gemini CLI also need Docker or Podman on `PATH` (macOS can use
+`sandbox-exec`). The same commands work in PowerShell and in a POSIX shell:
 
 ```bash
-cd ~/Downloads
-git clone https://github.com/choughton/llm-handoff.git
-cd llm-handoff
-```
-
-## 2. Create The Python Environment
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m llm_handoff --help
-```
-
-macOS or Linux:
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements-dev.txt
-python -m llm_handoff --help
-```
-
-## 3. Check Provider CLIs
-
-Run the checks for the providers your workflow will use:
-
-```bash
+python --version
+git --version
 codex --version
 gemini --version
 claude --version
-```
-
-The dispatcher launches provider CLIs. It does not install them or configure
-their accounts.
-
-Gemini CLI roles run in a container sandbox by default. Check that Docker or
-Podman is on `PATH` (macOS can use `sandbox-exec` instead):
-
-```bash
 docker --version
 ```
 
-Without one, the dispatcher refuses to start. Agents also launch with an
-allowlisted environment and permission checks on, and edits to protected
-control files stop the loop. See
-[Agent Safety Defaults](README.md#agent-safety-defaults) for what that means
-and how to opt out per role. On Windows, prefer running inside WSL2 or a
-container with no push credential.
+The dispatcher launches these CLIs. It does not install them or sign them in.
+Agents run with an allowlisted environment, permission checks, and sandboxes
+on; see [Agent Safety Defaults](README.md#agent-safety-defaults). On Windows,
+run the dispatcher inside WSL2 or a container with no push credential.
 
-## 4. Initialize A Target Repo
-
-Preview the files that would be copied:
+## 1. Install
 
 Windows PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe -m llm_handoff init C:\path\to\your-project --template reference-workflow --dry-run
+python -m pip install git+https://github.com/choughton/llm-handoff.git
+llm-handoff --help
 ```
 
 macOS or Linux:
 
 ```bash
-python -m llm_handoff init /path/to/your-project --template reference-workflow --dry-run
+python -m pip install git+https://github.com/choughton/llm-handoff.git
+llm-handoff --help
 ```
 
-If the dry run looks right, initialize the target repo:
+If you installed into a virtual environment that is not activated, call the
+command by path: `.\.venv\Scripts\llm-handoff.exe` on Windows,
+`.venv/bin/llm-handoff` on macOS or Linux.
+
+To run from a source checkout instead, follow
+[INSTALL.md](INSTALL.md#run-from-a-source-checkout) and replace `llm-handoff`
+in every command below with `python -m llm_handoff`
+(`.\.venv\Scripts\python.exe -m llm_handoff` in PowerShell when the
+environment is not activated).
+
+## 2. Initialize The Target Repository
 
 Windows PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe -m llm_handoff init C:\path\to\your-project --template reference-workflow
+llm-handoff init C:\path\to\your-project --dry-run
+llm-handoff init C:\path\to\your-project
 ```
 
 macOS or Linux:
 
 ```bash
-python -m llm_handoff init /path/to/your-project --template reference-workflow
+llm-handoff init /path/to/your-project --dry-run
+llm-handoff init /path/to/your-project
 ```
 
-The initializer copies the reference protocol files into the target repo,
-including `AGENTS.md`, `PROJECT_STATE.md`, `dispatch_config.yaml`,
-`docs/handoff/HANDOFF.md`, provider agent templates, and provider ignore files.
+Add `--provider claude`, `--provider codex`, or `--provider gemini` to put
+every role on one CLI.
+To track work in Linear, read
+[Files Or Linear](README.md#files-or-linear-where-work-is-tracked) first and
+add the `--tracker` flags to the second command.
 
-## 5. Edit The First Handoff
+## 3. Run The Preflight Check
 
-In the target repo, review and edit:
+Windows PowerShell:
+
+```powershell
+llm-handoff doctor --repo-root C:\path\to\your-project
+```
+
+macOS or Linux:
+
+```bash
+llm-handoff doctor --repo-root /path/to/your-project
+```
+
+Fix every `FAIL` before continuing.
+
+## 4. Tell The Planner What To Build
+
+In the target repository, edit:
 
 ```text
-PROJECT_STATE.md
-dispatch_config.yaml
 docs/handoff/HANDOFF.md
+PROJECT_STATE.md
 ```
 
-Start with a small planner assignment:
+The starter handoff text is in
+[README step 4](README.md#4-tell-the-planner-what-to-build).
 
-```markdown
----
-next_agent: planner
-reason: Scope the first bounded implementation task.
-producer: user
----
-
-# Initial Handoff
-
-Read the repository instructions and project state, then write the first
-dispatchable task assignment.
-```
-
-## 6. Dry Run Dispatch
-
-From the `llm-handoff` source checkout, point the dispatcher at the target repo:
+## 5. Dry Run, Then Run
 
 Windows PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe -m llm_handoff --repo-root C:\path\to\your-project --config C:\path\to\your-project\dispatch_config.yaml --dry-run
+llm-handoff --repo-root C:\path\to\your-project --dry-run
+llm-handoff --repo-root C:\path\to\your-project
 ```
 
 macOS or Linux:
 
 ```bash
-python -m llm_handoff --repo-root /path/to/your-project --config /path/to/your-project/dispatch_config.yaml --dry-run
+llm-handoff --repo-root /path/to/your-project --dry-run
+llm-handoff --repo-root /path/to/your-project
 ```
 
-The dry run should report the route and provider it would invoke without
-launching an agent.
+Add `--config <path>` when `dispatch_config.yaml` is not at the target
+repository root.
 
-## 7. Run One Real Cycle
-
-When provider auth is ready and the dry run is clean:
+To stop cleanly, from a second terminal:
 
 Windows PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe -m llm_handoff --repo-root C:\path\to\your-project --config C:\path\to\your-project\dispatch_config.yaml
+llm-handoff stop --repo-root C:\path\to\your-project
 ```
 
 macOS or Linux:
 
 ```bash
-python -m llm_handoff --repo-root /path/to/your-project --config /path/to/your-project/dispatch_config.yaml
+llm-handoff stop --repo-root /path/to/your-project
 ```
-
-The dispatcher reads `docs/handoff/HANDOFF.md`, runs one role at a time, checks
-the updated handoff, and continues or pauses.
 
 ## Next Reading
 
-- [INSTALL.md](INSTALL.md) for dependency and command details.
-- [WALKTHROUGH.md](WALKTHROUGH.md) for a slower first-run explanation.
-- [CONFIGURATION.md](CONFIGURATION.md) for `dispatch_config.yaml`.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the dispatch loop design.
+- [README.md](README.md#quick-start) explains each step above.
+- [WALKTHROUGH.md](WALKTHROUGH.md) explains how the two repositories, the
+  roles, and the copied files fit together.
+- [INSTALL.md](INSTALL.md) covers the source checkout, `doctor`, and
+  debugging.
+- [CONFIGURATION.md](CONFIGURATION.md) covers `dispatch_config.yaml`.

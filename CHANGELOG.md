@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Gave each first-run guide one job so the install, init, dry-run, and run
+  steps appear only in the README quick start: `QUICKSTART.md` is now the
+  Windows PowerShell and macOS/Linux command sheet for those five steps,
+  `INSTALL.md` keeps requirements, the package and source-checkout install
+  paths, `doctor`, safety defaults, debugging, and tests, and
+  `WALKTHROUGH.md` keeps the two-repo model, the role-to-provider table, the
+  full list of files `init` copies (now matching
+  `examples/reference-workflow/`, including the Claude planner, backend, and
+  frontend agents, the per-role Codex skills, the Codex rules file, and the
+  Antigravity agents), the target-repo file contract, dry-run expectations,
+  and common pauses.
 - `llm-handoff init --provider codex` (and the automatic all-Codex mapping
   on a machine where `codex` is the only provider CLI) now writes
   `commit_mode: dispatcher` instead of the template's `commit_mode: agent`.
