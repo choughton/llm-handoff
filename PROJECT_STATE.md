@@ -58,6 +58,10 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
   template whose labels match the Work Packet parser.
 - LIN-9: Auditor pass and fail transitions and user-attention steps; the
   validator checks the latest evidence comment against `HANDOFF.md`, read-only.
+- LIN-9c: The validator support agent (each shipped provider's handoff-validator
+  helper file) gains a Linear evidence check row, and the dispatcher's validator
+  output handling acts on it, so a validation-only turn reports evidence-comment
+  mismatches end to end. From the LIN-9a review (PR #91, Finding 1).
 - LIN-10: `docs/TESTING.md` runbook for a manual acceptance run against a
   sandbox Linear team.
 
