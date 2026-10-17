@@ -438,6 +438,111 @@ def test_protected_file_escalation_by_pause_validator_blocks_recovery(
     ) in harness.logs
 
 
+_LINEAR_EVIDENCE_PAUSE_LOG = (
+    "PAUSE",
+    "Linear evidence check failed; not scheduling planner recovery.",
+)
+
+
+def _tracker_config(repo_root: Path, provider: str) -> DispatchConfig:
+    tracker: dict[str, Any] = {"provider": provider}
+    if provider == "linear":
+        tracker.update(
+            {
+                "team": "ENG",
+                "project": "Platform",
+                "eligible_state": "Todo",
+                "in_progress_state": "In Progress",
+                "success_state": "In Review",
+                "mcp_server": "linear",
+            }
+        )
+    return _config(
+        repo_root,
+        enforce_work_packet=True,
+        work_packet_opt_out_reason=None,
+        tracker=tracker,
+    )
+
+
+def _linear_evidence_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    handoff_path: Path,
+    evidence_row: str,
+) -> _Harness:
+    harness = _Harness(monkeypatch, handoff_path, planner_writes=[USER_HANDOFF])
+
+    def fake_support(_name: str, prompt: str, **_kwargs: Any) -> SubagentResult:
+        harness.validator_prompts.append(prompt)
+        return SubagentResult(
+            stdout=(
+                "VALID: NO\n"
+                "CHECKS:\n"
+                "  ROUTING:        FAIL - no routing instruction\n"
+                f"  LINEAR-EVIDENCE: {evidence_row}\n"
+            ),
+            stderr="",
+            exit_code=0,
+            elapsed_seconds=0.01,
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    return harness
+
+
+_EVIDENCE_FAIL_ROW = (
+    "FAIL - producer: comment value backend, handoff value auditor"
+)
+
+
+def test_linear_evidence_failure_blocks_pause_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, NO_ROUTE_HANDOFF)
+    harness = _linear_evidence_harness(
+        monkeypatch, handoff_path, _EVIDENCE_FAIL_ROW
+    )
+
+    assert harness.run(_tracker_config(tmp_path, "linear")) == 0
+
+    assert harness.planner_instructions == []
+    assert _LINEAR_EVIDENCE_PAUSE_LOG in harness.logs
+    assert not any(
+        "bounded planner recovery" in message for message in harness.pause_messages()
+    )
+
+
+def test_linear_evidence_failure_without_linear_mode_keeps_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, NO_ROUTE_HANDOFF)
+    harness = _linear_evidence_harness(
+        monkeypatch, handoff_path, _EVIDENCE_FAIL_ROW
+    )
+
+    assert harness.run(_tracker_config(tmp_path, "none")) == 0
+
+    assert len(harness.recovery_instructions) == 1
+    assert _LINEAR_EVIDENCE_PAUSE_LOG not in harness.logs
+
+
+def test_linear_evidence_pass_keeps_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, NO_ROUTE_HANDOFF)
+    harness = _linear_evidence_harness(
+        monkeypatch, handoff_path, "PASS - comment matches the handoff"
+    )
+
+    assert harness.run(_tracker_config(tmp_path, "linear")) == 0
+
+    assert len(harness.recovery_instructions) == 1
+    assert _LINEAR_EVIDENCE_PAUSE_LOG not in harness.logs
+
+
 def test_planner_route_stale_pause_dispatches_recovery_planner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

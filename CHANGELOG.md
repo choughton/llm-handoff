@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The Codex and Antigravity `handoff-validator` helpers (root and
+  `examples/reference-workflow/` copies) gain checklist item 13 and a
+  `LINEAR-EVIDENCE` row in their report. When `docs/handoff/HANDBOOK.md` has a
+  `## Linear Mode: validator` section, the helper runs that section's evidence
+  check read-only and reports each mismatched field as `FAIL`, naming both the
+  comment value and the handoff value; without that section it reports
+  `PASS - Linear mode is off`. The Linear-mode validator prompt's step 6 now
+  puts each mismatch on a validation-only turn on that row. In Linear mode,
+  the dispatcher no longer schedules planner pause recovery when the pause
+  diagnosis fails the `LINEAR-EVIDENCE` row; it logs
+  `Linear evidence check failed; not scheduling planner recovery.` and waits
+  for a person. The Claude `handoff-validator` helper files follow in LIN-9d.
 - The Linear-mode auditor prompt now states its issue-state transitions: on
   a pass it posts `audit_passed` with `state_from` and `state_to` and moves the
   leased issue to `tracker.success_state` (the dispatcher routes to the auditor

@@ -45,7 +45,8 @@ Evidence check. Run this read-only check on every Linear-mode turn:
      `next_agent: user` and one specific question for the user. With no
      mismatch, state in that section that the check passed.
    - On a turn that asks only for a validation report and forbids file
-     edits, do not edit `HANDOFF.md`. Report each mismatch, naming both
-     values, as a failed check in the report that turn asks for.
+     edits, do not edit `HANDOFF.md`. Report each mismatch as a failed check
+     in the report that turn asks for: a `FAIL` on the report's
+     `LINEAR-EVIDENCE` row, naming both values.
 7. Never edit a comment or the issue to make them match. This check is
    read-only.

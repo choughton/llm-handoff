@@ -688,7 +688,9 @@ def run_loop(
             pause_reason = (
                 "No routing instruction found in HANDOFF.md. Update the handoff; dispatch will resume after the file changes."
             )
-            if _pause_recovery_available(config, pause_recovery_used, log_fn):
+            if _pause_recovery_available(
+                config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+            ):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -808,7 +810,9 @@ def run_loop(
             pause_reason = (
                 f"STALE ROUTING DETECTED: same route ({current_cycle.route}) and unchanged HANDOFF hash."
             )
-            if _pause_recovery_available(config, pause_recovery_used, log_fn):
+            if _pause_recovery_available(
+                config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+            ):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -866,7 +870,9 @@ def run_loop(
             pause_reason = (
                 f"Routing instruction {decision.route} is only {decision.confidence} confidence. Update HANDOFF.md; dispatch will resume after the file changes."
             )
-            if _pause_recovery_available(config, pause_recovery_used, log_fn):
+            if _pause_recovery_available(
+                config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+            ):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -984,7 +990,9 @@ def run_loop(
                 pause_reason = (
                     "finalizer ledger-updater output was unparseable. Update HANDOFF.md; dispatch will resume after the file changes."
                 )
-                if _pause_recovery_available(config, pause_recovery_used, log_fn):
+                if _pause_recovery_available(
+                    config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+                ):
                     pending_planner_recovery = _schedule_pause_recovery(
                         config,
                         pause_reason=pause_reason,
@@ -1471,7 +1479,9 @@ def run_loop(
                     _log(log_fn, "ERROR", pause_reason)
                 if ungated_claim:
                     pause_reason += UNGATED_CLAIM_PAUSE_NOTE
-                elif _pause_recovery_available(config, pause_recovery_used, log_fn):
+                elif _pause_recovery_available(
+                    config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+                ):
                     pending_planner_recovery = _schedule_pause_recovery(
                         config,
                         pause_reason=pause_reason,
@@ -3729,9 +3739,26 @@ def _pause_at_dispatcher_pause(
 
 
 def _pause_recovery_available(
-    config: DispatchConfig, used: bool, log: LogFn
+    config: DispatchConfig,
+    used: bool,
+    log: LogFn,
+    *,
+    diagnosis: ValidationResult | None = None,
 ) -> bool:
     if config.pause_recovery != "planner" or config.dry_run or used:
+        return False
+    # In Linear mode, an evidence-comment mismatch goes to a person, never to
+    # automatic planner recovery.
+    if (
+        config.tracker.provider == "linear"
+        and diagnosis is not None
+        and any(error.startswith("linear-evidence:") for error in diagnosis.errors)
+    ):
+        _log(
+            log,
+            "PAUSE",
+            "Linear evidence check failed; not scheduling planner recovery.",
+        )
         return False
     # The pause validator may have rewritten HANDOFF.md to route to `user`,
     # for example the protected-file escalation. A user route never gets
