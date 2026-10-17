@@ -6,7 +6,14 @@ import re
 import string
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 import yaml
 
 
@@ -245,6 +252,15 @@ class AgentConfig(BaseModel):
     # agent: a timeout, a rate or usage limit, a sign-in failure, or a CLI that
     # will not launch. One level only; a fallback has no fallback of its own.
     fallback: AgentConfig | None = None
+    # Set only by DispatchConfig in Linear mode with tracker.claude_mcp_config;
+    # a private attribute, so no YAML key can set it.
+    _claude_mcp_config: Path | None = PrivateAttr(default=None)
+
+    @property
+    def claude_mcp_config_path(self) -> Path | None:
+        """Resolved MCP config file this Claude launch loads, if any."""
+
+        return self._claude_mcp_config
 
     @field_validator("timeout_ms", mode="after")
     @classmethod
@@ -643,6 +659,54 @@ _TRACKER_LINEAR_NON_BLANK_KEYS: tuple[str, ...] = (
 )
 # `mcp_server` later forms the `mcp__<server>__` tool-name prefix.
 _MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Linear MCP tools each role's Claude launch gets in Linear mode, unprefixed.
+# `linear_tools_for_role` adds the `mcp__<tracker.mcp_server>__` prefix.
+LINEAR_ROLE_TOOLS: dict[AgentRole, tuple[str, ...]] = {
+    "planner": (
+        "get_issue",
+        "list_issues",
+        "list_comments",
+        "save_comment",
+        "save_issue",
+    ),
+    "backend": ("get_issue", "list_issues", "list_comments", "save_comment"),
+    "frontend": ("get_issue", "list_issues", "list_comments", "save_comment"),
+    "auditor": (
+        "get_issue",
+        "list_issues",
+        "list_comments",
+        "save_comment",
+        "save_issue",
+    ),
+    "validator": ("get_issue", "list_issues", "list_comments"),
+    "finalizer": ("get_issue", "list_issues", "list_comments"),
+}
+
+
+def linear_tools_for_role(role: str, mcp_server: str) -> tuple[str, ...]:
+    """Full ``mcp__<server>__<tool>`` names for one role, in table order."""
+
+    return tuple(
+        f"mcp__{mcp_server}__{tool}" for tool in LINEAR_ROLE_TOOLS.get(role, ())
+    )
+
+
+def _with_linear_tools(
+    agent_config: AgentConfig,
+    linear_tools: tuple[str, ...],
+    mcp_config_path: Path | None,
+) -> AgentConfig:
+    if agent_config.provider != "claude" or agent_config.unsafe_bypass:
+        return agent_config
+    base = (
+        CLAUDE_DEFAULT_ALLOWED_TOOLS
+        if agent_config.allowed_tools is None
+        else agent_config.allowed_tools
+    )
+    added = tuple(tool for tool in linear_tools if tool not in base)
+    derived = agent_config.model_copy(update={"allowed_tools": (*base, *added)})
+    derived._claude_mcp_config = mcp_config_path
+    return derived
 
 
 class TrackerConfig(BaseModel):
@@ -651,8 +715,10 @@ class TrackerConfig(BaseModel):
     ``provider: none`` (the default) means vanilla mode and allows no other
     key. ``provider: linear`` binds the repository to a pool of Linear issues
     that agents read and update through their own CLI's MCP connector; the
-    dispatcher never calls Linear and holds no Linear credential. Nothing in
-    the dispatcher reads this block yet beyond validating it at load.
+    dispatcher never calls Linear and holds no Linear credential. In Linear
+    mode the dispatcher uses this block to build each Claude role's tool list
+    (``LINEAR_ROLE_TOOLS``) and, with ``claude_mcp_config``, its
+    ``--mcp-config`` launch arguments.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -879,6 +945,33 @@ class DispatchConfig(BaseModel):
                 "tracker.claude_mcp_config must name an existing file; "
                 f"{mcp_config_path} does not exist or is not a file."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _derive_linear_claude_tools(self) -> DispatchConfig:
+        # Computed in memory from the tracker block; never written back to the
+        # config file. Re-validating an already-derived config is a no-op
+        # because tools already listed are skipped.
+        if not self.tracker.enabled or self.tracker.mcp_server is None:
+            return self
+        mcp_config_path = self.tracker_claude_mcp_config_path
+        if mcp_config_path is not None:
+            mcp_config_path = mcp_config_path.resolve()
+        derived: dict[AgentRole, AgentConfig] = {}
+        for role, agent_config in self.agents.items():
+            linear_tools = linear_tools_for_role(role, self.tracker.mcp_server)
+            updated = _with_linear_tools(agent_config, linear_tools, mcp_config_path)
+            if agent_config.fallback is not None:
+                fallback = _with_linear_tools(
+                    agent_config.fallback, linear_tools, mcp_config_path
+                )
+                if fallback is not agent_config.fallback:
+                    private = updated._claude_mcp_config
+                    updated = updated.model_copy(update={"fallback": fallback})
+                    updated._claude_mcp_config = private
+            derived[role] = updated
+        # The model is frozen; set the derived agents once, during validation.
+        object.__setattr__(self, "agents", derived)
         return self
 
     @field_validator("pause_recovery", mode="before")
