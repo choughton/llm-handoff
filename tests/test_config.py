@@ -936,6 +936,145 @@ def test_tracker_rejects_unknown_provider(tmp_path: Path) -> None:
         DispatchConfig(repo_root=tmp_path, tracker={"provider": "jira"})
 
 
+def test_linear_role_tool_table() -> None:
+    read = ("get_issue", "list_issues", "list_comments")
+    assert config_module.LINEAR_ROLE_TOOLS == {
+        "planner": (*read, "save_comment", "save_issue"),
+        "backend": (*read, "save_comment"),
+        "frontend": (*read, "save_comment"),
+        "auditor": (*read, "save_comment", "save_issue"),
+        "validator": read,
+        "finalizer": read,
+    }
+    assert set(config_module.LINEAR_ROLE_TOOLS) == config_module.REQUIRED_AGENT_ROLES
+
+
+def test_linear_tools_for_role_prefixes_in_table_order() -> None:
+    assert config_module.linear_tools_for_role("auditor", "linear") == (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    )
+    assert config_module.linear_tools_for_role("finalizer", "my-linear") == (
+        "mcp__my-linear__get_issue",
+        "mcp__my-linear__list_issues",
+        "mcp__my-linear__list_comments",
+    )
+
+
+_LINEAR_YAML = """tracker:
+  provider: linear
+  team: ENG
+  project: Platform
+  eligible_state: Todo
+  in_progress_state: In Progress
+  success_state: In Review
+  mcp_server: linear
+"""
+
+
+def test_linear_mode_load_derives_claude_allowed_tools(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        _LINEAR_YAML
+        + """agents:
+  planner:
+    provider: claude
+  backend:
+    provider: claude
+    allowed_tools: [Read, "Bash(pytest:*)"]
+""",
+    )
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.agents["planner"].allowed_tools == (
+        *config_module.CLAUDE_DEFAULT_ALLOWED_TOOLS,
+        *config_module.linear_tools_for_role("planner", "linear"),
+    )
+    assert loaded.agents["backend"].allowed_tools == (
+        "Read",
+        "Bash(pytest:*)",
+        *config_module.linear_tools_for_role("backend", "linear"),
+    )
+    for role in ("auditor", "validator", "finalizer"):
+        assert loaded.agents[role].allowed_tools == (
+            *config_module.CLAUDE_DEFAULT_ALLOWED_TOOLS,
+            *config_module.linear_tools_for_role(role, "linear"),
+        )
+    # Default frontend is Gemini, which has no per-role tool list.
+    assert loaded.agents["frontend"].provider == "gemini"
+    assert loaded.agents["frontend"].allowed_tools is None
+    # The config file itself is never rewritten.
+    assert "mcp__" not in config_path.read_text(encoding="utf-8")
+
+
+def test_linear_mode_model_validate_derives_claude_allowed_tools(
+    tmp_path: Path,
+) -> None:
+    loaded = DispatchConfig.model_validate(
+        {"repo_root": tmp_path, "tracker": _linear_tracker()}
+    )
+
+    assert loaded.agents["auditor"].allowed_tools == (
+        *config_module.CLAUDE_DEFAULT_ALLOWED_TOOLS,
+        *config_module.linear_tools_for_role("auditor", "linear"),
+    )
+    assert loaded.agents["backend"].provider == "codex"
+    assert loaded.agents["backend"].allowed_tools is None
+
+
+def test_linear_mode_derivation_is_idempotent_on_revalidation(
+    tmp_path: Path,
+) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker())
+    revalidated = DispatchConfig.model_validate(loaded.model_dump())
+
+    assert revalidated.agents["validator"].allowed_tools == (
+        loaded.agents["validator"].allowed_tools
+    )
+
+
+def test_linear_mode_mcp_config_path_lives_on_derived_agent(tmp_path: Path) -> None:
+    mcp_file = tmp_path / "linear-mcp.json"
+    mcp_file.write_text("{}", encoding="utf-8")
+    loaded = DispatchConfig(
+        repo_root=tmp_path,
+        tracker=_linear_tracker(claude_mcp_config="linear-mcp.json"),
+    )
+
+    assert loaded.agents["auditor"].claude_mcp_config_path == mcp_file.resolve()
+    assert loaded.agents["backend"].claude_mcp_config_path is None
+    assert "claude_mcp_config" not in loaded.agents["auditor"].model_dump()
+
+
+def test_vanilla_mode_leaves_allowed_tools_unset(tmp_path: Path) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path)
+    assert all(agent.allowed_tools is None for agent in loaded.agents.values())
+    assert all(
+        agent.claude_mcp_config_path is None for agent in loaded.agents.values()
+    )
+
+
+@pytest.mark.parametrize(
+    "key", ["claude_mcp_config", "_claude_mcp_config", "claude_mcp_config_path"]
+)
+def test_agent_yaml_rejects_new_mcp_config_key(tmp_path: Path, key: str) -> None:
+    (tmp_path / "linear-mcp.json").write_text("{}", encoding="utf-8")
+    config_path = _write_config(
+        tmp_path,
+        _LINEAR_YAML
+        + f"""agents:
+  auditor:
+    provider: claude
+    {key}: linear-mcp.json
+""",
+    )
+    with pytest.raises(ValueError, match=key):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
 @pytest.mark.parametrize(
     "relative_path",
     ["dispatch_config.example.yaml", "examples/reference-workflow/dispatch_config.yaml"],

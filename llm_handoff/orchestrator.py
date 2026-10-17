@@ -3916,6 +3916,23 @@ def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
                 f"{' '.join(args)}; approvals and sandboxing are disabled. Remove "
                 f"{config_key}.unsafe_bypass to restore the safe default.",
             )
+    if config.tracker.enabled and config.tracker.claude_mcp_config is None:
+        unscoped_claude = [
+            label
+            for label, _key, agent_config in launch_agents
+            if agent_config.provider == "claude" and not agent_config.unsafe_bypass
+        ]
+        if unscoped_claude:
+            _log(
+                log,
+                "WARN",
+                "Linear mode without tracker.claude_mcp_config: Claude roles "
+                f"{', '.join(unscoped_claude)} launch without "
+                "--strict-mcp-config, so every MCP server in the user's Claude "
+                "configuration loads and tools pre-approved in user or project "
+                "settings can run. Set tracker.claude_mcp_config to load only "
+                "the Linear MCP server.",
+            )
 
 
 def _read_required_text(path: Path) -> str | None:
