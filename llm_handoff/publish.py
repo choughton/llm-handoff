@@ -67,7 +67,11 @@ from llm_handoff.pr_review import (
     wait_for_codex_review,
 )
 from llm_handoff.roles import normalize_next_agent_value
-from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
+from llm_handoff.router import (
+    HandoffFrontmatterError,
+    HandoffRouting,
+    parse_handoff_frontmatter_text,
+)
 from llm_handoff.work_claim import extract_work_packet_section, git_head
 
 
@@ -130,6 +134,15 @@ class StoryState:
     # every commit added since then is a merge commit or is already on the
     # base branch, and each such merge holds only the conflict resolution.
     paused_head: str = ""
+    # Tracker lease fields from the assignment. The review-bounce and
+    # deferred-finding handoffs carry them so they pass the Linear-mode lease
+    # checks. Empty when the assignment has none (vanilla mode).
+    tracker_issue: str = ""
+    tracker_url: str = ""
+    selection_basis: str = ""
+
+
+_TRACKER_FIELDS = ("tracker_issue", "tracker_url", "selection_basis")
 
 
 @dataclass(frozen=True)
@@ -234,6 +247,7 @@ def ensure_story_branch(
             epic_id=epic_id,
             work_packet=(extract_work_packet_section(assignment_content) or "").strip(),
             implementer=implementer,
+            **_tracker_fields(frontmatter),
         ),
     )
     (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
@@ -282,15 +296,45 @@ def _refresh_work_packet(repo_root: Path, branch: str, assignment_content: str) 
     The planner can revise a story's packet after its branch exists. The review
     bounce and the pull request report read the saved packet, so a stale copy
     would bring back what the planner fixed. An assignment without a Work
-    Packet keeps the saved one.
+    Packet keeps the saved one. The tracker lease fields refresh the same way:
+    a non-empty value replaces the saved one, and an absent or empty value
+    keeps it.
     """
 
     state = _load_state(repo_root)
     if state is None or state.branch != branch:
         return
+    changes: dict[str, str] = {}
     work_packet = (extract_work_packet_section(assignment_content) or "").strip()
     if work_packet and work_packet != state.work_packet:
-        _save_state(repo_root, replace(state, work_packet=work_packet))
+        changes["work_packet"] = work_packet
+    try:
+        frontmatter = parse_handoff_frontmatter_text(assignment_content)
+    except HandoffFrontmatterError:
+        frontmatter = None
+    for name, value in _tracker_fields(frontmatter).items():
+        if value and value != getattr(state, name):
+            changes[name] = value
+    if changes:
+        _save_state(repo_root, replace(state, **changes))
+
+
+def _tracker_fields(frontmatter: HandoffRouting | None) -> dict[str, str]:
+    """Return the stripped tracker lease fields; empty strings when absent."""
+
+    return {
+        name: ((getattr(frontmatter, name) or "") if frontmatter else "").strip()
+        for name in _TRACKER_FIELDS
+    }
+
+
+def _add_tracker_fields(frontmatter: dict[str, object], state: StoryState) -> None:
+    """Add the saved non-empty tracker lease fields to a handoff frontmatter."""
+
+    for name in _TRACKER_FIELDS:
+        value = getattr(state, name)
+        if isinstance(value, str) and value:
+            frontmatter[name] = value
 
 
 def save_review_responses(repo_root: Path, claim_content: str) -> None:
@@ -1087,6 +1131,7 @@ def build_review_bounce_handoff(
     if state.epic_id:
         frontmatter["epic_id"] = state.epic_id
     frontmatter["story_id"] = state.story_id
+    _add_tracker_fields(frontmatter, state)
     if state.story_title:
         frontmatter["story_title"] = state.story_title
     frontmatter["status"] = "verified_fail"
@@ -1158,6 +1203,7 @@ def build_deferred_findings_handoff(
     if state.epic_id:
         frontmatter["epic_id"] = state.epic_id
     frontmatter["story_id"] = state.story_id
+    _add_tracker_fields(frontmatter, state)
     if state.story_title:
         frontmatter["story_title"] = state.story_title
     frontmatter["status"] = "verified_pass"

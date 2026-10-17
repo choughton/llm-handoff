@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
+import yaml
 
 from llm_handoff.config import DispatchConfig
 from llm_handoff.pr_review import ReviewGate
@@ -2481,6 +2483,278 @@ def test_a_story_state_saved_by_an_older_version_still_loads(tmp_path: Path) -> 
 
     assert loaded is not None and loaded.story_id == "W9.9"
     assert saved_story_base(tmp_path, "W9.9") == state["base_sha"]
+
+
+def test_a_story_state_without_tracker_fields_loads_with_empty_values(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.publish import _load_state
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    path = tmp_path / STATE_PATH
+    state = json.loads(path.read_text(encoding="utf-8"))
+    for name in ("tracker_issue", "tracker_url", "selection_basis"):
+        state.pop(name)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    loaded = _load_state(tmp_path)
+
+    assert loaded is not None and loaded.story_id == "W9.9"
+    assert (loaded.tracker_issue, loaded.tracker_url, loaded.selection_basis) == (
+        "",
+        "",
+        "",
+    )
+
+
+LINEAR_URL = "https://linear.app/acme/issue/LIN-9/add-a-widget"
+LINEAR_ASSIGNMENT = ASSIGNMENT.replace("story_id: W9.9\n", "story_id: LIN-9\n").replace(
+    "producer: planner\n",
+    f"tracker_issue: ' LIN-9 '\ntracker_url: {LINEAR_URL}\n"
+    "selection_basis: priority\nproducer: planner\n",
+)
+LINEAR_BRANCH = "llm-handoff/lin-9-add-a-widget"
+
+
+def _tracker_state(repo: Path) -> dict:
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    return {
+        name: state[name] for name in ("tracker_issue", "tracker_url", "selection_basis")
+    }
+
+
+def _ensure(repo: Path, content: str) -> None:
+    assert (
+        ensure_story_branch(
+            repo_root=repo,
+            prefix="llm-handoff/",
+            base_branch=None,
+            assignment_content=content,
+        )
+        is None
+    )
+
+
+def test_ensure_story_branch_saves_the_tracker_fields(tmp_path: Path) -> None:
+    _init(tmp_path)
+
+    _ensure(tmp_path, LINEAR_ASSIGNMENT)
+
+    assert _git(tmp_path, "branch", "--show-current") == LINEAR_BRANCH
+    assert _tracker_state(tmp_path) == {
+        "tracker_issue": "LIN-9",
+        "tracker_url": LINEAR_URL,
+        "selection_basis": "priority",
+    }
+
+
+def test_ensure_story_branch_saves_empty_tracker_fields_without_them(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+
+    _ensure(tmp_path, ASSIGNMENT)
+
+    assert _tracker_state(tmp_path) == {
+        "tracker_issue": "",
+        "tracker_url": "",
+        "selection_basis": "",
+    }
+
+
+def test_the_tracker_fields_refresh_and_keep_saved_values(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _ensure(tmp_path, LINEAR_ASSIGNMENT)
+    path = tmp_path / STATE_PATH
+
+    # An assignment without the fields keeps the saved ones and saves nothing.
+    without = LINEAR_ASSIGNMENT.replace(f"tracker_url: {LINEAR_URL}\n", "").replace(
+        "selection_basis: priority\n", "selection_basis: ''\n"
+    )
+    before = path.read_text(encoding="utf-8")
+    _ensure(tmp_path, without)
+    assert path.read_text(encoding="utf-8") == before
+
+    # A changed non-empty value replaces the saved one; on the existing
+    # branch after a switch too.
+    moved = LINEAR_URL.replace("add-a-widget", "add-the-widget")
+    revised = LINEAR_ASSIGNMENT.replace(LINEAR_URL, moved).replace(
+        "selection_basis: priority", "selection_basis: manual_order"
+    )
+    _git(tmp_path, "switch", "-q", "main")
+    _ensure(tmp_path, revised)
+
+    assert _git(tmp_path, "branch", "--show-current") == LINEAR_BRANCH
+    assert _tracker_state(tmp_path) == {
+        "tracker_issue": "LIN-9",
+        "tracker_url": moved,
+        "selection_basis": "manual_order",
+    }
+    assert "Add the widget module." in json.loads(path.read_text(encoding="utf-8"))[
+        "work_packet"
+    ]
+
+
+def _bounce(state: StoryState) -> str:
+    return build_review_bounce_handoff(
+        state=state,
+        findings=[],
+        url="https://example.invalid/pull/7",
+        head_sha="0" * 40,
+        review_round=1,
+        max_rounds=1,
+    )
+
+
+def _deferred(state: StoryState) -> str:
+    from llm_handoff.publish import build_deferred_findings_handoff
+
+    return build_deferred_findings_handoff(
+        state=state,
+        findings=[{"number": 1, "location": "src/widget.py:1", "body": "Edge."}],
+        url="https://example.invalid/pull/7",
+    )
+
+
+def _plain_state(**changes: object) -> StoryState:
+    base = StoryState(
+        branch=BRANCH,
+        base_branch="main",
+        base_sha="0" * 40,
+        story_id="W9.9",
+        story_title="Add a widget",
+        epic_id="E1",
+        work_packet="## Work Packet\n\n- **Objective:** Add the widget module.",
+    )
+    return replace(base, **changes)
+
+
+def _frontmatter_keys(handoff: str) -> list[str]:
+    return list(yaml.safe_load(handoff.split("---\n")[1]))
+
+
+def test_generated_handoffs_put_the_tracker_fields_after_story_id() -> None:
+    state = _plain_state(
+        story_id="LIN-9",
+        tracker_issue="LIN-9",
+        tracker_url=LINEAR_URL,
+        selection_basis="priority",
+    )
+
+    assert _frontmatter_keys(_bounce(state)) == [
+        "next_agent",
+        "reason",
+        "epic_id",
+        "story_id",
+        "tracker_issue",
+        "tracker_url",
+        "selection_basis",
+        "story_title",
+        "status",
+        "producer",
+    ]
+    assert _frontmatter_keys(_deferred(state)) == [
+        "next_agent",
+        "reason",
+        "epic_id",
+        "story_id",
+        "tracker_issue",
+        "tracker_url",
+        "selection_basis",
+        "story_title",
+        "status",
+        "producer",
+    ]
+    # Only the non-empty fields are written.
+    keys = _frontmatter_keys(_bounce(replace(state, tracker_url="")))
+    assert "tracker_url" not in keys and "selection_basis" in keys
+
+
+def test_generated_handoffs_without_tracker_fields_are_unchanged() -> None:
+    state = _plain_state()
+
+    bounce = _bounce(state)
+    deferred = _deferred(state)
+
+    assert bounce.startswith(
+        "---\n"
+        "next_agent: backend\n"
+        "reason: Codex review of 000000000000 on https://example.invalid/pull/7 "
+        "reported 0\n"
+        "  finding(s); the pull request was not merged.\n"
+        "epic_id: E1\n"
+        "story_id: W9.9\n"
+        "story_title: Add a widget\n"
+        "status: verified_fail\n"
+        "producer: validator\n"
+        "---\n"
+    )
+    assert deferred.startswith(
+        "---\n"
+        "next_agent: planner\n"
+        "reason: 1 deferred review finding(s) keep https://example.invalid/pull/7 "
+        "from merging;\n"
+        "  the planner decides how to handle them.\n"
+        "epic_id: E1\n"
+        "story_id: W9.9\n"
+        "story_title: Add a widget\n"
+        "status: verified_pass\n"
+        "producer: validator\n"
+        "---\n"
+    )
+    # The body after the frontmatter does not depend on the tracker fields.
+    with_fields = replace(
+        state, tracker_issue="W9.9", tracker_url=LINEAR_URL, selection_basis="priority"
+    )
+    assert bounce.split("---\n", 2)[2] == _bounce(with_fields).split("---\n", 2)[2]
+    assert deferred.split("---\n", 2)[2] == _deferred(with_fields).split("---\n", 2)[2]
+
+
+def test_a_review_bounce_with_tracker_fields_passes_the_linear_lease_checks() -> None:
+    from llm_handoff.validator import validate_handoff_text
+
+    lease_errors = (
+        "tracker_issue_missing",
+        "tracker_url_missing",
+        "tracker_story_id_mismatch",
+    )
+    leased = _plain_state(story_id="LIN-9", tracker_issue="LIN-9", tracker_url=LINEAR_URL)
+
+    result = validate_handoff_text(_bounce(leased), "validator", tracker_provider="linear")
+
+    assert not [
+        error for error in result.errors if error.startswith(lease_errors)
+    ], result.errors
+
+    # Without the saved fields, Linear mode still rejects the bounce.
+    bare = validate_handoff_text(
+        _bounce(_plain_state(story_id="LIN-9")), "validator", tracker_provider="linear"
+    )
+    assert any(error.startswith("tracker_issue_missing") for error in bare.errors)
+
+
+@pytest.mark.parametrize("build", [_bounce, _deferred])
+def test_generated_handoffs_round_trip_the_tracker_fields(build) -> None:
+    from llm_handoff.router import parse_handoff_frontmatter_text
+
+    tricky_url = 'https://linear.app/acme/issue/LIN-9?q="a: b"\nproducer: user'
+    state = _plain_state(
+        story_id="LIN-9",
+        tracker_issue="LIN-9: x",
+        tracker_url=tricky_url,
+        selection_basis="created_at",
+    )
+
+    parsed = parse_handoff_frontmatter_text(build(state))
+
+    assert parsed is not None
+    assert (parsed.tracker_issue, parsed.tracker_url, parsed.selection_basis) == (
+        "LIN-9: x",
+        tricky_url,
+        "created_at",
+    )
+    assert parsed.producer == "validator"
 
 
 
