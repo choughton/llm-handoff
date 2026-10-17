@@ -6,9 +6,9 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** LINEAR-FOUNDATIONS (next; LIN-1 not started).
-  CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST,
-  and ANTIGRAVITY-ADAPTER closed.
+- **Active Epic:** LINEAR-WORKFLOW (next; LIN-7 not started).
+  LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY,
+  PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -21,7 +21,8 @@ story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
 
-Epic 6 (CONFIG-CLEANUP) is closed; see the Completed Scope Ledger.
+Epics 6 (CONFIG-CLEANUP) and 7 (LINEAR-FOUNDATIONS) are closed; see the
+Completed Scope Ledger.
 
 ### 7. LINEAR-FOUNDATIONS - optional Linear mode, groundwork
 
@@ -127,6 +128,23 @@ Before scoping INTAKE-1, route to `user` for a short design check.
     `llm_handoff/config.py` (~line 785); reject absolute paths, `..` segments,
     and control characters.
 
+- From the LINEAR-FOUNDATIONS close (low/info, LIN-6b):
+  - (a) low: non-ASCII literals in `tests/test_doctor.py` (~lines 2561, 2582,
+    2671), including an invisible U+200E; replace with `\u` escapes.
+  - (b) low: the probe's isolation (`llm_handoff/doctor.py` ~line 1237) has
+    not been checked against a live Claude CLI; an operator should run
+    `llm-handoff doctor --probe-tracker <ISSUE>` once in a repo with a project
+    hook and confirm the hook does not fire.
+  - (c) low: the probe write denylist names only five tools
+    (`llm_handoff/doctor.py` ~line 1217); deny every tracker-server tool except
+    the two read tools, or keep the documented risk and recommend
+    `claude_mcp_config`.
+  - (d) low: `logs/dispatch/carry-over.json` is trusted at startup
+    (`llm_handoff/orchestrator.py` ~line 3171); bind it to the handoff SHA and
+    lock holder, or check it against git state.
+  - (e) info: a stop request without `target_pid` is honored
+    (`llm_handoff/stop_request.py` ~line 146); document it or require the pid.
+
 ## Completed Scope Ledger
 
 - **Phase 0 bootstrap (W0.1)** - pinned dispatcher took its first assignment
@@ -187,6 +205,16 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   `92fa431018de65cc2b1c2aef64cfca832fb8b3ee`. Audit approved with
   sub-threshold findings only (see Open Followups). Verification: full test
   suite, 1739 passed, 18 skipped.
+- **LINEAR-FOUNDATIONS** - optional Linear mode, groundwork (hybrid model; no
+  Linear client in the dispatcher; off by default). LIN-1 `tracker` config
+  (PR #79 merge `00db136`); LIN-2a/2b lease fields (PRs #80 `d6f5e83`, #81
+  `4fca24d`); LIN-3 Claude role Linear tools (PR #82 merge `0916264`); LIN-4
+  prompt templates (PR #83 merge `470842f`); LIN-5 `init --tracker` (PR #84
+  merge `3d0154e`); LIN-6a `doctor` connector report (PR #85 merge `e212077`);
+  LIN-6b `doctor --probe-tracker` (PR #88 merge
+  `cf49bf40a061c2c26c335c4e6f6ca02aa5a3b213`, audited at that SHA). Audit
+  approved with sub-threshold findings only (see Open Followups). Verification:
+  full test suite, 2126 passed, 20 skipped.
 
 ## Notes
 
