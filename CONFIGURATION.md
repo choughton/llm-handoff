@@ -285,9 +285,10 @@ What survives a restart, all under `logs/dispatch/`:
 
 What does not survive: a scheduled planner recovery or operator-prompt
 dispatch that had not run yet (the dispatcher logs a `WARN` line naming it),
-the pause recovery streak, the managed planner session, and the audit range
-base. After a restart the dispatcher routes `HANDOFF.md` again; a pause that
-still applies is detected again and gets its one bounded planner recovery.
+the pause recovery streak, the managed planner session, and the in-memory
+audit range base (outside `local` mode the audit range starts from the saved
+story base instead; see [Audit Fan-Out](#audit-fan-out)). After a restart
+the dispatcher routes `HANDOFF.md` again; a pause that still applies is detected again and gets its one bounded planner recovery.
 
 ## Work-Claim Gate
 
@@ -579,6 +580,22 @@ dispatcher merges the pull request. If the retried
 `gh pr merge` fails again, the dispatcher pauses the same way and leaves the
 pull request open. The next start retries the merge, or you can merge it
 yourself.
+
+Uncommitted files are never stashed, discarded, or committed by the
+dispatcher. When the checkout has uncommitted files (staged, unstaged, or
+untracked), the dispatcher first checks whether the merge would change any of
+them, using `git merge-tree --write-tree`, which runs any configured merge
+drivers, as the resume check below does. If it would, the dispatcher does not
+merge and pauses (exit code 0) with the story state kept, naming those
+files. Git also refuses a merge whenever changes are staged; that pause names
+the files from git's `error:` line. Neither pause asks you to resolve conflicts, because there are
+none: set the named files aside without committing them to the story branch,
+for example with `git stash push --include-untracked -- <files>` or a commit
+on another branch, then start the dispatcher again. It merges the base branch
+itself, then continues where it paused. A commit added to the story branch
+has not passed the audit, so the resume refuses it. Any other failed merge
+pauses the same way and names git's `error:` or `fatal:` line rather than an
+earlier `warning:` line such as a line-ending notice.
 
 Before a resume pushes anything, the dispatcher fetches the base branch and
 checks what was added to the story branch since the pause:
@@ -1781,8 +1798,13 @@ With `security` enabled, the auditor route works differently:
 
 - The dispatcher records `git rev-parse HEAD` before each backend or frontend
   dispatch. The review scope is that commit through the handoff's `scope_sha`.
-  If the pre-dispatch commit is unknown, for example after a dispatcher
-  restart, the scope falls back to `scope_sha~1..scope_sha`.
+  After a dispatcher restart in the `merge-commit` and `pr` publish modes,
+  the scope starts at the saved story branch base
+  (`logs/dispatch/publish/story.json`) when it names the handoff's
+  `story_id` and its branch is checked out, including when the restarted
+  run routes straight to the auditor. Otherwise, when the pre-dispatch
+  commit is unknown (for example after a restart in `local` mode), the
+  scope falls back to `scope_sha~1..scope_sha`.
 - The quality reviewer (the configured `auditor` agent) and the security
   reviewer run concurrently on that range. Both are told not to write
   `HANDOFF.md` and must return a JSON verdict.

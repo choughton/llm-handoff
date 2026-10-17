@@ -684,7 +684,9 @@ def _sync_with_base(
     Returns ``None`` when the story branch is up to date or the merge is
     clean. A merge that does not go through is aborted, and the dispatcher
     pauses with the story state kept, so a start after the operator's merge
-    resumes publishing at ``step`` ("push" or "merge").
+    resumes publishing at ``step`` ("push" or "merge"). Uncommitted files
+    the merge would change are never stashed, discarded, or committed: the
+    dispatcher pauses and names them instead.
     """
 
     upstream = f"{remote}/{state.base_branch}"
@@ -695,6 +697,22 @@ def _sync_with_base(
             f"git fetch {remote} {state.base_branch} failed: {_first_line(fetched)}",
         )
     before = git_head(repo_root)
+    overlap = _dirty_paths_the_merge_changes(repo_root, upstream)
+    if overlap:
+        return _set_aside_pause(
+            repo_root,
+            log,
+            state,
+            upstream,
+            step=step,
+            url=url,
+            before=before,
+            paths=overlap,
+            problem=(
+                f"would overwrite uncommitted changes to {_path_list(overlap)}, "
+                f"which {upstream} also changes"
+            ),
+        )
     merged = _git(repo_root, ["merge", "--no-edit", "--no-verify", upstream])
     if merged.returncode == 0:
         after = git_head(repo_root)
@@ -710,11 +728,27 @@ def _sync_with_base(
     conflicts = [line.strip() for line in unmerged.stdout.splitlines() if line.strip()]
     if _git(repo_root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode == 0:
         _git(repo_root, ["merge", "--abort"])
-    problem = (
-        f"conflicts in {', '.join(f'`{path}`' for path in conflicts)}"
-        if conflicts
-        else f"failed: {_first_line(merged)}"
-    )
+    if not conflicts:
+        # Git refused to start the merge: it stops before touching any file
+        # when the merge would overwrite local changes.
+        error = _first_line(merged)
+        blocking = _blocking_paths(merged)
+        return _set_aside_pause(
+            repo_root,
+            log,
+            state,
+            upstream,
+            step=step,
+            url=url,
+            before=before,
+            paths=blocking,
+            problem=(
+                f"failed with `{error.rstrip(':')}`: {_path_list(blocking)}"
+                if blocking
+                else f"failed: {error}"
+            ),
+        )
+    problem = f"conflicts in {_path_list(conflicts)}"
     if step == "merge":
         outcome = f"the pull request {url or state.branch} was left open"
         resume = (
@@ -735,6 +769,121 @@ def _sync_with_base(
         "merge was aborted and the story state was kept. To resume: on "
         f"`{state.branch}`, run `git merge {upstream}`, resolve the conflicts, "
         f"and commit the merge; then start the dispatcher again. It {resume}.",
+        keep_state=True,
+    )
+
+
+def _dirty_paths_the_merge_changes(repo_root: Path, upstream: str) -> list[str]:
+    """Return the uncommitted paths that merging ``upstream`` would change.
+
+    Covers staged, unstaged, and untracked files. Any git failure returns an
+    empty list: the merge that follows still refuses to overwrite local
+    changes, and its error names the files.
+    """
+
+    status = _git(
+        repo_root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+    )
+    if status.returncode != 0:
+        return []
+    dirty: set[str] = set()
+    fields = (status.stdout or "").split("\0")
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        dirty.add(entry[3:])
+        if entry[0] in "RC" and index < len(fields):
+            # With -z, a rename or copy lists its source path next.
+            dirty.add(fields[index])
+            index += 1
+    if not dirty:
+        return []
+    merged = _git(
+        repo_root, ["merge-tree", "--write-tree", "--no-messages", "HEAD", upstream]
+    )
+    if merged.returncode not in (0, 1):
+        return []
+    lines = (merged.stdout or "").splitlines()
+    tree = lines[0].strip() if lines else ""
+    if not _OBJECT_ID_RE.fullmatch(tree):
+        return []
+    changed = _git(
+        repo_root, ["diff", "--no-renames", "--name-only", "-z", "HEAD", tree]
+    )
+    if changed.returncode != 0:
+        return []
+    return sorted(dirty.intersection(changed.stdout.split("\0")) - {""})
+
+
+def _path_list(paths: list[str]) -> str:
+    return ", ".join(f"`{path}`" for path in paths)
+
+
+def _set_aside_pause(
+    repo_root: Path,
+    log: LogFn,
+    state: StoryState,
+    upstream: str,
+    *,
+    step: str,
+    url: str,
+    before: str | None,
+    paths: list[str],
+    problem: str,
+) -> PublishOutcome:
+    """Pause on a base-branch merge that did not start.
+
+    The start after the pause merges ``upstream`` itself, so the operator
+    only removes the cause; with ``paths`` that means setting the named
+    uncommitted files aside.
+    """
+
+    if step == "merge":
+        outcome = f"the pull request {url or state.branch} was left open"
+        resume = (
+            "pushes the merge to the pull request and merges it; with "
+            "`wait_for_reviewers` it leaves the pull request open for you to "
+            "review and merge instead"
+        )
+    else:
+        outcome = f"`{state.branch}` was not pushed"
+        resume = "pushes the story branch and publishes it as usual"
+    if paths:
+        one = len(paths) == 1
+        them = "it" if one else "them"
+        quoted = " ".join(
+            path if re.fullmatch(r"[\w./-]+", path) else f'"{path}"'
+            for path in paths
+        )
+        remedy = (
+            "Nothing was merged, and the dispatcher left "
+            + ("that file as it is" if one else "those files as they are")
+            + "; the story state was kept. Uncommitted files are not part of "
+            f"the audited story. To resume: set {them} aside without "
+            f"committing {them} to `{state.branch}`, for example with "
+            f"`git stash push --include-untracked -- {quoted}` or a commit on "
+            "another branch; then start the dispatcher again. It merges "
+            f"{upstream} itself, then {resume}. A commit added to "
+            f"`{state.branch}` has not passed the audit, so the resume "
+            "refuses it."
+        )
+    else:
+        remedy = (
+            "The merge did not go through and the story state was kept. To "
+            "resume: fix the cause, then start the dispatcher again. It "
+            f"merges {upstream} itself, then {resume}."
+        )
+    _save_state(
+        repo_root, replace(state, paused_publish=step, paused_head=before or "")
+    )
+    return _pause(
+        repo_root,
+        log,
+        f"Merging {upstream} into `{state.branch}` {problem}, so {outcome}. "
+        + remedy,
         keep_state=True,
     )
 
@@ -2116,8 +2265,42 @@ def _run(
 
 
 def _first_line(result: subprocess.CompletedProcess[str]) -> str:
-    for text in (result.stderr, result.stdout):
-        for line in (text or "").splitlines():
-            if line.strip():
-                return line.strip()
-    return f"exit {result.returncode}"
+    """Return the line that best explains a failed command.
+
+    Git prints warnings, such as line-ending notices, before the error that
+    stopped it, so an ``error:`` or ``fatal:`` line wins over the first line,
+    and ``warning:`` and ``hint:`` lines come last.
+    """
+
+    lines = [
+        line.strip()
+        for text in (result.stderr, result.stdout)
+        for line in (text or "").splitlines()
+        if line.strip()
+    ]
+    for line in lines:
+        if line.lower().startswith(("error:", "fatal:")):
+            return line
+    for line in lines:
+        if not line.lower().startswith(("warning:", "hint:")):
+            return line
+    return lines[0] if lines else f"exit {result.returncode}"
+
+
+def _blocking_paths(result: subprocess.CompletedProcess[str]) -> list[str]:
+    """Return the files a failed ``git merge`` says it would overwrite.
+
+    Git lists them, indented, after an ``error:`` line that ends with
+    "would be overwritten by merge:".
+    """
+
+    paths: list[str] = []
+    listing = False
+    for line in (result.stderr or "").splitlines():
+        if line.lower().startswith("error:"):
+            listing = line.rstrip().endswith("would be overwritten by merge:")
+        elif listing and line[:1] in (" ", "\t") and line.strip():
+            paths.append(line.strip())
+        else:
+            listing = False
+    return paths

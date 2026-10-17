@@ -1120,6 +1120,20 @@ def run_loop(
                             config, handoff_content, implementer_base_sha
                         )
                     implementer_base_story_key = story_key
+            elif (
+                config.audit.security_enabled
+                and current_cycle.route == "auditor"
+                and implementer_base_sha is None
+                and config.publish.mode != "local"
+            ):
+                # A restart whose handoff routes straight to the auditor has
+                # no implementer dispatch in this run to record the base, and
+                # the review would fall back to the scope commit's parent.
+                implementer_base_sha = saved_story_base(
+                    config.repo_root, _handoff_story_id(handoff_content)
+                )
+                if implementer_base_sha is not None:
+                    implementer_base_story_key = story_key
             planner_git_before = (
                 git_position(config.repo_root)
                 if current_cycle.route == "planner"

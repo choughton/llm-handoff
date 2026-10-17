@@ -4772,6 +4772,39 @@ def test_audit_range_survives_a_restart_mid_story(
     assert audit_bases == [base]
 
 
+@pytest.mark.parametrize("mode", ["pr", "local"])
+def test_a_restart_that_routes_straight_to_the_auditor_audits_the_whole_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    mode: str,
+) -> None:
+    from llm_handoff.publish import PublishOutcome
+
+    base = _init_repo(tmp_path)
+
+    def backend_work(attempt: int) -> None:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+
+    config, backend_heads, audit_bases = _audit_range_harness(
+        tmp_path, monkeypatch, backend_work=backend_work, publish={"mode": mode}
+    )
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(
+        orchestrator, "publish_story", lambda **_kwargs: PublishOutcome()
+    )
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+    # The dispatcher restarts with the handback still routing to the auditor,
+    # so no implementer dispatch in this run records where the story started.
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+
+    assert backend_heads == [base]
+    # Outside `local` mode the saved story base outlives the restart; in
+    # `local` mode the review falls back to the scope commit's parent.
+    assert audit_bases == [base if mode == "pr" else None]
+
+
 def test_audit_range_restarts_after_the_story_is_approved(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

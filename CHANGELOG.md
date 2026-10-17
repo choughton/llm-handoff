@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A `pr`-mode merge of the base branch that git refuses no longer pauses with
+  the wrong cause. The pause named the first line git printed, often a
+  line-ending `warning:`, and asked the operator to resolve conflicts that did
+  not exist. It now names git's `error:` or `fatal:` line, and when local
+  changes block the merge it names the blocking files and asks for them to be
+  set aside (stashed, or committed on another branch) instead. The dispatcher
+  now also checks before the merge whether an uncommitted file is one the
+  merge would change, and pauses naming those files without merging. It never
+  stashes, discards, or commits them; the next start merges the base branch
+  itself.
+- A restart whose `HANDOFF.md` routes straight to the auditor now reviews the
+  whole story in the `merge-commit` and `pr` publish modes. With no
+  implementer dispatch in the restarted run, the security audit range fell
+  back to `scope_sha~1..scope_sha`, so earlier story commits were in no audit
+  diff. The range now starts at the saved story branch base when it names the
+  handoff's `story_id` and its branch is checked out. `local` mode is
+  unchanged.
 - Gave each first-run guide one job so the install, init, dry-run, and run
   steps appear only in the README quick start: `QUICKSTART.md` is now the
   Windows PowerShell and macOS/Linux command sheet for those five steps,
