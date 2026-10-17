@@ -14,7 +14,10 @@ dispatch loop applies. When a role or fallback runs on Antigravity without
 `unsafe_bypass`, it also checks the `agy` user settings file for the required
 `permissions.allow` and `permissions.deny` entries, and for `permissions.deny`
 or `permissions.ask` rules that override a required allow entry, reading that
-file only.
+file only. In Linear mode (`tracker.provider: linear`) it reports, for each
+provider CLI the configured roles launch, whether that CLI's MCP config files
+define a server named `tracker.mcp_server`; it reads those MCP config files
+only, never prints a value from them, and never runs the provider CLI.
 It does not start a dispatch, call a provider, contact the network, or write
 any files.
 
@@ -33,7 +36,8 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from typing import Literal
+import tomllib
+from typing import Any, Literal
 
 import yaml
 
@@ -147,6 +151,7 @@ def run_doctor(
         _check_security_review(dispatch_config, checks)
         _check_work_claim_gate(dispatch_config, checks)
         _check_scanners(dispatch_config, checks)
+        _check_tracker_connectors(dispatch_config, resolved_root, checks)
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
         require_work_packet = dispatch_config.enforce_work_packet
@@ -882,6 +887,304 @@ def _scanner_applies_condition(command: str) -> str:
         return ""
     verb = "is" if len(used) == 1 else "are"
     return f"where {' and '.join(used)} {verb} nonempty"
+
+
+_TRACKER_CONNECTOR_CHECK_NAME = "tracker connector"
+_McpConfigKind = Literal["JSON", "TOML"]
+
+
+def _read_mcp_config(path: Path, kind: _McpConfigKind) -> dict[str, Any] | str | None:
+    """Read one JSON or TOML MCP config file for the tracker connector check.
+
+    Returns the top-level object, None when the file does not exist, or a
+    reason string when it cannot be read or parsed. A reason names the path
+    and carries only the ``OSError``, ``json``, or ``tomllib`` message, never
+    file content. The file is only read, never opened for writing.
+    """
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return f"{path} could not be read ({exc})"
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return f"{path} is not valid UTF-8"
+    try:
+        data: object = json.loads(text) if kind == "JSON" else tomllib.loads(text)
+    except (ValueError, RecursionError) as exc:
+        # json.JSONDecodeError and tomllib.TOMLDecodeError are ValueErrors.
+        return f"{path} is not valid {kind} ({exc})"
+    if not isinstance(data, dict):
+        return f"{path} is not a {kind} object"
+    return data
+
+
+def _defines_mcp_server(
+    data: dict[str, Any], key: str, server: str, *, require_table: bool = False
+) -> bool:
+    servers = data.get(key)
+    if not isinstance(servers, dict) or server not in servers:
+        return False
+    return not require_table or isinstance(servers[server], dict)
+
+
+def _resolved_or_none(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _claude_project_entry(
+    data: dict[str, Any], repo_root: Path
+) -> dict[str, Any] | None:
+    """Return the ``projects`` entry whose key resolves to ``repo_root``."""
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        return None
+    target = _resolved_or_none(repo_root)
+    if target is None:
+        return None
+    for key, entry in projects.items():
+        if not isinstance(key, str) or not key.strip() or not isinstance(entry, dict):
+            continue
+        if _resolved_or_none(Path(key)) == target:
+            return entry
+    return None
+
+
+def _connector_warn(
+    provider: str,
+    server: str,
+    checked: list[str],
+    problems: list[str],
+    covers: str,
+    *,
+    extra: str = "",
+) -> DoctorCheck:
+    detail = "".join(f"; {problem}" for problem in problems)
+    return DoctorCheck(
+        "WARN",
+        _TRACKER_CONNECTOR_CHECK_NAME,
+        f"{provider}: no checked MCP config defines MCP server `{server}` "
+        f"(checked {', '.join(checked)}){detail}{extra} {covers}",
+    )
+
+
+def _claude_strict_connector(path: Path, server: str, covers: str) -> DoctorCheck:
+    """Check ``tracker.claude_mcp_config`` for Claude launches that load only it."""
+    result = _read_mcp_config(path, "JSON")
+    if result is None:
+        reason = f"{path} was not found"
+    elif isinstance(result, str):
+        reason = result
+    elif not isinstance(result.get("mcpServers"), dict):
+        reason = f"{path} has no mcpServers object"
+    elif server in result["mcpServers"]:
+        return DoctorCheck(
+            "PASS",
+            _TRACKER_CONNECTOR_CHECK_NAME,
+            f"claude: {path} (tracker.claude_mcp_config) defines MCP server "
+            f"`{server}` {covers}",
+        )
+    else:
+        reason = f"{path} does not define MCP server `{server}` under mcpServers"
+    return DoctorCheck(
+        "FAIL",
+        _TRACKER_CONNECTOR_CHECK_NAME,
+        f"claude: {reason} (tracker.claude_mcp_config); these launches pass "
+        f"--strict-mcp-config and load only that file, so the Linear tools for "
+        f"MCP server `{server}` cannot load {covers}",
+    )
+
+
+def _claude_user_connector(repo_root: Path, server: str, covers: str) -> DoctorCheck:
+    """Check the project and user Claude configs that non-strict launches load."""
+    project_path = repo_root / ".mcp.json"
+    user_path = _claude_user_config_path()
+    project_entry_label = f"{user_path} projects entry for {repo_root}"
+    checked = [str(project_path), str(user_path), project_entry_label]
+    problems: list[str] = []
+    found: str | None = None
+
+    result = _read_mcp_config(project_path, "JSON")
+    if isinstance(result, str):
+        problems.append(result)
+    elif result is not None and _defines_mcp_server(result, "mcpServers", server):
+        found = str(project_path)
+    if found is None:
+        result = _read_mcp_config(user_path, "JSON")
+        if isinstance(result, str):
+            problems.append(result)
+        elif result is not None:
+            if _defines_mcp_server(result, "mcpServers", server):
+                found = f"{user_path} (user mcpServers)"
+            else:
+                entry = _claude_project_entry(result, repo_root)
+                if entry is not None and _defines_mcp_server(
+                    entry, "mcpServers", server
+                ):
+                    found = project_entry_label
+    if found is not None:
+        return DoctorCheck(
+            "PASS",
+            _TRACKER_CONNECTOR_CHECK_NAME,
+            f"claude: {found} defines MCP server `{server}` {covers}",
+        )
+    return _connector_warn(
+        "claude",
+        server,
+        checked,
+        problems,
+        covers,
+        extra=(
+            "; servers defined elsewhere (for example managed settings or "
+            "plugins) are not seen"
+        ),
+    )
+
+
+def _file_connector(
+    provider: str,
+    paths: list[Path],
+    kind: _McpConfigKind,
+    key: str,
+    server: str,
+    covers: str,
+) -> DoctorCheck:
+    """PASS on the first file in ``paths`` that defines ``key.<server>``."""
+    problems: list[str] = []
+    for path in paths:
+        result = _read_mcp_config(path, kind)
+        if isinstance(result, str):
+            problems.append(result)
+        elif result is not None and _defines_mcp_server(
+            result, key, server, require_table=kind == "TOML"
+        ):
+            return DoctorCheck(
+                "PASS",
+                _TRACKER_CONNECTOR_CHECK_NAME,
+                f"{provider}: {path} defines MCP server `{server}` {covers}",
+            )
+    return _connector_warn(
+        provider, server, [str(path) for path in paths], problems, covers
+    )
+
+
+def _env_dir(name: str) -> Path | None:
+    """Return the directory named by environment variable ``name`` if non-empty."""
+    value = os.environ.get(name, "")
+    if value.strip():
+        return Path(value)
+    return None
+
+
+def _claude_user_config_path() -> Path:
+    """User ``.claude.json``, relocated by ``CLAUDE_CONFIG_DIR`` when set."""
+    config_dir = _env_dir("CLAUDE_CONFIG_DIR")
+    if config_dir is not None:
+        return config_dir / ".claude.json"
+    return Path.home() / ".claude.json"
+
+
+def _gemini_user_settings_path() -> Path:
+    """User Gemini settings, rooted at ``GEMINI_CLI_HOME`` when set."""
+    root = _env_dir("GEMINI_CLI_HOME")
+    if root is None:
+        root = Path.home()
+    return root / ".gemini" / "settings.json"
+
+
+def _codex_config_paths(repo_root: Path) -> list[Path]:
+    codex_home = _env_dir("CODEX_HOME")
+    if codex_home is not None:
+        user_path = codex_home / "config.toml"
+    else:
+        user_path = Path.home() / ".codex" / "config.toml"
+    return [user_path, repo_root / ".codex" / "config.toml"]
+
+
+def _check_tracker_connectors(
+    dispatch_config: DispatchConfig,
+    repo_root: Path,
+    checks: list[DoctorCheck],
+) -> None:
+    """Report, per provider CLI, whether its MCP config defines the tracker server.
+
+    Runs only in Linear mode. Lines are grouped per provider (claude, codex,
+    gemini, antigravity), each ending with the role labels it covers. Only
+    MCP config files are read; no provider CLI is run, nothing is written,
+    and no value from a config file is printed. Only Claude launches that
+    load ``tracker.claude_mcp_config`` with ``--strict-mcp-config`` can FAIL.
+    """
+    tracker = dispatch_config.tracker
+    if not tracker.enabled or tracker.mcp_server is None:
+        return
+    server = tracker.mcp_server
+    strict_path = dispatch_config.tracker_claude_mcp_config_path
+    groups: dict[str, list[str]] = {
+        "claude strict": [],
+        "claude": [],
+        "codex": [],
+        "gemini": [],
+        "antigravity": [],
+    }
+    for label, agent_config in _role_launches(dispatch_config):
+        provider = agent_config.provider
+        if (
+            provider == "claude"
+            and strict_path is not None
+            and not agent_config.unsafe_bypass
+        ):
+            groups["claude strict"].append(label)
+        elif provider in groups:
+            groups[provider].append(label)
+
+    for group, labels in groups.items():
+        if not labels:
+            continue
+        covers = f"(covers {', '.join(labels)})"
+        if group == "claude strict" and strict_path is not None:
+            checks.append(_claude_strict_connector(strict_path, server, covers))
+        elif group == "claude":
+            checks.append(_claude_user_connector(repo_root, server, covers))
+        elif group == "codex":
+            checks.append(
+                _file_connector(
+                    "codex",
+                    _codex_config_paths(repo_root),
+                    "TOML",
+                    "mcp_servers",
+                    server,
+                    covers,
+                )
+            )
+        elif group == "gemini":
+            checks.append(
+                _file_connector(
+                    "gemini",
+                    [
+                        repo_root / ".gemini" / "settings.json",
+                        _gemini_user_settings_path(),
+                    ],
+                    "JSON",
+                    "mcpServers",
+                    server,
+                    covers,
+                )
+            )
+        elif group == "antigravity":
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    _TRACKER_CONNECTOR_CHECK_NAME,
+                    "antigravity: the doctor cannot check the Antigravity CLI's "
+                    "MCP configuration; confirm that a server named "
+                    f"`{server}` is configured there {covers}",
+                )
+            )
 
 
 def _describe_missing(names: list[str]) -> str:
