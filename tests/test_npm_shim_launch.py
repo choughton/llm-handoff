@@ -106,6 +106,60 @@ def test_npm_shim_without_a_program_on_path_is_left_alone(
     ]
 
 
+def test_npm_shim_whose_program_resolves_to_a_script_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With .JS in PATHEXT, shutil.which("node") can return a node.js script
+    # instead of node.exe; the shim strips .JS first, so the bypass must not
+    # hand that script to Popen.
+    shim = _write_npm_shim(tmp_path, "codex", package="@openai/codex", entry="codex.js")
+    stray_script = tmp_path / "elsewhere" / "node.js"
+    stray_script.parent.mkdir()
+    stray_script.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        agent_process.shutil,
+        "which",
+        lambda name: str(stray_script) if name == "node" else None,
+    )
+
+    assert agent_process._resolve_command_argv([str(shim), "--version"]) == [
+        str(shim),
+        "--version",
+    ]
+
+
+def test_npm_shim_with_interpreter_options_is_left_alone(tmp_path: Path) -> None:
+    # cmd-shim writes shebang options between the program and the target
+    # (`#!/usr/bin/env -S node --loader x`); bypassing would drop them.
+    shim = _write_npm_shim(tmp_path, "codex", package="@openai/codex", entry="codex.js")
+    text = shim.read_text(encoding="utf-8").replace(
+        '"%_prog%"  "%dp0%', '"%_prog%" --loader ./hooks.mjs "%dp0%'
+    )
+    assert "--loader" in text
+    shim.write_text(text, encoding="utf-8")
+    (tmp_path / "node.exe").write_text("", encoding="utf-8")
+
+    assert agent_process._resolve_command_argv([str(shim), "--version"]) == [
+        str(shim),
+        "--version",
+    ]
+
+
+def test_npm_shim_with_environment_assignments_is_left_alone(tmp_path: Path) -> None:
+    # cmd-shim writes `#!/usr/bin/env NODE_OPTIONS=... node` as `@SET` lines.
+    shim = _write_npm_shim(tmp_path, "codex", package="@openai/codex", entry="codex.js")
+    text = _NPM_SHIM_TEMPLATE.format(package="@openai\\codex", entry="codex.js")
+    text = text.replace("@ECHO off", "@ECHO off\r\n@SET NODE_OPTIONS=--max-old-space-size=4096", 1)
+    assert "@SET NODE_OPTIONS" in text
+    shim.write_text(text, encoding="utf-8")
+    (tmp_path / "node.exe").write_text("", encoding="utf-8")
+
+    assert agent_process._resolve_command_argv([str(shim), "--version"]) == [
+        str(shim),
+        "--version",
+    ]
+
+
 def test_hand_written_cmd_wrapper_is_left_alone(tmp_path: Path) -> None:
     shim = tmp_path / "agent.cmd"
     shim.write_text('@echo off\r\n"%~dp0\\tool.exe" %*\r\n', encoding="utf-8")

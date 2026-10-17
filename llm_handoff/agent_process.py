@@ -28,7 +28,16 @@ _WINDOWS = os.name == "nt"
 #   SET "_prog=node"
 #   "%_prog%"  "%dp0%\node_modules\<pkg>\bin\<entry>.js" %*
 _NPM_SHIM_PROGRAM_RE = re.compile(r'SET\s+"_prog=([^"%]+)"', re.IGNORECASE)
-_NPM_SHIM_TARGET_RE = re.compile(r'"%dp0%\\([^"%]+)"\s+%\*', re.IGNORECASE)
+# Anchored to ``"%_prog%"`` so a shim whose shebang carried interpreter
+# options (``"%_prog%" --loader x "%dp0%\..."``) is not recognized.
+_NPM_SHIM_TARGET_RE = re.compile(
+    r'"%_prog%"\s+"%dp0%\\([^"%]+)"\s+%\*', re.IGNORECASE
+)
+# cmd-shim writes shebang environment assignments as ``@SET name=value``.
+_NPM_SHIM_ENV_RE = re.compile(r"^@SET\s", re.IGNORECASE | re.MULTILINE)
+# Script suffixes that a ``PATHEXT`` lookup may return for a bare program
+# name (``node`` -> ``node.js``); a bypass launch needs a real executable.
+_SCRIPT_SUFFIXES = frozenset({".js", ".cjs", ".mjs", ".cmd", ".bat", ".ps1", ".py"})
 
 # Environment variables every provider CLI receives in ``allowlist`` mode.
 # Names are compared case-insensitively because Windows environment names are
@@ -573,10 +582,12 @@ def _resolve_command_argv(command: list[str]) -> list[str]:
 def _npm_shim_direct_launch(shim: Path) -> list[str] | None:
     """Return ``[program, script]`` for an npm cmd-shim, or None.
 
-    Only shims written by npm's ``cmd-shim`` are recognized (a ``SET
-    "_prog=<program>"`` line plus a ``"%_prog%" "%dp0%\\<script>" %*``
-    launcher). Anything else, including a hand-written ``.cmd`` wrapper, is
-    left to run through ``cmd.exe`` as before.
+    Only the plain shape npm's ``cmd-shim`` writes for a zero-option shebang
+    is recognized: a ``SET "_prog=<program>"`` line plus a
+    ``"%_prog%" "%dp0%\\<script>" %*`` launcher, with no interpreter options
+    between them and no shebang environment assignments. Anything else,
+    including a hand-written ``.cmd`` wrapper, is left to run through
+    ``cmd.exe`` as before.
     """
     if shim.suffix.lower() not in (".cmd", ".bat"):
         return None
@@ -588,6 +599,8 @@ def _npm_shim_direct_launch(shim: Path) -> list[str] | None:
     target_match = _NPM_SHIM_TARGET_RE.search(text)
     if program_match is None or target_match is None:
         return None
+    if _NPM_SHIM_ENV_RE.search(text) is not None:
+        return None
     program = program_match.group(1).strip()
     script = shim.parent.joinpath(*target_match.group(1).split("\\"))
     if not program or not script.is_file():
@@ -598,9 +611,22 @@ def _npm_shim_direct_launch(shim: Path) -> list[str] | None:
     if local_program.is_file():
         return [str(local_program), str(script)]
     resolved_program = shutil.which(program)
-    if resolved_program is None:
+    if resolved_program is None or not _is_bypass_executable(Path(resolved_program)):
         return None
     return [resolved_program, str(script)]
+
+
+def _is_bypass_executable(path: Path) -> bool:
+    """Return whether a PATH lookup found a program ``Popen`` can run directly.
+
+    The shim strips ``.JS`` from ``PATHEXT`` before it resolves its program;
+    ``shutil.which`` does not, so ``node`` can come back as a ``node.js``
+    script on PATH. On Windows only a native executable qualifies.
+    """
+    suffix = path.suffix.lower()
+    if _WINDOWS:
+        return suffix in (".exe", ".com")
+    return suffix not in _SCRIPT_SUFFIXES
 
 
 def _resolve_command_binary(command: str) -> str:

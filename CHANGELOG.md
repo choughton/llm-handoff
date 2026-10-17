@@ -17,8 +17,10 @@ This project follows a simple pre-release changelog until the first public tag.
   Codex launch path (`codex exec`, `codex exec resume`, and the
   `audit.security_provider: codex` reviewer) goes through the same resolver,
   so arguments containing `"`, `<`, `>`, `|`, `&`, `%`, or `^` now reach the
-  CLI intact. Only shims written by npm's `cmd-shim` are recognized; a
-  hand-written `.cmd` wrapper still runs through `cmd.exe` as before.
+  CLI intact. Only the plain shape npm's `cmd-shim` writes for a zero-option
+  shebang is recognized, and the program must resolve to a native
+  executable; a shim with interpreter options or environment assignments,
+  or a hand-written `.cmd` wrapper, still runs through `cmd.exe` as before.
 - Restructured `README.md` around getting started: a table of contents, a
   five-step quick start, a section on choosing and switching between file
   mode and Linear mode, a gotchas list, and a gates-and-scanners summary.
