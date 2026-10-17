@@ -283,9 +283,17 @@ post-dispatch validation for that cycle. It does not revert the changes; a human
 
 The CLI creates `.dispatch.lock` in the target repo before starting the loop and
 removes it on exit. If the lock already exists, dispatch fails closed with a
-message telling the user to confirm no other dispatcher is active before
-removing the lock. This protects the handoff file and Git state from two local
-dispatcher loops writing the same target repo at the same time.
+message that names the pid in the lock, says whether it is running, and tells
+the user to confirm no other dispatcher is active before removing the lock.
+The dispatcher never removes another run's lock. This protects the handoff
+file and Git state from two local dispatcher loops writing the same target
+repo at the same time.
+
+`llm-handoff stop` asks the lock holder to exit by writing
+`logs/dispatch/stop-request`. The loop checks for it only at points where no
+agent runs: before each cycle and while it waits at a pause. A cycle in
+flight, including its dispatcher commit, validation, and work-claim gate,
+always finishes first.
 
 ## Supervised Dispatch
 

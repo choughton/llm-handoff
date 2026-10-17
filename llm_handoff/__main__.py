@@ -44,9 +44,19 @@ from llm_handoff.init_workflow import (
 from llm_handoff.logging_util import DispatchLogger
 from llm_handoff.stack_detect import Candidate
 from llm_handoff.orchestrator import run_loop
+from llm_handoff.stop_request import (
+    DISPATCH_LOCK_FILENAME,
+    clear_stop_request,
+    describe_lock_holder,
+    dispatch_lock_path,
+    process_is_running,
+    read_dispatch_lock,
+    request_stop,
+    stop_request_is_ignored,
+    stop_request_path,
+)
 
 _WINDOWS = os.name == "nt"
-DISPATCH_LOCK_FILENAME = ".dispatch.lock"
 app = typer.Typer(
     add_completion=False,
     help="File-based handoff dispatcher for multi-CLI AI coding workflows.",
@@ -131,9 +141,12 @@ def _run_dispatch(
     lock = _try_acquire_dispatch_lock(config.repo_root)
     if lock is None:
         lock_path = _dispatch_lock_path(config.repo_root)
+        holder = read_dispatch_lock(config.repo_root)
+        detail = f" {describe_lock_holder(holder)}" if holder is not None else ""
         print(
-            "Another llm-handoff dispatcher appears to be running for this repo. "
-            f"Remove {lock_path} only after confirming no dispatcher is active.",
+            "Another llm-handoff dispatcher appears to be running for this repo."
+            f"{detail} Remove {lock_path} only after confirming no dispatcher "
+            "is active.",
             file=sys.stderr,
         )
         return 1
@@ -145,6 +158,14 @@ def _run_dispatch(
             backend_resume=config.backend_resume,
             planner_resume=config.planner_resume,
         )
+        if clear_stop_request(config.repo_root):
+            # A request left by an earlier run, or written while no
+            # dispatcher held the lock, is not meant for this run.
+            logger(
+                "WARN",
+                "Removed a stop request left from before this run: "
+                f"{stop_request_path(config.repo_root)}.",
+            )
         previous_title, changed_title = _set_dispatch_console_title()
         try:
             return run_loop(config, log=logger)
@@ -154,11 +175,13 @@ def _run_dispatch(
         finally:
             _restore_console_title(previous_title, changed=changed_title)
     finally:
+        # A stop request only applies to the run that holds the lock.
+        clear_stop_request(config.repo_root)
         _release_dispatch_lock(lock)
 
 
 def _dispatch_lock_path(repo_root: Path) -> Path:
-    return Path(repo_root).resolve() / DISPATCH_LOCK_FILENAME
+    return dispatch_lock_path(repo_root)
 
 
 def _try_acquire_dispatch_lock(repo_root: Path) -> DispatchLock | None:
@@ -416,6 +439,52 @@ def doctor_command(
     for line in report.lines():
         typer.echo(line)
     raise typer.Exit(report.exit_code)
+
+
+@app.command("stop")
+def stop_command(
+    repo_root: Path | None = typer.Option(
+        None,
+        "--repo-root",
+        help="Repository root of the running dispatcher. Defaults to the repo containing the CWD.",
+    ),
+) -> None:
+    """Ask the running dispatcher to exit after its current cycle."""
+    _configure_stdio_encoding()
+    root = detect_repo_root(repo_root)
+    lock = read_dispatch_lock(root)
+    if lock is None:
+        typer.echo(
+            f"No llm-handoff dispatcher is running for {root} "
+            f"(no {DISPATCH_LOCK_FILENAME}). Nothing to stop.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if lock.pid is not None and not process_is_running(lock.pid):
+        typer.echo(
+            f"No stop request written. {describe_lock_holder(lock)} Remove "
+            f"{lock.path} only after confirming no dispatcher is active.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if not stop_request_is_ignored(root):
+        typer.echo(
+            "No stop request written: Git does not ignore "
+            f"{stop_request_path(root)}, so the running dispatch's work-claim "
+            "gate would report it as an uncommitted file. Add /logs/dispatch/ "
+            "to .gitignore (as `llm-handoff init` does), or stop the "
+            "dispatcher at a pause.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    path = request_stop(root)
+    holder = f" (pid {lock.pid})" if lock.pid is not None else ""
+    typer.echo(
+        f"Stop requested: wrote {path}. The dispatcher{holder} finishes its "
+        "current cycle, including a running agent and the dispatcher commit, "
+        "then exits with code 0 before the next dispatch. Delete the file "
+        "to cancel."
+    )
 
 
 @app.callback(invoke_without_command=True)

@@ -62,6 +62,11 @@ class HandoffChanged:
     """The paused HANDOFF.md content changed while the prompt was waiting."""
 
 
+@dataclass(frozen=True, slots=True)
+class StopRequested:
+    """A stop request arrived (``llm-handoff stop``) while the prompt waited."""
+
+
 def parse_operator_input(line: str) -> OperatorAction:
     stripped = line.strip()
     if not stripped:
@@ -407,11 +412,13 @@ def wait_for_operator_or_handoff_change(
     log: LogFn,
     *,
     hash_content: Callable[[str], str] = content_sha,
-) -> HandoffChanged | OperatorAction:
-    """Wait for an operator action or a HANDOFF.md change.
+    stop_requested: Callable[[], bool] | None = None,
+) -> HandoffChanged | StopRequested | OperatorAction:
+    """Wait for an operator action, a HANDOFF.md change, or a stop request.
 
     Never returns an ``invalid`` action: those are logged and the wait goes on.
     After EOF on the operator stream it keeps polling the handoff file only.
+    ``stop_requested`` is checked once per poll when given.
     """
 
     discarded = reader.drain()
@@ -444,6 +451,8 @@ def wait_for_operator_or_handoff_change(
                 continue
             return action
 
+        if stop_requested is not None and stop_requested():
+            return StopRequested()
         current = _read_handoff(handoff_path)
         if current is None:
             log("WARN", f"Handoff file not found at: {handoff_path}")

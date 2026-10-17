@@ -219,8 +219,8 @@ class PreDispatchState:
 class ImplementerLeftovers:
     """Files an implementer dispatch left uncommitted, with their fingerprints.
 
-    The dispatcher keeps this in memory between cycles. It does not survive a
-    dispatcher restart; after one, leftovers count as operator edits again.
+    The dispatcher keeps this in memory between cycles and saves it with
+    :func:`save_implementer_leftovers` so it survives a dispatcher restart.
     ``story_key`` comes from :func:`carry_over_key`.
     """
 
@@ -805,6 +805,86 @@ def carry_over_key(handoff_content: str) -> str | None:
     return "work-packet:" + hashlib.sha256(section.encode("utf-8")).hexdigest()
 
 
+def prune_implementer_leftovers(
+    repo_root: Path, leftovers: ImplementerLeftovers | None
+) -> ImplementerLeftovers | None:
+    """Drop leftovers that were committed or changed since they were recorded.
+
+    Only a file that is still dirty with the recorded content can be carried
+    over, so the rest no longer belong in the record. None when nothing is left.
+    """
+
+    if leftovers is None or not leftovers.fingerprints:
+        return None
+    dirty_files = git_dirty_files(repo_root)
+    if dirty_files is None:
+        # Git could not list dirty files; keep the record unchanged.
+        return leftovers
+    dirty = set(dirty_files)
+    kept = tuple(
+        (path, fingerprint)
+        for path, fingerprint in leftovers.fingerprints
+        if path in dirty and working_tree_fingerprint(repo_root, path) == fingerprint
+    )
+    if not kept:
+        return None
+    return ImplementerLeftovers(story_key=leftovers.story_key, fingerprints=kept)
+
+
+def load_implementer_leftovers(state_path: Path) -> ImplementerLeftovers | None:
+    """Read a carry-over record saved by :func:`save_implementer_leftovers`.
+
+    A missing, unreadable, or malformed file loads nothing.
+    """
+
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    story_key = payload.get("story_key")
+    files = payload.get("fingerprints")
+    if not isinstance(story_key, str) or not story_key or not isinstance(files, dict):
+        return None
+    fingerprints = tuple(
+        sorted(
+            (path, fingerprint)
+            for path, fingerprint in files.items()
+            if isinstance(path, str) and path and isinstance(fingerprint, str)
+        )
+    )
+    if not fingerprints:
+        return None
+    return ImplementerLeftovers(story_key=story_key, fingerprints=fingerprints)
+
+
+def save_implementer_leftovers(
+    state_path: Path, leftovers: ImplementerLeftovers | None
+) -> None:
+    """Write the carry-over record, or delete it when nothing can carry over.
+
+    A record without a story key never matches a later dispatch, so it is not
+    kept. An ``OSError`` from the write propagates to the caller.
+    """
+
+    if leftovers is None or not leftovers.story_key or not leftovers.fingerprints:
+        try:
+            state_path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "story_key": leftovers.story_key,
+        "fingerprints": dict(sorted(leftovers.fingerprints)),
+    }
+    temporary_path = state_path.with_name(f"{state_path.name}.tmp")
+    temporary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(state_path)
+
+
 def working_tree_fingerprint(repo_root: Path, path: str) -> str:
     """Hash a working-tree file's bytes; marks absent or unreadable files."""
 
@@ -877,6 +957,12 @@ def git_dirty_files(repo_root: Path) -> tuple[str, ...] | None:
         if "R" in code or "C" in code:
             next(iterator, None)
     return tuple(sorted(files))
+
+
+def git_path_is_ignored(repo_root: Path, path: str) -> bool:
+    """True when Git ignores ``path``; False when it does not or Git fails."""
+
+    return _git_stdout(repo_root, ["check-ignore", "-q", "--", path]) is not None
 
 
 def _git_nul_entries(repo_root: Path, args: list[str]) -> tuple[str, ...] | None:
@@ -2326,10 +2412,14 @@ __all__ = [
     "capture_implementer_leftovers",
     "carry_over_key",
     "capture_pre_dispatch_state",
+    "load_implementer_leftovers",
+    "prune_implementer_leftovers",
+    "save_implementer_leftovers",
     "command_executable",
     "evidence_commit_value",
     "evidence_sha_token",
     "extract_work_packet_section",
+    "git_path_is_ignored",
     "parse_work_packet",
     "path_is_in_scope",
     "path_is_out_of_bounds",

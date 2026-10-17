@@ -137,6 +137,10 @@ CODEX_SESSION_STATE_PATH = CODEX_OUTPUT_DIRECTORY / "session.json"
 # Per-story bounce counts for the three-fix circuit breaker. Kept outside the
 # handoff file so a dispatcher restart cannot reset the breaker.
 BOUNCE_COUNT_STATE_PATH = Path("logs") / "dispatch" / "bounce-counts.json"
+# Uncommitted files the last implementer dispatch left for its story, so a
+# dispatcher restart can still carry them over instead of treating them as
+# operator edits.
+CARRY_OVER_STATE_PATH = Path("logs") / "dispatch" / "carry-over.json"
 
 
 def detect_repo_root(start: Path | None = None) -> Path:

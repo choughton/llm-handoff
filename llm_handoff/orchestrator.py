@@ -33,6 +33,7 @@ from llm_handoff.audit_review import (
 )
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
+    CARRY_OVER_STATE_PATH,
     AgentConfig,
     AgentRole,
     CLAUDE_DEFAULT_ALLOWED_TOOLS,
@@ -62,6 +63,7 @@ from llm_handoff.dispatcher_commit import (
 from llm_handoff.operator_prompt import (
     HandoffChanged,
     OperatorInputReader,
+    StopRequested,
     wait_for_operator_or_handoff_change,
 )
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
@@ -75,6 +77,11 @@ from llm_handoff.publish import (
     settle_deferred_findings,
 )
 from llm_handoff.roles import normalize_next_agent_value
+from llm_handoff.stop_request import (
+    clear_stop_request,
+    stop_request_path,
+    stop_requested,
+)
 from llm_handoff.router import (
     HandoffFrontmatterError,
     HandoffRouting,
@@ -102,7 +109,11 @@ from llm_handoff.work_claim import (
     claude_protected_scope_entries,
     git_changed_files,
     git_dirty_files,
+    git_path_is_ignored,
+    load_implementer_leftovers,
     parse_work_packet_scope,
+    prune_implementer_leftovers,
+    save_implementer_leftovers,
     path_is_in_scope,
     record_passed_verification,
     verify_work_claim,
@@ -452,9 +463,17 @@ def run_loop(
     implementer_base_story_key: str | None = None
     # (story key, HEAD before that story's first gated dispatch).
     gate_story_base: tuple[str | None, str] | None = None
-    implementer_leftovers: ImplementerLeftovers | None = None
+    implementer_leftovers = _restore_implementer_leftovers(config, log_fn)
+    stop_watch = _StopRequestWatch(config.repo_root)
 
     while True:
+        # Every path back to the top of the loop has finished its cycle: the
+        # dispatch, the dispatcher commit, validation, and the work-claim gate.
+        if stop_watch.requested(log_fn):
+            stop_watch.finish(
+                log_fn, dropped_recovery=pending_planner_recovery
+            )
+            return 0
         cycle_number += 1
         _log(log_fn, "INFO", f"--- Cycle {cycle_number} ---")
 
@@ -609,6 +628,7 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                stop_watch=stop_watch,
             )
             if pause.stop:
                 return 0
@@ -678,6 +698,7 @@ def run_loop(
                 ),
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                stop_watch=stop_watch,
             )
             if pause.stop:
                 return 0
@@ -725,6 +746,7 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                stop_watch=stop_watch,
             )
             if pause.stop:
                 return 0
@@ -782,6 +804,7 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                stop_watch=stop_watch,
             )
             if pause.stop:
                 return 0
@@ -807,6 +830,7 @@ def run_loop(
                 reason=protected_scope_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                stop_watch=stop_watch,
             )
             if pause.stop:
                 return 0
@@ -829,6 +853,7 @@ def run_loop(
                 else None
             )
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
+            stop_watch.requested(log_fn)
             if finalizer_git_before is not None:
                 finalizer_check = undo_planner_handoff_commits(
                     config.repo_root,
@@ -897,6 +922,7 @@ def run_loop(
                     reason=pause_reason,
                     log=log_fn,
                     operator_prompt=operator_prompt,
+                    stop_watch=stop_watch,
                 )
                 if pause.stop:
                     return 0
@@ -941,6 +967,13 @@ def run_loop(
             story_base_sha: str | None = None
             story_key = carry_over_key(handoff_content)
             if _work_claim_gate_applies(config, current_cycle.route):
+                if (
+                    implementer_leftovers is not None
+                    and implementer_leftovers.story_key != story_key
+                ):
+                    # Another story's leftovers never carry over to this one.
+                    implementer_leftovers = None
+                    _persist_implementer_leftovers(config, None, log_fn)
                 pre_dispatch_state = capture_pre_dispatch_state(
                     config.repo_root,
                     leftovers=implementer_leftovers,
@@ -1026,14 +1059,21 @@ def run_loop(
                     implementer_base_sha=implementer_base_sha,
                 ),
             )
+            # Only logs that a stop request was seen; the loop honors it at
+            # the top, after this cycle's commit, validation, and gate.
+            stop_watch.requested(log_fn)
             if pre_dispatch_state is not None:
                 # Whatever this dispatch leaves uncommitted is this story's
-                # work, so a later dispatch for the story can still commit it.
+                # work, so a later dispatch for the story can still commit it,
+                # including after a dispatcher restart.
                 implementer_leftovers = capture_implementer_leftovers(
                     config.repo_root,
                     handoff_path=config.handoff_path,
                     pre_dispatch_state=pre_dispatch_state,
                     story_key=story_key,
+                )
+                _persist_implementer_leftovers(
+                    config, implementer_leftovers, log_fn
                 )
             if planner_git_before is not None:
                 planner_check = undo_planner_handoff_commits(
@@ -1135,6 +1175,14 @@ def run_loop(
                 log=log_fn,
                 story_base_sha=story_base_sha,
             )
+            if commit_result is not None and commit_result.sha is not None:
+                # Committed files are no longer carry-over work.
+                implementer_leftovers = prune_implementer_leftovers(
+                    config.repo_root, implementer_leftovers
+                )
+                _persist_implementer_leftovers(
+                    config, implementer_leftovers, log_fn
+                )
             _log(
                 log_fn,
                 "AGENT",
@@ -1348,6 +1396,7 @@ def run_loop(
                     reason=pause_reason,
                     log=log_fn,
                     operator_prompt=operator_prompt,
+                    stop_watch=stop_watch,
                 )
                 if pause.stop:
                     # Without polling, an unhandled validation failure still
@@ -3115,6 +3164,109 @@ def _restore_bounce_counts(config: DispatchConfig, log: LogFn) -> None:
     _log(log, "INFO", f"Restored bounce counts from {state_path}: {summary}")
 
 
+def _carry_over_state_path(config: DispatchConfig) -> Path:
+    return (config.repo_root / CARRY_OVER_STATE_PATH).resolve()
+
+
+def _restore_implementer_leftovers(
+    config: DispatchConfig, log: LogFn
+) -> ImplementerLeftovers | None:
+    """Load the carry-over record a previous run saved, if any."""
+
+    state_path = _carry_over_state_path(config)
+    leftovers = load_implementer_leftovers(state_path)
+    if leftovers is None:
+        return None
+    _log(
+        log,
+        "INFO",
+        f"Restored carry-over record from {state_path} for {leftovers.story_key}: "
+        + ", ".join(path for path, _ in leftovers.fingerprints)
+        + ". Files still unchanged carry over to that story's next dispatch.",
+    )
+    return leftovers
+
+
+def _persist_implementer_leftovers(
+    config: DispatchConfig,
+    leftovers: ImplementerLeftovers | None,
+    log: LogFn,
+) -> None:
+    if config.dry_run:
+        return
+    state_path = _carry_over_state_path(config)
+    if (
+        leftovers is not None
+        and leftovers.story_key
+        and leftovers.fingerprints
+        and not git_path_is_ignored(config.repo_root, CARRY_OVER_STATE_PATH.as_posix())
+    ):
+        # An untracked record Git does not ignore would itself show up as an
+        # uncommitted file in the next work-claim gate.
+        _log(
+            log,
+            "WARN",
+            f"Git does not ignore {CARRY_OVER_STATE_PATH.as_posix()}, so the "
+            "carry-over record stays in memory and a restart treats these "
+            "uncommitted files as operator edits. Add /logs/dispatch/ to "
+            ".gitignore to keep it across restarts.",
+        )
+        return
+    try:
+        save_implementer_leftovers(state_path, leftovers)
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not save the carry-over record to {state_path}: {exc}. "
+            "After a restart these uncommitted files count as operator edits.",
+        )
+
+
+class _StopRequestWatch:
+    """Notices a stop request from ``llm-handoff stop`` and logs it once."""
+
+    def __init__(self, repo_root: Path) -> None:
+        self._repo_root = repo_root
+        self._seen = False
+
+    def requested(self, log: LogFn) -> bool:
+        if not stop_requested(self._repo_root):
+            return False
+        if not self._seen:
+            self._seen = True
+            _log(
+                log,
+                "PAUSE",
+                f"Stop requested ({stop_request_path(self._repo_root)}). The "
+                "dispatcher finishes the current cycle and exits before the "
+                "next dispatch.",
+            )
+        return True
+
+    def finish(
+        self,
+        log: LogFn,
+        *,
+        dropped_recovery: PendingPlannerRecovery | None = None,
+    ) -> None:
+        clear_stop_request(self._repo_root)
+        if dropped_recovery is not None:
+            _log(
+                log,
+                "WARN",
+                f"Dropped the scheduled {dropped_recovery.kind} dispatch to "
+                f"{dropped_recovery.route}; it is not saved. After a restart "
+                "the dispatcher routes HANDOFF.md again.",
+            )
+        _log(
+            log,
+            "PAUSE",
+            "Stopped at the operator's request before the next dispatch. "
+            "Exiting with code 0.",
+        )
+
+
 def _handoff_status(raw_status: str | None) -> HandoffStatus | None:
     if raw_status is None:
         return None
@@ -3268,7 +3420,10 @@ def _pause_until_handoff_changes(
     handoff_sha: str,
     reason: str,
     log: LogFn,
+    stop_watch: _StopRequestWatch | None = None,
 ) -> bool:
+    """Wait for a HANDOFF.md change; False when the run should stop instead."""
+
     _log(log, "PAUSE", reason)
     if config.poll_interval_seconds <= 0:
         return False
@@ -3280,6 +3435,8 @@ def _pause_until_handoff_changes(
     )
     while True:
         time.sleep(config.poll_interval_seconds)
+        if stop_watch is not None and stop_watch.requested(log):
+            return False
         handoff_content = _read_required_text(config.handoff_full_path)
         if handoff_content is None:
             _log(
@@ -3316,7 +3473,9 @@ class _OperatorPromptState:
         return self._reader
 
 
-PauseOutcomeKind = Literal["resume", "stop", "quit", "retry", "planner"]
+PauseOutcomeKind = Literal[
+    "resume", "stop", "quit", "stop_request", "retry", "planner"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -3328,7 +3487,7 @@ class PauseOutcome:
     def stop(self) -> bool:
         """True when run_loop should return 0."""
 
-        return self.kind in {"stop", "quit"}
+        return self.kind in {"stop", "quit", "stop_request"}
 
 
 def _operator_prompt_enabled(config: DispatchConfig) -> bool:
@@ -3347,8 +3506,22 @@ def _pause_at_dispatcher_pause(
     reason: str,
     log: LogFn,
     operator_prompt: _OperatorPromptState,
+    stop_watch: _StopRequestWatch | None = None,
 ) -> PauseOutcome:
-    """Pause for a HANDOFF.md edit, or for the operator prompt at a TTY."""
+    """Pause for a HANDOFF.md edit, or for the operator prompt at a TTY.
+
+    A stop request seen before or during the pause ends the run instead.
+    """
+
+    def stop_or(kind: PauseOutcomeKind) -> PauseOutcome:
+        if stop_watch is not None and stop_watch.requested(log):
+            stop_watch.finish(log)
+            return PauseOutcome(kind="stop_request")
+        return PauseOutcome(kind=kind)
+
+    if stop_watch is not None and stop_watch.requested(log):
+        _log(log, "PAUSE", reason)
+        return stop_or("stop")
 
     if not _operator_prompt_enabled(config):
         if _pause_until_handoff_changes(
@@ -3356,9 +3529,10 @@ def _pause_at_dispatcher_pause(
             handoff_sha=handoff_sha,
             reason=reason,
             log=log,
+            stop_watch=stop_watch,
         ):
             return PauseOutcome(kind="resume")
-        return PauseOutcome(kind="stop")
+        return stop_or("stop")
 
     reader = operator_prompt.reader()
     if reader.console_unavailable:
@@ -3373,9 +3547,10 @@ def _pause_at_dispatcher_pause(
             handoff_sha=handoff_sha,
             reason=reason,
             log=log,
+            stop_watch=stop_watch,
         ):
             return PauseOutcome(kind="resume")
-        return PauseOutcome(kind="stop")
+        return stop_or("stop")
 
     _log(log, "PAUSE", reason)
     result = wait_for_operator_or_handoff_change(
@@ -3385,7 +3560,12 @@ def _pause_at_dispatcher_pause(
         config.poll_interval_seconds,
         log,
         hash_content=_content_sha,
+        stop_requested=(
+            (lambda: stop_watch.requested(log)) if stop_watch is not None else None
+        ),
     )
+    if isinstance(result, StopRequested):
+        return stop_or("stop")
     if isinstance(result, HandoffChanged):
         _log(log, "PAUSE", "Detected HANDOFF.md change. Resuming dispatch loop.")
         return PauseOutcome(kind="resume")
