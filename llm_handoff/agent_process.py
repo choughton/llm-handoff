@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -22,6 +23,12 @@ PROCESS_READER_JOIN_TIMEOUT_SECONDS = 0.2
 PROCESS_READ_CHUNK_BYTES = 65536
 PROCESS_TREE_KILL_TIMEOUT_SECONDS = 30
 _WINDOWS = os.name == "nt"
+
+# The launcher lines npm's cmd-shim writes into ``<prefix>\<name>.cmd``:
+#   SET "_prog=node"
+#   "%_prog%"  "%dp0%\node_modules\<pkg>\bin\<entry>.js" %*
+_NPM_SHIM_PROGRAM_RE = re.compile(r'SET\s+"_prog=([^"%]+)"', re.IGNORECASE)
+_NPM_SHIM_TARGET_RE = re.compile(r'"%dp0%\\([^"%]+)"\s+%\*', re.IGNORECASE)
 
 # Environment variables every provider CLI receives in ``allowlist`` mode.
 # Names are compared case-insensitively because Windows environment names are
@@ -169,9 +176,10 @@ def _process_group_popen_kwargs() -> dict[str, object]:
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
     """Terminate ``process`` and every descendant it spawned.
 
-    On Windows the configured provider binaries are ``.cmd`` shims, so
-    ``Popen.kill()`` only terminates the ``cmd.exe`` wrapper and the inner
-    ``node`` process keeps running and editing the repo. ``taskkill /T``
+    On Windows the provider CLIs spawn children of their own (an npm shim
+    launched through ``cmd.exe`` starts ``node``, and the Codex launcher
+    script starts the native ``codex`` binary), so ``Popen.kill()`` alone
+    leaves the inner process running and editing the repo. ``taskkill /T``
     walks the tree while the parent is still alive. On POSIX the child was
     started in its own session, so killing its process group reaches every
     descendant.
@@ -297,8 +305,7 @@ def _run_command_streaming(
     kills the process once it has written nothing to stdout or stderr for
     that long, so a hung CLI is caught before the full timeout.
     """
-    resolved_command = list(command)
-    resolved_command[0] = _resolve_command_binary(resolved_command[0])
+    resolved_command = _resolve_command_argv(command)
     popen_kwargs = {
         "cwd": cwd,
         "stdout": subprocess.PIPE,
@@ -500,8 +507,7 @@ def _run_command(
     timeout_ms: int,
     env: dict[str, str] | None = None,
 ) -> _ProcessResult:
-    resolved_command = list(command)
-    resolved_command[0] = _resolve_command_binary(resolved_command[0])
+    resolved_command = _resolve_command_argv(command)
     run_kwargs = {
         "cwd": cwd,
         "capture_output": True,
@@ -536,6 +542,65 @@ def _coerce_output(output: str | bytes | None) -> str:
     if isinstance(output, bytes):
         return output.decode("utf-8", errors="replace")
     return output
+
+
+def _resolve_command_argv(command: list[str]) -> list[str]:
+    """Return the argv to hand to ``Popen`` for ``command``.
+
+    ``argv[0]`` is resolved with :func:`_resolve_command_binary`. When that
+    lands on an npm ``.cmd``/``.bat`` shim, the shim is bypassed and its
+    target script is launched directly (``node <entry>.js <args>``).
+
+    Running a ``.cmd`` file makes ``cmd.exe`` re-parse the command line, and
+    it does not understand the ``\\"`` escapes Python writes for inner
+    quotes. A prompt such as ``"summary": "<one line>"`` then puts ``<one``
+    outside quotes, which ``cmd.exe`` reads as input redirection from a
+    missing file and fails with "The system cannot find the file
+    specified." before the CLI ever starts. Launching the target directly
+    keeps every argument intact and makes the quoting rules the same as on
+    POSIX.
+    """
+    resolved = list(command)
+    if not resolved:
+        return resolved
+    resolved[0] = _resolve_command_binary(resolved[0])
+    direct = _npm_shim_direct_launch(Path(resolved[0]))
+    if direct is not None:
+        return [*direct, *resolved[1:]]
+    return resolved
+
+
+def _npm_shim_direct_launch(shim: Path) -> list[str] | None:
+    """Return ``[program, script]`` for an npm cmd-shim, or None.
+
+    Only shims written by npm's ``cmd-shim`` are recognized (a ``SET
+    "_prog=<program>"`` line plus a ``"%_prog%" "%dp0%\\<script>" %*``
+    launcher). Anything else, including a hand-written ``.cmd`` wrapper, is
+    left to run through ``cmd.exe`` as before.
+    """
+    if shim.suffix.lower() not in (".cmd", ".bat"):
+        return None
+    try:
+        text = shim.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    program_match = _NPM_SHIM_PROGRAM_RE.search(text)
+    target_match = _NPM_SHIM_TARGET_RE.search(text)
+    if program_match is None or target_match is None:
+        return None
+    program = program_match.group(1).strip()
+    script = shim.parent.joinpath(*target_match.group(1).split("\\"))
+    if not program or not script.is_file():
+        return None
+    # cmd-shim prefers a program installed next to the shim (the npm prefix)
+    # and falls back to PATH, so do the same.
+    local_program = shim.parent / f"{program}.exe"
+    if local_program.is_file():
+        return [str(local_program), str(script)]
+    resolved_program = shutil.which(program)
+    if resolved_program is None:
+        return None
+    return [resolved_program, str(script)]
 
 
 def _resolve_command_binary(command: str) -> str:

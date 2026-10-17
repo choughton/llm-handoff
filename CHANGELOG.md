@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- On Windows, provider CLIs installed through npm (`codex.cmd`, `gemini.cmd`)
+  are now launched directly through their shim's target (`node <entry>.js`)
+  instead of through the `.cmd` shim itself. Running the shim made `cmd.exe`
+  re-parse the command line, which does not understand the `\"` escapes
+  Python writes for inner quotes, so a prompt such as the Codex security
+  reviewer's `"summary": "<one line>"` left `<one` outside quotes and
+  `cmd.exe` failed with "The system cannot find the file specified." before
+  Codex started (`security.stderr.txt` in the audit log directory). Every
+  Codex launch path (`codex exec`, `codex exec resume`, and the
+  `audit.security_provider: codex` reviewer) goes through the same resolver,
+  so arguments containing `"`, `<`, `>`, `|`, `&`, `%`, or `^` now reach the
+  CLI intact. Only shims written by npm's `cmd-shim` are recognized; a
+  hand-written `.cmd` wrapper still runs through `cmd.exe` as before.
 - In `publish.mode: pr`, the dispatcher now also saves the implementer's
   `## Review Responses` from the handoff it is about to send to the auditor,
   not only when the work-claim gate passes. A correction-round handback that
