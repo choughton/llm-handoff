@@ -3,235 +3,346 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 `llm-handoff` is a reference implementation of a file-based dispatch loop for
-multi-CLI AI coding workflows.
-
-The design principle is simple:
+multi-CLI AI coding workflows. It runs one agent CLI at a time against a
+single repository, passes work between them through one Markdown file, and
+only advances when that file parses, routes, and validates.
 
 > Prompts are advisory. Validators are authoritative.
 
-Agents can write prose, but the dispatcher only advances when the handoff state
-parses, routes, and validates. A single Markdown file is the shared state file.
-Git commit SHAs are the durable record of completed work. When routing is
-ambiguous or unsafe, the dispatcher fails closed and pauses instead of guessing.
-
-Built for solo developers coordinating multiple agent CLIs on a single repo
-without the overhead of git worktrees, pull-request choreography, or a service
-orchestrator.
+Built for solo developers coordinating Codex, Gemini CLI, Claude Code, or
+Antigravity on one repo without git worktrees, pull-request choreography, or a
+service orchestrator.
 
 ![llm-handoff dispatch loop](docs/assets/llm-handoff-hero.png)
 
+## Contents
+
+- [Status](#status)
+- [Quick Start](#quick-start)
+- [Files Or Linear: Where Work Is Tracked](#files-or-linear-where-work-is-tracked)
+- [Gotchas](#gotchas)
+- [Gates And Scanners](#gates-and-scanners)
+- [How It Works](#how-it-works)
+- [Agent Safety Defaults](#agent-safety-defaults)
+- [What This Is And Is Not](#what-this-is-and-is-not)
+- [Why Not LangGraph, AutoGen, Or CrewAI?](#why-not-langgraph-autogen-or-crewai)
+- [Known Limitations](#known-limitations)
+- [Further Reading](#further-reading)
+- [License](#license)
+
 ## Status
 
-This repository is in pre-release extraction. The dispatcher is being
-genericized from a project-specific implementation into a public reference
-workflow. Expect names, configuration, and examples to change until the first
-tagged release.
+Pre-release. The dispatcher is being extracted from a project-specific
+implementation into a public reference workflow, and names, configuration,
+and examples can still change before the first tagged release. It is not a
+production-certified tool for arbitrary repositories. See
+[CHANGELOG.md](CHANGELOG.md).
 
-This is still pre-release software, not a production-certified tool for
-arbitrary repositories. See [CHANGELOG.md](CHANGELOG.md) for the extraction
-state.
+## Quick Start
 
-## Repository Map
+You need Python 3.11 or newer, Git, and Claude Code (`claude`) or Codex
+(`codex`) signed in. Gemini CLI (`gemini`) is optional: the reference mapping
+uses it for the planner and frontend, but it cannot run every role by itself,
+and any role mapped to it needs Docker or Podman on `PATH` (macOS can use
+`sandbox-exec`). The dispatcher launches these CLIs; it does not install them
+or manage their logins.
 
-All Markdown documentation and shipped Markdown prompt artifacts are linked
-here. Test fixture handoffs are included in a collapsed section because they
-are parser fixtures, not user-facing docs.
+Two directories are involved: the `llm-handoff` install, and the target
+repository where agents do the work. Commands below run from anywhere once the
+package is installed.
 
-### Core Docs
-
-| File | Purpose |
-| --- | --- |
-| [README.md](README.md) | Public front door and project positioning. |
-| [QUICKSTART.md](QUICKSTART.md) | Short source-checkout path for a first dry run. |
-| [WALKTHROUGH.md](WALKTHROUGH.md) | Longer first-run guide explaining source and target repo flow. |
-| [INSTALL.md](INSTALL.md) | Install paths, provider CLI checks, and first run. |
-| [CONFIGURATION.md](CONFIGURATION.md) | Supported `dispatch_config.yaml` surface. |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map and design choices. |
-| [docs/SUPERVISED_DISPATCH.md](docs/SUPERVISED_DISPATCH.md) | Optional supervisor wrapper, heartbeats, incident bundles, and bounded repair role. |
-| [docs/TESTING.md](docs/TESTING.md) | Test strategy and current scaffold state. |
-| [AGENTS.md](AGENTS.md) | Instructions for coding agents working in this repo. |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution scope and project boundaries. |
-| [SECURITY.md](SECURITY.md) | Safe usage and vulnerability reporting. |
-| [CHANGELOG.md](CHANGELOG.md) | Release and extraction history. |
-
-### Runtime And Examples
-
-| File | Purpose |
-| --- | --- |
-| [dispatch_config.example.yaml](dispatch_config.example.yaml) | Example role-to-provider config shape. |
-| [.pre-commit-config.yaml](.pre-commit-config.yaml) | Lightweight contributor hooks for whitespace, YAML/TOML, large files, and Ruff. |
-| [pyproject.toml](pyproject.toml) | Package metadata, runtime dependencies, and the `llm-handoff` console command. |
-| [requirements-dev.txt](requirements-dev.txt) | Source-checkout runtime and test dependencies. |
-| [examples/reference-workflow/README.md](examples/reference-workflow/README.md) | Copyable workflow protocol plan. |
-
-### Handoff Protocol
-
-| File | Purpose |
-| --- | --- |
-| [docs/handoff/README.md](docs/handoff/README.md) | Handoff directory guide and schema summary. |
-| [docs/handoff/HANDOFF.md](docs/handoff/HANDOFF.md) | Placeholder live handoff template. |
-| [docs/handoff/HANDBOOK.md](docs/handoff/HANDBOOK.md) | Shared handoff operating rules for all roles. |
-| [docs/handoff/SHARED_REPO_INIT_PROMPT.md](docs/handoff/SHARED_REPO_INIT_PROMPT.md) | Shared startup prompt for roles. |
-| [docs/handoff/PLANNER_INITIAL_PROMPT.md](docs/handoff/PLANNER_INITIAL_PROMPT.md) | First planner prompt for new workflows. |
-| [docs/handoff/PLANNER_HANDOFF_PROMPT.md](docs/handoff/PLANNER_HANDOFF_PROMPT.md) | Planner handoff prompt. |
-| [docs/handoff/BACKEND_HANDOFF_PROMPT.md](docs/handoff/BACKEND_HANDOFF_PROMPT.md) | Backend role prompt. |
-| [docs/handoff/FRONTEND_HANDOFF_PROMPT.md](docs/handoff/FRONTEND_HANDOFF_PROMPT.md) | Frontend role prompt. |
-| [docs/handoff/AUDITOR_HANDOFF_PROMPT.md](docs/handoff/AUDITOR_HANDOFF_PROMPT.md) | Auditor role prompt. |
-| [docs/handoff/FINALIZER_HANDOFF_PROMPT.md](docs/handoff/FINALIZER_HANDOFF_PROMPT.md) | Finalizer role prompt. |
-
-### Provider Agent Templates
-
-| File | Purpose |
-| --- | --- |
-| [.codex/skills/llm-handoff/SKILL.md](.codex/skills/llm-handoff/SKILL.md) | Codex backend skill bootstrap. |
-| [.gemini/agents/planner.md](.gemini/agents/planner.md) | Gemini planner agent template. |
-| [.gemini/agents/frontend.md](.gemini/agents/frontend.md) | Gemini frontend agent template. |
-| [.claude/agents/auditor.md](.claude/agents/auditor.md) | Claude auditor agent template. |
-| [.claude/agents/handoff-router.md](.claude/agents/handoff-router.md) | Claude routing clarification agent. |
-| [.claude/agents/handoff-validator.md](.claude/agents/handoff-validator.md) | Claude handoff validator agent. |
-| [.claude/agents/ledger-updater.md](.claude/agents/ledger-updater.md) | Claude finalizer compatibility agent. |
-| [.agents/agents/planner.md](.agents/agents/planner.md) | Antigravity planner agent template. |
-| [.agents/agents/backend.md](.agents/agents/backend.md) | Antigravity backend agent template. |
-| [.agents/agents/frontend.md](.agents/agents/frontend.md) | Antigravity frontend agent template. |
-| [.agents/agents/auditor.md](.agents/agents/auditor.md) | Antigravity auditor agent template. |
-| [.agents/agents/handoff-validator.md](.agents/agents/handoff-validator.md) | Antigravity handoff validator agent. |
-| [.agents/agents/handoff-router.md](.agents/agents/handoff-router.md) | Antigravity routing clarification agent. |
-| [.agents/agents/ledger-updater.md](.agents/agents/ledger-updater.md) | Antigravity finalizer compatibility agent. |
-
-<details>
-<summary>Reference Workflow Template Markdown</summary>
-
-| File | Purpose |
-| --- | --- |
-| [examples/reference-workflow/AGENTS.md](examples/reference-workflow/AGENTS.md) | Target-repo agent instructions template. |
-| [examples/reference-workflow/PROJECT_STATE.md](examples/reference-workflow/PROJECT_STATE.md) | Target-repo durable state template. |
-| [examples/reference-workflow/docs/handoff/README.md](examples/reference-workflow/docs/handoff/README.md) | Template handoff directory guide. |
-| [examples/reference-workflow/docs/handoff/HANDOFF.md](examples/reference-workflow/docs/handoff/HANDOFF.md) | Template starter handoff. |
-| [examples/reference-workflow/docs/handoff/HANDBOOK.md](examples/reference-workflow/docs/handoff/HANDBOOK.md) | Template shared handoff handbook. |
-| [examples/reference-workflow/docs/handoff/SHARED_REPO_INIT_PROMPT.md](examples/reference-workflow/docs/handoff/SHARED_REPO_INIT_PROMPT.md) | Template shared startup prompt. |
-| [examples/reference-workflow/docs/handoff/PLANNER_INITIAL_PROMPT.md](examples/reference-workflow/docs/handoff/PLANNER_INITIAL_PROMPT.md) | Template first planner prompt. |
-| [examples/reference-workflow/docs/handoff/PLANNER_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/PLANNER_HANDOFF_PROMPT.md) | Template planner prompt. |
-| [examples/reference-workflow/docs/handoff/BACKEND_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/BACKEND_HANDOFF_PROMPT.md) | Template backend prompt. |
-| [examples/reference-workflow/docs/handoff/FRONTEND_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/FRONTEND_HANDOFF_PROMPT.md) | Template frontend prompt. |
-| [examples/reference-workflow/docs/handoff/AUDITOR_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/AUDITOR_HANDOFF_PROMPT.md) | Template auditor prompt. |
-| [examples/reference-workflow/docs/handoff/FINALIZER_HANDOFF_PROMPT.md](examples/reference-workflow/docs/handoff/FINALIZER_HANDOFF_PROMPT.md) | Template finalizer prompt. |
-| [examples/reference-workflow/.codex/skills/llm-handoff/SKILL.md](examples/reference-workflow/.codex/skills/llm-handoff/SKILL.md) | Template Codex backend skill. |
-| [examples/reference-workflow/.gemini/agents/planner.md](examples/reference-workflow/.gemini/agents/planner.md) | Template Gemini planner agent. |
-| [examples/reference-workflow/.gemini/agents/frontend.md](examples/reference-workflow/.gemini/agents/frontend.md) | Template Gemini frontend agent. |
-| [examples/reference-workflow/.claude/agents/auditor.md](examples/reference-workflow/.claude/agents/auditor.md) | Template Claude auditor agent. |
-| [examples/reference-workflow/.claude/agents/handoff-router.md](examples/reference-workflow/.claude/agents/handoff-router.md) | Template Claude router agent. |
-| [examples/reference-workflow/.claude/agents/handoff-validator.md](examples/reference-workflow/.claude/agents/handoff-validator.md) | Template Claude validator agent. |
-| [examples/reference-workflow/.claude/agents/ledger-updater.md](examples/reference-workflow/.claude/agents/ledger-updater.md) | Template Claude finalizer compatibility agent. |
-| [examples/reference-workflow/.agents/agents/planner.md](examples/reference-workflow/.agents/agents/planner.md) | Template Antigravity planner agent. |
-| [examples/reference-workflow/.agents/agents/backend.md](examples/reference-workflow/.agents/agents/backend.md) | Template Antigravity backend agent. |
-| [examples/reference-workflow/.agents/agents/frontend.md](examples/reference-workflow/.agents/agents/frontend.md) | Template Antigravity frontend agent. |
-| [examples/reference-workflow/.agents/agents/auditor.md](examples/reference-workflow/.agents/agents/auditor.md) | Template Antigravity auditor agent. |
-| [examples/reference-workflow/.agents/agents/handoff-validator.md](examples/reference-workflow/.agents/agents/handoff-validator.md) | Template Antigravity validator agent. |
-| [examples/reference-workflow/.agents/agents/handoff-router.md](examples/reference-workflow/.agents/agents/handoff-router.md) | Template Antigravity router agent. |
-| [examples/reference-workflow/.agents/agents/ledger-updater.md](examples/reference-workflow/.agents/agents/ledger-updater.md) | Template Antigravity finalizer compatibility agent. |
-
-</details>
-
-<details>
-<summary>Ported Test Fixture Markdown</summary>
-
-| File | Purpose |
-| --- | --- |
-| [tests/ported/fixtures/handoffs/audit_story_close_next_story.md](tests/ported/fixtures/handoffs/audit_story_close_next_story.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/legacy_backend_handback_story_close.md](tests/ported/fixtures/handoffs/legacy_backend_handback_story_close.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/conflicting_signals.md](tests/ported/fixtures/handoffs/conflicting_signals.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/empty.md](tests/ported/fixtures/handoffs/empty.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/escalation.md](tests/ported/fixtures/handoffs/escalation.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/legacy_manual_frontend_dispatch.md](tests/ported/fixtures/handoffs/legacy_manual_frontend_dispatch.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/misroute.md](tests/ported/fixtures/handoffs/misroute.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/next_step_header_epic_close.md](tests/ported/fixtures/handoffs/next_step_header_epic_close.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/next_step_header_for_backend.md](tests/ported/fixtures/handoffs/next_step_header_for_backend.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/next_step_qualifier_suffix_auditor.md](tests/ported/fixtures/handoffs/next_step_qualifier_suffix_auditor.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/next_step_subheading_frontend.md](tests/ported/fixtures/handoffs/next_step_subheading_frontend.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/no_signal.md](tests/ported/fixtures/handoffs/no_signal.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/planner_task_assignment_backend.md](tests/ported/fixtures/handoffs/planner_task_assignment_backend.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/prose_next_agent_planner_legacy_alias.md](tests/ported/fixtures/handoffs/prose_next_agent_planner_legacy_alias.md) | Router fixture. |
-| [tests/ported/fixtures/handoffs/story_close_ledger_language.md](tests/ported/fixtures/handoffs/story_close_ledger_language.md) | Router fixture. |
-
-</details>
-
-## Source Checkout
-
-The package is installable from a Git checkout (`python -m pip install .`) or
-straight from Git
-(`python -m pip install git+https://github.com/choughton/llm-handoff.git`),
-which adds an `llm-handoff` console command and bundles the reference workflow
-template. It is not yet published to PyPI. To run from source instead:
-
-Windows PowerShell:
-
-```powershell
-git clone https://github.com/choughton/llm-handoff.git
-cd llm-handoff
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m llm_handoff --help
-```
-
-See [INSTALL.md](INSTALL.md) for provider CLI checks, local dependencies, and
-the target-repo initialization workflow, including macOS and Linux commands.
-For the shortest path through a first dry run, see
-[QUICKSTART.md](QUICKSTART.md). For a slower explanation of the source-checkout
-plus target-repo workflow, see [WALKTHROUGH.md](WALKTHROUGH.md).
-For long local runs that should leave a run-state file, heartbeat output, and
-incident bundles before stopping, see
-[docs/SUPERVISED_DISPATCH.md](docs/SUPERVISED_DISPATCH.md).
-
-To preview the copyable reference workflow for another repository:
+### 1. Install
 
 ```bash
-python -m llm_handoff init path/to/your-project --template reference-workflow --dry-run
+python -m pip install git+https://github.com/choughton/llm-handoff.git
+llm-handoff --help
 ```
 
-## What This Is
+Not on PyPI yet. To run from a source checkout instead, see
+[INSTALL.md](INSTALL.md); `python -m llm_handoff ...` then replaces
+`llm-handoff ...` in every command.
 
-- A Python CLI for serially dispatching work between AI coding CLIs.
-- A file-based operating protocol centered on `HANDOFF.md`.
-- A deterministic router with validator-backed failure handling.
-- A deterministic work-claim gate, on by default, that checks an
-  implementer's `scope_sha`, diff scope, and verification command before an
-  audit session, with optional operator-configured scanners such as gitleaks
-  or bandit; turning the gate off needs a written reason.
-- A security reviewer that runs next to the quality auditor on the same
-  commit range by default; turning it off needs a written reason.
-- A reference workflow that users can inspect, copy, fork, or adapt.
-- An `llm-handoff doctor` preflight check for Git, provider CLIs, the Gemini
-  sandbox runtime, the security reviewer and work-claim gate settings, and
-  the handoff file; it
-  exits `1` on any error.
-- An optional supervised wrapper for operator evidence, heartbeat output, and
-  bounded repair-role handoff when explicitly enabled.
+### 2. Initialize the target repository
 
-## What This Is Not
+Preview what will be copied, then copy it:
 
-- Not a general multi-agent framework.
-- Not parallel execution across branches or worktrees.
-- Not a hosted service.
-- Not a replacement for Codex, Gemini, Claude, or any other agent CLI.
-- Not self-healing. It detects, validates, and pauses.
-- Not a background supervisor service; supervised dispatch is an opt-in local
-  wrapper around the same serial dispatcher.
-- Not production-certified for arbitrary repositories.
+```bash
+llm-handoff init path/to/your-project --dry-run
+llm-handoff init path/to/your-project
+```
+
+This writes the reference workflow into the target repo: `AGENTS.md`,
+`PROJECT_STATE.md`, `dispatch_config.yaml`, `docs/handoff/HANDOFF.md`, the
+role prompts under `docs/handoff/`, and provider agent files under `.claude/`,
+`.codex/`, `.gemini/`, and `.agents/`. Existing identical files are skipped;
+changed files stop the run unless you pass `--force`.
+
+`init` picks a role-to-provider mapping for you. When only Claude Code or only
+Codex is on `PATH`, every role goes on that one CLI. Otherwise it writes the
+reference mapping (Gemini planner, Codex backend, Claude auditor). Pass
+`--provider claude` or `--provider codex` to force a single-vendor setup. The
+command prints the mapping it chose. Those are the only two single-vendor
+mappings; a machine with only Gemini gets the reference mapping and fails
+`doctor` until Codex and Claude are installed.
+
+With every role on Codex, also set `commit_mode: dispatcher` in
+`dispatch_config.yaml` before running. `init` leaves the template's
+`commit_mode: agent`, and Codex's sandbox keeps `.git` read-only, so a Codex
+implementer asked to commit its own work hands back
+`blocked_implementation_failure` instead. In dispatcher mode the dispatcher
+commits the in-scope files for it.
+
+To track work in Linear instead of in files, add the tracker flags here. See
+[Files Or Linear](#files-or-linear-where-work-is-tracked) first, because this
+choice is hard to change later.
+
+### 3. Run the preflight check
+
+```bash
+llm-handoff doctor --repo-root path/to/your-project
+```
+
+`doctor` checks Git, each configured role's CLI binary, the Gemini sandbox
+runtime, the gate and reviewer settings, configured scanners, and whether the
+handoff file routes. It exits `1` on any error. Fix every `FAIL` before
+continuing; read the `WARN` lines too.
+
+### 4. Tell the planner what to build
+
+In the target repo, open `docs/handoff/HANDOFF.md`. The starter file already
+routes to `planner`. Replace the body with what you want built, in enough
+detail for a planner to scope a first bounded story:
+
+```markdown
+---
+next_agent: planner
+reason: Scope the first bounded implementation task.
+producer: user
+---
+
+# Initial Handoff
+
+Read AGENTS.md and PROJECT_STATE.md. The goal of this epic is <what you
+want>. Scope the first story and write a Work Packet for it.
+```
+
+Also fill in `PROJECT_STATE.md`. It is the durable summary the planner reads
+at the start of every cycle and the finalizer updates when an epic closes.
+
+### 5. Dry run, then run
+
+```bash
+llm-handoff --repo-root path/to/your-project --dry-run
+```
+
+The dry run reports the route and the provider CLI it would launch without
+launching anything. When it is clean:
+
+```bash
+llm-handoff --repo-root path/to/your-project
+```
+
+The loop now reads the handoff, runs one role, validates the rewritten
+handoff, and continues, pauses, or escalates to you. Watch
+`docs/handoff/HANDOFF.md`, `git log`, and `logs/dispatch/` in the target repo.
+
+To stop cleanly, run `llm-handoff stop --repo-root path/to/your-project` from
+another terminal. The running agent finishes, its work is committed and
+checked as usual, and the dispatcher exits before the next dispatch. Ctrl+C
+kills the running agent immediately.
+
+When the loop pauses and you are at a terminal, an operator prompt lets you
+press Enter to send the planner back in, type `@backend`, `@frontend`, or
+`@auditor` with a message to dispatch that role directly, or type `retry` or
+`quit`. Editing `HANDOFF.md` by hand also resumes it.
+
+For the same path with per-platform commands, see [QUICKSTART.md](QUICKSTART.md).
+For the slower explanation, see [WALKTHROUGH.md](WALKTHROUGH.md).
+
+## Files Or Linear: Where Work Is Tracked
+
+`llm-handoff` has two modes for where the backlog lives. `HANDOFF.md` is the
+routing state in both. What differs is where the planner finds the next piece
+of work and where evidence is recorded.
+
+| | File mode (default) | Linear mode |
+| --- | --- | --- |
+| Backlog | Epics and stories the planner writes into `HANDOFF.md` frontmatter (`epic_id`, `story_id`, `remaining_stories`), seeded by what you describe in the handoff body and `PROJECT_STATE.md`. | A pool of Linear issues: one team, filtered by one project or one label, in a configured eligible state. |
+| Who picks the next story | The planner, from its own plan. | The planner, by Linear priority, then manual order, then creation date. |
+| Durable record | Git commits plus the ledger in `PROJECT_STATE.md`. | Git commits plus YAML evidence comments on the issue and issue-state changes. |
+| Who talks to Linear | Nobody. | The agents, through their own CLI's Linear MCP connector. The dispatcher never calls Linear and holds no Linear credential. |
+| Extra requirements | None. | `enforce_work_packet: true` (the default), a Linear MCP server configured in each provider CLI you use, and Linear-mode prompt text in `AGENTS.md` and `HANDBOOK.md`. |
+
+### Starting in Linear mode
+
+Add the tracker flags to `init`. It only works on a repository that has no
+`dispatch_config.yaml` yet:
+
+```bash
+llm-handoff init path/to/your-project --tracker linear --tracker-team ENG --tracker-project Platform
+```
+
+Give exactly one of `--tracker-project` and `--tracker-label`. The Linear MCP
+server name defaults to `linear`; change it with `--tracker-mcp-server`. This
+writes a `tracker` block into `dispatch_config.yaml` and renders the Linear
+prompt sections into `AGENTS.md` and `docs/handoff/HANDBOOK.md` between
+`<!-- llm-handoff:linear:begin -->` and `<!-- llm-handoff:linear:end -->`
+markers.
+
+Then check the connectors. `doctor` prints one `tracker connector` line per
+provider CLI, saying whether that CLI's MCP config defines the server. It
+does not prove the connector authenticates; for that, run the opt-in probe
+against a real issue:
+
+```bash
+llm-handoff doctor --repo-root path/to/your-project --probe-tracker ENG-123
+```
+
+Set `tracker.claude_mcp_config` to a file that defines only the Linear
+server. Without it, Claude roles load every MCP server in your Claude
+configuration, and the startup banner warns about it.
+
+In Linear mode an empty or missing `HANDOFF.md` is not an error. The
+dispatcher gives the planner one cycle to pick an issue from the pool and
+write the lease.
+
+### Switching modes later
+
+`init` does not switch an initialized repository. Switching is a manual
+config edit, done between stories, when `HANDOFF.md` has no active lease:
+
+- **Linear to files.** In `dispatch_config.yaml`, set `tracker.provider:
+  none` and remove every other `tracker.*` key; a half-configured block is
+  rejected at load. The Linear prompt sections say to ignore themselves when
+  the provider is not `linear`, so the marked blocks can stay. Write a fresh
+  planner handoff describing the next epic.
+- **Files to Linear.** Add a `tracker` block to `dispatch_config.yaml`
+  (copy the shape from [dispatch_config.example.yaml](dispatch_config.example.yaml)).
+  Render the prompt text by running `init --tracker linear ...` into an empty
+  scratch directory and copying the marked blocks from its `AGENTS.md` and
+  `docs/handoff/HANDBOOK.md` into yours. Then empty `HANDOFF.md` and start
+  the dispatcher; the planner rebuilds the lease from the pool.
+
+Run `doctor` after either change. The full key reference and validation rules
+are in [Tracker (Optional Linear Mode)](CONFIGURATION.md#tracker-optional-linear-mode).
+
+## Gotchas
+
+Things that stop a first run or quietly change what the loop does.
+
+- **Gemini roles need a container runtime.** Gemini CLI runs in its sandbox,
+  so any role on `gemini` needs Docker or Podman on `PATH` (macOS:
+  `sandbox-exec`). Without one the dispatcher refuses to start. If you only
+  have one CLI, use `init --provider claude` or `--provider codex`. Gemini
+  alone is not enough; there is no all-Gemini mapping.
+- **All-Codex setups need dispatcher commits.** Codex's `workspace-write`
+  sandbox cannot write to `.git`. Set `commit_mode: dispatcher` (which needs
+  the work-claim gate on, the default) or every implementer handback comes
+  back as `blocked_implementation_failure`. See
+  [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits).
+- **Two reviewers run on every audit by default.** A read-only security
+  reviewer runs beside the quality auditor. It uses the first installed CLI
+  that differs from the implementer's vendor. With a single vendor it still
+  runs, with a warning that the review is not independent. A Gemini reviewer
+  additionally needs the Gemini CLI security extension. Opting out takes
+  `audit.reviewers: [quality]` plus a written `audit.security_opt_out_reason`.
+- **The planner must write a Work Packet.** With the work-claim gate on (the
+  default), a handoff that routes work to `backend` or `frontend` without a
+  parseable `## Work Packet` fails validation. The shipped planner prompts ask
+  for one. See [Gates And Scanners](#gates-and-scanners).
+- **The Verification command is agent-written and runs with your
+  permissions.** Set `verification_allowed_prefixes` (for example
+  `["python -m pytest"]`) so the gate only runs commands you expect.
+- **Scanners are off until you list them,** and `required: true` is the
+  default, so a listed scanner that is not installed fails every claim it
+  applies to. See [Gates And Scanners](#gates-and-scanners).
+- **Codex with an API key needs a flag.** Codex roles authenticated with
+  `OPENAI_API_KEY` instead of `codex login` need `use_api_key_env: true`. By
+  default agents get an allowlisted environment, not your shell.
+- **Editing control files stops the loop.** A role that changes `AGENTS.md`,
+  the handoff prompts, `dispatch_config.yaml`, or anything under `.claude/`,
+  `.codex/`, `.gemini/`, or `.agents/` without listing the path in its Work
+  Packet routes the handoff to `user`.
+- **Gemini guardrails do not apply until you copy them.** Gemini CLI ignores
+  a project's `.gemini/policies/`. Copy `planner_guardrails.toml` to
+  `~/.gemini/policies/` to enforce its deny rules.
+- **Nothing pushes by default.** `publish.mode: local` commits locally.
+  `merge-commit` and `pr` modes are explicit opt-ins; `pr` needs
+  `commit_mode: dispatcher` and the `gh` CLI. See
+  [Publishing](CONFIGURATION.md#publishing-story-branches-and-pull-requests).
+- **Windows.** Run the dispatcher inside WSL2 or a container with no push
+  credential. Claude Code's Bash sandbox needs WSL2, and Codex's native
+  Windows sandbox is experimental. See the
+  [threat model](SECURITY.md#threat-model).
+- **Pauses are not failures.** With the default `pause_recovery: planner`,
+  the planner gets one recovery attempt per pause before the dispatcher waits
+  for you. Three bounces of the same claim trip a circuit breaker. See
+  [Pause Recovery](CONFIGURATION.md#pause-recovery).
+
+## Gates And Scanners
+
+Three checks sit between an implementer's "done" and the auditor. Two are on
+by default; scanners are opt-in and run inside the work-claim gate, so they
+need it on.
+
+| Gate | Default | What it checks | Details |
+| --- | --- | --- | --- |
+| Work-claim gate | on (`enforce_work_packet: true`) | For a `ready_for_review` handoff from `backend` or `frontend`: `scope_sha` is HEAD, the diff stays inside the Work Packet's `Files in scope`, the tree is clean, and the Verification command exits 0. | [Work-Claim Gate](CONFIGURATION.md#work-claim-gate) |
+| Scanners | off (`scanners: []`) | Runs operator-listed tools such as gitleaks, semgrep, bandit, or pip-audit on the claimed diff, after the scope checks pass and before the Verification command. | [Scanners](CONFIGURATION.md#scanners) |
+| Security reviewer | on (`audit.reviewers: [quality, security]`) | A read-only security review on the same commit range as the quality audit; findings at or above `audit.block_severity` fail the claim. | [Audit Fan-Out](CONFIGURATION.md#audit-fan-out) |
+
+Turning off either default needs a written reason
+(`work_packet_opt_out_reason`, `audit.security_opt_out_reason`), which every
+dispatcher start and `doctor` report as a warning.
+
+A scanner configuration that adds secret scanning and a pinned semgrep
+ruleset:
+
+```yaml
+enforce_work_packet: true
+scanners:
+  - name: gitleaks
+    command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}
+    required: true
+  - name: semgrep
+    command: semgrep scan --config .semgrep/rules.yml --metrics off --error --quiet {changed_files}
+    required: true
+  - name: bandit
+    command: bandit -q {changed_py_files}
+    required: false
+```
+
+Scanner rules of thumb:
+
+- `llm-handoff` installs nothing. Each tool must be on `PATH` in the target
+  repo's environment. `doctor` prints a line per configured scanner saying
+  whether the gate will run it.
+- Use semgrep only with a ruleset committed to the repository. `--config
+  auto` downloads rules at run time, so results can change without a commit.
+- Scope gitleaks, semgrep, and bandit to the diff with `{diff_range}`,
+  `{changed_files}`, or `{changed_py_files}`. A scanner that uses a changed-
+  files placeholder is skipped when that list is empty. Run dependency audits
+  such as pip-audit unscoped.
+- Scanners get the same allowlisted environment as the Verification command.
+  A token such as `SEMGREP_APP_TOKEN` or a proxy setting must be listed under
+  `work_claim_env_passthrough`.
+- A failed scanner bounces the claim to the implementer as `verified_fail`
+  with the output tail. Every scanner runs even after one fails, so a single
+  bounce reports every finding.
 
 ## How It Works
 
 `llm-handoff` treats model output as untrusted input.
 
-1. The dispatcher reads a handoff file.
-2. YAML frontmatter declares the next role.
-3. A deterministic router checks the role.
-4. If the role is non-canonical, a constrained model-backed normalizer may
-   rewrite obvious values or return `unknown`.
-5. The configured provider CLI runs one role.
-6. The updated handoff is validated. With the work-claim gate on (the
-   default), a completion claim is also checked against the Work Packet
-   before audit.
-7. The loop continues, pauses, or escalates to the user.
+1. The dispatcher reads `HANDOFF.md`. YAML frontmatter declares `next_agent`.
+2. A deterministic router checks the role. A non-canonical value may go to a
+   constrained model-backed normalizer, which rewrites obvious values or
+   returns `unknown`.
+3. The configured provider CLI runs that one role with the role's prompt.
+4. The rewritten handoff is validated: frontmatter, status enum, evidence
+   block, and the route the status implies. A completion claim also passes
+   the work-claim gate before the auditor is dispatched.
+5. The loop continues, pauses, or escalates to `user`.
 
 ```text
 agent writes HANDOFF.md
@@ -255,85 +366,21 @@ agent updates HANDOFF.md
 validator accepts, pauses, or escalates
 ```
 
+The roles are generic: `planner`, `backend`, `frontend`, `auditor`,
+`validator`, `finalizer`, and `user`. Which CLI runs each role is a config
+mapping, not part of the protocol. A typical story goes planner (writes the
+Work Packet) to backend or frontend (implements, claims `ready_for_review`)
+to auditor (passes or fails) and back to planner for the next story; the
+finalizer runs only when the auditor closes an epic.
+
 The handoff file is the mutex and the debugger. There is no hidden queue,
-database, or dashboard required to understand the current state.
+database, or dashboard required to understand the current state. Git commit
+SHAs are the durable record of completed work.
 
-For longer runs, `python -m llm_handoff.supervisor` can launch the same
-dispatcher as a child process and write operator evidence under
-`logs/dispatch/supervisor/`. The supervised wrapper is opt-in, has its own
-`dispatch-supervised.lock`, emits heartbeats every 300 seconds or on cycle and
-route boundaries, and can invoke one configured repair role only when
-`--repair-role` is set. See
+For long unattended runs, `python -m llm_handoff.supervisor` wraps the same
+dispatcher with heartbeats, a run-state file, incident bundles, and an
+optional bounded repair role. See
 [docs/SUPERVISED_DISPATCH.md](docs/SUPERVISED_DISPATCH.md).
-
-## Optional Gates
-
-Three checks are `dispatch_config.yaml` settings in the target repository.
-The work-claim gate and the security reviewer are on by default; turning
-either off needs a written reason, which every dispatcher start and
-`llm-handoff doctor` report as a warning. Scanners are off until you list
-them. Scanners run inside the work-claim gate, so they need it on. The
-security reviewer is independent of both.
-
-| Gate | Setting | What it adds | Details |
-| --- | --- | --- | --- |
-| Work-claim gate | on by default (`enforce_work_packet: true`) | For `ready_for_review` handoffs from `backend` or `frontend`, checks before the auditor runs that `scope_sha` is HEAD, the diff stays inside the Work Packet's `Files in scope`, the tree is clean, and the Work Packet's verification command exits 0. Handoffs routed to the auditor by other roles are not checked. Opting out takes `enforce_work_packet: false` plus a non-empty `work_packet_opt_out_reason` | [Work-Claim Gate](CONFIGURATION.md#work-claim-gate) |
-| Scanners | a `scanners:` list | Runs tools the target repo installs, such as gitleaks, semgrep, bandit, or pip-audit, inside the work-claim gate | [Scanners](CONFIGURATION.md#scanners) |
-| Security reviewer | on by default (`audit.reviewers: [quality, security]`) | Runs a read-only security reviewer concurrently with the quality auditor on the same commit range. Opting out takes `audit.reviewers: [quality]` plus a non-empty `audit.security_opt_out_reason`, which every dispatcher start and `llm-handoff doctor` report as a warning | [Audit Fan-Out](CONFIGURATION.md#audit-fan-out) |
-
-A minimal configuration that adds scanners to the default gates:
-
-```yaml
-scanners:
-  - name: gitleaks
-    command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}
-  - name: bandit
-    command: bandit -q {changed_py_files}
-```
-
-A failed check does not advance the loop. Where it goes depends on the
-failure:
-
-- A failed scope, tree, scanner, or verification check, or a blocking
-  security finding, rewrites the handoff as `status: verified_fail` with the
-  evidence and routes it back to the implementer. These bounces count toward
-  the three-fix circuit breaker.
-- A missing or unusable Work Packet routes to `planner`, which owns the
-  packet. So does a Verification command that fails again, with no other
-  failed check, when the claim has no new commit since the previous bounce.
-- A scanner command whose placeholders cannot be filled escalates to `user`.
-- A missing, malformed, or timed-out reviewer verdict restores the pre-review
-  handoff and counts as a dispatch failure.
-
-Notes on the gates:
-
-- The work-claim gate needs planner handoffs to include a `## Work Packet`
-  with `Files in scope`, `Files out of bounds`, and `Verification command`.
-  The shipped planner prompts already ask for it. A handoff that routes work
-  to `backend` or `frontend` without a parseable packet fails post-dispatch
-  validation while the gate is on.
-- The verification command is written by an agent and runs with the
-  dispatcher's permissions. Scanner commands come from your config and are
-  trusted operator input.
-- `llm-handoff` does not install scanners. A scanner marked `required` that
-  is not on `PATH` fails the claim. `llm-handoff doctor` reports each
-  configured scanner and whether its executable is on `PATH`.
-- The security reviewer uses the first installed provider CLI that differs
-  from the implementer's, and falls back to the implementer's own vendor with
-  a warning that the review is not independent. When no reviewer CLI is
-  installed, or a Gemini reviewer lacks its sandbox runtime or the Gemini CLI
-  security extension, `run` stops at startup before any agent launches.
-  Vendor security reviewers are not hardened against prompt
-  injection in repository content, so treat them as a second check, not a
-  guarantee.
-
-## Why Not LangGraph, AutoGen, Or CrewAI?
-
-Those projects are broader orchestration frameworks. `llm-handoff` is narrower:
-one repo, one branch, one handoff file, one agent at a time. The differentiator
-is not a graph runtime. It is the inversion that prompts are advisory while
-validators are authoritative. The router can propose, but the loop only
-advances when the handoff state parses, routes, and validates.
 
 ## Agent Safety Defaults
 
@@ -344,20 +391,18 @@ Provider CLIs launch with these protections on by default:
   cloud credentials, and other vendors' API keys stay out. See
   [Agent Environment](CONFIGURATION.md#agent-environment).
 - **Permission checks and sandboxes on.** Claude Code runs in `dontAsk` mode
-  with a tool allowlist, Codex in its `workspace-write` sandbox, and Gemini CLI
-  in its container sandbox. See
+  with a tool allowlist, Codex in its `workspace-write` sandbox, and Gemini
+  CLI in its container sandbox. See
   [Launch Permissions And Sandboxing](CONFIGURATION.md#launch-permissions-and-sandboxing).
-- **Protected control files fail closed.** A role that edits `AGENTS.md`, the
-  handoff prompts, `dispatch_config.yaml`, or `.claude/`, `.codex/`, or
-  `.gemini/` without listing the path in its Work Packet stops the loop, and
-  the handoff routes to `user`. See
+- **Protected control files fail closed.** See the gotcha above and
   [Protected Control Files](CONFIGURATION.md#protected-control-files).
+- **Shipped guardrails deny pushes and destructive commands.** The template's
+  `.claude/settings.json` and its `PreToolUse` hook block `git push`, `curl`,
+  `wget`, `rm -rf`, and `git reset --hard` in every permission mode. The
+  Codex rules file forbids `git push`. The Gemini policy file does the same
+  once copied to your user policies.
 
-Roles mapped to Gemini CLI need Docker or Podman on `PATH` (macOS can use
-`sandbox-exec`). Without one, the dispatcher refuses to start and names the
-setting to change.
-
-Each protection has an opt-out:
+Each protection has a per-role or repo-wide opt-out:
 
 ```yaml
 protected_paths: []      # stop checking control files
@@ -367,11 +412,40 @@ agents:
     env_mode: inherit    # this role gets the dispatcher's full environment
 ```
 
-Warning: each opt-out removes a protection. Use one only to debug a specific
-role.
+Each opt-out removes a protection. Use one only to debug a specific role.
+These rules match command prefixes; they catch mistakes and simple prompt
+injection, not an agent that writes a script to do the same thing. Keep push
+credentials out of the dispatch environment.
 
-On Windows, run the dispatcher inside WSL2 or a container that has no push
-credential. See the [threat model](SECURITY.md#threat-model).
+## What This Is And Is Not
+
+It is:
+
+- A Python CLI for serially dispatching work between AI coding CLIs.
+- A file-based operating protocol centered on `HANDOFF.md`.
+- A deterministic router with validator-backed failure handling.
+- A deterministic work-claim gate with optional operator-configured scanners.
+- A security reviewer that runs beside the quality auditor.
+- A reference workflow that you can inspect, copy, fork, or adapt.
+- A `doctor` preflight and an opt-in supervised wrapper.
+
+It is not:
+
+- A general multi-agent framework.
+- Parallel execution across branches or worktrees.
+- A hosted service or background daemon.
+- A replacement for Codex, Gemini, Claude, or any other agent CLI.
+- Self-healing. It detects, validates, and pauses. Humans or configured
+  agents perform recovery.
+- Production-certified for arbitrary repositories.
+
+## Why Not LangGraph, AutoGen, Or CrewAI?
+
+Those projects are broader orchestration frameworks. `llm-handoff` is
+narrower: one repo, one branch, one handoff file, one agent at a time. The
+differentiator is not a graph runtime. It is the inversion that prompts are
+advisory while validators are authoritative. The router can propose, but the
+loop only advances when the handoff state parses, routes, and validates.
 
 ## Known Limitations
 
@@ -380,12 +454,26 @@ credential. See the [threat model](SECURITY.md#threat-model).
   permission and sandbox flags follow each CLI's documentation but have not
   been run against every CLI version and platform.
 - Validator calls optimize for correctness over token cost.
-- Runtime role providers are configurable across the registered CLI adapters:
-  `codex`, `gemini`, and `claude`. Provider-specific prompt files and local auth
-  are still the user's responsibility.
+- Registered runtime adapters are `codex`, `gemini`, `claude`, and
+  `antigravity`. Provider-specific prompt files and local auth are the
+  user's responsibility.
+- Switching an initialized repository between file mode and Linear mode is
+  a manual edit; `init` does not do it.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design constraints in
-more detail.
+## Further Reading
+
+| Document | Read it when |
+| --- | --- |
+| [QUICKSTART.md](QUICKSTART.md) | You want the quick start above with Windows and POSIX commands spelled out. |
+| [WALKTHROUGH.md](WALKTHROUGH.md) | You want the two-repo model, what `init` copies, and common pauses explained. |
+| [INSTALL.md](INSTALL.md) | You are running from a source checkout or debugging the install. |
+| [CONFIGURATION.md](CONFIGURATION.md) | You are editing `dispatch_config.yaml`. Every supported key is here. |
+| [docs/INVENTORY.md](docs/INVENTORY.md) | You want the index of every doc, prompt file, agent template, and fixture in this repo. |
+| [docs/handoff/README.md](docs/handoff/README.md) | You are writing or debugging a handoff: frontmatter, status enum, Work Packet format. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | You want the module map and design constraints. |
+| [docs/SUPERVISED_DISPATCH.md](docs/SUPERVISED_DISPATCH.md) | You want heartbeats and incident bundles for long runs. |
+| [SECURITY.md](SECURITY.md) | You want the threat model before pointing agents at a real repo. |
+| [docs/TESTING.md](docs/TESTING.md) | You are contributing. Also see [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). |
 
 ## License
 
