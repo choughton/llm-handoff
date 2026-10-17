@@ -193,3 +193,23 @@ audit:
   # security_model: <model>   # claude reviewer only; unset = borrow the first claude role's model
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000
+
+# Optional Linear mode, off by default (provider: none; omitting the block is
+# the same). With provider: linear, agents read and update this repository's
+# Linear issue pool through their own CLI's Linear MCP connector; the
+# dispatcher never calls Linear and holds no Linear credential. Linear mode
+# needs enforce_work_packet: true. With provider: none, no other tracker key
+# may be set. The block is validated at load; nothing else reads it yet. See
+# CONFIGURATION.md.
+# tracker:
+#   provider: linear              # none (default) | linear
+#   team: ENG                     # Linear team key
+#   project: Platform             # exactly one of project / label
+#   label: null                   # opt-in label for this repository
+#   eligible_state: Todo
+#   in_progress_state: In Progress
+#   success_state: In Review      # Done only when you want it
+#   blocked_state: null           # optional
+#   user_attention_label: needs-operator   # optional
+#   mcp_server: linear            # Linear server name in each CLI's MCP config
+#   claude_mcp_config: null       # optional file, relative to the repo root

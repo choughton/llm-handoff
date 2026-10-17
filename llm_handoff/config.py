@@ -609,6 +609,127 @@ class ScannerConfig(BaseModel):
         return self
 
 
+TrackerProvider = Literal["none", "linear"]
+# Every tracker key other than `provider`. With `provider: none` all of them
+# must be unset, so a half-configured block fails closed.
+_TRACKER_SETTING_KEYS: tuple[str, ...] = (
+    "team",
+    "project",
+    "label",
+    "eligible_state",
+    "in_progress_state",
+    "success_state",
+    "blocked_state",
+    "user_attention_label",
+    "mcp_server",
+    "claude_mcp_config",
+)
+_TRACKER_STRING_KEYS: tuple[str, ...] = tuple(
+    key for key in _TRACKER_SETTING_KEYS if key != "claude_mcp_config"
+)
+_TRACKER_LINEAR_REQUIRED_KEYS: tuple[str, ...] = (
+    "team",
+    "eligible_state",
+    "in_progress_state",
+    "success_state",
+    "mcp_server",
+)
+# Keys that may be omitted in Linear mode but must not be blank when given.
+_TRACKER_LINEAR_NON_BLANK_KEYS: tuple[str, ...] = (
+    "project",
+    "label",
+    "blocked_state",
+    "user_attention_label",
+)
+# `mcp_server` later forms the `mcp__<server>__` tool-name prefix.
+_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+class TrackerConfig(BaseModel):
+    """Optional issue-tracker binding (Linear mode).
+
+    ``provider: none`` (the default) means vanilla mode and allows no other
+    key. ``provider: linear`` binds the repository to a pool of Linear issues
+    that agents read and update through their own CLI's MCP connector; the
+    dispatcher never calls Linear and holds no Linear credential. Nothing in
+    the dispatcher reads this block yet beyond validating it at load.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: TrackerProvider = "none"
+    team: str | None = None
+    project: str | None = None
+    label: str | None = None
+    eligible_state: str | None = None
+    in_progress_state: str | None = None
+    success_state: str | None = None
+    blocked_state: str | None = None
+    user_attention_label: str | None = None
+    mcp_server: str | None = None
+    claude_mcp_config: Path | None = None
+
+    @field_validator(*_TRACKER_STRING_KEYS, mode="after")
+    @classmethod
+    def _strip_strings(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def _validate_provider_settings(self) -> TrackerConfig:
+        if self.provider == "none":
+            configured = [
+                f"tracker.{key}"
+                for key in _TRACKER_SETTING_KEYS
+                if getattr(self, key) is not None
+            ]
+            if configured:
+                raise ValueError(
+                    "tracker.provider is `none`, but the tracker block also sets "
+                    f"{', '.join(configured)}; remove those keys or set "
+                    "tracker.provider: linear."
+                )
+            return self
+
+        missing = [
+            f"tracker.{key}"
+            for key in _TRACKER_LINEAR_REQUIRED_KEYS
+            if not getattr(self, key)
+        ]
+        if missing:
+            raise ValueError(
+                "tracker.provider: linear requires non-empty "
+                f"{', '.join(missing)}."
+            )
+        for key in _TRACKER_LINEAR_NON_BLANK_KEYS:
+            value = getattr(self, key)
+            if value is not None and not value:
+                raise ValueError(
+                    f"tracker.{key} must not be empty; remove it or give a value."
+                )
+        if self.project is not None and self.label is not None:
+            raise ValueError(
+                "tracker.provider: linear needs exactly one of tracker.project "
+                "and tracker.label, but both are set; keep one."
+            )
+        if self.project is None and self.label is None:
+            raise ValueError(
+                "tracker.provider: linear needs exactly one of tracker.project "
+                "and tracker.label to define this repository's issue pool; set "
+                "one."
+            )
+        if _MCP_SERVER_NAME_RE.fullmatch(self.mcp_server or "") is None:
+            raise ValueError(
+                "tracker.mcp_server must contain only letters, digits, `_`, or "
+                f"`-` (it forms the mcp__<server>__ tool prefix); got "
+                f"`{self.mcp_server}`."
+            )
+        return self
+
+    @property
+    def enabled(self) -> bool:
+        return self.provider != "none"
+
+
 def _default_agent_configs() -> dict[AgentRole, AgentConfig]:
     return {
         role: AgentConfig.model_validate(_agent_defaults_for_provider(role, provider))
@@ -695,6 +816,7 @@ class DispatchConfig(BaseModel):
     protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
     commit_mode: CommitMode = "agent"
     publish: PublishConfig = PublishConfig()
+    tracker: TrackerConfig = TrackerConfig()
 
     @model_validator(mode="before")
     @classmethod
@@ -737,6 +859,25 @@ class DispatchConfig(BaseModel):
             raise ValueError(
                 f"publish.mode: {self.publish.mode} requires commit_mode: "
                 "dispatcher; the dispatcher owns the story branch and its commits."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_tracker(self) -> DispatchConfig:
+        if not self.tracker.enabled:
+            return self
+        if not self.enforce_work_packet:
+            raise ValueError(
+                f"tracker.provider: {self.tracker.provider} requires "
+                "enforce_work_packet: true; Linear mode requires the work-claim "
+                "gate, because the auditor only moves an issue to its success "
+                "state after the gate passes."
+            )
+        mcp_config_path = self.tracker_claude_mcp_config_path
+        if mcp_config_path is not None and not mcp_config_path.is_file():
+            raise ValueError(
+                "tracker.claude_mcp_config must name an existing file; "
+                f"{mcp_config_path} does not exist or is not a file."
             )
         return self
 
@@ -913,6 +1054,22 @@ class DispatchConfig(BaseModel):
     @property
     def project_state_full_path(self) -> Path:
         return (self.repo_root / self.project_state_path).resolve()
+
+    @property
+    def tracker_claude_mcp_config_path(self) -> Path | None:
+        """``tracker.claude_mcp_config`` resolved against ``repo_root``.
+
+        Relative paths resolve from the repository root; absolute paths are
+        returned as given. ``None`` when the key is unset.
+        """
+
+        configured = self.tracker.claude_mcp_config
+        if configured is None:
+            return None
+        path = Path(configured)
+        if path.is_absolute():
+            return path
+        return (self.repo_root / path).resolve()
 
     @property
     def backend_resume_enabled(self) -> bool:

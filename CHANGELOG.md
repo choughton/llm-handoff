@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `dispatch_config.yaml` accepts an optional top-level `tracker` block for
+  Linear mode, validated at load. It defaults to `provider: none`, which
+  changes nothing and allows no other tracker key. `provider: linear`
+  requires `team`, `eligible_state`, `in_progress_state`, `success_state`,
+  `mcp_server`, exactly one of `project` / `label`, and
+  `enforce_work_packet: true`; an optional `claude_mcp_config` must name an
+  existing file. Nothing reads the block yet. The example and template
+  configs carry it commented out. See `CONFIGURATION.md`.
 - The shipped finalizer helper files and the stale-finalizer recovery
   instruction now defer to the configured `project_state_path` instead of
   always naming `PROJECT_STATE.md`.
