@@ -34,6 +34,11 @@ This project follows a simple pre-release changelog until the first public tag.
 - In dispatcher commit mode, recording the commit SHA now replaces only the
   `pending-dispatcher-commit` marker (with or without backticks) in
   `Commit SHA verified` and keeps any note after it.
+- The package ships static Linear-mode prompt templates under
+  `llm_handoff/prompt_templates/linear/` (a shared `AGENTS.md` section, the
+  `llm_handoff_event` YAML evidence-comment contract, and one section per
+  role), loaded by the new `llm_handoff.tracker_prompts` module. Nothing
+  renders them yet; `init --tracker linear` will.
 - With `tracker.provider: linear`, every Claude role launch (primary and
   fallback, unless `unsafe_bypass: true`) gets its Linear MCP tools appended
   to `allowed_tools` in memory, per a fixed role table. With
