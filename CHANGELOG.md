@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The Linear-mode planner prompt now states the selection rules: pick the
+  eligible issue with the highest Linear priority (`selection_basis:
+  priority`, ties broken by manual order, then creation date), else the first
+  issue in manual order (`manual_order`), else the oldest issue
+  (`created_at`); call out a pick made without a priority in `HANDOFF.md` and
+  in the `lease_opened` comment; copy the issue's Work Packet fields; and
+  route to `user` when the pool is empty or the packet cannot be completed.
+  A new `ISSUE_TEMPLATE.md` gives an example Linear issue description whose
+  `## Work Packet` labels match the Work Packet parser, and
+  `llm-handoff init --tracker linear` renders it into the
+  `docs/handoff/HANDBOOK.md` Linear block between the evidence contract and
+  the role sections.
 - In Linear mode (`tracker.provider: linear`), a missing or empty
   (whitespace-only) `HANDOFF.md` at the top of a cycle no longer exits with
   code 1. The dispatcher logs one `WARN` line and dispatches one planner

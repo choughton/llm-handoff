@@ -1253,8 +1253,10 @@ servers.
 
 The Linear-mode prompt text ships inside the package as static Markdown under
 `llm_handoff/prompt_templates/linear/`: a shared `AGENTS.md` section, the
-YAML evidence-comment contract in `EVIDENCE_COMMENT.md`, and one
-`roles/<role>.md` section per workflow role. The text names settings by their
+YAML evidence-comment contract in `EVIDENCE_COMMENT.md`, the Linear issue
+template in `ISSUE_TEMPLATE.md`, whose example `## Work Packet` uses the labels
+the Work Packet parser reads, and one `roles/<role>.md` section per workflow
+role. The text names settings by their
 `tracker.*` keys and embeds no values. With `commit_mode: dispatcher`, the
 implementer's `implementation_handoff` comment records
 `pending-dispatcher-commit`, and the auditor's comment records the concrete
@@ -1284,8 +1286,9 @@ is written. `init` then writes:
   `<!-- llm-handoff:linear:begin -->` and `<!-- llm-handoff:linear:end -->`,
   after the usual `llm-handoff` block. An existing Linear block is replaced;
   malformed Linear markers make `AGENTS.md` a conflict.
-- `docs/handoff/HANDBOOK.md`: the evidence-comment contract and every role
-  section, between the same `<!-- llm-handoff:linear:... -->` markers.
+- `docs/handoff/HANDBOOK.md`: the evidence-comment contract, the issue
+  template, and every role section, between the same
+  `<!-- llm-handoff:linear:... -->` markers.
   Every role prompt already reads the handbook.
 
 `init` without `--tracker`, or with `--tracker none`, writes the same files as
