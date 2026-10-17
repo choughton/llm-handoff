@@ -12,7 +12,8 @@ This project follows a simple pre-release changelog until the first public tag.
   reads config files only, prints no values from them, runs no provider CLI,
   and does not contact Linear. Only a `tracker.claude_mcp_config` file that
   lacks the server (or cannot be parsed) fails the doctor; other gaps are
-  warnings. Vanilla mode output is unchanged.
+  warnings. The user config paths follow `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+  and `GEMINI_CLI_HOME` when they are set. Vanilla mode output is unchanged.
 - `llm-handoff init --tracker linear --tracker-team <key>` with exactly one
   of `--tracker-project` and `--tracker-label` (and optional
   `--tracker-mcp-server`, default `linear`) sets up a fresh repository in

@@ -1560,8 +1560,9 @@ def _linear_repo(
     claude_mcp_config: str | None = None,
     role_extra: dict[str, str] | None = None,
 ) -> Path:
-    """Linear-mode repo with home at tmp_path/home and CODEX_HOME unset.
+    """Linear-mode repo with home at tmp_path/home and config-dir variables unset.
 
+    ``CODEX_HOME``, ``CLAUDE_CONFIG_DIR``, and ``GEMINI_CLI_HOME`` are unset.
     ``role_extra`` appends YAML lines (indented four spaces) to a role block.
     """
     repo = _make_repo(tmp_path, providers, handoff=None, commit=False)
@@ -1578,6 +1579,8 @@ def _linear_repo(
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
     _stub_which(
         monkeypatch,
         {
@@ -1779,6 +1782,42 @@ def test_doctor_tracker_connector_claude_ignores_other_project_entries(
     assert _provider_line(output, "claude").startswith(f"WARN {TRACKER_CHECK}:")
 
 
+def test_doctor_tracker_connector_claude_honors_claude_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    config_dir = tmp_path / "claude-config"
+    _write_json(config_dir / ".claude.json", _servers())
+    # The default user file is ignored while CLAUDE_CONFIG_DIR is set.
+    _write_json(tmp_path / "home" / ".claude.json", "not json")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"PASS {TRACKER_CHECK}: claude:")
+    assert f"{config_dir / '.claude.json'} (user mcpServers)" in line
+
+
+def test_doctor_tracker_connector_claude_config_dir_hides_default_user_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    _write_json(tmp_path / "home" / ".claude.json", _servers())
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"WARN {TRACKER_CHECK}: claude:")
+    assert str(config_dir / ".claude.json") in line
+    assert str(tmp_path / "home" / ".claude.json") not in line
+
+
 def test_doctor_tracker_connector_claude_warns_when_no_source_defines_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
@@ -1914,6 +1953,41 @@ def test_doctor_tracker_connector_gemini_passes_from_user_settings(
     line = _provider_line(output, "gemini")
     assert line.startswith(f"PASS {TRACKER_CHECK}: gemini:")
     assert str(tmp_path / "home" / ".gemini" / "settings.json") in line
+
+
+def test_doctor_tracker_connector_gemini_honors_gemini_cli_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
+    gemini_home = tmp_path / "gemini-home"
+    settings = _write_json(gemini_home / ".gemini" / "settings.json", _servers())
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(gemini_home))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _provider_line(output, "gemini") == (
+        f"PASS {TRACKER_CHECK}: gemini: {settings} defines MCP server `linear` "
+        "(covers planner)"
+    )
+
+
+def test_doctor_tracker_connector_gemini_cli_home_hides_default_user_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
+    gemini_home = tmp_path / "gemini-home"
+    gemini_home.mkdir()
+    _write_json(tmp_path / "home" / ".gemini" / "settings.json", _servers())
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(gemini_home))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "gemini")
+    assert line.startswith(f"WARN {TRACKER_CHECK}: gemini:")
+    assert str(gemini_home / ".gemini" / "settings.json") in line
+    assert str(tmp_path / "home" / ".gemini" / "settings.json") not in line
 
 
 def test_doctor_tracker_connector_gemini_warns_when_absent(

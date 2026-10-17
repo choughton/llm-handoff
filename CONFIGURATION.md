@@ -1110,14 +1110,17 @@ Each line says whether that CLI's MCP config defines a server named
   Linear tools from anywhere else.
 - Other Claude launches: the doctor reads `<repo>/.mcp.json`, then
   `~/.claude.json` (its top-level `mcpServers`, then the `projects` entry for
-  this repository). PASS names the first source that defines the server;
+  this repository). When `CLAUDE_CONFIG_DIR` is set and non-empty, the user
+  file is `$CLAUDE_CONFIG_DIR/.claude.json` instead, matching the file the
+  launched CLI uses. PASS names the first source that defines the server;
   otherwise WARN. Servers defined elsewhere, for example in managed settings
   or plugins, are not seen.
 - Codex: `$CODEX_HOME/config.toml` (or `~/.codex/config.toml` when
   `CODEX_HOME` is unset or empty), then `<repo>/.codex/config.toml`. PASS when
   either has an `[mcp_servers.<server>]` table; otherwise WARN.
-- Gemini: `<repo>/.gemini/settings.json`, then `~/.gemini/settings.json`.
-  PASS when either has `mcpServers.<server>`; otherwise WARN.
+- Gemini: `<repo>/.gemini/settings.json`, then `~/.gemini/settings.json`
+  (or `$GEMINI_CLI_HOME/.gemini/settings.json` when `GEMINI_CLI_HOME` is set
+  and non-empty). PASS when either has `mcpServers.<server>`; otherwise WARN.
 - Antigravity: always WARN, because the doctor cannot check the Antigravity
   CLI's MCP configuration; confirm the server is configured there.
 

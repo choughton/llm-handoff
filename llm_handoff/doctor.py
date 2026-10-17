@@ -1003,7 +1003,7 @@ def _claude_strict_connector(path: Path, server: str, covers: str) -> DoctorChec
 def _claude_user_connector(repo_root: Path, server: str, covers: str) -> DoctorCheck:
     """Check the project and user Claude configs that non-strict launches load."""
     project_path = repo_root / ".mcp.json"
-    user_path = Path.home() / ".claude.json"
+    user_path = _claude_user_config_path()
     project_entry_label = f"{user_path} projects entry for {repo_root}"
     checked = [str(project_path), str(user_path), project_entry_label]
     problems: list[str] = []
@@ -1073,10 +1073,34 @@ def _file_connector(
     )
 
 
+def _env_dir(name: str) -> Path | None:
+    """Return the directory named by environment variable ``name`` if non-empty."""
+    value = os.environ.get(name, "")
+    if value.strip():
+        return Path(value)
+    return None
+
+
+def _claude_user_config_path() -> Path:
+    """User ``.claude.json``, relocated by ``CLAUDE_CONFIG_DIR`` when set."""
+    config_dir = _env_dir("CLAUDE_CONFIG_DIR")
+    if config_dir is not None:
+        return config_dir / ".claude.json"
+    return Path.home() / ".claude.json"
+
+
+def _gemini_user_settings_path() -> Path:
+    """User Gemini settings, rooted at ``GEMINI_CLI_HOME`` when set."""
+    root = _env_dir("GEMINI_CLI_HOME")
+    if root is None:
+        root = Path.home()
+    return root / ".gemini" / "settings.json"
+
+
 def _codex_config_paths(repo_root: Path) -> list[Path]:
-    codex_home = os.environ.get("CODEX_HOME", "")
-    if codex_home.strip():
-        user_path = Path(codex_home) / "config.toml"
+    codex_home = _env_dir("CODEX_HOME")
+    if codex_home is not None:
+        user_path = codex_home / "config.toml"
     else:
         user_path = Path.home() / ".codex" / "config.toml"
     return [user_path, repo_root / ".codex" / "config.toml"]
@@ -1143,7 +1167,7 @@ def _check_tracker_connectors(
                     "gemini",
                     [
                         repo_root / ".gemini" / "settings.json",
-                        Path.home() / ".gemini" / "settings.json",
+                        _gemini_user_settings_path(),
                     ],
                     "JSON",
                     "mcpServers",
