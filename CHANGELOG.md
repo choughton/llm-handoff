@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added the all-Gemini mapping: `llm-handoff init --provider gemini` (chosen
+  automatically when `gemini` is the only provider CLI on `PATH`) puts every
+  role on Gemini CLI with `audit.security_provider: gemini` and the API-only
+  Gemini normalizer, the reference workflow ships a Gemini agent file for
+  every role (`backend`, `auditor`, `validator`, and `finalizer` are new),
+  and `llm-handoff doctor` checks the Gemini CLI security extension when the
+  security reviewer resolves to Gemini.
 - Restructured `README.md` around getting started: a table of contents, a
   five-step quick start, a section on choosing and switching between file
   mode and Linear mode, a gotchas list, and a gates-and-scanners summary.
