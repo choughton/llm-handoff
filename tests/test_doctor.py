@@ -2352,6 +2352,12 @@ def test_doctor_probe_argv_without_claude_mcp_config(
         "mcp__linear__create_comment",
     ):
         assert tool in disallowed
+    # Project and local settings (and their hooks) are skipped; hooks off.
+    assert _option_value(command, "--setting-sources") == "user"
+    assert json.loads(_option_value(command, "--settings")) == {
+        "disableAllHooks": True
+    }
+    assert "--bare" not in command
     assert "--strict-mcp-config" not in command
     assert "--mcp-config" not in command
     assert _option_value(command, "--model") == config_module.CLAUDE_MODEL
@@ -2390,6 +2396,10 @@ def test_doctor_probe_argv_with_claude_mcp_config(
         (repo / "config" / "linear-mcp.json").resolve()
     )
     assert command.count("--strict-mcp-config") == 1
+    assert _option_value(command, "--setting-sources") == "user"
+    assert json.loads(_option_value(command, "--settings")) == {
+        "disableAllHooks": True
+    }
     assert _option_value(command, "--tools") == ""
     assert "mcp__linear__save_issue" in _option_value(command, "--disallowedTools")
 
@@ -2567,6 +2577,52 @@ def test_doctor_probe_fails_on_nonzero_exit_with_escaped_truncated_stderr(
     # "cafe" (4) + space + snowman + space leaves 193 of the 200 characters.
     assert "x" * 193 in line and "x" * 194 not in line
     assert "second line" not in line
+
+
+CONTROL_TEXT = "\x1b[2K\x1b[1Ared\x07bell\x08back\x7fdel\x00nul‎ltr"
+CONTROL_ESCAPED = (
+    "\\x1b[2K\\x1b[1Ared\\x07bell\\x08back\\x7fdel\\x00nul\\u200eltr"
+)
+
+
+def _assert_no_control_bytes(line: str) -> None:
+    assert line.isascii()
+    assert all(0x20 <= ord(char) < 0x7F for char in line), repr(line)
+
+
+def test_doctor_probe_escapes_control_bytes_in_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(monkeypatch, stderr=f"{CONTROL_TEXT}\n", exit_code=2)
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert "exited with code 2" in line
+    assert CONTROL_ESCAPED in line
+    _assert_no_control_bytes(line)
+    assert "\x1b" not in output and "\x07" not in output
+
+
+def test_doctor_probe_escapes_control_bytes_in_the_error_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(
+        monkeypatch,
+        stdout=_envelope(issue_found=False, team_states=[], error=CONTROL_TEXT),
+    )
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert "could not read issue ENG-123" in line
+    assert CONTROL_ESCAPED in line
+    _assert_no_control_bytes(line)
+    assert "\x1b" not in output and "\x08" not in output
 
 
 @pytest.mark.parametrize(

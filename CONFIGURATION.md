@@ -1226,10 +1226,18 @@ ignores that launch's `allowed_tools`, `unsafe_bypass`, and
 `mcp__<server>__get_issue` and `mcp__<server>__list_issue_statuses`.
 `--disallowedTools` names `WebFetch`, `WebSearch`, and
 `mcp__<server>__save_issue`, `save_comment`, `create_issue`, `update_issue`,
-and `create_comment`. With `tracker.claude_mcp_config` set it also passes
+and `create_comment`. The probe runs from the repository root, so it also
+passes `--setting-sources user`, which skips the project and local Claude
+settings files (`.claude/settings.json` and `.claude/settings.local.json`),
+and `--settings '{"disableAllHooks": true}'`, which turns off the hooks and
+status line command left in the user's settings. Hooks from admin-managed
+settings are not affected. With `tracker.claude_mcp_config` set it also passes
 `--mcp-config <path> --strict-mcp-config`. The Claude CLI is asked to read the
 issue and the `tracker.team` workflow states and to answer with a JSON schema
-passed inline; the probe writes no file and has a 180-second timeout.
+passed inline; the probe writes no file and has a 180-second timeout. Text the
+probe prints from Claude's stderr or its `error` field is collapsed to one
+line, truncated to 200 characters, and has non-ASCII characters and ASCII
+control bytes escaped.
 
 PASS means the issue was read and every configured state name
 (`eligible_state`, `in_progress_state`, `success_state`, and `blocked_state`

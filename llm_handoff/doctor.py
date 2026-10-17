@@ -24,10 +24,11 @@ provider, contact the network, or write any files.
 `--probe-tracker <ISSUE>` (Linear mode only) adds one `tracker probe` line.
 It launches the first configured Claude CLI role or fallback once, with no
 built-in tools and only the tracker server's `get_issue` and
-`list_issue_statuses` tools approved (write tools are denied), asks it to read
-the issue and the team's workflow states, and checks that every configured
-state name exists. The probe still writes no file and starts at most one
-provider process.
+`list_issue_statuses` tools approved (write tools are denied), project and
+local Claude settings skipped, and all hooks disabled, asks it to read the
+issue and the team's workflow states, and checks that every configured state
+name exists. The probe still writes no file and starts at most one provider
+process.
 
 `_command_available` and `_command_binary_name` live here so the supervisor's
 `--doctor` mode and this command share one PATH lookup, including the Windows
@@ -1227,6 +1228,14 @@ _TRACKER_PROBE_STATE_KEYS = (
     "blocked_state",
 )
 _TRACKER_PROBE_DETAIL_LIMIT = 200
+# The probe runs from the repository root, so a committed
+# `.claude/settings.json` could otherwise add hooks that run shell commands or
+# HTTP calls, or pre-approve other tools. `--setting-sources user` skips the
+# project and local settings files, and the inline `--settings` turns off
+# every hook (and any status line command) that remains. `--bare` is not used
+# because it never reads OAuth credentials and skips the user's MCP servers.
+_TRACKER_PROBE_SETTING_SOURCES = "user"
+_TRACKER_PROBE_SETTINGS: dict[str, Any] = {"disableAllHooks": True}
 # No "$schema" key: Claude Code's --json-schema validator rejects it.
 TRACKER_PROBE_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -1255,9 +1264,19 @@ def _probe_fail(message: str) -> DoctorCheck:
 
 
 def _probe_detail(text: str) -> str:
-    """One line, at most 200 characters, ASCII-escaped."""
+    """One line, at most 200 characters, ASCII-escaped, no control bytes.
+
+    ``backslashreplace`` escapes only non-ASCII characters (which covers
+    Unicode format characters), so ASCII control bytes such as ESC, BEL, and
+    backspace are escaped separately; otherwise they would reach the terminal
+    and could rewrite or hide the doctor's report.
+    """
     collapsed = " ".join(text.split())[:_TRACKER_PROBE_DETAIL_LIMIT]
-    return collapsed.encode("ascii", "backslashreplace").decode("ascii")
+    escaped = collapsed.encode("ascii", "backslashreplace").decode("ascii")
+    return "".join(
+        f"\\x{ord(char):02x}" if ord(char) < 0x20 or ord(char) == 0x7F else char
+        for char in escaped
+    )
 
 
 def _first_claude_launch(
@@ -1293,6 +1312,10 @@ def _tracker_probe_command(
         ",".join(allowed),
         "--disallowedTools",
         ",".join(disallowed),
+        "--setting-sources",
+        _TRACKER_PROBE_SETTING_SOURCES,
+        "--settings",
+        json.dumps(_TRACKER_PROBE_SETTINGS),
     ]
     mcp_config_path = dispatch_config.tracker_claude_mcp_config_path
     if mcp_config_path is not None:
@@ -1346,8 +1369,9 @@ def _check_tracker_probe(
 
     Gates run first and launch nothing on failure. When they pass, the first
     Claude launch in ``_role_launches`` order runs once with no built-in
-    tools, only the tracker server's read tools approved, and its write tools
-    denied. Nothing is written; the schema goes inline in argv.
+    tools, only the tracker server's read tools approved, its write tools
+    denied, project and local settings skipped, and hooks disabled. Nothing
+    is written; the schema goes inline in argv.
     """
     tracker = dispatch_config.tracker
     if not tracker.enabled or tracker.mcp_server is None:
