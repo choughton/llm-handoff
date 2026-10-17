@@ -143,7 +143,8 @@ A handoff routed to `user` (`next_agent: user`) never triggers recovery; the
 dispatcher always waits for a person. The same holds when the pause validator
 leaves `HANDOFF.md` routed to `user`, for example after it changed a protected
 file and the dispatcher wrote the protected-file escalation. `--dry-run` never
-schedules recovery.
+schedules recovery. In Linear mode, a pause diagnosis whose `LINEAR-EVIDENCE`
+row fails never triggers recovery, and the dispatcher waits for a person.
 
 Set `pause_recovery: "off"` to skip recovery and pause at once, as earlier
 releases did. Quote the value: YAML reads a bare `off` as the boolean `false`,
@@ -1266,7 +1267,8 @@ implementer's `implementation_handoff` comment records
 commit SHA. The validator runs a read-only check that compares the latest
 evidence comment on the leased issue with `HANDOFF.md`, and routes any
 mismatch to `user` with `status: blocked_missing_context`, or reports it
-without editing files on a validation-only turn. The planner posts
+without editing files on a validation-only turn, where the report puts each
+mismatch on its `LINEAR-EVIDENCE` row as a `FAIL`. The planner posts
 `user_attention_requested` when it routes a leased issue to `user` and
 `user_attention_cleared` when work resumes. The auditor moves a passing issue
 to `success_state` and leaves a failing one in `in_progress_state`, posting

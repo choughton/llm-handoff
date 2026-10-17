@@ -327,6 +327,23 @@ def test_codex_validator_skill_covers_validation_and_routing() -> None:
     assert "The dispatcher's prompt names which task applies." in content
 
 
+LINEAR_EVIDENCE_HELPER_FILES = (
+    REPO_ROOT / ".codex" / "skills" / "llm-handoff-validator" / "SKILL.md",
+    REFERENCE_WORKFLOW / ".codex" / "skills" / "llm-handoff-validator" / "SKILL.md",
+    REPO_ROOT / ".agents" / "agents" / "handoff-validator.md",
+    REFERENCE_WORKFLOW / ".agents" / "agents" / "handoff-validator.md",
+)
+
+
+def test_validator_helpers_report_a_linear_evidence_row() -> None:
+    for path in LINEAR_EVIDENCE_HELPER_FILES:
+        content = path.read_text(encoding="utf-8")
+        relative_path = path.relative_to(REPO_ROOT).as_posix()
+
+        assert "LINEAR-EVIDENCE:" in content, relative_path
+        assert "## Linear Mode: validator" in content, relative_path
+
+
 PLANNER_PROMPT_FILES = (
     ".claude/agents/planner.md",
     ".codex/skills/llm-handoff-planner/SKILL.md",
