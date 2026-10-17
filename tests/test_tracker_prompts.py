@@ -300,6 +300,18 @@ def test_auditor_paragraphs_follow_existing_bullets() -> None:
     assert closing < transitions < user_attention
 
 
+def test_auditor_clear_step_restores_in_progress_state() -> None:
+    text = " ".join(linear_role_section("auditor").split())
+    cleared = text.index("post `user_attention_cleared`")
+    clear_step = text[cleared:]
+    restore = clear_step.index(
+        "move the issue back to `tracker.in_progress_state`"
+    )
+    assert "`tracker.blocked_state`" in clear_step[:restore]
+    assert "`state_from` and `state_to`" in clear_step[restore:]
+    assert restore < clear_step.index("before you post `audit_passed`")
+
+
 def test_auditor_section_keeps_existing_bullets() -> None:
     text = linear_role_section("auditor")
     for phrase in (

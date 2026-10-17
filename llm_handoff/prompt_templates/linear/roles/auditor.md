@@ -30,4 +30,8 @@ comment on that issue with `next_agent: user` and the handoff `status`; when
 and record `state_from` and `state_to` in that comment. When your turn starts
 on a leased issue whose latest evidence comment is `user_attention_requested`,
 post `user_attention_cleared` and, when `tracker.user_attention_label` is set,
-remove that label; do both before you post `audit_passed` or `audit_failed`.
+remove that label. When `tracker.blocked_state` is set and the issue is in
+`tracker.blocked_state`, also move the issue back to
+`tracker.in_progress_state` and record `state_from` and `state_to` in the
+`user_attention_cleared` comment. Do all of this before you post
+`audit_passed` or `audit_failed`.

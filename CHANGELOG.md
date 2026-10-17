@@ -16,8 +16,10 @@ This project follows a simple pre-release changelog until the first public tag.
   it routes a leased issue to `user` it posts `user_attention_requested`, adds
   `tracker.user_attention_label` when set, and moves the issue to
   `tracker.blocked_state` when set; when its turn starts after
-  `user_attention_requested` it posts `user_attention_cleared` and removes the
-  label before it posts `audit_passed` or `audit_failed`.
+  `user_attention_requested` it posts `user_attention_cleared`, removes the
+  label, and moves the issue from `tracker.blocked_state` back to
+  `tracker.in_progress_state` when it was blocked, before it posts
+  `audit_passed` or `audit_failed`.
 - The Linear-mode validator prompt now runs a read-only evidence check: it
   compares the latest `llm_handoff_event` comment on the leased issue with
   `HANDOFF.md` (`issue`, `tracker_url`, `producer`, `next_agent`, `status`,
