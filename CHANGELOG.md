@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In Linear mode (`tracker.provider: linear`), a missing or empty
+  (whitespace-only) `HANDOFF.md` at the top of a cycle no longer exits with
+  code 1. The dispatcher logs one `WARN` line and dispatches one planner
+  cycle (routing source `tracker_lease_rebuild`) that rebuilds the lease from
+  the tracker pool: the planner picks one issue by the `AGENTS.md` Linear
+  rules or routes to `user`, posts a `lease_opened` comment, and writes the
+  handoff. The dispatcher does not call Linear itself. If the handoff is
+  still missing or empty at the next cycle, the dispatcher pauses until
+  `HANDOFF.md` has content, with no second planner dispatch and no pause
+  recovery; a cycle that reads content resets this. Vanilla mode
+  (`provider: none`) is unchanged.
 - `llm-handoff doctor --probe-tracker <ISSUE>` (opt-in, Linear mode only)
   launches the first configured Claude CLI role or fallback once, with no
   built-in tools, only the tracker server's `get_issue` and

@@ -343,6 +343,27 @@ THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
     "is unsafe, or route to the correct next role with explicit acceptance "
     "criteria and verification evidence requirements."
 )
+# Linear mode: a missing or empty HANDOFF.md gets one planner cycle that
+# rebuilds the lease from the tracker pool. The dispatcher never calls the
+# tracker itself; the planner reads and comments through its own tools.
+TRACKER_LEASE_REBUILD_SOURCE = "tracker_lease_rebuild"
+TRACKER_LEASE_REBUILD_INSTRUCTION = (
+    "HANDOFF.md is missing or empty, so there is no active lease. Rebuild it "
+    "from the tracker pool. Read the tracker pool by the selection rules in "
+    "the Linear sections of AGENTS.md and choose exactly one issue. If no "
+    "issue qualifies, write HANDOFF.md routed to user with "
+    "`status: escalate_to_user` and one specific question for the user. "
+    "Otherwise post a `lease_opened` evidence comment on the chosen issue, "
+    "then write HANDOFF.md with frontmatter that sets `tracker_issue` to the "
+    "chosen issue identifier, `tracker_url` to its URL, `selection_basis`, "
+    "and `story_id` equal to `tracker_issue`, and a body with a "
+    "`## Work Packet` section for the next role."
+)
+TRACKER_LEASE_REBUILD_PAUSE_REASON = (
+    "TRACKER LEASE REBUILD FAILED: the planner lease-rebuild cycle did not "
+    "produce a handoff, and HANDOFF.md is still missing or empty. Dispatch "
+    "resumes once HANDOFF.md has content."
+)
 
 LogFn = Callable[[str, str], None]
 _COMMIT_SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
@@ -465,6 +486,9 @@ def run_loop(
     gate_story_base: tuple[str | None, str] | None = None
     implementer_leftovers = _restore_implementer_leftovers(config, log_fn)
     stop_watch = _StopRequestWatch(config.repo_root)
+    # Linear mode: one planner lease-rebuild cycle per missing-handoff streak.
+    # A cycle that reads non-empty handoff content clears it.
+    tracker_lease_rebuild_used = False
 
     while True:
         # Every path back to the top of the loop has finished its cycle: the
@@ -478,25 +502,64 @@ def run_loop(
         _log(log_fn, "INFO", f"--- Cycle {cycle_number} ---")
 
         handoff_content = _read_required_text(config.handoff_full_path)
-        if handoff_content is None:
+        tracker_lease_rebuild = config.tracker.provider == "linear" and (
+            handoff_content is None or not handoff_content.strip()
+        )
+        if tracker_lease_rebuild:
+            if pending_planner_recovery is not None:
+                _log(
+                    log_fn,
+                    "WARN",
+                    f"Dropped the scheduled {pending_planner_recovery.kind} "
+                    f"dispatch to {pending_planner_recovery.route} because "
+                    "HANDOFF.md is missing or empty.",
+                )
+                pending_planner_recovery = None
+            if tracker_lease_rebuild_used:
+                # The rebuild cycle already ran for this miss; no second
+                # planner dispatch and no pause recovery.
+                if not _pause_until_handoff_changes(
+                    config,
+                    handoff_sha=_content_sha(handoff_content or ""),
+                    reason=TRACKER_LEASE_REBUILD_PAUSE_REASON,
+                    log=log_fn,
+                    stop_watch=stop_watch,
+                ):
+                    if stop_watch.requested(log_fn):
+                        stop_watch.finish(log_fn)
+                    return 0
+                previous_cycle = None
+                continue
+            tracker_lease_rebuild_used = True
+            _log(
+                log_fn,
+                "WARN",
+                "HANDOFF.md is missing or empty at "
+                f"{config.handoff_full_path}; dispatching one planner "
+                "lease-rebuild cycle from the tracker pool.",
+            )
+            handoff_content = handoff_content or ""
+        elif handoff_content is None:
             _log(
                 log_fn,
                 "ERROR",
                 f"Handoff file not found at: {config.handoff_full_path}",
             )
             return 1
-        handoff_content = _repair_handoff_frontmatter_file(
-            config.handoff_full_path,
-            handoff_content,
-            log_fn,
-        )
-        handoff_content = _normalize_handoff_next_agent_file(
-            config.handoff_full_path,
-            handoff_content,
-            config.normalizer,
-            log_fn,
-            repo_root=config.repo_root,
-        )
+        else:
+            tracker_lease_rebuild_used = False
+            handoff_content = _repair_handoff_frontmatter_file(
+                config.handoff_full_path,
+                handoff_content,
+                log_fn,
+            )
+            handoff_content = _normalize_handoff_next_agent_file(
+                config.handoff_full_path,
+                handoff_content,
+                config.normalizer,
+                log_fn,
+                repo_root=config.repo_root,
+            )
 
         project_state_content = _read_optional_text(config.project_state_full_path)
         handoff_sha = _content_sha(handoff_content)
@@ -509,7 +572,19 @@ def run_loop(
         )
         forced_additional_instruction: str | None = None
         active_planner_recovery_kind: str | None = None
-        if (
+        if tracker_lease_rebuild:
+            decision = RoutingDecision(
+                route="planner",
+                confidence="HIGH",
+                source=TRACKER_LEASE_REBUILD_SOURCE,
+                reasoning=(
+                    "HANDOFF.md is missing or empty in Linear mode, so the "
+                    "planner rebuilds the lease from the tracker pool."
+                ),
+                warnings=[],
+            )
+            forced_additional_instruction = TRACKER_LEASE_REBUILD_INSTRUCTION
+        elif (
             pending_planner_recovery is not None
             and pending_planner_recovery.handoff_sha == handoff_sha
         ):
@@ -721,6 +796,8 @@ def run_loop(
             # on its own recovery.
             active_planner_recovery_kind
             not in {"pause", "operator", "operator_role"}
+            # The lease-rebuild cycle has its own one-cycle bound.
+            and not tracker_lease_rebuild
             and previous_cycle is not None
             and previous_cycle.route == current_cycle.route
             and previous_cycle.handoff_sha == current_cycle.handoff_sha
@@ -1166,6 +1243,23 @@ def run_loop(
                 if consecutive_failures >= config.max_consecutive_failures:
                     return 1
                 continue
+
+            if tracker_lease_rebuild:
+                rebuilt_content = _read_required_text(config.handoff_full_path)
+                if rebuilt_content is None or not rebuilt_content.strip():
+                    # Nothing to validate; the next cycle sees the second miss
+                    # and pauses.
+                    _log(
+                        log_fn,
+                        "WARN",
+                        "The planner lease-rebuild cycle left HANDOFF.md "
+                        "missing or empty; skipping post-dispatch validation.",
+                    )
+                    previous_cycle = current_cycle
+                    consecutive_failures = 0
+                    if max_cycles is not None and cycle_number >= max_cycles:
+                        return 0
+                    continue
 
             commit_result = _commit_for_implementer(
                 config=config,
