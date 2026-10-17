@@ -70,11 +70,13 @@ _EXCLUDED_TEMPLATE_FILES = frozenset({Path("README.md")})
 
 # Provider mappings `init` can write into dispatch_config.yaml. `reference`
 # keeps the template's mixed mapping; `claude` puts every role on Claude Code;
-# `codex` puts every role on the Codex CLI.
+# `codex` puts every role on the Codex CLI; `gemini` puts every role on
+# Gemini CLI.
 REFERENCE_MAPPING = "reference"
 CLAUDE_MAPPING = "claude"
 CODEX_MAPPING = "codex"
-PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING)
+GEMINI_MAPPING = "gemini"
+PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, GEMINI_MAPPING)
 PROVIDER_CLIS = ("claude", "codex", "gemini")
 _CONFIG_PATH = Path("dispatch_config.yaml")
 _TEXT_MARKERS = {
@@ -224,6 +226,53 @@ _CODEX_AGENTS_BLOCK = """agents:
     timeout_ms: 900000
 
 """
+_GEMINI_AGENTS_BLOCK = """agents:
+  # All-Gemini mapping written by `llm-handoff init` (Gemini CLI only).
+  # Each role runs the matching agent file in .gemini/agents/ through its
+  # mention, and every role needs the container sandbox runtime.
+  planner:
+    provider: gemini
+    binary: gemini
+    mention: "@planner"
+    resume: false
+    timeout_ms: 1200000
+
+  backend:
+    provider: gemini
+    binary: gemini
+    mention: "@backend"
+    resume: false
+    timeout_ms: 1200000
+
+  frontend:
+    provider: gemini
+    binary: gemini
+    mention: "@frontend"
+    resume: false
+    timeout_ms: 1200000
+
+  auditor:
+    provider: gemini
+    binary: gemini
+    mention: "@auditor"
+    resume: false
+    timeout_ms: 900000
+
+  validator:
+    provider: gemini
+    binary: gemini
+    mention: "@validator"
+    resume: false
+    timeout_ms: 900000
+
+  finalizer:
+    provider: gemini
+    binary: gemini
+    mention: "@finalizer"
+    resume: false
+    timeout_ms: 900000
+
+"""
 _REFERENCE_SECURITY_PROVIDER_LINE = (
     "  # security_provider: claude   # claude | gemini | codex; unset = auto\n"
 )
@@ -235,6 +284,11 @@ _CODEX_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available.\n"
     "  security_provider: codex\n"
 )
+_GEMINI_SECURITY_PROVIDER_LINE = (
+    "  # Same vendor as the implementer: the only CLI available. The Gemini\n"
+    "  # reviewer needs the Gemini CLI security extension installed.\n"
+    "  security_provider: gemini\n"
+)
 _REFERENCE_NORMALIZER_LINES = (
     "normalizer:\n"
     "  provider: claude\n"
@@ -245,13 +299,29 @@ _CODEX_NORMALIZER_LINES = (
     "  # All-Codex mapping: the normalizer runs through the Codex CLI login.\n"
     "  provider: codex\n"
 )
+_GEMINI_NORMALIZER_LINES = (
+    "normalizer:\n"
+    "  # All-Gemini mapping: the Gemini normalizer is API-only, so it needs\n"
+    "  # GEMINI_API_KEY (or GOOGLE_API_KEY) in the dispatcher's environment.\n"
+    "  # It runs only when a handoff's next_agent is not a canonical role;\n"
+    "  # without the key that handoff stays unchanged and the loop pauses.\n"
+    "  provider: gemini\n"
+)
 _MAPPING_AGENTS_BLOCKS = {
     CLAUDE_MAPPING: _CLAUDE_AGENTS_BLOCK,
     CODEX_MAPPING: _CODEX_AGENTS_BLOCK,
+    GEMINI_MAPPING: _GEMINI_AGENTS_BLOCK,
 }
 _MAPPING_SECURITY_PROVIDER_LINES = {
     CLAUDE_MAPPING: _CLAUDE_SECURITY_PROVIDER_LINE,
     CODEX_MAPPING: _CODEX_SECURITY_PROVIDER_LINE,
+    GEMINI_MAPPING: _GEMINI_SECURITY_PROVIDER_LINE,
+}
+# Mappings whose normalizer cannot stay on the template's claude default
+# because that CLI is not installed; the others keep the template lines.
+_MAPPING_NORMALIZER_LINES = {
+    CODEX_MAPPING: _CODEX_NORMALIZER_LINES,
+    GEMINI_MAPPING: _GEMINI_NORMALIZER_LINES,
 }
 # The executable of a confirmed verification command becomes one
 # `Bash(<exe>:*)` rule, so it must be a bare program name: no path separators,
@@ -378,8 +448,8 @@ def resolve_provider_mapping(
     """Pick the mapping to write: an explicit choice, else auto-detect.
 
     Auto-detection switches to a single-provider mapping only when that
-    provider's CLI (Claude Code or Codex) is the only provider CLI installed;
-    any other combination keeps the reference mapping.
+    provider's CLI (Claude Code, Codex, or Gemini CLI) is the only provider
+    CLI installed; any other combination keeps the reference mapping.
     """
 
     if provider is not None:
@@ -391,6 +461,8 @@ def resolve_provider_mapping(
         return CLAUDE_MAPPING
     if available == {"codex"}:
         return CODEX_MAPPING
+    if available == {"gemini"}:
+        return GEMINI_MAPPING
     return REFERENCE_MAPPING
 
 
@@ -420,16 +492,14 @@ def render_config(template_text: str, mapping: str) -> str:
         _REFERENCE_SECURITY_PROVIDER_LINE,
         _MAPPING_SECURITY_PROVIDER_LINES[mapping],
     )
-    if mapping == CODEX_MAPPING:
+    normalizer_lines = _MAPPING_NORMALIZER_LINES.get(mapping)
+    if normalizer_lines is not None:
         if rendered.count(_REFERENCE_NORMALIZER_LINES) != 1:
             raise InitWorkflowError(
                 "Template dispatch_config.yaml no longer has the expected "
                 "normalizer provider and model lines."
             )
-        rendered = rendered.replace(
-            _REFERENCE_NORMALIZER_LINES,
-            _CODEX_NORMALIZER_LINES,
-        )
+        rendered = rendered.replace(_REFERENCE_NORMALIZER_LINES, normalizer_lines)
     return rendered
 
 

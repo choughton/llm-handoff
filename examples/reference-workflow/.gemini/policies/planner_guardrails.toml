@@ -1,4 +1,6 @@
-# llm-handoff guardrails for Gemini CLI roles (planner, frontend).
+# llm-handoff guardrails for every role mapped to Gemini CLI. The file name
+# is historical; the rules are role-agnostic and apply to any Gemini CLI
+# session once installed in the user tier.
 #
 # Gemini CLI's policy engine reads [[rule]] tables with toolName,
 # commandPrefix, decision, and priority (0-999). Deny rules apply in every

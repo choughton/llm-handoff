@@ -148,13 +148,29 @@ def test_init_command_provider_codex_writes_all_codex_mapping(
     assert "skill_name: llm-handoff-planner" in text
 
 
-def test_init_help_names_both_single_provider_mappings(capsys) -> None:
+def test_init_command_provider_gemini_writes_all_gemini_mapping(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    exit_code = main_module.main(["init", str(tmp_path), "--provider", "gemini"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Provider mapping: all roles on gemini" in output
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "provider: claude" not in text
+    assert "provider: codex" not in text
+    assert 'mention: "@auditor"' in text
+
+
+def test_init_help_names_every_single_provider_mapping(capsys) -> None:
     assert main_module.main(["init", "--help"]) == 0
 
     # Drop the help panel borders so wrapped help text reads as one line.
     output = " ".join(capsys.readouterr().out.replace("\u2502", " ").split())
-    assert "claude or codex" in output
+    assert "claude, codex, or gemini" in output
     assert "codex when Codex is the only provider CLI on PATH" in output
+    assert "gemini when Gemini CLI is the only provider CLI on PATH" in output
 
 
 def _node_fixture(root: Path) -> None:

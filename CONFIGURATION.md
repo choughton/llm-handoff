@@ -1502,6 +1502,54 @@ report and the finalizer's `PROJECT STATE UPDATED` report must be the whole
 `summary`. Output that is not an envelope, such as a resumed session's
 answer, is parsed as it is.
 
+### All-Gemini Mapping
+
+The reference workflow ships a Gemini agent file for every role, so a machine
+with only Gemini CLI installed can run the whole loop. Each role's `mention`
+names its agent file (`@<role>` selects `.gemini/agents/<role>.md`), and the
+Gemini adapter puts that mention at the front of the prompt:
+
+| Role | Gemini agent file |
+| --- | --- |
+| `planner` | `.gemini/agents/planner.md` |
+| `backend` | `.gemini/agents/backend.md` |
+| `frontend` | `.gemini/agents/frontend.md` |
+| `auditor` | `.gemini/agents/auditor.md` |
+| `validator` | `.gemini/agents/validator.md` |
+| `finalizer` | `.gemini/agents/finalizer.md` |
+
+The validator file covers both the handoff validation and handoff routing
+tasks; the dispatcher's prompt names which one applies.
+
+`llm-handoff init --provider gemini` writes this mapping into
+`dispatch_config.yaml`, with every role on `provider: gemini`,
+`audit.security_provider: gemini`, and `normalizer.provider: gemini`.
+Without `--provider`, `init` writes it automatically when `gemini` is the
+only provider CLI on `PATH`. `--verification-command` changes no `agents:`
+entry under this mapping, because it only adds `allowed_tools` to Claude
+roles.
+
+Every role runs inside Gemini CLI's container sandbox, so the machine needs
+Docker or Podman on `PATH` (macOS can use `sandbox-exec`); see
+[Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
+With every role on Gemini, the security reviewer runs on the same vendor as
+the implementer, so it is a second read-only review rather than an
+independent one, and the dispatcher logs a warning saying so. That reviewer
+also needs the Gemini CLI security extension installed and enabled;
+`llm-handoff doctor` checks it.
+
+The Gemini normalizer is API-only, so this mapping needs `GEMINI_API_KEY`
+(or `GOOGLE_API_KEY`) in the dispatcher's environment; there is no CLI-login
+path for it as there is for Codex. The normalizer runs only when a handoff's
+`next_agent` is not a canonical role. Without the key, `llm-handoff doctor`
+fails its `normalizer` line, and at run time such a handoff is left
+unchanged and the loop pauses, as it does for any normalizer failure.
+
+Gemini CLI returns the role's final answer as plain text in its
+`stream-json` output, so the validator's `VALID:` report and the finalizer's
+`PROJECT STATE UPDATED` report are parsed as written; the agent files ask
+for them as plain lines rather than inside a code fence.
+
 ### Fallback Agents
 
 A role can name one fallback agent. When the primary agent fails fatally, the
@@ -1718,7 +1766,10 @@ each implementer role, whether configured or chosen automatically: its CLI
 must be on `PATH`, and a Gemini reviewer also needs a sandbox runtime (unless
 the Gemini role sets `unsafe_bypass: true`) and the Gemini CLI security
 extension. A failed check stops the run with a `security_reviewer_failed:`
-error. `--dry-run` skips this check.
+error. `--dry-run` skips this check. `llm-handoff doctor` runs the same
+extension check (`gemini extensions list`, no model call) when a reviewer
+resolves to Gemini and prints a `security extension` line that fails when
+the extension is missing or disabled.
 
 With `security` enabled, the auditor route works differently:
 
