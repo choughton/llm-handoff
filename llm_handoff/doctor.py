@@ -150,17 +150,20 @@ def run_doctor(
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
         require_work_packet = dispatch_config.enforce_work_packet
+        tracker_provider = dispatch_config.tracker.provider
     else:
         handoff_path = (resolved_root / DEFAULT_HANDOFF_PATH).resolve()
         dispatcher_commit_mode = False
         # The config did not load (already a FAIL); validate against the
         # built-in default, which runs the work-claim gate.
         require_work_packet = True
+        tracker_provider = "none"
     _check_handoff(
         resolved_root,
         handoff_path,
         dispatcher_commit_mode=dispatcher_commit_mode,
         require_work_packet=require_work_packet,
+        tracker_provider=tracker_provider,
         git_available=git_available,
         checks=checks,
     )
@@ -897,11 +900,14 @@ def _check_handoff(
     git_available: bool,
     checks: list[DoctorCheck],
     require_work_packet: bool = True,
+    tracker_provider: str = "none",
 ) -> None:
     """Validate the current handoff the way the dispatch loop does.
 
     ``require_work_packet`` mirrors ``enforce_work_packet`` so a handoff the
     dispatcher would reject for a missing Work Packet also fails here.
+    ``tracker_provider`` mirrors ``tracker.provider`` so Linear-mode lease
+    rules apply the same way.
     """
     if not handoff_path.exists():
         checks.append(
@@ -964,6 +970,7 @@ def _check_handoff(
             git_cwd=repo_root if git_available else None,
             require_work_packet=require_work_packet,
             dispatcher_commit_mode=dispatcher_commit_mode,
+            tracker_provider=tracker_provider,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         checks.append(

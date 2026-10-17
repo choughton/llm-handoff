@@ -802,9 +802,11 @@ def _run_preflight(
         errors.append(f"dispatch config could not be loaded: {exc}")
         handoff_path = (config.repo_root / DEFAULT_HANDOFF_PATH).resolve()
         dispatcher_commit_mode = False
+        tracker_provider = "none"
     else:
         handoff_path = dispatch_config.handoff_full_path
         dispatcher_commit_mode = dispatch_config.commit_mode == "dispatcher"
+        tracker_provider = dispatch_config.tracker.provider
     snapshot = _repo_snapshot(config.repo_root, handoff_path=handoff_path)
 
     if not agents_path.exists():
@@ -853,6 +855,7 @@ def _run_preflight(
                 frontmatter.producer or "unknown producer",
                 git_cwd=config.repo_root,
                 dispatcher_commit_mode=dispatcher_commit_mode,
+                tracker_provider=tracker_provider,
             )
             for error in validation.errors:
                 _add_handoff_preflight_issue(

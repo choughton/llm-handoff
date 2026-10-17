@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Handoff frontmatter accepts three tracker lease fields: `tracker_issue`,
+  `tracker_url`, and `selection_basis` (`priority`, `manual_order`, or
+  `created_at`). With `tracker.provider: linear`, handoffs routed to
+  `backend`, `frontend`, or `auditor` must carry `tracker_issue` (equal to
+  `story_id`) and `tracker_url`, planner assignments must carry
+  `selection_basis`, and the dispatcher logs a WARN when the planner picked an
+  issue without a priority. Repair prompts preserve the fields, and the audit
+  fan-out handoff carries them forward. With `provider: none` the fields are
+  accepted with a single `tracker_fields_ignored` warning.
 - `dispatch_config.yaml` accepts an optional top-level `tracker` block for
   Linear mode, validated at load. It defaults to `provider: none`, which
   changes nothing and allows no other tracker key. `provider: linear`
