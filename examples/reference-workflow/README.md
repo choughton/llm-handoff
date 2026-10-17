@@ -9,24 +9,44 @@ role names.
 
 ## Included Files
 
+`llm-handoff init` copies every file in this directory except this README:
+
 ```text
 AGENTS.md
 PROJECT_STATE.md
 dispatch_config.yaml
-docs/handoff/HANDOFF.md
-docs/handoff/*.md
+.gitignore
 .geminiignore
-.gemini/agents/planner.md
-.gemini/agents/frontend.md
-.gemini/policies/planner_guardrails.toml
-.codex/skills/llm-handoff/SKILL.md
-.codex/skills/llm-handoff/agents/openai.yaml
+docs/handoff/README.md
+docs/handoff/HANDOFF.md
+docs/handoff/HANDBOOK.md
+docs/handoff/SHARED_REPO_INIT_PROMPT.md
+docs/handoff/PLANNER_INITIAL_PROMPT.md
+docs/handoff/PLANNER_HANDOFF_PROMPT.md
+docs/handoff/BACKEND_HANDOFF_PROMPT.md
+docs/handoff/FRONTEND_HANDOFF_PROMPT.md
+docs/handoff/AUDITOR_HANDOFF_PROMPT.md
+docs/handoff/FINALIZER_HANDOFF_PROMPT.md
+.claude/agents/planner.md
+.claude/agents/backend.md
+.claude/agents/frontend.md
 .claude/agents/auditor.md
-.claude/agents/handoff-router.md
 .claude/agents/handoff-validator.md
+.claude/agents/handoff-router.md
 .claude/agents/ledger-updater.md
 .claude/settings.json
 .claude/hooks/block_dangerous_commands.py
+.codex/skills/llm-handoff/SKILL.md
+.codex/skills/llm-handoff/agents/openai.yaml
+.codex/skills/llm-handoff-planner/SKILL.md
+.codex/skills/llm-handoff-frontend/SKILL.md
+.codex/skills/llm-handoff-auditor/SKILL.md
+.codex/skills/llm-handoff-validator/SKILL.md
+.codex/skills/llm-handoff-finalizer/SKILL.md
+.codex/rules/llm-handoff.rules
+.gemini/agents/planner.md
+.gemini/agents/frontend.md
+.gemini/policies/planner_guardrails.toml
 .agents/agents/planner.md
 .agents/agents/backend.md
 .agents/agents/frontend.md
@@ -35,6 +55,9 @@ docs/handoff/*.md
 .agents/agents/handoff-router.md
 .agents/agents/ledger-updater.md
 ```
+
+`AGENTS.md`, `.gitignore`, `.geminiignore`, and `.claude/settings.json` are
+merged into existing target files; the rest are copied.
 
 ## Guardrails
 
