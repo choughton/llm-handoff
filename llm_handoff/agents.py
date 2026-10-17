@@ -130,7 +130,8 @@ _ORIGINAL_PROCESS_RUN_LOGGED_AGENT_COMMAND = _process._run_logged_agent_command
 
 
 def _selected(global_name: str, facade_func: object, original_func: object) -> object:
-    value = globals()[global_name]
+    # global_name is always one of this module's fixed facade names.
+    value = globals()[global_name]  # nosemgrep: dangerous-globals-use
     return original_func if value is facade_func else value
 
 
