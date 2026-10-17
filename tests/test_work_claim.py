@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -174,7 +176,35 @@ status: {status}
 """
 
 
+# Process launches dominate this file's run time, most of all on Windows. Each
+# starting repository is built once per worker and copied into each test.
+_TEMPLATE_ROOT: Path | None = None
+_TEMPLATE_HEADS: dict[str, str] = {}
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _repo_template_root(tmp_path_factory: pytest.TempPathFactory) -> None:
+    global _TEMPLATE_ROOT
+    _TEMPLATE_ROOT = tmp_path_factory.mktemp("work-claim-templates")
+
+
 def _init_repo(repo_root: Path, handoff_content: str | None = None) -> str:
+    if repo_root.exists() and any(repo_root.iterdir()):
+        return _build_repo(repo_root, handoff_content)
+    assert _TEMPLATE_ROOT is not None
+    key = hashlib.sha256(repr(handoff_content).encode("utf-8")).hexdigest()[:16]
+    template = _TEMPLATE_ROOT / key
+    if key not in _TEMPLATE_HEADS:
+        _TEMPLATE_HEADS[key] = _build_repo(template, handoff_content)
+    shutil.copytree(template, repo_root, dirs_exist_ok=True)
+    # A copy gets new file creation times, which git's index compares, so
+    # plumbing such as `git diff-index` would see every file as changed.
+    _git(repo_root, "update-index", "-q", "--refresh")
+    return _TEMPLATE_HEADS[key]
+
+
+def _build_repo(repo_root: Path, handoff_content: str | None) -> str:
+    repo_root.mkdir(parents=True, exist_ok=True)
     _git(repo_root, "init", "-q")
     _git(repo_root, "config", "user.name", "llm-handoff tests")
     _git(repo_root, "config", "user.email", "tests@example.invalid")
