@@ -1261,6 +1261,7 @@ def run_loop(
                     previous_cycle = current_cycle
                     consecutive_failures = 0
                     continue
+                unhandled_failure = False
                 if _has_missing_route_error(validation_result):
                     pause_diagnosis = _run_post_dispatch_missing_route_validator(
                         config=config,
@@ -1268,34 +1269,7 @@ def run_loop(
                         log=log_fn,
                     )
                     pause_reason = _missing_route_pause_reason(previous_agent)
-                    if _pause_recovery_available(config, pause_recovery_used, log_fn):
-                        pending_planner_recovery = _schedule_pause_recovery(
-                            config,
-                            pause_reason=pause_reason,
-                            validation_result=pause_diagnosis,
-                            log=log_fn,
-                        )
-                        pause_recovery_used = True
-                        previous_cycle = current_cycle
-                        consecutive_failures = 0
-                        continue
-                    pause = _pause_at_dispatcher_pause(
-                        config,
-                        handoff_sha=_content_sha(
-                            _read_required_text(config.handoff_full_path) or ""
-                        ),
-                        reason=pause_reason,
-                        log=log_fn,
-                        operator_prompt=operator_prompt,
-                    )
-                    if pause.stop:
-                        return 0
-                    if pause.kind == "retry":
-                        previous_cycle = None
-                    elif pause.pending_planner_recovery is not None:
-                        pending_planner_recovery = pause.pending_planner_recovery
-                    continue
-                if self_loop_kind is not None:
+                elif self_loop_kind is not None:
                     pause_diagnosis = _run_self_loop_validator(
                         config=config,
                         previous_agent=previous_agent,
@@ -1306,34 +1280,46 @@ def run_loop(
                         previous_agent,
                         self_loop_kind,
                     )
-                    if _pause_recovery_available(config, pause_recovery_used, log_fn):
-                        pending_planner_recovery = _schedule_pause_recovery(
-                            config,
-                            pause_reason=pause_reason,
-                            validation_result=pause_diagnosis,
-                            log=log_fn,
-                        )
-                        pause_recovery_used = True
-                        previous_cycle = current_cycle
-                        consecutive_failures = 0
-                        continue
-                    pause = _pause_at_dispatcher_pause(
-                        config,
-                        handoff_sha=_content_sha(
-                            _read_required_text(config.handoff_full_path) or ""
-                        ),
-                        reason=pause_reason,
-                        log=log_fn,
-                        operator_prompt=operator_prompt,
+                else:
+                    # No repair applies. The work may already be committed, so
+                    # pause with the reason rather than exit without one.
+                    unhandled_failure = True
+                    pause_diagnosis = validation_result
+                    pause_reason = _post_dispatch_failure_pause_reason(
+                        previous_agent,
+                        validation_result,
+                        commit_result,
                     )
-                    if pause.stop:
-                        return 0
-                    if pause.kind == "retry":
-                        previous_cycle = None
-                    elif pause.pending_planner_recovery is not None:
-                        pending_planner_recovery = pause.pending_planner_recovery
+                    _log(log_fn, "ERROR", pause_reason)
+                if _pause_recovery_available(config, pause_recovery_used, log_fn):
+                    pending_planner_recovery = _schedule_pause_recovery(
+                        config,
+                        pause_reason=pause_reason,
+                        validation_result=pause_diagnosis,
+                        log=log_fn,
+                    )
+                    pause_recovery_used = True
+                    previous_cycle = current_cycle
+                    consecutive_failures = 0
                     continue
-                return 1
+                pause = _pause_at_dispatcher_pause(
+                    config,
+                    handoff_sha=_content_sha(
+                        _read_required_text(config.handoff_full_path) or ""
+                    ),
+                    reason=pause_reason,
+                    log=log_fn,
+                    operator_prompt=operator_prompt,
+                )
+                if pause.stop:
+                    # Without polling, an unhandled validation failure still
+                    # ends the run with a failure code.
+                    return 1 if unhandled_failure and pause.kind == "stop" else 0
+                if pause.kind == "retry":
+                    previous_cycle = None
+                elif pause.pending_planner_recovery is not None:
+                    pending_planner_recovery = pause.pending_planner_recovery
+                continue
 
             if (
                 validation_result.verdict != "NO"
@@ -1840,6 +1826,9 @@ def _is_repairable_handoff_hygiene_failure(
     if result.verdict != "NO" or not result.errors:
         return False
     repairable_prefixes = (
+        # A missing, empty, or HEAD evidence field is a formatting problem in
+        # the handback; the producer can rewrite it from its own turn.
+        "EVIDENCE_MISSING:",
         "frontmatter_reason_missing:",
         "frontmatter_producer_missing:",
         "scope_claim_missing:",
@@ -3496,6 +3485,24 @@ def _self_loop_pause_reason(
 
 def _missing_route_pause_reason(previous_agent: str) -> str:
     return f"{previous_agent} produced HANDOFF.md without a dispatchable route. Update the handoff; dispatch will resume after the file changes."
+
+
+def _post_dispatch_failure_pause_reason(
+    previous_agent: str,
+    result: ValidationResult,
+    commit_result: DispatcherCommitResult | None,
+) -> str:
+    committed = ""
+    if commit_result is not None and commit_result.sha is not None:
+        committed = (
+            f" The dispatcher already committed {previous_agent}'s work as "
+            f"{commit_result.sha[:12]}; that commit stays."
+        )
+    return (
+        f"Post-dispatch validation failed for {previous_agent} and no automatic "
+        f"repair applies: {_format_validation_errors(result)}.{committed} "
+        "Update the handoff; dispatch will resume after the file changes."
+    )
 
 
 def _log_dispatch_completion(

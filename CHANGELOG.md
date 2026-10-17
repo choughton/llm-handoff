@@ -6,6 +6,27 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A post-dispatch validation failure no longer ends the run with exit code 1
+  and no stated reason. When no repair or existing pause applies, the
+  dispatcher logs an `ERROR` that names the validation errors and, in
+  dispatcher commit mode, the commit it already made, then pauses: one
+  bounded planner recovery when `pause_recovery: planner` is set, otherwise
+  the operator prompt or a wait for `HANDOFF.md` to change. Without polling
+  (`poll_interval_seconds: 0`) the run still exits 1 after logging the
+  reason.
+- `EVIDENCE_MISSING` validation errors, including a `Commit SHA verified`
+  of `HEAD`, now go through the one-shot producer handoff hygiene repair
+  instead of stopping the run.
+- Verification Evidence fields now accept indented continuation lines, as
+  Work Packet fields already did, so `- **Commands run:**` followed by
+  indented `- ...` bullets is not empty. A label may also carry one
+  parenthetical note before its colon, as in
+  `- **Commands run (this turn):**`. `Commit SHA verified` must still name
+  its SHA on the label line. An empty field no longer absorbs the field on
+  the next line.
+- In dispatcher commit mode, recording the commit SHA now replaces only the
+  `pending-dispatcher-commit` marker (with or without backticks) in
+  `Commit SHA verified` and keeps any note after it.
 - The dispatcher now pauses before dispatching `backend` or `frontend` when
   the role is `provider: claude` in the default `dontAsk` mode and the Work
   Packet's `Files in scope` names a path under a `.claude` directory, at the

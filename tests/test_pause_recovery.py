@@ -465,6 +465,76 @@ def test_planner_route_stale_pause_dispatches_recovery_planner(
     ) == 1
 
 
+_UNREPAIRABLE_ERROR = (
+    "evidence_sha_unknown: Commit SHA verified `abc` names no commit SHA; "
+    "write the 7-40 character SHA of the verified commit."
+)
+_UNHANDLED_REASON = (
+    "Post-dispatch validation failed for planner and no automatic repair "
+    f"applies: {_UNREPAIRABLE_ERROR}."
+)
+
+
+def test_unhandled_post_dispatch_failure_schedules_planner_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, PLANNER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        planner_writes=["# Planner handback\n", USER_HANDOFF],
+        post_dispatch=_post_dispatch_error(_UNREPAIRABLE_ERROR),
+    )
+
+    exit_code = harness.run(_config(tmp_path))
+
+    assert exit_code == 0
+    assert any(
+        level == "ERROR" and message.startswith(_UNHANDLED_REASON)
+        for level, message in harness.logs
+    )
+    assert len(harness.recovery_instructions) == 1
+    assert _UNHANDLED_REASON in harness.recovery_instructions[0]
+
+
+def test_unhandled_post_dispatch_failure_pauses_with_an_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, PLANNER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        planner_writes=["# Planner handback\n"],
+        post_dispatch=_post_dispatch_error(_UNREPAIRABLE_ERROR),
+    )
+
+    exit_code = harness.run(_config(tmp_path, pause_recovery="off"))
+
+    # Without polling the pause cannot wait, so the failure still exits 1, but
+    # only after the reason is logged.
+    assert exit_code == 1
+    assert harness.planner_instructions == [None]
+    errors = [message for level, message in harness.logs if level == "ERROR"]
+    assert any(message.startswith(_UNHANDLED_REASON) for message in errors)
+    assert any(
+        message.startswith(_UNHANDLED_REASON) for message in harness.pause_messages()
+    )
+
+
+def test_unhandled_failure_reason_names_the_dispatcher_commit() -> None:
+    result = ValidationResult(verdict="NO", warnings=[], errors=[_UNREPAIRABLE_ERROR])
+    commit = orchestrator.DispatcherCommitResult(sha="c" * 40, committed=("a.py",))
+
+    reason = orchestrator._post_dispatch_failure_pause_reason(
+        "backend", result, commit
+    )
+
+    assert "already committed backend's work as cccccccccccc" in reason
+    assert reason.isascii()
+
+
 def test_pause_recovery_off_keeps_the_pause(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

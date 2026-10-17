@@ -1623,6 +1623,115 @@ Audit complete with verification.
     ) in log_messages
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        "EVIDENCE_MISSING: status ready_for_review requires populated evidence "
+        "fields at line 12: missing Commands run.",
+        "EVIDENCE_MISSING: Verification Evidence cannot use HEAD as Commit SHA verified.",
+    ],
+)
+def test_evidence_missing_is_a_repairable_handoff_hygiene_failure(error: str) -> None:
+    orchestrator = _load_orchestrator_module()
+    result = ValidationResult(
+        verdict="NO",
+        warnings=[],
+        errors=[error],
+        routing_instruction="auditor",
+    )
+
+    assert orchestrator._is_repairable_handoff_hygiene_failure(
+        result,
+        handoff_content="",
+    )
+
+
+def test_run_loop_repairs_missing_evidence_field_with_one_producer_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **auditor:** Audit the current story.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    subagent_calls: list[tuple[str, str]] = []
+
+    handback = """---
+next_agent: planner
+reason: Story audit approved; scope next story.
+status: verified_pass
+scope_sha: 59206fb
+close_type: story
+producer: auditor
+---
+
+# Auditor Handback
+
+**Agent:** auditor
+
+## Audit Summary
+
+Audit complete with verification.
+
+## Verification Evidence
+
+{commands}- **Output summary:** exit 0
+- **Commit SHA verified:** 59206fb
+- **Files changed or reviewed:** src/app.py
+- **Unresolved concerns:** none
+"""
+
+    def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
+        subagent_calls.append((subagent_name, prompt))
+        if len(subagent_calls) == 1:
+            handoff_path.write_text(handback.format(commands=""), encoding="utf-8")
+        else:
+            assert "EVIDENCE_MISSING" in prompt
+            handoff_path.write_text(
+                handback.format(
+                    commands="- **Commands run:**\n  - `python -m pytest tests -q`\n"
+                ),
+                encoding="utf-8",
+            )
+        return _subagent_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_subagent)
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_head",
+        Mock(side_effect=["a" * 40, "b" * 40]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_dirty_files",
+        Mock(side_effect=[("docs/handoff/HANDOFF.md",), ()]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_git_changed_files_since",
+        Mock(return_value=("docs/handoff/HANDOFF.md",)),
+    )
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert [call[0] for call in subagent_calls] == ["auditor", "auditor"]
+    assert (
+        "AGENT",
+        "Producer handoff hygiene repair passed post-checks.",
+    ) in log_messages
+
+
 def test_run_loop_allows_handoff_repair_with_existing_unrelated_dirty_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

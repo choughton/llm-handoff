@@ -26,7 +26,11 @@ from llm_handoff.roles import (
     normalize_next_agent_value,
 )
 from llm_handoff.text_io import read_dispatch_text
-from llm_handoff.work_claim import evidence_sha_token, work_packet_errors
+from llm_handoff.work_claim import (
+    EVIDENCE_LABEL_NOTE,
+    evidence_sha_token,
+    work_packet_errors,
+)
 
 
 ValidationVerdict = Literal["YES", "NO", "WARNINGS-ONLY"]
@@ -48,7 +52,8 @@ _WORK_PACKET_FIELD_RE = re.compile(
 )
 _VERIFICATION_EVIDENCE_RE = re.compile(r"(?im)^##\s+Verification Evidence\s*$")
 _EVIDENCE_FIELD_RE = re.compile(
-    r"(?im)^-\s+\*\*(Commands run|Output summary|Commit SHA verified|Files changed or reviewed|Unresolved concerns):\*\*\s*(.*)$"
+    r"(?im)^-[ \t]+\*\*(Commands run|Output summary|Commit SHA verified|Files changed or reviewed|Unresolved concerns)"
+    rf"{EVIDENCE_LABEL_NOTE}:\*\*[ \t]*(.*)$"
 )
 _HEADING_RE = re.compile(r"(?m)^#{1,6}\s+")
 _REPORTING_HEADER_RE = re.compile(
@@ -658,11 +663,19 @@ def _verification_evidence_block(
 
 
 def _evidence_fields(block: tuple[int, str]) -> dict[str, str]:
-    _line_number, content = block
-    return {
-        match.group(1): match.group(2).strip()
-        for match in _EVIDENCE_FIELD_RE.finditer(content)
-    }
+    """Map each Verification Evidence field to its value.
+
+    Like a Work Packet field, a value is the text after the label plus any
+    indented lines below it. ``Commit SHA verified`` is the exception: its SHA
+    must be on the label line, the line the work-claim gate and the
+    dispatcher's commit stamp read.
+    """
+
+    fields = _bullet_field_values(_EVIDENCE_FIELD_RE, block)
+    for match in _EVIDENCE_FIELD_RE.finditer(block[1]):
+        if match.group(1) == "Commit SHA verified":
+            fields["Commit SHA verified"] = match.group(2).strip()
+    return fields
 
 
 def _work_packet_block(handoff_content: str) -> tuple[int, str] | None:
@@ -684,8 +697,14 @@ def _work_packet_fields(block: tuple[int, str]) -> dict[str, str]:
     ``- ...`` items) is not empty.
     """
 
+    return _bullet_field_values(_WORK_PACKET_FIELD_RE, block)
+
+
+def _bullet_field_values(
+    field_re: re.Pattern[str], block: tuple[int, str]
+) -> dict[str, str]:
     _line_number, content = block
-    matches = list(_WORK_PACKET_FIELD_RE.finditer(content))
+    matches = list(field_re.finditer(content))
     fields: dict[str, str] = {}
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
