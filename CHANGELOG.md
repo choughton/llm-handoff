@@ -17,6 +17,21 @@ This project follows a simple pre-release changelog until the first public tag.
   frontend agents, the per-role Codex skills, the Codex rules file, and the
   Antigravity agents), the target-repo file contract, dry-run expectations,
   and common pauses.
+- On Windows, provider CLIs installed through npm (`codex.cmd`, `gemini.cmd`)
+  are now launched directly through their shim's target (`node <entry>.js`)
+  instead of through the `.cmd` shim itself. Running the shim made `cmd.exe`
+  re-parse the command line, which does not understand the `\"` escapes
+  Python writes for inner quotes, so a prompt such as the Codex security
+  reviewer's `"summary": "<one line>"` left `<one` outside quotes and
+  `cmd.exe` failed with "The system cannot find the file specified." before
+  Codex started (`security.stderr.txt` in the audit log directory). Every
+  Codex launch path (`codex exec`, `codex exec resume`, and the
+  `audit.security_provider: codex` reviewer) goes through the same resolver,
+  so arguments containing `"`, `<`, `>`, `|`, `&`, `%`, or `^` now reach the
+  CLI intact. Only the plain shape npm's `cmd-shim` writes for a zero-option
+  shebang is recognized, and the program must resolve to a native
+  executable; a shim with interpreter options or environment assignments,
+  or a hand-written `.cmd` wrapper, still runs through `cmd.exe` as before.
 - Restructured `README.md` around getting started: a table of contents, a
   five-step quick start, a section on choosing and switching between file
   mode and Linear mode, a gotchas list, and a gates-and-scanners summary.
