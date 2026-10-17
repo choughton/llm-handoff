@@ -9,8 +9,10 @@ import sys
 import pytest
 import yaml
 
+from llm_handoff import ledger, orchestrator
+from llm_handoff.agents import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
-from llm_handoff.pr_review import ReviewGate
+from llm_handoff.pr_review import ReviewGate, parse_review_responses
 from llm_handoff.publish import (
     RESPONSES_PATH,
     STATE_PATH,
@@ -18,6 +20,7 @@ from llm_handoff.publish import (
     StoryState,
     build_review_bounce_handoff,
     ensure_story_branch,
+    keep_review_responses,
     publish_story,
     resume_paused_publish,
     save_review_responses,
@@ -26,6 +29,7 @@ from llm_handoff.publish import (
     story_branch_name,
 )
 from llm_handoff.router import route
+from llm_handoff.validator import ValidationResult
 from llm_handoff.work_claim import work_packet_errors
 
 
@@ -2240,6 +2244,161 @@ def test_save_review_responses_keeps_only_claims_with_responses(
 
     save_review_responses(tmp_path, "# Handback\n\nNo responses here.\n")
     assert not (tmp_path / RESPONSES_PATH).exists()
+
+
+def test_keep_review_responses_never_drops_saved_responses(tmp_path: Path) -> None:
+    assert keep_review_responses(
+        tmp_path, "## Review Responses\n\n### Finding 1\nFixed.\n"
+    )
+    assert not keep_review_responses(tmp_path, "# Audit Report\n\nApproved.\n")
+    assert parse_review_responses(
+        (tmp_path / RESPONSES_PATH).read_text(encoding="utf-8")
+    ) == {1: "Fixed."}
+
+
+def _correction_claim(scope_sha: str | None) -> str:
+    """A correction-round handback; without ``scope_sha`` its evidence is bad."""
+
+    scope_lines = f"scope_sha: {scope_sha}\nclose_type: story\n" if scope_sha else ""
+    return f"""---
+next_agent: auditor
+reason: "Fixed the review finding; audit requested."
+epic_id: E1
+story_id: W9.9
+story_title: Add a widget
+status: ready_for_review
+{scope_lines}producer: backend
+---
+
+# Backend Handback
+
+## Completed Work
+
+- Defaulted WIDGET in src/widget.py.
+
+## Verification Evidence
+
+- **Commands run:** `python -c "print(1)"`
+- **Output summary:** exit 0
+- **Commit SHA verified:** {scope_sha or 'not-a-sha'}
+- **Files changed or reviewed:** src/widget.py
+- **Unresolved concerns:** none
+
+## Review Responses
+
+### Finding 1: `src/widget.py:1`
+Defaulted WIDGET when it is unset.
+"""
+
+
+@pytest.mark.parametrize("recovery", ["restart", "resume"])
+def test_review_responses_survive_a_failed_validation_before_the_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovery: str
+) -> None:
+    """A correction-round handback that fails post-dispatch validation never
+    passes the work-claim gate. After the handoff is fixed, the auditor runs
+    directly, and the responses still reach the review thread."""
+
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    entries, log = _logs()
+    bounce = _publish_with_review(repo, gh, log).handoff
+    assert bounce is not None
+
+    config = DispatchConfig(
+        repo_root=repo,
+        poll_interval_seconds=0,
+        pause_recovery="off",
+        enforce_work_packet=True,
+        commit_mode="dispatcher",
+        publish={"mode": "pr", "wait_for_reviewers": ["codex"]},
+        audit={
+            "reviewers": ["quality"],
+            "security_opt_out_reason": "Tests cover the single-auditor route.",
+        },
+    )
+    config.handoff_full_path.parent.mkdir(parents=True, exist_ok=True)
+    config.handoff_full_path.write_text(bounce, encoding="utf-8")
+    dispatches: list[str] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+        path.write_text(_correction_claim(None), encoding="utf-8")
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def fake_support(subagent_name: str, prompt: str, **_kwargs: object):
+        dispatches.append(subagent_name)
+        assert subagent_name == "auditor"
+        config.handoff_full_path.write_text(VERIFIED, encoding="utf-8")
+        return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def validate(path: Path, previous_agent: str, **_kwargs: object):
+        if previous_agent == "backend":
+            return ValidationResult(
+                verdict="NO",
+                warnings=[],
+                errors=["evidence_malformed: the Commit SHA verified is not a SHA."],
+                routing_instruction="auditor",
+            )
+        return ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="planner"
+        )
+
+    def fix_handoff() -> None:
+        # The operator points the claim at the dispatcher's commit.
+        head = _git(repo, "rev-parse", "HEAD")
+        config.handoff_full_path.write_text(_correction_claim(head), encoding="utf-8")
+        _set_api(tmp_path, comments=[_codex_summary(head)])
+
+    def fix_and_resume(_config: DispatchConfig, **_kwargs: object) -> bool:
+        fix_handoff()
+        return True
+
+    def publish(**kwargs: object) -> PublishOutcome:
+        return publish_story(**kwargs, gh_command=gh, sleep=lambda seconds: None)
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+    monkeypatch.setattr(orchestrator, "publish_story", publish)
+    if recovery == "resume":
+        monkeypatch.setattr(
+            orchestrator, "_pause_until_handoff_changes", fix_and_resume
+        )
+    ledger.reset_bounce("W9.9")
+    try:
+        if recovery == "restart":
+            # The pause stops the run; the operator fixes the handoff and
+            # starts the dispatcher again, which routes to the auditor.
+            assert orchestrator.run_loop(config, max_cycles=1, log=log) == 1
+            assert not (repo / RESPONSES_PATH).exists()
+            fix_handoff()
+            assert orchestrator.run_loop(config, max_cycles=1, log=log) == 0
+        else:
+            assert orchestrator.run_loop(config, max_cycles=2, log=log) == 0
+    finally:
+        ledger.reset_bounce("W9.9")
+
+    assert dispatches == ["backend", "auditor"]
+    assert not any("No review response" in message for _level, message in entries)
+    gh_state = _gh_state(tmp_path)
+    [reply] = gh_state["replies"]
+    assert reply["endpoint"].endswith("/pulls/7/comments/4279958834/replies")
+    assert reply["body"].startswith("Defaulted WIDGET when it is unset.")
+    assert gh_state["threads"][0]["isResolved"] is True
+    assert gh_state["pr"] == "MERGED"
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert not (repo / RESPONSES_PATH).exists()
 
 
 def _set_gh(tmp_path: Path, **values: object) -> None:

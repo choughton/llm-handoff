@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In `publish.mode: pr`, the dispatcher now also saves the implementer's
+  `## Review Responses` from the handoff it is about to send to the auditor,
+  not only when the work-claim gate passes. A correction-round handback that
+  failed post-dispatch validation, was fixed by hand, and then went straight
+  to the auditor (after a resume or a restart) used to lose its responses, so
+  publish left the review threads unresolved and paused with the pull request
+  open. A handoff without responses keeps any saved ones, and responses are
+  still posted only after the audit passes and cleared when the story ends.
 - The Linear-mode validator prompt now runs a read-only evidence check: it
   compares the latest `llm_handoff_event` comment on the leased issue with
   `HANDOFF.md` (`issue`, `tracker_url`, `producer`, `next_agent`, `status`,
