@@ -245,6 +245,16 @@ _CODEX_NORMALIZER_LINES = (
     "  # All-Codex mapping: the normalizer runs through the Codex CLI login.\n"
     "  provider: codex\n"
 )
+# The template's top-level commit_mode line (anchored at the start of a line
+# so an indented key never matches). The all-Codex mapping switches it: the
+# Codex workspace-write sandbox keeps .git read-only, so an agent-mode
+# implementer hands back blocked_implementation_failure on its first story.
+_REFERENCE_COMMIT_MODE_RE = re.compile(r"^commit_mode: agent\n", re.MULTILINE)
+_CODEX_COMMIT_MODE_LINE = (
+    "# All-Codex mapping: the Codex workspace-write sandbox keeps .git read-only,\n"
+    "# so the dispatcher commits implementer work.\n"
+    "commit_mode: dispatcher\n"
+)
 _MAPPING_AGENTS_BLOCKS = {
     CLAUDE_MAPPING: _CLAUDE_AGENTS_BLOCK,
     CODEX_MAPPING: _CODEX_AGENTS_BLOCK,
@@ -429,6 +439,14 @@ def render_config(template_text: str, mapping: str) -> str:
         rendered = rendered.replace(
             _REFERENCE_NORMALIZER_LINES,
             _CODEX_NORMALIZER_LINES,
+        )
+        if len(_REFERENCE_COMMIT_MODE_RE.findall(rendered)) != 1:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has the expected "
+                "commit_mode: agent line."
+            )
+        rendered = _REFERENCE_COMMIT_MODE_RE.sub(
+            lambda _match: _CODEX_COMMIT_MODE_LINE, rendered
         )
     return rendered
 

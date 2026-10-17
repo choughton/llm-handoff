@@ -408,6 +408,7 @@ def test_init_provider_claude_writes_an_all_claude_config(tmp_path: Path) -> Non
     assert {agent.provider for agent in config.agents.values()} == {"claude"}
     assert config.audit.security_provider == "claude"
     assert config.normalizer.provider == "claude"
+    assert config.commit_mode == "agent"
     for name in ("planner", "backend", "frontend"):
         assert (tmp_path / ".claude" / "agents" / f"{name}.md").is_file()
 
@@ -561,6 +562,58 @@ def test_render_config_codex_rejects_a_template_without_the_normalizer_lines(
         render_config(broken, CODEX_MAPPING)
 
 
+def test_render_config_codex_switches_commit_mode_to_dispatcher() -> None:
+    template = _template_config_text()
+    rendered = render_config(template, CODEX_MAPPING)
+
+    assert template.count("\ncommit_mode: agent\n") == 1
+    assert "\ncommit_mode: agent\n" not in rendered
+    assert rendered.count("\ncommit_mode: dispatcher\n") == 1
+    data = yaml.safe_load(rendered)
+    assert data["commit_mode"] == "dispatcher"
+    # dispatcher commits need the work-claim gate, which the template keeps on.
+    assert data["enforce_work_packet"] is True
+    # The explanatory comment above the template line survives the swap.
+    assert "# Who commits implementer work: agent (default) or dispatcher." in rendered
+    assert "keeps .git read-only" in rendered
+
+
+def test_render_config_commit_mode_stays_agent_outside_the_codex_mapping() -> None:
+    template = _template_config_text()
+
+    assert render_config(template, REFERENCE_MAPPING) == template
+    claude = render_config(template, CLAUDE_MAPPING)
+    assert claude.count("\ncommit_mode: agent\n") == 1
+    assert "commit_mode: dispatcher\n" not in claude
+    assert yaml.safe_load(claude)["commit_mode"] == "agent"
+    assert yaml.safe_load(template)["commit_mode"] == "agent"
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "",
+        "commit_mode: dispatcher\n",
+        "  commit_mode: agent\n",
+        "commit_mode: agent\ncommit_mode: agent\n",
+        "# commit_mode: agent\n",
+    ],
+)
+def test_render_config_codex_rejects_a_template_without_the_commit_mode_line(
+    replacement: str,
+) -> None:
+    template = _template_config_text()
+    original = "commit_mode: agent\n"
+    assert template.count(original) == 1
+    broken = template.replace(original, replacement)
+
+    with pytest.raises(InitWorkflowError, match="commit_mode: agent"):
+        render_config(broken, CODEX_MAPPING)
+    # The other mappings never touch the line, so they still render.
+    assert render_config(broken, CLAUDE_MAPPING)
+    assert render_config(broken, REFERENCE_MAPPING) == broken
+
+
 def test_init_provider_codex_writes_a_loadable_all_codex_config(
     tmp_path: Path,
 ) -> None:
@@ -581,6 +634,11 @@ def test_init_provider_codex_writes_a_loadable_all_codex_config(
         assert config.agents[role].skill_name == skill_name, role
     assert config.audit.security_provider == "codex"
     assert config.normalizer.provider == "codex"
+    assert config.commit_mode == "dispatcher"
+    assert config.enforce_work_packet is True
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert text.count("\ncommit_mode: dispatcher\n") == 1
+    assert "commit_mode: agent\n" not in text
     for skill_name in CODEX_ROLE_SKILLS.values():
         assert (tmp_path / ".codex" / "skills" / skill_name / "SKILL.md").is_file()
 
@@ -593,6 +651,12 @@ def test_init_auto_detects_a_codex_only_machine(tmp_path: Path) -> None:
     text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
     assert "provider: gemini" not in text
     assert "provider: claude" not in text
+    assert text == render_config(_template_config_text(), CODEX_MAPPING)
+    config = load_dispatch_config(
+        repo_root=tmp_path,
+        config_path=tmp_path / "dispatch_config.yaml",
+    )
+    assert config.commit_mode == "dispatcher"
 
 
 def test_init_codex_mapping_is_repeatable(tmp_path: Path) -> None:

@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff init --provider codex` (and the automatic all-Codex mapping
+  on a machine where `codex` is the only provider CLI) now writes
+  `commit_mode: dispatcher` instead of the template's `commit_mode: agent`.
+  Codex's `workspace-write` sandbox keeps `.git` read-only, so an all-Codex
+  config in agent mode stalled on its first backend handoff with
+  `blocked_implementation_failure`. The `claude` and reference mappings are
+  unchanged, and `init` fails with a clear error if the template no longer
+  has exactly one `commit_mode: agent` line.
 - In `publish.mode: pr`, the dispatcher now also saves the implementer's
   `## Review Responses` from the handoff it is about to send to the auditor,
   not only when the work-claim gate passes. A correction-round handback that
