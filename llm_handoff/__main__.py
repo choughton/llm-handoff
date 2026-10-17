@@ -257,9 +257,10 @@ def init_command(
         None,
         "--provider",
         help=(
-            "Put every role on one provider CLI: claude or codex. "
+            "Put every role on one provider CLI: claude, codex, or gemini. "
             "Default: claude when Claude Code is the only provider CLI on "
             "PATH, codex when Codex is the only provider CLI on PATH, "
+            "gemini when Gemini CLI is the only provider CLI on PATH, "
             "otherwise the reference mapping."
         ),
     ),
