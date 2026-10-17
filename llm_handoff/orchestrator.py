@@ -299,9 +299,11 @@ PAUSE_RECOVERY_INSTRUCTION_TEMPLATE = (
 PAUSE_RECOVERY_NO_DIAGNOSIS = "The validator returned no diagnosis."
 # In Linear mode a validator report must carry a well-formed LINEAR-EVIDENCE
 # row, in the same shape the validator's check-row parser reads. A missing or
-# malformed row counts as a failed evidence check, never as a pass.
+# malformed row counts as a failed evidence check, never as a pass. The match
+# is case-sensitive: the parser records a status only when it is exactly
+# PASS, WARN, or FAIL, so a row like "fail - x" must not satisfy this guard.
 _LINEAR_EVIDENCE_ROW_RE = re.compile(
-    r"(?im)^\s{2}LINEAR-EVIDENCE:\s*(PASS|WARN|FAIL)\s*(?:-|—)\s*(.+)$"
+    r"(?m)^\s{2}LINEAR-EVIDENCE:\s*(PASS|WARN|FAIL)\s*(?:-|\u2014)\s*(.+)$"
 )
 LINEAR_EVIDENCE_ROW_MISSING_ERROR = (
     "linear-evidence: the validator report has no parseable LINEAR-EVIDENCE "
@@ -2716,7 +2718,7 @@ def _require_linear_evidence_row(
     status would otherwise read as a pass and let planner recovery run.
     """
 
-    if _LINEAR_EVIDENCE_ROW_RE.search(stdout.lstrip("﻿")) is not None:
+    if _LINEAR_EVIDENCE_ROW_RE.search(stdout.lstrip("\ufeff")) is not None:
         return validation_result
     return replace(
         validation_result,
