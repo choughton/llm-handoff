@@ -66,11 +66,15 @@ This project follows a simple pre-release changelog until the first public tag.
   has exactly one `commit_mode: agent` line.
 - Added the all-Gemini mapping: `llm-handoff init --provider gemini` (chosen
   automatically when `gemini` is the only provider CLI on `PATH`) puts every
-  role on Gemini CLI with `audit.security_provider: gemini` and the API-only
-  Gemini normalizer, the reference workflow ships a Gemini agent file for
-  every role (`backend`, `auditor`, `validator`, and `finalizer` are new),
-  and `llm-handoff doctor` checks the Gemini CLI security extension when the
-  security reviewer resolves to Gemini.
+  role on Gemini CLI with `audit.security_provider: gemini` and the Gemini
+  normalizer, the reference workflow ships a Gemini agent file for every role
+  (`backend`, `auditor`, `validator`, and `finalizer` are new), and
+  `llm-handoff doctor` checks the Gemini CLI security extension when the
+  security reviewer resolves to Gemini. The Gemini normalizer now runs
+  through the Gemini CLI sign-in when no `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+  is set, as the Claude and Codex normalizers already did, so a Gemini-only
+  machine needs no API key; `doctor` passes its `normalizer` line when the
+  `gemini` binary is on `PATH`.
 - On Windows, provider CLIs installed through npm (`codex.cmd`, `gemini.cmd`)
   are now launched directly through their shim's target (`node <entry>.js`)
   instead of through the `.cmd` shim itself. Running the shim made `cmd.exe`
