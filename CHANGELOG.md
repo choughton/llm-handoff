@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The Linear-mode validator prompt now runs a read-only evidence check: it
+  compares the latest `llm_handoff_event` comment on the leased issue with
+  `HANDOFF.md` (`issue`, `tracker_url`, `producer`, `next_agent`, `status`,
+  and `commit_sha` against `scope_sha`, allowing `pending-dispatcher-commit`
+  for `implementation_handoff` when `commit_mode` is `dispatcher`), checks
+  that the producer may post that event and that required fields are present,
+  writes the result under `## Linear Evidence Check`, and routes any mismatch
+  to `user` with `status: blocked_missing_context`. It never edits a comment
+  or the issue. The Linear-mode planner prompt now posts
+  `user_attention_requested` (and adds `tracker.user_attention_label` when
+  set) when it routes a leased issue to `user`, posts nothing when no issue is
+  leased, and posts `user_attention_cleared` (and removes the label) before it
+  routes onward from `user`.
 - The Linear-mode planner prompt now states the selection rules: pick the
   eligible issue with the highest Linear priority (`selection_basis:
   priority`, ties broken by manual order, then creation date), else the first

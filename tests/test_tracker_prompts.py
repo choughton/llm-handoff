@@ -192,6 +192,46 @@ def test_planner_selection_rules_are_ordered() -> None:
     assert order == sorted(order)
 
 
+def test_validator_section_states_read_only_evidence_check() -> None:
+    text = " ".join(linear_role_section("validator").split())
+    for phrase in (
+        "latest evidence comment",
+        "`llm_handoff_event`",
+        "`tracker_issue`",
+        "`tracker_url`",
+        "`producer`",
+        "`next_agent`",
+        "`scope_sha`",
+        "`pending-dispatcher-commit`",
+        "`commit_mode`",
+        "## Linear Evidence Check",
+        "`status: blocked_missing_context`",
+        "`next_agent: user`",
+        "read-only",
+    ):
+        assert phrase in text, phrase
+
+
+def test_planner_section_states_user_attention_steps_in_order() -> None:
+    text = " ".join(linear_role_section("planner").split())
+    for phrase in (
+        "`user_attention_requested`",
+        "`user_attention_cleared`",
+        "`tracker.user_attention_label`",
+    ):
+        assert phrase in text, phrase
+    requested = text.index("`user_attention_requested`")
+    cleared = text.index("`user_attention_cleared`")
+    assert requested < cleared
+
+
+def test_planner_user_attention_follows_closing_paragraph() -> None:
+    text = " ".join(linear_role_section("planner").split())
+    closing = text.index("Issue text decides what the work is")
+    assert closing < text.index("`user_attention_requested`")
+    assert closing < text.index("`tracker.user_attention_label`")
+
+
 @pytest.mark.parametrize("role", ["user", "security", "", "Planner"])
 def test_unknown_role_raises_value_error(role: str) -> None:
     with pytest.raises(ValueError):
