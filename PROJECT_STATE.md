@@ -74,7 +74,46 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 
-### 10. WORK-INTAKE - turn a plain request into epics and stories
+### 10. CHAT - talk to the agents while the loop runs
+
+The operator types at any time; a message holds the loop and is answered by
+the agent it is about, from that agent's own session, read-only. Chat never
+changes routing on its own: only a confirmed action re-dispatches a role.
+Console only, TTY only; without a TTY the loop behaves exactly as today. No new
+dependencies; Windows (`msvcrt`) and POSIX.
+
+- CHAT-1: Console chat line. During a run, a prompt line stays at the bottom of
+  the console (`[<role> running] chat> `) and is redrawn around log lines.
+  Agent processes start with `stdin=DEVNULL` so they never read the operator's
+  keystrokes.
+- CHAT-2: A sent message holds the loop at the next safe point: after the
+  current dispatch, its dispatcher commit, and its gates, and before the next
+  dispatch and before any publish or merge (reuse the graceful-stop check
+  points). A message about the running agent prints `Question queued until
+  after the current <role> run completes.` While held, print `Press Enter to
+  continue`; the loop never resumes on its own after a message. Queued
+  messages are saved under `logs/dispatch/` and survive `llm-handoff stop`.
+- CHAT-3: Dispatch record and read-only answers. Save each dispatch in the run
+  (role, story, provider, session id, time) under `logs/dispatch/`. A question
+  resumes that agent's own session read-only and prints the answer; follow-ups
+  stay in the same thread. Claude `--resume`; Codex `exec resume` in the
+  read-only sandbox; Gemini `--approval-mode plan` (confirm `--resume` accepts
+  a session id, else start sessions with `--session-id` and load them with
+  `--session-file`); agy `--conversation` with `--mode plan`. After each answer
+  the dispatcher checks that `HANDOFF.md` and the Git state are unchanged and
+  pauses with a warning if not. A provider that cannot resume says so and
+  offers the planner.
+- CHAT-4: Router and action path. `@role <message>` targets that role. Otherwise
+  the normalizer model classifies the message against the dispatch record
+  (target, question or action, confidence) and prints its pick before anything
+  runs, for example `-> asking auditor (LIN-9b audit, session <id>)`; a
+  low-confidence pick shows a numbered list instead. Questions about the loop
+  as a whole go to the planner. An action asks `Re-dispatch <role> with this
+  guidance? [y/N]`; yes uses the existing operator role dispatch, and the
+  handoff and pull request record the result as operator-influenced (closes
+  PAUSE-RECOVERY followup (d)).
+
+### 11. WORK-INTAKE - turn a plain request into epics and stories
 
 Before scoping INTAKE-1, route to `user` for a short design check.
 
