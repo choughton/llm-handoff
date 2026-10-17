@@ -120,8 +120,12 @@ dispatcher role writes `HANDOFF.md`; see
 | File | Purpose |
 | --- | --- |
 | [.gemini/agents/planner.md](../.gemini/agents/planner.md) | Planner agent template (the reference mapping's Gemini role). |
+| [.gemini/agents/backend.md](../.gemini/agents/backend.md) | Backend agent template (all-Gemini mapping). |
 | [.gemini/agents/frontend.md](../.gemini/agents/frontend.md) | Frontend agent template. |
-| [.gemini/policies/planner_guardrails.toml](../.gemini/policies/planner_guardrails.toml) | Deny rules for `git push`, `curl`, `wget`, `rm -rf`, `git reset --hard`. Must be copied to `~/.gemini/policies/` to take effect. |
+| [.gemini/agents/auditor.md](../.gemini/agents/auditor.md) | Auditor agent template (all-Gemini mapping). |
+| [.gemini/agents/validator.md](../.gemini/agents/validator.md) | Validator and router agent template (all-Gemini mapping). |
+| [.gemini/agents/finalizer.md](../.gemini/agents/finalizer.md) | Finalizer agent template (all-Gemini mapping). |
+| [.gemini/policies/planner_guardrails.toml](../.gemini/policies/planner_guardrails.toml) | Deny rules for `git push`, `curl`, `wget`, `rm -rf`, `git reset --hard` for every Gemini role. Must be copied to `~/.gemini/policies/` to take effect. |
 
 ### Antigravity
 
@@ -211,7 +215,11 @@ guide to that directory.
 | [.codex/skills/llm-handoff-finalizer/SKILL.md](../examples/reference-workflow/.codex/skills/llm-handoff-finalizer/SKILL.md) | Codex finalizer skill. |
 | [.codex/rules/llm-handoff.rules](../examples/reference-workflow/.codex/rules/llm-handoff.rules) | Codex rules file. |
 | [.gemini/agents/planner.md](../examples/reference-workflow/.gemini/agents/planner.md) | Gemini planner agent. |
+| [.gemini/agents/backend.md](../examples/reference-workflow/.gemini/agents/backend.md) | Gemini backend agent. |
 | [.gemini/agents/frontend.md](../examples/reference-workflow/.gemini/agents/frontend.md) | Gemini frontend agent. |
+| [.gemini/agents/auditor.md](../examples/reference-workflow/.gemini/agents/auditor.md) | Gemini auditor agent. |
+| [.gemini/agents/validator.md](../examples/reference-workflow/.gemini/agents/validator.md) | Gemini validator and router agent. |
+| [.gemini/agents/finalizer.md](../examples/reference-workflow/.gemini/agents/finalizer.md) | Gemini finalizer agent. |
 | [.gemini/policies/planner_guardrails.toml](../examples/reference-workflow/.gemini/policies/planner_guardrails.toml) | Gemini deny rules. Copy to `~/.gemini/policies/` to enforce. |
 | [.agents/agents/planner.md](../examples/reference-workflow/.agents/agents/planner.md) | Antigravity planner agent. |
 | [.agents/agents/backend.md](../examples/reference-workflow/.agents/agents/backend.md) | Antigravity backend agent. |

@@ -280,6 +280,35 @@ def test_codex_validator_output_is_unwrapped_for_the_parser(
     assert parsed.errors == ["routing: next_agent is missing."]
 
 
+def test_gemini_validator_output_is_parsed_as_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The Gemini adapter already reduces stream-json to the assistant text,
+    # so the support path hands the report to the parser without unwrapping
+    # and without the Codex envelope instruction.
+    plain = DispatchResult(
+        stdout=VALIDATION_REPORT, stderr="", exit_code=0, elapsed_seconds=0.01
+    )
+    invoke_mock = Mock(return_value=plain)
+    monkeypatch.setattr(agent_roles, "invoke_gemini", invoke_mock)
+
+    result = agent_roles.invoke_support_role(
+        "handoff-validator",
+        "Return ONLY the structured validation output.",
+        role="validator",
+        handoff_path=Path("docs/handoff/HANDOFF.md"),
+        agent_config=AgentConfig(provider="gemini", mention="@validator"),
+    )
+
+    assert invoke_mock.call_args.kwargs["additional_instruction"] == (
+        "Return ONLY the structured validation output."
+    )
+    assert result.stdout == VALIDATION_REPORT
+    parsed = parse_validation_output(result.stdout)
+    assert parsed.verdict == "NO"
+    assert parsed.errors == ["routing: next_agent is missing."]
+
+
 def test_codex_plain_output_passes_through_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

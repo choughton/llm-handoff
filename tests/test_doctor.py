@@ -10,6 +10,7 @@ import pytest
 
 from llm_handoff import __main__ as main_module
 from llm_handoff import antigravity_permissions as agy_perms
+from llm_handoff import audit_review
 from llm_handoff import config as config_module
 from llm_handoff import doctor
 from llm_handoff import supervisor
@@ -399,6 +400,98 @@ def test_doctor_warns_with_the_security_opt_out_reason(
     assert len(warn_lines) == 1
     assert "security reviewer is off" in warn_lines[0]
     assert "Local prototype with no user data." in warn_lines[0]
+
+
+ALL_GEMINI = {role: "gemini" for role in ROLES}
+
+
+def _make_all_gemini_repo(tmp_path: Path) -> Path:
+    # The shape `llm-handoff init --provider gemini` writes: every role on
+    # Gemini CLI, the Gemini normalizer, and the Gemini security reviewer.
+    repo = _make_repo(
+        tmp_path, ALL_GEMINI, normalizer_provider="gemini", commit=False
+    )
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "audit:\n"
+        + "  security_provider: gemini\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "initial")
+    return repo
+
+
+def _stub_gemini_extensions_list(
+    monkeypatch: pytest.MonkeyPatch, stdout: str, exit_code: int = 0
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_run(_agent_name: str, command: list[str], **_kwargs: object):
+        calls.append(command)
+        return _ProcessResult(stdout=stdout, stderr="", exit_code=exit_code)
+
+    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_run)
+    return calls
+
+
+def test_doctor_passes_the_gemini_security_extension_when_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_all_gemini_repo(tmp_path)
+    _stub_which(monkeypatch, {"fake-gemini", "docker"})
+    monkeypatch.setenv("GEMINI_API_KEY", "doctor-test-key")
+    calls = _stub_gemini_extensions_list(
+        monkeypatch, f"{audit_review.GEMINI_SECURITY_EXTENSION_NAME} (0.3.0)\n"
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert calls == [["fake-gemini", "extensions", "list"]]
+    assert "PASS security review: the security reviewer is on" in output
+    assert (
+        "PASS security extension: the Gemini CLI security extension "
+        f"({audit_review.GEMINI_SECURITY_EXTENSION_NAME}) is active"
+    ) in output
+    assert "PASS container runtime:" in output
+    assert "PASS normalizer: provider gemini can use GEMINI_API_KEY" in output
+
+
+def test_doctor_fails_when_the_gemini_security_extension_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_all_gemini_repo(tmp_path)
+    _stub_which(monkeypatch, {"fake-gemini", "docker"})
+    monkeypatch.setenv("GEMINI_API_KEY", "doctor-test-key")
+    _stub_gemini_extensions_list(monkeypatch, "No extensions installed.\n")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    fail_lines = [
+        line
+        for line in output.splitlines()
+        if line.startswith("FAIL security extension:")
+    ]
+    assert len(fail_lines) == 1
+    assert "security_reviewer_failed" not in fail_lines[0]
+    assert audit_review.GEMINI_SECURITY_EXTENSION_URL in fail_lines[0]
+
+
+def test_doctor_skips_the_extension_check_for_other_reviewers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    calls = _stub_gemini_extensions_list(monkeypatch, "")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert calls == []
+    assert "security extension" not in output
 
 
 def test_doctor_fails_on_security_opt_out_without_a_reason(
