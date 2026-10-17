@@ -12,7 +12,7 @@ Your job is to record the closed scope in durable project state, clear the final
 1. `docs/handoff/HANDBOOK.md`
 2. `AGENTS.md`
 3. `docs/handoff/HANDOFF.md`
-4. `PROJECT_STATE.md` if present
+4. The project state file named in the dispatcher prompt (`PROJECT_STATE.md` by default), if present
 5. `git log --oneline -10`
 
 ## Shell Commands
@@ -39,9 +39,9 @@ If any precondition is missing, do not update project state. Rewrite `docs/hando
 
 ## State Update
 
-If `PROJECT_STATE.md` exists, update it according to the consuming repository's local instructions. Keep the edit focused on the closed scope, next active scope, and durable commit references.
+If the project state file named in the dispatcher prompt exists, update it according to the consuming repository's local instructions. Keep the edit focused on the closed scope, next active scope, and durable commit references.
 
-If `PROJECT_STATE.md` does not exist, create a minimal one only when `AGENTS.md` or `docs/handoff/HANDOFF.md` explicitly says this repository uses it. Otherwise, leave project state unchanged and route to `planner` or `user` with a clear reason.
+If the project state file named in the dispatcher prompt does not exist, create a minimal one only when `AGENTS.md` or `docs/handoff/HANDOFF.md` explicitly says this repository uses it. Otherwise, leave project state unchanged and route to `planner` or `user` with a clear reason.
 
 ## Handoff Rewrite
 
@@ -79,7 +79,7 @@ HANDOFF.MD REWRITTEN: YES | NO
 SCOPE CLOSED: <scope name>
 NEXT ROUTE: <planner | user | another supported next_agent>
 AUDIT SHA: <full or short sha>
-COMMIT SHA: <single full or short sha for the PROJECT_STATE.md/HANDOFF.md commit>
+COMMIT SHA: <single full or short sha for the project state commit>
 PUSH RESULT: SKIPPED
 CHANGES MADE:
   - <file>: <what changed>

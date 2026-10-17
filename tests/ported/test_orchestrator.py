@@ -2795,6 +2795,7 @@ def test_run_loop_redirects_completed_stale_epic_close_to_planner_scoping(
     assert planner_calls[0][:2] == (handoff_path, False)
     assert planner_calls[0][2] is not None
     assert "prior finalizer cycle already completed" in planner_calls[0][2]
+    assert "PROJECT_STATE.md" in planner_calls[0][2]
     assert (
         "WARN",
         "STALE finalizer detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
@@ -2806,13 +2807,27 @@ def test_run_loop_redirects_completed_stale_epic_close_to_planner_scoping(
 def test_stale_finalizer_recovery_instruction_is_provider_agnostic() -> None:
     orchestrator = _load_orchestrator_module()
 
-    instruction = orchestrator.STALE_FINALIZER_RECOVERY_INSTRUCTION.lower()
+    instruction = orchestrator.stale_finalizer_recovery_instruction(
+        Path("PROJECT_STATE.md")
+    ).lower()
 
     assert "gemini" not in instruction
     assert "claude" not in instruction
     assert "codex" not in instruction
     old_name = "STALE_EPIC_CLOSE_" + "GEM" + "INI_RECOVERY_INSTRUCTION"
     assert not hasattr(orchestrator, old_name)
+    assert not hasattr(orchestrator, "STALE_FINALIZER_RECOVERY_INSTRUCTION")
+
+
+def test_stale_finalizer_recovery_instruction_names_the_configured_state_path() -> None:
+    orchestrator = _load_orchestrator_module()
+
+    instruction = orchestrator.stale_finalizer_recovery_instruction(
+        Path("docs/state/STATUS.md")
+    )
+
+    assert "docs/state/STATUS.md" in instruction
+    assert "PROJECT_STATE.md" not in instruction
 
 
 def test_run_loop_redirects_stale_epic_close_after_ledger_advances_campaign(

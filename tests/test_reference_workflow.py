@@ -152,6 +152,27 @@ def test_reference_workflow_copied_templates_match_source() -> None:
     assert mismatched == []
 
 
+FINALIZER_HELPER_FILES = (
+    ".codex/skills/llm-handoff-finalizer/SKILL.md",
+    ".claude/agents/ledger-updater.md",
+    ".agents/agents/ledger-updater.md",
+)
+
+
+def test_finalizer_helpers_defer_to_the_configured_project_state_path() -> None:
+    for root in (REPO_ROOT, REFERENCE_WORKFLOW):
+        for relative_path in FINALIZER_HELPER_FILES:
+            path = root / relative_path
+            content = path.read_text(encoding="utf-8")
+
+            assert "project state file named in the dispatcher prompt" in content, path
+            count = content.count("PROJECT_STATE.md")
+            assert count <= 1, path
+            if count == 1:
+                assert "(`PROJECT_STATE.md` by default)" in content, path
+            assert "PROJECT_STATE.md/HANDOFF.md commit" not in content, path
+
+
 def test_reference_workflow_config_loads() -> None:
     config = load_dispatch_config(
         repo_root=REFERENCE_WORKFLOW,
