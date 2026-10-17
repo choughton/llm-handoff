@@ -144,7 +144,10 @@ dispatcher always waits for a person. The same holds when the pause validator
 leaves `HANDOFF.md` routed to `user`, for example after it changed a protected
 file and the dispatcher wrote the protected-file escalation. `--dry-run` never
 schedules recovery. In Linear mode, a pause diagnosis whose `LINEAR-EVIDENCE`
-row fails never triggers recovery, and the dispatcher waits for a person.
+row fails never triggers recovery, and the dispatcher waits for a person. A
+validator report with no `LINEAR-EVIDENCE` row, or with a row that does not
+parse (such as `LINEAR-EVIDENCE: FAIL` with no detail), counts as a failed
+row: recovery needs a parsed `PASS` or `WARN` status.
 
 Set `pause_recovery: "off"` to skip recovery and pause at once, as earlier
 releases did. Quote the value: YAML reads a bare `off` as the boolean `false`,

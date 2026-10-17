@@ -468,9 +468,12 @@ def _tracker_config(repo_root: Path, provider: str) -> DispatchConfig:
 def _linear_evidence_harness(
     monkeypatch: pytest.MonkeyPatch,
     handoff_path: Path,
-    evidence_row: str,
+    evidence_row: str | None,
 ) -> _Harness:
     harness = _Harness(monkeypatch, handoff_path, planner_writes=[USER_HANDOFF])
+    evidence_line = (
+        "" if evidence_row is None else f"  LINEAR-EVIDENCE: {evidence_row}\n"
+    )
 
     def fake_support(_name: str, prompt: str, **_kwargs: Any) -> SubagentResult:
         harness.validator_prompts.append(prompt)
@@ -479,7 +482,7 @@ def _linear_evidence_harness(
                 "VALID: NO\n"
                 "CHECKS:\n"
                 "  ROUTING:        FAIL - no routing instruction\n"
-                f"  LINEAR-EVIDENCE: {evidence_row}\n"
+                f"{evidence_line}"
             ),
             stderr="",
             exit_code=0,
@@ -521,6 +524,39 @@ def test_linear_evidence_failure_without_linear_mode_keeps_recovery(
     harness = _linear_evidence_harness(
         monkeypatch, handoff_path, _EVIDENCE_FAIL_ROW
     )
+
+    assert harness.run(_tracker_config(tmp_path, "none")) == 0
+
+    assert len(harness.recovery_instructions) == 1
+    assert _LINEAR_EVIDENCE_PAUSE_LOG not in harness.logs
+
+
+@pytest.mark.parametrize(
+    "evidence_row",
+    [None, "FAIL", "PASS"],
+    ids=["row-missing", "fail-without-detail", "pass-without-detail"],
+)
+def test_linear_evidence_row_missing_or_malformed_blocks_pause_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_row: str | None,
+) -> None:
+    handoff_path = _write_repo(tmp_path, NO_ROUTE_HANDOFF)
+    harness = _linear_evidence_harness(monkeypatch, handoff_path, evidence_row)
+
+    assert harness.run(_tracker_config(tmp_path, "linear")) == 0
+
+    assert harness.planner_instructions == []
+    assert _LINEAR_EVIDENCE_PAUSE_LOG in harness.logs
+    assert ("ERROR", orchestrator.LINEAR_EVIDENCE_ROW_MISSING_ERROR) in harness.logs
+
+
+def test_linear_evidence_row_missing_without_linear_mode_keeps_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, NO_ROUTE_HANDOFF)
+    harness = _linear_evidence_harness(monkeypatch, handoff_path, None)
 
     assert harness.run(_tracker_config(tmp_path, "none")) == 0
 

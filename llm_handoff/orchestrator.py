@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 from hashlib import sha256
 import inspect
@@ -297,6 +297,16 @@ PAUSE_RECOVERY_INSTRUCTION_TEMPLATE = (
     "one specific question for the user."
 )
 PAUSE_RECOVERY_NO_DIAGNOSIS = "The validator returned no diagnosis."
+# In Linear mode a validator report must carry a well-formed LINEAR-EVIDENCE
+# row, in the same shape the validator's check-row parser reads. A missing or
+# malformed row counts as a failed evidence check, never as a pass.
+_LINEAR_EVIDENCE_ROW_RE = re.compile(
+    r"(?im)^\s{2}LINEAR-EVIDENCE:\s*(PASS|WARN|FAIL)\s*(?:-|—)\s*(.+)$"
+)
+LINEAR_EVIDENCE_ROW_MISSING_ERROR = (
+    "linear-evidence: the validator report has no parseable LINEAR-EVIDENCE "
+    "row, so the evidence check did not report a status."
+)
 # Planner dispatch requested by a person at the operator prompt. The operator
 # text is passed as a keyword value, so braces in it are not parsed again.
 OPERATOR_PAUSE_INSTRUCTION_TEMPLATE = (
@@ -2682,12 +2692,37 @@ def _run_validator(
         _log(log, "WARN", f"{label} returned unparseable output.")
         return None
 
+    if config.tracker.provider == "linear":
+        validation_result = _require_linear_evidence_row(
+            validation_result, result.stdout
+        )
+
     _log(log, "AGENT", f"Handoff validation verdict: {validation_result.verdict}")
     for warning in validation_result.warnings:
         _log(log, "WARN", warning)
     for error in validation_result.errors:
         _log(log, "ERROR", error)
     return validation_result
+
+
+def _require_linear_evidence_row(
+    validation_result: ValidationResult, stdout: str
+) -> ValidationResult:
+    """Treat a missing or malformed LINEAR-EVIDENCE row as a failed check.
+
+    In Linear mode the validator report must carry a well-formed
+    ``LINEAR-EVIDENCE`` row. ``parse_validation_output`` drops a row it cannot
+    parse, such as ``LINEAR-EVIDENCE: FAIL`` with no detail, so an absent
+    status would otherwise read as a pass and let planner recovery run.
+    """
+
+    if _LINEAR_EVIDENCE_ROW_RE.search(stdout.lstrip("﻿")) is not None:
+        return validation_result
+    return replace(
+        validation_result,
+        verdict="NO",
+        errors=[*validation_result.errors, LINEAR_EVIDENCE_ROW_MISSING_ERROR],
+    )
 
 
 def _run_unknown_route_validator(

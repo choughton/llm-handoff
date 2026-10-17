@@ -17,7 +17,9 @@ This project follows a simple pre-release changelog until the first public tag.
   the dispatcher no longer schedules planner pause recovery when the pause
   diagnosis fails the `LINEAR-EVIDENCE` row; it logs
   `Linear evidence check failed; not scheduling planner recovery.` and waits
-  for a person. The Claude `handoff-validator` helper files follow in LIN-9d.
+  for a person. A validator report whose `LINEAR-EVIDENCE` row is missing or
+  does not parse counts as a failed row, so recovery needs a parsed `PASS` or
+  `WARN` status. The Claude `handoff-validator` helper files follow in LIN-9d.
 - In `publish.mode: pr`, the dispatcher now also saves the implementer's
   `## Review Responses` from the handoff it is about to send to the auditor,
   not only when the work-claim gate passes. A correction-round handback that
