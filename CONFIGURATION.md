@@ -1718,7 +1718,10 @@ each implementer role, whether configured or chosen automatically: its CLI
 must be on `PATH`, and a Gemini reviewer also needs a sandbox runtime (unless
 the Gemini role sets `unsafe_bypass: true`) and the Gemini CLI security
 extension. A failed check stops the run with a `security_reviewer_failed:`
-error. `--dry-run` skips this check.
+error. `--dry-run` skips this check. `llm-handoff doctor` runs the same
+extension check (`gemini extensions list`, no model call) when a reviewer
+resolves to Gemini and prints a `security extension` line that fails when
+the extension is missing or disabled.
 
 With `security` enabled, the auditor route works differently:
 
