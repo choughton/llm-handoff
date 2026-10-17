@@ -12,12 +12,20 @@ from importlib import resources
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from llm_handoff.config import (
     CLAUDE_DEFAULT_ALLOWED_TOOLS,
     VERIFICATION_FORBIDDEN_CHARS,
+    TrackerConfig,
 )
 from llm_handoff.stack_detect import Candidate, detect_candidates
+from llm_handoff.tracker_prompts import (
+    LINEAR_PROMPT_ROLES,
+    linear_agents_section,
+    linear_evidence_contract,
+    linear_role_section,
+)
 
 REFERENCE_TEMPLATE = "reference-workflow"
 _PACKAGE_NAME = "llm_handoff"
@@ -74,6 +82,33 @@ _TEXT_MARKERS = {
     Path(".geminiignore"): (b"# llm-handoff:begin", b"# llm-handoff:end"),
 }
 _SETTINGS_PATH = Path(".claude/settings.json")
+_AGENTS_PATH = Path("AGENTS.md")
+_HANDBOOK_PATH = Path("docs/handoff/HANDBOOK.md")
+
+# `init --tracker` values. `none` keeps vanilla output byte for byte.
+TRACKER_NONE = "none"
+TRACKER_LINEAR = "linear"
+TRACKER_CHOICES = (TRACKER_NONE, TRACKER_LINEAR)
+DEFAULT_TRACKER_MCP_SERVER = "linear"
+_DEFAULT_ELIGIBLE_STATE = "Todo"
+_DEFAULT_IN_PROGRESS_STATE = "In Progress"
+_DEFAULT_SUCCESS_STATE = "In Review"
+# Managed-block markers for Linear mode. The config block uses YAML comments;
+# AGENTS.md and HANDBOOK.md use HTML comments.
+_TRACKER_CONFIG_MARKERS = ("# llm-handoff:tracker:begin", "# llm-handoff:tracker:end")
+_LINEAR_TEXT_MARKERS = (
+    b"<!-- llm-handoff:linear:begin -->",
+    b"<!-- llm-handoff:linear:end -->",
+)
+# Order of the `--tracker-*` option names substituted into validation errors;
+# `tracker.provider: linear` must be replaced before the shorter keys.
+_TRACKER_OPTION_NAMES = (
+    ("tracker.provider: linear", "--tracker linear"),
+    ("tracker.mcp_server", "--tracker-mcp-server"),
+    ("tracker.project", "--tracker-project"),
+    ("tracker.label", "--tracker-label"),
+    ("tracker.team", "--tracker-team"),
+)
 _GEMINIIGNORE_BLOCK = b""".git
 node_modules
 venv
@@ -246,6 +281,7 @@ class InitResult:
     # `init` prints the agy permission entries; the provider mapping
     # auto-detect does not use it.
     antigravity_detected: bool = False
+    tracker: str = TRACKER_NONE
 
 
 class InitWorkflowError(RuntimeError):
@@ -277,6 +313,33 @@ class InvalidVerificationCommandError(InitWorkflowError):
         )
         self.command = command
         self.token = token
+
+
+class UnknownTrackerError(InitWorkflowError):
+    def __init__(self, tracker: str) -> None:
+        super().__init__(
+            f"Unknown tracker {tracker!r}. "
+            f"Available trackers: {', '.join(TRACKER_CHOICES)}."
+        )
+        self.tracker = tracker
+
+
+class InvalidTrackerOptionsError(InitWorkflowError):
+    """A `--tracker-*` option is missing, misplaced, or has an invalid value."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"Invalid tracker options: {detail}")
+        self.detail = detail
+
+
+class TrackerRequiresFreshRepoError(InitWorkflowError):
+    def __init__(self, target_root: Path) -> None:
+        super().__init__(
+            "--tracker linear only sets up a repository that has no "
+            f"dispatch_config.yaml yet, but {target_root / _CONFIG_PATH} "
+            "exists; switching an initialized repository is not supported yet."
+        )
+        self.target_root = target_root
 
 
 class InitConflictError(InitWorkflowError):
@@ -549,8 +612,172 @@ def _check_allowed_tools(rendered: str, tools: tuple[str, ...]) -> None:
             )
 
 
-def _config_is_rendered(mapping: str, executable: str | None) -> bool:
-    return mapping != REFERENCE_MAPPING or executable is not None
+def build_tracker_config(
+    tracker: str,
+    *,
+    team: str | None = None,
+    project: str | None = None,
+    label: str | None = None,
+    mcp_server: str | None = None,
+) -> TrackerConfig | None:
+    """Validate the `init --tracker` options; return the block to write.
+
+    Returns None for `--tracker none`. Raises UnknownTrackerError for an
+    unknown tracker and InvalidTrackerOptionsError for a missing, misplaced,
+    or invalid `--tracker-*` option. Nothing is written here.
+    """
+
+    if tracker not in TRACKER_CHOICES:
+        raise UnknownTrackerError(tracker)
+    if tracker == TRACKER_NONE:
+        given = [
+            name
+            for name, value in (
+                ("--tracker-team", team),
+                ("--tracker-project", project),
+                ("--tracker-label", label),
+                ("--tracker-mcp-server", mcp_server),
+            )
+            if value is not None
+        ]
+        if given:
+            raise InvalidTrackerOptionsError(
+                f"{', '.join(given)} requires --tracker linear."
+            )
+        return None
+    if team is None:
+        raise InvalidTrackerOptionsError("--tracker linear requires --tracker-team.")
+    if (project is None) == (label is None):
+        raise InvalidTrackerOptionsError(
+            "--tracker linear requires exactly one of --tracker-project and "
+            "--tracker-label."
+        )
+    values: dict[str, str] = {"provider": TRACKER_LINEAR, "team": team}
+    if project is not None:
+        values["project"] = project
+    else:
+        values["label"] = label  # type: ignore[assignment]
+    values.update(
+        eligible_state=_DEFAULT_ELIGIBLE_STATE,
+        in_progress_state=_DEFAULT_IN_PROGRESS_STATE,
+        success_state=_DEFAULT_SUCCESS_STATE,
+        mcp_server=DEFAULT_TRACKER_MCP_SERVER if mcp_server is None else mcp_server,
+    )
+    try:
+        return TrackerConfig(**values)
+    except ValidationError as exc:
+        raise InvalidTrackerOptionsError(_tracker_error_detail(exc)) from exc
+
+
+def _tracker_error_detail(exc: ValidationError) -> str:
+    messages = []
+    for error in exc.errors():
+        message = str(error.get("msg", ""))
+        message = message.removeprefix("Value error, ")
+        for key, option in _TRACKER_OPTION_NAMES:
+            message = message.replace(key, option)
+        messages.append(" ".join(message.split()))
+    return "; ".join(messages) or "the tracker options are invalid."
+
+
+def _tracker_mapping(tracker: TrackerConfig) -> dict[str, str]:
+    data: dict[str, str] = {"provider": tracker.provider, "team": tracker.team or ""}
+    if tracker.project is not None:
+        data["project"] = tracker.project
+    else:
+        data["label"] = tracker.label or ""
+    data["eligible_state"] = tracker.eligible_state or ""
+    data["in_progress_state"] = tracker.in_progress_state or ""
+    data["success_state"] = tracker.success_state or ""
+    data["mcp_server"] = tracker.mcp_server or ""
+    return data
+
+
+def add_tracker_block(config_text: str, tracker: TrackerConfig) -> str:
+    """Append the managed `tracker` block to dispatch_config.yaml text.
+
+    The block uses the template text's line ending. The rest of the text,
+    including the commented `# tracker:` example, is unchanged.
+    """
+
+    lines = config_text.splitlines(keepends=True)
+    newline = (_line_ending(lines[0]) if lines else "") or "\n"
+    mapping = _tracker_mapping(tracker)
+    dumped = yaml.safe_dump(
+        {"tracker": mapping}, sort_keys=False, default_flow_style=False
+    )
+    begin, end = _TRACKER_CONFIG_MARKERS
+    body = "".join(f"{line}{newline}" for line in dumped.splitlines())
+    separator = newline if config_text and not config_text.endswith("\n") else ""
+    rendered = (
+        f"{config_text}{separator}{newline}{begin}{newline}{body}{end}{newline}"
+    )
+    try:
+        data = yaml.safe_load(rendered)
+    except yaml.YAMLError as exc:
+        raise InitWorkflowError(
+            "Rendered dispatch_config.yaml is not valid YAML."
+        ) from exc
+    if not isinstance(data, dict) or data.get("tracker") != mapping:
+        raise InitWorkflowError(
+            "Rendered dispatch_config.yaml does not carry the tracker block."
+        )
+    return rendered
+
+
+def _linear_block(content: str) -> bytes:
+    begin, end = _LINEAR_TEXT_MARKERS
+    return begin + b"\n" + content.rstrip("\r\n").encode("utf-8") + b"\n" + end
+
+
+def _linear_handbook_text() -> str:
+    sections = [linear_evidence_contract()]
+    sections.extend(linear_role_section(role) for role in LINEAR_PROMPT_ROLES)
+    return "\n\n".join(section.strip("\r\n") for section in sections)
+
+
+def _append_linear_handbook(template: bytes) -> bytes:
+    block = _linear_block(_linear_handbook_text())
+    if b"\r\n" in template:
+        block = block.replace(b"\n", b"\r\n")
+        newline = b"\r\n"
+    else:
+        newline = b"\n"
+    separator = newline if template and not template.endswith(b"\n") else b""
+    return template + separator + block + newline
+
+
+def _merge_linear_agents(existing: bytes) -> bytes:
+    """Add or replace the Linear block in merged AGENTS.md bytes.
+
+    Raises ValueError for malformed Linear markers, which `init` reports as a
+    conflict.
+    """
+
+    begin, end = _LINEAR_TEXT_MARKERS
+    block = _linear_block(linear_agents_section())
+    span = _marker_span(existing, begin, end)
+    if span:
+        return existing[: span[0]] + block + existing[span[1] :]
+    separator = b"\n" if existing and not existing.endswith(b"\n") else b""
+    return existing + separator + block + b"\n"
+
+
+def _config_is_rendered(
+    mapping: str, executable: str | None, tracker: TrackerConfig | None = None
+) -> bool:
+    return mapping != REFERENCE_MAPPING or executable is not None or tracker is not None
+
+
+def _source_is_rendered(
+    relative_path: Path,
+    mapping: str,
+    executable: str | None,
+    tracker: TrackerConfig | None,
+) -> bool:
+    if relative_path == _CONFIG_PATH:
+        return _config_is_rendered(mapping, executable, tracker)
+    return relative_path == _HANDBOOK_PATH and tracker is not None
 
 
 def _source_bytes(
@@ -558,9 +785,12 @@ def _source_bytes(
     mapping: str,
     executable: str | None = None,
     verification_command: str | None = None,
+    tracker: TrackerConfig | None = None,
 ) -> bytes:
     source_path = _TEMPLATE_ROOT / relative_path
-    if relative_path == _CONFIG_PATH and _config_is_rendered(mapping, executable):
+    if relative_path == _CONFIG_PATH and _config_is_rendered(
+        mapping, executable, tracker
+    ):
         if mapping == REFERENCE_MAPPING:
             # Keep the template's bytes, line endings included.
             text = source_path.read_bytes().decode("utf-8")
@@ -570,7 +800,11 @@ def _source_bytes(
             text = add_verification_allowed_tools(text, executable)
         if verification_command is not None:
             text = add_verification_allowed_prefixes(text, verification_command)
+        if tracker is not None:
+            text = add_tracker_block(text, tracker)
         return text.encode("utf-8")
+    if relative_path == _HANDBOOK_PATH and tracker is not None:
+        return _append_linear_handbook(source_path.read_bytes())
     return source_path.read_bytes()
 
 
@@ -686,11 +920,30 @@ def init_reference_workflow(
     available_providers: Iterable[str] | None = None,
     verification_command: str | None = None,
     antigravity_available: bool | None = None,
+    tracker: str = TRACKER_NONE,
+    tracker_team: str | None = None,
+    tracker_project: str | None = None,
+    tracker_label: str | None = None,
+    tracker_mcp_server: str | None = None,
 ) -> InitResult:
     if template != REFERENCE_TEMPLATE:
         raise UnknownTemplateError(template)
     if not _TEMPLATE_ROOT.is_dir():
         raise InitWorkflowError(f"Template directory not found: {_TEMPLATE_ROOT}")
+
+    # Validate tracker options and the fresh-repo rule before any file is
+    # planned, so both errors also fire with dry_run.
+    tracker_config = build_tracker_config(
+        tracker,
+        team=tracker_team,
+        project=tracker_project,
+        label=tracker_label,
+        mcp_server=tracker_mcp_server,
+    )
+    if tracker_config is not None:
+        resolved_root = target_root.expanduser().resolve()
+        if os.path.lexists(resolved_root / _CONFIG_PATH):
+            raise TrackerRequiresFreshRepoError(resolved_root)
 
     executable = (
         None
@@ -720,7 +973,7 @@ def init_reference_workflow(
     for relative_path in template_files():
         target_path = target_root / relative_path
         source = _source_bytes(
-            relative_path, mapping, executable, verification_command
+            relative_path, mapping, executable, verification_command, tracker_config
         )
         managed = relative_path in _TEXT_MARKERS or relative_path == _SETTINGS_PATH
         if _has_linked_destination(target_root, relative_path) or target_path.is_dir():
@@ -732,6 +985,8 @@ def init_reference_workflow(
             try:
                 if relative_path in _TEXT_MARKERS:
                     rendered = _merge_text(relative_path, existing, source)
+                    if relative_path == _AGENTS_PATH and tracker_config is not None:
+                        rendered = _merge_linear_agents(rendered)
                 else:
                     rendered = _merge_settings(existing if exists else b"{}", source)
             except (ValueError, TypeError):
@@ -771,6 +1026,7 @@ def init_reference_workflow(
         candidates=candidates,
         verification_command=verification_command,
         antigravity_detected=antigravity_detected,
+        tracker=TRACKER_NONE if tracker_config is None else TRACKER_LINEAR,
     )
 
     if conflicts and not dry_run:
@@ -785,9 +1041,15 @@ def init_reference_workflow(
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if relative_path in planned:
             target_path.write_bytes(planned[relative_path])
-        elif relative_path == _CONFIG_PATH and _config_is_rendered(mapping, executable):
+        elif _source_is_rendered(relative_path, mapping, executable, tracker_config):
             target_path.write_bytes(
-                _source_bytes(relative_path, mapping, executable, verification_command)
+                _source_bytes(
+                    relative_path,
+                    mapping,
+                    executable,
+                    verification_command,
+                    tracker_config,
+                )
             )
         else:
             shutil.copy2(source_path, target_path)
