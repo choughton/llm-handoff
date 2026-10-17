@@ -43,9 +43,8 @@ production-certified tool for arbitrary repositories. See
 You need Python 3.11 or newer, Git, and at least one provider CLI signed in:
 Claude Code (`claude`), Codex (`codex`), or Gemini CLI (`gemini`). Any role
 mapped to Gemini needs Docker or Podman on `PATH` (macOS can use
-`sandbox-exec`), and a Gemini-only setup also needs `GEMINI_API_KEY` for the
-next-agent normalizer. The dispatcher launches these CLIs; it does not
-install them or manage their logins.
+`sandbox-exec`). The dispatcher launches these CLIs; it does not install
+them or manage their logins.
 
 Two directories are involved: the `llm-handoff` install, and the target
 repository where agents do the work. Commands below run from anywhere once the
@@ -233,9 +232,9 @@ Things that stop a first run or quietly change what the loop does.
   so any role on `gemini` needs Docker or Podman on `PATH` (macOS:
   `sandbox-exec`). Without one the dispatcher refuses to start. An
   all-Gemini setup (`init --provider gemini`) puts every role in that
-  sandbox, needs the Gemini CLI security extension for the security
-  reviewer, and needs `GEMINI_API_KEY` for the next-agent normalizer, which
-  has no CLI-login path.
+  sandbox and needs the Gemini CLI security extension for the security
+  reviewer; the next-agent normalizer runs on the same Gemini CLI sign-in,
+  with no API key required.
 - **All-Codex setups need dispatcher commits.** Codex's `workspace-write`
   sandbox cannot write to `.git`. Set `commit_mode: dispatcher` (which needs
   the work-claim gate on, the default) or every implementer handback comes

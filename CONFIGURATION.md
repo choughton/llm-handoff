@@ -1538,12 +1538,13 @@ independent one, and the dispatcher logs a warning saying so. That reviewer
 also needs the Gemini CLI security extension installed and enabled;
 `llm-handoff doctor` checks it.
 
-The Gemini normalizer is API-only, so this mapping needs `GEMINI_API_KEY`
-(or `GOOGLE_API_KEY`) in the dispatcher's environment; there is no CLI-login
-path for it as there is for Codex. The normalizer runs only when a handoff's
-`next_agent` is not a canonical role. Without the key, `llm-handoff doctor`
-fails its `normalizer` line, and at run time such a handoff is left
-unchanged and the loop pauses, as it does for any normalizer failure.
+The normalizer runs through the Gemini CLI sign-in, the same login the roles
+use, so no API key is needed; see
+[Next-Agent Normalizer](#next-agent-normalizer) for the command it runs.
+Setting `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in the dispatcher's
+environment switches it to the API path. The normalizer runs only when a
+handoff's `next_agent` is not a canonical role; when it fails, that handoff
+is left unchanged and the loop pauses.
 
 Gemini CLI returns the role's final answer as plain text in its
 `stream-json` output, so the validator's `VALID:` report and the finalizer's
@@ -1880,13 +1881,13 @@ is omitted, the loader fills a provider-specific default model.
 The normalizer has two runtime auth shapes:
 
 - API key path: the configured provider API is called with the
-  `NormalizedNextAgent` Pydantic schema. Gemini requires `GEMINI_API_KEY` or
-  `GOOGLE_API_KEY`; OpenAI requires `OPENAI_API_KEY`; Claude uses
+  `NormalizedNextAgent` Pydantic schema. Gemini uses `GEMINI_API_KEY` or
+  `GOOGLE_API_KEY` when present; OpenAI requires `OPENAI_API_KEY`; Claude uses
   `ANTHROPIC_API_KEY` when present.
-- CLI auth path: Claude may fall back to the local Claude Code CLI session when
-  no Anthropic API key is available. The `codex` adapter always uses the local
-  Codex CLI login. Gemini and OpenAI normalizer adapters are API-only in the
-  current scaffold.
+- CLI auth path: Claude falls back to the local Claude Code CLI session when
+  no Anthropic API key is available, and Gemini falls back to the local Gemini
+  CLI sign-in when neither Gemini key is set. The `codex` adapter always uses
+  the local Codex CLI login. The OpenAI normalizer adapter is API-only.
 
 Choose `provider: codex` when the machine has the Codex CLI signed in (for
 example with a ChatGPT account) but no `OPENAI_API_KEY`, such as an all-Codex
@@ -1914,12 +1915,28 @@ behind a Windows `.cmd` shim. A missing `codex` binary, a launch error, a
 timeout, a nonzero exit, or output that is not a valid role fails closed and
 leaves the handoff unchanged.
 
+The `gemini` adapter's CLI path runs `gemini --approval-mode plan
+--sandbox=false --skip-trust --model <model> --output-format json -p <fixed
+instruction>` with the arguments passed as a list and no shell, and the
+request on stdin (headless Gemini CLI appends the `-p` text to stdin). Like
+the `codex` adapter it starts from a private temporary directory outside the
+repository, so project-level `.gemini/` settings do not apply and the call
+has nothing to read; plan mode keeps it read-only, and no container sandbox
+is used, so this path does not need Docker. The environment is the Gemini
+role allowlist with both Gemini API keys withheld. The answer is parsed from
+the JSON `response` field (a JSON object, a bare role name, or either inside
+a code fence); anything else, a nonzero exit, a timeout, or a sign-in failure
+(for example `IneligibleTierError`, which Google now reports for the retired
+personal Gemini Code Assist tier) fails closed with the sign-in fix in the
+message. Setting `GEMINI_API_KEY` selects the API path instead.
+
 `llm-handoff doctor` prints one `normalizer` line. It fails when the
 configured normalizer cannot run: for `codex`, the `codex` binary is not
 found; for `claude`, neither `ANTHROPIC_API_KEY` nor the `claude` binary is
-available; for `openai`, `OPENAI_API_KEY` is not set; for `gemini`, neither
-`GEMINI_API_KEY` nor `GOOGLE_API_KEY` is set. The doctor never calls the
-provider, so a passing line reports auth as not verified.
+available; for `openai`, `OPENAI_API_KEY` is not set; for `gemini`, none of
+`GEMINI_API_KEY`, `GOOGLE_API_KEY`, or the `gemini` binary is available. The
+doctor never calls the provider, so a passing line reports auth as not
+verified.
 
 The API path should not silently fall back to CLI auth after selecting an API
 key. If the structured API call fails, the dispatcher should fail closed and

@@ -186,17 +186,207 @@ def test_normalizer_dispatches_to_configured_openai_provider() -> None:
     assert "review gate" in client.responses.calls[0]["input"]
 
 
-def test_gemini_normalizer_requires_api_key_when_client_is_not_injected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+class _FakeGeminiRun:
+    """Stands in for headless `gemini --output-format json`."""
+
+    def __init__(
+        self,
+        *,
+        response: object = '{"normalized": "backend"}',
+        returncode: int = 0,
+        stdout: str | None = None,
+        stderr: str = "",
+    ) -> None:
+        self.stdout = (
+            json.dumps({"response": response, "stats": {"models": {}}})
+            if stdout is None
+            else stdout
+        )
+        self.returncode = returncode
+        self.stderr = stderr
+        self.calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def __call__(
+        self, command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command, self.returncode, stdout=self.stdout, stderr=self.stderr
+        )
+
+
+def _no_gemini_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
-    with pytest.raises(RuntimeError, match="requires GEMINI_API_KEY"):
-        gemini_normalizer.normalize_next_agent_with_gemini(
+
+def test_gemini_normalizer_runs_the_gemini_cli_login_without_an_api_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_gemini_keys(monkeypatch)
+    fake_run = _FakeGeminiRun()
+    monkeypatch.setattr(gemini_normalizer, "_run_cli_process", fake_run)
+
+    assert (
+        handoff_normalizer.normalize_next_agent(
             "implementer",
+            provider="gemini",
             model="gemini-flash-test",
-            timeout_ms=1000,
+            timeout_ms=12345,
+            repo_root=tmp_path,
+        )
+        == "backend"
+    )
+
+    assert len(fake_run.calls) == 1
+    command, kwargs = fake_run.calls[0]
+    assert command[command.index("--approval-mode") + 1] == "plan"
+    assert "--sandbox=false" in command
+    assert "--skip-trust" in command
+    assert command[command.index("--model") + 1] == "gemini-flash-test"
+    assert command[command.index("--output-format") + 1] == "json"
+    assert command[-2:] == ["-p", gemini_normalizer.GEMINI_CLI_NORMALIZER_INSTRUCTION]
+    # The raw value travels on stdin, never on the command line.
+    assert not any("implementer" in arg for arg in command)
+    assert "implementer" in str(kwargs["input"])
+    assert kwargs["timeout"] == pytest.approx(12.345)
+    # The turn runs from a private temp directory, never the target repo.
+    cwd = Path(str(kwargs["cwd"]))
+    assert cwd != tmp_path
+    assert tmp_path not in cwd.parents
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert "GEMINI_API_KEY" not in {name.upper() for name in env}
+    assert "GOOGLE_API_KEY" not in {name.upper() for name in env}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_gemini_normalizer_prefers_the_api_key_path_when_a_key_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "key-should-select-the-api")
+    client = _FakeGeminiClient()
+    monkeypatch.setattr(
+        gemini_normalizer, "_build_gemini_api_client", lambda **_kwargs: client
+    )
+    fake_run = _FakeGeminiRun()
+    monkeypatch.setattr(gemini_normalizer, "_run_cli_process", fake_run)
+
+    assert (
+        gemini_normalizer.normalize_next_agent_with_gemini(
+            "implementer", model="gemini-flash-test", timeout_ms=1000
+        )
+        == "backend"
+    )
+    assert len(client.models.calls) == 1
+    assert fake_run.calls == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"normalized": "auditor"}',
+        '```json\n{"normalized": "auditor"}\n```',
+        "auditor",
+        '"auditor"\n',
+        {"normalized": "auditor"},
+    ],
+)
+def test_gemini_cli_normalizer_accepts_the_answer_shapes_gemini_prints(
+    monkeypatch: pytest.MonkeyPatch, response: object
+) -> None:
+    _no_gemini_keys(monkeypatch)
+    monkeypatch.setattr(
+        gemini_normalizer, "_run_cli_process", _FakeGeminiRun(response=response)
+    )
+
+    assert (
+        gemini_normalizer.normalize_next_agent_with_gemini(
+            "review gate", model="gemini-flash-test", timeout_ms=1000
+        )
+        == "auditor"
+    )
+
+
+def test_gemini_cli_normalizer_reads_plain_text_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An older CLI that ignores --output-format prints the answer itself.
+    _no_gemini_keys(monkeypatch)
+    monkeypatch.setattr(
+        gemini_normalizer,
+        "_run_cli_process",
+        _FakeGeminiRun(stdout='{"normalized": "planner"}\n'),
+    )
+
+    assert (
+        gemini_normalizer.normalize_next_agent_with_gemini(
+            "plan it", model="gemini-flash-test", timeout_ms=1000
+        )
+        == "planner"
+    )
+
+
+@pytest.mark.parametrize(
+    ("fake_run", "match"),
+    [
+        (_FakeGeminiRun(response="the implementer, probably"), "does not match"),
+        (_FakeGeminiRun(stdout=""), "returned no output"),
+        (_FakeGeminiRun(returncode=2, stderr="boom"), "exited with code 2: boom"),
+        (
+            _FakeGeminiRun(
+                returncode=1,
+                stderr="Error authenticating: IneligibleTierError: no longer supported",
+            ),
+            "not signed in",
+        ),
+    ],
+)
+def test_gemini_cli_normalizer_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, fake_run: _FakeGeminiRun, match: str
+) -> None:
+    _no_gemini_keys(monkeypatch)
+    monkeypatch.setattr(gemini_normalizer, "_run_cli_process", fake_run)
+
+    with pytest.raises(RuntimeError, match=match):
+        gemini_normalizer.normalize_next_agent_with_gemini(
+            "implementer", model="gemini-flash-test", timeout_ms=1000
+        )
+
+
+def test_gemini_cli_normalizer_sign_in_error_names_the_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_gemini_keys(monkeypatch)
+    monkeypatch.setattr(
+        gemini_normalizer,
+        "_run_cli_process",
+        _FakeGeminiRun(returncode=1, stderr="Error: not logged in"),
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        gemini_normalizer.normalize_next_agent_with_gemini(
+            "implementer", model="gemini-flash-test", timeout_ms=1000
+        )
+
+    assert "Run `gemini` in a terminal" in str(error.value)
+    assert "GEMINI_API_KEY" in str(error.value)
+
+
+def test_gemini_cli_normalizer_raises_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_gemini_keys(monkeypatch)
+
+    def timeout_run(command: list[str], **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(command, 0.001)
+
+    monkeypatch.setattr(gemini_normalizer, "_run_cli_process", timeout_run)
+
+    with pytest.raises(RuntimeError, match="normalization failed"):
+        gemini_normalizer.normalize_next_agent_with_gemini(
+            "implementer", model="gemini-flash-test", timeout_ms=1
         )
 
 

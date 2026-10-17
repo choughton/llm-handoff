@@ -440,8 +440,7 @@ def test_doctor_passes_the_gemini_security_extension_when_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _make_all_gemini_repo(tmp_path)
-    _stub_which(monkeypatch, {"fake-gemini", "docker"})
-    monkeypatch.setenv("GEMINI_API_KEY", "doctor-test-key")
+    _stub_which(monkeypatch, {"fake-gemini", config_module.GEMINI_BINARY, "docker"})
     calls = _stub_gemini_extensions_list(
         monkeypatch, f"{audit_review.GEMINI_SECURITY_EXTENSION_NAME} (0.3.0)\n"
     )
@@ -456,15 +455,18 @@ def test_doctor_passes_the_gemini_security_extension_when_active(
         f"({audit_review.GEMINI_SECURITY_EXTENSION_NAME}) is active"
     ) in output
     assert "PASS container runtime:" in output
-    assert "PASS normalizer: provider gemini can use GEMINI_API_KEY" in output
+    # No API key is set: the Gemini normalizer runs on the CLI login.
+    assert (
+        f"PASS normalizer: provider gemini binary `{config_module.GEMINI_BINARY}` "
+        "is on PATH (auth not verified)"
+    ) in output
 
 
 def test_doctor_fails_when_the_gemini_security_extension_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _make_all_gemini_repo(tmp_path)
-    _stub_which(monkeypatch, {"fake-gemini", "docker"})
-    monkeypatch.setenv("GEMINI_API_KEY", "doctor-test-key")
+    _stub_which(monkeypatch, {"fake-gemini", config_module.GEMINI_BINARY, "docker"})
     _stub_gemini_extensions_list(monkeypatch, "No extensions installed.\n")
 
     exit_code, output = _run(repo, capsys)
@@ -1141,6 +1143,39 @@ def test_doctor_passes_gemini_normalizer_with_google_api_key(
     assert exit_code == 0, output
     assert _normalizer_lines(output) == [
         "PASS normalizer: provider gemini can use GOOGLE_API_KEY (auth not verified)"
+    ]
+
+
+def test_doctor_passes_gemini_normalizer_with_only_the_gemini_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, MIXED, normalizer_provider="gemini")
+    _stub_which(
+        monkeypatch,
+        {"fake-gemini", "fake-codex", "fake-claude", config_module.GEMINI_BINARY, "docker"},
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _normalizer_lines(output) == [
+        f"PASS normalizer: provider gemini binary `{config_module.GEMINI_BINARY}` "
+        "is on PATH (auth not verified)"
+    ]
+
+
+def test_doctor_fails_gemini_normalizer_without_key_or_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="gemini")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert _normalizer_lines(output) == [
+        "FAIL normalizer: provider gemini cannot run: none of GEMINI_API_KEY, "
+        f"GOOGLE_API_KEY, the `{config_module.GEMINI_BINARY}` binary is available"
     ]
 
 
