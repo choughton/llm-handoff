@@ -212,6 +212,38 @@ def test_validator_section_states_read_only_evidence_check() -> None:
         assert phrase in text, phrase
 
 
+def test_validator_evidence_check_enforces_schema_version() -> None:
+    text = " ".join(linear_role_section("validator").split())
+    assert "`version` is present and equals `1`" in text
+
+
+def test_validator_compares_commit_sha_only_for_required_events() -> None:
+    text = " ".join(linear_role_section("validator").split())
+    required = ", ".join(f"`{event}`" for event in LINEAR_EVIDENCE_REQUIRED_EVENTS)
+    required = required.replace(", `audit_failed`", ", and `audit_failed`")
+    assert f"For {required}, `commit_sha` equals the handoff `scope_sha`" in text
+    assert "do not compare it for them" in text
+
+
+def test_validator_exempts_roles_that_post_no_evidence_comments() -> None:
+    text = " ".join(linear_role_section("validator").split())
+    posters = {role for roles in LINEAR_EVIDENCE_EVENTS.values() for role in roles}
+    non_posters = [role for role in LINEAR_PROMPT_ROLES if role not in posters]
+    assert non_posters == ["validator", "finalizer"]
+    for role in non_posters:
+        assert f"`{role}`" in text, role
+    assert "post no evidence comments" in text
+    assert "compare only `issue` and `tracker_url`" in text
+
+
+def test_validator_reports_without_editing_on_validation_only_turns() -> None:
+    text = " ".join(linear_role_section("validator").split())
+    rewrite = text.index("On a turn where you rewrite `HANDOFF.md`")
+    report_only = text.index("forbids file edits, do not edit `HANDOFF.md`")
+    assert rewrite < report_only
+    assert "as a failed check in the report that turn asks for" in text
+
+
 def test_planner_section_states_user_attention_steps_in_order() -> None:
     text = " ".join(linear_role_section("planner").split())
     for phrase in (

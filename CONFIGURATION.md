@@ -1262,7 +1262,8 @@ implementer's `implementation_handoff` comment records
 `pending-dispatcher-commit`, and the auditor's comment records the concrete
 commit SHA. The validator runs a read-only check that compares the latest
 evidence comment on the leased issue with `HANDOFF.md`, and routes any
-mismatch to `user` with `status: blocked_missing_context`. The planner posts
+mismatch to `user` with `status: blocked_missing_context`, or reports it
+without editing files on a validation-only turn. The planner posts
 `user_attention_requested` when it routes a leased issue to `user` and
 `user_attention_cleared` when work resumes.
 
