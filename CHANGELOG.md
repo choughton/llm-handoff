@@ -34,6 +34,12 @@ This project follows a simple pre-release changelog until the first public tag.
 - In dispatcher commit mode, recording the commit SHA now replaces only the
   `pending-dispatcher-commit` marker (with or without backticks) in
   `Commit SHA verified` and keeps any note after it.
+- In `merge-commit` and `pr` publish modes, the saved story state keeps the
+  assignment's `tracker_issue`, `tracker_url`, and `selection_basis` (a later
+  non-empty value replaces a saved one), and the review-bounce and
+  deferred-finding handoffs write them after `story_id`, so a review bounce
+  passes the Linear-mode lease checks. Stories without the fields produce the
+  same handoffs as before.
 - Handoff frontmatter accepts three tracker lease fields: `tracker_issue`,
   `tracker_url`, and `selection_basis` (`priority`, `manual_order`, or
   `created_at`). With `tracker.provider: linear`, handoffs routed to
