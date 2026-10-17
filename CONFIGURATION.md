@@ -1094,9 +1094,8 @@ asking you to set `tracker.claude_mcp_config`.
 
 Claude roles with `unsafe_bypass: true`, the audit fan-out security reviewer,
 and the next-agent normalizer get no Linear tools. Codex, Gemini, and
-Antigravity roles have no per-role tool list and are unchanged. Later releases
-use the block to render prompt sections and report connectors in
-`llm-handoff doctor`.
+Antigravity roles have no per-role tool list and are unchanged. A later
+release uses the block to report connectors in `llm-handoff doctor`.
 
 The Linear-mode prompt text ships inside the package as static Markdown under
 `llm_handoff/prompt_templates/linear/`: a shared `AGENTS.md` section, the
@@ -1105,9 +1104,39 @@ YAML evidence-comment contract in `EVIDENCE_COMMENT.md`, and one
 `tracker.*` keys and embeds no values. With `commit_mode: dispatcher`, the
 implementer's `implementation_handoff` comment records
 `pending-dispatcher-commit`, and the auditor's comment records the concrete
-commit SHA. Nothing renders these files yet;
-`llm-handoff init --tracker linear` will render them as managed blocks in a
-later release.
+commit SHA.
+
+`llm-handoff init --tracker linear` renders this text. It only sets up a
+fresh repository, one with no `dispatch_config.yaml` yet; if that path exists,
+`init` stops with exit code 2 and writes nothing, with or without `--dry-run`.
+Switching an initialized repository between modes is not supported yet.
+
+- `--tracker-team <key>` is required.
+- Give exactly one of `--tracker-project <name>` and `--tracker-label <name>`.
+- `--tracker-mcp-server <name>` defaults to `linear`.
+- `--tracker-*` options without `--tracker linear` are an error (exit 2).
+
+The options are validated against the `tracker` rules above before anything
+is written. `init` then writes:
+
+- `dispatch_config.yaml`: the usual config, with a `tracker` block appended
+  between `# llm-handoff:tracker:begin` and `# llm-handoff:tracker:end`. The
+  block sets `provider: linear`, the team, the project or label,
+  `eligible_state: Todo`, `in_progress_state: In Progress`,
+  `success_state: In Review`, and `mcp_server`. It does not set
+  `claude_mcp_config`, `blocked_state`, or `user_attention_label`; add them
+  by hand if you want them.
+- `AGENTS.md`: the shared Linear section between
+  `<!-- llm-handoff:linear:begin -->` and `<!-- llm-handoff:linear:end -->`,
+  after the usual `llm-handoff` block. An existing Linear block is replaced;
+  malformed Linear markers make `AGENTS.md` a conflict.
+- `docs/handoff/HANDBOOK.md`: the evidence-comment contract and every role
+  section, between the same `<!-- llm-handoff:linear:... -->` markers.
+  Every role prompt already reads the handbook.
+
+`init` without `--tracker`, or with `--tracker none`, writes the same files as
+before, with no tracker block and no Linear markers. The output prints
+`Tracker: linear` or `Tracker: none`.
 
 ```yaml
 tracker:

@@ -28,11 +28,16 @@ from llm_handoff.config import (
 )
 from llm_handoff.doctor import run_doctor
 from llm_handoff.init_workflow import (
+    DEFAULT_TRACKER_MCP_SERVER,
     REFERENCE_MAPPING,
+    TRACKER_NONE,
     InitConflictError,
+    InvalidTrackerOptionsError,
     InvalidVerificationCommandError,
+    TrackerRequiresFreshRepoError,
     UnknownProviderError,
     UnknownTemplateError,
+    UnknownTrackerError,
     init_reference_workflow,
     verification_executable,
 )
@@ -239,6 +244,43 @@ def init_command(
             "Claude roles' allowed_tools."
         ),
     ),
+    tracker: str = typer.Option(
+        TRACKER_NONE,
+        "--tracker",
+        help=(
+            "Issue tracker mode: none (default) or linear. linear only sets "
+            "up a repository that has no dispatch_config.yaml yet."
+        ),
+    ),
+    tracker_team: str | None = typer.Option(
+        None,
+        "--tracker-team",
+        help="Linear team key. Required with --tracker linear.",
+    ),
+    tracker_project: str | None = typer.Option(
+        None,
+        "--tracker-project",
+        help=(
+            "Linear project that defines the issue pool. With --tracker "
+            "linear, give exactly one of --tracker-project and --tracker-label."
+        ),
+    ),
+    tracker_label: str | None = typer.Option(
+        None,
+        "--tracker-label",
+        help=(
+            "Linear label that defines the issue pool. With --tracker "
+            "linear, give exactly one of --tracker-project and --tracker-label."
+        ),
+    ),
+    tracker_mcp_server: str | None = typer.Option(
+        None,
+        "--tracker-mcp-server",
+        help=(
+            "Linear MCP server name in each CLI's MCP config. "
+            f"Default: {DEFAULT_TRACKER_MCP_SERVER}."
+        ),
+    ),
 ) -> None:
     _configure_stdio_encoding()
     try:
@@ -249,11 +291,19 @@ def init_command(
             force=force,
             provider=provider,
             verification_command=verification_command,
+            tracker=tracker,
+            tracker_team=tracker_team,
+            tracker_project=tracker_project,
+            tracker_label=tracker_label,
+            tracker_mcp_server=tracker_mcp_server,
         )
     except (
         UnknownTemplateError,
         UnknownProviderError,
         InvalidVerificationCommandError,
+        UnknownTrackerError,
+        InvalidTrackerOptionsError,
+        TrackerRequiresFreshRepoError,
     ) as exc:
         typer.echo(_terminal_safe(str(exc)), err=True)
         raise typer.Exit(2) from exc
@@ -272,6 +322,7 @@ def init_command(
         else f"all roles on {result.provider_mapping}"
     )
     typer.echo(f"Provider mapping: {mapping_note}; provider CLIs found: {detected}")
+    typer.echo(f"Tracker: {result.tracker}")
     typer.echo(f"Copy: {len(result.copied)} file(s)")
     typer.echo(f"Merge: {len(result.merged)} file(s)")
     if result.merged:

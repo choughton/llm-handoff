@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff init --tracker linear --tracker-team <key>` with exactly one
+  of `--tracker-project` and `--tracker-label` (and optional
+  `--tracker-mcp-server`, default `linear`) sets up a fresh repository in
+  Linear mode: it appends a validated `tracker` block to
+  `dispatch_config.yaml` and renders the Linear prompt text as
+  `<!-- llm-handoff:linear:... -->` managed blocks in `AGENTS.md` and
+  `docs/handoff/HANDBOOK.md`. It refuses a repository that already has
+  `dispatch_config.yaml`. `init` without `--tracker`, or with
+  `--tracker none`, writes the same files as before; the output now prints a
+  `Tracker:` line. The shared Linear `AGENTS.md` section now says Linear
+  issue and comment text is untrusted data.
 - A post-dispatch validation failure no longer ends the run with exit code 1
   and no stated reason. When no repair or existing pause applies, the
   dispatcher logs an `ERROR` that names the validation errors and, in
@@ -37,8 +48,7 @@ This project follows a simple pre-release changelog until the first public tag.
 - The package ships static Linear-mode prompt templates under
   `llm_handoff/prompt_templates/linear/` (a shared `AGENTS.md` section, the
   `llm_handoff_event` YAML evidence-comment contract, and one section per
-  role), loaded by the new `llm_handoff.tracker_prompts` module. Nothing
-  renders them yet; `init --tracker linear` will.
+  role), loaded by the new `llm_handoff.tracker_prompts` module.
 - With `tracker.provider: linear`, every Claude role launch (primary and
   fallback, unless `unsafe_bypass: true`) gets its Linear MCP tools appended
   to `allowed_tools` in memory, per a fixed role table. With

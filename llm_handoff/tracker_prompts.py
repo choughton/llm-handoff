@@ -2,8 +2,9 @@
 
 The Markdown files under ``llm_handoff/prompt_templates/linear/`` are static
 text: they name settings by their ``dispatch_config.yaml`` keys and embed no
-values. This module only loads them; nothing renders them into a repository
-yet.
+values. This module loads them; ``llm-handoff init --tracker linear``
+renders them into a fresh repository as managed blocks in ``AGENTS.md`` and
+``docs/handoff/HANDBOOK.md``.
 """
 
 from __future__ import annotations
