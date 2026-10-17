@@ -828,7 +828,9 @@ the launch also passes `--tools` with the base tool names from the list
 (`Read`, `Bash`, and so on). Built-in tools outside the list are then not
 available at all, even if user or project settings approve them.
 `--strict-mcp-config` loads no MCP servers unless `allowed_tools` names an
-`mcp__` tool. The default list is:
+`mcp__` tool. Linear mode with `tracker.claude_mcp_config` set also passes
+`--mcp-config <path> --strict-mcp-config` (see
+[Tracker](#tracker-optional-linear-mode)). The default list is:
 
 ```yaml
 allowed_tools:
@@ -1066,9 +1068,35 @@ In Linear mode, agents read and update issues through their own CLI's Linear
 MCP connector. The dispatcher contains no Linear client, never calls Linear,
 and holds no Linear credential.
 
-In this release the dispatcher only validates the block at load; nothing else
-reads it yet. Later releases use it to render prompt sections, build Claude
-tool lists, and report connectors in `llm-handoff doctor`.
+In Linear mode the dispatcher builds each Claude role's tool list from this
+block. At load, every `agents.<role>` with `provider: claude` (and any Claude
+`fallback`) gets that role's Linear tools appended to its `allowed_tools` (or
+to the default list when `allowed_tools` is unset), named
+`mcp__<mcp_server>__<tool>`; tools already listed are not repeated. The list
+is computed in memory and never written to the config file.
+
+| Role | Linear tools |
+|---|---|
+| `planner` | `get_issue`, `list_issues`, `list_comments`, `save_comment`, `save_issue` |
+| `backend` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
+| `frontend` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
+| `auditor` | `get_issue`, `list_issues`, `list_comments`, `save_comment`, `save_issue` |
+| `validator` | `get_issue`, `list_issues`, `list_comments` |
+| `finalizer` | `get_issue`, `list_issues`, `list_comments` |
+
+When `claude_mcp_config` is set, those Claude launches also pass
+`--mcp-config <resolved path> --strict-mcp-config`, so they load only the MCP
+servers in that file. When it is unset, they launch without
+`--strict-mcp-config` (an `mcp__` tool is listed), so every MCP server in the
+user's Claude configuration loads and tools pre-approved in user or project
+settings can run; the startup banner logs one WARN naming those roles and
+asking you to set `tracker.claude_mcp_config`.
+
+Claude roles with `unsafe_bypass: true`, the audit fan-out security reviewer,
+and the next-agent normalizer get no Linear tools. Codex, Gemini, and
+Antigravity roles have no per-role tool list and are unchanged. Later releases
+use the block to render prompt sections and report connectors in
+`llm-handoff doctor`.
 
 ```yaml
 tracker:

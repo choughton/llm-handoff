@@ -333,7 +333,9 @@ def claude_permission_args(
     or project settings cannot approve anything else), ``--strict-mcp-config``
     loads no MCP servers unless the list names an ``mcp__`` tool,
     ``--allowedTools`` pre-approves the listed rules, and web tools are always
-    denied. ``unsafe_bypass`` restores the previous
+    denied. In Linear mode with ``tracker.claude_mcp_config`` the launch also
+    passes ``--mcp-config <path> --strict-mcp-config`` so only that file's MCP
+    servers load. ``unsafe_bypass`` restores the previous
     ``--dangerously-skip-permissions`` launch (or the role's
     ``permissions_flag``).
     """
@@ -359,6 +361,13 @@ def claude_permission_args(
     guidance = claude_shell_guidance(allowed_tools)
     if guidance:
         args.extend(["--append-system-prompt", guidance])
+    mcp_config_path = agent_config.claude_mcp_config_path
+    if mcp_config_path is not None:
+        # Linear mode with tracker.claude_mcp_config: load only that file's
+        # MCP servers, not every server in the user's Claude configuration.
+        args.extend(["--mcp-config", str(mcp_config_path)])
+        if "--strict-mcp-config" not in args:
+            args.append("--strict-mcp-config")
     return args
 
 

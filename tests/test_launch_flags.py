@@ -628,3 +628,417 @@ def test_claude_shell_guidance_only_recommends_available_file_tools() -> None:
     assert "Use the Grep tool instead of" in guidance
     for missing in ("Read", "Glob", "Write", "Edit"):
         assert f"{missing} " not in guidance and f"{missing}," not in guidance
+
+
+# Linear mode Claude launches
+
+_ROLES = ("planner", "backend", "frontend", "auditor", "validator", "finalizer")
+_LINEAR_TRACKER: dict[str, object] = {
+    "provider": "linear",
+    "team": "ENG",
+    "project": "Platform",
+    "eligible_state": "Todo",
+    "in_progress_state": "In Progress",
+    "success_state": "In Review",
+    "mcp_server": "linear",
+}
+_EXPECTED_LINEAR_TOOLS: dict[str, tuple[str, ...]] = {
+    "planner": (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    ),
+    "backend": (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
+    ),
+    "frontend": (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
+    ),
+    "auditor": (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    ),
+    "validator": (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+    ),
+    "finalizer": (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+    ),
+}
+_DEFAULT_GUIDANCE = claude.claude_shell_guidance(config.CLAUDE_DEFAULT_ALLOWED_TOOLS)
+_VANILLA_DEFAULT_ARGS = [
+    "--permission-mode",
+    "dontAsk",
+    "--tools",
+    "Read,Edit,Write,Grep,Glob,Agent,Bash",
+    "--strict-mcp-config",
+    "--allowedTools",
+    ",".join(config.CLAUDE_DEFAULT_ALLOWED_TOOLS),
+    "--disallowedTools",
+    "WebFetch,WebSearch",
+    "--append-system-prompt",
+    _DEFAULT_GUIDANCE,
+]
+
+
+def _all_claude_agents(**overrides: object) -> dict[str, dict[str, object]]:
+    return {role: {"provider": "claude", **overrides} for role in _ROLES}
+
+
+def _linear_config(
+    tmp_path: Path, agents: dict[str, object], **tracker: object
+) -> DispatchConfig:
+    return DispatchConfig(
+        repo_root=tmp_path, agents=agents, tracker={**_LINEAR_TRACKER, **tracker}
+    )
+
+
+def _mcp_file(tmp_path: Path) -> Path:
+    path = tmp_path / "linear-mcp.json"
+    path.write_text("{}", encoding="utf-8")
+    return path
+
+
+def test_vanilla_mode_claude_launch_args_are_unchanged(tmp_path: Path) -> None:
+    default = DispatchConfig(repo_root=tmp_path)
+    assert all(agent.allowed_tools is None for agent in default.agents.values())
+    for role in ("auditor", "validator", "finalizer"):
+        assert orchestrator._launch_args_for_role(default, role) == (
+            _VANILLA_DEFAULT_ARGS
+        )
+
+    all_claude = DispatchConfig(repo_root=tmp_path, agents=_all_claude_agents())
+    for role in _ROLES:
+        assert all_claude.agents[role].allowed_tools is None
+        assert all_claude.agents[role].claude_mcp_config_path is None
+        assert orchestrator._launch_args_for_role(all_claude, role) == (
+            _VANILLA_DEFAULT_ARGS
+        )
+
+    custom_tools = ("Read", "Bash(git diff:*)")
+    custom = DispatchConfig(
+        repo_root=tmp_path,
+        agents=_all_claude_agents(allowed_tools=custom_tools),
+    )
+    for role in _ROLES:
+        assert custom.agents[role].allowed_tools == custom_tools
+        assert orchestrator._launch_args_for_role(custom, role) == [
+            "--permission-mode",
+            "dontAsk",
+            "--tools",
+            "Read,Bash",
+            "--strict-mcp-config",
+            "--allowedTools",
+            "Read,Bash(git diff:*)",
+            "--disallowedTools",
+            "WebFetch,WebSearch",
+            "--append-system-prompt",
+            claude.claude_shell_guidance(custom_tools),
+        ]
+
+
+@pytest.mark.parametrize("role", _ROLES)
+def test_linear_mode_without_mcp_config_adds_role_tools(
+    tmp_path: Path, role: str
+) -> None:
+    loaded = _linear_config(tmp_path, _all_claude_agents())
+    allowed = (*config.CLAUDE_DEFAULT_ALLOWED_TOOLS, *_EXPECTED_LINEAR_TOOLS[role])
+
+    assert loaded.agents[role].allowed_tools == allowed
+    assert loaded.agents[role].claude_mcp_config_path is None
+    args = orchestrator._launch_args_for_role(loaded, role)
+    assert args == [
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "Read,Edit,Write,Grep,Glob,Agent,Bash",
+        "--allowedTools",
+        ",".join(allowed),
+        "--disallowedTools",
+        "WebFetch,WebSearch",
+        "--append-system-prompt",
+        _DEFAULT_GUIDANCE,
+    ]
+    assert "--strict-mcp-config" not in args
+    assert "--mcp-config" not in args
+
+
+@pytest.mark.parametrize("role", _ROLES)
+def test_linear_mode_with_mcp_config_loads_only_that_config(
+    tmp_path: Path, role: str
+) -> None:
+    mcp_file = _mcp_file(tmp_path)
+    loaded = _linear_config(
+        tmp_path, _all_claude_agents(), claude_mcp_config="linear-mcp.json"
+    )
+    allowed = (*config.CLAUDE_DEFAULT_ALLOWED_TOOLS, *_EXPECTED_LINEAR_TOOLS[role])
+
+    args = orchestrator._launch_args_for_role(loaded, role)
+
+    assert args == [
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "Read,Edit,Write,Grep,Glob,Agent,Bash",
+        "--allowedTools",
+        ",".join(allowed),
+        "--disallowedTools",
+        "WebFetch,WebSearch",
+        "--append-system-prompt",
+        _DEFAULT_GUIDANCE,
+        "--mcp-config",
+        str(mcp_file.resolve()),
+        "--strict-mcp-config",
+    ]
+    assert not any(
+        "mcp__" in name for name in args[args.index("--tools") + 1].split(",")
+    )
+
+
+def test_linear_mode_claude_launch_command_carries_mcp_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mcp_file = _mcp_file(tmp_path)
+    loaded = _linear_config(
+        tmp_path, _all_claude_agents(), claude_mcp_config=str(mcp_file)
+    )
+    recorder = _CommandRecorder()
+    monkeypatch.setattr(claude, "_run_command_streaming", recorder)
+
+    claude.invoke_claude_subagent(
+        "backend",
+        "work",
+        repo_root=tmp_path,
+        agent_config=loaded.agents["backend"],
+    )
+
+    command = recorder.commands[0]
+    index = command.index("--mcp-config")
+    assert command[index + 1 : index + 3] == [
+        str(mcp_file.resolve()),
+        "--strict-mcp-config",
+    ]
+    assert command[command.index("--allowedTools") + 1].endswith(
+        "mcp__linear__save_comment"
+    )
+
+
+def test_linear_mode_custom_allowed_tools_skip_listed_linear_tools(
+    tmp_path: Path,
+) -> None:
+    agents = _all_claude_agents()
+    agents["auditor"] = {
+        "provider": "claude",
+        "allowed_tools": ["Read", "mcp__linear__list_issues"],
+    }
+    loaded = _linear_config(tmp_path, agents)
+
+    assert loaded.agents["auditor"].allowed_tools == (
+        "Read",
+        "mcp__linear__list_issues",
+        "mcp__linear__get_issue",
+        "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    )
+
+
+def test_linear_mode_uses_the_configured_mcp_server_name(tmp_path: Path) -> None:
+    loaded = _linear_config(tmp_path, _all_claude_agents(), mcp_server="team-linear")
+
+    assert loaded.agents["validator"].allowed_tools[-3:] == (
+        "mcp__team-linear__get_issue",
+        "mcp__team-linear__list_issues",
+        "mcp__team-linear__list_comments",
+    )
+
+
+def test_linear_mode_claude_fallback_gets_its_roles_tools(tmp_path: Path) -> None:
+    mcp_file = _mcp_file(tmp_path)
+    agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["backend"] = {
+        "provider": "codex",
+        "fallback": {"provider": "claude", "allowed_tools": ["Read"]},
+    }
+    agents["auditor"] = {
+        "provider": "claude",
+        "model": "claude-opus-5-5",
+        "fallback": {"provider": "claude", "model": "claude-sonnet-5"},
+    }
+    loaded = _linear_config(tmp_path, agents, claude_mcp_config="linear-mcp.json")
+
+    backend = loaded.agents["backend"]
+    assert backend.allowed_tools is None
+    assert backend.claude_mcp_config_path is None
+    assert backend.fallback is not None
+    assert backend.fallback.allowed_tools == (
+        "Read",
+        *_EXPECTED_LINEAR_TOOLS["backend"],
+    )
+    fallback_args = orchestrator._launch_args_for_agent(backend.fallback)
+    assert fallback_args[-3:] == [
+        "--mcp-config",
+        str(mcp_file.resolve()),
+        "--strict-mcp-config",
+    ]
+
+    auditor = loaded.agents["auditor"]
+    assert auditor.fallback is not None
+    assert auditor.fallback.allowed_tools == (
+        *config.CLAUDE_DEFAULT_ALLOWED_TOOLS,
+        *_EXPECTED_LINEAR_TOOLS["auditor"],
+    )
+    assert auditor.claude_mcp_config_path == mcp_file.resolve()
+    assert auditor.fallback.claude_mcp_config_path == mcp_file.resolve()
+
+
+def test_linear_mode_leaves_non_claude_and_bypass_agents_unchanged(
+    tmp_path: Path,
+) -> None:
+    _mcp_file(tmp_path)
+    agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["auditor"] = {"provider": "claude", "unsafe_bypass": True}
+    vanilla = DispatchConfig(repo_root=tmp_path, agents=agents)
+    loaded = _linear_config(tmp_path, agents, claude_mcp_config="linear-mcp.json")
+
+    for role in ("planner", "backend", "frontend", "auditor"):
+        assert loaded.agents[role] == vanilla.agents[role]
+        assert loaded.agents[role].allowed_tools is None
+        assert loaded.agents[role].claude_mcp_config_path is None
+    assert orchestrator._launch_args_for_role(loaded, "auditor") == [
+        "--dangerously-skip-permissions"
+    ]
+    assert orchestrator._launch_args_for_role(loaded, "backend") == (
+        orchestrator._launch_args_for_role(vanilla, "backend")
+    )
+
+
+@pytest.mark.parametrize("with_mcp_config", [False, True])
+def test_linear_mode_security_reviewer_gets_no_linear_tools(
+    tmp_path: Path, with_mcp_config: bool
+) -> None:
+    from llm_handoff import audit_review
+
+    tracker: dict[str, object] = {}
+    if with_mcp_config:
+        _mcp_file(tmp_path)
+        tracker["claude_mcp_config"] = "linear-mcp.json"
+    loaded = _linear_config(tmp_path, _all_claude_agents(), **tracker)
+
+    plan = audit_review.build_security_reviewer_plan(
+        loaded,
+        provider="claude",
+        scope=audit_review.ReviewScope(
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            files=("src/app.py",),
+            diff_path=tmp_path / "scope.diff",
+        ),
+        handoff_display="docs/handoff/HANDOFF.md",
+        log_dir=tmp_path,
+    )
+
+    command = list(plan.command)
+    assert not any("mcp__" in part for part in command)
+    assert "--mcp-config" not in command
+    assert "--strict-mcp-config" in command
+
+
+def test_linear_mode_normalizer_launch_gets_no_linear_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from llm_handoff.normalizer_providers import claude as normalizer_claude
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(list(command))
+        raise subprocess.TimeoutExpired(command, 1)
+
+    monkeypatch.setattr(normalizer_claude.subprocess, "run", fake_run)
+    try:
+        normalizer_claude._normalize_next_agent_with_claude_cli(
+            "auditor", model="claude-haiku-5-5", timeout_ms=1000
+        )
+    except Exception:
+        pass
+
+    assert commands
+    assert not any("mcp__" in part for part in commands[0])
+    assert "--mcp-config" not in commands[0]
+    assert "--strict-mcp-config" in commands[0]
+
+
+def _posture_warnings(loaded: DispatchConfig) -> list[str]:
+    logs: list[tuple[str, str]] = []
+    orchestrator._log_launch_posture(
+        loaded, lambda level, message: logs.append((level, message))
+    )
+    return [message for level, message in logs if level == "WARN"]
+
+
+def test_linear_mode_without_mcp_config_warns_once_at_startup(
+    tmp_path: Path,
+) -> None:
+    agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["backend"] = {
+        "provider": "codex",
+        "fallback": {"provider": "claude"},
+    }
+    agents["finalizer"] = {"provider": "claude", "unsafe_bypass": True}
+
+    warnings = _posture_warnings(_linear_config(tmp_path, agents))
+
+    linear_warnings = [m for m in warnings if "tracker.claude_mcp_config" in m]
+    assert linear_warnings == [
+        "Linear mode without tracker.claude_mcp_config: Claude roles "
+        "backend fallback, auditor, validator launch without "
+        "--strict-mcp-config, so every MCP server in the user's Claude "
+        "configuration loads and tools pre-approved in user or project "
+        "settings can run. Set tracker.claude_mcp_config to load only the "
+        "Linear MCP server."
+    ]
+
+
+def test_linear_mode_startup_warn_absent_with_mcp_config_or_vanilla(
+    tmp_path: Path,
+) -> None:
+    _mcp_file(tmp_path)
+    with_config = _linear_config(
+        tmp_path, _all_claude_agents(), claude_mcp_config="linear-mcp.json"
+    )
+    assert _posture_warnings(with_config) == []
+    assert _posture_warnings(DispatchConfig(repo_root=tmp_path)) == []
+    assert (
+        _posture_warnings(
+            DispatchConfig(repo_root=tmp_path, agents=_all_claude_agents())
+        )
+        == []
+    )
+
+
+def test_linear_mode_startup_warn_absent_without_safe_claude_agents(
+    tmp_path: Path,
+) -> None:
+    agents = _all_claude_agents(unsafe_bypass=True)
+
+    warnings = _posture_warnings(_linear_config(tmp_path, agents))
+
+    assert not any("tracker.claude_mcp_config" in m for m in warnings)

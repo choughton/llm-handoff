@@ -34,6 +34,14 @@ This project follows a simple pre-release changelog until the first public tag.
 - In dispatcher commit mode, recording the commit SHA now replaces only the
   `pending-dispatcher-commit` marker (with or without backticks) in
   `Commit SHA verified` and keeps any note after it.
+- With `tracker.provider: linear`, every Claude role launch (primary and
+  fallback, unless `unsafe_bypass: true`) gets its Linear MCP tools appended
+  to `allowed_tools` in memory, per a fixed role table. With
+  `tracker.claude_mcp_config` set, those launches pass
+  `--mcp-config <path> --strict-mcp-config`; without it the startup banner
+  logs one WARN that every MCP server in the user's Claude configuration
+  loads. The security reviewer and normalizer get no Linear tools, and
+  vanilla mode launch arguments are unchanged.
 - In `merge-commit` and `pr` publish modes, the saved story state keeps the
   assignment's `tracker_issue`, `tracker_url`, and `selection_basis` (a later
   non-empty value replaces a saved one), and the review-bounce and
