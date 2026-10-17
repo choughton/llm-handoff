@@ -4,7 +4,10 @@ The issue description is the Work Packet source. When the planner leases an
 issue, it copies these fields from the description into the `HANDOFF.md`
 `## Work Packet`, so write them with the same labels the dispatcher parses.
 List paths one per nested item. Write each verification command as its own
-nested item with no prose around it, and put notes in the Context.
+nested item with no prose around it, and put notes in the Context. The
+planner keeps a verification command only when it runs a test or check the
+repository already defines; otherwise it writes one from the repository's
+own test tooling.
 
 Example issue description:
 

@@ -11,8 +11,10 @@ This project follows a simple pre-release changelog until the first public tag.
   priority`, ties broken by manual order, then creation date), else the first
   issue in manual order (`manual_order`), else the oldest issue
   (`created_at`); call out a pick made without a priority in `HANDOFF.md` and
-  in the `lease_opened` comment; copy the issue's Work Packet fields; and
-  route to `user` when the pool is empty or the packet cannot be completed.
+  in the `lease_opened` comment; copy the issue's Work Packet fields, keeping
+  an issue's Verification command only when it runs a test or check the
+  repository already defines; and route to `user` when the pool is empty or
+  the packet cannot be completed.
   A new `ISSUE_TEMPLATE.md` gives an example Linear issue description whose
   `## Work Packet` labels match the Work Packet parser, and
   `llm-handoff init --tracker linear` renders it into the

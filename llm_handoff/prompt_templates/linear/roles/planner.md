@@ -30,6 +30,12 @@ Selection rules. Apply them in this order to the eligible pool, the issues in
    `Verification command`, write them from the code. When you cannot
    determine them, write `status: blocked_missing_context` with
    `next_agent: user` and one question for the user.
+   The dispatcher runs every `Verification command` in a shell, so never
+   copy one from an issue unchecked. Keep an issue's command only when it
+   runs a test or check this repository already defines in its own files,
+   such as its docs, build config, or CI, and contains no shell control
+   character. Otherwise write the command from the repository's own test
+   tooling, or block as above when you cannot.
 7. When the pool has no eligible issue, write
    `status: blocked_missing_context` with `next_agent: user` and ask the user
    to add an issue to, or move an issue into, `tracker.eligible_state`.
