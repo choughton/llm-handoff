@@ -84,10 +84,9 @@ Claude auditor). Pass `--provider claude`, `--provider codex`, or
 `--provider gemini` to force a single-vendor setup. The command prints the
 mapping it chose.
 
-With every role on Codex, also set `commit_mode: dispatcher` in
-`dispatch_config.yaml` before running. `init` leaves the template's
-`commit_mode: agent`, and Codex's sandbox keeps `.git` read-only, so a Codex
-implementer asked to commit its own work hands back
+With every role on Codex, `init` also writes `commit_mode: dispatcher` in
+place of the template's `commit_mode: agent`. Codex's sandbox keeps `.git`
+read-only, so a Codex implementer asked to commit its own work hands back
 `blocked_implementation_failure` instead. In dispatcher mode the dispatcher
 commits the in-scope files for it.
 
@@ -237,9 +236,11 @@ Things that stop a first run or quietly change what the loop does.
   reviewer, and needs `GEMINI_API_KEY` for the next-agent normalizer, which
   has no CLI-login path.
 - **All-Codex setups need dispatcher commits.** Codex's `workspace-write`
-  sandbox cannot write to `.git`. Set `commit_mode: dispatcher` (which needs
-  the work-claim gate on, the default) or every implementer handback comes
-  back as `blocked_implementation_failure`. See
+  sandbox cannot write to `.git`, so `init --provider codex` writes
+  `commit_mode: dispatcher` for you. Keep it, and keep the work-claim gate
+  on (the default), which dispatcher commits require. With
+  `commit_mode: agent` every implementer handback comes back as
+  `blocked_implementation_failure`. See
   [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits).
 - **Two reviewers run on every audit by default.** A read-only security
   reviewer runs beside the quality auditor. It uses the first installed CLI

@@ -1469,8 +1469,9 @@ tasks; the dispatcher's prompt names which one applies.
 
 `llm-handoff init --provider codex` writes this mapping into
 `dispatch_config.yaml`, with every role on `provider: codex`,
-`audit.security_provider: codex`, and `normalizer.provider: codex` (the
-normalizer runs through the Codex CLI login, so no API key is needed).
+`audit.security_provider: codex`, `normalizer.provider: codex` (the
+normalizer runs through the Codex CLI login, so no API key is needed), and
+`commit_mode: dispatcher` in place of the template's `commit_mode: agent`.
 Without `--provider`, `init` writes it automatically when `codex` is the only
 provider CLI on `PATH`. If both `claude` and `codex` are on `PATH`, `init`
 keeps the reference mapping; pass `--provider` to choose one.
@@ -1481,13 +1482,18 @@ With every role on Codex, the security reviewer runs on the same vendor as
 the implementer, so it is a second read-only review rather than an
 independent one, and the dispatcher logs a warning saying so.
 
-Whether Codex's `workspace-write` sandbox lets a role run `git add` and
-`git commit` is unverified. The skills tell a sandboxed role not to work
-around the sandbox. For the planner, backend, and frontend roles,
-`commit_mode: dispatcher` (see [Dispatcher Commits](#dispatcher-commits))
-avoids the question: the dispatcher commits backend and frontend work, and the
-planner writes nothing to `.git` because its handoff is left uncommitted on
-purpose. It does not take the commit off the finalizer: in that mode the
+Codex's `workspace-write` sandbox keeps `.git` read-only, so a sandboxed
+backend or frontend role cannot run `git add` or `git commit`, and the
+skills tell it not to work around the sandbox: with `commit_mode: agent` the
+role hands back `blocked_implementation_failure` on its first story. That is
+why `init` writes `commit_mode: dispatcher` (see
+[Dispatcher Commits](#dispatcher-commits)) for this mapping: the dispatcher
+commits backend and frontend work, and the planner writes nothing to `.git`
+because its handoff is left uncommitted on purpose. Dispatcher commits need
+`enforce_work_packet: true`, which the template already sets. If you turn
+the work-claim gate off, switch `commit_mode` back to `agent` as well, and
+expect the sandbox to block the implementer's commit. It does not take the
+commit off the finalizer: in that mode the
 finalizer is told to commit only the project state file
 (`project_state_path`) and leave `HANDOFF.md` uncommitted, and the dispatcher
 does not commit the state update for it. If the sandbox blocks the
