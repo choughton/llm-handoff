@@ -641,3 +641,312 @@ def test_verification_allowed_prefixes_rejects_each_forbidden_char(
     message = str(error.value)
     assert repr(entry) in message
     assert repr(char) in message
+
+
+# --- tracker block -----------------------------------------------------------
+
+_DROP = object()
+
+
+def _linear_tracker(**overrides: object) -> dict[str, object]:
+    tracker: dict[str, object] = {
+        "provider": "linear",
+        "team": "ENG",
+        "project": "Platform",
+        "eligible_state": "Todo",
+        "in_progress_state": "In Progress",
+        "success_state": "In Review",
+        "mcp_server": "linear",
+    }
+    for key, value in overrides.items():
+        if value is _DROP:
+            tracker.pop(key, None)
+        else:
+            tracker[key] = value
+    return tracker
+
+
+def _write_config(tmp_path: Path, text: str) -> Path:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(text, encoding="utf-8")
+    return config_path
+
+
+def test_tracker_config_model_is_frozen_and_forbids_extra() -> None:
+    assert config_module.TrackerConfig.model_config["frozen"] is True
+    assert config_module.TrackerConfig.model_config["extra"] == "forbid"
+    tracker = config_module.TrackerConfig()
+    assert tracker.provider == "none"
+    for key in config_module._TRACKER_SETTING_KEYS:
+        assert getattr(tracker, key) is None
+    with pytest.raises(ValueError):
+        tracker.provider = "linear"  # type: ignore[misc]
+
+
+def test_tracker_defaults_to_none_when_absent(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path).tracker.provider == "none"
+    config_path = _write_config(tmp_path, "pause_recovery: planner\n")
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    assert loaded.tracker.provider == "none"
+    assert loaded.tracker.enabled is False
+    assert loaded.tracker_claude_mcp_config_path is None
+
+
+def test_tracker_provider_none_loads(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, "tracker:\n  provider: none\n")
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    assert loaded.tracker.provider == "none"
+    assert loaded.tracker == config_module.TrackerConfig()
+
+
+def test_tracker_provider_none_allows_explicit_nulls(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path, "tracker:\n  provider: none\n  project: null\n  label: null\n"
+    )
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    assert loaded.tracker.provider == "none"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "team",
+        "project",
+        "label",
+        "eligible_state",
+        "in_progress_state",
+        "success_state",
+        "blocked_state",
+        "user_attention_label",
+        "mcp_server",
+        "claude_mcp_config",
+    ],
+)
+def test_tracker_provider_none_rejects_other_keys(tmp_path: Path, key: str) -> None:
+    with pytest.raises(ValueError) as error:
+        DispatchConfig(repo_root=tmp_path, tracker={"provider": "none", key: "x"})
+    message = str(error.value)
+    assert f"tracker.{key}" in message
+    assert "remove those keys or set tracker.provider: linear" in message
+
+
+def test_tracker_provider_none_rejects_blank_key(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="tracker.team"):
+        DispatchConfig(repo_root=tmp_path, tracker={"team": "  "})
+
+
+def test_tracker_linear_loads_and_strips_strings(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        """tracker:
+  provider: linear
+  team: " ENG "
+  label: " repo-a "
+  eligible_state: " Todo "
+  in_progress_state: " In Progress "
+  success_state: " In Review "
+  blocked_state: " Blocked "
+  user_attention_label: " needs-operator "
+  mcp_server: " linear "
+""",
+    )
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    tracker = loaded.tracker
+    assert tracker.provider == "linear"
+    assert tracker.enabled is True
+    assert tracker.team == "ENG"
+    assert tracker.project is None
+    assert tracker.label == "repo-a"
+    assert tracker.eligible_state == "Todo"
+    assert tracker.in_progress_state == "In Progress"
+    assert tracker.success_state == "In Review"
+    assert tracker.blocked_state == "Blocked"
+    assert tracker.user_attention_label == "needs-operator"
+    assert tracker.mcp_server == "linear"
+    assert tracker.claude_mcp_config is None
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["team", "eligible_state", "in_progress_state", "success_state", "mcp_server"],
+)
+@pytest.mark.parametrize("value", [_DROP, "", "   "])
+def test_tracker_linear_requires_keys(
+    tmp_path: Path, key: str, value: object
+) -> None:
+    with pytest.raises(ValueError) as error:
+        DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker(**{key: value}))
+    message = str(error.value)
+    assert f"tracker.{key}" in message
+    assert "requires non-empty" in message
+
+
+def test_tracker_linear_rejects_project_and_label(tmp_path: Path) -> None:
+    with pytest.raises(ValueError) as error:
+        DispatchConfig(
+            repo_root=tmp_path, tracker=_linear_tracker(label="repo-a")
+        )
+    message = str(error.value)
+    assert "exactly one of tracker.project and tracker.label" in message
+    assert "both are set" in message
+
+
+def test_tracker_linear_rejects_neither_project_nor_label(tmp_path: Path) -> None:
+    with pytest.raises(ValueError) as error:
+        DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker(project=_DROP))
+    message = str(error.value)
+    assert "exactly one of tracker.project and tracker.label" in message
+    assert "set one" in message
+
+
+def test_tracker_linear_accepts_label_instead_of_project(tmp_path: Path) -> None:
+    config = DispatchConfig(
+        repo_root=tmp_path, tracker=_linear_tracker(project=_DROP, label="repo-a")
+    )
+    assert config.tracker.label == "repo-a"
+    assert config.tracker.project is None
+
+
+@pytest.mark.parametrize(
+    "key", ["project", "label", "blocked_state", "user_attention_label"]
+)
+@pytest.mark.parametrize("value", ["", "   "])
+def test_tracker_linear_rejects_blank_optional_values(
+    tmp_path: Path, key: str, value: str
+) -> None:
+    overrides: dict[str, object] = {key: value}
+    if key == "label":
+        overrides["project"] = _DROP
+    with pytest.raises(ValueError, match=f"tracker.{key} must not be empty"):
+        DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker(**overrides))
+
+
+def test_tracker_linear_optional_keys_may_be_omitted(tmp_path: Path) -> None:
+    config = DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker())
+    assert config.tracker.blocked_state is None
+    assert config.tracker.user_attention_label is None
+
+
+@pytest.mark.parametrize("server", ["linear", "Linear_2", "my-linear", "a"])
+def test_tracker_mcp_server_accepts_simple_names(tmp_path: Path, server: str) -> None:
+    config = DispatchConfig(
+        repo_root=tmp_path, tracker=_linear_tracker(mcp_server=server)
+    )
+    assert config.tracker.mcp_server == server
+
+
+@pytest.mark.parametrize(
+    "server", ["my linear", "linear.app", "linear/v1", "linear:1", "lin*"]
+)
+def test_tracker_mcp_server_rejects_other_characters(
+    tmp_path: Path, server: str
+) -> None:
+    with pytest.raises(ValueError, match="tracker.mcp_server") as error:
+        DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker(mcp_server=server))
+    assert f"`{server}`" in str(error.value)
+
+
+def test_tracker_claude_mcp_config_resolves_relative_to_repo_root(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "config").mkdir()
+    mcp_file = tmp_path / "config" / "linear-mcp.json"
+    mcp_file.write_text("{}", encoding="utf-8")
+    config_path = _write_config(
+        tmp_path,
+        """tracker:
+  provider: linear
+  team: ENG
+  project: Platform
+  eligible_state: Todo
+  in_progress_state: In Progress
+  success_state: In Review
+  mcp_server: linear
+  claude_mcp_config: config/linear-mcp.json
+""",
+    )
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    assert loaded.tracker.claude_mcp_config == Path("config/linear-mcp.json")
+    assert loaded.tracker_claude_mcp_config_path == mcp_file.resolve()
+
+
+def test_tracker_claude_mcp_config_accepts_absolute_path(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    mcp_file = tmp_path / "outside" / "linear-mcp.json"
+    mcp_file.parent.mkdir()
+    mcp_file.write_text("{}", encoding="utf-8")
+    config = DispatchConfig(
+        repo_root=repo_root, tracker=_linear_tracker(claude_mcp_config=mcp_file)
+    )
+    assert config.tracker_claude_mcp_config_path == mcp_file
+
+
+def test_tracker_claude_mcp_config_rejects_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="tracker.claude_mcp_config") as error:
+        DispatchConfig(
+            repo_root=tmp_path,
+            tracker=_linear_tracker(claude_mcp_config="missing/linear-mcp.json"),
+        )
+    expected = (tmp_path / "missing" / "linear-mcp.json").resolve()
+    assert str(expected) in str(error.value)
+
+
+def test_tracker_claude_mcp_config_rejects_directory(tmp_path: Path) -> None:
+    (tmp_path / "mcp").mkdir()
+    with pytest.raises(ValueError, match="tracker.claude_mcp_config"):
+        DispatchConfig(
+            repo_root=tmp_path, tracker=_linear_tracker(claude_mcp_config="mcp")
+        )
+
+
+def test_tracker_linear_requires_work_claim_gate(tmp_path: Path) -> None:
+    with pytest.raises(ValueError) as error:
+        DispatchConfig(
+            repo_root=tmp_path,
+            enforce_work_packet=False,
+            work_packet_opt_out_reason="testing without the gate",
+            tracker=_linear_tracker(),
+        )
+    message = str(error.value)
+    assert "enforce_work_packet: true" in message
+    assert "Linear mode requires the work-claim gate" in message
+
+
+def test_tracker_none_allows_work_claim_gate_off(tmp_path: Path) -> None:
+    config = DispatchConfig(
+        repo_root=tmp_path,
+        enforce_work_packet=False,
+        work_packet_opt_out_reason="testing without the gate",
+        tracker={"provider": "none"},
+    )
+    assert config.tracker.provider == "none"
+
+
+def test_tracker_rejects_unknown_keys(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="api_key"):
+        DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker(api_key="x"))
+    config_path = _write_config(tmp_path, "tracker:\n  provider: none\n  teams: ENG\n")
+    with pytest.raises(ValueError, match="teams"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_tracker_rejects_unknown_provider(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="provider"):
+        DispatchConfig(repo_root=tmp_path, tracker={"provider": "jira"})
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["dispatch_config.example.yaml", "examples/reference-workflow/dispatch_config.yaml"],
+)
+def test_shipped_configs_leave_tracker_off_and_document_it(
+    tmp_path: Path, relative_path: str
+) -> None:
+    source = Path(__file__).resolve().parents[1] / relative_path
+    text = source.read_text(encoding="utf-8")
+    assert "# tracker:" in text
+    for key in ("provider", *config_module._TRACKER_SETTING_KEYS):
+        assert f"#   {key}:" in text, key
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=source)
+    assert loaded.tracker.provider == "none"

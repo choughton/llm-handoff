@@ -1056,6 +1056,72 @@ Set `protected_paths: []` to turn the check off. A config file passed with
 provider CLI writes its own state under one of these directories in your
 setup, narrow the pattern rather than removing the check.
 
+## Tracker (Optional Linear Mode)
+
+The optional top-level `tracker` block binds a repository to a pool of Linear
+issues. It is off by default: omitting the block is the same as
+`provider: none`, and vanilla mode behaves exactly as before.
+
+In Linear mode, agents read and update issues through their own CLI's Linear
+MCP connector. The dispatcher contains no Linear client, never calls Linear,
+and holds no Linear credential.
+
+In this release the dispatcher only validates the block at load; nothing else
+reads it yet. Later releases use it to render prompt sections, build Claude
+tool lists, and report connectors in `llm-handoff doctor`.
+
+```yaml
+tracker:
+  provider: linear              # none (default) | linear
+  team: ENG                     # Linear team key
+  project: Platform             # exactly one of project / label
+  # label: repo-a               # opt-in label for this repository
+  eligible_state: Todo
+  in_progress_state: In Progress
+  success_state: In Review      # Done only when you want it
+  # blocked_state: Blocked      # optional
+  user_attention_label: needs-operator   # optional
+  mcp_server: linear            # Linear server name in each CLI's MCP config
+  # claude_mcp_config: config/linear-mcp.json   # optional
+```
+
+| Key | Linear mode | Meaning |
+|---|---|---|
+| `provider` | - | `none` (default) or `linear`. |
+| `team` | required | Linear team key. An issue is in the pool only if it belongs to this team. |
+| `project` | exactly one of `project` / `label` | Linear project whose issues form the pool. |
+| `label` | exactly one of `project` / `label` | Label that opts an issue into this repository's pool. |
+| `eligible_state` | required | Workflow state an issue must be in to be picked. |
+| `in_progress_state` | required | State an issue moves to when work starts. |
+| `success_state` | required | State the auditor moves an issue to on pass, for example a review state. |
+| `blocked_state` | optional | State for blocked issues. |
+| `user_attention_label` | optional | Label added when the loop routes to `user`. |
+| `mcp_server` | required | Name of the Linear server in each CLI's MCP configuration. |
+| `claude_mcp_config` | optional | MCP configuration file for Claude roles. |
+
+Validation rules:
+
+- With `provider: none`, every other tracker key must be unset (or `null`).
+  A half-configured block is rejected; remove the keys or set
+  `provider: linear`.
+- With `provider: linear`, `team`, `eligible_state`, `in_progress_state`,
+  `success_state`, and `mcp_server` must be non-empty after surrounding
+  whitespace is stripped. String values are stored stripped.
+- Exactly one of `project` and `label` must be set. Both, or neither, is
+  rejected.
+- `blocked_state` and `user_attention_label` may be omitted; when given they
+  must not be empty.
+- `mcp_server` may contain only letters, digits, `_`, and `-`, because it
+  later forms the `mcp__<server>__` tool-name prefix for Claude roles.
+- `claude_mcp_config`, when set, resolves against the repository root if it
+  is relative; an absolute path is used as given. The resolved path must be
+  an existing file.
+- Linear mode requires the work-claim gate. `provider: linear` with
+  `enforce_work_packet: false` is rejected even when
+  `work_packet_opt_out_reason` is given, because the auditor only moves an
+  issue to `success_state` after the gate passes.
+- Unknown keys inside `tracker` are rejected.
+
 ## Supervised Dispatch
 
 The optional supervisor wrapper is configured through command-line options, not
