@@ -95,10 +95,14 @@ bounces until the three-fix circuit breaker escalates.
   role, story key, phase, HEAD, a copy of the pre-dispatch `HANDOFF.md`, and
   fingerprints of the files dirty before the dispatch); clear it when the
   cycle completes. At startup, an implementer phase found in the record means
-  files changed since the record are that agent's partial work: carry them
-  over (never as operator edits), restore a half-written `HANDOFF.md`, and
-  re-dispatch the same role with a note that its previous run was interrupted
-  and its partial changes are in the tree. Interrupted after the handback but
+  files that were clean when the record was written and are changed now are
+  that agent's partial work: carry them over, restore a half-written
+  `HANDOFF.md`, and re-dispatch the same role with a note that its previous
+  run was interrupted and its partial changes are in the tree. Files that
+  were already dirty in the record stay operator-owned even if they changed
+  (a fingerprint shows a change but cannot separate the operator's bytes from
+  the agent's): they are never carried over or staged, and the dispatcher
+  pauses for the operator, naming them. Interrupted after the handback but
   before the dispatcher commit or the gates: resume at the commit.
 - RECOVERY-3: The other phases. Planner and finalizer: restore an invalid
   `HANDOFF.md` and re-run. Audit fan-out: restore the handoff and re-run the
