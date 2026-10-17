@@ -244,6 +244,14 @@ def test_validator_reports_without_editing_on_validation_only_turns() -> None:
     assert "as a failed check in the report that turn asks for" in text
 
 
+def test_validator_step_six_names_the_linear_evidence_row() -> None:
+    text = " ".join(linear_role_section("validator").split())
+    step_six = text[text.index("6. Report the result") : text.index("7. Never edit")]
+    assert "a `FAIL` on the report's `LINEAR-EVIDENCE` row, naming both values" in (
+        step_six
+    )
+
+
 def test_planner_section_states_user_attention_steps_in_order() -> None:
     text = " ".join(linear_role_section("planner").split())
     for phrase in (

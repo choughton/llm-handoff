@@ -6,6 +6,20 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The Codex and Antigravity `handoff-validator` helpers (root and
+  `examples/reference-workflow/` copies) gain checklist item 13 and a
+  `LINEAR-EVIDENCE` row in their report. When `docs/handoff/HANDBOOK.md` has a
+  `## Linear Mode: validator` section, the helper runs that section's evidence
+  check read-only and reports each mismatched field as `FAIL`, naming both the
+  comment value and the handoff value; without that section it reports
+  `PASS - Linear mode is off`. The Linear-mode validator prompt's step 6 now
+  puts each mismatch on a validation-only turn on that row. In Linear mode,
+  the dispatcher no longer schedules planner pause recovery when the pause
+  diagnosis fails the `LINEAR-EVIDENCE` row; it logs
+  `Linear evidence check failed; not scheduling planner recovery.` and waits
+  for a person. A validator report whose `LINEAR-EVIDENCE` row is missing or
+  does not parse counts as a failed row, so recovery needs a parsed `PASS` or
+  `WARN` status. The Claude `handoff-validator` helper files follow in LIN-9d.
 - Gave each first-run guide one job so the install, init, dry-run, and run
   steps appear only in the README quick start: `QUICKSTART.md` is now the
   Windows PowerShell and macOS/Linux command sheet for those five steps,

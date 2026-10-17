@@ -39,6 +39,7 @@ Validate these items in order:
 10. Completion statuses include the `## Verification Evidence` block.
 11. The handoff body contains enough detail to act on: files, checks, findings, or acceptance criteria.
 12. The current git state is compatible with the handoff claim. Report dirty state as WARN unless local instructions require clean state.
+13. When `docs/handoff/HANDBOOK.md` contains a `## Linear Mode: validator` section, run that section's evidence check read-only. Report each mismatched field on the `LINEAR-EVIDENCE` row as `FAIL`, naming both the comment value and the handoff value. If the issue or its comments cannot be read, report `FAIL - cannot read the leased issue`. Without that handbook section, report `PASS - Linear mode is off`. Never edit a comment, the issue, or `HANDOFF.md` for this check.
 
 ## Output Format
 
@@ -53,6 +54,7 @@ CHECKS:
   ROUTING:        PASS | WARN | FAIL - <detail>
   CONTENT:        PASS | WARN | FAIL - <detail>
   GIT-STATE:      PASS | WARN | FAIL - <detail>
+  LINEAR-EVIDENCE: PASS | WARN | FAIL - <detail>
 SUMMARY: <one sentence>
 BLOCKERS: <numbered list if VALID=NO, otherwise "none">
 ```
