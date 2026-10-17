@@ -6,6 +6,30 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- New `llm-handoff stop` command asks a running dispatcher to stop without
+  timing it. It writes `logs/dispatch/stop-request`; the dispatcher finishes
+  the cycle in flight (the agent, the dispatcher commit, post-dispatch
+  validation, and the work-claim gate), then exits with code 0 and releases
+  `.dispatch.lock` before the next dispatch. It also stops while waiting at a
+  pause or the operator prompt. It logs one line when it sees the request
+  and one when it exits for it. The request names the lock holder's pid, and
+  a dispatcher ignores a request for another pid. The command refuses when
+  no dispatcher holds the lock, when the lock records no pid or its pid is
+  not running, or when Git does not ignore `logs/dispatch/`. Ctrl+C is
+  unchanged and still aborts at once.
+- The implementer carry-over record (uncommitted files an implementer
+  dispatch left for its story) is saved to `logs/dispatch/carry-over.json`
+  and loaded at startup, so a dispatcher restart no longer turns that work
+  into operator edits the dispatcher never commits. The rule is unchanged:
+  only files whose content is unchanged carry over, for the same story key.
+  Files leave the record once the dispatcher commits them, and the record is
+  deleted when a dispatch for another story starts. When Git does not ignore
+  that path the record stays in memory only, with a `WARN` line.
+- When `.dispatch.lock` already exists, the refusal now names the lock's pid
+  and start time, says whether that pid is running on this machine, and
+  gives the command to check it. The lock is still never removed
+  automatically.
+
 - In Linear mode, `llm-handoff doctor` adds `tracker connector` lines that
   report, per provider CLI the configured roles launch, whether that CLI's
   MCP config files define a server named `tracker.mcp_server`. The check

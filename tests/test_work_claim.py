@@ -20,9 +20,11 @@ from llm_handoff.dispatcher_commit import (
 )
 import llm_handoff.ledger as ledger
 from llm_handoff.router import parse_handoff_frontmatter_text, route
+from llm_handoff.stop_request import request_stop
 from llm_handoff.validator import ValidationResult, validate_handoff_text
 from llm_handoff.work_claim import (
     CommandRun,
+    ImplementerLeftovers,
     PreDispatchState,
     ScannerContext,
     WorkPacket,
@@ -36,17 +38,21 @@ from llm_handoff.work_claim import (
     carry_over_key,
     evidence_commit_value,
     extract_work_packet_section,
+    load_implementer_leftovers,
     parse_work_packet,
     path_is_in_scope,
     path_is_out_of_bounds,
     path_matches_entry,
+    prune_implementer_leftovers,
     render_scanner_command,
     run_scanner,
     run_shell_command,
+    save_implementer_leftovers,
     shell_quote,
     verification_command_allowed,
     verify_work_claim,
     work_packet_errors,
+    working_tree_fingerprint,
 )
 
 
@@ -3600,6 +3606,254 @@ def test_run_loop_commits_work_a_bounced_dispatch_left_uncommitted(
     )
     assert ("INFO", carried) in messages
     assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+
+
+def test_run_loop_carries_over_leftovers_across_a_dispatcher_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    # The same stall as above, but the dispatcher stops between the two
+    # dispatches. The leftovers must come back from logs/dispatch/.
+    _init_repo(tmp_path)
+    _write(tmp_path / ".gitignore", "logs/\n")
+    _commit_all(tmp_path, "ignore runtime state")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    state_path = tmp_path / "logs" / "dispatch" / "carry-over.json"
+    messages: list[tuple[str, str]] = []
+    dispatches: list[int] = []
+    real_commit = orchestrator.commit_implementer_changes
+
+    def dropping_commit(**kwargs: Any):
+        if len(dispatches) == 1:
+            kwargs["assignment_content"] = _assignment(
+                files_in_scope="tests/test_app.py"
+            )
+        return real_commit(**kwargs)
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append(1)
+        if len(dispatches) == 1:
+            _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+            _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    pass\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "commit_implementer_changes", dropping_commit)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    # The committed file left the record; the dropped one stays.
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["story_key"] == f"story:{STORY_ID}"
+    assert list(saved["fingerprints"]) == ["src/app.py"]
+
+    messages.clear()
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert len(dispatches) == 2
+    assert any(
+        level == "INFO"
+        and message.startswith("Restored carry-over record from")
+        and "src/app.py" in message
+        for level, message in messages
+    )
+    assert (
+        "INFO",
+        f"Carrying over uncommitted work from the previous {STORY_ID} "
+        "dispatch: src/app.py.",
+    ) in messages
+    assert _commit_files(tmp_path, "HEAD") == ["src/app.py"]
+    assert ("AGENT", "Work-claim gate PASSED for backend.") in messages
+    # Everything was committed, so nothing is left to carry over.
+    assert not state_path.exists()
+
+
+def test_run_loop_keeps_carry_over_in_memory_when_git_does_not_ignore_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    # An untracked record Git does not ignore would show up in the next gate.
+    _init_repo(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "api.py", "API = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert not (tmp_path / "logs" / "dispatch" / "carry-over.json").exists()
+    assert any(
+        level == "WARN"
+        and "Git does not ignore logs/dispatch/carry-over.json" in message
+        for level, message in messages
+    )
+
+
+def test_restored_leftovers_do_not_carry_over_edited_or_other_story_files(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = tmp_path / "logs" / "dispatch" / "carry-over.json"
+    first_state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(tmp_path / "src" / "api.py", "API = 2\n")
+    save_implementer_leftovers(
+        state_path,
+        capture_implementer_leftovers(
+            tmp_path,
+            handoff_path=HANDOFF_RELATIVE_PATH,
+            pre_dispatch_state=first_state,
+            story_key=f"story:{STORY_ID}",
+        ),
+    )
+    # The operator edits one leftover while the dispatcher is stopped.
+    _write(tmp_path / "src" / "api.py", "API = 'operator edit'\n")
+
+    restored = load_implementer_leftovers(state_path)
+    same_story = capture_pre_dispatch_state(
+        tmp_path, leftovers=restored, story_key=f"story:{STORY_ID}"
+    )
+    other_story = capture_pre_dispatch_state(
+        tmp_path, leftovers=restored, story_key="story:EPIC-1-S2"
+    )
+
+    assert same_story.carried_over == ("src/app.py",)
+    assert "src/api.py" in same_story.dirty_files
+    assert other_story.carried_over == ()
+
+
+def test_carry_over_record_is_cleared_when_nothing_can_carry_over(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = tmp_path / "logs" / "dispatch" / "carry-over.json"
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    leftovers = ImplementerLeftovers(
+        story_key=f"story:{STORY_ID}",
+        fingerprints=(("src/app.py", working_tree_fingerprint(tmp_path, "src/app.py")),),
+    )
+    save_implementer_leftovers(state_path, leftovers)
+    assert load_implementer_leftovers(state_path) == leftovers
+
+    _commit_all(tmp_path, "commit the leftover")
+    assert prune_implementer_leftovers(tmp_path, leftovers) is None
+
+    save_implementer_leftovers(state_path, None)
+    assert not state_path.exists()
+    # Without a story key a record never matches, so it is not kept.
+    save_implementer_leftovers(
+        state_path, ImplementerLeftovers(story_key=None, fingerprints=leftovers.fingerprints)
+    )
+    assert not state_path.exists()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text("{not json", encoding="utf-8")
+    assert load_implementer_leftovers(state_path) is None
+
+
+def test_run_loop_clears_the_carry_over_record_when_the_story_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / ".gitignore", "logs/\n")
+    _commit_all(tmp_path, "ignore runtime state")
+    state_path = tmp_path / "logs" / "dispatch" / "carry-over.json"
+    _write(tmp_path / "src" / "api.py", "API = 'left by another story'\n")
+    save_implementer_leftovers(
+        state_path,
+        ImplementerLeftovers(
+            story_key="story:EPIC-9-S9",
+            fingerprints=(
+                ("src/api.py", working_tree_fingerprint(tmp_path, "src/api.py")),
+            ),
+        ),
+    )
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    seen_states: list[Any] = []
+    real_capture = orchestrator.capture_pre_dispatch_state
+
+    def recording_capture(*args: Any, **kwargs: Any):
+        state = real_capture(*args, **kwargs)
+        seen_states.append(state)
+        return state
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        assert not state_path.exists(), "the other story's record must be cleared"
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "capture_pre_dispatch_state", recording_capture)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert seen_states[0].carried_over == ()
+    assert "src/api.py" in seen_states[0].dirty_files
+    assert _commit_files(tmp_path, "HEAD") == ["src/app.py"]
+
+
+def test_stop_request_during_an_implementer_dispatch_exits_after_commit_and_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / ".gitignore", "logs/\n")
+    base = _commit_all(tmp_path, "ignore runtime state")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    stop_path = tmp_path / "logs" / "dispatch" / "stop-request"
+    messages: list[tuple[str, str]] = []
+    dispatches: list[str] = []
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        # The operator runs `llm-handoff stop` while the agent works.
+        request_stop(tmp_path)
+        return _dispatch_result()
+
+    def fail_auditor(*_args: object, **_kwargs: object) -> SubagentResult:
+        raise AssertionError("the stop request must prevent the next dispatch")
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fail_auditor)
+
+    # No max_cycles: only the stop request ends this run.
+    exit_code = orchestrator.run_loop(config, log=_collecting_log(messages))
+
+    assert exit_code == 0
+    assert dispatches == ["backend"]
+    assert _git(tmp_path, "rev-parse", "HEAD^") == base
+    assert _commit_files(tmp_path, "HEAD") == ["src/app.py"]
+    assert not stop_path.exists()
+    texts = [message for _level, message in messages]
+
+    def index_of(prefix: str) -> int:
+        return next(i for i, text in enumerate(texts) if text.startswith(prefix))
+
+    seen = index_of("Stop requested (")
+    committed = index_of("Dispatcher committed 1 in-scope file(s) for backend")
+    gate = texts.index("Work-claim gate PASSED for backend.")
+    stopped = index_of("Stopped at the operator's request before the next dispatch")
+    assert seen < committed < gate < stopped
+    assert sum(text.startswith("Stop requested (") for text in texts) == 1
+    assert not any(text.startswith("--- Cycle 2") for text in texts)
 
 
 # ---------------------------------------------------------------------------

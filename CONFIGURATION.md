@@ -223,6 +223,72 @@ turn the prompt off, set `interactive_pause: false` or pass
 `--no-interactive-pause` on the command line. The startup banner shows
 whether the prompt is enabled.
 
+## Stopping The Dispatcher
+
+To stop a running dispatcher without timing it, run this from a second
+terminal in the target repository (or pass `--repo-root`):
+
+```bash
+llm-handoff stop
+```
+
+The command writes `logs/dispatch/stop-request`. The dispatcher checks for
+that file before each cycle and once per poll while it waits at a pause or
+at the operator prompt. It never interrupts an agent: a cycle in flight
+finishes first, including, for an implementer, the dispatcher commit of its
+in-scope files (dispatcher commit mode), post-dispatch validation, the
+work-claim gate, and any publish step after an approval. The dispatcher then
+removes the file, releases
+`.dispatch.lock`, and exits with code 0 before it starts the next dispatch.
+It logs one `PAUSE` line when it first sees the request and one when it
+exits for it. Deleting the file before then cancels the request. The request
+names the pid recorded in `.dispatch.lock`, and a dispatcher honors only a
+request for its own pid (or one that names no pid, such as a file created by
+hand). A request the run never honored is removed when that run exits. At
+startup the dispatcher removes, with a `WARN` line, any request that does not
+name its pid, so a request accepted for the new lock is kept.
+
+`llm-handoff stop` refuses, and writes nothing, when no `.dispatch.lock`
+exists, when the lock records no pid (after giving a starting dispatcher a
+moment to write it), when the lock's pid is not running, or when Git does not ignore
+`logs/dispatch/stop-request`. An untracked file that Git does not ignore would
+show up as an uncommitted file in the work-claim gate of the dispatch in
+flight. `llm-handoff init` adds `/logs/dispatch/` to `.gitignore`.
+
+Under [supervised dispatch](docs/SUPERVISED_DISPATCH.md) the request stops the
+child dispatcher. The wrapper treats that exit like any other exit code 0: if
+the run's output contains a failure marker such as a failed post-dispatch
+gate, it may still start a repair and restart the child.
+
+Ctrl+C still aborts at once, as before: the dispatcher kills the running
+agent's process tree, releases the lock, and exits with code 130. It is not
+the graceful path because a Windows console delivers Ctrl+C to every process
+attached to it, including the agent CLI and any `git` command in progress.
+Edits the interrupted agent left are not recorded for carry-over; review them
+with `git status` before restarting.
+
+If the dispatcher was killed, `.dispatch.lock` stays behind and the next start
+refuses. The refusal names the pid in the lock, says whether that pid is
+running on this machine, and gives the command to check it
+(`Get-Process -Id <pid>` on Windows, `ps -p <pid>` elsewhere). The dispatcher
+does not remove the lock itself: a pid can be reused, and a dispatcher started
+from another environment (for example WSL against the same checkout) has pids
+this one cannot see. Remove the lock only after confirming no dispatcher is
+active.
+
+What survives a restart, all under `logs/dispatch/`:
+
+- per-story bounce counts (`bounce-counts.json`);
+- the publish story state (`publish/story.json`), so a paused publish resumes;
+- the carry-over record (`carry-over.json`); see
+  [Dispatcher Commits](#dispatcher-commits).
+
+What does not survive: a scheduled planner recovery or operator-prompt
+dispatch that had not run yet (the dispatcher logs a `WARN` line naming it),
+the pause recovery streak, the managed planner session, and the audit range
+base. After a restart the dispatcher routes `HANDOFF.md` again; a pause that
+still applies is detected again and gets its one bounded planner recovery.
+
 ## Work-Claim Gate
 
 On by default:
@@ -417,9 +483,18 @@ implementer dispatch for the same `story_id` (or, when the handoff has no
 `story_id`, the same `## Work Packet` text, which a bounce carries forward
 verbatim) treats any of them that are still unchanged as its own changes: the
 commit step can stage them, and the worktree check fails the claim if they stay
-uncommitted. A file edited in between, a different story, or a dispatcher
-restart puts a file back in the "already dirty before dispatch" group, which is
-never committed.
+uncommitted. A file edited in between or a different story puts a file back in
+the "already dirty before dispatch" group, which is never committed.
+
+The dispatcher saves this record to `logs/dispatch/carry-over.json` after each
+implementer dispatch and loads it at startup, so a restart keeps the same rule:
+only files whose content is unchanged, for the same story key. It drops files
+from the record once the dispatcher commits them, deletes the record when
+nothing is left or when an implementer dispatch starts for a different story,
+and logs an `INFO` line when it restores one. When Git does not ignore that
+path, the record stays in memory only and the dispatcher logs a `WARN` line,
+because the untracked file would otherwise show up in the next work-claim
+gate.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the
