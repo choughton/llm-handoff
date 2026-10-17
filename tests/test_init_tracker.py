@@ -21,6 +21,7 @@ from llm_handoff.tracker_prompts import (
     LINEAR_PROMPT_ROLES,
     linear_agents_section,
     linear_evidence_contract,
+    linear_issue_template,
     linear_role_section,
 )
 
@@ -462,11 +463,17 @@ def test_handbook_block_content_and_order(tmp_path: Path) -> None:
     content = (tmp_path / HANDBOOK).read_bytes()
     assert content.startswith(template)
     block = content[len(template) :].decode("utf-8")
-    sections = [linear_evidence_contract().strip("\n")]
+    sections = [
+        linear_evidence_contract().strip("\n"),
+        linear_issue_template().strip("\n"),
+    ]
     sections.extend(linear_role_section(role).strip("\n") for role in LINEAR_PROMPT_ROLES)
     expected = f"{LINEAR_BEGIN}\n" + "\n\n".join(sections) + f"\n{LINEAR_END}\n"
     assert block == expected
-    positions = [block.index("## Linear Evidence Comment\n")]
+    positions = [
+        block.index("## Linear Evidence Comment\n"),
+        block.index("## Linear Issue Template\n"),
+    ]
     positions.extend(
         block.index(f"## Linear Mode: {role}\n") for role in LINEAR_PROMPT_ROLES
     )

@@ -352,7 +352,7 @@ TRACKER_LEASE_REBUILD_INSTRUCTION = (
     "from the tracker pool. Read the tracker pool by the selection rules in "
     "the Linear sections of AGENTS.md and choose exactly one issue. If no "
     "issue qualifies, write HANDOFF.md routed to user with "
-    "`status: escalate_to_user` and one specific question for the user. "
+    "`status: blocked_missing_context` and one specific question for the user. "
     "Otherwise post a `lease_opened` evidence comment on the chosen issue, "
     "then write HANDOFF.md with frontmatter that sets `tracker_issue` to the "
     "chosen issue identifier, `tracker_url` to its URL, `selection_basis`, "

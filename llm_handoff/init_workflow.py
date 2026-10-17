@@ -24,6 +24,7 @@ from llm_handoff.tracker_prompts import (
     LINEAR_PROMPT_ROLES,
     linear_agents_section,
     linear_evidence_contract,
+    linear_issue_template,
     linear_role_section,
 )
 
@@ -731,7 +732,7 @@ def _linear_block(content: str) -> bytes:
 
 
 def _linear_handbook_text() -> str:
-    sections = [linear_evidence_contract()]
+    sections = [linear_evidence_contract(), linear_issue_template()]
     sections.extend(linear_role_section(role) for role in LINEAR_PROMPT_ROLES)
     return "\n\n".join(section.strip("\r\n") for section in sections)
 

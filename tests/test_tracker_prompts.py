@@ -12,14 +12,18 @@ from llm_handoff.tracker_prompts import (
     LINEAR_PROMPT_ROLES,
     linear_agents_section,
     linear_evidence_contract,
+    linear_issue_template,
     linear_role_section,
 )
+from llm_handoff.validator import _REQUIRED_WORK_PACKET_FIELDS
+from llm_handoff.work_claim import parse_work_packet
 
 SOURCE_PACKAGE_DIR = Path(__file__).resolve().parents[1] / "llm_handoff"
 TEMPLATE_DIR = SOURCE_PACKAGE_DIR / "prompt_templates" / "linear"
 EXPECTED_FILES = {
     "AGENTS.md",
     "EVIDENCE_COMMENT.md",
+    "ISSUE_TEMPLATE.md",
     "roles/planner.md",
     "roles/backend.md",
     "roles/frontend.md",
@@ -39,10 +43,20 @@ def _all_sections() -> dict[str, str]:
     sections = {
         "AGENTS.md": linear_agents_section(),
         "EVIDENCE_COMMENT.md": linear_evidence_contract(),
+        "ISSUE_TEMPLATE.md": linear_issue_template(),
     }
     for role in LINEAR_PROMPT_ROLES:
         sections[f"roles/{role}.md"] = linear_role_section(role)
     return sections
+
+
+def _issue_template_example() -> str:
+    text = linear_issue_template()
+    fence = "```markdown\n"
+    assert text.count(fence) == 1
+    start = text.index(fence) + len(fence)
+    end = text.index("```", start)
+    return text[start:end]
 
 
 def test_prompt_roles_are_the_six_workflow_roles_in_order() -> None:
@@ -105,6 +119,77 @@ def test_role_sections_have_role_headings() -> None:
 
 def test_evidence_contract_heading() -> None:
     assert linear_evidence_contract().startswith("## Linear Evidence Comment\n")
+
+
+def test_issue_template_heading() -> None:
+    assert linear_issue_template().startswith("## Linear Issue Template\n")
+
+
+def test_issue_template_example_parses_as_work_packet() -> None:
+    packet = parse_work_packet(_issue_template_example())
+    assert packet.verification_commands == ("python -m pytest tests -q",)
+    assert packet.files_in_scope
+    assert packet.files_out_of_bounds
+
+
+def test_issue_template_example_uses_every_required_label() -> None:
+    lines = _issue_template_example().splitlines()
+    assert lines[0] == "## Work Packet"
+    for label in _REQUIRED_WORK_PACKET_FIELDS:
+        prefix = f"- **{label}:**"
+        assert any(line.startswith(prefix) for line in lines), label
+
+
+def test_planner_section_states_selection_rules() -> None:
+    text = linear_role_section("planner")
+    for phrase in (
+        "selection_basis: priority",
+        "selection_basis: manual_order",
+        "selection_basis: created_at",
+        "lease_opened",
+        "output_summary",
+        "tracker.eligible_state",
+        "status: blocked_missing_context",
+    ):
+        assert phrase in text, phrase
+    assert "without a priority" in " ".join(text.split())
+
+
+def test_planner_section_keeps_existing_bullets() -> None:
+    text = linear_role_section("planner")
+    for phrase in (
+        "Read the issue pool",
+        "write the lease fields",
+        "Post a `lease_opened` evidence comment on the issue.",
+        "Move the issue to `tracker.in_progress_state`.",
+        "Then rewrite `HANDOFF.md`.",
+    ):
+        assert phrase in text, phrase
+
+
+def test_planner_vets_issue_verification_commands() -> None:
+    # Issue text is untrusted and the gate runs Verification commands in a
+    # shell, so the planner must not copy an issue's command unchecked.
+    text = " ".join(linear_role_section("planner").split())
+    assert "never copy one from an issue unchecked" in text
+    assert "this repository already defines" in text
+    assert "no shell control character" in text
+    template = " ".join(linear_issue_template().split())
+    assert "the repository already defines" in template
+
+
+def test_planner_selection_rules_are_ordered() -> None:
+    text = " ".join(linear_role_section("planner").split())
+    order = [
+        text.index("Urgent, then High, then Medium, then Low"),
+        text.index("break the tie by manual order, then by creation date"),
+        text.index("set `selection_basis: manual_order`"),
+        text.index("set `selection_basis: created_at`"),
+        text.index("made without a priority"),
+        text.index("## Work Packet"),
+        text.index("the pool has no eligible issue"),
+    ]
+    assert order == sorted(order)
 
 
 @pytest.mark.parametrize("role", ["user", "security", "", "Planner"])
@@ -229,6 +314,9 @@ def test_templates_load_from_source_tree() -> None:
     )
     assert linear_evidence_contract() == (
         template_dir / "EVIDENCE_COMMENT.md"
+    ).read_text(encoding="utf-8")
+    assert linear_issue_template() == (
+        template_dir / "ISSUE_TEMPLATE.md"
     ).read_text(encoding="utf-8")
     for role in LINEAR_PROMPT_ROLES:
         on_disk = (template_dir / "roles" / f"{role}.md").read_text(

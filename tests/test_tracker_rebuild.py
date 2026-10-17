@@ -10,6 +10,7 @@ import pytest
 import llm_handoff.orchestrator as orchestrator
 from llm_handoff.agents import DispatchResult
 from llm_handoff.config import DispatchConfig
+from llm_handoff.tracker_prompts import linear_role_section
 from llm_handoff.validator import ValidationResult
 
 REBUILT_HANDOFF = """---
@@ -141,9 +142,17 @@ def test_rebuild_instruction_is_ascii_and_generic() -> None:
         "user",
     ):
         assert fragment in text
+    assert "status: blocked_missing_context" in text
+    assert "escalate_to_user" not in text
     assert "commit" not in text.lower()
     assert "ENG" not in text
     assert orchestrator.TRACKER_LEASE_REBUILD_PAUSE_REASON.isascii()
+
+
+def test_rebuild_instruction_empty_pool_status_matches_planner_rule() -> None:
+    status = "status: blocked_missing_context"
+    assert status in orchestrator.TRACKER_LEASE_REBUILD_INSTRUCTION
+    assert status in linear_role_section("planner")
 
 
 def test_vanilla_missing_handoff_still_exits_1(
