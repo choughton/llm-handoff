@@ -2682,7 +2682,20 @@ class _ProviderPopenRecorder:
         )
 
     def stems(self) -> set[str]:
-        return {Path(command[0]).stem.lower() for command, _env in self.launches}
+        return {_launched_cli_stem(command) for command, _env in self.launches}
+
+
+def _launched_cli_stem(command: list[str]) -> str:
+    """Name the CLI a recorded launch ran, e.g. ``codex`` or ``gemini``.
+
+    On Windows an npm-installed CLI is launched as ``node <entry>.js ...``
+    (see ``agent_process._resolve_command_argv``), so the CLI name is the
+    script's stem rather than ``argv[0]``'s.
+    """
+    program = Path(command[0]).stem.lower()
+    if program == "node" and len(command) > 1:
+        return Path(command[1]).stem.lower()
+    return program
 
 
 def _with_codex_security_cli(
