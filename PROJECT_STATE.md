@@ -6,9 +6,9 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** CONFIG-CLEANUP (next; CLEAN-1 not started).
-  SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and
-  ANTIGRAVITY-ADAPTER closed.
+- **Active Epic:** LINEAR-FOUNDATIONS (next; LIN-1 not started).
+  CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST,
+  and ANTIGRAVITY-ADAPTER closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -21,25 +21,7 @@ story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
 
-### 6. CONFIG-CLEANUP - known gaps from the portability review
-
-- CLEAN-1: `auto_push` is declared in config but never read. Remove it or wire
-  it to the documented behavior, and update the tests and examples that set it.
-- CLEAN-2: The finalizer prompt strings in `llm_handoff/ledger.py` hard-code
-  `PROJECT_STATE.md`; use the configured `project_state_path`.
-- CLEAN-3: The supervisor's default repair allowlist
-  (`llm_handoff/supervisor.py`) assumes this repository's layout; make the
-  default generic for target repositories.
-- CLEAN-4: The shipped finalizer helper files still hard-code
-  `PROJECT_STATE.md` (read list, update rules, dispatcher-mode commit
-  rules, `COMMIT SHA` output line), so they conflict with the finalizer
-  prompt when `project_state_path` names another file. Make them defer to
-  the project state path named in the dispatcher prompt: the Codex
-  `llm-handoff-finalizer/SKILL.md` and the Claude and agy
-  `ledger-updater.md`, in both the repository root and
-  `examples/reference-workflow/` copies (`.agents/**` is a protected
-  path), plus `STALE_FINALIZER_RECOVERY_INSTRUCTION` in
-  `llm_handoff/orchestrator.py`. From the CLEAN-2 review (PR #74).
+Epic 6 (CONFIG-CLEANUP) is closed; see the Completed Scope Ledger.
 
 ### 7. LINEAR-FOUNDATIONS - optional Linear mode, groundwork
 
@@ -137,6 +119,14 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   - (d) `CONFIGURATION.md` (~line 674) does not recommend pinning scanner
     versions; add one line.
 
+- From the CONFIG-CLEANUP close (CLEAN-4, low/info):
+  - (a) the planner, backend, frontend, auditor, validator, and router helper
+    files still name `PROJECT_STATE.md` literally; give them the same deferral
+    wording if wanted.
+  - (b) `project_state_path` and `handoff_path` are not validated in
+    `llm_handoff/config.py` (~line 785); reject absolute paths, `..` segments,
+    and control characters.
+
 ## Completed Scope Ledger
 
 - **Phase 0 bootstrap (W0.1)** - pinned dispatcher took its first assignment
@@ -185,6 +175,18 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   `d1bbd817a0e5f0c279d205befcf0a7ef511333c7`, audited at that SHA). Audit
   approved with sub-threshold findings only (see Open Followups). Verification:
   full test suite, 1726 passed, 18 skipped.
+- **CONFIG-CLEANUP** - portability review gaps. CLEAN-1 `auto_push` config;
+  CLEAN-2 finalizer prompt strings use `project_state_path`; CLEAN-3 generic
+  supervisor default repair allowlist (`e275de4347d404baa3f256754b451800ec5ef006`,
+  PR #75 merge `d5cda0437401b32b151ca9cbda84ce4a76230dee`); CLEAN-4 shipped
+  finalizer helper files and the stale-finalizer recovery instruction defer to
+  the configured `project_state_path` (`STALE_FINALIZER_RECOVERY_INSTRUCTION`
+  became `STALE_FINALIZER_RECOVERY_INSTRUCTION_TEMPLATE` plus
+  `stale_finalizer_recovery_instruction()`), audited at
+  `b871bdce278510ab6a5622980d8544353513767f`, PR #77 merge
+  `92fa431018de65cc2b1c2aef64cfca832fb8b3ee`. Audit approved with
+  sub-threshold findings only (see Open Followups). Verification: full test
+  suite, 1739 passed, 18 skipped.
 
 ## Notes
 
