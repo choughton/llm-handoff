@@ -1098,6 +1098,17 @@ Antigravity roles have no per-role tool list and are unchanged. Later releases
 use the block to render prompt sections and report connectors in
 `llm-handoff doctor`.
 
+The Linear-mode prompt text ships inside the package as static Markdown under
+`llm_handoff/prompt_templates/linear/`: a shared `AGENTS.md` section, the
+YAML evidence-comment contract in `EVIDENCE_COMMENT.md`, and one
+`roles/<role>.md` section per workflow role. The text names settings by their
+`tracker.*` keys and embeds no values. With `commit_mode: dispatcher`, the
+implementer's `implementation_handoff` comment records
+`pending-dispatcher-commit`, and the auditor's comment records the concrete
+commit SHA. Nothing renders these files yet;
+`llm-handoff init --tracker linear` will render them as managed blocks in a
+later release.
+
 ```yaml
 tracker:
   provider: linear              # none (default) | linear
