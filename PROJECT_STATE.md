@@ -80,7 +80,100 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 
-### 10. WORK-INTAKE - turn a plain request into epics and stories
+### 10. RECOVERY - interrupted-run recovery
+
+A Ctrl+C, a closed window, or a crash at any point must leave the loop able
+to continue from a record it wrote, without the operator cleaning the working
+tree by hand. The dispatcher resumes deterministically; it does not guess
+whose edits are whose. Today a Ctrl+C on Windows also reaches the agent
+(children share the console process group), and a restart treats the agent's
+partial edits as operator edits that are never committed, so the story
+bounces until the three-fix circuit breaker escalates.
+
+- RECOVERY-1: Graceful Ctrl+C. Start agent processes in their own process
+  group on Windows (`CREATE_NEW_PROCESS_GROUP`, like POSIX
+  `start_new_session`) so a console Ctrl+C reaches only the dispatcher. The
+  first Ctrl+C requests the same stop as `llm-handoff stop` and prints `Stop
+  requested; finishing the current <role> run. Press Ctrl+C again to stop
+  now.`; the second stops at once and takes down the agent process tree.
+- RECOVERY-2: In-flight record and implementer recovery. Before each step
+  that can leave partial state, write `logs/dispatch/in-flight.json` (cycle,
+  role, story key, phase, HEAD, a copy of the pre-dispatch `HANDOFF.md`, and
+  fingerprints of the files dirty before the dispatch); clear it when the
+  cycle completes. At startup, an implementer phase found in the record means
+  files that were clean when the record was written and are changed now are
+  that agent's partial work: carry them over, restore a half-written
+  `HANDOFF.md`, and re-dispatch the same role with a note that its previous
+  run was interrupted and its partial changes are in the tree. Files that
+  were already dirty in the record stay operator-owned even if they changed
+  (a fingerprint shows a change but cannot separate the operator's bytes from
+  the agent's): they are never carried over or staged, and the dispatcher
+  pauses for the operator, naming them. Interrupted after the handback but
+  before the dispatcher commit or the gates: resume at the commit.
+- RECOVERY-3: The other phases. Planner and finalizer: restore an invalid
+  `HANDOFF.md` and re-run. Audit fan-out: restore the handoff and re-run the
+  read-only reviewers. Work-claim gate and scanners: re-run. Publish: make
+  each step safe to repeat (push again, reuse the open pull request, skip a
+  merge that already happened), using `story.json`. A `.git/index.lock` left
+  by a killed `git` pauses with its path and the check to run; it is never
+  deleted automatically.
+- RECOVERY-4: No-record fallback. When there is no in-flight record (a run
+  from before RECOVERY-2, or a lost record) and files are dirty, in scope for
+  the story's Work Packet, and clean at the story's last commit, ask `Treat
+  these as <role>'s interrupted <story> work? [y/N]`; yes carries them over,
+  no leaves them as operator edits. Never decide this without the operator.
+
+### 11. CHAT - talk to the agents while the loop runs
+
+The operator types at any time; a message holds the loop and is answered by
+the agent it is about, from that agent's own session, read-only. Chat never
+changes routing on its own: only a confirmed action re-dispatches a role.
+Console only, TTY only; without a TTY the loop behaves exactly as today. No new
+dependencies; Windows (`msvcrt`) and POSIX.
+
+- CHAT-1: Console chat line. During a run, a prompt line stays at the bottom of
+  the console (`[<role> running] chat> `) and is redrawn around log lines.
+  Agent processes start with `stdin=DEVNULL` so they never read the operator's
+  keystrokes.
+- CHAT-2: A sent message holds the loop at the next safe point: after the
+  current dispatch, its dispatcher commit, and its gates, and before the next
+  dispatch. The graceful-stop check at the loop top is not enough, because
+  publishing runs inside the auditor's cycle: add explicit hold checks right
+  before `publish_story` in the cycle and before `resume_paused_publish` at
+  startup, so no push or merge happens while a message is pending or held. A
+  message about the running agent prints `Question queued until after the
+  current <role> run completes.` While held, print `Press Enter to continue`;
+  the loop never resumes on its own after a message. Queued messages are saved
+  under `logs/dispatch/` and survive `llm-handoff stop`; a saved message found
+  at startup holds the loop before the publish resume.
+- CHAT-3: Dispatch record and read-only answers. Save each dispatch in the run
+  (role, story, provider, session id, time) under `logs/dispatch/`. A question
+  resumes that agent's own session and prints the answer; follow-ups stay in
+  the same thread. Each answer runs behind a read-only boundary the provider
+  enforces, not a prompt-level mode: Claude `--resume` with only read tools
+  (Read, Grep, Glob, read-only `git`); Codex `exec resume` in the read-only
+  sandbox. Gemini plan mode and agy plan mode are not boundaries (Gemini plan
+  mode auto-approves `exit_plan_mode` and switches to YOLO in non-interactive
+  runs; see `docs/ARCHITECTURE.md`), so Gemini and agy answer only once the
+  story establishes an enforced boundary for them (for example a sandbox with
+  the repository mounted read-only, or deny rules for every write and shell
+  tool); until then they say they cannot answer and offer the planner. For
+  Gemini, confirm `--resume` accepts a session id, else start sessions with
+  `--session-id` and load them with `--session-file`. After each answer the
+  dispatcher also checks that `HANDOFF.md` and the Git state are unchanged and
+  pauses with a warning if not; this check is a second layer, not the
+  boundary.
+- CHAT-4: Router and action path. `@role <message>` targets that role. Otherwise
+  the normalizer model classifies the message against the dispatch record
+  (target, question or action, confidence) and prints its pick before anything
+  runs, for example `-> asking auditor (LIN-9b audit, session <id>)`; a
+  low-confidence pick shows a numbered list instead. Questions about the loop
+  as a whole go to the planner. An action asks `Re-dispatch <role> with this
+  guidance? [y/N]`; yes uses the existing operator role dispatch, and the
+  handoff and pull request record the result as operator-influenced (closes
+  PAUSE-RECOVERY followup (d)).
+
+### 12. WORK-INTAKE - turn a plain request into epics and stories
 
 Before scoping INTAKE-1, route to `user` for a short design check.
 

@@ -1,21 +1,25 @@
 # Walkthrough
 
-This walkthrough explains the first-run flow in more detail than
-[QUICKSTART.md](QUICKSTART.md). It assumes you want to understand how the source
-checkout, target repo, provider CLIs, and handoff files fit together.
+How the pieces of a first run fit together: the two directories involved, how
+roles map to provider CLIs, every file `init` copies and what each one is for,
+what a dry run should show, how to inspect state after a cycle, and what the
+common pauses mean. The commands themselves are in the
+[README quick start](README.md#quick-start), with per-platform variants in
+[QUICKSTART.md](QUICKSTART.md).
 
 ## The Two-Repos Mental Model
 
 There are usually two directories involved:
 
 ```text
-llm-handoff/       # source checkout for the dispatcher
+llm-handoff/       # the dispatcher: an installed package or a source checkout
 your-project/      # target repository where agents do work
 ```
 
-The dispatcher source checkout contains the Python loop and reference templates.
-The target repository receives the workflow files the agents will read and
-write.
+The dispatcher contains the Python loop and the reference templates. The
+target repository receives the workflow files the agents will read and write.
+`--repo-root` tells the dispatcher which target repository to work in, and
+`--config` defaults to `dispatch_config.yaml` in that root.
 
 The dispatcher does not hide state in a database. The target repo owns the live
 state:
@@ -28,105 +32,114 @@ git log
 
 `HANDOFF.md` is the current route. Git commits are the durable record.
 
-## Step 1. Install The Dispatcher Source Checkout
-
-Clone the dispatcher somewhere outside the target repo:
-
-```bash
-git clone https://github.com/choughton/llm-handoff.git
-cd llm-handoff
-```
-
-Create a virtual environment and install the source-checkout dependencies:
-
-```bash
-python -m venv .venv
-python -m pip install -r requirements-dev.txt
-python -m llm_handoff --help
-```
-
-On Windows PowerShell, use the venv interpreter directly if the environment is
-not activated:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m llm_handoff --help
-```
-
-## Step 2. Confirm Provider CLIs
+## Roles And Providers
 
 The reference workflow maps generic roles to provider CLIs:
 
-| Role | Typical Provider |
+| Role | Reference Provider |
 | --- | --- |
-| `planner` | Gemini |
-| `backend` | Codex |
-| `frontend` | Gemini or manual frontend work |
-| `auditor` | Claude |
-| `validator` | Claude |
-| `finalizer` | Claude |
+| `planner` | Gemini CLI |
+| `backend` | Codex CLI |
+| `frontend` | Gemini CLI, or manual work with `--manual-frontend` |
+| `auditor` | Claude Code |
+| `validator` | Claude Code |
+| `finalizer` | Claude Code |
 
-These are adapter choices, not handoff protocol names. Handoffs should use the
-generic roles.
+These are adapter choices, not handoff protocol names. Handoffs use the generic
+roles. `init` writes this mapping when more than one provider CLI is on
+`PATH`; when only one of Claude Code, Codex, or Gemini CLI is installed, it
+puts every role on that CLI, and `--provider claude`, `--provider codex`, or
+`--provider gemini` forces that choice. Antigravity is also a registered
+adapter. See [Agent Roles](CONFIGURATION.md#agent-roles) for the mapping
+shape and the single-vendor variants, and the README's
+[Gotchas](README.md#gotchas) for what all-Codex and all-Gemini setups need
+in addition.
 
-Check the CLIs you plan to use:
-
-```bash
-codex --version
-gemini --version
-claude --version
-```
-
-If a provider CLI is not authenticated, fix that before running a real dispatch.
+If a provider CLI is not signed in, fix that before running a real dispatch.
 The dispatcher invokes provider tools; it does not manage their login flow.
 
-## Step 3. Initialize The Target Repository
+## What `init` Copies
 
-From the dispatcher source checkout, preview the reference workflow copy:
-
-```bash
-python -m llm_handoff init /path/to/your-project --template reference-workflow --dry-run
-```
-
-Then copy the files:
-
-```bash
-python -m llm_handoff init /path/to/your-project --template reference-workflow
-```
-
-The initializer copies:
+`llm-handoff init` copies everything under
+[`examples/reference-workflow/`](examples/reference-workflow/) except that
+directory's own `README.md`:
 
 ```text
 AGENTS.md
 PROJECT_STATE.md
 dispatch_config.yaml
-docs/handoff/HANDOFF.md
-docs/handoff/*.md
+.gitignore
 .geminiignore
-.gemini/agents/planner.md
-.gemini/agents/frontend.md
-.gemini/policies/planner_guardrails.toml
-.codex/skills/llm-handoff/SKILL.md
-.codex/skills/llm-handoff/agents/openai.yaml
+docs/handoff/README.md
+docs/handoff/HANDOFF.md
+docs/handoff/HANDBOOK.md
+docs/handoff/SHARED_REPO_INIT_PROMPT.md
+docs/handoff/PLANNER_INITIAL_PROMPT.md
+docs/handoff/PLANNER_HANDOFF_PROMPT.md
+docs/handoff/BACKEND_HANDOFF_PROMPT.md
+docs/handoff/FRONTEND_HANDOFF_PROMPT.md
+docs/handoff/AUDITOR_HANDOFF_PROMPT.md
+docs/handoff/FINALIZER_HANDOFF_PROMPT.md
+.claude/agents/planner.md
+.claude/agents/backend.md
+.claude/agents/frontend.md
 .claude/agents/auditor.md
-.claude/agents/handoff-router.md
 .claude/agents/handoff-validator.md
+.claude/agents/handoff-router.md
 .claude/agents/ledger-updater.md
 .claude/settings.json
 .claude/hooks/block_dangerous_commands.py
+.codex/skills/llm-handoff/SKILL.md
+.codex/skills/llm-handoff/agents/openai.yaml
+.codex/skills/llm-handoff-planner/SKILL.md
+.codex/skills/llm-handoff-frontend/SKILL.md
+.codex/skills/llm-handoff-auditor/SKILL.md
+.codex/skills/llm-handoff-validator/SKILL.md
+.codex/skills/llm-handoff-finalizer/SKILL.md
+.codex/rules/llm-handoff.rules
+.gemini/agents/planner.md
+.gemini/agents/backend.md
+.gemini/agents/frontend.md
+.gemini/agents/auditor.md
+.gemini/agents/validator.md
+.gemini/agents/finalizer.md
+.gemini/policies/planner_guardrails.toml
+.agents/agents/planner.md
+.agents/agents/backend.md
+.agents/agents/frontend.md
+.agents/agents/auditor.md
+.agents/agents/handoff-validator.md
+.agents/agents/handoff-router.md
+.agents/agents/ledger-updater.md
 ```
 
-Existing identical files are skipped. Existing changed files stop the init
-unless you pass `--force` after reviewing the conflict.
+Four of these are merged rather than copied when the target already has them:
+`AGENTS.md`, `.gitignore`, and `.geminiignore` get a managed block between
+`llm-handoff:begin` and `llm-handoff:end` markers, and `.claude/settings.json`
+gets the template's deny rules and `PreToolUse` hook added to your existing
+settings. Every other existing identical file is skipped, and an existing
+changed file stops the init unless you pass `--force` after reviewing the
+conflict. `--force` overwrites non-managed files and keeps your content in the
+managed ones.
+
+`init` also chooses the role-to-provider mapping it writes into
+`dispatch_config.yaml` (see [Roles And Providers](#roles-and-providers)) and,
+with `--tracker linear`, adds a `tracker` block and the Linear prompt sections
+(see [Files Or Linear](README.md#files-or-linear-where-work-is-tracked)).
 
 Gemini CLI ignores policy files in a project's `.gemini/policies/` directory
 today. To enforce the shipped Gemini guardrails, copy
-`.gemini/policies/planner_guardrails.toml` into `~/.gemini/policies/`. See the
-Guardrails section of `examples/reference-workflow/README.md`.
+`.gemini/policies/planner_guardrails.toml` into `~/.gemini/policies/`
+(Windows: `%USERPROFILE%\.gemini\policies\`). See the Guardrails section of
+[examples/reference-workflow/README.md](examples/reference-workflow/README.md).
 
-## Step 4. Review The Target Repo Files
+You can also copy or fork the template files by hand if you want a custom
+protocol layout. The template README describes the role and handoff contracts
+the files must keep agreeing on.
 
-Open the target repo and inspect:
+## What Each Target-Repo File Is For
+
+After `init`, open the target repo and inspect:
 
 ```text
 AGENTS.md
@@ -136,68 +149,39 @@ docs/handoff/HANDOFF.md
 docs/handoff/README.md
 ```
 
-The important contract is:
+The contract is:
 
 - `AGENTS.md` tells agents how the workflow operates.
-- `PROJECT_STATE.md` stores durable project context.
-- `dispatch_config.yaml` maps generic roles to provider CLIs.
+- `PROJECT_STATE.md` stores durable project context: the active epic,
+  blockers, and the completed-scope ledger the finalizer updates.
+- `dispatch_config.yaml` maps generic roles to provider CLIs and holds the
+  gate, scanner, publishing, and tracker settings.
 - `docs/handoff/HANDOFF.md` declares the next route.
-- `docs/handoff/*.md` files are startup and handoff prompts for each role.
+- The other `docs/handoff/*.md` files are the startup and handoff prompts for
+  each role, the shared `HANDBOOK.md` rules, and the format guide in
+  `docs/handoff/README.md`.
+- `.claude/`, `.codex/`, `.gemini/`, and `.agents/` hold each provider CLI's
+  native agent files, skills, and guardrails for the same roles. The
+  dispatcher's prompt names the role; the provider file carries that role's
+  standing instructions.
+- The `.gitignore` and `.geminiignore` blocks keep `logs/dispatch/` and the
+  dispatch lock out of Git and out of Gemini CLI's context.
 
-## Step 5. Write The First Dispatchable Handoff
+`AGENTS.md`, the handoff prompts, `dispatch_config.yaml`, and the provider
+directories are protected control files: a role that edits them without
+listing the path in its Work Packet stops the loop. See
+[Protected Control Files](CONFIGURATION.md#protected-control-files).
 
-A dispatchable handoff starts with YAML frontmatter:
+## The First Handoff
 
-```markdown
----
-next_agent: planner
-reason: Scope the first bounded implementation task.
-producer: user
----
-```
-
-The body should give the next role enough context to act:
-
-```markdown
-# Initial Handoff
-
-Read AGENTS.md, PROJECT_STATE.md, and the current repository state. Then write a
-small backend, frontend, audit, or finalizer assignment in
-docs/handoff/HANDOFF.md.
-```
+A dispatchable handoff starts with YAML frontmatter that names `next_agent`,
+`reason`, and `producer`. The body gives the next role enough context to act.
+The starter text is in
+[README step 4](README.md#4-tell-the-planner-what-to-build); the full field
+and status reference is in [docs/handoff/README.md](docs/handoff/README.md).
 
 The dispatcher treats frontmatter as authoritative. Body prose is context for
-humans and agents.
-
-## Step 6. Run A Dry Dispatch
-
-From the `llm-handoff` source checkout, run a dry dispatch while pointing the
-dispatcher at the target repo.
-
-Windows PowerShell:
-
-```powershell
-.\.venv\Scripts\python.exe -m llm_handoff --repo-root C:\path\to\your-project --config C:\path\to\your-project\dispatch_config.yaml --dry-run
-```
-
-macOS or Linux:
-
-```bash
-python -m llm_handoff --repo-root /path/to/your-project --config /path/to/your-project/dispatch_config.yaml --dry-run
-```
-
-If you prefer to run commands from inside the target repo before package
-installation exists, set `PYTHONPATH` to the `llm-handoff` source checkout.
-
-Expected result:
-
-- the dispatcher reads `docs/handoff/HANDOFF.md`;
-- the router identifies `next_agent`;
-- the CLI logs the role it would dispatch;
-- no provider agent is launched.
-
-If dry run reports `unknown`, inspect the frontmatter first. `next_agent` must
-be one of:
+humans and agents. `next_agent` must be one of:
 
 ```text
 planner
@@ -209,48 +193,27 @@ finalizer
 user
 ```
 
-## Step 7. Run A Real Cycle
+## What A Dry Run Shows
 
-When dry run is clean and provider auth is ready, run without `--dry-run`:
+A dry run (`--dry-run`) parses the handoff, resolves the configured role, and
+reports the provider CLI it would invoke. Expected result:
 
-Windows PowerShell:
+- the dispatcher reads `docs/handoff/HANDOFF.md`;
+- the router identifies `next_agent`;
+- the CLI logs the role and provider it would dispatch;
+- no provider agent is launched.
 
-```powershell
-.\.venv\Scripts\python.exe -m llm_handoff --repo-root C:\path\to\your-project --config C:\path\to\your-project\dispatch_config.yaml
-```
+If the dry run reports `unknown`, inspect the frontmatter first and check
+`next_agent` against the list above.
 
-macOS or Linux:
+Without `--dry-run`, the same command runs the loop: the dispatcher invokes
+one role, the role updates `HANDOFF.md`, the dispatcher validates the updated
+handoff, and the loop continues, pauses, or escalates. Stopping it cleanly
+and the operator prompt are described in
+[README step 5](README.md#5-dry-run-then-run) and in
+[Stopping The Dispatcher](CONFIGURATION.md#stopping-the-dispatcher).
 
-```bash
-python -m llm_handoff --repo-root /path/to/your-project --config /path/to/your-project/dispatch_config.yaml
-```
-
-The loop is serial:
-
-```text
-HANDOFF.md declares next_agent
-        |
-        v
-dispatcher invokes one role
-        |
-        v
-role updates HANDOFF.md
-        |
-        v
-dispatcher validates the updated handoff
-        |
-        v
-continue, pause, or escalate
-```
-
-To stop the loop at any time, run `llm-handoff stop` from a second terminal in
-the target repository (or pass `--repo-root`). The dispatcher lets the running
-agent finish, commits and checks its work as usual, and exits with code 0
-before the next dispatch. Ctrl+C still aborts immediately and kills the
-running agent. See
-[CONFIGURATION.md](CONFIGURATION.md#stopping-the-dispatcher).
-
-## Step 8. Inspect State After A Cycle
+## Inspecting State After A Cycle
 
 After each cycle, inspect:
 
@@ -275,12 +238,10 @@ agent to proceed. If the dispatcher pauses, it should log why.
 With the default `pause_recovery: planner`, the planner gets one recovery
 attempt at each of these pauses (except a `user` route) before the dispatcher
 waits for you to edit `HANDOFF.md`; see
-[CONFIGURATION.md](CONFIGURATION.md#pause-recovery). When the dispatcher then
-waits and you are at a terminal, an operator prompt lets you press Enter or
-type guidance to dispatch the planner, type `@backend`, `@frontend`, or
-`@auditor` with an optional message to dispatch that role directly, type
-`retry` or `quit`, or edit `HANDOFF.md` to resume; see
-[CONFIGURATION.md](CONFIGURATION.md#operator-prompt).
+[Pause Recovery](CONFIGURATION.md#pause-recovery). When the dispatcher then
+waits and you are at a terminal, the operator prompt lets you dispatch the
+planner or another role, retry, quit, or edit `HANDOFF.md` to resume; see
+[Operator Prompt](CONFIGURATION.md#operator-prompt).
 
 `unknown` route:
 

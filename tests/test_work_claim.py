@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -38,6 +40,9 @@ from llm_handoff.work_claim import (
     carry_over_key,
     evidence_commit_value,
     extract_work_packet_section,
+    git_dirty_files,
+    git_head,
+    git_head_and_dirty_files,
     load_implementer_leftovers,
     parse_work_packet,
     path_is_in_scope,
@@ -174,7 +179,35 @@ status: {status}
 """
 
 
+# Process launches dominate this file's run time, most of all on Windows. Each
+# starting repository is built once per worker and copied into each test.
+_TEMPLATE_ROOT: Path | None = None
+_TEMPLATE_HEADS: dict[str, str] = {}
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _repo_template_root(tmp_path_factory: pytest.TempPathFactory) -> None:
+    global _TEMPLATE_ROOT
+    _TEMPLATE_ROOT = tmp_path_factory.mktemp("work-claim-templates")
+
+
 def _init_repo(repo_root: Path, handoff_content: str | None = None) -> str:
+    if repo_root.exists() and any(repo_root.iterdir()):
+        return _build_repo(repo_root, handoff_content)
+    assert _TEMPLATE_ROOT is not None
+    key = hashlib.sha256(repr(handoff_content).encode("utf-8")).hexdigest()[:16]
+    template = _TEMPLATE_ROOT / key
+    if key not in _TEMPLATE_HEADS:
+        _TEMPLATE_HEADS[key] = _build_repo(template, handoff_content)
+    shutil.copytree(template, repo_root, dirs_exist_ok=True)
+    # A copy gets new file creation times, which git's index compares, so
+    # plumbing such as `git diff-index` would see every file as changed.
+    _git(repo_root, "update-index", "-q", "--refresh")
+    return _TEMPLATE_HEADS[key]
+
+
+def _build_repo(repo_root: Path, handoff_content: str | None) -> str:
+    repo_root.mkdir(parents=True, exist_ok=True)
     _git(repo_root, "init", "-q")
     _git(repo_root, "config", "user.name", "llm-handoff tests")
     _git(repo_root, "config", "user.email", "tests@example.invalid")
@@ -507,6 +540,83 @@ def test_verify_work_claim_tolerates_handoff_only_commit_above_scope_sha(
     scope_check = next(check for check in result.checks if check.name == "scope_sha")
     assert "HEAD~1" in scope_check.detail
     assert result.changed_files == ("docs/handoff/HANDOFF.md", "src/app.py")
+
+
+def _git_launches(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    import llm_handoff.work_claim as work_claim_module
+
+    launches: list[list[str]] = []
+    real_run = subprocess.run
+
+    def recording_run(args, *run_args, **run_kwargs):
+        if args and args[0] == "git":
+            launches.append(list(args[3:]))
+        return real_run(args, *run_args, **run_kwargs)
+
+    monkeypatch.setattr(work_claim_module.subprocess, "run", recording_run)
+    return launches
+
+
+def test_verify_work_claim_runs_each_git_lookup_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(head))
+    launches = _git_launches(monkeypatch)
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(head), state=state
+    )
+
+    assert result.passed
+    # scope_sha and the evidence both name HEAD, which `git status` reported,
+    # so neither needs a rev-parse and HEAD's files are listed once.
+    assert [args[0] for args in launches] == ["status", "diff", "diff-tree"]
+
+
+def test_verify_work_claim_walks_handoff_only_commits_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    work_sha = _commit_all(tmp_path, "set value")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(work_sha))
+    _commit_all(tmp_path, "handoff")
+    launches = _git_launches(monkeypatch)
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(work_sha), state=state
+    )
+
+    assert result.passed
+    assert [args[0] for args in launches] == [
+        "status",
+        "diff",
+        "rev-parse",
+        "diff-tree",
+        "rev-parse",
+        "diff-tree",
+    ]
+
+
+def test_verify_work_claim_skips_git_diff_when_head_did_not_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    state = capture_pre_dispatch_state(tmp_path)
+    launches = _git_launches(monkeypatch)
+
+    result = _verify(
+        tmp_path, assignment=_assignment(), claim=_claim(None), state=state
+    )
+
+    assert result.changed_files == ()
+    assert "diff" not in [args[0] for args in launches]
+    assert _outcomes(result)["diff_scope"] == "PASS"
 
 
 def test_verify_work_claim_rejects_handoff_plus_source_commit_above_scope_sha(
@@ -3550,6 +3660,38 @@ def test_git_dirty_files_keeps_the_first_porcelain_path_whole(tmp_path: Path) ->
     _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
 
     assert orchestrator._git_dirty_files(tmp_path) == ("AGENTS.md", "src/app.py")
+
+
+def test_git_head_and_dirty_files_matches_the_separate_lookups(tmp_path: Path) -> None:
+    head = _init_repo(tmp_path)
+    _git(tmp_path, "mv", "src/api.py", "src/api moved.py")
+    _git(tmp_path, "rm", "-q", "--cached", "AGENTS.md")
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(tmp_path / "new dir" / "notes with spaces.md", "untracked\n")
+
+    expected = (
+        "AGENTS.md",
+        "new dir/notes with spaces.md",
+        "src/api moved.py",
+        "src/app.py",
+    )
+    assert git_dirty_files(tmp_path) == expected
+    assert git_head_and_dirty_files(tmp_path) == (head, expected)
+    assert git_head(tmp_path) == head
+
+
+def test_git_head_and_dirty_files_reports_no_head_on_an_unborn_branch(
+    tmp_path: Path,
+) -> None:
+    _git(tmp_path, "init", "-q")
+    _write(tmp_path / "README.md", "untracked\n")
+
+    assert git_head(tmp_path) is None
+    assert git_head_and_dirty_files(tmp_path) == (None, ("README.md",))
+
+
+def test_git_head_and_dirty_files_outside_a_repository(tmp_path: Path) -> None:
+    assert git_head_and_dirty_files(tmp_path / "missing") == (None, None)
 
 
 STORY_ID_LINE = f"story_id: {STORY_ID}\n"

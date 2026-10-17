@@ -1474,8 +1474,9 @@ tasks; the dispatcher's prompt names which one applies.
 
 `llm-handoff init --provider codex` writes this mapping into
 `dispatch_config.yaml`, with every role on `provider: codex`,
-`audit.security_provider: codex`, and `normalizer.provider: codex` (the
-normalizer runs through the Codex CLI login, so no API key is needed).
+`audit.security_provider: codex`, `normalizer.provider: codex` (the
+normalizer runs through the Codex CLI login, so no API key is needed), and
+`commit_mode: dispatcher` in place of the template's `commit_mode: agent`.
 Without `--provider`, `init` writes it automatically when `codex` is the only
 provider CLI on `PATH`. If both `claude` and `codex` are on `PATH`, `init`
 keeps the reference mapping; pass `--provider` to choose one.
@@ -1486,13 +1487,18 @@ With every role on Codex, the security reviewer runs on the same vendor as
 the implementer, so it is a second read-only review rather than an
 independent one, and the dispatcher logs a warning saying so.
 
-Whether Codex's `workspace-write` sandbox lets a role run `git add` and
-`git commit` is unverified. The skills tell a sandboxed role not to work
-around the sandbox. For the planner, backend, and frontend roles,
-`commit_mode: dispatcher` (see [Dispatcher Commits](#dispatcher-commits))
-avoids the question: the dispatcher commits backend and frontend work, and the
-planner writes nothing to `.git` because its handoff is left uncommitted on
-purpose. It does not take the commit off the finalizer: in that mode the
+Codex's `workspace-write` sandbox keeps `.git` read-only, so a sandboxed
+backend or frontend role cannot run `git add` or `git commit`, and the
+skills tell it not to work around the sandbox: with `commit_mode: agent` the
+role hands back `blocked_implementation_failure` on its first story. That is
+why `init` writes `commit_mode: dispatcher` (see
+[Dispatcher Commits](#dispatcher-commits)) for this mapping: the dispatcher
+commits backend and frontend work, and the planner writes nothing to `.git`
+because its handoff is left uncommitted on purpose. Dispatcher commits need
+`enforce_work_packet: true`, which the template already sets. If you turn
+the work-claim gate off, switch `commit_mode` back to `agent` as well, and
+expect the sandbox to block the implementer's commit. It does not take the
+commit off the finalizer: in that mode the
 finalizer is told to commit only the project state file
 (`project_state_path`) and leave `HANDOFF.md` uncommitted, and the dispatcher
 does not commit the state update for it. If the sandbox blocks the
@@ -1506,6 +1512,54 @@ roles, the dispatcher parses the `summary` text, so the validator's `VALID:`
 report and the finalizer's `PROJECT STATE UPDATED` report must be the whole
 `summary`. Output that is not an envelope, such as a resumed session's
 answer, is parsed as it is.
+
+### All-Gemini Mapping
+
+The reference workflow ships a Gemini agent file for every role, so a machine
+with only Gemini CLI installed can run the whole loop. Each role's `mention`
+names its agent file (`@<role>` selects `.gemini/agents/<role>.md`), and the
+Gemini adapter puts that mention at the front of the prompt:
+
+| Role | Gemini agent file |
+| --- | --- |
+| `planner` | `.gemini/agents/planner.md` |
+| `backend` | `.gemini/agents/backend.md` |
+| `frontend` | `.gemini/agents/frontend.md` |
+| `auditor` | `.gemini/agents/auditor.md` |
+| `validator` | `.gemini/agents/validator.md` |
+| `finalizer` | `.gemini/agents/finalizer.md` |
+
+The validator file covers both the handoff validation and handoff routing
+tasks; the dispatcher's prompt names which one applies.
+
+`llm-handoff init --provider gemini` writes this mapping into
+`dispatch_config.yaml`, with every role on `provider: gemini`,
+`audit.security_provider: gemini`, and `normalizer.provider: gemini`.
+Without `--provider`, `init` writes it automatically when `gemini` is the
+only provider CLI on `PATH`. `--verification-command` changes no `agents:`
+entry under this mapping, because it only adds `allowed_tools` to Claude
+roles.
+
+Every role runs inside Gemini CLI's container sandbox, so the machine needs
+Docker or Podman on `PATH` (macOS can use `sandbox-exec`); see
+[Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
+With every role on Gemini, the security reviewer runs on the same vendor as
+the implementer, so it is a second read-only review rather than an
+independent one, and the dispatcher logs a warning saying so. That reviewer
+also needs the Gemini CLI security extension installed and enabled;
+`llm-handoff doctor` checks it.
+
+The Gemini normalizer is API-only, so this mapping needs `GEMINI_API_KEY`
+(or `GOOGLE_API_KEY`) in the dispatcher's environment; there is no CLI-login
+path for it as there is for Codex. The normalizer runs only when a handoff's
+`next_agent` is not a canonical role. Without the key, `llm-handoff doctor`
+fails its `normalizer` line, and at run time such a handoff is left
+unchanged and the loop pauses, as it does for any normalizer failure.
+
+Gemini CLI returns the role's final answer as plain text in its
+`stream-json` output, so the validator's `VALID:` report and the finalizer's
+`PROJECT STATE UPDATED` report are parsed as written; the agent files ask
+for them as plain lines rather than inside a code fence.
 
 ### Fallback Agents
 
@@ -1723,7 +1777,10 @@ each implementer role, whether configured or chosen automatically: its CLI
 must be on `PATH`, and a Gemini reviewer also needs a sandbox runtime (unless
 the Gemini role sets `unsafe_bypass: true`) and the Gemini CLI security
 extension. A failed check stops the run with a `security_reviewer_failed:`
-error. `--dry-run` skips this check.
+error. `--dry-run` skips this check. `llm-handoff doctor` runs the same
+extension check (`gemini extensions list`, no model call) when a reviewer
+resolves to Gemini and prints a `security extension` line that fails when
+the extension is missing or disabled.
 
 With `security` enabled, the auditor route works differently:
 

@@ -20,6 +20,53 @@ This project follows a simple pre-release changelog until the first public tag.
   for a person. A validator report whose `LINEAR-EVIDENCE` row is missing or
   does not parse counts as a failed row, so recovery needs a parsed `PASS` or
   `WARN` status. The Claude `handoff-validator` helper files follow in LIN-9d.
+- Gave each first-run guide one job so the install, init, dry-run, and run
+  steps appear only in the README quick start: `QUICKSTART.md` is now the
+  Windows PowerShell and macOS/Linux command sheet for those five steps,
+  `INSTALL.md` keeps requirements, the package and source-checkout install
+  paths, `doctor`, safety defaults, debugging, and tests, and
+  `WALKTHROUGH.md` keeps the two-repo model, the role-to-provider table, the
+  full list of files `init` copies (now matching
+  `examples/reference-workflow/`, including the Claude planner, backend, and
+  frontend agents, the per-role Codex skills, the Codex rules file, and the
+  Antigravity agents), the target-repo file contract, dry-run expectations,
+  and common pauses.
+- `llm-handoff init --provider codex` (and the automatic all-Codex mapping
+  on a machine where `codex` is the only provider CLI) now writes
+  `commit_mode: dispatcher` instead of the template's `commit_mode: agent`.
+  Codex's `workspace-write` sandbox keeps `.git` read-only, so an all-Codex
+  config in agent mode stalled on its first backend handoff with
+  `blocked_implementation_failure`. The `claude` and reference mappings are
+  unchanged, and `init` fails with a clear error if the template no longer
+  has exactly one `commit_mode: agent` line.
+- Added the all-Gemini mapping: `llm-handoff init --provider gemini` (chosen
+  automatically when `gemini` is the only provider CLI on `PATH`) puts every
+  role on Gemini CLI with `audit.security_provider: gemini` and the API-only
+  Gemini normalizer, the reference workflow ships a Gemini agent file for
+  every role (`backend`, `auditor`, `validator`, and `finalizer` are new),
+  and `llm-handoff doctor` checks the Gemini CLI security extension when the
+  security reviewer resolves to Gemini.
+- On Windows, provider CLIs installed through npm (`codex.cmd`, `gemini.cmd`)
+  are now launched directly through their shim's target (`node <entry>.js`)
+  instead of through the `.cmd` shim itself. Running the shim made `cmd.exe`
+  re-parse the command line, which does not understand the `\"` escapes
+  Python writes for inner quotes, so a prompt such as the Codex security
+  reviewer's `"summary": "<one line>"` left `<one` outside quotes and
+  `cmd.exe` failed with "The system cannot find the file specified." before
+  Codex started (`security.stderr.txt` in the audit log directory). Every
+  Codex launch path (`codex exec`, `codex exec resume`, and the
+  `audit.security_provider: codex` reviewer) goes through the same resolver,
+  so arguments containing `"`, `<`, `>`, `|`, `&`, `%`, or `^` now reach the
+  CLI intact. Only the plain shape npm's `cmd-shim` writes for a zero-option
+  shebang is recognized, and the program must resolve to a native
+  executable; a shim with interpreter options or environment assignments,
+  or a hand-written `.cmd` wrapper, still runs through `cmd.exe` as before.
+- Restructured `README.md` around getting started: a table of contents, a
+  five-step quick start, a section on choosing and switching between file
+  mode and Linear mode, a gotchas list, and a gates-and-scanners summary.
+  The file-by-file repository map moved to `docs/INVENTORY.md`, which now
+  also lists the all-Claude and all-Codex agent files, the Codex rules file,
+  the Linear-mode prompt templates, and the CLI commands.
 - In `publish.mode: pr`, the dispatcher now also saves the implementer's
   `## Review Responses` from the handoff it is about to send to the auditor,
   not only when the work-claim gate passes. A correction-round handback that

@@ -19,6 +19,8 @@ Current full-suite result on Windows:
 One test, `test_timed_out_cmd_shim_child_is_killed_with_its_tree` in
 `tests/test_process_tree.py`, launches a real Windows `.cmd` shim process tree
 and is skipped on other platforms, where the result is `724 passed, 1 skipped`.
+Two tests in `tests/test_npm_shim_launch.py` launch a fake npm `.cmd` shim
+through `node` and are skipped off Windows or when `node` is not on `PATH`.
 
 The `tests/ported/` directory is still named as migration history, but it is
 part of the release gate. Individual tests can be moved or renamed later as the

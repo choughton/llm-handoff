@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -190,7 +191,40 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+# Process launches dominate this file's run time, most of all on Windows. The
+# starting repositories are built once per worker and copied into each test.
+_TEMPLATE_ROOT: Path | None = None
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _repo_template_root(tmp_path_factory: pytest.TempPathFactory) -> None:
+    global _TEMPLATE_ROOT
+    _TEMPLATE_ROOT = tmp_path_factory.mktemp("publish-templates")
+
+
+def _copy_template(name: str, build, dest: Path) -> None:
+    assert _TEMPLATE_ROOT is not None
+    template = _TEMPLATE_ROOT / name
+    if not template.exists():
+        build(template)
+    shutil.copytree(template, dest, dirs_exist_ok=True)
+
+
+def _refresh_index(repo: Path) -> None:
+    # A copy gets new file creation times, which git's index compares, so
+    # plumbing such as `git diff-index` would see every file as changed.
+    _git(repo, "update-index", "-q", "--refresh")
+
+
 def _init(repo: Path) -> None:
+    if repo.exists() and any(repo.iterdir()):
+        _build_init(repo)
+        return
+    _copy_template("init", _build_init, repo)
+    _refresh_index(repo)
+
+
+def _build_init(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.name", "llm-handoff tests")
@@ -398,15 +432,24 @@ def test_merge_commit_mode_merges_with_a_story_report(tmp_path: Path) -> None:
     assert not (tmp_path / STATE_PATH).exists()
 
 
-def _with_remote(tmp_path: Path) -> tuple[Path, Path, list[str], dict[str, str]]:
-    repo = tmp_path / "repo"
-    remote = tmp_path / "remote.git"
+def _build_with_remote(root: Path) -> None:
+    repo = root / "repo"
+    remote = root / "remote.git"
     subprocess.run(
         ["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True
     )
-    _init(repo)
+    _build_init(repo)
     _git(repo, "remote", "add", "origin", str(remote))
     _git(repo, "push", "-q", "-u", "origin", "main")
+
+
+def _with_remote(tmp_path: Path) -> tuple[Path, Path, list[str], dict[str, str]]:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    assert not repo.exists() and not remote.exists()
+    _copy_template("with-remote", _build_with_remote, tmp_path)
+    _git(repo, "remote", "set-url", "origin", str(remote))
+    _refresh_index(repo)
     script = tmp_path / "fake_gh.py"
     script.write_text(FAKE_GH, encoding="utf-8")
     gh_log = tmp_path / "gh.jsonl"

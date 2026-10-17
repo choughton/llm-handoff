@@ -737,7 +737,8 @@ def capture_pre_dispatch_state(
     files.
     """
 
-    dirty_files = git_dirty_files(repo_root) or ()
+    head_sha, dirty = git_head_and_dirty_files(repo_root)
+    dirty_files = dirty or ()
     fingerprints = {
         path: working_tree_fingerprint(repo_root, path) for path in dirty_files
     }
@@ -752,7 +753,7 @@ def capture_pre_dispatch_state(
         )
     dirty_files = tuple(path for path in dirty_files if path not in carried)
     return PreDispatchState(
-        head_sha=git_head(repo_root),
+        head_sha=head_sha,
         dirty_files=dirty_files,
         dirty_fingerprints=tuple((path, fingerprints[path]) for path in dirty_files),
         carried_over=carried,
@@ -940,23 +941,64 @@ def git_commit_files(repo_root: Path, sha: str) -> tuple[str, ...] | None:
     return tuple(sorted({normalize_repo_path(entry) for entry in entries}))
 
 
+# Porcelain v2 entries: ordinary ("1"), renamed or copied ("2", followed by
+# the original path as its own entry), unmerged ("u"), and untracked ("?").
+# The number is how many space-separated fields precede the path.
+_STATUS_ARGS = ["status", "--porcelain=v2", "--untracked-files=all", "-z"]
+_STATUS_FIELDS_BEFORE_PATH = {"1": 8, "2": 9, "u": 10, "?": 1}
+
+
 def git_dirty_files(repo_root: Path) -> tuple[str, ...] | None:
-    entries = _git_nul_entries(
-        repo_root,
-        ["status", "--porcelain", "--untracked-files=all", "-z"],
-    )
+    entries = _git_nul_entries(repo_root, _STATUS_ARGS)
     if entries is None:
         return None
+    return _status_paths(entries)[1]
+
+
+def git_head_and_dirty_files(
+    repo_root: Path,
+) -> tuple[str | None, tuple[str, ...] | None]:
+    """Return :func:`git_head` and :func:`git_dirty_files` from one ``git status``.
+
+    When ``git status`` fails, HEAD comes from :func:`git_head` and the dirty
+    files are None, as the two separate calls would return.
+    """
+
+    entries = _git_nul_entries(
+        repo_root, [*_STATUS_ARGS, "--branch", "--no-ahead-behind"]
+    )
+    if entries is None:
+        return git_head(repo_root), None
+    oid, files = _status_paths(entries)
+    if oid is None:
+        return git_head(repo_root), files
+    # An unborn branch has no HEAD commit, so `git rev-parse` fails too.
+    return (None if oid == "(initial)" else oid), files
+
+
+def _status_paths(
+    entries: tuple[str, ...],
+) -> tuple[str | None, tuple[str, ...]]:
+    """Parse ``git status --porcelain=v2 -z`` into the ``# branch.oid`` header
+    value (None without ``--branch``) and the sorted dirty paths."""
+
+    oid: str | None = None
     files: set[str] = set()
     iterator = iter(entries)
     for entry in iterator:
-        if len(entry) < 4:
+        if entry.startswith("# branch.oid "):
+            oid = entry[len("# branch.oid ") :].strip() or None
             continue
-        code, path = entry[:2], entry[3:]
-        files.add(normalize_repo_path(path))
-        if "R" in code or "C" in code:
+        fields = _STATUS_FIELDS_BEFORE_PATH.get(entry[:1])
+        if fields is None:
+            continue
+        parts = entry.split(" ", fields)
+        if len(parts) <= fields:
+            continue
+        files.add(normalize_repo_path(parts[fields]))
+        if entry[:1] == "2":
             next(iterator, None)
-    return tuple(sorted(files))
+    return oid, tuple(sorted(files))
 
 
 def git_path_is_ignored(repo_root: Path, path: str) -> bool:
@@ -1005,18 +1047,57 @@ def head_equivalent_commits(
     is still "at HEAD".
     """
 
+    return _head_equivalent_commits(
+        _CommitLookups(repo_root), head_sha, handoff_rel_path, limit=limit
+    )
+
+
+def _head_equivalent_commits(
+    lookups: _CommitLookups,
+    head_sha: str,
+    handoff_rel_path: str,
+    *,
+    limit: int = HANDOFF_ONLY_COMMIT_WALK_LIMIT,
+) -> tuple[str, ...]:
     commits = [head_sha]
     current = head_sha
     for _ in range(limit):
-        files = git_commit_files(repo_root, current)
+        files = lookups.commit_files(current)
         if files != (handoff_rel_path,):
             break
-        parent = git_resolve_commit(repo_root, f"{current}^")
+        parent = lookups.resolve_commit(f"{current}^")
         if parent is None:
             break
         commits.append(parent)
         current = parent
     return tuple(commits)
+
+
+class _CommitLookups:
+    """Memoize commit lookups for one work-claim check.
+
+    The gate resolves the same refs and lists the same commits' files more
+    than once (scope_sha and the evidence SHA usually both name HEAD), and
+    nothing commits while it checks, so each lookup runs Git once.
+    """
+
+    def __init__(self, repo_root: Path, *, head_sha: str | None = None) -> None:
+        self.repo_root = repo_root
+        self._resolved: dict[str, str | None] = {}
+        self._files: dict[str, tuple[str, ...] | None] = {}
+        if head_sha is not None:
+            # HEAD is always a commit, so its SHA resolves to itself.
+            self._resolved[head_sha] = head_sha
+
+    def resolve_commit(self, ref: str) -> str | None:
+        if ref not in self._resolved:
+            self._resolved[ref] = git_resolve_commit(self.repo_root, ref)
+        return self._resolved[ref]
+
+    def commit_files(self, sha: str) -> tuple[str, ...] | None:
+        if sha not in self._files:
+            self._files[sha] = git_commit_files(self.repo_root, sha)
+        return self._files[sha]
 
 
 def evidence_commit_value(handoff_content: str) -> str | None:
@@ -1464,7 +1545,9 @@ def verify_work_claim(
     scope_sha = frontmatter.scope_sha if frontmatter is not None else None
     work_packet_text = extract_work_packet_section(assignment_content)
 
-    head_sha = git_head(repo_root)
+    # Nothing commits or edits files during the git checks below, so one
+    # `git status` gives HEAD now and the dirty files for the worktree check.
+    head_sha, dirty_now = git_head_and_dirty_files(repo_root)
     pre_dispatch_head = pre_dispatch_state.head_sha
     if head_sha is None or pre_dispatch_head is None:
         detail = (
@@ -1502,7 +1585,8 @@ def verify_work_claim(
             )
         )
 
-    changed_files = git_changed_files(repo_root, pre_dispatch_head, head_sha)
+    lookups = _CommitLookups(repo_root, head_sha=head_sha)
+    changed_files = _changed_since(repo_root, pre_dispatch_head, head_sha)
     # Files the story's commits changed: since this dispatch, or since the
     # story's first dispatch when an earlier one already committed work.
     story_files = changed_files
@@ -1512,7 +1596,7 @@ def verify_work_claim(
         and changed_files is not None
         and not any(path != handoff_rel_path for path in changed_files)
     ):
-        story_files = git_changed_files(repo_root, story_base_sha, head_sha)
+        story_files = _changed_since(repo_root, story_base_sha, head_sha)
     has_story_work = story_files is not None and any(
         path != handoff_rel_path for path in story_files
     )
@@ -1534,7 +1618,7 @@ def verify_work_claim(
         scope_error, resolved_scope_sha = None, None
     else:
         scope_check, scope_error, resolved_scope_sha = _scope_sha_check(
-            repo_root,
+            lookups,
             scope_sha=scope_sha,
             producer=producer,
             head_sha=head_sha,
@@ -1546,7 +1630,7 @@ def verify_work_claim(
 
     if resolved_scope_sha is not None:
         evidence_check, evidence_error = _evidence_sha_check(
-            repo_root,
+            lookups,
             claim_content=claim_content,
             scope_sha=scope_sha or resolved_scope_sha,
             resolved_scope_sha=resolved_scope_sha,
@@ -1592,6 +1676,7 @@ def verify_work_claim(
 
     worktree_check, worktree_errors = _worktree_check(
         repo_root,
+        dirty_now=dirty_now,
         pre_dispatch_state=pre_dispatch_state,
         handoff_rel_path=handoff_rel_path,
         packet=packet,
@@ -1713,6 +1798,17 @@ def verify_work_claim(
     )
 
 
+def _changed_since(
+    repo_root: Path, base: str, head_sha: str
+) -> tuple[str, ...] | None:
+    """:func:`git_changed_files` for ``base..head_sha``, where ``head_sha`` is a
+    resolved commit; an empty range needs no Git call."""
+
+    if base == head_sha:
+        return ()
+    return git_changed_files(repo_root, base, head_sha)
+
+
 def _logging_scanner_runner(
     name: str,
     log: Callable[[str, str], None],
@@ -1787,7 +1883,7 @@ def _previous_bounce_failed_command(assignment_content: str, command: str) -> bo
 
 
 def _scope_sha_check(
-    repo_root: Path,
+    lookups: _CommitLookups,
     *,
     scope_sha: str | None,
     producer: str,
@@ -1807,7 +1903,7 @@ def _scope_sha_check(
             None,
         )
 
-    resolved = git_resolve_commit(repo_root, scope_sha)
+    resolved = lookups.resolve_commit(scope_sha)
     if resolved is None:
         detail = (
             f"scope_sha `{scope_sha}` does not resolve to a commit; HEAD is "
@@ -1819,7 +1915,7 @@ def _scope_sha_check(
             None,
         )
 
-    equivalents = head_equivalent_commits(repo_root, head_sha, handoff_rel_path)
+    equivalents = _head_equivalent_commits(lookups, head_sha, handoff_rel_path)
     if resolved not in equivalents:
         detail = (
             f"scope_sha `{scope_sha}` resolves to {_short(resolved)}, but HEAD is "
@@ -1844,7 +1940,7 @@ def _scope_sha_check(
 
 
 def _evidence_sha_check(
-    repo_root: Path,
+    lookups: _CommitLookups,
     *,
     claim_content: str,
     scope_sha: str,
@@ -1874,7 +1970,7 @@ def _evidence_sha_check(
         if len(shown) > _EVIDENCE_VALUE_DETAIL_CHARS:
             shown = shown[: _EVIDENCE_VALUE_DETAIL_CHARS - 3] + "..."
         token = evidence_sha_token(value)
-        resolved = git_resolve_commit(repo_root, token) if token else None
+        resolved = lookups.resolve_commit(token) if token else None
         if token is None:
             detail = f"Commit SHA verified `{shown}` names no commit SHA; {remedy}"
         elif resolved is None:
@@ -1882,8 +1978,8 @@ def _evidence_sha_check(
                 f"Commit SHA verified `{token}` does not resolve to a commit; "
                 f"{remedy}"
             )
-        elif resolved_scope_sha in head_equivalent_commits(
-            repo_root, resolved, handoff_rel_path
+        elif resolved_scope_sha in _head_equivalent_commits(
+            lookups, resolved, handoff_rel_path
         ):
             return None, None
         else:
@@ -1940,12 +2036,12 @@ def _diff_scope_check(
 def _worktree_check(
     repo_root: Path,
     *,
+    dirty_now: tuple[str, ...] | None,
     pre_dispatch_state: PreDispatchState,
     handoff_rel_path: str,
     packet: WorkPacket | None = None,
     dispatcher_commit_mode: bool = False,
 ) -> tuple[WorkClaimCheck, list[str]]:
-    dirty_now = git_dirty_files(repo_root)
     if dirty_now is None:
         detail = "git status failed; uncommitted changes could not be listed."
         return (

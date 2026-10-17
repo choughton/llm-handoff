@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+import pytest
 import yaml
 
 from llm_handoff.config import load_dispatch_config
@@ -37,7 +38,11 @@ REQUIRED_TEMPLATE_FILES = (
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".codex/rules/llm-handoff.rules",
     ".gemini/agents/planner.md",
+    ".gemini/agents/backend.md",
     ".gemini/agents/frontend.md",
+    ".gemini/agents/auditor.md",
+    ".gemini/agents/validator.md",
+    ".gemini/agents/finalizer.md",
     ".gemini/policies/planner_guardrails.toml",
     ".claude/agents/auditor.md",
     ".claude/agents/handoff-router.md",
@@ -76,7 +81,11 @@ COPIED_TEMPLATE_FILES = (
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".codex/rules/llm-handoff.rules",
     ".gemini/agents/planner.md",
+    ".gemini/agents/backend.md",
     ".gemini/agents/frontend.md",
+    ".gemini/agents/auditor.md",
+    ".gemini/agents/validator.md",
+    ".gemini/agents/finalizer.md",
     ".gemini/policies/planner_guardrails.toml",
     ".claude/agents/auditor.md",
     ".claude/agents/handoff-router.md",
@@ -106,6 +115,24 @@ ANTIGRAVITY_AGENT_FILES = (
     ".agents/agents/handoff-router.md",
     ".agents/agents/ledger-updater.md",
 )
+
+# The Gemini agent file each role's default `mention` selects when it is
+# mapped to `gemini` (`@<role>` names `.gemini/agents/<role>.md`).
+GEMINI_ROLE_AGENT_FILES = {
+    "planner": ".gemini/agents/planner.md",
+    "backend": ".gemini/agents/backend.md",
+    "frontend": ".gemini/agents/frontend.md",
+    "auditor": ".gemini/agents/auditor.md",
+    "validator": ".gemini/agents/validator.md",
+    "finalizer": ".gemini/agents/finalizer.md",
+}
+GEMINI_ROLE_PROMPT_FILES = {
+    "planner": "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
+    "backend": "docs/handoff/BACKEND_HANDOFF_PROMPT.md",
+    "frontend": "docs/handoff/FRONTEND_HANDOFF_PROMPT.md",
+    "auditor": "docs/handoff/AUDITOR_HANDOFF_PROMPT.md",
+    "finalizer": "docs/handoff/FINALIZER_HANDOFF_PROMPT.md",
+}
 
 # The Claude subagent each role launches when it is mapped to `claude`.
 CLAUDE_ROLE_AGENT_FILES = {
@@ -155,6 +182,7 @@ def test_reference_workflow_copied_templates_match_source() -> None:
 FINALIZER_HELPER_FILES = (
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".claude/agents/ledger-updater.md",
+    ".gemini/agents/finalizer.md",
     ".agents/agents/ledger-updater.md",
 )
 
@@ -317,14 +345,40 @@ def test_shipped_template_files_do_not_point_at_dispatcher_docs() -> None:
             assert "CONFIGURATION.md" not in content, relative_path
 
 
-def test_codex_validator_skill_covers_validation_and_routing() -> None:
-    content = (
-        REFERENCE_WORKFLOW / ".codex" / "skills" / "llm-handoff-validator" / "SKILL.md"
-    ).read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        ".codex/skills/llm-handoff-validator/SKILL.md",
+        ".gemini/agents/validator.md",
+    ],
+)
+def test_single_file_validator_helpers_cover_validation_and_routing(
+    relative_path: str,
+) -> None:
+    content = (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8")
 
     assert "## Handoff Validation" in content
     assert "## Handoff Routing" in content
-    assert "The dispatcher's prompt names which task applies." in content
+    assert "The dispatcher's prompt names which task applies" in content
+    assert "VALID: YES | NO | WARNINGS-ONLY" in content
+    assert "ROUTING UPDATED: YES" in content
+
+
+def test_gemini_agent_files_cover_every_role() -> None:
+    # The Gemini adapter mentions `@<role>` unless `mention` overrides it, and
+    # Gemini CLI resolves a mention by the `name` in the agent file's
+    # frontmatter, so each role needs a file whose name is the role.
+    for role, relative_path in GEMINI_ROLE_AGENT_FILES.items():
+        content = (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8")
+        frontmatter = content.split("---", 2)[1]
+
+        assert f"\nname: {role}\n" in frontmatter, relative_path
+        assert "`docs/handoff/HANDBOOK.md`" in content, relative_path
+        assert "`docs/handoff/SHARED_REPO_INIT_PROMPT.md`" in content, relative_path
+        prompt_file = GEMINI_ROLE_PROMPT_FILES.get(role)
+        if prompt_file is not None:
+            assert f"`{prompt_file}`" in content, relative_path
+        assert "git push" in content, relative_path
 
 
 LINEAR_EVIDENCE_HELPER_FILES = (
@@ -362,6 +416,7 @@ PLANNER_EPIC_CLOSE_PROMPT_FILES = tuple(
 AUDITOR_PROMPT_FILES = (
     ".claude/agents/auditor.md",
     ".codex/skills/llm-handoff-auditor/SKILL.md",
+    ".gemini/agents/auditor.md",
     "docs/handoff/AUDITOR_HANDOFF_PROMPT.md",
     ".agents/agents/auditor.md",
 )
@@ -420,6 +475,7 @@ IMPLEMENTER_PROMPT_FILES = (
     Path(".claude") / "agents" / "frontend.md",
     Path(".codex") / "skills" / "llm-handoff" / "SKILL.md",
     Path(".codex") / "skills" / "llm-handoff-frontend" / "SKILL.md",
+    Path(".gemini") / "agents" / "backend.md",
     Path(".gemini") / "agents" / "frontend.md",
     Path("docs") / "handoff" / "BACKEND_HANDOFF_PROMPT.md",
     Path("docs") / "handoff" / "FRONTEND_HANDOFF_PROMPT.md",
