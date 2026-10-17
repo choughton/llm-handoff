@@ -341,15 +341,30 @@ def save_review_responses(repo_root: Path, claim_content: str) -> None:
     """Keep the claim's ``## Review Responses`` for the pull request threads.
 
     The auditor rewrites ``HANDOFF.md``, so the implementer's responses are
-    saved when the work-claim gate passes.
+    saved when the work-claim gate passes. A claim without responses drops
+    any saved ones.
     """
 
+    if not keep_review_responses(repo_root, claim_content):
+        (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
+
+
+def keep_review_responses(repo_root: Path, handoff_content: str) -> bool:
+    """Save the handoff's ``## Review Responses`` when it has any.
+
+    Called with the handoff the auditor is about to read, so responses the
+    work-claim gate never saw (a restart, or a handoff fixed by hand after a
+    validation pause) still reach the review threads. They are posted only
+    after the audit passes. A handoff without responses keeps any saved ones.
+    Returns whether responses were saved.
+    """
+
+    if not parse_review_responses(handoff_content):
+        return False
     path = repo_root / RESPONSES_PATH
-    if not parse_review_responses(claim_content):
-        path.unlink(missing_ok=True)
-        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(claim_content, encoding="utf-8")
+    path.write_text(handoff_content, encoding="utf-8")
+    return True
 
 
 def publish_story(

@@ -18,6 +18,14 @@ This project follows a simple pre-release changelog until the first public tag.
   diagnosis fails the `LINEAR-EVIDENCE` row; it logs
   `Linear evidence check failed; not scheduling planner recovery.` and waits
   for a person. The Claude `handoff-validator` helper files follow in LIN-9d.
+- In `publish.mode: pr`, the dispatcher now also saves the implementer's
+  `## Review Responses` from the handoff it is about to send to the auditor,
+  not only when the work-claim gate passes. A correction-round handback that
+  failed post-dispatch validation, was fixed by hand, and then went straight
+  to the auditor (after a resume or a restart) used to lose its responses, so
+  publish left the review threads unresolved and paused with the pull request
+  open. A handoff without responses keeps any saved ones, and responses are
+  still posted only after the audit passes and cleared when the story ends.
 - The Linear-mode auditor prompt now states its issue-state transitions: on
   a pass it posts `audit_passed` with `state_from` and `state_to` and moves the
   leased issue to `tracker.success_state` (the dispatcher routes to the auditor

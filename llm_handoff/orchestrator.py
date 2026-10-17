@@ -70,6 +70,7 @@ from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
 from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
     ensure_story_branch,
+    keep_review_responses,
     publish_story,
     resume_paused_publish,
     save_review_responses,
@@ -1048,6 +1049,20 @@ def run_loop(
                 if branch_error is not None:
                     _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
                     return 1
+            if (
+                config.publish.mode != "local"
+                and current_cycle.route == "auditor"
+                and keep_review_responses(config.repo_root, handoff_content)
+            ):
+                # The auditor rewrites HANDOFF.md. Keep the responses it audits
+                # even when the work-claim gate did not save them: a restart
+                # before the gate, or a fixed handoff after a validation pause.
+                _log(
+                    log_fn,
+                    "INFO",
+                    "Saved the implementer's review responses for the pull "
+                    "request threads; they are posted after the audit passes.",
+                )
             pre_dispatch_state: PreDispatchState | None = None
             story_base_sha: str | None = None
             story_key = carry_over_key(handoff_content)
