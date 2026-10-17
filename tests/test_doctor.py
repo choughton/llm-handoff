@@ -13,6 +13,7 @@ from llm_handoff import antigravity_permissions as agy_perms
 from llm_handoff import config as config_module
 from llm_handoff import doctor
 from llm_handoff import supervisor
+from llm_handoff.agent_types import _ProcessResult
 
 ROLES = ("planner", "backend", "frontend", "auditor", "validator", "finalizer")
 REAL_WHICH = shutil.which
@@ -2125,3 +2126,517 @@ def test_doctor_tracker_connector_runs_no_provider_cli(
     provider_binaries = {"claude", "codex", "gemini", "agy", "antigravity"}
     for name in calls:
         assert name.removeprefix("fake-") not in provider_binaries, calls
+
+
+# --- Tracker probe (--probe-tracker) ----------------------------------------
+
+PROBE_CHECK = "tracker probe"
+CONFIGURED_STATES = ["Todo", "In Progress", "In Review"]
+
+
+def _probe_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if f" {PROBE_CHECK}:" in line]
+
+
+def _probe_line(output: str) -> str:
+    lines = _probe_lines(output)
+    assert len(lines) == 1, output
+    return lines[0]
+
+
+def _envelope(
+    structured: object = None,
+    *,
+    issue_found: bool = True,
+    team_states: list[str] | None = None,
+    error: str = "",
+    is_error: bool = False,
+) -> str:
+    if structured is None:
+        structured = {
+            "issue_found": issue_found,
+            "team_states": (
+                ["Backlog", *CONFIGURED_STATES, "Done"]
+                if team_states is None
+                else team_states
+            ),
+            "error": error,
+        }
+    return json.dumps(
+        {"type": "result", "is_error": is_error, "structured_output": structured}
+    )
+
+
+class _FakeProbeRunner:
+    """Stands in for ``doctor._run_logged_agent_command``; launches nothing."""
+
+    def __init__(
+        self,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        exit_code: int = 0,
+        raises: BaseException | None = None,
+    ) -> None:
+        self.result = _ProcessResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+        self.raises = raises
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self, agent_name: str, command: list[str], **kwargs: object
+    ) -> _ProcessResult:
+        self.calls.append({"agent_name": agent_name, "command": command, **kwargs})
+        if self.raises is not None:
+            raise self.raises
+        return self.result
+
+
+def _install_runner(
+    monkeypatch: pytest.MonkeyPatch, runner: _FakeProbeRunner | None = None, **kw
+) -> _FakeProbeRunner:
+    runner = runner or _FakeProbeRunner(**kw)
+    monkeypatch.setattr(doctor, "_run_logged_agent_command", runner)
+    return runner
+
+
+def _run_probe(
+    repo: Path, capsys: pytest.CaptureFixture[str], issue: str = "ENG-123"
+) -> tuple[int, str]:
+    exit_code = main_module.main(
+        ["doctor", "--repo-root", str(repo), "--probe-tracker", issue]
+    )
+    return exit_code, capsys.readouterr().out
+
+
+def _option_value(command: list[str], flag: str) -> str:
+    assert command.count(flag) == 1, command
+    return command[command.index(flag) + 1]
+
+
+def test_doctor_without_probe_flag_prints_no_probe_line_and_launches_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    runner = _install_runner(monkeypatch, raises=AssertionError("no launch"))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert PROBE_CHECK not in output
+    assert runner.calls == []
+
+
+def test_doctor_probe_fails_in_vanilla_mode_without_launching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None, commit=False)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "--probe-tracker needs tracker.provider: linear" in line
+    assert runner.calls == []
+
+
+def test_doctor_probe_prints_nothing_when_the_config_does_not_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _add_config(repo, "  not_a_key: 1\n")
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    assert output.startswith("FAIL config:")
+    assert _probe_lines(output) == []
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(
+    "issue",
+    ["qq 7", "QQ-0", "QQ-", "1QQ-5", "ABCDEFGHIJK-1", "QQ-1234567890", "Q-1;x"],
+)
+def test_doctor_probe_rejects_invalid_identifier_without_echoing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, issue: str
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys, issue)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "Linear issue identifier such as ENG-123" in line
+    assert issue not in line
+    assert runner.calls == []
+
+
+def test_doctor_probe_accepts_identifier_with_surrounding_whitespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys, "  eng-42 ")
+
+    assert exit_code == 0, output
+    assert "issue eng-42" in _probe_line(output)
+    assert "eng-42" in _option_value(runner.calls[0]["command"], "-p")
+
+
+def test_doctor_probe_fails_without_a_claude_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch, {role: "codex" for role in ROLES})
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "runs through the Claude CLI" in line
+    assert "no configured role or fallback" in line
+    assert runner.calls == []
+
+
+def test_doctor_probe_line_follows_the_tracker_connector_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = output.splitlines()
+    probe_index = lines.index(_probe_line(output))
+    connector_indexes = [
+        index for index, line in enumerate(lines) if f" {TRACKER_CHECK}:" in line
+    ]
+    assert connector_indexes and probe_index == connector_indexes[-1] + 1
+
+
+def test_doctor_probe_argv_without_claude_mcp_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 0, output
+    assert len(runner.calls) == 1
+    call = runner.calls[0]
+    command = call["command"]
+    assert command[0] == "fake-claude"
+    assert _option_value(command, "--permission-mode") == "dontAsk"
+    assert _option_value(command, "--tools") == ""
+    assert _option_value(command, "--allowedTools").split(",") == [
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issue_statuses",
+    ]
+    disallowed = _option_value(command, "--disallowedTools").split(",")
+    for tool in (
+        *config_module.CLAUDE_DISALLOWED_TOOLS,
+        "mcp__linear__save_issue",
+        "mcp__linear__save_comment",
+        "mcp__linear__create_issue",
+        "mcp__linear__update_issue",
+        "mcp__linear__create_comment",
+    ):
+        assert tool in disallowed
+    assert "--strict-mcp-config" not in command
+    assert "--mcp-config" not in command
+    assert _option_value(command, "--model") == config_module.CLAUDE_MODEL
+    assert _option_value(command, "--output-format") == "json"
+    schema = json.loads(_option_value(command, "--json-schema"))
+    assert schema == doctor.TRACKER_PROBE_JSON_SCHEMA
+    assert set(schema["required"]) == {"issue_found", "team_states", "error"}
+    assert schema["additionalProperties"] is False
+    assert "--no-session-persistence" in command
+    assert command[-2] == "-p"
+    prompt = command[-1]
+    assert "ENG-123" in prompt and "ENG" in prompt
+    assert "get_issue" in prompt and "list_issue_statuses" in prompt
+    assert "Platform" not in prompt and "In Review" not in prompt
+    assert prompt.isascii()
+    assert call["cwd"] == repo.resolve() or call["cwd"] == repo
+    assert call["timeout_ms"] == doctor._TRACKER_PROBE_TIMEOUT_MS == 180_000
+    assert call["log"] is None
+    assert isinstance(call["env"], dict)
+
+
+def test_doctor_probe_argv_with_claude_mcp_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path, monkeypatch, claude_mcp_config="config/linear-mcp.json"
+    )
+    _write_json(repo / "config" / "linear-mcp.json", _servers())
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 0, output
+    command = runner.calls[0]["command"]
+    assert _option_value(command, "--mcp-config") == str(
+        (repo / "config" / "linear-mcp.json").resolve()
+    )
+    assert command.count("--strict-mcp-config") == 1
+    assert _option_value(command, "--tools") == ""
+    assert "mcp__linear__save_issue" in _option_value(command, "--disallowedTools")
+
+
+def test_doctor_probe_uses_the_first_claude_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    providers = {**NO_GEMINI, "planner": "codex", "backend": "claude"}
+    repo = _linear_repo(
+        tmp_path,
+        monkeypatch,
+        providers,
+        role_extra={
+            "backend": (
+                "    model: backend-probe-model\n"
+                "    unsafe_bypass: true\n"
+                "    permissions_flag: --some-flag\n"
+            ),
+            "frontend": "    model: frontend-model\n",
+        },
+    )
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 0, output
+    call = runner.calls[0]
+    command = call["command"]
+    assert call["agent_name"] == "backend"
+    assert command[0] == "fake-claude"
+    assert _option_value(command, "--model") == "backend-probe-model"
+    # unsafe_bypass and permissions_flag are ignored by the probe.
+    assert "--some-flag" not in command
+    assert "--dangerously-skip-permissions" not in command
+    assert _option_value(command, "--permission-mode") == "dontAsk"
+    line = _probe_line(output)
+    assert line.startswith(f"PASS {PROBE_CHECK}:")
+    assert "launch backend" in line
+
+
+def test_doctor_probe_passes_when_every_state_is_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(
+        monkeypatch,
+        stdout=_envelope(team_states=[" Todo ", "In Progress", "In Review"]),
+    )
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _probe_line(output)
+    assert line.startswith(f"PASS {PROBE_CHECK}:")
+    assert "ENG-123" in line
+    assert "launch planner" in line
+    assert "3 of 3 configured state names" in line
+    assert output.strip().splitlines()[-1].startswith("Doctor PASS: 0 error(s)")
+
+
+def test_doctor_probe_checks_blocked_state_only_when_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(monkeypatch, stdout=_envelope(team_states=CONFIGURED_STATES))
+    exit_code, output = _run_probe(repo, capsys)
+    assert exit_code == 0, output
+    assert "3 of 3" in _probe_line(output)
+
+    _add_config(repo, "  blocked_state: Blocked\n")
+    exit_code, output = _run_probe(repo, capsys)
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "`Blocked`" in line
+    assert "`Todo`" not in line
+
+    _install_runner(
+        monkeypatch, stdout=_envelope(team_states=[*CONFIGURED_STATES, "Blocked"])
+    )
+    exit_code, output = _run_probe(repo, capsys)
+    assert exit_code == 0, output
+    assert "4 of 4" in _probe_line(output)
+
+
+def test_doctor_probe_lists_only_missing_configured_states(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(
+        monkeypatch, stdout=_envelope(team_states=["Todo", "Backlog", "Canceled"])
+    )
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "`In Progress`" in line and "`In Review`" in line
+    assert "`Todo`" not in line
+    assert "Backlog" not in line and "Canceled" not in line
+    assert output.strip().splitlines()[-1].startswith("Doctor FAIL: 1 error(s)")
+
+
+def test_doctor_probe_fails_when_the_binary_is_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _stub_which(monkeypatch, {"fake-codex"})
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "`fake-claude`" in line
+    assert "could not start the probe" in line
+    assert runner.calls == []
+
+
+def test_doctor_probe_fails_on_launch_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(monkeypatch, raises=OSError("boom"))
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "`fake-claude`" in line
+    assert "could not start the probe" in line
+    assert "Traceback" not in output
+
+
+def test_doctor_probe_fails_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(
+        monkeypatch, stderr="Process timed out after 180 seconds.", exit_code=1
+    )
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert "`fake-claude`" in line
+    assert "could not start the probe" in line
+    assert "timed out" in line
+
+
+def test_doctor_probe_fails_on_nonzero_exit_with_escaped_truncated_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    long_line = "café  ☃\t" + "x" * 400
+    _install_runner(
+        monkeypatch,
+        stdout=_envelope(),
+        stderr=f"\n   \n{long_line}\nsecond line\n",
+        exit_code=3,
+    )
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "exited with code 3" in line
+    assert line.isascii()
+    assert "caf\\xe9 \\u2603 x" in line
+    # "cafe" (4) + space + snowman + space leaves 193 of the 200 characters.
+    assert "x" * 193 in line and "x" * 194 not in line
+    assert "second line" not in line
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "not json",
+        json.dumps(["structured_output"]),
+        _envelope(is_error=True),
+        json.dumps({"is_error": False, "result": "done"}),
+        _envelope(structured="text"),
+        _envelope(structured={"issue_found": True, "team_states": []}),
+        _envelope(
+            structured={
+                "issue_found": True,
+                "team_states": CONFIGURED_STATES,
+                "error": "",
+                "extra": 1,
+            }
+        ),
+        _envelope(
+            structured={"issue_found": "yes", "team_states": [], "error": ""}
+        ),
+        _envelope(
+            structured={"issue_found": True, "team_states": [1], "error": ""}
+        ),
+    ],
+)
+def test_doctor_probe_fails_without_a_usable_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, stdout: str
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(monkeypatch, stdout=stdout)
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "returned no usable probe result" in line
+
+
+def test_doctor_probe_fails_when_the_issue_is_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    reason = "get_issue was refused\nüber " + "y" * 300
+    _install_runner(
+        monkeypatch, stdout=_envelope(issue_found=False, team_states=[], error=reason)
+    )
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _probe_line(output)
+    assert line.startswith(f"FAIL {PROBE_CHECK}:")
+    assert "could not read issue ENG-123" in line
+    assert "get_issue was refused \\xfcber y" in line
+    assert line.isascii()
+    # The collapsed 27-character prefix leaves 173 of the 200 characters.
+    assert "y" * 173 in line and "y" * 174 not in line
+
+
+def test_doctor_probe_writes_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _install_runner(monkeypatch, stdout=_envelope())
+    before = sorted(p for p in tmp_path.rglob("*") if ".git" not in p.parts)
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 0, output
+    assert sorted(p for p in tmp_path.rglob("*") if ".git" not in p.parts) == before

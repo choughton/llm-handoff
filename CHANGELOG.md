@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff doctor --probe-tracker <ISSUE>` (opt-in, Linear mode only)
+  launches the first configured Claude CLI role or fallback once, with no
+  built-in tools, only the tracker server's `get_issue` and
+  `list_issue_statuses` tools approved, and its write tools denied. It adds
+  one `tracker probe` line that passes when the issue can be read and every
+  configured state name is one of the team's workflow states; any other
+  result fails the doctor. Without the option, doctor output is unchanged and
+  no provider CLI runs.
 - In Linear mode, `llm-handoff doctor` adds `tracker connector` lines that
   report, per provider CLI the configured roles launch, whether that CLI's
   MCP config files define a server named `tracker.mcp_server`. The check

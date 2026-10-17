@@ -409,10 +409,24 @@ def doctor_command(
         "--config",
         help="Path to dispatch_config.yaml. Relative paths resolve from the repo root.",
     ),
+    probe_tracker: str | None = typer.Option(
+        None,
+        "--probe-tracker",
+        metavar="ISSUE",
+        help=(
+            "Linear mode only: launch the Claude CLI once with Linear read "
+            "tools to read this issue (for example ENG-123) and the team's "
+            "workflow states, and confirm the configured state names."
+        ),
+    ),
 ) -> None:
     """Check Git, provider CLIs, sandbox runtime, and the handoff file."""
     _configure_stdio_encoding()
-    report = run_doctor(repo_root=repo_root, config_path=config_path)
+    report = run_doctor(
+        repo_root=repo_root,
+        config_path=config_path,
+        probe_tracker_issue=probe_tracker,
+    )
     for line in report.lines():
         typer.echo(line)
     raise typer.Exit(report.exit_code)

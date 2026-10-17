@@ -1132,6 +1132,42 @@ server entries can hold tokens in `env` or `headers`), never runs a provider
 CLI, and never contacts Linear, so a PASS does not prove the connector
 authenticates.
 
+**Probing Linear access with `--probe-tracker`.**
+`llm-handoff doctor --probe-tracker <ISSUE>` is opt-in. It adds one
+`tracker probe` line right after the `tracker connector` lines. Without the
+option the doctor output is unchanged and no provider CLI runs.
+
+The probe checks these gates in order and prints a FAIL line, launching
+nothing, at the first that fails: the config must load (otherwise no probe
+line is printed), `tracker.provider` must be `linear`, the issue must be a
+Linear identifier such as `ENG-123` (the rejected value is not echoed), and at
+least one role or fallback must use `provider: claude`.
+
+When the gates pass, the probe launches the first Claude role or fallback (in
+config order) once, with that launch's `binary`, `model`, and environment. It
+ignores that launch's `allowed_tools`, `unsafe_bypass`, and
+`permissions_flag` and always uses `--permission-mode dontAsk`, `--tools ""`
+(no built-in tools), and `--allowedTools` naming only
+`mcp__<server>__get_issue` and `mcp__<server>__list_issue_statuses`.
+`--disallowedTools` names `WebFetch`, `WebSearch`, and
+`mcp__<server>__save_issue`, `save_comment`, `create_issue`, `update_issue`,
+and `create_comment`. With `tracker.claude_mcp_config` set it also passes
+`--mcp-config <path> --strict-mcp-config`. The Claude CLI is asked to read the
+issue and the `tracker.team` workflow states and to answer with a JSON schema
+passed inline; the probe writes no file and has a 180-second timeout.
+
+PASS means the issue was read and every configured state name
+(`eligible_state`, `in_progress_state`, `success_state`, and `blocked_state`
+when set) is one of the team's workflow states. Any other result, including a
+launch error, a non-zero exit, unusable output, an unreadable issue, or
+missing state names, is a FAIL and sets exit code 1.
+
+Residual risk: when `tracker.claude_mcp_config` is unset, every MCP server in
+the user's Claude configuration loads. A Linear write tool that the user's
+Claude settings pre-approve under a name not on the deny list above is not
+denied. Set `tracker.claude_mcp_config` to limit the probe to that file's
+servers.
+
 The Linear-mode prompt text ships inside the package as static Markdown under
 `llm_handoff/prompt_templates/linear/`: a shared `AGENTS.md` section, the
 YAML evidence-comment contract in `EVIDENCE_COMMENT.md`, and one
