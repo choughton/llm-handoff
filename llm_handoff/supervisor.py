@@ -1228,7 +1228,9 @@ def _notify(config: SupervisorConfig, *, event: str, message: str, log: LogFn) -
             config.notify_command,
             cwd=config.repo_root,
             env=env,
-            shell=True,
+            # notify_command is operator-written shell text; the message is
+            # passed in env vars, never interpolated into the command.
+            shell=True,  # nosemgrep: subprocess-shell-true
             capture_output=True,
             text=True,
             encoding="utf-8",

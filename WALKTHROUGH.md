@@ -243,6 +243,13 @@ dispatcher validates the updated handoff
 continue, pause, or escalate
 ```
 
+To stop the loop at any time, run `llm-handoff stop` from a second terminal in
+the target repository (or pass `--repo-root`). The dispatcher lets the running
+agent finish, commits and checks its work as usual, and exits with code 0
+before the next dispatch. Ctrl+C still aborts immediately and kills the
+running agent. See
+[CONFIGURATION.md](CONFIGURATION.md#stopping-the-dispatcher).
+
 ## Step 8. Inspect State After A Cycle
 
 After each cycle, inspect:
