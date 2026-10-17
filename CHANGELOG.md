@@ -14,6 +14,20 @@ This project follows a simple pre-release changelog until the first public tag.
   publish left the review threads unresolved and paused with the pull request
   open. A handoff without responses keeps any saved ones, and responses are
   still posted only after the audit passes and cleared when the story ends.
+- The Linear-mode auditor prompt now states its issue-state transitions: on
+  a pass it posts `audit_passed` with `state_from` and `state_to` and moves the
+  leased issue to `tracker.success_state` (the dispatcher routes to the auditor
+  only after the work-claim gate passed); on a fail it posts `audit_failed`
+  with the findings and leaves the issue in `tracker.in_progress_state`. It
+  changes only the issue named by `tracker_issue`, and posts the evidence
+  comment before the state change, both before it rewrites `HANDOFF.md`. When
+  it routes a leased issue to `user` it posts `user_attention_requested`, adds
+  `tracker.user_attention_label` when set, and moves the issue to
+  `tracker.blocked_state` when set; when its turn starts after
+  `user_attention_requested` it posts `user_attention_cleared`, removes the
+  label, and moves the issue from `tracker.blocked_state` back to
+  `tracker.in_progress_state` when it was blocked, before it posts
+  `audit_passed` or `audit_failed`.
 - The Linear-mode validator prompt now runs a read-only evidence check: it
   compares the latest `llm_handoff_event` comment on the leased issue with
   `HANDOFF.md` (`issue`, `tracker_url`, `producer`, `next_agent`, `status`,

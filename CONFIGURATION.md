@@ -1268,7 +1268,11 @@ evidence comment on the leased issue with `HANDOFF.md`, and routes any
 mismatch to `user` with `status: blocked_missing_context`, or reports it
 without editing files on a validation-only turn. The planner posts
 `user_attention_requested` when it routes a leased issue to `user` and
-`user_attention_cleared` when work resumes.
+`user_attention_cleared` when work resumes. The auditor moves a passing issue
+to `success_state` and leaves a failing one in `in_progress_state`, posting
+`audit_passed` or `audit_failed` first, and follows the same user-attention
+steps as the planner, also moving the issue to `blocked_state` when it is set
+and back to `in_progress_state` when it clears the request.
 
 `llm-handoff init --tracker linear` renders this text. It only sets up a
 fresh repository, one with no `dispatch_config.yaml` yet; if that path exists,
@@ -1327,8 +1331,8 @@ tracker:
 | `eligible_state` | required | Workflow state an issue must be in to be picked. |
 | `in_progress_state` | required | State an issue moves to when work starts. |
 | `success_state` | required | State the auditor moves an issue to on pass, for example a review state. |
-| `blocked_state` | optional | State for blocked issues. |
-| `user_attention_label` | optional | Label the planner adds when it routes a leased issue to `user` and removes when work resumes. |
+| `blocked_state` | optional | State for blocked issues. The auditor moves the issue there when it routes a leased issue to `user`, and back to `in_progress_state` when work resumes. |
+| `user_attention_label` | optional | Label the planner or the auditor adds when it routes a leased issue to `user` and removes when work resumes. |
 | `mcp_server` | required | Name of the Linear server in each CLI's MCP configuration. |
 | `claude_mcp_config` | optional | MCP configuration file for Claude roles. |
 

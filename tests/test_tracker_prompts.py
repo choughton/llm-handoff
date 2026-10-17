@@ -264,6 +264,65 @@ def test_planner_user_attention_follows_closing_paragraph() -> None:
     assert closing < text.index("`tracker.user_attention_label`")
 
 
+def test_auditor_section_states_pass_and_fail_transitions() -> None:
+    text = " ".join(linear_role_section("auditor").split())
+    for phrase in (
+        "`audit_passed`",
+        "`audit_failed`",
+        "`tracker.success_state`",
+        "`tracker.in_progress_state`",
+        "`state_from`",
+        "`state_to`",
+        "work-claim gate",
+    ):
+        assert phrase in text, phrase
+
+
+def test_auditor_section_states_user_attention_steps_in_order() -> None:
+    text = " ".join(linear_role_section("auditor").split())
+    for phrase in (
+        "`user_attention_requested`",
+        "`user_attention_cleared`",
+        "`tracker.user_attention_label`",
+        "`tracker.blocked_state`",
+    ):
+        assert phrase in text, phrase
+    requested = text.index("`user_attention_requested`")
+    cleared = text.index("`user_attention_cleared`")
+    assert requested < cleared
+
+
+def test_auditor_paragraphs_follow_existing_bullets() -> None:
+    text = " ".join(linear_role_section("auditor").split())
+    closing = text.index("Then rewrite `HANDOFF.md`, keeping")
+    transitions = text.index("Transitions.")
+    user_attention = text.index("User attention.")
+    assert closing < transitions < user_attention
+
+
+def test_auditor_clear_step_restores_in_progress_state() -> None:
+    text = " ".join(linear_role_section("auditor").split())
+    cleared = text.index("post `user_attention_cleared`")
+    clear_step = text[cleared:]
+    restore = clear_step.index(
+        "move the issue back to `tracker.in_progress_state`"
+    )
+    assert "`tracker.blocked_state`" in clear_step[:restore]
+    assert "`state_from` and `state_to`" in clear_step[restore:]
+    assert restore < clear_step.index("before you post `audit_passed`")
+
+
+def test_auditor_section_keeps_existing_bullets() -> None:
+    text = linear_role_section("auditor")
+    for phrase in (
+        "- Read the leased issue named by `tracker_issue`, and its comments,",
+        "- After your review, post an `audit_passed` or `audit_failed` evidence",
+        "- Set `commit_sha` to the concrete commit you reviewed, the `scope_sha` in",
+        "- Then rewrite `HANDOFF.md`, keeping `tracker_issue`, `tracker_url`, and",
+    ):
+        assert phrase in text, phrase
+
+
 @pytest.mark.parametrize("role", ["user", "security", "", "Planner"])
 def test_unknown_role_raises_value_error(role: str) -> None:
     with pytest.raises(ValueError):
