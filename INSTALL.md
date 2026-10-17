@@ -13,12 +13,14 @@ with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
 
 - Python 3.11 or newer.
 - Git.
-- One or more provider CLIs, depending on which roles your
-  `dispatch_config.yaml` maps to them. The reference mapping puts the
-  `planner` and `frontend` on Gemini CLI, the `backend` on Codex CLI, and the
-  `auditor`, `validator`, and `finalizer` on Claude Code. A single-vendor
-  setup (`init --provider claude` or `--provider codex`) needs only that one
-  CLI.
+- Claude Code (`claude`) or Codex CLI (`codex`), signed in. Gemini CLI
+  (`gemini`) is optional: the reference mapping puts the `planner` and
+  `frontend` on it, the `backend` on Codex, and the `auditor`, `validator`,
+  and `finalizer` on Claude Code, but Gemini cannot run every role by itself
+  and there is no all-Gemini mapping. A single-vendor setup
+  (`init --provider claude` or `--provider codex`) needs only that one CLI;
+  all-Codex also needs `commit_mode: dispatcher` in `dispatch_config.yaml`
+  (see [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits)).
 - Docker or Podman on `PATH` for any role mapped to Gemini CLI (macOS can use
   `sandbox-exec`). Gemini roles run in its container sandbox and the
   dispatcher refuses to start without one.
