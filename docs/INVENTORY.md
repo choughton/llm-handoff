@@ -50,6 +50,8 @@ Three copies of the handoff protocol exist on purpose:
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Contribution scope and project boundaries. |
 | [SECURITY.md](../SECURITY.md) | Threat model, safe usage, and vulnerability reporting. |
 | [CHANGELOG.md](../CHANGELOG.md) | Release and extraction history. |
+| [.github/pull_request_template.md](../.github/pull_request_template.md) | Pull request template: summary, changes, reviewer notes, test plan. |
+| [docs/INVENTORY.md](INVENTORY.md) | This page. |
 
 ## Runtime And Packaging Files
 
@@ -59,6 +61,8 @@ Three copies of the handoff protocol exist on purpose:
 | [pyproject.toml](../pyproject.toml) | Package metadata, runtime dependencies, and the `llm-handoff` console command. |
 | [requirements-dev.txt](../requirements-dev.txt) | Source-checkout runtime and test dependencies. |
 | [.pre-commit-config.yaml](../.pre-commit-config.yaml) | Contributor hooks for whitespace, YAML/TOML, large files, and Ruff. |
+| [llm_handoff/rationalization_patterns.yaml](../llm_handoff/rationalization_patterns.yaml) | Per-role regex patterns the validator reports as advisory warnings when a handoff body contradicts its claimed status. |
+| [llm_handoff/schemas/codex_final_response.schema.json](../llm_handoff/schemas/codex_final_response.schema.json) | JSON schema passed to `codex exec --output-schema`; a Codex role's final message must match it. |
 | [LICENSE](../LICENSE) | Apache License 2.0. |
 
 ## Handoff Protocol (This Repository)
