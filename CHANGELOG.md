@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In Linear mode, `llm-handoff doctor` adds `tracker connector` lines that
+  report, per provider CLI the configured roles launch, whether that CLI's
+  MCP config files define a server named `tracker.mcp_server`. The check
+  reads config files only, prints no values from them, runs no provider CLI,
+  and does not contact Linear. Only a `tracker.claude_mcp_config` file that
+  lacks the server (or cannot be parsed) fails the doctor; other gaps are
+  warnings. Vanilla mode output is unchanged.
 - `llm-handoff init --tracker linear --tracker-team <key>` with exactly one
   of `--tracker-project` and `--tracker-label` (and optional
   `--tracker-mcp-server`, default `linear`) sets up a fresh repository in

@@ -1094,8 +1094,40 @@ asking you to set `tracker.claude_mcp_config`.
 
 Claude roles with `unsafe_bypass: true`, the audit fan-out security reviewer,
 and the next-agent normalizer get no Linear tools. Codex, Gemini, and
-Antigravity roles have no per-role tool list and are unchanged. A later
-release uses the block to report connectors in `llm-handoff doctor`.
+Antigravity roles have no per-role tool list and are unchanged.
+
+In Linear mode, `llm-handoff doctor` prints `tracker connector` lines, one
+per provider CLI the configured roles and fallbacks launch (in the order
+claude, codex, gemini, antigravity), each ending with `(covers <labels>)`.
+Each line says whether that CLI's MCP config defines a server named
+`tracker.mcp_server`:
+
+- Claude launches that load `tracker.claude_mcp_config` (set, and no
+  `unsafe_bypass`): the doctor reads that file. PASS when its top-level
+  `mcpServers` has the server; FAIL when it does not, when `mcpServers` is
+  missing or not an object, or when the file cannot be read or is not valid
+  JSON, because these launches pass `--strict-mcp-config` and cannot load the
+  Linear tools from anywhere else.
+- Other Claude launches: the doctor reads `<repo>/.mcp.json`, then
+  `~/.claude.json` (its top-level `mcpServers`, then the `projects` entry for
+  this repository). PASS names the first source that defines the server;
+  otherwise WARN. Servers defined elsewhere, for example in managed settings
+  or plugins, are not seen.
+- Codex: `$CODEX_HOME/config.toml` (or `~/.codex/config.toml` when
+  `CODEX_HOME` is unset or empty), then `<repo>/.codex/config.toml`. PASS when
+  either has an `[mcp_servers.<server>]` table; otherwise WARN.
+- Gemini: `<repo>/.gemini/settings.json`, then `~/.gemini/settings.json`.
+  PASS when either has `mcpServers.<server>`; otherwise WARN.
+- Antigravity: always WARN, because the doctor cannot check the Antigravity
+  CLI's MCP configuration; confirm the server is configured there.
+
+A missing file is skipped. A file that cannot be read or parsed adds its
+reason to the line instead of stopping the doctor. Only the
+`tracker.claude_mcp_config` case can FAIL and change the doctor exit code.
+The doctor only reads these files: it never prints a value from them (MCP
+server entries can hold tokens in `env` or `headers`), never runs a provider
+CLI, and never contacts Linear, so a PASS does not prove the connector
+authenticates.
 
 The Linear-mode prompt text ships inside the package as static Markdown under
 `llm_handoff/prompt_templates/linear/`: a shared `AGENTS.md` section, the

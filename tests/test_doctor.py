@@ -1530,3 +1530,524 @@ def test_doctor_antigravity_leaves_the_settings_file_unchanged(
     assert settings_path.read_bytes() == before_bytes
     assert settings_path.stat().st_mtime_ns == before_mtime
     assert sorted(p.name for p in settings_path.parent.iterdir()) == ["settings.json"]
+
+
+# --- Tracker connectors (Linear mode) ----------------------------------------
+
+TRACKER_CHECK = "tracker connector"
+LINEAR_TRACKER = """tracker:
+  provider: linear
+  team: ENG
+  project: Platform
+  eligible_state: Todo
+  in_progress_state: In Progress
+  success_state: In Review
+  mcp_server: linear
+"""
+CLAUDE_ROLES_NO_GEMINI = "planner, frontend, auditor, validator, finalizer"
+SECRET_SENTINEL = "sk-sentinel-DO-NOT-PRINT-0123456789"
+
+
+def _role_block(role: str, provider: str) -> str:
+    return f"  {role}:\n    provider: {provider}\n    binary: fake-{provider}\n"
+
+
+def _linear_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    providers: dict[str, str] = NO_GEMINI,
+    *,
+    claude_mcp_config: str | None = None,
+    role_extra: dict[str, str] | None = None,
+) -> Path:
+    """Linear-mode repo with home at tmp_path/home and CODEX_HOME unset.
+
+    ``role_extra`` appends YAML lines (indented four spaces) to a role block.
+    """
+    repo = _make_repo(tmp_path, providers, handoff=None, commit=False)
+    config_path = repo / "dispatch_config.yaml"
+    text = config_path.read_text(encoding="utf-8")
+    for role, extra in (role_extra or {}).items():
+        block = _role_block(role, providers[role])
+        text = text.replace(block, block + extra)
+    tracker = LINEAR_TRACKER
+    if claude_mcp_config is not None:
+        tracker += f"  claude_mcp_config: {claude_mcp_config}\n"
+    config_path.write_text(text + tracker, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    _stub_which(
+        monkeypatch,
+        {
+            "fake-claude",
+            "fake-codex",
+            "fake-gemini",
+            "fake-agy",
+            "fake-antigravity",
+            "docker",
+        },
+    )
+    return repo
+
+
+def _write_json(path: Path, content: object) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, str):
+        path.write_text(content, encoding="utf-8")
+    else:
+        path.write_text(json.dumps(content), encoding="utf-8")
+    return path
+
+
+def _write_text(path: Path, content: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _servers(name: str = "linear") -> dict[str, object]:
+    return {"mcpServers": {name: {"command": "npx", "args": ["linear-mcp"]}}}
+
+
+def _tracker_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if f" {TRACKER_CHECK}:" in line]
+
+
+def _provider_line(output: str, provider: str) -> str:
+    matches = [
+        line
+        for line in _tracker_lines(output)
+        if line.split(":", 1)[1].strip().startswith(f"{provider}:")
+    ]
+    assert len(matches) == 1, output
+    return matches[0]
+
+
+def test_doctor_tracker_connector_absent_in_vanilla_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, MIXED, handoff=None, commit=False)
+    _stub_which(monkeypatch, {"fake-gemini", "fake-codex", "fake-claude", "docker"})
+
+    exit_code, output = _run(repo, capsys)
+    assert exit_code == 0, output
+    assert TRACKER_CHECK not in output
+
+    _add_config(repo, "tracker:\n  provider: none\n")
+    exit_code, output = _run(repo, capsys)
+    assert exit_code == 0, output
+    assert TRACKER_CHECK not in output
+
+
+def test_doctor_tracker_connector_claude_mcp_config_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path, monkeypatch, claude_mcp_config="config/linear-mcp.json"
+    )
+    _write_json(repo / "config" / "linear-mcp.json", _servers())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"PASS {TRACKER_CHECK}: claude:")
+    assert "linear-mcp.json" in line
+    assert "`linear`" in line
+    assert line.endswith(f"(covers {CLAUDE_ROLES_NO_GEMINI})")
+
+
+def test_doctor_tracker_connector_claude_mcp_config_fails_without_the_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path, monkeypatch, claude_mcp_config="config/linear-mcp.json"
+    )
+    _write_json(repo / "config" / "linear-mcp.json", _servers("other"))
+    # A user-level definition does not count: strict launches load only the file.
+    _write_json(tmp_path / "home" / ".claude.json", _servers())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"FAIL {TRACKER_CHECK}: claude:")
+    assert "linear-mcp.json" in line
+    assert "`linear`" in line
+    assert "--strict-mcp-config" in line
+    assert line.endswith(f"(covers {CLAUDE_ROLES_NO_GEMINI})")
+
+
+def test_doctor_tracker_connector_claude_mcp_config_fails_without_mcp_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path, monkeypatch, claude_mcp_config="config/linear-mcp.json"
+    )
+    _write_json(repo / "config" / "linear-mcp.json", {"mcpServers": ["linear"]})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"FAIL {TRACKER_CHECK}: claude:")
+    assert "has no mcpServers object" in line
+
+
+def test_doctor_tracker_connector_claude_mcp_config_fails_on_invalid_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path, monkeypatch, claude_mcp_config="config/linear-mcp.json"
+    )
+    _write_json(repo / "config" / "linear-mcp.json", '{"mcpServers": {')
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"FAIL {TRACKER_CHECK}: claude:")
+    assert "is not valid JSON" in line
+    assert "linear-mcp.json" in line
+
+
+def test_doctor_tracker_connector_claude_passes_from_project_mcp_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _write_json(repo / ".mcp.json", _servers())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"PASS {TRACKER_CHECK}: claude:")
+    assert ".mcp.json" in line
+    assert line.endswith(f"(covers {CLAUDE_ROLES_NO_GEMINI})")
+
+
+def test_doctor_tracker_connector_claude_passes_from_user_mcp_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _write_json(tmp_path / "home" / ".claude.json", _servers())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"PASS {TRACKER_CHECK}: claude:")
+    assert ".claude.json (user mcpServers)" in line
+
+
+def test_doctor_tracker_connector_claude_passes_from_matching_project_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _write_json(
+        tmp_path / "home" / ".claude.json",
+        {
+            "projects": {
+                str(tmp_path / "elsewhere"): {"mcpServers": {"other": {}}},
+                str(repo): _servers(),
+            }
+        },
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"PASS {TRACKER_CHECK}: claude:")
+    assert "projects entry for" in line
+
+
+def test_doctor_tracker_connector_claude_ignores_other_project_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _write_json(
+        tmp_path / "home" / ".claude.json",
+        {"projects": {str(tmp_path / "elsewhere"): _servers()}},
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _provider_line(output, "claude").startswith(f"WARN {TRACKER_CHECK}:")
+
+
+def test_doctor_tracker_connector_claude_warns_when_no_source_defines_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _write_json(repo / ".mcp.json", _servers("other"))
+    _write_json(tmp_path / "home" / ".claude.json", "not json")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "claude")
+    assert line.startswith(f"WARN {TRACKER_CHECK}: claude:")
+    assert "`linear`" in line
+    assert str(repo / ".mcp.json") in line
+    assert str(tmp_path / "home" / ".claude.json") in line
+    assert "projects entry for" in line
+    assert "is not valid JSON" in line
+    assert "managed settings or plugins" in line
+    assert line.endswith(f"(covers {CLAUDE_ROLES_NO_GEMINI})")
+
+
+def test_doctor_tracker_connector_splits_unsafe_bypass_claude_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path,
+        monkeypatch,
+        claude_mcp_config="config/linear-mcp.json",
+        role_extra={"finalizer": "    unsafe_bypass: true\n"},
+    )
+    _write_json(repo / "config" / "linear-mcp.json", _servers())
+    _write_json(repo / ".mcp.json", _servers())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    claude_lines = [
+        line for line in _tracker_lines(output) if f"{TRACKER_CHECK}: claude:" in line
+    ]
+    assert len(claude_lines) == 2, output
+    assert "tracker.claude_mcp_config" in claude_lines[0]
+    assert claude_lines[0].endswith("(covers planner, frontend, auditor, validator)")
+    assert str(repo / ".mcp.json") in claude_lines[1]
+    assert claude_lines[1].endswith("(covers finalizer)")
+
+
+def test_doctor_tracker_connector_codex_passes_from_codex_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    codex_home = tmp_path / "codex-home"
+    _write_text(codex_home / "config.toml", '[mcp_servers.linear]\ncommand = "npx"\n')
+    # The default user path is ignored while CODEX_HOME is set.
+    _write_text(tmp_path / "home" / ".codex" / "config.toml", "not = [valid")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "codex")
+    assert line == (
+        f"PASS {TRACKER_CHECK}: codex: {codex_home / 'config.toml'} defines MCP "
+        "server `linear` (covers backend)"
+    )
+
+
+def test_doctor_tracker_connector_codex_passes_from_repo_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_HOME", "")
+    _write_text(
+        tmp_path / "home" / ".codex" / "config.toml",
+        '[mcp_servers.other]\ncommand = "npx"\n',
+    )
+    _write_text(
+        repo / ".codex" / "config.toml", '[mcp_servers.linear]\ncommand = "npx"\n'
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "codex")
+    assert line.startswith(f"PASS {TRACKER_CHECK}: codex:")
+    assert str(repo / ".codex" / "config.toml") in line
+
+
+def test_doctor_tracker_connector_codex_warns_on_invalid_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch)
+    _write_text(tmp_path / "home" / ".codex" / "config.toml", "[mcp_servers.linear\n")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "codex")
+    assert line.startswith(f"WARN {TRACKER_CHECK}: codex:")
+    assert "is not valid TOML" in line
+    assert str(tmp_path / "home" / ".codex" / "config.toml") in line
+    assert str(repo / ".codex" / "config.toml") in line
+    assert line.endswith("(covers backend)")
+
+
+GEMINI_PLANNER = {**NO_GEMINI, "planner": "gemini"}
+
+
+def test_doctor_tracker_connector_gemini_passes_from_repo_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
+    _write_json(repo / ".gemini" / "settings.json", _servers())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "gemini")
+    assert line == (
+        f"PASS {TRACKER_CHECK}: gemini: {repo / '.gemini' / 'settings.json'} "
+        "defines MCP server `linear` (covers planner)"
+    )
+
+
+def test_doctor_tracker_connector_gemini_passes_from_user_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
+    _write_json(tmp_path / "home" / ".gemini" / "settings.json", _servers())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "gemini")
+    assert line.startswith(f"PASS {TRACKER_CHECK}: gemini:")
+    assert str(tmp_path / "home" / ".gemini" / "settings.json") in line
+
+
+def test_doctor_tracker_connector_gemini_warns_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "gemini")
+    assert line.startswith(f"WARN {TRACKER_CHECK}: gemini:")
+    assert str(repo / ".gemini" / "settings.json") in line
+    assert str(tmp_path / "home" / ".gemini" / "settings.json") in line
+    assert line.endswith("(covers planner)")
+
+
+def test_doctor_tracker_connector_warns_that_antigravity_is_unchecked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path, monkeypatch, {**NO_GEMINI, "planner": "antigravity"}
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _provider_line(output, "antigravity")
+    assert line.startswith(f"WARN {TRACKER_CHECK}: antigravity:")
+    assert "cannot check" in line
+    assert "`linear`" in line
+    assert line.endswith("(covers planner)")
+
+
+def test_doctor_tracker_connector_reports_one_line_per_provider_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path,
+        monkeypatch,
+        MIXED,
+        role_extra={
+            "planner": (
+                "    fallback:\n      provider: antigravity\n      binary: fake-agy\n"
+            ),
+            "backend": (
+                "    fallback:\n      provider: claude\n      binary: fake-claude\n"
+            ),
+        },
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _tracker_lines(output)
+    assert len(lines) == 4, output
+    providers = [line.split(":", 2)[1].strip() for line in lines]
+    assert providers == ["claude", "codex", "gemini", "antigravity"]
+    assert lines[0].endswith("(covers backend fallback, auditor, validator, finalizer)")
+    assert lines[1].endswith("(covers backend)")
+    assert lines[2].endswith("(covers planner, frontend)")
+    assert lines[3].endswith("(covers planner fallback)")
+
+
+def test_doctor_tracker_connector_never_prints_config_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path,
+        monkeypatch,
+        {**MIXED, "planner": "antigravity"},
+        claude_mcp_config="config/linear-mcp.json",
+        role_extra={"finalizer": "    unsafe_bypass: true\n"},
+    )
+    entry = {
+        "command": "npx",
+        "env": {"LINEAR_API_KEY": SECRET_SENTINEL},
+        "headers": {"Authorization": f"Bearer {SECRET_SENTINEL}"},
+    }
+    _write_json(repo / "config" / "linear-mcp.json", {"mcpServers": {"linear": entry}})
+    _write_json(repo / ".mcp.json", {"mcpServers": {"other": entry}})
+    _write_json(
+        tmp_path / "home" / ".claude.json",
+        {"mcpServers": {"other": entry}, "projects": {str(repo): {"mcpServers": {}}}},
+    )
+    _write_text(
+        tmp_path / "home" / ".codex" / "config.toml",
+        f'[mcp_servers.linear]\ncommand = "npx"\n'
+        f'env = {{ LINEAR_API_KEY = "{SECRET_SENTINEL}" }}\n',
+    )
+    # Invalid JSON whose text holds the sentinel: the parse error must not echo it.
+    _write_text(
+        repo / ".gemini" / "settings.json",
+        '{"mcpServers": {"linear": {"env": {"T": "' + SECRET_SENTINEL + '"}}',
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert len(_tracker_lines(output)) == 5, output
+    assert SECRET_SENTINEL not in output
+    assert "sentinel" not in output.lower()
+
+
+def test_doctor_tracker_connector_runs_no_provider_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _linear_repo(
+        tmp_path,
+        monkeypatch,
+        MIXED,
+        role_extra={
+            "planner": (
+                "    fallback:\n      provider: antigravity\n      binary: fake-agy\n"
+            )
+        },
+    )
+    _write_json(repo / ".mcp.json", _servers())
+    real_run = subprocess.run
+    calls: list[str] = []
+
+    def recording_run(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        first = command[0] if isinstance(command, (list, tuple)) else command
+        calls.append(Path(str(first)).stem.lower())
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(doctor.subprocess, "run", recording_run)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert len(_tracker_lines(output)) == 4, output
+    assert "git" in calls
+    provider_binaries = {"claude", "codex", "gemini", "agy", "antigravity"}
+    for name in calls:
+        assert name.removeprefix("fake-") not in provider_binaries, calls
