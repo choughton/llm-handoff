@@ -19,7 +19,9 @@ This project follows a simple pre-release changelog until the first public tag.
   `## Work Packet` labels match the Work Packet parser, and
   `llm-handoff init --tracker linear` renders it into the
   `docs/handoff/HANDBOOK.md` Linear block between the evidence contract and
-  the role sections.
+  the role sections. The lease-rebuild instruction now asks for
+  `status: blocked_missing_context` when no issue qualifies, matching the
+  planner rule.
 - In Linear mode (`tracker.provider: linear`), a missing or empty
   (whitespace-only) `HANDOFF.md` at the top of a cycle no longer exits with
   code 1. The dispatcher logs one `WARN` line and dispatches one planner
