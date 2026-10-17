@@ -662,8 +662,9 @@ def _merge_pull_request(
         result = _git(repo_root, args)
         if result.returncode != 0:
             return _stop(log, f"git {' '.join(args[:2])} failed: {_first_line(result)}")
-    if _branch_exists(repo_root, state.branch):
-        _git(repo_root, ["branch", "-D", state.branch])
+    # `gh pr merge --delete-branch` usually deleted it already; a failure here
+    # only means the branch is gone.
+    _git(repo_root, ["branch", "-D", state.branch])
     _clear_state(repo_root)
     log("AGENT", f"Merged pull request {url or state.branch} into {state.base_branch}.")
     return PublishOutcome()
@@ -871,8 +872,10 @@ def _resume_blocker(repo_root: Path, remote: str, state: StoryState) -> str | No
             f"`git switch {state.base_branch}` and `git pull`, then start the "
             "dispatcher again."
         )
+    # One listing with parents serves both the non-merge check and the merge
+    # checks below.
     listed = _git(
-        repo_root, ["rev-list", "--no-merges", f"{paused}..HEAD", f"^{upstream}"]
+        repo_root, ["rev-list", "--parents", f"{paused}..HEAD", f"^{upstream}"]
     )
     if listed.returncode != 0:
         return (
@@ -882,9 +885,11 @@ def _resume_blocker(repo_root: Path, remote: str, state: StoryState) -> str | No
             f"yourself, run `git switch {state.base_branch}` and `git pull`, "
             "then start the dispatcher again."
         )
-    added = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    commits = [line.split() for line in listed.stdout.splitlines() if line.strip()]
+    added = [words[0] for words in commits if len(words) <= 2]
     if not added:
-        return _merge_commit_blocker(repo_root, upstream, state, paused, lead)
+        merges = [words for words in reversed(commits) if len(words) > 2]
+        return _merge_commit_blocker(repo_root, upstream, state, merges, lead)
     shown = _git(
         repo_root,
         ["show", "-s", "--format=%h %s", *added[:_RESUME_LISTED_COMMITS]],
@@ -911,15 +916,20 @@ _OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
 def _merge_commit_blocker(
-    repo_root: Path, upstream: str, state: StoryState, paused: str, lead: str
+    repo_root: Path,
+    upstream: str,
+    state: StoryState,
+    merges: list[list[str]],
+    lead: str,
 ) -> str | None:
     """Return why a merge added since the pause blocks the resume, or ``None``.
 
-    Each merge commit added since the pause must be a two-parent merge of the
-    base branch whose tree differs from the automatic merge of its parents
-    only in paths that automatic merge left conflicted. Edits inside a
-    conflicted file are not inspected. Any git failure keeps the publish
-    paused.
+    ``merges`` holds the merge commits added since the pause, oldest first,
+    each as its ``git rev-list --parents`` words. Each must be a two-parent
+    merge of the base branch whose tree differs from the automatic merge of
+    its parents only in paths that automatic merge left conflicted. Edits
+    inside a conflicted file are not inspected. Any git failure keeps the
+    publish paused.
     """
 
     publish_yourself = (
@@ -927,20 +937,9 @@ def _merge_commit_blocker(
         f"`git switch {state.base_branch}` and `git pull`, then start the "
         "dispatcher again."
     )
-    listed = _git(
-        repo_root,
-        ["rev-list", "--reverse", "--merges", f"{paused}..HEAD", f"^{upstream}"],
-    )
-    if listed.returncode != 0:
-        return (
-            lead
-            + f"git rev-list --merges failed ({_first_line(listed)}), so the "
-            "merge commits added since the pause could not be checked. "
-            + publish_yourself
-        )
-    merges = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
-    for merge in merges:
-        blocker = _merge_content_problem(repo_root, upstream, merge)
+    for words in merges:
+        merge = words[0]
+        blocker = _merge_content_problem(repo_root, upstream, words)
         if blocker is None:
             continue
         reason, failed = blocker
@@ -966,17 +965,14 @@ def _merge_commit_blocker(
 
 
 def _merge_content_problem(
-    repo_root: Path, upstream: str, merge: str
+    repo_root: Path, upstream: str, words: list[str]
 ) -> tuple[str, bool] | None:
-    """Check one merge commit; return ``(reason, command_failed)`` or ``None``."""
+    """Check one merge commit, given as its ``git rev-list --parents`` words;
+    return ``(reason, command_failed)`` or ``None``."""
 
-    parents_run = _git(repo_root, ["rev-list", "--parents", "-n", "1", merge])
-    if parents_run.returncode != 0:
-        return f"git rev-list --parents failed ({_first_line(parents_run)})", True
-    words = parents_run.stdout.split()
-    if not words or not all(_OBJECT_ID_RE.fullmatch(word) for word in words):
+    if not all(_OBJECT_ID_RE.fullmatch(word) for word in words):
         return "git rev-list --parents printed no parents", True
-    parents = words[1:]
+    merge, parents = words[0], words[1:]
     if len(parents) != 2:
         return (
             f"has {len(parents)} parents; only a two-parent merge of {upstream} "
