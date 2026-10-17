@@ -34,6 +34,7 @@ from llm_handoff.work_claim import (
     capture_implementer_leftovers,
     capture_pre_dispatch_state,
     carry_over_key,
+    evidence_commit_value,
     extract_work_packet_section,
     parse_work_packet,
     path_is_in_scope,
@@ -3151,6 +3152,38 @@ def test_stamp_commit_sha_fills_scope_sha_and_evidence() -> None:
     assert frontmatter.scope_sha == sha
     assert f"- **Commit SHA verified:** {sha}" in stamped
     assert PENDING_COMMIT_SHA not in stamped
+
+
+@pytest.mark.parametrize(
+    "marker", [PENDING_COMMIT_SHA, f"`{PENDING_COMMIT_SHA}`"]
+)
+def test_stamp_commit_sha_keeps_the_text_after_the_marker(marker: str) -> None:
+    sha = "a" * 40
+    claim = _pending_claim().replace(
+        f"- **Commit SHA verified:** {PENDING_COMMIT_SHA}",
+        f"- **Commit SHA verified:** {marker} (plus operator commit 1234567,\n"
+        "  which only touched docs)",
+    )
+
+    stamped = stamp_commit_sha(claim, sha)
+
+    assert (
+        f"- **Commit SHA verified:** {sha} (plus operator commit 1234567,\n"
+        "  which only touched docs)"
+    ) in stamped
+    assert PENDING_COMMIT_SHA not in stamped
+
+
+def test_stamp_commit_sha_accepts_a_parenthetical_label_note() -> None:
+    sha = "a" * 40
+    claim = _pending_claim().replace(
+        "- **Commit SHA verified:**", "- **Commit SHA verified (this turn):**"
+    )
+
+    stamped = stamp_commit_sha(claim, sha)
+
+    assert f"- **Commit SHA verified (this turn):** {sha}" in stamped
+    assert evidence_commit_value(stamped) == sha
 
 
 def test_stamp_commit_sha_replaces_an_existing_scope_sha() -> None:

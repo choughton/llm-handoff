@@ -157,8 +157,12 @@ _VERIFICATION_EVIDENCE_HEADING_RE = re.compile(
     r"(?im)^##[ \t]+Verification Evidence[ \t]*$"
 )
 _ANY_HEADING_RE = re.compile(r"(?m)^#{1,6}[ \t]+")
+# A Verification Evidence label may carry one parenthetical note before its
+# colon, as in ``- **Commands run (this turn):**``. Shared by every parser of
+# evidence labels so they agree on what counts as a field.
+EVIDENCE_LABEL_NOTE = r"(?:[ \t]*\([^()\n*]*\))?"
 _EVIDENCE_COMMIT_FIELD_RE = re.compile(
-    r"(?im)^-[ \t]+\*\*Commit SHA verified:\*\*[ \t]*(.*)$"
+    rf"(?im)^-[ \t]+\*\*Commit SHA verified{EVIDENCE_LABEL_NOTE}:\*\*[ \t]*(.*)$"
 )
 _SHA_TOKEN_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
 _EVIDENCE_VALUE_DETAIL_CHARS = 80

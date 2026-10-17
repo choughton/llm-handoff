@@ -26,6 +26,7 @@ import subprocess
 
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.work_claim import (
+    EVIDENCE_LABEL_NOTE,
     PreDispatchState,
     WorkPacketError,
     git_dirty_files,
@@ -60,7 +61,10 @@ PENDING_COMMIT_SHA = "pending-dispatcher-commit"
 _GIT_TIMEOUT_SECONDS = 60
 _FRONTMATTER_SCOPE_SHA_RE = re.compile(r"(?m)^scope_sha:[^\n]*$")
 _FRONTMATTER_PRODUCER_RE = re.compile(r"(?m)^producer:[^\n]*$")
-_EVIDENCE_SHA_RE = re.compile(r"(?im)^(-\s+\*\*Commit SHA verified:\*\*)[^\n]*$")
+_EVIDENCE_SHA_RE = re.compile(
+    rf"(?im)^(-[ \t]+\*\*Commit SHA verified{EVIDENCE_LABEL_NOTE}:\*\*)([^\n]*)$"
+)
+_PENDING_MARKER_RE = re.compile(rf"`?{re.escape(PENDING_COMMIT_SHA)}`?")
 
 
 @dataclass(frozen=True)
@@ -210,8 +214,17 @@ def stamp_commit_sha(handoff_content: str, sha: str) -> str:
         )
     else:
         frontmatter = f"{frontmatter}scope_sha: {sha}\n"
-    rest = _EVIDENCE_SHA_RE.sub(lambda match: f"{match.group(1)} {sha}", rest)
+    rest = _EVIDENCE_SHA_RE.sub(lambda match: _stamp_evidence_line(match, sha), rest)
     return frontmatter + rest
+
+
+def _stamp_evidence_line(match: re.Match[str], sha: str) -> str:
+    label, value = match.group(1), match.group(2)
+    # Replace only the marker, so a note after it, as in
+    # "pending-dispatcher-commit (plus operator commit ...", keeps its text.
+    if _PENDING_MARKER_RE.search(value):
+        return label + _PENDING_MARKER_RE.sub(sha, value, count=1)
+    return f"{label} {sha}"
 
 
 @dataclass(frozen=True)
