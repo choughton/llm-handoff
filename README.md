@@ -40,10 +40,12 @@ production-certified tool for arbitrary repositories. See
 
 ## Quick Start
 
-You need Python 3.11 or newer, Git, and at least one provider CLI signed in:
-`claude`, `codex`, or `gemini`. Roles mapped to Gemini CLI also need Docker or
-Podman on `PATH` (macOS can use `sandbox-exec`). The dispatcher launches these
-CLIs; it does not install them or manage their logins.
+You need Python 3.11 or newer, Git, and Claude Code (`claude`) or Codex
+(`codex`) signed in. Gemini CLI (`gemini`) is optional: the reference mapping
+uses it for the planner and frontend, but it cannot run every role by itself,
+and any role mapped to it needs Docker or Podman on `PATH` (macOS can use
+`sandbox-exec`). The dispatcher launches these CLIs; it does not install them
+or manage their logins.
 
 Two directories are involved: the `llm-handoff` install, and the target
 repository where agents do the work. Commands below run from anywhere once the
@@ -79,7 +81,16 @@ changed files stop the run unless you pass `--force`.
 Codex is on `PATH`, every role goes on that one CLI. Otherwise it writes the
 reference mapping (Gemini planner, Codex backend, Claude auditor). Pass
 `--provider claude` or `--provider codex` to force a single-vendor setup. The
-command prints the mapping it chose.
+command prints the mapping it chose. Those are the only two single-vendor
+mappings; a machine with only Gemini gets the reference mapping and fails
+`doctor` until Codex and Claude are installed.
+
+With every role on Codex, also set `commit_mode: dispatcher` in
+`dispatch_config.yaml` before running. `init` leaves the template's
+`commit_mode: agent`, and Codex's sandbox keeps `.git` read-only, so a Codex
+implementer asked to commit its own work hands back
+`blocked_implementation_failure` instead. In dispatcher mode the dispatcher
+commits the in-scope files for it.
 
 To track work in Linear instead of in files, add the tracker flags here. See
 [Files Or Linear](#files-or-linear-where-work-is-tracked) first, because this
@@ -222,7 +233,13 @@ Things that stop a first run or quietly change what the loop does.
 - **Gemini roles need a container runtime.** Gemini CLI runs in its sandbox,
   so any role on `gemini` needs Docker or Podman on `PATH` (macOS:
   `sandbox-exec`). Without one the dispatcher refuses to start. If you only
-  have one CLI, use `init --provider claude` or `--provider codex`.
+  have one CLI, use `init --provider claude` or `--provider codex`. Gemini
+  alone is not enough; there is no all-Gemini mapping.
+- **All-Codex setups need dispatcher commits.** Codex's `workspace-write`
+  sandbox cannot write to `.git`. Set `commit_mode: dispatcher` (which needs
+  the work-claim gate on, the default) or every implementer handback comes
+  back as `blocked_implementation_failure`. See
+  [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits).
 - **Two reviewers run on every audit by default.** A read-only security
   reviewer runs beside the quality auditor. It uses the first installed CLI
   that differs from the implementer's vendor. With a single vendor it still
