@@ -71,7 +71,8 @@ llm-handoff init /path/to/your-project --dry-run
 llm-handoff init /path/to/your-project
 ```
 
-Add `--provider claude` or `--provider codex` to put every role on one CLI.
+Add `--provider claude`, `--provider codex`, or `--provider gemini` to put
+every role on one CLI.
 To track work in Linear, read
 [Files Or Linear](README.md#files-or-linear-where-work-is-tracked) first and
 add the `--tracker` flags to the second command.

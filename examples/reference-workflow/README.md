@@ -45,7 +45,11 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .codex/skills/llm-handoff-finalizer/SKILL.md
 .codex/rules/llm-handoff.rules
 .gemini/agents/planner.md
+.gemini/agents/backend.md
 .gemini/agents/frontend.md
+.gemini/agents/auditor.md
+.gemini/agents/validator.md
+.gemini/agents/finalizer.md
 .gemini/policies/planner_guardrails.toml
 .agents/agents/planner.md
 .agents/agents/backend.md

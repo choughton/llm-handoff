@@ -47,11 +47,13 @@ The reference workflow maps generic roles to provider CLIs:
 
 These are adapter choices, not handoff protocol names. Handoffs use the generic
 roles. `init` writes this mapping when more than one provider CLI is on
-`PATH`; when only Claude Code or only Codex is installed, it puts every role
-on that CLI, and `--provider claude` or `--provider codex` forces that
-choice. Antigravity is also a registered adapter. See
-[Agent Roles](CONFIGURATION.md#agent-roles) for the mapping shape and the
-all-Claude and all-Codex variants.
+`PATH`; when only one of Claude Code, Codex, or Gemini CLI is installed, it
+puts every role on that CLI, and `--provider claude`, `--provider codex`, or
+`--provider gemini` forces that choice. Antigravity is also a registered
+adapter. See [Agent Roles](CONFIGURATION.md#agent-roles) for the mapping
+shape and the single-vendor variants, and the README's
+[Gotchas](README.md#gotchas) for what all-Codex and all-Gemini setups need
+in addition.
 
 If a provider CLI is not signed in, fix that before running a real dispatch.
 The dispatcher invokes provider tools; it does not manage their login flow.
@@ -96,7 +98,11 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .codex/skills/llm-handoff-finalizer/SKILL.md
 .codex/rules/llm-handoff.rules
 .gemini/agents/planner.md
+.gemini/agents/backend.md
 .gemini/agents/frontend.md
+.gemini/agents/auditor.md
+.gemini/agents/validator.md
+.gemini/agents/finalizer.md
 .gemini/policies/planner_guardrails.toml
 .agents/agents/planner.md
 .agents/agents/backend.md
