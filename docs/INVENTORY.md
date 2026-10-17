@@ -33,7 +33,7 @@ Three copies of the handoff protocol exist on purpose:
 | File | Purpose |
 | --- | --- |
 | [README.md](../README.md) | Front door: quick start, mode switching, gotchas, and how the loop works. |
-| [QUICKSTART.md](../QUICKSTART.md) | Numbered source-checkout path through a first dry run, with Windows and POSIX commands. |
+| [QUICKSTART.md](../QUICKSTART.md) | The README quick start's five steps as a command sheet, with Windows PowerShell and macOS/Linux variants. |
 | [WALKTHROUGH.md](../WALKTHROUGH.md) | Slower first-run guide: the two-repo model, what `init` copies, common pauses. |
 | [INSTALL.md](../INSTALL.md) | Requirements, install paths, provider CLI checks, `doctor`, and debugging. |
 | [CONFIGURATION.md](../CONFIGURATION.md) | Every supported `dispatch_config.yaml` key, including the work-claim gate, scanners, publishing, sandboxing, Linear mode, and audit fan-out. |

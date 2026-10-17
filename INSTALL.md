@@ -1,77 +1,40 @@
 # Installation
 
-`llm-handoff` is in pre-release extraction. These instructions describe the
-source-checkout workflow and the target-repo initialization path.
+How to get `llm-handoff` onto your machine: the requirements, installing it as
+a package, running it from a source checkout, the `doctor` preflight, the
+safety defaults every install turns on, and how to debug a run or run the
+test suite. The first-run steps (initialize a target repository, write a
+handoff, dry run, run) are in the [README quick start](README.md#quick-start),
+with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
 
-For a shorter first-run path, see [QUICKSTART.md](QUICKSTART.md). For a more
-detailed source-checkout and target-repo explanation, see
-[WALKTHROUGH.md](WALKTHROUGH.md).
+`llm-handoff` is in pre-release extraction and is not yet published to PyPI.
 
 ## Requirements
 
 - Python 3.11 or newer.
 - Git.
-- One or more provider CLIs, depending on your workflow:
-  - Codex CLI for backend-style dispatches.
-  - Gemini CLI for planner or frontend-style dispatches.
-  - Claude Code CLI for auditor, validator, or finalizer-style dispatches.
+- One or more provider CLIs, depending on which roles your
+  `dispatch_config.yaml` maps to them. The reference mapping puts the
+  `planner` and `frontend` on Gemini CLI, the `backend` on Codex CLI, and the
+  `auditor`, `validator`, and `finalizer` on Claude Code. A single-vendor
+  setup (`init --provider claude` or `--provider codex`) needs only that one
+  CLI.
 - Docker or Podman on `PATH` for any role mapped to Gemini CLI (macOS can use
   `sandbox-exec`). Gemini roles run in its container sandbox and the
   dispatcher refuses to start without one.
-- Optional: GitHub CLI (`gh`) for repository checks and release workflow.
+- Optional: GitHub CLI (`gh`), signed in (`gh auth status`), for
+  `publish.mode: pr` and repository checks.
 
-The dispatcher orchestrates provider CLIs. It does not install them, configure
-their accounts, or manage their API keys.
+Provider auth must already be valid before the dispatcher invokes a provider
+CLI. The dispatcher orchestrates provider CLIs. It does not install them,
+configure their accounts, or manage their API keys. The version-check
+commands are in [QUICKSTART.md](QUICKSTART.md#0-check-prerequisites);
+`llm-handoff doctor` (below) reports which configured CLIs are on `PATH`.
 
-## Clone From Source
+## Install As A Package
 
-```bash
-git clone https://github.com/choughton/llm-handoff.git
-cd llm-handoff
-```
-
-## Create A Virtual Environment
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-```
-
-When a later command is shown as `python -m ...`, Windows PowerShell users who
-have not activated the environment should run it as
-`.\.venv\Scripts\python.exe -m ...` instead. If you activate the environment
-yourself, `python` is fine.
-
-macOS or Linux:
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip
-```
-
-## Install Local Dependencies
-
-Source-checkout dependency install:
-
-Windows PowerShell:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-```
-
-macOS or Linux:
-
-```bash
-python -m pip install -r requirements-dev.txt
-```
-
-## Install The Package From A Git Checkout
-
-The repository ships a `pyproject.toml`, so you can install it as a package
-from a checkout or straight from Git. It is not yet published to PyPI.
+The repository ships a `pyproject.toml`, so you can install it from a checkout
+or straight from Git.
 
 From a local checkout:
 
@@ -88,28 +51,50 @@ python -m pip install git+https://github.com/choughton/llm-handoff.git
 Either install puts an `llm-handoff` console command on `PATH` for that
 environment. `llm-handoff ...` and `python -m llm_handoff ...` run the same
 CLI. The wheel bundles the `examples/reference-workflow/` template, including
-its hidden `.claude/`, `.codex/`, `.gemini/`, `.geminiignore`, and `.gitignore`
-paths, so `llm-handoff init` works outside the source checkout. Run from source
-instead, `init` reads the template from `examples/reference-workflow/`.
+its hidden `.claude/`, `.codex/`, `.gemini/`, `.agents/`, `.geminiignore`, and
+`.gitignore` paths, so `llm-handoff init` works from any directory.
 
-## Check Provider CLIs
+## Run From A Source Checkout
 
-Run the commands for the providers you intend to use:
-
-```bash
-codex --version
-gemini --version
-claude --version
-```
-
-If you use GitHub workflows:
+Clone the dispatcher somewhere outside the target repository:
 
 ```bash
-gh auth status
+git clone https://github.com/choughton/llm-handoff.git
+cd llm-handoff
 ```
 
-Provider auth must already be valid before the dispatcher invokes a provider
-CLI.
+Create a virtual environment and install the source-checkout dependencies.
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m llm_handoff --help
+```
+
+macOS or Linux:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+python -m llm_handoff --help
+```
+
+When a command in this repository's docs is shown as `python -m ...`, Windows
+PowerShell users who have not activated the environment should run it as
+`.\.venv\Scripts\python.exe -m ...` instead. If you activate the environment
+yourself, `python` is fine.
+
+Run from source, `python -m llm_handoff` replaces `llm-handoff` in every
+command, and `init` reads the template from `examples/reference-workflow/`
+instead of the packaged copy. To work against a separate target repository
+from the source checkout, pass `--repo-root` (and `--config` when
+`dispatch_config.yaml` is not at that root). If `--config` is omitted, the
+dispatcher looks for `dispatch_config.yaml` in the detected repo root.
 
 ## Verify Setup
 
@@ -153,61 +138,6 @@ credential. Claude Code's Bash sandbox needs WSL2, and the Codex native
 Windows sandbox is experimental. See the
 [threat model](SECURITY.md#threat-model).
 
-## Initialize A Target Repository
-
-From the `llm-handoff` source checkout, preview the reference workflow files
-that would be copied into a target repository:
-
-```bash
-python -m llm_handoff init path/to/your-project --template reference-workflow --dry-run
-```
-
-Then initialize the target repository:
-
-```bash
-python -m llm_handoff init path/to/your-project --template reference-workflow
-```
-
-The initializer recursively copies the reference workflow template from
-[`examples/reference-workflow/`](examples/reference-workflow/). That directory
-is the authoritative inventory of copied files. It includes the target-repo
-`AGENTS.md`, `PROJECT_STATE.md`, `dispatch_config.yaml`, handoff prompt
-templates, provider agent templates, provider policy files, and provider ignore
-files.
-
-It does not copy the template README into the target repo. Existing identical
-files are skipped. Existing changed files abort initialization unless you pass
-`--force` after reviewing what would be overwritten.
-
-You can still copy or fork the files under
-[examples/reference-workflow](examples/reference-workflow/README.md) manually
-if you want a custom protocol layout.
-
-## Dry Run
-
-```bash
-python -m llm_handoff --config dispatch_config.yaml --dry-run
-```
-
-A dry run parses the handoff, resolves the configured role, and reports the
-provider CLI it would invoke without launching the agent.
-
-If `--config` is omitted, the dispatcher looks for `dispatch_config.yaml` in
-the detected repo root.
-
-## Run The Loop
-
-```bash
-python -m llm_handoff --config dispatch_config.yaml
-```
-
-The dispatcher reads the handoff file, invokes one role, validates the updated
-handoff, then continues or pauses.
-
-To run against a separate target repository, either install the package (see
-above) and run `llm-handoff` from anywhere, or run from the source checkout
-while pointing `--repo-root` and `--config` at the target repo.
-
 ## Debugging
 
 When the loop pauses, inspect:
@@ -219,7 +149,8 @@ logs/dispatch/
 git log --oneline
 ```
 
-The handoff file is the live state. Git is the durable history.
+The handoff file is the live state. Git is the durable history. See
+[Common Pauses](WALKTHROUGH.md#common-pauses) for what each pause means.
 
 ## Running Tests
 
