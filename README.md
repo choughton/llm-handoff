@@ -40,12 +40,12 @@ production-certified tool for arbitrary repositories. See
 
 ## Quick Start
 
-You need Python 3.11 or newer, Git, and Claude Code (`claude`) or Codex
-(`codex`) signed in. Gemini CLI (`gemini`) is optional: the reference mapping
-uses it for the planner and frontend, but it cannot run every role by itself,
-and any role mapped to it needs Docker or Podman on `PATH` (macOS can use
-`sandbox-exec`). The dispatcher launches these CLIs; it does not install them
-or manage their logins.
+You need Python 3.11 or newer, Git, and at least one provider CLI signed in:
+Claude Code (`claude`), Codex (`codex`), or Gemini CLI (`gemini`). Any role
+mapped to Gemini needs Docker or Podman on `PATH` (macOS can use
+`sandbox-exec`), and a Gemini-only setup also needs `GEMINI_API_KEY` for the
+next-agent normalizer. The dispatcher launches these CLIs; it does not
+install them or manage their logins.
 
 Two directories are involved: the `llm-handoff` install, and the target
 repository where agents do the work. Commands below run from anywhere once the
@@ -77,13 +77,12 @@ role prompts under `docs/handoff/`, and provider agent files under `.claude/`,
 `.codex/`, `.gemini/`, and `.agents/`. Existing identical files are skipped;
 changed files stop the run unless you pass `--force`.
 
-`init` picks a role-to-provider mapping for you. When only Claude Code or only
-Codex is on `PATH`, every role goes on that one CLI. Otherwise it writes the
-reference mapping (Gemini planner, Codex backend, Claude auditor). Pass
-`--provider claude` or `--provider codex` to force a single-vendor setup. The
-command prints the mapping it chose. Those are the only two single-vendor
-mappings; a machine with only Gemini gets the reference mapping and fails
-`doctor` until Codex and Claude are installed.
+`init` picks a role-to-provider mapping for you. When only one of Claude
+Code, Codex, or Gemini CLI is on `PATH`, every role goes on that one CLI.
+Otherwise it writes the reference mapping (Gemini planner, Codex backend,
+Claude auditor). Pass `--provider claude`, `--provider codex`, or
+`--provider gemini` to force a single-vendor setup. The command prints the
+mapping it chose.
 
 With every role on Codex, `init` also writes `commit_mode: dispatcher` in
 place of the template's `commit_mode: agent`. Codex's sandbox keeps `.git`
@@ -102,8 +101,8 @@ llm-handoff doctor --repo-root path/to/your-project
 ```
 
 `doctor` checks Git, each configured role's CLI binary, the Gemini sandbox
-runtime, the gate and reviewer settings, configured scanners, and whether the
-handoff file routes. It exits `1` on any error. Fix every `FAIL` before
+runtime and security extension, the gate and reviewer settings, configured
+scanners, and whether the handoff file routes. It exits `1` on any error. Fix every `FAIL` before
 continuing; read the `WARN` lines too.
 
 ### 4. Tell the planner what to build
@@ -231,9 +230,11 @@ Things that stop a first run or quietly change what the loop does.
 
 - **Gemini roles need a container runtime.** Gemini CLI runs in its sandbox,
   so any role on `gemini` needs Docker or Podman on `PATH` (macOS:
-  `sandbox-exec`). Without one the dispatcher refuses to start. If you only
-  have one CLI, use `init --provider claude` or `--provider codex`. Gemini
-  alone is not enough; there is no all-Gemini mapping.
+  `sandbox-exec`). Without one the dispatcher refuses to start. An
+  all-Gemini setup (`init --provider gemini`) puts every role in that
+  sandbox, needs the Gemini CLI security extension for the security
+  reviewer, and needs `GEMINI_API_KEY` for the next-agent normalizer, which
+  has no CLI-login path.
 - **All-Codex setups need dispatcher commits.** Codex's `workspace-write`
   sandbox cannot write to `.git`, so `init --provider codex` writes
   `commit_mode: dispatcher` for you. Keep it, and keep the work-claim gate

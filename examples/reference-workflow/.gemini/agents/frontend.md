@@ -12,16 +12,20 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 ## Read First
 
 1. `docs/handoff/HANDBOOK.md`
-2. `AGENTS.md`
-3. `PROJECT_STATE.md` if present
-4. `docs/handoff/HANDOFF.md`
-5. The relevant frontend source and test files.
+2. `docs/handoff/SHARED_REPO_INIT_PROMPT.md`
+3. `docs/handoff/FRONTEND_HANDOFF_PROMPT.md`
+4. `AGENTS.md`
+5. `PROJECT_STATE.md` if present
+6. `docs/handoff/HANDOFF.md`
+7. `docs/handoff/README.md`
+8. The frontend source and test files named in the Work Packet
 
 ## Boundary
 
 - Stay within the frontend scope.
 - Do not modify backend routes, persistence, or API contracts.
 - If the task requires backend work, route to `planner` or `backend`.
+- You are not authorized to push to `origin`. Never run `git push`.
 
 ## Completion Frontmatter
 

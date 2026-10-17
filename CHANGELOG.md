@@ -14,6 +14,13 @@ This project follows a simple pre-release changelog until the first public tag.
   `blocked_implementation_failure`. The `claude` and reference mappings are
   unchanged, and `init` fails with a clear error if the template no longer
   has exactly one `commit_mode: agent` line.
+- Added the all-Gemini mapping: `llm-handoff init --provider gemini` (chosen
+  automatically when `gemini` is the only provider CLI on `PATH`) puts every
+  role on Gemini CLI with `audit.security_provider: gemini` and the API-only
+  Gemini normalizer, the reference workflow ships a Gemini agent file for
+  every role (`backend`, `auditor`, `validator`, and `finalizer` are new),
+  and `llm-handoff doctor` checks the Gemini CLI security extension when the
+  security reviewer resolves to Gemini.
 - On Windows, provider CLIs installed through npm (`codex.cmd`, `gemini.cmd`)
   are now launched directly through their shim's target (`node <entry>.js`)
   instead of through the `.cmd` shim itself. Running the shim made `cmd.exe`
