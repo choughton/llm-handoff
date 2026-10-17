@@ -69,6 +69,9 @@ _FRONTMATTER_KNOWN_KEYS = {
     "close_type",
     "prior_sha",
     "producer",
+    "tracker_issue",
+    "tracker_url",
+    "selection_basis",
 }
 _FRONTMATTER_REPAIRABLE_SCALAR_KEYS = {
     "reason",
@@ -113,6 +116,9 @@ class HandoffRouting(BaseModel):
     story_id: str | None = None
     story_title: str | None = None
     remaining_stories: tuple[str, ...] = ()
+    tracker_issue: str | None = None
+    tracker_url: str | None = None
+    selection_basis: str | None = None
 
     @field_validator(
         "next_agent",
@@ -125,6 +131,9 @@ class HandoffRouting(BaseModel):
         "epic_id",
         "story_id",
         "story_title",
+        "tracker_issue",
+        "tracker_url",
+        "selection_basis",
         mode="before",
     )
     @classmethod

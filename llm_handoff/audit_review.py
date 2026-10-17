@@ -1069,6 +1069,14 @@ def render_audit_handoff(
             lines.append(f"epic_id: {_yaml_scalar(frontmatter.epic_id)}")
         if frontmatter.story_id:
             lines.append(f"story_id: {_yaml_scalar(frontmatter.story_id)}")
+        if frontmatter.tracker_issue:
+            lines.append(f"tracker_issue: {_yaml_scalar(frontmatter.tracker_issue)}")
+        if frontmatter.tracker_url:
+            lines.append(f"tracker_url: {_yaml_scalar(frontmatter.tracker_url)}")
+        if frontmatter.selection_basis:
+            lines.append(
+                f"selection_basis: {_yaml_scalar(frontmatter.selection_basis)}"
+            )
         if frontmatter.story_title:
             lines.append(f"story_title: {json.dumps(frontmatter.story_title)}")
         if frontmatter.remaining_stories:

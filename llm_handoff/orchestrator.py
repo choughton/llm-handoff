@@ -77,6 +77,7 @@ from llm_handoff.publish import (
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import (
     HandoffFrontmatterError,
+    HandoffRouting,
     RoutingDecision,
     RouteName,
     parse_handoff_frontmatter_text,
@@ -192,8 +193,8 @@ POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE = (
     "tests, project-state files, ledger files, or any file except "
     "{handoff_path}. Fix only these handoff hygiene validation errors: "
     "{errors}. Preserve the current frontmatter next_agent, producer, scope_sha, "
-    "prior_sha, close_type, epic_id, story_id, story_title, and "
-    "remaining_stories unless the listed validation error explicitly names that "
+    "prior_sha, close_type, epic_id, story_id, tracker_issue, tracker_url, "
+    "selection_basis, story_title, and remaining_stories unless the listed validation error explicitly names that "
     "field. {commit_rule}"
 )
 POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_COMMIT_RULE = (
@@ -219,7 +220,8 @@ POST_DISPATCH_HANDOFF_HYGIENE_PLANNER_RECOVERY_TEMPLATE = (
     "files, ledger files, or completed work. Only rewrite "
     "{handoff_path} to produce a dispatchable next step, or route to "
     "user if unsafe. Preserve scope_sha, prior_sha, close_type, epic_id, "
-    "story_id, story_title, remaining_stories, producer, and the audit/work "
+    "story_id, tracker_issue, tracker_url, selection_basis, story_title, "
+    "remaining_stories, producer, and the audit/work "
     "evidence unless a listed validator error explicitly identifies that field "
     "as invalid. Commit exactly {handoff_path} before finishing."
 )
@@ -481,6 +483,11 @@ def run_loop(
         handoff_sha = _content_sha(handoff_content)
         _log_handoff_scope(handoff_content, log_fn)
         cycle_frontmatter = _parse_frontmatter_or_none(handoff_content)
+        _log_tracker_selection(
+            cycle_frontmatter,
+            tracker_provider=config.tracker.provider,
+            log=log_fn,
+        )
         forced_additional_instruction: str | None = None
         active_planner_recovery_kind: str | None = None
         if (
@@ -1139,6 +1146,7 @@ def run_loop(
                 prior_handoff_sha=current_cycle.handoff_sha,
                 require_work_packet=config.enforce_work_packet,
                 dispatcher_commit_mode=config.commit_mode == "dispatcher",
+                tracker_provider=config.tracker.provider,
             )
             _record_post_dispatch_status_transition(
                 config=config,
@@ -1825,6 +1833,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         prior_handoff_sha=before_state.handoff_sha,
         require_work_packet=config.enforce_work_packet,
         dispatcher_commit_mode=config.commit_mode == "dispatcher",
+        tracker_provider=config.tracker.provider,
     )
     if repaired_validation.verdict == "NO":
         _log(
@@ -2645,6 +2654,50 @@ def _log_handoff_scope(handoff_content: str, log: LogFn) -> None:
         return
 
     _log(log, "INFO", f"Handoff scope: {'; '.join(parts)}")
+
+
+_SELECTION_BASIS_CALLOUTS = {
+    "manual_order": "by manual order",
+    "created_at": "by creation date",
+}
+
+
+def _log_tracker_selection(
+    frontmatter: HandoffRouting | None,
+    *,
+    tracker_provider: str,
+    log: LogFn,
+) -> None:
+    """Warn when the planner picked a Linear issue without a priority."""
+
+    if tracker_provider != "linear" or frontmatter is None:
+        return
+    if normalize_next_agent_value(frontmatter.producer) != "planner":
+        return
+    callout = _SELECTION_BASIS_CALLOUTS.get(frontmatter.selection_basis or "")
+    if callout is None:
+        return
+    issue = _single_line_log_value(
+        frontmatter.tracker_issue or frontmatter.story_id or ""
+    )
+    _log(
+        log,
+        "WARN",
+        f"{issue or 'unknown issue'} was selected without a priority ({callout})",
+    )
+
+
+def _single_line_log_value(text: str) -> str:
+    """Collapse whitespace and drop control characters from handoff text.
+
+    Handoff values are agent-written or hand-edited, so a quoted YAML scalar
+    can carry escaped newlines that would otherwise forge extra log lines.
+    """
+
+    printable = "".join(
+        char if char.isprintable() or char.isspace() else " " for char in text
+    )
+    return " ".join(printable.split())
 
 
 def _parse_frontmatter_or_none(handoff_content: str):
