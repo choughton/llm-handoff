@@ -9,7 +9,8 @@ import pytest
 
 import llm_handoff.orchestrator as orchestrator
 from llm_handoff.agents import DispatchResult
-from llm_handoff.config import DispatchConfig
+from llm_handoff import config as config_module
+from llm_handoff.config import AgentConfig, DispatchConfig
 from llm_handoff.tracker_prompts import linear_role_section
 from llm_handoff.validator import ValidationResult
 
@@ -56,6 +57,12 @@ def _config(
     }
     if linear:
         kwargs["tracker"] = _linear_tracker()
+        # Linear mode rejects antigravity, the planner and frontend default.
+        kwargs["agents"] = {
+            **config_module._default_agent_configs(),
+            "planner": AgentConfig(provider="codex"),
+            "frontend": AgentConfig(provider="codex"),
+        }
         kwargs["enforce_work_packet"] = True
     else:
         kwargs["enforce_work_packet"] = False

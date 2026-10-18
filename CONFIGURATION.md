@@ -19,8 +19,8 @@ planner_api_key_env: false
 
 agents:
   planner:
-    provider: gemini
-    binary: gemini
+    provider: antigravity
+    binary: agy
     resume: true
     timeout_ms: 1200000
 
@@ -1674,14 +1674,27 @@ present. If a role changes providers, omitted provider-specific fields are
 filled from that provider's default field bundle rather than the role's old
 provider defaults.
 
-| Role | Reference Provider |
-| --- | --- |
-| `planner` | `gemini` |
-| `backend` | `codex` |
-| `frontend` | `gemini` or manual frontend pause |
-| `auditor` | `claude` |
-| `validator` | `claude` |
-| `finalizer` | `claude` |
+| Role | Reference Provider | Reference agent file |
+| --- | --- | --- |
+| `planner` | `antigravity` (`agy`) | `.agents/agents/planner.md` |
+| `backend` | `codex` | `.codex/skills/llm-handoff/SKILL.md` |
+| `frontend` | `antigravity` (`agy`) or manual frontend pause | `.agents/agents/frontend.md` |
+| `auditor` | `claude` | `.claude/agents/auditor.md` |
+| `validator` | `claude` | `.claude/agents/handoff-validator.md` |
+| `finalizer` | `claude` | `.claude/agents/ledger-updater.md` |
+
+The `planner` and `frontend` roles on `antigravity` need the `agy` user
+settings entries described in
+[Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
+
+Linear mode does not support `antigravity` roles (see
+[Tracker](#tracker-optional-linear-mode)). `llm-handoff init --tracker linear` with the reference
+mapping therefore writes `planner` and `frontend` on `provider: claude`
+(`binary: claude`, `resume: false`, `timeout_ms: 1200000`), with a comment
+above `planner` saying why, and keeps the other roles as the template has
+them. A hand-written Linear-mode config that omits `planner` or `frontend`
+gets the `antigravity` default for that role and fails at load; map both
+roles to `claude` or `codex`.
 
 The table documents the shipped reference workflow defaults, not a hard
 runtime matrix. If you map a role to another registered provider, make sure the

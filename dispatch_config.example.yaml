@@ -2,7 +2,7 @@
 #
 # This file documents the shipped reference role-to-provider mapping for source
 # checkout users and target-repo templates. Roles can be remapped to registered
-# runtime adapters: codex, gemini, or claude.
+# runtime adapters: codex, antigravity, gemini, or claude.
 #
 # Launch flags are safe by default: Claude Code runs in dontAsk mode with an
 # allowed_tools list, Codex in its workspace-write sandbox, and Gemini CLI in
@@ -117,9 +117,8 @@ protected_paths:
 
 agents:
   planner:
-    provider: gemini
-    binary: gemini
-    mention: "@planner"
+    provider: antigravity
+    binary: agy
     resume: true
     timeout_ms: 1200000
 
@@ -143,9 +142,8 @@ agents:
     # idle_timeout_ms: 300000
 
   frontend:
-    provider: gemini
-    binary: gemini
-    mention: "@frontend"
+    provider: antigravity
+    binary: agy
     resume: false
     timeout_ms: 1200000
 

@@ -384,7 +384,7 @@ def test_config_file_fallback_gets_provider_defaults(tmp_path: Path) -> None:
     assert backend_fallback.binary == config.CLAUDE_BINARY
     assert backend_fallback.timeout_ms == config.SUBAGENT_TIMEOUT_MS
     planner = loaded.agents["planner"]
-    assert planner.provider == "gemini"
+    assert planner.provider == "antigravity"
     assert planner.fallback is not None
     assert planner.fallback.skill_name == config.CODEX_SKILL_NAME
     assert loaded.agents["auditor"].fallback is None

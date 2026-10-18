@@ -9,7 +9,8 @@ import pytest
 
 from llm_handoff import orchestrator
 from llm_handoff.agent_types import DispatchResult, SubagentResult
-from llm_handoff.config import DispatchConfig
+from llm_handoff import config as config_module
+from llm_handoff.config import AgentConfig, DispatchConfig
 from llm_handoff.ledger import EpicCloseResult
 from llm_handoff.validator import ValidationResult
 
@@ -446,6 +447,7 @@ _LINEAR_EVIDENCE_PAUSE_LOG = (
 
 def _tracker_config(repo_root: Path, provider: str) -> DispatchConfig:
     tracker: dict[str, Any] = {"provider": provider}
+    overrides: dict[str, Any] = {}
     if provider == "linear":
         tracker.update(
             {
@@ -457,11 +459,18 @@ def _tracker_config(repo_root: Path, provider: str) -> DispatchConfig:
                 "mcp_server": "linear",
             }
         )
+        # Linear mode rejects antigravity, the planner and frontend default.
+        overrides["agents"] = {
+            **config_module._default_agent_configs(),
+            "planner": AgentConfig(provider="codex"),
+            "frontend": AgentConfig(provider="codex"),
+        }
     return _config(
         repo_root,
         enforce_work_packet=True,
         work_packet_opt_out_reason=None,
         tracker=tracker,
+        **overrides,
     )
 
 

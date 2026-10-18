@@ -82,8 +82,8 @@ def _capture_popen(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     ("route", "expected_provider"),
     [
         ("backend", "codex"),
-        ("planner", "gemini"),
-        ("frontend", "gemini"),
+        ("planner", "antigravity"),
+        ("frontend", "antigravity"),
         ("auditor", "claude"),
         ("validator", "claude"),
     ],

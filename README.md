@@ -78,10 +78,12 @@ changed files stop the run unless you pass `--force`.
 
 `init` picks a role-to-provider mapping for you. When only one of Claude
 Code, Codex, or Gemini CLI is on `PATH`, every role goes on that one CLI.
-Otherwise it writes the reference mapping (Gemini planner, Codex backend,
-Claude auditor). Pass `--provider claude`, `--provider codex`, or
-`--provider gemini` to force a single-vendor setup. The command prints the
-mapping it chose.
+Otherwise it writes the reference mapping (Antigravity `agy` planner and
+frontend, Codex backend, Claude auditor, validator, and finalizer). With
+`--tracker linear`, the reference mapping puts `planner` and `frontend` on
+Claude instead, because Linear mode does not support `antigravity` roles.
+Pass `--provider claude`, `--provider codex`, or `--provider gemini` to force
+a single-vendor setup. The command prints the mapping it chose.
 
 With every role on Codex, `init` also writes `commit_mode: dispatcher` in
 place of the template's `commit_mode: agent`. Codex's sandbox keeps `.git`

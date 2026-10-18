@@ -3158,7 +3158,11 @@ def test_startup_check_names_gemini_role_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _no_gemini_sandbox(monkeypatch)
-    config = _fan_out_config(tmp_path, security_provider="gemini")
+    config = _fan_out_config(
+        tmp_path,
+        security_provider="gemini",
+        agents=_default_agents(planner={"provider": "gemini"}),
+    )
 
     error = audit_review.security_reviewer_startup_error(config)
 

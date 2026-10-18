@@ -217,7 +217,8 @@ def test_reference_workflow_config_loads() -> None:
 
     assert config.handoff_path == Path("docs/handoff/HANDOFF.md")
     assert config.project_state_path == Path("PROJECT_STATE.md")
-    assert config.agents["planner"].provider == "gemini"
+    assert config.agents["planner"].provider == "antigravity"
+    assert config.agents["frontend"].provider == "antigravity"
     assert config.agents["backend"].provider == "codex"
     assert config.agents["auditor"].provider == "claude"
 

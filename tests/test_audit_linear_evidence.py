@@ -123,8 +123,15 @@ def _repo(tmp_path: Path, *, tracker_issue: bool = True) -> tuple[Path, str, str
 
 
 def _linear_config(repo: Path, **tracker: Any) -> DispatchConfig:
+    # Linear mode rejects antigravity, the planner and frontend default.
+    agents = {
+        **config_module._default_agent_configs(),
+        "planner": config_module.AgentConfig(provider="codex"),
+        "frontend": config_module.AgentConfig(provider="codex"),
+    }
     return DispatchConfig(
         repo_root=repo,
+        agents=agents,
         poll_interval_seconds=0,
         pause_recovery="off",
         audit={

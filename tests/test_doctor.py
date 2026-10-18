@@ -982,13 +982,16 @@ def test_doctor_warns_on_dirty_tree_and_falls_back_to_default_config(
     repo = _make_repo(tmp_path, NO_GEMINI, handoff=None, commit=False)
     (repo / "dispatch_config.yaml").unlink()
     (repo / "notes.txt").write_text("dirty\n", encoding="utf-8")
+    # The built-in defaults put planner and frontend on Antigravity.
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    _write_agy_settings(tmp_path, _complete_agy_settings())
     _stub_which(
         monkeypatch,
         {
             doctor._command_binary_name("codex"),
             doctor._command_binary_name("claude"),
-            doctor._command_binary_name("gemini"),
-            "podman",
+            doctor._command_binary_name("agy"),
         },
     )
 
@@ -997,7 +1000,8 @@ def test_doctor_warns_on_dirty_tree_and_falls_back_to_default_config(
     assert exit_code == 0, output
     assert "PASS config: no dispatch_config.yaml found" in output
     assert "WARN git working tree: working tree is dirty" in output
-    assert "PASS container runtime: Gemini CLI sandbox runtime `podman`" in output
+    assert "PASS role planner: provider antigravity" in output
+    assert "PASS role frontend: provider antigravity" in output
 
 
 def test_doctor_fails_outside_git_repository(

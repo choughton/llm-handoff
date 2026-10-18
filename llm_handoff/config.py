@@ -241,9 +241,9 @@ SECURITY_REVIEW_PROVIDER_PREFERENCE: tuple[SecurityReviewProvider, ...] = (
 )
 
 DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
-    "planner": "gemini",
+    "planner": "antigravity",
     "backend": "codex",
-    "frontend": "gemini",
+    "frontend": "antigravity",
     "auditor": "claude",
     "validator": "claude",
     "finalizer": "claude",
