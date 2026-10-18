@@ -131,8 +131,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
   `logs/`, and `.git` out of Gemini CLI's reach; `agy` roles never had it.
 
 - GEM-0: Make `agy` roles work. On 2026-10-17 the first live run with
-  `planner` on `antigravity` (`logs/dispatch/dispatch-v2-2026-10-17T203451.log`
-  in the development checkout) could not write `HANDOFF.md`: the shipped
+  `planner` on `antigravity` could not write `HANDOFF.md`: the shipped
   `.agents/agents/planner.md` sets no `tools:` list, so `agy` gave it only
   read and research tools, and it printed the handoff instead
   (`no_new_sha`, `planner_self_loop`). Fix both gaps in the facts above.
@@ -143,9 +142,16 @@ itself from 1.3.5 to 1.4.2 during the checks):
   run_command]` writes files and runs granted commands. Keep the allowed
   names in one list in code and test that every shipped file uses only
   those, since an unknown name stops `agy` before the run. Leave out web,
-  browser, MCP, image, and subagent tools, as the Claude roles deny
-  WebFetch and WebSearch; read-only helpers such as `handoff-validator`
-  may also leave out the write tools. (2) Replace the exact-match grants
+  browser, image, and subagent tools, as the Claude roles deny WebFetch and
+  WebSearch; read-only helpers such as `handoff-validator` may also leave
+  out the write tools. Linear mode (`tracker.provider: linear`) supports
+  `agy` roles, which reach Linear through `agy`'s MCP connector, so a
+  `tools:` list without MCP access would cut them off. Either give
+  Linear-mode `agy` roles the MCP tool (`call_mcp_tool`, limited per role
+  to the LIN-3 Linear tools where `agy` allows it, for example with
+  `mcp(<server>/<tool>)` grants) and check it live, or reject `antigravity`
+  roles in Linear mode at config load with a clear message; never ship a
+  list that silently drops Linear access. (2) Replace the exact-match grants
   in `ANTIGRAVITY_REQUIRED_ALLOW` (`llm_handoff/antigravity_permissions.py`),
   the list `init` prints, and `CONFIGURATION.md` with grants that cover
   each command with arguments, likely `command(regex:...)` entries. The
