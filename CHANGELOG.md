@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Added a `## Linear Mode Acceptance Run` section to `docs/TESTING.md`: a
+  manual runbook for an operator to check Linear mode against a sandbox
+  Linear team and a disposable repository. It covers prerequisites, `init
+  --tracker linear`, connector setup per CLI, `doctor` and
+  `--probe-tracker` preflight (including a check that a project hook does
+  not fire during the probe), one passing issue, one forced audit failure,
+  a deleted lease, the validator's `LINEAR-EVIDENCE` check, caveats, and
+  what to record. The test suite does not run it.
 - The Codex and Antigravity `handoff-validator` helpers (root and
   `examples/reference-workflow/` copies) gain checklist item 13 and a
   `LINEAR-EVIDENCE` row in their report. When `docs/handoff/HANDBOOK.md` has a
