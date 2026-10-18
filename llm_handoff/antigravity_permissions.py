@@ -9,6 +9,11 @@ writes that file; the user adds the entries.
 The allow entries mirror the `Bash(...)` rules in
 `CLAUDE_DEFAULT_ALLOWED_TOOLS`. `git push` is denied in both the plain and the
 unsandboxed form.
+
+It also holds the `tools:` list that every shipped `agy` agent file under
+`.agents/agents/` declares. A file without that list gets only read tools and
+cannot write files; the read-only `handoff-validator` file declares the same
+list without the write tools.
 """
 
 from __future__ import annotations
@@ -34,6 +39,26 @@ ANTIGRAVITY_REQUIRED_ALLOW: tuple[str, ...] = (
 ANTIGRAVITY_REQUIRED_DENY: tuple[str, ...] = (
     "command(git push)",
     "unsandboxed(git push)",
+)
+
+# The `tools:` list in each shipped `.agents/agents/*.md` file. A tool name
+# `agy` does not know makes it exit before the run starts. Web, browser,
+# image, MCP, and subagent tools are left out on purpose.
+ANTIGRAVITY_AGENT_TOOLS: tuple[str, ...] = (
+    "view_file",
+    "list_dir",
+    "grep_search",
+    "find_by_name",
+    "write_to_file",
+    "replace_file_content",
+    "multi_replace_file_content",
+    "run_command",
+)
+# The write tools; the read-only `handoff-validator` agent file omits these.
+ANTIGRAVITY_AGENT_WRITE_TOOLS: tuple[str, ...] = (
+    "write_to_file",
+    "replace_file_content",
+    "multi_replace_file_content",
 )
 
 

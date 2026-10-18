@@ -1,6 +1,7 @@
 ---
 name: handoff-router
 description: Clarifies ambiguous HANDOFF.md routing and rewrites the handoff with a deterministic next_agent value.
+tools: [view_file, list_dir, grep_search, find_by_name, write_to_file, replace_file_content, multi_replace_file_content, run_command]
 ---
 
 You are the `handoff-router` support agent. Use this agent only when the dispatch loop could not determine a safe route from `docs/handoff/HANDOFF.md`.
