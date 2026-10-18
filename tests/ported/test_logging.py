@@ -259,6 +259,49 @@ def test_dispatch_logger_routes_selected_progress_info_to_console(
     )
 
 
+@pytest.mark.parametrize("level", ["AGENT", "INFO", "WARN"])
+def test_dispatch_logger_escapes_terminal_control_characters_on_console_only(
+    tmp_path: Path,
+    level: str,
+) -> None:
+    logging_util = _load_logging_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    console = io.StringIO()
+    logger = _build_logger(logging_util, repo_root, console=console)
+    logger.mark_startup_complete()
+    # An OSC title-set sequence, a bare ESC, a carriage return that could
+    # overwrite the line, a bidi override, and a line feed that could forge
+    # a second log line.
+    spoof = "\x1b]0;owned\x07 \x1b[31mred \rPASS \u202eabc\n[fake] [AGENT] PASSED"
+    message = f"work-claim: running verification command: python -c {spoof}"
+
+    logger.log(level, message)
+
+    console_text = console.getvalue()
+    assert "\x1b]0;owned" not in console_text
+    assert "\r" not in console_text
+    assert "\u202e" not in console_text
+    assert console_text.count("\n") == 1
+    # Only the level color and the reset remain as real escape characters.
+    assert console_text.count("\x1b") == 2
+    assert (
+        "python -c \\x1b]0;owned\\x07 \\x1b[31mred \\rPASS \\u202eabc\\n[fake]"
+        in console_text
+    )
+    # Read bytes: text mode would translate the carriage return on read.
+    file_text = logger.log_file_path.read_bytes().decode("utf-8")
+    assert message in file_text
+
+
+def test_terminal_safe_keeps_ordinary_unicode() -> None:
+    logging_util = _load_logging_module()
+
+    text = "work-claim: changed files since dispatch: docs/r\u00e9sum\u00e9.md"
+
+    assert logging_util.terminal_safe(text) == text
+
+
 def test_dispatch_logger_routes_startup_info_to_console_and_log(
     tmp_path: Path,
 ) -> None:

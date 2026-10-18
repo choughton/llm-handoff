@@ -15,7 +15,11 @@ This project follows a simple pre-release changelog until the first public tag.
   as it starts, each check's PASS, FAIL, or SKIP with its detail, each
   scanner's outcome (a new line), and each Verification command's exit code
   and elapsed time. Command output tails (`work-claim | ...`) stay in the
-  log file.
+  log file. Console lines quote repository-derived text (Verification
+  commands, file names, agent messages), so the console writer now escapes
+  terminal control and format characters (ANSI and OSC sequences, carriage
+  returns, line feeds, bidi overrides, surrogates) as `\xNN` or `\uNNNN`
+  before printing; the log file keeps the exact text.
 - `llm-handoff init --provider antigravity` writes a new all-Antigravity
   mapping: every role on `provider: antigravity` and `binary: agy` with the
   all-Claude timeouts and no `unsafe_bypass`, `audit.security_provider:
