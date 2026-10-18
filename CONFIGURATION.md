@@ -1595,7 +1595,8 @@ Public docs and templates should use generic role names:
 Provider names are adapter details. The runtime dispatch layer selects the
 adapter from each role's `provider` field. The currently registered runtime
 adapters are `codex`, `gemini`, `claude`, and `antigravity` (binary `agy`);
-`antigravity` is a runtime adapter only and cannot be a normalizer or
+`antigravity` can also be the next-agent normalizer (see
+[Next-Agent Normalizer](#next-agent-normalizer)) but cannot be the
 `audit.security_provider`. Providers without a registered
 adapter fail closed at config load.
 
@@ -2147,8 +2148,8 @@ normalizer:
   on_unknown: fail_closed
 ```
 
-The registered normalizer adapters are `claude`, `codex`, `gemini`, and
-`openai`. `claude` is the reference default. If `provider` changes and `model`
+The registered normalizer adapters are `antigravity`, `claude`, `codex`,
+`gemini`, and `openai`. `claude` is the reference default. If `provider` changes and `model`
 is omitted, the loader fills a provider-specific default model.
 
 The normalizer has two runtime auth shapes:
@@ -2160,7 +2161,8 @@ The normalizer has two runtime auth shapes:
 - CLI auth path: Claude falls back to the local Claude Code CLI session when
   no Anthropic API key is available, and Gemini falls back to the local Gemini
   CLI sign-in when neither Gemini key is set. The `codex` adapter always uses
-  the local Codex CLI login. The OpenAI normalizer adapter is API-only.
+  the local Codex CLI login, and the `antigravity` adapter always uses the
+  local `agy` sign-in. The OpenAI normalizer adapter is API-only.
 
 Choose `provider: codex` when the machine has the Codex CLI signed in (for
 example with a ChatGPT account) but no `OPENAI_API_KEY`, such as an all-Codex
@@ -2210,9 +2212,38 @@ a code fence); anything else, a nonzero exit, a timeout, or a sign-in failure
 personal Gemini Code Assist tier) fails closed with the sign-in fix in the
 message. Setting `GEMINI_API_KEY` selects the API path instead.
 
+The `antigravity` adapter (`provider: antigravity`, model default
+`gemini-3.8-flash-low`) runs `agy -p <fixed instruction> --agent <agent name>
+--output-format stream-json --json-schema <schema path> --print-timeout <N>s
+--model <model>` with the arguments passed as a list, no shell, and nothing on
+stdin; `<N>` is `timeout_ms` in whole seconds, at least 1. Each call starts
+from a new private temporary directory outside the repository. That directory
+holds the closed JSON schema (`normalizer.schema.json`) and a one-off
+workspace agent file, `.agents/agents/llm-handoff-normalizer-<random hex>.md`.
+The random name is both the file name and the frontmatter `name:`, so no
+global agent can already exist under it. The frontmatter is the name, a fixed
+description, `tools: [finish]`, and `commandExecutionPolicy: off`; agy 1.4.2
+accepts that last key, but it is not shown to be honored, so it is defense in
+depth only. The agent file body is the normalizer prompt, which quotes the
+raw `next_agent` value, so the value never appears on the command line. The
+environment is the Antigravity role allowlist, with no vendor API key. The
+adapter reads stdout as stream-json and accepts only the clean shape: every
+`step_update` must have a `step_type` of `user_input`, `agent_response`, or
+`finish` (any `tool` step fails, whatever its `tool_name`, as does a missing
+or unknown step type); only `init`, `step_update`, and `result` events may
+appear; and there must be exactly one `result` event, with `status:
+SUCCESS`. The answer comes only from that event's `structured_output`, which
+must contain exactly the schema keys. The `response` field, which holds the
+raw `finish` arguments with extra keys, is never read. A missing `agy`
+binary, a launch error, a timeout (the whole process tree is killed), a
+nonzero exit, an agy sign-in failure or permission auto-deny on stderr, a
+non-JSON stdout line, or any other shape fails closed and leaves the handoff
+unchanged. Error messages never quote stdout or the raw value.
+
 `llm-handoff doctor` prints one `normalizer` line. It fails when the
 configured normalizer cannot run: for `codex`, the `codex` binary is not
-found; for `claude`, neither `ANTHROPIC_API_KEY` nor the `claude` binary is
+found; for `antigravity`, the `agy` binary is not found; for `claude`,
+neither `ANTHROPIC_API_KEY` nor the `claude` binary is
 available; for `openai`, `OPENAI_API_KEY` is not set; for `gemini`, none of
 `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or the `gemini` binary is available. The
 doctor never calls the provider, so a passing line reports auth as not

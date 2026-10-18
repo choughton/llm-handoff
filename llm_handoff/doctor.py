@@ -68,6 +68,7 @@ from llm_handoff.antigravity_permissions import (
     antigravity_settings_path,
 )
 from llm_handoff.config import (
+    ANTIGRAVITY_BINARY,
     CLAUDE_BINARY,
     CLAUDE_DEFAULT_ALLOWED_TOOLS,
     CLAUDE_DISALLOWED_TOOLS,
@@ -878,10 +879,11 @@ _NORMALIZER_API_KEY_NAMES: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "openai": ("OPENAI_API_KEY",),
 }
-# Providers whose normalizer can run through a local CLI login. The codex
-# normalizer is CLI-only, so it has no API key entry above; claude and gemini
-# use the CLI login only when no API key is set.
+# Providers whose normalizer can run through a local CLI login. The codex and
+# antigravity (`agy`) normalizers are CLI-only, so they have no API key entry
+# above; claude and gemini use the CLI login only when no API key is set.
 _NORMALIZER_CLI_BINARIES: dict[str, str] = {
+    "antigravity": ANTIGRAVITY_BINARY,
     "claude": CLAUDE_BINARY,
     "codex": CODEX_BINARY,
     "gemini": GEMINI_BINARY,

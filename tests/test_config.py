@@ -158,9 +158,16 @@ def test_load_dispatch_config_rejects_provider_without_runtime_adapter(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
-def test_antigravity_is_a_runtime_adapter_only() -> None:
+def test_antigravity_is_a_runtime_and_normalizer_adapter() -> None:
     assert "antigravity" in config_module.RUNTIME_PROVIDER_ADAPTERS
-    assert "antigravity" not in config_module.NORMALIZER_PROVIDER_ADAPTERS
+    assert "antigravity" in config_module.NORMALIZER_PROVIDER_ADAPTERS
+    assert (
+        config_module.NORMALIZER_PROVIDER_MODELS["antigravity"]
+        == config_module.ANTIGRAVITY_NORMALIZER_MODEL
+        == "gemini-3.8-flash-low"
+    )
+    # The default normalizer stays claude.
+    assert config_module.NORMALIZER_PROVIDER == "claude"
     assert config_module.ANTIGRAVITY_BINARY == config_module._binary_name("agy")
     assert config_module.DEFAULT_AGENT_PROVIDERS["planner"] == "gemini"
     assert ".agents/**" in config_module.DEFAULT_PROTECTED_PATHS
@@ -204,12 +211,14 @@ def test_load_dispatch_config_fills_antigravity_defaults(tmp_path: Path) -> None
     assert loaded.agents["frontend"].model == "pro"
 
 
-def test_load_dispatch_config_rejects_antigravity_normalizer(tmp_path: Path) -> None:
+def test_load_dispatch_config_accepts_antigravity_normalizer(tmp_path: Path) -> None:
     config_path = tmp_path / "dispatch_config.yaml"
     config_path.write_text("normalizer:\n  provider: antigravity\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="normalizer"):
-        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.normalizer.provider == "antigravity"
+    assert loaded.normalizer.model == "gemini-3.8-flash-low"
 
 
 def test_load_dispatch_config_rejects_antigravity_security_provider(
@@ -384,6 +393,7 @@ def test_normalizer_adapters_and_default_models_cover_the_same_providers() -> No
 @pytest.mark.parametrize(
     ("provider", "expected_model"),
     [
+        ("antigravity", config_module.ANTIGRAVITY_NORMALIZER_MODEL),
         ("codex", config_module.CODEX_NORMALIZER_MODEL),
         ("gemini", config_module.GEMINI_NORMALIZER_MODEL),
         ("openai", config_module.OPENAI_NORMALIZER_MODEL),

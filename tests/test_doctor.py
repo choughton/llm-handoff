@@ -1242,6 +1242,46 @@ def test_doctor_fails_gemini_normalizer_without_key_or_binary(
     ]
 
 
+def test_doctor_passes_antigravity_normalizer_with_the_agy_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="antigravity")
+    _stub_which(
+        monkeypatch,
+        {"fake-codex", "fake-claude", config_module.ANTIGRAVITY_BINARY},
+    )
+    # No API key is set: the agy normalizer runs on the CLI login.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _normalizer_lines(output) == [
+        "PASS normalizer: provider antigravity binary "
+        f"`{config_module.ANTIGRAVITY_BINARY}` is on PATH (auth not verified)"
+    ]
+
+
+def test_doctor_fails_antigravity_normalizer_without_agy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="antigravity")
+    # The role binaries resolve; only the normalizer's agy CLI is missing.
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    # API keys do not make the CLI-only agy normalizer runnable.
+    monkeypatch.setenv("GEMINI_API_KEY", "doctor-test-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "doctor-test-key")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert _normalizer_lines(output) == [
+        "FAIL normalizer: provider antigravity cannot run: the "
+        f"`{config_module.ANTIGRAVITY_BINARY}` binary is not available"
+    ]
+    assert output.strip().splitlines()[-1].startswith("Doctor FAIL: 1 error(s)")
+
+
 def _fake_codex_bin(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir()
