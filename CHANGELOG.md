@@ -6,6 +6,74 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `audit.security_provider: antigravity` is now a read-only security
+  reviewer that runs `agy`, and the automatic security reviewer order is
+  `claude`, `codex`, `antigravity`. `gemini` left the automatic order; an
+  explicit `audit.security_provider: gemini` still works. Each review runs
+  `agy -p <fixed instruction> --agent <name> --output-format stream-json
+  --json-schema <schema> --print-timeout <N>s` from a new private temp
+  directory outside the repository that holds a copy of the scope diff, the
+  verdict schema, and a dispatcher-written agent file named
+  `llm-handoff-security-<random hex>` with
+  `tools: [view_file, list_dir, grep_search, find_by_name, finish]` and
+  `commandExecutionPolicy: off`. If the system temp directory (`TMPDIR`,
+  `TEMP`, or `TMP`) resolves inside the repository, the review fails closed
+  before writing any file. `--model` is added only when the first
+  `antigravity` role sets `model`; the unsafe-bypass argument is never added.
+  Only `user_input`, `agent_response`, `finish`, and allowed-tool steps and
+  exactly one `SUCCESS` result are accepted, the verdict comes only from
+  `structured_output`, and error text never quotes `agy` output. The
+  user-wide `agy` `permissions.allow` grants still apply, and the step checks
+  run only after `agy` exits. `audit.security_model` is now rejected for
+  every provider other than `claude`. The antigravity reviewer has not yet
+  passed an operator-run live check.
+- Breaking default change: interpreter grants are now an operator opt-in.
+  `CLAUDE_DEFAULT_ALLOWED_TOOLS` no longer holds `Bash(python:*)`,
+  `Bash(python3:*)`, or `Bash(pytest:*)`, and the generated `agy` allow
+  entries (`ANTIGRAVITY_REQUIRED_ALLOW`, the list `init` prints, and the list
+  `doctor` checks) no longer hold the `python`, `python3`, or `pytest`
+  grants or a grant for a `verification_allowed_prefixes` entry that starts
+  with one of them. A new top-level `interpreter_grants: true` restores the
+  previous default lists exactly. Any interpreter grant lets an agent run any
+  command, `git push` included, past the allowlist, so role allowlists are a
+  guardrail, not a sandbox; the docs now recommend server-side branch
+  protection. A role's own `allowed_tools` list, `unsafe_bypass` launches,
+  Codex launches, and the work-claim gate (which runs the Verification
+  command itself) are unchanged.
+  - `antigravity_allowed_commands()` and `antigravity_allow_entries()` take a
+    required keyword-only `interpreter_grants` argument; the new constants
+    are `CLAUDE_INTERPRETER_ALLOWED_TOOLS` and
+    `ANTIGRAVITY_INTERPRETER_COMMANDS`.
+  - `llm-handoff init --verification-command` with a `python`, `python3`, or
+    `pytest` executable adds no rule and writes no `allowed_tools` list, and
+    prints one line explaining the opt-in. `init` never writes
+    `interpreter_grants`.
+  - `llm-handoff doctor` reports `interpreter grants` as PASS for the default
+    lists with the key off, names `interpreter_grants: true` as the cause in
+    each warning about a grant the key adds, and warns (with the key off)
+    about any `agy` settings `permissions.allow` entry that still grants an
+    interpreter, since that grant is user-wide.
+- `normalizer.provider: antigravity` is now a registered next-agent
+  normalizer (default model `gemini-3.8-flash-low`; the default provider
+  stays `claude`). Each call runs `agy` with `--output-format stream-json`
+  and a `--json-schema` file from a new private temp directory that holds a
+  one-off agent file named `llm-handoff-normalizer-<random hex>` with
+  `tools: [finish]` and `commandExecutionPolicy: off`. The raw `next_agent`
+  value goes only in the agent file body, never on the command line. Only
+  `user_input`, `agent_response`, and `finish` steps and exactly one
+  `SUCCESS` result are accepted, and the answer comes only from
+  `structured_output`, never `response`; anything else, including any `tool`
+  step, fails closed and leaves the handoff unchanged. `llm-handoff doctor`
+  checks for the `agy` binary for this provider. `antigravity` still cannot
+  be the `audit.security_provider`.
+  - A sign-in failure or permission auto-deny from the `antigravity`
+    normalizer now raises fixed error text and never copies `agy`'s stderr,
+    which can carry tokens or command arguments.
+  - `llm-handoff doctor` prints a `normalizer boundary` WARN line when the
+    normalizer provider is `antigravity`: the only pre-execution boundary is
+    agy's enforcement of `tools: [finish]`, the user-wide
+    `permissions.allow` grants still apply, and the post-run checks cannot
+    undo a command that already ran.
 - An `agy` deny-rule refusal line no longer includes the refused command line
   or `agy`'s error message, which repeats the command; best-effort redaction
   could not cover every secret shape, such as

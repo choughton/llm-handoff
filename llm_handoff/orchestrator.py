@@ -36,9 +36,9 @@ from llm_handoff.config import (
     CARRY_OVER_STATE_PATH,
     AgentConfig,
     AgentRole,
-    CLAUDE_DEFAULT_ALLOWED_TOOLS,
     DispatchConfig,
     NormalizerConfig,
+    claude_default_allowed_tools,
 )
 from llm_handoff.ledger import (
     bounce_count,
@@ -4489,7 +4489,7 @@ def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
             allowed = (
                 agent_config.allowed_tools
                 if agent_config.allowed_tools is not None
-                else CLAUDE_DEFAULT_ALLOWED_TOOLS
+                else claude_default_allowed_tools(config.interpreter_grants)
             )
             summary = (
                 f"--permission-mode dontAsk ({len(allowed)} allowed tool rules; "

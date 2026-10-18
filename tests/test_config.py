@@ -158,9 +158,16 @@ def test_load_dispatch_config_rejects_provider_without_runtime_adapter(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
-def test_antigravity_is_a_runtime_adapter_only() -> None:
+def test_antigravity_is_a_runtime_and_normalizer_adapter() -> None:
     assert "antigravity" in config_module.RUNTIME_PROVIDER_ADAPTERS
-    assert "antigravity" not in config_module.NORMALIZER_PROVIDER_ADAPTERS
+    assert "antigravity" in config_module.NORMALIZER_PROVIDER_ADAPTERS
+    assert (
+        config_module.NORMALIZER_PROVIDER_MODELS["antigravity"]
+        == config_module.ANTIGRAVITY_NORMALIZER_MODEL
+        == "gemini-3.8-flash-low"
+    )
+    # The default normalizer stays claude.
+    assert config_module.NORMALIZER_PROVIDER == "claude"
     assert config_module.ANTIGRAVITY_BINARY == config_module._binary_name("agy")
     assert config_module.DEFAULT_AGENT_PROVIDERS["planner"] == "gemini"
     assert ".agents/**" in config_module.DEFAULT_PROTECTED_PATHS
@@ -204,21 +211,45 @@ def test_load_dispatch_config_fills_antigravity_defaults(tmp_path: Path) -> None
     assert loaded.agents["frontend"].model == "pro"
 
 
-def test_load_dispatch_config_rejects_antigravity_normalizer(tmp_path: Path) -> None:
+def test_load_dispatch_config_accepts_antigravity_normalizer(tmp_path: Path) -> None:
     config_path = tmp_path / "dispatch_config.yaml"
     config_path.write_text("normalizer:\n  provider: antigravity\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="normalizer"):
-        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.normalizer.provider == "antigravity"
+    assert loaded.normalizer.model == "gemini-3.8-flash-low"
 
 
-def test_load_dispatch_config_rejects_antigravity_security_provider(
+def test_load_dispatch_config_accepts_antigravity_security_provider(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "dispatch_config.yaml"
     config_path.write_text(
         "audit:\n  security_provider: antigravity\n", encoding="utf-8"
     )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.audit.security_provider == "antigravity"
+
+
+def test_load_dispatch_config_still_accepts_explicit_gemini_security_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("audit:\n  security_provider: gemini\n", encoding="utf-8")
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.audit.security_provider == "gemini"
+
+
+def test_load_dispatch_config_rejects_unknown_security_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("audit:\n  security_provider: openai\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="security_provider"):
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
@@ -278,7 +309,7 @@ def test_load_dispatch_config_rejects_security_model_without_security_reviewer(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
-@pytest.mark.parametrize("provider", ["gemini", "codex"])
+@pytest.mark.parametrize("provider", ["gemini", "codex", "antigravity"])
 def test_load_dispatch_config_rejects_security_model_for_non_claude_provider(
     tmp_path: Path,
     provider: str,
@@ -384,6 +415,7 @@ def test_normalizer_adapters_and_default_models_cover_the_same_providers() -> No
 @pytest.mark.parametrize(
     ("provider", "expected_model"),
     [
+        ("antigravity", config_module.ANTIGRAVITY_NORMALIZER_MODEL),
         ("codex", config_module.CODEX_NORMALIZER_MODEL),
         ("gemini", config_module.GEMINI_NORMALIZER_MODEL),
         ("openai", config_module.OPENAI_NORMALIZER_MODEL),
@@ -1096,6 +1128,110 @@ def test_linear_tools_for_role_prefixes_in_table_order() -> None:
         "mcp__my-linear__list_issues",
         "mcp__my-linear__list_comments",
     )
+
+
+def test_interpreter_grants_defaults_to_false(tmp_path: Path) -> None:
+    loaded = load_dispatch_config(repo_root=tmp_path)
+
+    assert loaded.interpreter_grants is False
+    for agent in loaded.agents.values():
+        assert agent.interpreter_grants is False
+        if agent.provider == "claude":
+            assert agent.claude_allowed_tools == (
+                config_module.CLAUDE_DEFAULT_ALLOWED_TOOLS
+            )
+            assert "Bash(python:*)" not in agent.claude_allowed_tools
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_interpreter_grants_loads_from_yaml(tmp_path: Path, value: bool) -> None:
+    config_path = _write_config(
+        tmp_path,
+        f"interpreter_grants: {str(value).lower()}\n"
+        "agents:\n"
+        "  backend:\n"
+        "    provider: codex\n"
+        "    fallback:\n"
+        "      provider: claude\n"
+        "  auditor:\n"
+        "    provider: claude\n"
+        "    allowed_tools: [Read]\n",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.interpreter_grants is value
+    expected = config_module.claude_default_allowed_tools(value)
+    assert loaded.agents["validator"].claude_allowed_tools == expected
+    fallback = loaded.agents["backend"].fallback
+    assert fallback is not None
+    assert fallback.interpreter_grants is value
+    assert fallback.claude_allowed_tools == expected
+    # An explicit list is kept as written whatever the flag says.
+    assert loaded.agents["auditor"].claude_allowed_tools == ("Read",)
+
+
+def test_interpreter_grants_is_not_a_role_key(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        "agents:\n  auditor:\n    provider: claude\n    interpreter_grants: true\n",
+    )
+
+    with pytest.raises(ValueError, match="interpreter_grants"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_interpreter_grants_survive_revalidation(tmp_path: Path) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path, interpreter_grants=True)
+    revalidated = DispatchConfig.model_validate(loaded.model_dump())
+
+    assert revalidated.interpreter_grants is True
+    assert revalidated.agents["auditor"].claude_allowed_tools == (
+        config_module.claude_default_allowed_tools(True)
+    )
+
+
+def test_interpreter_grants_do_not_mutate_the_callers_agent_config(
+    tmp_path: Path,
+) -> None:
+    agent = config_module.AgentConfig(provider="claude")
+    agents = {**config_module._default_agent_configs(), "auditor": agent}
+
+    loaded = DispatchConfig(repo_root=tmp_path, agents=agents, interpreter_grants=True)
+
+    assert loaded.agents["auditor"].interpreter_grants is True
+    assert agent.interpreter_grants is False
+
+
+def test_uses_default_allowed_tools_tracks_the_list_source(tmp_path: Path) -> None:
+    explicit = config_module.AgentConfig(provider="claude", allowed_tools=("Read",))
+    fallback_default = config_module.AgentConfig(provider="claude", model="other")
+    agents = {
+        **config_module._default_agent_configs(),
+        "planner": config_module.AgentConfig(provider="claude"),
+        "auditor": explicit,
+        "validator": config_module.AgentConfig(
+            provider="claude", allowed_tools=("Read",), fallback=fallback_default
+        ),
+    }
+
+    for tracker in (None, _linear_tracker()):
+        kwargs = {} if tracker is None else {"tracker": tracker}
+        loaded = DispatchConfig(
+            repo_root=tmp_path, agents=agents, interpreter_grants=True, **kwargs
+        )
+        planner = loaded.agents["planner"]
+        assert planner.uses_default_allowed_tools is True
+        assert loaded.agents["auditor"].uses_default_allowed_tools is False
+        validator = loaded.agents["validator"]
+        assert validator.uses_default_allowed_tools is False
+        assert validator.fallback is not None
+        # The Linear derivation sets allowed_tools on default-list launches
+        # but keeps the record that the list built on the default.
+        assert validator.fallback.uses_default_allowed_tools is True
+        if tracker is not None:
+            assert planner.allowed_tools is not None
+            assert validator.fallback.allowed_tools is not None
 
 
 _LINEAR_YAML = """tracker:

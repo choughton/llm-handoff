@@ -49,10 +49,31 @@ CLAUDE_DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(git add:*)",
     "Bash(git commit:*)",
     "Bash(git rev-parse:*)",
+)
+# Executables that `interpreter_grants` covers, for Claude and agy alike.
+INTERPRETER_EXECUTABLES: tuple[str, ...] = ("python", "python3", "pytest")
+# Interpreter rules added to the default list only with the top-level
+# `interpreter_grants: true`. Any of them lets an agent run any command,
+# `git push` included, past the allowlist, so they are an operator opt-in.
+CLAUDE_INTERPRETER_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(python:*)",
     "Bash(python3:*)",
     "Bash(pytest:*)",
 )
+
+
+def claude_default_allowed_tools(interpreter_grants: bool) -> tuple[str, ...]:
+    """Return the default Claude allowlist for one config.
+
+    The base ``CLAUDE_DEFAULT_ALLOWED_TOOLS``, plus
+    ``CLAUDE_INTERPRETER_ALLOWED_TOOLS`` when ``interpreter_grants`` is true.
+    """
+
+    if interpreter_grants:
+        return (*CLAUDE_DEFAULT_ALLOWED_TOOLS, *CLAUDE_INTERPRETER_ALLOWED_TOOLS)
+    return CLAUDE_DEFAULT_ALLOWED_TOOLS
+
+
 CLAUDE_DISALLOWED_TOOLS: tuple[str, ...] = ("WebFetch", "WebSearch")
 CODEX_SANDBOX_ARGS: tuple[str, ...] = (
     "--sandbox",
@@ -70,6 +91,8 @@ GEMINI_NORMALIZER_MODEL = "gemini-2.5-flash"
 OPENAI_NORMALIZER_MODEL = "gpt-5.4-mini"
 # The codex normalizer runs through the Codex CLI login instead of the API.
 CODEX_NORMALIZER_MODEL = OPENAI_NORMALIZER_MODEL
+# The antigravity normalizer runs through the agy CLI login.
+ANTIGRAVITY_NORMALIZER_MODEL = "gemini-3.8-flash-low"
 NORMALIZER_TIMEOUT_MS = 60_000
 
 AGENT_TIMEOUT_MS = 1_200_000
@@ -189,7 +212,7 @@ ProviderName = Literal["codex", "gemini", "claude", "antigravity", "openai"]
 EnvMode = Literal["allowlist", "inherit"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
 AuditReviewer = Literal["quality", "security"]
-SecurityReviewProvider = Literal["claude", "gemini", "codex"]
+SecurityReviewProvider = Literal["claude", "gemini", "codex", "antigravity"]
 BlockSeverity = Literal["critical", "high", "medium", "low"]
 # Who commits an implementer's work: the agent itself, or the dispatcher after
 # checking every changed file against the Work Packet's scope.
@@ -209,11 +232,12 @@ DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality", "security")
 # Order used to pick a security reviewer vendor when `audit.security_provider`
 # is not set: the first vendor whose CLI is on PATH and that differs from the
-# implementer's provider, else the implementer's own vendor.
+# implementer's provider, else the implementer's own vendor. `gemini` is not
+# in the automatic order; it can still be set explicitly.
 SECURITY_REVIEW_PROVIDER_PREFERENCE: tuple[SecurityReviewProvider, ...] = (
     "claude",
     "codex",
-    "gemini",
+    "antigravity",
 )
 
 DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
@@ -225,8 +249,11 @@ DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "finalizer": "claude",
 }
 RUNTIME_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini", "antigravity"})
-NORMALIZER_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini", "openai"})
+NORMALIZER_PROVIDER_ADAPTERS = frozenset(
+    {"antigravity", "claude", "codex", "gemini", "openai"}
+)
 NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
+    "antigravity": ANTIGRAVITY_NORMALIZER_MODEL,
     "claude": NORMALIZER_MODEL,
     "codex": CODEX_NORMALIZER_MODEL,
     "gemini": GEMINI_NORMALIZER_MODEL,
@@ -278,12 +305,48 @@ class AgentConfig(BaseModel):
     # Set only by DispatchConfig in Linear mode with tracker.claude_mcp_config;
     # a private attribute, so no YAML key can set it.
     _claude_mcp_config: Path | None = PrivateAttr(default=None)
+    # Set only by DispatchConfig from the top-level `interpreter_grants`; a
+    # private attribute, so no role-level YAML key can set it.
+    _interpreter_grants: bool = PrivateAttr(default=False)
+    # Set only by the Linear-mode derivation when it builds `allowed_tools` on
+    # the flag-aware default list (the role left `allowed_tools` unset).
+    _allowed_tools_from_default: bool = PrivateAttr(default=False)
 
     @property
     def claude_mcp_config_path(self) -> Path | None:
         """Resolved MCP config file this Claude launch loads, if any."""
 
         return self._claude_mcp_config
+
+    @property
+    def interpreter_grants(self) -> bool:
+        """The loaded config's ``interpreter_grants`` value for this launch."""
+
+        return self._interpreter_grants
+
+    @property
+    def uses_default_allowed_tools(self) -> bool:
+        """Whether this launch's Claude allowlist builds on the default list.
+
+        True when the role leaves ``allowed_tools`` unset, or when the
+        Linear-mode derivation appended its tools to that default list. False
+        for a list the role writes itself, which ``interpreter_grants`` does
+        not change.
+        """
+
+        return self.allowed_tools is None or self._allowed_tools_from_default
+
+    @property
+    def claude_allowed_tools(self) -> tuple[str, ...]:
+        """The Claude allowlist this launch uses without ``unsafe_bypass``.
+
+        ``allowed_tools`` as written when the role sets it; otherwise
+        ``claude_default_allowed_tools(interpreter_grants)``.
+        """
+
+        if self.allowed_tools is not None:
+            return self.allowed_tools
+        return claude_default_allowed_tools(self._interpreter_grants)
 
     @field_validator("timeout_ms", mode="after")
     @classmethod
@@ -523,7 +586,7 @@ class AuditConfig(BaseModel):
                 "includes `security`; remove it or add `security` to "
                 "audit.reviewers."
             )
-        if self.security_provider in ("gemini", "codex"):
+        if self.security_provider is not None and self.security_provider != "claude":
             raise ValueError(
                 "audit.security_model applies only to the claude security "
                 f"reviewer, but audit.security_provider is "
@@ -721,15 +784,36 @@ def _with_linear_tools(
 ) -> AgentConfig:
     if agent_config.provider != "claude" or agent_config.unsafe_bypass:
         return agent_config
-    base = (
-        CLAUDE_DEFAULT_ALLOWED_TOOLS
-        if agent_config.allowed_tools is None
-        else agent_config.allowed_tools
-    )
+    base = agent_config.claude_allowed_tools
     added = tuple(tool for tool in linear_tools if tool not in base)
     derived = agent_config.model_copy(update={"allowed_tools": (*base, *added)})
     derived._claude_mcp_config = mcp_config_path
+    derived._interpreter_grants = agent_config._interpreter_grants
+    derived._allowed_tools_from_default = agent_config.uses_default_allowed_tools
     return derived
+
+
+def _with_interpreter_grants(
+    agent_config: AgentConfig, interpreter_grants: bool
+) -> AgentConfig:
+    """Return ``agent_config`` (and its fallback) carrying the config flag."""
+
+    fallback = agent_config.fallback
+    if fallback is not None and fallback._interpreter_grants != interpreter_grants:
+        fallback_copy = fallback.model_copy()
+        fallback_copy._interpreter_grants = interpreter_grants
+        fallback = fallback_copy
+    if (
+        agent_config._interpreter_grants == interpreter_grants
+        and fallback is agent_config.fallback
+    ):
+        return agent_config
+    private = agent_config._claude_mcp_config
+    updated = agent_config.model_copy(update={"fallback": fallback})
+    updated._claude_mcp_config = private
+    updated._interpreter_grants = interpreter_grants
+    updated._allowed_tools_from_default = agent_config._allowed_tools_from_default
+    return updated
 
 
 class TrackerConfig(BaseModel):
@@ -906,6 +990,11 @@ class DispatchConfig(BaseModel):
     commit_mode: CommitMode = "agent"
     publish: PublishConfig = PublishConfig()
     tracker: TrackerConfig = TrackerConfig()
+    # Operator opt-in. When true, the default Claude allowlist and the
+    # generated agy grants include `python`, `python3`, and `pytest`, which
+    # let an agent run any command (`git push` included) past the allowlist.
+    # Roles with their own `allowed_tools` keep that list as written.
+    interpreter_grants: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -991,6 +1080,21 @@ class DispatchConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _apply_interpreter_grants(self) -> DispatchConfig:
+        # Carry the top-level flag to every role and fallback so a launch with
+        # `allowed_tools: None` picks the matching default list. Runs before
+        # the Linear derivation, which builds on that default list.
+        derived = {
+            role: _with_interpreter_grants(agent_config, self.interpreter_grants)
+            for role, agent_config in self.agents.items()
+        }
+        if any(derived[role] is not self.agents[role] for role in derived):
+            # The model is frozen; set the derived agents once, during
+            # validation.
+            object.__setattr__(self, "agents", derived)
+        return self
+
+    @model_validator(mode="after")
     def _derive_linear_claude_tools(self) -> DispatchConfig:
         # Computed in memory from the tracker block; never written back to the
         # config file. Re-validating an already-derived config is a no-op
@@ -1010,8 +1114,10 @@ class DispatchConfig(BaseModel):
                 )
                 if fallback is not agent_config.fallback:
                     private = updated._claude_mcp_config
+                    from_default = updated._allowed_tools_from_default
                     updated = updated.model_copy(update={"fallback": fallback})
                     updated._claude_mcp_config = private
+                    updated._allowed_tools_from_default = from_default
             derived[role] = updated
         # The model is frozen; set the derived agents once, during validation.
         object.__setattr__(self, "agents", derived)

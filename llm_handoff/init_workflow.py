@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from llm_handoff.config import (
     CLAUDE_DEFAULT_ALLOWED_TOOLS,
+    INTERPRETER_EXECUTABLES,
     VERIFICATION_FORBIDDEN_CHARS,
     TrackerConfig,
     linear_tools_for_role,
@@ -280,7 +281,8 @@ _GEMINI_AGENTS_BLOCK = """agents:
 
 """
 _REFERENCE_SECURITY_PROVIDER_LINE = (
-    "  # security_provider: claude   # claude | gemini | codex; unset = auto\n"
+    "  # security_provider: claude   # claude | codex | antigravity | gemini; "
+    "unset = auto\n"
 )
 _CLAUDE_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available.\n"
@@ -632,9 +634,22 @@ def add_verification_allowed_prefixes(config_text: str, command: str) -> str:
     return rendered
 
 
-def verification_allowed_tools(executable: str) -> tuple[str, ...]:
-    """Return the Claude allowed_tools list that also allows ``executable``."""
+def is_interpreter_executable(executable: str) -> bool:
+    """Return True when ``executable`` is one that ``interpreter_grants`` covers."""
 
+    return executable in INTERPRETER_EXECUTABLES
+
+
+def verification_allowed_tools(executable: str) -> tuple[str, ...]:
+    """Return the Claude allowed_tools list that also allows ``executable``.
+
+    An interpreter executable (``python``, ``python3``, ``pytest``) adds no
+    rule: interpreter grants are the operator opt-in ``interpreter_grants``,
+    and the dispatcher gate runs the verification command either way.
+    """
+
+    if is_interpreter_executable(executable):
+        return CLAUDE_DEFAULT_ALLOWED_TOOLS
     rule = f"Bash({executable}:*)"
     if rule in CLAUDE_DEFAULT_ALLOWED_TOOLS:
         return CLAUDE_DEFAULT_ALLOWED_TOOLS
@@ -934,7 +949,10 @@ def _source_bytes(
             text = source_path.read_bytes().decode("utf-8")
         else:
             text = render_config(source_path.read_text(encoding="utf-8"), mapping)
-        if executable is not None:
+        # An interpreter executable writes no allowed_tools list: the claude
+        # roles keep the default list, so a later `interpreter_grants: true`
+        # still reaches them. init never writes `interpreter_grants` itself.
+        if executable is not None and not is_interpreter_executable(executable):
             text = add_verification_allowed_tools(text, executable)
         if verification_command is not None:
             text = add_verification_allowed_prefixes(text, verification_command)

@@ -93,8 +93,12 @@ The dispatcher pushes only through `publish.mode`. With the default
 a user sets `publish.mode` to opt in.
 
 Agents are told not to push, and the reference workflow denies `git push` through
-provider guardrails, but neither is a hard boundary. Keep push credentials out
-of the dispatch environment; see [SECURITY.md](SECURITY.md#threat-model).
+provider guardrails, but neither is a hard boundary. Role allowlists are a
+guardrail, not a sandbox: any interpreter grant (see
+[Interpreter Grants](#interpreter-grants)) can run any command, `git push`
+included. Protect the remote with server-side branch protection, meaning a
+ruleset that requires pull requests and has no bypass actors. The dispatcher
+does not configure it. See also [SECURITY.md](SECURITY.md#threat-model).
 
 ## Runtime Controls
 
@@ -1018,17 +1022,21 @@ allowed_tools:
   - Bash(git add:*)
   - Bash(git commit:*)
   - Bash(git rev-parse:*)
-  - Bash(python:*)
-  - Bash(python3:*)
-  - Bash(pytest:*)
 ```
+
+With `interpreter_grants: true` (see [Interpreter Grants](#interpreter-grants))
+the default list also ends with `Bash(python:*)`, `Bash(python3:*)`, and
+`Bash(pytest:*)`, in that order, which is the default list before that key
+existed.
 
 `Agent` is included because the Claude-side prompts delegate to the named
 subagent, and `git cat-file` because the shipped `handoff-validator` resolves
-SHAs with it. Setting `allowed_tools` on a role replaces the whole list. The
-list is a guardrail, not a sandbox: `Bash(python:*)` still lets the agent run
-arbitrary Python. `git push` is not on the list. `llm-handoff doctor` reports
-these interpreter rules per role as `interpreter grants` warnings.
+SHAs with it. Setting `allowed_tools` on a role replaces the whole list, and
+`interpreter_grants` does not change a list a role sets itself. The list is a
+guardrail, not a sandbox: any interpreter rule, such as `Bash(python:*)`, lets
+the agent run any command, `git push` included. `git push` is not on the
+list. `llm-handoff doctor` reports interpreter rules per role as
+`interpreter grants` warnings.
 
 Claude Code also protects some paths, and `dontAsk` mode denies every write
 to them before it reads `allowed_tools` or settings allow rules. One of them
@@ -1066,11 +1074,16 @@ executable. It must be a bare program name matching
 operators, so `./run-tests.sh` and `a;b` are rejected and `init` writes no
 files. `init` then gives every `provider: claude` role in the written
 `dispatch_config.yaml` an `allowed_tools` list: the default list above plus
-`Bash(<executable>:*)`, unless the default list already has that rule (for
-example `python` or `pytest`). The rule allows every subcommand of that
+`Bash(<executable>:*)`. The rule allows every subcommand of that
 executable, not only the confirmed command: `Bash(npm:*)` also allows
-`npm install` and `npm publish`. Without `--verification-command`, `init`
-writes the same config as before.
+`npm install` and `npm publish`. When the executable is `python`, `python3`,
+or `pytest`, `init` adds no rule and writes no `allowed_tools` list. It prints
+one line saying that the dispatcher gate runs the command, and that roles can
+run it themselves only after you set `interpreter_grants: true`, which lets an
+agent run any command, `git push` included (see
+[Interpreter Grants](#interpreter-grants)). `init` never writes
+`interpreter_grants`. Without `--verification-command`, `init` writes the
+same config as before.
 
 Codex keeps its `workspace-write` sandbox: writes are limited to the
 workspace and network access is off by default. The sandbox always keeps
@@ -1126,8 +1139,8 @@ custom-agent format, and its frontmatter carries `name`, `description`, and a
 `replace_file_content`, `multi_replace_file_content`). Leaving out the write
 tools is not a shell boundary. `handoff-validator` keeps `run_command`
 because it resolves SHAs with `git cat-file` and checks git state, and the
-user-wide `permissions.allow` grants, including `git add`, `git commit`,
-`python`, and `pytest`, apply to it as to every `agy` run. Its prompt limits
+user-wide `permissions.allow` grants, including `git add`, `git commit`, and
+any `python` or `pytest` grant, apply to it as to every `agy` run. Its prompt limits
 it to read-only git commands; that limit is a guardrail, not a sandbox. Web,
 browser, image, MCP, and subagent tools are left out on purpose. A tool name
 `agy` does not know makes it exit before the run starts.
@@ -1162,15 +1175,17 @@ arguments:
 - `command(regex:^git add( .*)?$)`
 - `command(regex:^git commit( .*)?$)`
 - `command(regex:^git rev-parse( .*)?$)`
-- `command(regex:^python( .*)?$)`
-- `command(regex:^python3( .*)?$)`
-- `command(regex:^pytest( .*)?$)`
 
-These are the same commands as the default Claude `Bash(...)` rules. Add
+These are the same commands as the default Claude `Bash(...)` rules. With
+`interpreter_grants: true` (see [Interpreter Grants](#interpreter-grants)) the
+list also holds `command(regex:^python( .*)?$)`,
+`command(regex:^python3( .*)?$)`, and `command(regex:^pytest( .*)?$)`. Add
 `command(regex:^<cmd>( .*)?$)` for each Work Packet Verification command you
 expect, with a backslash before each regex metacharacter in `<cmd>`
-(`\ . + * ? ( ) | [ ] { } ^ $`); spaces and `-` stay as they are. Under
-`permissions.deny`:
+(`\ . + * ? ( ) | [ ] { } ^ $`); spaces and `-` stay as they are. With
+`interpreter_grants: false`, a Verification command whose first word is
+`python`, `python3`, or `pytest` gets no grant; the dispatcher gate still
+runs it. Under `permissions.deny`:
 
 - `command(regex:^git( .*)? push( .*)?$)`
 - `unsandboxed(regex:^git( .*)? push( .*)?$)`
@@ -1186,10 +1201,11 @@ present. The deny entries above also refused option-prefixed pushes such as
 `git -c core.pager=cat push origin main` and `git -C . push origin main`.
 
 The deny entries are deliberately broad: they refuse any `git` command line
-that contains ` push`, for example `git log --grep push`. The
+that contains ` push`, for example `git log --grep push`. The opt-in
 `command(regex:^python( .*)?$)` grant allows `python -c <code>`, which matches
-the Claude `Bash(python:*)` rule. Unanchored regex semantics, glob forms, `git`
-aliases, and `sh -c "git push"` were not checked.
+the Claude `Bash(python:*)` rule, so it can run `git push` past these deny
+entries. Unanchored regex semantics, glob forms, `git` aliases, and
+`sh -c "git push"` were not checked.
 
 When a deny entry refuses a command, `agy` reports it as a `run_command` tool
 error inside a `SUCCESS` result with empty stderr. The adapter fails the
@@ -1209,14 +1225,17 @@ repository, and since the adapter passes no `--sandbox` flag they are the
 only shell guardrail.
 
 When `agy` is on `PATH`, `llm-handoff init` (including `--dry-run`) prints
-this list, adds `command(regex:^<cmd>( .*)?$)` for `--verification-command`
-when given, and asks you to add the entries yourself and then run
-`llm-handoff doctor`.
+this list with `interpreter_grants` off, adds `command(regex:^<cmd>( .*)?$)`
+for `--verification-command` when given (unless its first word is `python`,
+`python3`, or `pytest`), and asks you to add the entries yourself and then
+run `llm-handoff doctor`.
 `agy` does not change the provider mapping `init` picks. When any role or
 fallback has `provider: antigravity` without `unsafe_bypass: true`,
 `llm-handoff doctor` reads the settings file and reports one
 `antigravity permissions` result, with the allow list built from the default
-entries plus `verification_allowed_prefixes`:
+entries for the config's `interpreter_grants` value plus
+`verification_allowed_prefixes` (with the key off, prefixes that start with
+an interpreter are left out):
 
 - WARN when the file is missing (the message lists every entry to add), cannot
   be read, is not valid JSON, or is not shaped as
@@ -1256,13 +1275,18 @@ entries plus `verification_allowed_prefixes`:
   `agy -p` run denies any command that needs approval, so a rule such as
   `"ask": ["command(*)"]` blocks every required command. The doctor tests each
   `command(...)` rule against the plain required commands (`git status`,
-  `python`, each verification command, and so on) and reports the matching
+  each verification command, and so on) and reports the matching
   allow entries. It counts a rule as overriding when it matches exactly, is a
   word prefix (`command(git)` for `git status`), is a `*` or `?` wildcard
   pattern that matches, or is a `regex:` pattern that matches. The required
   deny entries do not match any required command, so they are not reported.
   This errs toward warning; the exact `agy` matching rules for every form have
   not been checked against a live CLI.
+- WARN, with `interpreter_grants` off, for each `permissions.allow` entry
+  that equals `command(regex:^<cmd>( .*)?$)` as generated for `<cmd>`, or
+  `command(<cmd>)`, where the first word of `<cmd>` is `python`, `python3`,
+  or `pytest`. The grant is user-wide and still applies to every `agy` run,
+  so remove it or set `interpreter_grants: true`.
 - PASS when none of the above applies.
 
 Roles with `unsafe_bypass: true` launch with `--dangerously-skip-permissions`
@@ -1271,14 +1295,19 @@ file.
 
 `llm-handoff doctor` also reports `interpreter grants` lines, one per role or
 fallback launch. A Claude launch without `unsafe_bypass` gets a WARN naming
-each rule in its effective list (`allowed_tools`, or the default list above)
-that is bare `Bash`, `Bash(*)`, or `Bash(<cmd>...)` starting with `python`,
-`python3`, or `pytest`. An Antigravity launch without `unsafe_bypass` gets a
-WARN naming each required `command(regex:...)` allow entry, including those
-built from `verification_allowed_prefixes`, whose command starts with one of
-those interpreters, and noting that `agy` grants are user-wide; this check
-does not read the settings file. Both warnings say that an interpreter can run
-any command, including `git push`, past the allowlist. Any launch with
+each rule in its effective list (`allowed_tools`, or the default list for the
+config's `interpreter_grants` value) that is bare `Bash`, `Bash(*)`, or
+`Bash(<cmd>...)` starting with `python`, `python3`, or `pytest`. An
+Antigravity launch without `unsafe_bypass` gets a WARN naming each required
+`command(regex:...)` allow entry, including those built from
+`verification_allowed_prefixes`, whose command starts with one of those
+interpreters, and noting that `agy` grants are user-wide; this check does not
+read the settings file. Both warnings say that an interpreter can run any
+command, including `git push`, past the allowlist. With
+`interpreter_grants: true`, a warning that names an interpreter grant the key
+adds also names `interpreter_grants: true` as the cause. With the key off and
+the default lists, no role has an interpreter grant, so the line is PASS. Any
+launch with
 `unsafe_bypass: true` gets a WARN that it has no shell allowlist at all; Codex
 launches without it get no line. When no line is added and at least one
 Claude or Antigravity launch exists, the doctor prints one PASS line that
@@ -1294,6 +1323,42 @@ These flags were checked against the provider CLI documentation, not run end
 to end against every CLI version on every platform. If a CLI rejects a flag,
 pin `unsafe_bypass: true` on that role only while you investigate, and treat
 the run as unsandboxed.
+
+### Interpreter Grants
+
+```yaml
+interpreter_grants: false
+```
+
+`interpreter_grants` is a top-level boolean, `false` by default. With `false`,
+no default grant list holds `python`, `python3`, or `pytest`: the default
+Claude `allowed_tools` list has no interpreter rule, and the generated `agy`
+allow entries have no interpreter grant. With `true`, the default Claude list
+gets `Bash(python:*)`, `Bash(python3:*)`, and `Bash(pytest:*)` back, and the
+generated `agy` allow entries get `command(regex:^python( .*)?$)`,
+`command(regex:^python3( .*)?$)`, and `command(regex:^pytest( .*)?$)` back,
+plus a grant for each `verification_allowed_prefixes` entry that starts with
+one of those interpreters.
+
+Turn it on only if you accept the risk. An interpreter can run any command,
+`git push` included, past the allowlist and the `git push` deny entries;
+writing a script with `Write` and running it with `python`, or writing a
+`conftest.py` and running `pytest`, does the same. Role allowlists are a
+guardrail, not a sandbox. Whatever the value, protect the remote with
+server-side branch protection: a ruleset that requires pull requests and has
+no bypass actors. The dispatcher does not configure it.
+
+The key changes only the default lists:
+
+- A role that sets its own `allowed_tools` keeps that list as written.
+- `unsafe_bypass: true` launches and Codex launches do not change.
+- The work-claim gate runs the Work Packet Verification command itself,
+  whatever the value. The key controls only whether agent roles may run
+  interpreters themselves. With `false`, a role cannot run `python -m pytest`
+  on its own, but the gate still runs it.
+- `llm-handoff init` never writes the key. A `--verification-command` whose
+  executable is `python`, `python3`, or `pytest` adds no `allowed_tools`
+  list, so the Claude roles keep the default list and follow the key.
 
 ## Protected Control Files
 
@@ -1595,7 +1660,8 @@ Public docs and templates should use generic role names:
 Provider names are adapter details. The runtime dispatch layer selects the
 adapter from each role's `provider` field. The currently registered runtime
 adapters are `codex`, `gemini`, `claude`, and `antigravity` (binary `agy`);
-`antigravity` is a runtime adapter only and cannot be a normalizer or
+`antigravity` can also be the next-agent normalizer (see
+[Next-Agent Normalizer](#next-agent-normalizer)) but cannot be the
 `audit.security_provider`. Providers without a registered
 adapter fail closed at config load.
 
@@ -1919,7 +1985,7 @@ written reason.
 ```yaml
 audit:
   reviewers: [quality, security]  # the default
-  security_provider: null       # claude | gemini | codex; null = auto
+  security_provider: null       # claude | codex | antigravity | gemini; null = auto
   security_model: null          # claude reviewer only; null = borrowed
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000
@@ -1953,9 +2019,12 @@ When it is unset, the claude reviewer borrows the `model` of the first role
 whose provider is `claude` (checked in the order `auditor`, `validator`,
 `finalizer`, `planner`, `backend`, `frontend`), else the built-in Claude
 default. The gemini and codex reviewers pass no model flag and run with their
-CLI's default model. A config that sets `audit.security_model` while
-`audit.security_provider` is `gemini` or `codex`, or while `audit.reviewers`
-leaves out `security`, fails to load. With `audit.security_provider` unset,
+CLI's default model. The antigravity reviewer passes `--model` only when the
+first role whose provider is `antigravity` (same role order) sets `model`;
+otherwise it runs with `agy`'s default model. A config that sets
+`audit.security_model` while `audit.security_provider` is anything other
+than `claude` (`codex`, `antigravity`, or `gemini`), or while
+`audit.reviewers` leaves out `security`, fails to load. With `audit.security_provider` unset,
 the setting applies when the claude reviewer is chosen; when another vendor
 is chosen, each audit logs a `WARN` that `audit.security_model` was not
 applied. Every dispatcher start logs the security reviewer's model and its
@@ -1964,15 +2033,32 @@ source in the `Audit reviewers:` line.
 With `audit.security_provider` unset, the dispatcher picks the security
 reviewer for each implementer role (`backend` and `frontend`) in this order:
 
-1. the first of `claude`, `codex`, `gemini` whose CLI is on `PATH` and that
-   differs from the implementer role's provider;
-2. otherwise the implementer's own vendor when its CLI is on `PATH`, with a
-   `WARN` that the review is not independent;
+1. the first of `claude`, `codex`, `antigravity` whose CLI is on `PATH` and
+   that differs from the implementer role's provider;
+2. otherwise the implementer's own vendor when it is in that list and its
+   CLI is on `PATH`, with a `WARN` that the review is not independent;
 3. otherwise `run` refuses to start with an error that begins
    `security_reviewer_failed:`.
 
+`gemini` is not in the automatic order. It can still be set explicitly with
+`audit.security_provider: gemini` until the Gemini provider is removed.
+
 The CLI lookup is the one `llm-handoff doctor` uses for role binaries, and the
-binary is the one configured for the first role that uses that provider.
+binary is the one configured for the first role that uses that provider
+(`agy` by default for `antigravity`).
+
+The antigravity reviewer (`audit.security_provider: antigravity`) runs `agy`
+from a new private temp directory outside the repository, with a
+dispatcher-written agent file under a random name that allows only the read
+tools `view_file`, `list_dir`, `grep_search`, `find_by_name`, and `finish`.
+It reviews a copy of the scope diff in that temp directory and may read the
+repository root as context. It never gets `--dangerously-skip-permissions`,
+even when the antigravity role sets `unsafe_bypass: true`, and it uses that
+role's environment rules. Any other tool step, a non-`SUCCESS` result, or a
+verdict outside the schema fails the review. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#reviewer-security-posture) for
+the residual risk. The antigravity reviewer has not yet passed an
+operator-run live check.
 
 At startup, before any agent launches, `run` checks the security reviewer for
 each implementer role, whether configured or chosen automatically: its CLI
@@ -2147,8 +2233,8 @@ normalizer:
   on_unknown: fail_closed
 ```
 
-The registered normalizer adapters are `claude`, `codex`, `gemini`, and
-`openai`. `claude` is the reference default. If `provider` changes and `model`
+The registered normalizer adapters are `antigravity`, `claude`, `codex`,
+`gemini`, and `openai`. `claude` is the reference default. If `provider` changes and `model`
 is omitted, the loader fills a provider-specific default model.
 
 The normalizer has two runtime auth shapes:
@@ -2160,7 +2246,8 @@ The normalizer has two runtime auth shapes:
 - CLI auth path: Claude falls back to the local Claude Code CLI session when
   no Anthropic API key is available, and Gemini falls back to the local Gemini
   CLI sign-in when neither Gemini key is set. The `codex` adapter always uses
-  the local Codex CLI login. The OpenAI normalizer adapter is API-only.
+  the local Codex CLI login, and the `antigravity` adapter always uses the
+  local `agy` sign-in. The OpenAI normalizer adapter is API-only.
 
 Choose `provider: codex` when the machine has the Codex CLI signed in (for
 example with a ChatGPT account) but no `OPENAI_API_KEY`, such as an all-Codex
@@ -2210,13 +2297,58 @@ a code fence); anything else, a nonzero exit, a timeout, or a sign-in failure
 personal Gemini Code Assist tier) fails closed with the sign-in fix in the
 message. Setting `GEMINI_API_KEY` selects the API path instead.
 
+The `antigravity` adapter (`provider: antigravity`, model default
+`gemini-3.8-flash-low`) runs `agy -p <fixed instruction> --agent <agent name>
+--output-format stream-json --json-schema <schema path> --print-timeout <N>s
+--model <model>` with the arguments passed as a list, no shell, and nothing on
+stdin; `<N>` is `timeout_ms` in whole seconds, at least 1. Each call starts
+from a new private temporary directory outside the repository. That directory
+holds the closed JSON schema (`normalizer.schema.json`) and a one-off
+workspace agent file, `.agents/agents/llm-handoff-normalizer-<random hex>.md`.
+The random name is both the file name and the frontmatter `name:`, so no
+global agent can already exist under it. The frontmatter is the name, a fixed
+description, `tools: [finish]`, and `commandExecutionPolicy: off`; agy 1.4.2
+accepts that last key, but it is not shown to be honored, so it is defense in
+depth only. The agent file body is the normalizer prompt, which quotes the
+raw `next_agent` value, so the value never appears on the command line. The
+environment is the Antigravity role allowlist, with no vendor API key. The
+adapter reads stdout as stream-json and accepts only the clean shape: every
+`step_update` must have a `step_type` of `user_input`, `agent_response`, or
+`finish` (any `tool` step fails, whatever its `tool_name`, as does a missing
+or unknown step type); only `init`, `step_update`, and `result` events may
+appear; and there must be exactly one `result` event, with `status:
+SUCCESS`. The answer comes only from that event's `structured_output`, which
+must contain exactly the schema keys. The `response` field, which holds the
+raw `finish` arguments with extra keys, is never read. A missing `agy`
+binary, a launch error, a timeout (the whole process tree is killed), a
+nonzero exit, an agy sign-in failure or permission auto-deny on stderr, a
+non-JSON stdout line, or any other shape fails closed and leaves the handoff
+unchanged. Error messages never quote stdout, stderr, or the raw value; a
+sign-in failure or permission auto-deny is reported with fixed text.
+
+Execution boundary: the only pre-execution boundary for the `antigravity`
+normalizer is agy's enforcement of the agent file's `tools: [finish]`. The
+user-wide `permissions.allow` grants in `~/.gemini/antigravity-cli/settings.json`
+still apply to the normalizer run, as they do to every `agy` run for that
+user. `tools: [finish]` was seen to block an injected `run_command` request,
+but no live check has yet shown agy refusing a command those grants allow
+(for example `python ...`). The step-type and result checks run after agy
+exits: they protect the handoff, not the machine, and cannot undo a command
+that already ran. The provider is opt-in; the default normalizer stays
+`claude`. Operators who enable it should keep the agy grant set narrow, and
+should treat role allowlists as a guardrail, not a sandbox (see
+[Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing)).
+
 `llm-handoff doctor` prints one `normalizer` line. It fails when the
 configured normalizer cannot run: for `codex`, the `codex` binary is not
-found; for `claude`, neither `ANTHROPIC_API_KEY` nor the `claude` binary is
+found; for `antigravity`, the `agy` binary is not found; for `claude`,
+neither `ANTHROPIC_API_KEY` nor the `claude` binary is
 available; for `openai`, `OPENAI_API_KEY` is not set; for `gemini`, none of
 `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or the `gemini` binary is available. The
 doctor never calls the provider, so a passing line reports auth as not
-verified.
+verified. When the provider is `antigravity`, the doctor also prints a
+`normalizer boundary` WARN line, whether or not `agy` is found, that states
+the execution boundary above; it does not change the exit code.
 
 The API path should not silently fall back to CLI auth after selecting an API
 key. If the structured API call fails, the dispatcher should fail closed and
