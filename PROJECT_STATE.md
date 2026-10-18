@@ -9,7 +9,7 @@ belong in commits, handoffs, and pull requests.
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
-  GEM-0e in progress).
+  GEM-0e merged in PR #128; GEM-2 in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -306,7 +306,16 @@ itself from 1.3.5 to 1.4.2 during the checks):
   (written at launch, or shipped under the protected `.agents/**`), never from
   a file an implementer can edit. A tool call outside the allowed list fails
   the review closed, in addition to the existing handoff hash check. Update
-  Reviewer Security Posture in `docs/ARCHITECTURE.md`.
+  Reviewer Security Posture in `docs/ARCHITECTURE.md`. Design decided by the
+  planner on 2026-10-18: `agy` runs with a new private temp directory
+  outside the repository as its working directory; the dispatcher writes a
+  random-name agent file (`llm-handoff-security-<uuid4 hex>`) there with
+  `tools: [view_file, list_dir, grep_search, find_by_name, finish]`, plus a
+  copy of the scope diff and the verdict schema; the model is borrowed from
+  the first `antigravity` role (no `--model` otherwise); no unsafe-bypass
+  args are ever added; and the step checks fail closed (any tool outside the
+  list, any other step type, any non-`SUCCESS` or extra result). No operator
+  live run of the antigravity reviewer has been done yet.
 - GEM-3: `agy` as the default Google vendor. `DEFAULT_AGENT_PROVIDERS`,
   `dispatch_config.example.yaml`, and
   `examples/reference-workflow/dispatch_config.yaml` map `planner` and

@@ -1985,7 +1985,7 @@ written reason.
 ```yaml
 audit:
   reviewers: [quality, security]  # the default
-  security_provider: null       # claude | gemini | codex; null = auto
+  security_provider: null       # claude | codex | antigravity | gemini; null = auto
   security_model: null          # claude reviewer only; null = borrowed
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000
@@ -2019,9 +2019,12 @@ When it is unset, the claude reviewer borrows the `model` of the first role
 whose provider is `claude` (checked in the order `auditor`, `validator`,
 `finalizer`, `planner`, `backend`, `frontend`), else the built-in Claude
 default. The gemini and codex reviewers pass no model flag and run with their
-CLI's default model. A config that sets `audit.security_model` while
-`audit.security_provider` is `gemini` or `codex`, or while `audit.reviewers`
-leaves out `security`, fails to load. With `audit.security_provider` unset,
+CLI's default model. The antigravity reviewer passes `--model` only when the
+first role whose provider is `antigravity` (same role order) sets `model`;
+otherwise it runs with `agy`'s default model. A config that sets
+`audit.security_model` while `audit.security_provider` is anything other
+than `claude` (`codex`, `antigravity`, or `gemini`), or while
+`audit.reviewers` leaves out `security`, fails to load. With `audit.security_provider` unset,
 the setting applies when the claude reviewer is chosen; when another vendor
 is chosen, each audit logs a `WARN` that `audit.security_model` was not
 applied. Every dispatcher start logs the security reviewer's model and its
@@ -2030,15 +2033,32 @@ source in the `Audit reviewers:` line.
 With `audit.security_provider` unset, the dispatcher picks the security
 reviewer for each implementer role (`backend` and `frontend`) in this order:
 
-1. the first of `claude`, `codex`, `gemini` whose CLI is on `PATH` and that
-   differs from the implementer role's provider;
-2. otherwise the implementer's own vendor when its CLI is on `PATH`, with a
-   `WARN` that the review is not independent;
+1. the first of `claude`, `codex`, `antigravity` whose CLI is on `PATH` and
+   that differs from the implementer role's provider;
+2. otherwise the implementer's own vendor when it is in that list and its
+   CLI is on `PATH`, with a `WARN` that the review is not independent;
 3. otherwise `run` refuses to start with an error that begins
    `security_reviewer_failed:`.
 
+`gemini` is not in the automatic order. It can still be set explicitly with
+`audit.security_provider: gemini` until the Gemini provider is removed.
+
 The CLI lookup is the one `llm-handoff doctor` uses for role binaries, and the
-binary is the one configured for the first role that uses that provider.
+binary is the one configured for the first role that uses that provider
+(`agy` by default for `antigravity`).
+
+The antigravity reviewer (`audit.security_provider: antigravity`) runs `agy`
+from a new private temp directory outside the repository, with a
+dispatcher-written agent file under a random name that allows only the read
+tools `view_file`, `list_dir`, `grep_search`, `find_by_name`, and `finish`.
+It reviews a copy of the scope diff in that temp directory and may read the
+repository root as context. It never gets `--dangerously-skip-permissions`,
+even when the antigravity role sets `unsafe_bypass: true`, and it uses that
+role's environment rules. Any other tool step, a non-`SUCCESS` result, or a
+verdict outside the schema fails the review. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#reviewer-security-posture) for
+the residual risk. The antigravity reviewer has not yet passed an
+operator-run live check.
 
 At startup, before any agent launches, `run` checks the security reviewer for
 each implementer role, whether configured or chosen automatically: its CLI

@@ -212,7 +212,7 @@ ProviderName = Literal["codex", "gemini", "claude", "antigravity", "openai"]
 EnvMode = Literal["allowlist", "inherit"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
 AuditReviewer = Literal["quality", "security"]
-SecurityReviewProvider = Literal["claude", "gemini", "codex"]
+SecurityReviewProvider = Literal["claude", "gemini", "codex", "antigravity"]
 BlockSeverity = Literal["critical", "high", "medium", "low"]
 # Who commits an implementer's work: the agent itself, or the dispatcher after
 # checking every changed file against the Work Packet's scope.
@@ -232,11 +232,12 @@ DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality", "security")
 # Order used to pick a security reviewer vendor when `audit.security_provider`
 # is not set: the first vendor whose CLI is on PATH and that differs from the
-# implementer's provider, else the implementer's own vendor.
+# implementer's provider, else the implementer's own vendor. `gemini` is not
+# in the automatic order; it can still be set explicitly.
 SECURITY_REVIEW_PROVIDER_PREFERENCE: tuple[SecurityReviewProvider, ...] = (
     "claude",
     "codex",
-    "gemini",
+    "antigravity",
 )
 
 DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
@@ -585,7 +586,7 @@ class AuditConfig(BaseModel):
                 "includes `security`; remove it or add `security` to "
                 "audit.reviewers."
             )
-        if self.security_provider in ("gemini", "codex"):
+        if self.security_provider is not None and self.security_provider != "claude":
             raise ValueError(
                 "audit.security_model applies only to the claude security "
                 f"reviewer, but audit.security_provider is "

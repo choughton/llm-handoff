@@ -281,7 +281,8 @@ _GEMINI_AGENTS_BLOCK = """agents:
 
 """
 _REFERENCE_SECURITY_PROVIDER_LINE = (
-    "  # security_provider: claude   # claude | gemini | codex; unset = auto\n"
+    "  # security_provider: claude   # claude | codex | antigravity | gemini; "
+    "unset = auto\n"
 )
 _CLAUDE_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available.\n"

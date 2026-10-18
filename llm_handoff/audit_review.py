@@ -21,7 +21,7 @@ reduces but does not eliminate that risk.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -31,8 +31,16 @@ import subprocess
 import time
 from typing import Callable, Literal, Mapping, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
+from llm_handoff import antigravity_security_review as antigravity_review
 from llm_handoff import config as config_module
 from llm_handoff import doctor as doctor_module
 from llm_handoff.usage_log import (
@@ -60,7 +68,9 @@ from llm_handoff.work_claim import extract_work_packet_section
 
 Severity = Literal["critical", "high", "medium", "low", "info"]
 ReviewerName = Literal["quality", "security"]
-SecurityReviewerKind = Literal["claude", "gemini", "codex-security", "codex-exec"]
+SecurityReviewerKind = Literal[
+    "claude", "gemini", "codex-security", "codex-exec", "antigravity"
+]
 
 SEVERITY_RANK: dict[str, int] = {
     "critical": 4,
@@ -448,6 +458,14 @@ class SecurityReviewerPlan:
     # Set when the reviewer must not launch (for example, no sandbox runtime
     # for Gemini CLI); the run fails closed with this error instead.
     preflight_error: str | None = None
+    # Antigravity only: the model flag (None for agy's own model), the diff
+    # copied into the review's temp directory, the repository root, and the
+    # builder for the agent file body, which receives the temp diff path.
+    # `command` is a preview; the argv that ran is recorded on the run.
+    model: str | None = None
+    diff_path: Path | None = None
+    repo_root: Path | None = None
+    instructions_builder: Callable[[Path], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -707,6 +725,7 @@ _SECURITY_PROVIDER_DEFAULT_BINARIES: dict[str, str] = {
     "claude": config_module.CLAUDE_BINARY,
     "codex": config_module.CODEX_BINARY,
     "gemini": config_module.GEMINI_BINARY,
+    "antigravity": config_module.ANTIGRAVITY_BINARY,
 }
 _SECURITY_REVIEWER_REMEDY = (
     "install a reviewer CLI, set audit.security_provider to an installed "
@@ -914,7 +933,7 @@ def build_security_reviewer_plan(
     # Reviewers launch with the same environment allowlist as the provider's
     # role. Their read-only restrictions apply even when that role sets
     # unsafe_bypass; for Gemini, unsafe_bypass only lifts the container
-    # sandbox requirement.
+    # sandbox requirement, and for Antigravity it is ignored.
 
     if provider == "claude":
         binary = (provider_config.binary if provider_config else None) or (
@@ -1025,6 +1044,44 @@ def build_security_reviewer_plan(
             command=tuple(command),
             env=_build_codex_env(provider_config),
             last_message_path=last_message_path,
+        )
+
+    if provider == "antigravity":
+        binary = (provider_config.binary if provider_config else None) or (
+            config_module.ANTIGRAVITY_BINARY
+        )
+        model = antigravity_review.antigravity_security_model(provider_config)
+        repo_root = config.repo_root
+
+        def build_instructions(temp_diff_path: Path) -> str:
+            temp_scope = replace(scope, diff_path=temp_diff_path)
+            return build_security_review_prompt(
+                temp_scope,
+                handoff_display=handoff_display,
+                provider=provider,
+            ) + antigravity_review.antigravity_security_suffix(
+                diff_path=temp_diff_path,
+                repo_root=repo_root,
+            )
+
+        # unsafe_bypass on the antigravity role is ignored here: the
+        # reviewer never gets the unsafe-bypass arguments.
+        preview = antigravity_review.build_antigravity_security_command(
+            binary=binary,
+            agent_name=f"{antigravity_review.ANTIGRAVITY_SECURITY_AGENT_PREFIX}<random>",
+            schema_path=f"<temp>/{antigravity_review.ANTIGRAVITY_SECURITY_SCHEMA_FILENAME}",
+            timeout_ms=config.audit.review_timeout_ms,
+            model=model,
+        )
+        return SecurityReviewerPlan(
+            provider=provider,
+            kind="antigravity",
+            command=tuple(preview),
+            env=antigravity_review.antigravity_security_env(provider_config),
+            model=model,
+            diff_path=scope.diff_path,
+            repo_root=repo_root,
+            instructions_builder=build_instructions,
         )
 
     raise ValueError(f"Unsupported security review provider `{provider}`.")
@@ -1702,6 +1759,14 @@ def _run_security_reviewer(
             handoff_sha_after=_handoff_sha(handoff_path),
         )
 
+    if plan.kind == "antigravity":
+        return _run_antigravity_security_reviewer(
+            plan,
+            timeout_ms=timeout_ms,
+            repo_root=repo_root,
+            handoff_path=handoff_path,
+        )
+
     if plan.precheck_command is not None:
         precheck = _run_logged_agent_command(
             agent_name,
@@ -1821,6 +1886,61 @@ def _run_security_reviewer(
             error=error,
             usage=usage,
             start_failure=start_failure,
+        ),
+        handoff_sha_after=after_sha,
+    )
+
+
+def _run_antigravity_security_reviewer(
+    plan: SecurityReviewerPlan,
+    *,
+    timeout_ms: int,
+    repo_root: Path,
+    handoff_path: Path,
+) -> _ReviewerOutcome:
+    """Run the agy reviewer; the verdict comes only from structured_output."""
+    assert plan.diff_path is not None
+    assert plan.instructions_builder is not None
+    result = antigravity_review.run_antigravity_security_review(
+        binary=plan.command[0],
+        model=plan.model,
+        env=plan.env or {},
+        timeout_ms=timeout_ms,
+        diff_source=plan.diff_path,
+        build_instructions=plan.instructions_builder,
+        schema=SECURITY_VERDICT_JSON_SCHEMA,
+        repo_root=plan.repo_root or repo_root,
+    )
+    after_sha = _handoff_sha(handoff_path)
+    verdict: ReviewVerdict | None = None
+    error = result.error
+    if error is None and result.structured_output is not None:
+        try:
+            verdict = ReviewVerdict.model_validate(result.structured_output)
+        except ValidationError:
+            # Fixed text: the validation error quotes the model output.
+            error = (
+                "security_verdict_malformed: antigravity security reviewer "
+                "failed: structured_output does not match the security verdict "
+                "schema."
+            )
+    elif error is None:
+        error = (
+            "security_verdict_malformed: antigravity security reviewer failed: "
+            "no structured_output."
+        )
+    return _ReviewerOutcome(
+        run=ReviewerRun(
+            name="security",
+            provider=plan.provider,
+            command=result.command,
+            exit_code=result.exit_code,
+            elapsed_seconds=result.elapsed_seconds,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            verdict=verdict,
+            error=error,
+            start_failure=result.start_failure,
         ),
         handoff_sha_after=after_sha,
     )
@@ -1984,18 +2104,27 @@ def _claude_security_reviewer_model(config: DispatchConfig) -> tuple[str, str]:
 def describe_security_reviewer_model(config: DispatchConfig) -> str:
     """Describe which model the security reviewer uses, for the startup log.
 
-    Does no PATH lookup. Only the claude reviewer passes a model flag; the
-    gemini and codex reviewers run with their CLI's own default model.
+    Does no PATH lookup. The claude reviewer always passes a model flag. The
+    gemini and codex reviewers run with their CLI's own default model. The
+    antigravity reviewer runs with agy's own default model unless the first
+    antigravity role sets ``model``, which it then borrows.
     """
     provider = config.audit.security_provider
+    if provider == "antigravity":
+        role = _provider_agent_role(config, "antigravity")
+        borrowed = config.agents[role].model if role is not None else None
+        if borrowed:
+            return f"{borrowed} (borrowed from the {role} role)"
+        return "antigravity CLI default model (no model flag is passed)"
     if provider in ("gemini", "codex"):
         return f"{provider} CLI default model (no model flag is passed)"
     model, origin = _claude_security_reviewer_model(config)
     text = f"{model} ({origin})"
     if provider is None:
         text += (
-            ", applies when the claude reviewer is chosen (gemini and codex "
-            "use their CLI's default model)"
+            ", applies when the claude reviewer is chosen (codex uses its "
+            "CLI's default model; antigravity uses agy's default model or the "
+            "first antigravity role's model)"
         )
     return text
 

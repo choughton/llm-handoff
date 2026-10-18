@@ -457,8 +457,9 @@ def test_auto_security_provider_skips_a_vendor_whose_cli_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # claude is first in the preference order but not installed; codex is
-    # the implementer's vendor, so gemini is the independent reviewer.
-    _installed_clis(monkeypatch, "codex", "gemini")
+    # the implementer's vendor, so antigravity (agy) is the independent
+    # reviewer.
+    _installed_clis(monkeypatch, "codex", "agy")
     config = _auto_config(tmp_path)
     log = _Recorder()
 
@@ -466,8 +467,42 @@ def test_auto_security_provider_skips_a_vendor_whose_cli_is_missing(
         config, implementer_role="backend", log=log
     )
 
-    assert provider == ("gemini", "auto")
+    assert provider == ("antigravity", "auto")
     assert not [message for level, message in log.messages if level == "WARN"]
+
+
+def test_auto_security_provider_order_is_claude_codex_antigravity() -> None:
+    assert config_module.SECURITY_REVIEW_PROVIDER_PREFERENCE == (
+        "claude",
+        "codex",
+        "antigravity",
+    )
+
+
+def test_auto_security_provider_never_picks_gemini(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # gemini left the automatic order: a gemini-only PATH has no reviewer.
+    _installed_clis(monkeypatch, "gemini")
+    config = _auto_config(tmp_path)
+
+    with pytest.raises(audit_review.SecurityReviewerUnavailable) as excinfo:
+        audit_review.resolve_security_provider(config, implementer_role="backend")
+
+    assert "gemini" not in str(excinfo.value).split("(looked for", 1)[1]
+
+
+def test_auto_security_provider_skips_gemini_for_codex_and_agy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _installed_clis(monkeypatch, "codex", "gemini", "agy")
+    config = _auto_config(tmp_path)
+
+    assert audit_review.resolve_security_provider(
+        config, implementer_role="backend"
+    ) == ("antigravity", "auto")
 
 
 def test_auto_security_provider_falls_back_to_the_implementer_vendor_with_a_warning(
@@ -550,13 +585,27 @@ def test_startup_check_covers_each_implementer_role(
     assert "not independent" in warnings[0]
 
 
-@pytest.mark.parametrize("security_provider", ["claude", "codex", "gemini"])
+_PROVIDER_CLI_STEMS = {
+    "claude": "claude",
+    "codex": "codex",
+    "antigravity": "agy",
+    "gemini": "gemini",
+}
+
+
+@pytest.mark.parametrize(
+    "security_provider", ["claude", "codex", "antigravity", "gemini"]
+)
 def test_startup_check_fails_when_the_configured_reviewer_cli_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     security_provider: str,
 ) -> None:
-    others = [name for name in ("claude", "codex", "gemini") if name != security_provider]
+    others = [
+        stem
+        for name, stem in _PROVIDER_CLI_STEMS.items()
+        if name != security_provider
+    ]
     _installed_clis(monkeypatch, *others)
     config = _fan_out_config(tmp_path, security_provider=security_provider)
 
@@ -960,6 +1009,33 @@ def test_describe_security_reviewer_model_for_non_claude_provider(
 
     assert text.startswith(f"{provider} CLI default model")
     assert text.isascii()
+
+
+def test_describe_security_reviewer_model_for_antigravity_default(
+    tmp_path: Path,
+) -> None:
+    config = _security_model_config(tmp_path, security_provider="antigravity")
+
+    text = audit_review.describe_security_reviewer_model(config)
+
+    assert text.startswith("antigravity CLI default model")
+    assert text.isascii()
+
+
+def test_describe_security_reviewer_model_for_antigravity_borrows_role_model(
+    tmp_path: Path,
+) -> None:
+    config = _security_model_config(
+        tmp_path,
+        security_provider="antigravity",
+        agents=_default_agents(
+            planner={"provider": "antigravity", "model": "agy-model"}
+        ),
+    )
+
+    assert audit_review.describe_security_reviewer_model(config) == (
+        "agy-model (borrowed from the planner role)"
+    )
 
 
 def test_describe_security_reviewer_model_in_auto_mode(tmp_path: Path) -> None:
