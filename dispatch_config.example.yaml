@@ -24,6 +24,13 @@ pause_recovery: planner
 # `retry` re-runs the cycle, `quit` stops. --no-interactive-pause also turns
 # it off.
 interactive_pause: true
+# Interpreter grants, off by default. true grants python, python3, and pytest
+# in the default Claude tool list (Bash(python:*), Bash(python3:*),
+# Bash(pytest:*)) and in the agy allow entries. Any of them lets an agent run
+# any command past the allowlist, git push included, so turn it on only if
+# you accept that. A role that sets its own allowed_tools keeps that list.
+# The work-claim gate runs the Verification command either way.
+# interpreter_grants: false
 
 # Deterministic work-claim gate, on by default. A ready_for_review handoff
 # from backend or frontend is checked against the planner's Work Packet

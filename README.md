@@ -415,8 +415,17 @@ agents:
 
 Each opt-out removes a protection. Use one only to debug a specific role.
 These rules match command prefixes; they catch mistakes and simple prompt
-injection, not an agent that writes a script to do the same thing. Keep push
-credentials out of the dispatch environment.
+injection, not an agent that writes a script to do the same thing.
+
+Role allowlists are a guardrail, not a sandbox: any interpreter grant can run
+any command, `git push` included. The default allowlists therefore hold no
+`python`, `python3`, or `pytest` grant; the dispatcher's work-claim gate runs
+the Verification command itself. `interpreter_grants: true` puts those grants
+back for roles that need them, and lets those agents run any command past the
+allowlist (see
+[Interpreter Grants](CONFIGURATION.md#interpreter-grants)). Protect the remote
+with server-side branch protection, meaning a ruleset that requires pull
+requests and has no bypass actors. The dispatcher does not configure it.
 
 ## What This Is And Is Not
 

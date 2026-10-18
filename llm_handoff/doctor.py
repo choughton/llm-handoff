@@ -65,13 +65,14 @@ from llm_handoff.antigravity_permissions import (
     ANTIGRAVITY_REQUIRED_DENY,
     antigravity_allow_entries,
     antigravity_allowed_commands,
+    antigravity_command_grant,
     antigravity_settings_path,
 )
 from llm_handoff.config import (
     ANTIGRAVITY_BINARY,
     CLAUDE_BINARY,
-    CLAUDE_DEFAULT_ALLOWED_TOOLS,
     CLAUDE_DISALLOWED_TOOLS,
+    CLAUDE_INTERPRETER_ALLOWED_TOOLS,
     CLAUDE_MODEL,
     CODEX_BINARY,
     DEFAULT_CONFIG_PATH,
@@ -79,6 +80,7 @@ from llm_handoff.config import (
     GEMINI_BINARY,
     AgentConfig,
     DispatchConfig,
+    claude_default_allowed_tools,
     detect_repo_root,
     load_dispatch_config,
     scanner_command_placeholders,
@@ -645,11 +647,14 @@ def _check_antigravity_permissions(
     if not labels:
         return
     covers = f"(covers {', '.join(labels)})"
+    interpreter_grants = dispatch_config.interpreter_grants
     allowed_commands = antigravity_allowed_commands(
-        dispatch_config.verification_allowed_prefixes
+        dispatch_config.verification_allowed_prefixes,
+        interpreter_grants=interpreter_grants,
     )
     allow_required = antigravity_allow_entries(
-        dispatch_config.verification_allowed_prefixes
+        dispatch_config.verification_allowed_prefixes,
+        interpreter_grants=interpreter_grants,
     )
     path = antigravity_settings_path()
     result = _read_antigravity_permissions(path)
@@ -702,6 +707,25 @@ def _check_antigravity_permissions(
                 f"`{_ascii_entry(entry)}` {covers}; {advice}",
             )
         )
+    if not interpreter_grants:
+        # The generated set has no interpreter grant with the flag off, but an
+        # entry the operator added earlier is user-wide and still applies.
+        for entry in allow:
+            if not _settings_interpreter_grant(entry):
+                continue
+            found = True
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    _ANTIGRAVITY_CHECK_NAME,
+                    f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow grants the "
+                    f"interpreter entry `{_ascii_entry(entry)}` {covers}; the "
+                    "grant is user-wide and still applies to every agy run "
+                    "although interpreter_grants is off, and "
+                    f"{_INTERPRETER_BYPASS_RISK}; remove it, or set "
+                    "interpreter_grants: true to opt in",
+                )
+            )
     # Antigravity applies Deny > Ask > Allow, and a headless `agy -p` run
     # soft-denies any command that needs approval, so a deny or ask rule that
     # matches a required allow entry blocks that command despite the grant.
@@ -786,29 +810,82 @@ def _antigravity_interpreter_command(command: str) -> bool:
     return bool(tokens) and tokens[0] in _INTERPRETER_EXECUTABLES
 
 
+_GRANT_REGEX_PREFIX = "command(regex:^"
+_GRANT_REGEX_SUFFIX = "( .*)?$)"
+
+
+def _unescape_grant(escaped: str) -> str:
+    """Drop the backslash before each character, as written by
+    ``antigravity_command_grant``."""
+    out: list[str] = []
+    index = 0
+    while index < len(escaped):
+        ch = escaped[index]
+        if ch == "\\" and index + 1 < len(escaped):
+            index += 1
+            ch = escaped[index]
+        out.append(ch)
+        index += 1
+    return "".join(out)
+
+
+def _settings_interpreter_grant(entry: str) -> bool:
+    """Return True when ``entry`` grants an interpreter command.
+
+    That is an entry equal to ``antigravity_command_grant(c)`` or
+    ``command(c)`` where the first whitespace token of ``c`` is ``python``,
+    ``python3``, or ``pytest``.
+    """
+    if entry.startswith(_GRANT_REGEX_PREFIX) and entry.endswith(_GRANT_REGEX_SUFFIX):
+        command = _unescape_grant(
+            entry[len(_GRANT_REGEX_PREFIX) : -len(_GRANT_REGEX_SUFFIX)]
+        )
+        return (
+            antigravity_command_grant(command) == entry
+            and _antigravity_interpreter_command(command)
+        )
+    if entry.startswith("command(regex:"):
+        return False
+    if entry.startswith("command(") and entry.endswith(")"):
+        return _antigravity_interpreter_command(entry[len("command(") : -1])
+    return False
+
+
 def _check_interpreter_grants(
     dispatch_config: DispatchConfig,
     checks: list[DoctorCheck],
 ) -> None:
     """Warn, per role launch, about grants that bypass the shell allowlist.
 
-    Claude launches use ``allowed_tools`` or ``CLAUDE_DEFAULT_ALLOWED_TOOLS``
-    (the rule in ``agent_providers/claude.py``); Antigravity launches use the
-    required ``agy`` allow entries plus the verification prefixes (the
-    settings file is not read here). ``unsafe_bypass`` launches have no shell
-    allowlist at all. Every line is WARN or PASS, never FAIL.
+    Claude launches use ``allowed_tools`` or the default list for the
+    config's ``interpreter_grants`` (``claude_default_allowed_tools``, the
+    rule in ``agent_providers/claude.py``); Antigravity launches use the
+    required ``agy`` allow entries plus the verification prefixes for that
+    flag (the settings file is not read here). ``unsafe_bypass`` launches
+    have no shell allowlist at all. With ``interpreter_grants: true`` each
+    warning about a grant the flag adds names the flag as its cause. Every
+    line is WARN or PASS, never FAIL.
     """
+    interpreter_grants = dispatch_config.interpreter_grants
     allowed_commands = antigravity_allowed_commands(
-        dispatch_config.verification_allowed_prefixes
+        dispatch_config.verification_allowed_prefixes,
+        interpreter_grants=interpreter_grants,
     )
     allow_entries = antigravity_allow_entries(
-        dispatch_config.verification_allowed_prefixes
+        dispatch_config.verification_allowed_prefixes,
+        interpreter_grants=interpreter_grants,
     )
     agy_matches = [
         entry
         for command, entry in zip(allowed_commands, allow_entries, strict=True)
         if _antigravity_interpreter_command(command)
     ]
+    flag_cause = (
+        "; cause: interpreter_grants: true adds the python, python3, and "
+        "pytest grants to the default lists"
+        if interpreter_grants
+        else ""
+    )
     added = False
     allowlisted_launch = False
     for label, agent_config in _role_launches(dispatch_config):
@@ -827,20 +904,29 @@ def _check_interpreter_grants(
         if provider == "claude":
             allowlisted_launch = True
             tools = (
-                CLAUDE_DEFAULT_ALLOWED_TOOLS
+                claude_default_allowed_tools(interpreter_grants)
                 if agent_config.allowed_tools is None
                 else agent_config.allowed_tools
             )
             matches = [rule for rule in tools if _claude_interpreter_rule(rule)]
             if matches:
                 added = True
+                # Name the flag only when the list came from it: the default
+                # list, or a Linear-mode list built on it. A list the role
+                # writes itself is unaffected by the flag.
+                cause = (
+                    flag_cause
+                    if agent_config.uses_default_allowed_tools
+                    and any(rule in CLAUDE_INTERPRETER_ALLOWED_TOOLS for rule in matches)
+                    else ""
+                )
                 checks.append(
                     DoctorCheck(
                         "WARN",
                         _INTERPRETER_CHECK_NAME,
                         f"{label} (provider claude) allows "
                         + ", ".join(f"`{_ascii_entry(rule)}`" for rule in matches)
-                        + f"; {_INTERPRETER_BYPASS_RISK}",
+                        + f"; {_INTERPRETER_BYPASS_RISK}{cause}",
                     )
                 )
         elif provider == "antigravity":
@@ -857,7 +943,8 @@ def _check_interpreter_grants(
                             f"`{_ascii_entry(entry)}`" for entry in agy_matches
                         )
                         + f"; {_INTERPRETER_BYPASS_RISK}, and these grants are "
-                        "user-wide, so they apply to every agy run for this user",
+                        "user-wide, so they apply to every agy run for this user"
+                        + flag_cause,
                     )
                 )
     if not added and allowlisted_launch:

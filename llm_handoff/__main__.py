@@ -40,6 +40,7 @@ from llm_handoff.init_workflow import (
     UnknownTemplateError,
     UnknownTrackerError,
     init_reference_workflow,
+    is_interpreter_executable,
     verification_executable,
 )
 from llm_handoff.logging_util import DispatchLogger
@@ -269,7 +270,8 @@ def init_command(
         "--verification-command",
         help=(
             "Confirmed verification command; its executable is added to "
-            "Claude roles' allowed_tools."
+            "Claude roles' allowed_tools, except python, python3, and pytest, "
+            "which need the interpreter_grants opt-in."
         ),
     ),
     tracker: str = typer.Option(
@@ -373,7 +375,9 @@ def _echo_antigravity_permissions(verification_command: str | None) -> None:
     """Print the agy permission entries; init never touches the settings file."""
     commands = () if verification_command is None else (verification_command,)
     for line in format_antigravity_permissions(
-        antigravity_allow_entries(commands), ANTIGRAVITY_REQUIRED_DENY
+        # init never writes interpreter_grants, so print the flag-off set.
+        antigravity_allow_entries(commands, interpreter_grants=False),
+        ANTIGRAVITY_REQUIRED_DENY,
     ):
         typer.echo(line)
     typer.echo(
@@ -413,11 +417,20 @@ def _echo_candidates(
         typer.echo("Candidate commands: none found")
     if verification_command is not None:
         executable = verification_executable(verification_command)
-        typer.echo(
-            f"Verification command: {_terminal_safe(verification_command)}; "
-            f"allowed_tools adds Bash({_terminal_safe(executable)}:*) "
-            "for claude roles"
-        )
+        if is_interpreter_executable(executable):
+            typer.echo(
+                f"Verification command: {_terminal_safe(verification_command)}; "
+                f"no role gets a {executable} grant. The dispatcher gate runs "
+                "this command itself. Roles can run it only after you set "
+                "interpreter_grants: true in dispatch_config.yaml, which lets "
+                "an agent run any command, git push included."
+            )
+        else:
+            typer.echo(
+                f"Verification command: {_terminal_safe(verification_command)}; "
+                f"allowed_tools adds Bash({_terminal_safe(executable)}:*) "
+                "for claude roles"
+            )
     elif candidates:
         typer.echo(
             "No verification command selected; rerun with "

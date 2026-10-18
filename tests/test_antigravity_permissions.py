@@ -6,7 +6,10 @@ import re
 import pytest
 
 from llm_handoff import antigravity_permissions as perms
-from llm_handoff.config import CLAUDE_DEFAULT_ALLOWED_TOOLS
+from llm_handoff.config import (
+    CLAUDE_DEFAULT_ALLOWED_TOOLS,
+    claude_default_allowed_tools,
+)
 from llm_handoff.provider_auth import ANTIGRAVITY_SETTINGS_PATH
 
 
@@ -20,10 +23,20 @@ def test_allowed_commands_are_exact_and_ordered() -> None:
         "git add",
         "git commit",
         "git rev-parse",
-        "python",
-        "python3",
-        "pytest",
     )
+
+
+def test_interpreter_commands_are_exact_and_ordered() -> None:
+    assert perms.ANTIGRAVITY_INTERPRETER_COMMANDS == ("python", "python3", "pytest")
+    for command in perms.ANTIGRAVITY_INTERPRETER_COMMANDS:
+        assert command not in perms.ANTIGRAVITY_ALLOWED_COMMANDS
+
+
+_INTERPRETER_ALLOW = (
+    "command(regex:^python( .*)?$)",
+    "command(regex:^python3( .*)?$)",
+    "command(regex:^pytest( .*)?$)",
+)
 
 
 def test_required_allow_entries_are_exact_and_ordered() -> None:
@@ -36,14 +49,13 @@ def test_required_allow_entries_are_exact_and_ordered() -> None:
         "command(regex:^git add( .*)?$)",
         "command(regex:^git commit( .*)?$)",
         "command(regex:^git rev-parse( .*)?$)",
-        "command(regex:^python( .*)?$)",
-        "command(regex:^python3( .*)?$)",
-        "command(regex:^pytest( .*)?$)",
     )
     assert perms.ANTIGRAVITY_REQUIRED_ALLOW == tuple(
         perms.antigravity_command_grant(command)
         for command in perms.ANTIGRAVITY_ALLOWED_COMMANDS
     )
+    for entry in _INTERPRETER_ALLOW:
+        assert entry not in perms.ANTIGRAVITY_REQUIRED_ALLOW
 
 
 def test_required_allow_entries_mirror_claude_bash_rules() -> None:
@@ -53,6 +65,16 @@ def test_required_allow_entries_mirror_claude_bash_rules() -> None:
         if rule.startswith("Bash(")
     )
     assert perms.ANTIGRAVITY_REQUIRED_ALLOW == bash_rules
+
+
+def test_opt_in_allow_entries_mirror_claude_interpreter_rules() -> None:
+    bash_rules = tuple(
+        perms.antigravity_command_grant(rule[len("Bash(") : -len(":*)")])
+        for rule in claude_default_allowed_tools(True)
+        if rule.startswith("Bash(")
+    )
+    assert perms.antigravity_allow_entries((), interpreter_grants=True) == bash_rules
+    assert bash_rules == (*perms.ANTIGRAVITY_REQUIRED_ALLOW, *_INTERPRETER_ALLOW)
 
 
 def test_required_deny_entries_are_exact() -> None:
@@ -86,12 +108,15 @@ def _regex_pattern(entry: str) -> str:
     return entry[len(prefix) : -1]
 
 
-@pytest.mark.parametrize("command", perms.ANTIGRAVITY_ALLOWED_COMMANDS)
+@pytest.mark.parametrize(
+    "command",
+    (*perms.ANTIGRAVITY_ALLOWED_COMMANDS, *perms.ANTIGRAVITY_INTERPRETER_COMMANDS),
+)
 def test_required_allow_patterns_cover_arguments_but_not_longer_names(
     command: str,
 ) -> None:
     entry = perms.antigravity_command_grant(command)
-    assert entry in perms.ANTIGRAVITY_REQUIRED_ALLOW
+    assert entry in perms.antigravity_allow_entries((), interpreter_grants=True)
     pattern = _regex_pattern(entry)
 
     assert re.fullmatch(pattern, command)
@@ -119,18 +144,73 @@ def test_required_deny_pattern_does_not_block_git_status() -> None:
         assert re.search(_regex_pattern(entry), "git status --short") is None
 
 
-def test_allowed_commands_line_up_with_allow_entries() -> None:
+@pytest.mark.parametrize("interpreter_grants", [False, True])
+def test_allowed_commands_line_up_with_allow_entries(interpreter_grants: bool) -> None:
     verification = ["python -m pytest", "pytest", "  ", "npm test", " npm test"]
-    commands = perms.antigravity_allowed_commands(verification)
+    commands = perms.antigravity_allowed_commands(
+        verification, interpreter_grants=interpreter_grants
+    )
 
-    assert commands == (
-        *perms.ANTIGRAVITY_ALLOWED_COMMANDS,
-        "python -m pytest",
-        "npm test",
+    if interpreter_grants:
+        assert commands == (
+            *perms.ANTIGRAVITY_ALLOWED_COMMANDS,
+            *perms.ANTIGRAVITY_INTERPRETER_COMMANDS,
+            "python -m pytest",
+            "npm test",
+        )
+    else:
+        assert commands == (*perms.ANTIGRAVITY_ALLOWED_COMMANDS, "npm test")
+    assert perms.antigravity_allow_entries(
+        verification, interpreter_grants=interpreter_grants
+    ) == tuple(perms.antigravity_command_grant(command) for command in commands)
+
+
+@pytest.mark.parametrize(
+    "func", [perms.antigravity_allowed_commands, perms.antigravity_allow_entries]
+)
+def test_allow_helpers_require_the_interpreter_flag_keyword(func) -> None:
+    with pytest.raises(TypeError):
+        func(())
+    with pytest.raises(TypeError):
+        func((), False)
+
+
+def test_python_verification_prefix_is_skipped_with_the_flag_off() -> None:
+    verification = ["python -m pytest tests -q"]
+    grant = "command(regex:^python -m pytest tests -q( .*)?$)"
+
+    off = perms.antigravity_allow_entries(verification, interpreter_grants=False)
+    on = perms.antigravity_allow_entries(verification, interpreter_grants=True)
+
+    assert off == perms.ANTIGRAVITY_REQUIRED_ALLOW
+    assert grant not in off
+    for entry in _INTERPRETER_ALLOW:
+        assert entry not in off
+    assert on == (*perms.ANTIGRAVITY_REQUIRED_ALLOW, *_INTERPRETER_ALLOW, grant)
+    # git push deny entries do not depend on the flag.
+    assert perms.ANTIGRAVITY_REQUIRED_DENY == (
+        "command(regex:^git( .*)? push( .*)?$)",
+        "unsandboxed(regex:^git( .*)? push( .*)?$)",
     )
-    assert perms.antigravity_allow_entries(verification) == tuple(
-        perms.antigravity_command_grant(command) for command in commands
-    )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("python", True),
+        ("python -m pytest", True),
+        ("  python3 -c x", True),
+        ("pytest -q", True),
+        ("pythonx", False),
+        ("npm test", False),
+        ("", False),
+        ("uv run python", False),
+    ],
+)
+def test_is_interpreter_command_checks_the_first_token(
+    command: str, expected: bool
+) -> None:
+    assert perms.is_interpreter_command(command) is expected
 
 
 def test_agent_tools_are_exact_and_ordered() -> None:
@@ -178,25 +258,37 @@ def test_agent_tools_leave_out_web_image_mcp_and_subagent_tools(tool: str) -> No
 
 
 def test_allow_entries_without_verification_commands() -> None:
-    assert perms.antigravity_allow_entries(()) == perms.ANTIGRAVITY_REQUIRED_ALLOW
-
-
-def test_allow_entries_add_a_verification_command() -> None:
-    entries = perms.antigravity_allow_entries(["  npm test  "])
-
-    assert entries == (
+    assert (
+        perms.antigravity_allow_entries((), interpreter_grants=False)
+        == perms.ANTIGRAVITY_REQUIRED_ALLOW
+    )
+    assert perms.antigravity_allow_entries((), interpreter_grants=True) == (
         *perms.ANTIGRAVITY_REQUIRED_ALLOW,
-        "command(regex:^npm test( .*)?$)",
+        *_INTERPRETER_ALLOW,
+    )
+
+
+@pytest.mark.parametrize("interpreter_grants", [False, True])
+def test_allow_entries_add_a_verification_command(interpreter_grants: bool) -> None:
+    entries = perms.antigravity_allow_entries(
+        ["  npm test  "], interpreter_grants=interpreter_grants
+    )
+
+    assert entries[-1] == "command(regex:^npm test( .*)?$)"
+    assert entries[:-1] == perms.antigravity_allow_entries(
+        (), interpreter_grants=interpreter_grants
     )
 
 
 def test_allow_entries_deduplicate_and_keep_first_seen_order() -> None:
     entries = perms.antigravity_allow_entries(
-        ["python -m pytest", "pytest", "npm test", "python -m pytest", " npm test"]
+        ["python -m pytest", "pytest", "npm test", "python -m pytest", " npm test"],
+        interpreter_grants=True,
     )
 
     assert entries == (
         *perms.ANTIGRAVITY_REQUIRED_ALLOW,
+        *_INTERPRETER_ALLOW,
         "command(regex:^python -m pytest( .*)?$)",
         "command(regex:^npm test( .*)?$)",
     )
@@ -215,7 +307,7 @@ def test_settings_path_is_under_the_home_directory(
 
 
 def test_format_lists_every_entry_and_the_guardrail_note() -> None:
-    allow = perms.antigravity_allow_entries(["npm test"])
+    allow = perms.antigravity_allow_entries(["npm test"], interpreter_grants=False)
     lines = perms.format_antigravity_permissions(
         allow, perms.ANTIGRAVITY_REQUIRED_DENY
     )
@@ -238,7 +330,9 @@ def test_format_lists_every_entry_and_the_guardrail_note() -> None:
 
 def test_format_output_is_ascii_only() -> None:
     lines = perms.format_antigravity_permissions(
-        perms.antigravity_allow_entries(["npm test\x1b[2J", "café test"]),
+        perms.antigravity_allow_entries(
+            ["npm test\x1b[2J", "café test"], interpreter_grants=False
+        ),
         perms.ANTIGRAVITY_REQUIRED_DENY,
     )
 

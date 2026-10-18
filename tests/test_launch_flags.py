@@ -64,12 +64,160 @@ def test_claude_default_allowlist_covers_the_documented_tools() -> None:
         "Bash(git add:*)",
         "Bash(git commit:*)",
         "Bash(git rev-parse:*)",
-        "Bash(python:*)",
-        "Bash(pytest:*)",
     ):
         assert rule in allowed
     assert not any("push" in rule for rule in allowed)
     assert not any(rule in {"Bash", "Bash(*)"} for rule in allowed)
+
+
+# The default list before GEM-0e, which `interpreter_grants: true` restores.
+_PRE_GEM_0E_DEFAULT_TOOLS = (
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    "Agent",
+    "Bash(git status:*)",
+    "Bash(git diff:*)",
+    "Bash(git log:*)",
+    "Bash(git show:*)",
+    "Bash(git cat-file:*)",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git rev-parse:*)",
+    "Bash(python:*)",
+    "Bash(python3:*)",
+    "Bash(pytest:*)",
+)
+_INTERPRETER_RULES = ("Bash(python:*)", "Bash(python3:*)", "Bash(pytest:*)")
+
+
+def _old_default_args() -> list[str]:
+    return [
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "Read,Edit,Write,Grep,Glob,Agent,Bash",
+        "--strict-mcp-config",
+        "--allowedTools",
+        ",".join(_PRE_GEM_0E_DEFAULT_TOOLS),
+        "--disallowedTools",
+        "WebFetch,WebSearch",
+        "--append-system-prompt",
+        claude.claude_shell_guidance(_PRE_GEM_0E_DEFAULT_TOOLS),
+    ]
+
+
+def test_claude_default_allowlist_has_no_interpreter_rule() -> None:
+    assert config.CLAUDE_INTERPRETER_ALLOWED_TOOLS == _INTERPRETER_RULES
+    for rule in _INTERPRETER_RULES:
+        assert rule not in config.CLAUDE_DEFAULT_ALLOWED_TOOLS
+    assert config.claude_default_allowed_tools(False) == (
+        config.CLAUDE_DEFAULT_ALLOWED_TOOLS
+    )
+    assert config.claude_default_allowed_tools(True) == _PRE_GEM_0E_DEFAULT_TOOLS
+
+
+def test_claude_default_launch_args_have_no_interpreter_rule(tmp_path: Path) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path)
+    args = orchestrator._launch_args_for_role(loaded, "auditor")
+
+    allowed = args[args.index("--allowedTools") + 1].split(",")
+    assert allowed == list(config.CLAUDE_DEFAULT_ALLOWED_TOOLS)
+    for rule in _INTERPRETER_RULES:
+        assert rule not in allowed
+    guidance = args[args.index("--append-system-prompt") + 1]
+    assert "`python`" not in guidance
+    assert "`pytest`" not in guidance
+
+
+def test_interpreter_grants_restore_the_previous_launch_args(tmp_path: Path) -> None:
+    loaded = DispatchConfig(
+        repo_root=tmp_path, agents=_all_claude_agents(), interpreter_grants=True
+    )
+
+    for role in _ROLES:
+        assert loaded.agents[role].allowed_tools is None
+        assert loaded.agents[role].interpreter_grants is True
+        assert orchestrator._launch_args_for_role(loaded, role) == _old_default_args()
+
+
+def test_interpreter_grants_reach_the_claude_launch_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = _CommandRecorder()
+    monkeypatch.setattr(claude, "_run_command_streaming", recorder)
+    loaded = DispatchConfig(repo_root=tmp_path, interpreter_grants=True)
+
+    claude.invoke_claude_subagent(
+        "auditor", "audit", repo_root=tmp_path, agent_config=loaded.agents["auditor"]
+    )
+
+    command = recorder.commands[0]
+    assert command[1:12] == _old_default_args()
+
+
+def test_interpreter_grants_reach_claude_fallbacks(tmp_path: Path) -> None:
+    agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["backend"] = {"provider": "codex", "fallback": {"provider": "claude"}}
+    for flag, expected in ((False, _VANILLA_DEFAULT_ARGS), (True, _old_default_args())):
+        loaded = DispatchConfig(
+            repo_root=tmp_path, agents=agents, interpreter_grants=flag
+        )
+        fallback = loaded.agents["backend"].fallback
+        assert fallback is not None
+        assert fallback.interpreter_grants is flag
+        assert orchestrator._launch_args_for_agent(fallback) == expected
+
+
+def test_interpreter_grants_leave_explicit_allowed_tools_as_written(
+    tmp_path: Path,
+) -> None:
+    custom_tools = ("Read", "Bash(git diff:*)")
+    results = []
+    for flag in (False, True):
+        loaded = DispatchConfig(
+            repo_root=tmp_path,
+            agents=_all_claude_agents(allowed_tools=custom_tools),
+            interpreter_grants=flag,
+        )
+        assert loaded.agents["backend"].allowed_tools == custom_tools
+        assert loaded.agents["backend"].claude_allowed_tools == custom_tools
+        results.append(orchestrator._launch_args_for_role(loaded, "backend"))
+    assert results[0] == results[1]
+    assert ",".join(custom_tools) in results[1]
+
+
+def test_interpreter_grants_leave_unsafe_bypass_and_codex_launches(
+    tmp_path: Path,
+) -> None:
+    agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["auditor"] = {"provider": "claude", "unsafe_bypass": True}
+    off = DispatchConfig(repo_root=tmp_path, agents=agents)
+    on = DispatchConfig(repo_root=tmp_path, agents=agents, interpreter_grants=True)
+
+    for role in ("auditor", "backend"):
+        assert orchestrator._launch_args_for_role(on, role) == (
+            orchestrator._launch_args_for_role(off, role)
+        )
+    assert orchestrator._launch_args_for_role(on, "auditor") == [
+        "--dangerously-skip-permissions"
+    ]
+
+
+@pytest.mark.parametrize(("flag", "count"), [(False, 14), (True, 17)])
+def test_startup_banner_counts_the_flag_aware_default_list(
+    tmp_path: Path, flag: bool, count: int
+) -> None:
+    logs: list[tuple[str, str]] = []
+    orchestrator._log_launch_posture(
+        DispatchConfig(repo_root=tmp_path, interpreter_grants=flag),
+        lambda level, message: logs.append((level, message)),
+    )
+
+    [auditor_line] = [m for _level, m in logs if m.startswith("Launch auditor:")]
+    assert f"({count} allowed tool rules;" in auditor_line
 
 
 def test_claude_role_allowed_tools_override_reaches_command() -> None:
@@ -776,6 +924,31 @@ def test_linear_mode_without_mcp_config_adds_role_tools(
     ]
     assert "--strict-mcp-config" not in args
     assert "--mcp-config" not in args
+
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_linear_mode_appends_tools_to_the_flag_aware_default_list(
+    tmp_path: Path, flag: bool
+) -> None:
+    loaded = DispatchConfig(
+        repo_root=tmp_path,
+        agents=_all_claude_agents(),
+        tracker=_LINEAR_TRACKER,
+        interpreter_grants=flag,
+    )
+    base = config.claude_default_allowed_tools(flag)
+
+    for role in _ROLES:
+        assert loaded.agents[role].allowed_tools == (
+            *base,
+            *_EXPECTED_LINEAR_TOOLS[role],
+        )
+        args = orchestrator._launch_args_for_role(loaded, role)
+        assert args[args.index("--allowedTools") + 1] == ",".join(
+            (*base, *_EXPECTED_LINEAR_TOOLS[role])
+        )
+    has_interpreters = "Bash(python:*)" in loaded.agents["backend"].allowed_tools
+    assert has_interpreters is flag
 
 
 @pytest.mark.parametrize("role", _ROLES)
