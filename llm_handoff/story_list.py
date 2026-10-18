@@ -5,11 +5,14 @@ epic. A role that rewrites the handoff can drop entries without saying so, and
 in dispatcher commit mode a story that exists only in the handoff is then
 gone. These checks compare a dispatch's rewrite with the handoff it started
 from. Stories are matched by their leading ID token, so `S2 Add login` and
-`S2: Add login form` are the same story.
+`S2: Add login form` are the same story. A leading token counts as an ID only
+when it contains a digit; an entry without one, such as `Add login`, matches
+by its full text instead, so two titles that share a first word stay distinct.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 
 from llm_handoff.router import (
@@ -31,33 +34,41 @@ _REASON_LEAD_STRIP = " \t`*_:;,.-\u2013\u2014"
 
 
 def story_id_token(entry: str | None) -> str | None:
-    """The leading ID token of a story entry, such as `S2` in `S2 Add login`."""
+    """The leading ID token of a story entry, such as `S2` in `S2 Add login`.
+
+    `None` when the first word has no digit, as in the title-only `Add login`.
+    """
 
     if entry is None:
         return None
     for raw in entry.split():
         token = raw.strip(_TOKEN_STRIP)
         if token:
-            return token
+            return token if any(char.isdigit() for char in token) else None
     return None
 
 
+def _normalized_title(text: str) -> str:
+    words = (word.strip(_TOKEN_STRIP) for word in text.casefold().split())
+    return " ".join(word for word in words if word)
+
+
 def _story_key(entry: str | None) -> str | None:
+    if entry is None:
+        return None
     token = story_id_token(entry)
-    return token.casefold() if token is not None else None
+    if token is not None:
+        return token.casefold()
+    # Title-only entries match by their whole text; the prefix keeps a title
+    # from colliding with an ID.
+    title = _normalized_title(entry)
+    return f"title:{title}" if title else None
 
 
-def dropped_story_reasons(handoff_content: str) -> dict[str, str]:
-    """Map each story key in `## Dropped Stories` to its reason text.
-
-    Each entry is a bullet that starts with the story ID, for example
-    `- S2: Superseded by S5.` An entry without text after the ID maps to an
-    empty reason.
-    """
-
+def _dropped_story_bullets(handoff_content: str) -> list[str]:
     match = _DROPPED_STORIES_HEADING_RE.search(handoff_content)
     if match is None:
-        return {}
+        return []
     level = len(match.group(1))
     start = match.end()
     end = len(handoff_content)
@@ -65,12 +76,43 @@ def dropped_story_reasons(handoff_content: str) -> dict[str, str]:
         if len(heading.group(1)) <= level:
             end = heading.start()
             break
-    reasons: dict[str, str] = {}
+    bullets: list[str] = []
     for line in handoff_content[start:end].splitlines():
         bullet = _BULLET_RE.match(line)
-        if bullet is None:
+        if bullet is not None and bullet.group(1).strip():
+            bullets.append(bullet.group(1).strip())
+    return bullets
+
+
+def _title_drop_reason(title_key: str, bullets: list[str]) -> str | None:
+    """The reason a `## Dropped Stories` bullet gives for a title-only story.
+
+    The bullet starts with the story's full title, then the reason, as in
+    `- Add billing: Moved to the next epic.`
+    """
+
+    title = title_key.removeprefix("title:")
+    found: str | None = None
+    for text in bullets:
+        normalized = _normalized_title(text)
+        if normalized != title and not normalized.startswith(f"{title} "):
             continue
-        text = bullet.group(1).strip()
+        reason = normalized[len(title) :].strip()
+        if reason or found is None:
+            found = reason
+    return found
+
+
+def dropped_story_reasons(handoff_content: str) -> dict[str, str]:
+    """Map each story ID in `## Dropped Stories` to its reason text.
+
+    Each entry is a bullet that starts with the story ID, for example
+    `- S2: Superseded by S5.` An entry without text after the ID maps to an
+    empty reason. Bullets for title-only stories are matched separately.
+    """
+
+    reasons: dict[str, str] = {}
+    for text in _dropped_story_bullets(handoff_content):
         token = story_id_token(text)
         if token is None:
             continue
@@ -113,25 +155,38 @@ def story_list_errors(prior_content: str | None, current_content: str) -> list[s
         return []
     if not _same_epic(prior, current):
         return []
-    kept = {
+    exempt = {
         key
-        for key in (
-            *(_story_key(entry) for entry in current.remaining_stories),
-            _story_key(prior.story_id),
-            _story_key(current.story_id),
-        )
+        for key in (_story_key(prior.story_id), _story_key(current.story_id))
         if key is not None
     }
-    reasons = dropped_story_reasons(current_content.lstrip("\ufeff"))
+    # Counted, so a rewrite that keeps one of two entries with the same key
+    # still drops the other.
+    kept = Counter(
+        key
+        for key in (_story_key(entry) for entry in current.remaining_stories)
+        if key is not None
+    )
+    body = current_content.lstrip("\ufeff")
+    reasons = dropped_story_reasons(body)
+    bullets = _dropped_story_bullets(body)
     unexplained: list[str] = []
     missing_reason: list[str] = []
     for entry in prior.remaining_stories:
         key = _story_key(entry)
-        if key is None or key in kept:
+        if key is None or key in exempt:
             continue
-        if key not in reasons:
+        if kept[key] > 0:
+            kept[key] -= 1
+            continue
+        reason = (
+            _title_drop_reason(key, bullets)
+            if key.startswith("title:")
+            else reasons.get(key)
+        )
+        if reason is None:
             unexplained.append(entry)
-        elif not reasons[key]:
+        elif not reason:
             missing_reason.append(entry)
     if not unexplained and not missing_reason:
         return []
@@ -161,17 +216,25 @@ def project_state_story_warnings(
     current_content: str,
     project_state_content: str | None,
 ) -> list[str]:
-    """Warnings for `remaining_stories` IDs the project state file never names."""
+    """Warnings for `remaining_stories` entries the project state file never names.
+
+    An entry with an ID must have that ID in the file; a title-only entry must
+    have its full title.
+    """
 
     if project_state_content is None:
         return []
     current = _parse(current_content)
     if current is None:
         return []
+    state_text = f" {_normalized_title(project_state_content)} "
     missing: list[str] = []
     for entry in current.remaining_stories:
         token = story_id_token(entry)
         if token is None:
+            title = _normalized_title(entry)
+            if title and f" {title} " not in state_text:
+                missing.append(entry)
             continue
         pattern = rf"(?<![\w-]){re.escape(token)}(?![\w-])"
         if re.search(pattern, project_state_content, re.IGNORECASE) is None:

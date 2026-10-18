@@ -73,7 +73,8 @@ this file does not list yet.
 
 After each dispatch, the post-dispatch gate warns
 (`remaining_story_not_in_project_state`) when `remaining_stories` names a
-story ID that this file does not contain. A story that exists only in the
+story ID that this file does not contain, or a title-only story whose full
+title it does not contain. A story that exists only in the
 handoff is lost when a later rewrite drops it, and in dispatcher commit mode
 the planner's own edits to this file are never committed, so the planner
 records new stories through the next Work Packet. The warning does not fail
@@ -2215,7 +2216,11 @@ The dispatcher should fail closed on invalid or ambiguous frontmatter.
 The post-dispatch gate compares a dispatch's `remaining_stories` with the
 handoff the dispatch started from. Stories match by their leading ID token
 (`S2` in `S2 Add the login form`), ignoring case and surrounding `**`,
-backticks, or a trailing colon. An entry may leave the list only when it is
+backticks, or a trailing colon. A leading token counts as an ID only when it
+contains a digit; a title-only entry such as `Add the login form` matches by
+its full text, so `Add login` and `Add billing` stay two stories. Entries are
+counted, so keeping one of two entries with the same ID still drops the
+other. An entry may leave the list only when it is
 the prior or the new `story_id` (the story just closed, or the one now
 assigned), or when the rewrite lists it under a `## Dropped Stories` section
 with a reason:
@@ -2225,6 +2230,9 @@ with a reason:
 
 - S4: Merged into S3 at the user's request.
 ```
+
+A title-only story is dropped the same way, with a bullet that starts with its
+full title, such as `- Add billing: Moved to the next epic.`
 
 Any other missing entry fails the gate with `remaining_stories_dropped`,
 naming each dropped entry. A rewrite that leaves out `remaining_stories`

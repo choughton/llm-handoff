@@ -169,6 +169,71 @@ def test_dropped_stories_section_ends_at_the_next_heading() -> None:
     assert dropped_story_reasons(content) == {"s3": "Out of scope."}
 
 
+def test_title_only_entries_sharing_a_first_word_stay_distinct() -> None:
+    assert story_id_token("Add login") is None
+    prior = _handoff(story_id=None, remaining=["Add login", "Add billing"])
+    current = _handoff(story_id=None, remaining=["Add login"])
+
+    errors = story_list_errors(prior, current)
+
+    assert len(errors) == 1
+    assert "`Add billing`" in errors[0]
+    assert "`Add login`" not in errors[0]
+
+
+def test_title_only_story_may_close_or_be_dropped_with_a_reason() -> None:
+    prior = _handoff(
+        story_id="Add login",
+        remaining=["Add login", "Add billing", "Add reports"],
+    )
+    current = _handoff(
+        story_id="Add login",
+        remaining=["add  billing"],
+        body=(
+            "# Handoff\n\n## Dropped Stories\n\n"
+            "- **Add reports**: Moved to the next epic.\n"
+        ),
+    )
+
+    assert story_list_errors(prior, current) == []
+
+
+def test_title_only_drop_without_a_reason_fails() -> None:
+    prior = _handoff(story_id=None, remaining=["Add login", "Add billing"])
+    current = _handoff(
+        story_id=None,
+        remaining=["Add login"],
+        body="# Handoff\n\n## Dropped Stories\n\n- Add billing\n",
+    )
+
+    errors = story_list_errors(prior, current)
+
+    assert len(errors) == 1
+    assert "without a reason" in errors[0]
+
+
+def test_duplicate_story_keys_are_counted() -> None:
+    prior = _handoff(story_id="S1", remaining=["S2 Login form", "S2 Login API"])
+    current = _handoff(story_id="S1", remaining=["S2 Login form"])
+
+    errors = story_list_errors(prior, current)
+
+    assert len(errors) == 1
+    assert "`S2 Login API`" in errors[0]
+
+
+def test_project_state_warning_matches_title_only_entries_by_full_title() -> None:
+    current = _handoff(remaining=["Add login", "Add billing"])
+
+    warnings = project_state_story_warnings(
+        current, "# State\n\n- Add login: in progress\n- Add reports\n"
+    )
+
+    assert len(warnings) == 1
+    assert "`Add billing`" in warnings[0]
+    assert "Add login" not in warnings[0]
+
+
 def test_unparseable_handoffs_are_left_to_the_frontmatter_checks() -> None:
     assert story_list_errors("no frontmatter", _handoff(remaining=[])) == []
     assert story_list_errors(PRIOR, "no frontmatter") == []
