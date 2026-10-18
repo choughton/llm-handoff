@@ -6,9 +6,10 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** LINEAR-WORKFLOW (next; LIN-7 not started).
-  LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY,
-  PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER closed.
+- **Active Epic:** GEMINI-REMOVAL (next; GEM-1 not started).
+  LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
+  PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
+  closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -21,8 +22,8 @@ story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
 
-Epics 6 (CONFIG-CLEANUP) and 7 (LINEAR-FOUNDATIONS) are closed; see the
-Completed Scope Ledger.
+Epics 6 (CONFIG-CLEANUP), 7 (LINEAR-FOUNDATIONS), and 8 (LINEAR-WORKFLOW) are
+closed; see the Completed Scope Ledger.
 
 ### 7. LINEAR-FOUNDATIONS - optional Linear mode, groundwork
 
@@ -71,7 +72,108 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 - LIN-10: `docs/TESTING.md` runbook for a manual acceptance run against a
   sandbox Linear team.
 
-### 9. LINEAR-SWITCH - mode switching and onboarding
+### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
+
+Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
+fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
+`antigravity` role adapter already ships (ANTIGRAVITY-ADAPTER). Gemini CLI
+still backs `planner` and `frontend` in the default mapping, the
+`init --provider gemini` mapping, the `gemini` security reviewer, and the
+`gemini` normalizer (API and CLI paths). Replace each with `agy` first, then
+remove the `gemini` provider. After removal, a config value or flag that names
+`gemini` fails at load with a message that points to `antigravity`, like the
+`auto_push` removal (`_drop_removed_auto_push` in `llm_handoff/config.py`).
+Only the rejection code and its tests, `CHANGELOG.md`, and prose may name the
+old provider. Keep the strings that belong to `agy` itself: its model ids
+(`gemini-3.8-flash-low`, ...), its settings path
+`~/.gemini/antigravity-cli/settings.json`, and its `GEMINI.md` rules file.
+
+`agy` facts checked live on 2026-10-17 (agy 1.3.5, Windows, signed in):
+
+- Without an agent tools list, print mode offers about 55 tools, including
+  file writes, `run_command`, browser control, MCP calls, and subagents.
+  User-wide `permissions.allow` grants (for example the AGY-4
+  `command(git commit)` and `command(python)` entries) apply to every run.
+- A workspace agent file `.agents/agents/<name>.md` with a `tools:` list
+  limits the tools the model gets. With
+  `tools: [view_file, list_dir, grep_search, find_by_name]`, requests to call
+  `write_to_file` and `run_command` were refused as unavailable and no file
+  was created. The stream-json `init` event still lists every tool, so it
+  cannot confirm the restriction; `step_update` events name each tool call.
+- `tools: [finish]` with `--output-format json --json-schema <schema>`
+  returns the answer in the result's `structured_output` field
+  (`{"normalized": "backend"}`, one turn, about 8 seconds), and an injected
+  `run_command` request did not run. `tools: []` also removes `finish`, and
+  `--json-schema` then yields no `structured_output`.
+
+- GEM-1: `antigravity` normalizer. Add `antigravity` to the normalizer
+  providers. Each call runs `agy -p` from a private temp directory that holds
+  only a dispatcher-written agent file
+  (`.agents/agents/llm-handoff-normalizer.md`, `tools: [finish]`,
+  `commandExecutionPolicy: off`), with `--agent llm-handoff-normalizer
+  --output-format json --json-schema <next_agent schema> --print-timeout
+  <timeout_ms>`, the Antigravity role environment allowlist, and arguments as
+  a list with no shell. The answer comes only from `structured_output`. A
+  status other than `SUCCESS`, a missing or invalid `structured_output`, a
+  nonzero exit, a timeout, a sign-in failure, or any tool call other than
+  `finish` in the output fails closed and leaves the handoff unchanged. Check
+  whether a global agent of the same name (`~/.gemini/config/agents/`) can
+  shadow the workspace file, and whether the raw `next_agent` text can travel
+  on stdin instead of the command line. Default model: a flash id from
+  `agy models`. `doctor` passes the normalizer line when `agy` is on `PATH`.
+- GEM-2: `antigravity` security reviewer. `audit.security_provider` accepts
+  `antigravity`, and the automatic order becomes `claude`, `codex`,
+  `antigravity`. The reviewer's agent allows only read tools (`view_file`,
+  `list_dir`, `grep_search`, `find_by_name`, plus `finish` if the verdict uses
+  `--json-schema`): no `run_command`, because user-wide grants would apply to
+  it, and no write, browser, MCP, or subagent tools. It cannot run `git`, so
+  the dispatcher passes in the reviewed diff (in the prompt or in a file
+  outside the repository). The agent definition comes from the dispatcher
+  (written at launch, or shipped under the protected `.agents/**`), never from
+  a file an implementer can edit. A tool call outside the allowed list fails
+  the review closed, in addition to the existing handoff hash check. Update
+  Reviewer Security Posture in `docs/ARCHITECTURE.md`.
+- GEM-3: `agy` as the default Google vendor. `DEFAULT_AGENT_PROVIDERS`,
+  `dispatch_config.example.yaml`, and
+  `examples/reference-workflow/dispatch_config.yaml` map `planner` and
+  `frontend` to `antigravity`. `init --provider antigravity` writes an all-agy
+  mapping (every role on `agy`, `audit.security_provider: antigravity`,
+  `normalizer.provider: antigravity`) and is chosen automatically when `agy`
+  is the only provider CLI on `PATH`; `init` provider detection looks for
+  `agy` instead of `gemini`. Every role already has an `.agents/agents/` file
+  (AGY-3); confirm the all-agy mapping uses them.
+- GEM-4: Remove the `gemini` provider from the runtime and reject the old
+  names. Delete `llm_handoff/agent_providers/gemini.py`,
+  `llm_handoff/normalizer_providers/gemini.py` (API and CLI paths), and the
+  `google-genai` dependency. Remove the Gemini sandbox checks in
+  `orchestrator.py`, the Gemini security reviewer and its extension check in
+  `audit_review.py` (closes AUDIT-COST followup (b)), the Gemini checks in
+  `doctor.py`, the Gemini environment allowlist and API key rule in
+  `agent_process.py`, the Gemini sign-in patterns in `provider_auth.py`, the
+  `gemini` entry in `roles.py`, the Gemini re-exports in `agents.py`,
+  `init --provider gemini`, and `--use-planner-api-key-env`. Each of these
+  fails at load or parse with a message naming `antigravity`:
+  `provider: gemini` on any role, `normalizer.provider: gemini`,
+  `audit.security_provider: gemini`, `init --provider gemini`, and
+  `--use-planner-api-key-env`. Suggested text: "The gemini provider was
+  removed: Gemini CLI no longer serves personal Google accounts. Use
+  provider: antigravity (the agy CLI)." Delete or rewrite the Gemini tests and
+  add rejection tests. Split into runtime removal and rejection if it is too
+  large for one Work Packet.
+- GEM-5: Remove the shipped Gemini files and docs. Delete `.gemini/agents/`,
+  `.gemini/policies/`, and their copies under `examples/reference-workflow/`.
+  Delete both `.geminiignore` files unless `agy` reads them (check its docs).
+  `init` stops writing these into target repositories and leaves existing
+  copies alone. Drop `.gemini/agents/` from the supervisor repair allowlist
+  (`llm_handoff/supervisor.py`). Rewrite `README.md`, `CONFIGURATION.md`,
+  `INSTALL.md`, `QUICKSTART.md`, `WALKTHROUGH.md`, `SECURITY.md`, `docs/`, and
+  the handoff prompts to use `antigravity`, keeping one short note that Gemini
+  CLI support was removed and why. Finish with a grep of `llm_handoff/`,
+  `tests/`, `examples/`, and the config files for `gemini`: it may find only
+  rejection code and tests, agy model ids, the agy settings path, and
+  `GEMINI.md`.
+
+### 10. LINEAR-SWITCH - mode switching and onboarding
 
 - LIN-11: `init --tracker linear` and `init --tracker none` switch an
   initialized repository between modes, only between assignments and never
@@ -80,7 +182,7 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 
-### 10. RECOVERY - interrupted-run recovery
+### 11. RECOVERY - interrupted-run recovery
 
 A Ctrl+C, a closed window, or a crash at any point must leave the loop able
 to continue from a record it wrote, without the operator cleaning the working
@@ -123,7 +225,7 @@ bounces until the three-fix circuit breaker escalates.
   these as <role>'s interrupted <story> work? [y/N]`; yes carries them over,
   no leaves them as operator edits. Never decide this without the operator.
 
-### 11. CHAT - talk to the agents while the loop runs
+### 12. CHAT - talk to the agents while the loop runs
 
 The operator types at any time; a message holds the loop and is answered by
 the agent it is about, from that agent's own session, read-only. Chat never
@@ -152,17 +254,13 @@ dependencies; Windows (`msvcrt`) and POSIX.
   the same thread. Each answer runs behind a read-only boundary the provider
   enforces, not a prompt-level mode: Claude `--resume` with only read tools
   (Read, Grep, Glob, read-only `git`); Codex `exec resume` in the read-only
-  sandbox. Gemini plan mode and agy plan mode are not boundaries (Gemini plan
-  mode auto-approves `exit_plan_mode` and switches to YOLO in non-interactive
-  runs; see `docs/ARCHITECTURE.md`), so Gemini and agy answer only once the
-  story establishes an enforced boundary for them (for example a sandbox with
-  the repository mounted read-only, or deny rules for every write and shell
-  tool); until then they say they cannot answer and offer the planner. For
-  Gemini, confirm `--resume` accepts a session id, else start sessions with
-  `--session-id` and load them with `--session-file`. After each answer the
-  dispatcher also checks that `HANDOFF.md` and the Git state are unchanged and
-  pauses with a warning if not; this check is a second layer, not the
-  boundary.
+  sandbox. agy plan mode is not a boundary, so agy answers only once the
+  story establishes an enforced boundary for it (for example `--conversation`
+  with an agent whose `tools:` list holds only read tools, as in
+  GEMINI-REMOVAL); until then it says it cannot answer and offers the
+  planner. After each answer the dispatcher also checks that `HANDOFF.md` and
+  the Git state are unchanged and pauses with a warning if not; this check is
+  a second layer, not the boundary.
 - CHAT-4: Router and action path. `@role <message>` targets that role. Otherwise
   the normalizer model classifies the message against the dispatch record
   (target, question or action, confidence) and prints its pick before anything
@@ -173,7 +271,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   handoff and pull request record the result as operator-influenced (closes
   PAUSE-RECOVERY followup (d)).
 
-### 12. WORK-INTAKE - turn a plain request into epics and stories
+### 13. WORK-INTAKE - turn a plain request into epics and stories
 
 Before scoping INTAKE-1, route to `user` for a short design check.
 
@@ -248,6 +346,18 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   - (e) info: a stop request without `target_pid` is honored
     (`llm_handoff/stop_request.py` ~line 146); document it or require the pid.
 
+- From the LINEAR-WORKFLOW close (info, LIN-10):
+  - (a) `docs/TESTING.md` (~line 104) Preflight expects one tracker connector
+    line per CLI, but `doctor` groups Claude launches as `claude strict` and
+    `claude` (`llm_handoff/doctor.py` ~lines 1206-1212), so two Claude lines
+    can print; reword it and match `CONFIGURATION.md` (~lines 1192-1194).
+  - (b) planner guidance: do not suggest a failing Verification command as the
+    forced audit failure; the work-claim gate stops it as `verification_failed`
+    before any reviewer runs (`docs/TESTING.md` Scenario B).
+  - (c) `docs/TESTING.md` (~line 16) Current State full-suite counts are stale
+    (1344 passed, 18 skipped; actual 2275 passed, 20 skipped); update them or
+    drop the hard-coded numbers.
+
 ## Completed Scope Ledger
 
 - **Phase 0 bootstrap (W0.1)** - pinned dispatcher took its first assignment
@@ -318,6 +428,21 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   `cf49bf40a061c2c26c335c4e6f6ca02aa5a3b213`, audited at that SHA). Audit
   approved with sub-threshold findings only (see Open Followups). Verification:
   full test suite, 2126 passed, 20 skipped.
+- **LINEAR-WORKFLOW** - agent-side Linear workflow. LIN-7 planner lease rebuild
+  (PR #89 merge `5a7493aed9812fed177d8696ef51d56a8f9e06b9`); LIN-8 planner
+  selection rules and issue template (PR #90 merge
+  `717c4e30e7151a16568679d357e2d3282037a012`); LIN-9a (PR #91 merge
+  `4b298e0b9f909aed1b21362170f9a78202f45a28`); LIN-9b (PR #92 merge
+  `f9373a4243f21c78bcbcd485a3598e2f418b678b`); LIN-9c validator Linear
+  evidence check (PR #94 merge `f5f2b9737b3e6a1f52133729b12ecd0429a74393`);
+  LIN-9d Claude validator helper evidence row (PR #105 merge
+  `59e2533a568d06cff84e9798ff0da8da87b96002`); LIN-9e post-verdict Linear
+  evidence dispatch (PR #106 merge
+  `d012a8e6830e86f363d829c09cd81787e92c649c`); LIN-10 acceptance runbook in
+  `docs/TESTING.md` (PR #107 merge
+  `f4dc618e2bd52b417460ba6135708c1ff0ebaa84`, audited at that SHA). Audit
+  approved with info findings only (see Open Followups). Verification: full
+  test suite, 2275 passed, 20 skipped.
 
 ## Notes
 
