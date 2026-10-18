@@ -6,7 +6,7 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** GEMINI-REMOVAL (next; GEM-1 not started).
+- **Active Epic:** GEMINI-REMOVAL (next; GEM-0 not started).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -77,22 +77,28 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
 `antigravity` role adapter already ships (ANTIGRAVITY-ADAPTER). Gemini CLI
-still backs `planner` and `frontend` in the default mapping, the
-`init --provider gemini` mapping, the `gemini` security reviewer, and the
-`gemini` normalizer (API and CLI paths). Replace each with `agy` first, then
-remove the `gemini` provider. After removal, a config value or flag that names
-`gemini` fails at load with a message that points to `antigravity`, like the
-`auto_push` removal (`_drop_removed_auto_push` in `llm_handoff/config.py`).
-Only the rejection code and its tests, `CHANGELOG.md`, and prose may name the
-old provider. Keep the strings that belong to `agy` itself: its model ids
-(`gemini-3.8-flash-low`, ...), its settings path
-`~/.gemini/antigravity-cli/settings.json`, and its `GEMINI.md` rules file.
+still backs `planner` and `frontend` in the default mapping, the `init
+--provider gemini` mapping, the `gemini` security reviewer, and the `gemini`
+normalizer (API and CLI paths). GEM-0 first makes `agy` roles work (the first
+live `agy` planner run could not write files); then replace each Gemini path
+with `agy`, then remove the `gemini` provider. After removal, a config value or
+flag that names `gemini` fails at load with a message that points to
+`antigravity`, like the `auto_push` removal (`_drop_removed_auto_push` in
+`llm_handoff/config.py`). Only the rejection code and its tests,
+`CHANGELOG.md`, and prose may name the old provider. Keep the strings that
+belong to `agy` itself: its model ids (`gemini-3.8-flash-low`, ...), its
+settings path `~/.gemini/antigravity-cli/settings.json`, and its `GEMINI.md`
+rules file.
 
 `agy` facts checked live on 2026-10-17 (Windows, signed in; `agy` updated
 itself from 1.3.5 to 1.4.2 during the checks):
 
-- Without an agent tools list, print mode offers about 55 tools, including
-  file writes, `run_command`, browser control, MCP calls, and subagents.
+- Without `--agent`, print mode offers about 55 tools, including file
+  writes, `run_command`, browser control, MCP calls, and subagents. With
+  `--agent` and an agent file that sets no `tools:` list, the agent gets
+  only read and research tools (`view_file`, `search_web`,
+  `read_url_content`, `generate_image`, `send_message`, `schedule`,
+  `manage_task`) and cannot write files.
   User-wide `permissions.allow` grants (for example the AGY-4
   `command(git commit)` and `command(python)` entries) apply to every run.
 - A workspace agent file `.agents/agents/<name>.md` with a `tools:` list
@@ -106,6 +112,12 @@ itself from 1.3.5 to 1.4.2 during the checks):
   (`{"normalized": "backend"}`, one turn, about 8 seconds), and an injected
   `run_command` request did not run. `tools: []` also removes `finish`, and
   `--json-schema` then yields no `structured_output`.
+- An agent `tools:` list with a name `agy` does not know makes it exit 3
+  before the run starts (`tool "command_status" not found in registry`),
+  even though the `init` event lists `command_status`.
+- `permissions.allow` grants match the exact command line.
+  `command(git status)` allowed `git status` but refused `git status .`,
+  `git status --short`, and `python --version` (soft-denied, exit 0).
 - `agy` ignores `.gemini/agents/`, `.gemini/policies/`, and `.geminiignore`
   (it does read `GEMINI.md`, kept above). An agent that exists only under
   `.gemini/agents/` fails `--agent` with `unknown agent` (the
@@ -118,6 +130,40 @@ itself from 1.3.5 to 1.4.2 during the checks):
   does contain `.gitignore` (not tested). `.geminiignore` is what kept `.env`,
   `logs/`, and `.git` out of Gemini CLI's reach; `agy` roles never had it.
 
+- GEM-0: Make `agy` roles work. On 2026-10-17 the first live run with
+  `planner` on `antigravity` could not write `HANDOFF.md`: the shipped
+  `.agents/agents/planner.md` sets no `tools:` list, so `agy` gave it only
+  read and research tools, and it printed the handoff instead
+  (`no_new_sha`, `planner_self_loop`). Fix both gaps in the facts above.
+  (1) Every shipped `agy` agent file (`.agents/agents/*.md` and the copies
+  under `examples/reference-workflow/`) gets an explicit `tools:` list.
+  Checked live: `[view_file, list_dir, grep_search, find_by_name,
+  write_to_file, replace_file_content, multi_replace_file_content,
+  run_command]` writes files and runs granted commands. Keep the allowed
+  names in one list in code and test that every shipped file uses only
+  those, since an unknown name stops `agy` before the run. Leave out web,
+  browser, image, and subagent tools, as the Claude roles deny WebFetch and
+  WebSearch; read-only helpers such as `handoff-validator` may also leave
+  out the write tools. Linear mode (`tracker.provider: linear`) supports
+  `agy` roles, which reach Linear through `agy`'s MCP connector, so a
+  `tools:` list without MCP access would cut them off. Either give
+  Linear-mode `agy` roles the MCP tool (`call_mcp_tool`, limited per role
+  to the LIN-3 Linear tools where `agy` allows it, for example with
+  `mcp(<server>/<tool>)` grants) and check it live, or reject `antigravity`
+  roles in Linear mode at config load with a clear message; never ship a
+  list that silently drops Linear access. (2) Replace the exact-match grants
+  in `ANTIGRAVITY_REQUIRED_ALLOW` (`llm_handoff/antigravity_permissions.py`),
+  the list `init` prints, and `CONFIGURATION.md` with grants that cover
+  each command with arguments, likely `command(regex:...)` entries. The
+  regex form is untested, so route to `user` for a live check before
+  settling the list. `doctor` must recognize the new entries (it matches
+  by exact string today), and `git push` stays denied in every form. Also
+  correct the `CONFIGURATION.md` text these facts contradict (the agent
+  files "set no `tools` list"; loading via `--agent` "has not yet been
+  checked"). Done when an operator-run `agy` planner turn (Claude roles
+  cannot run `agy`) writes a valid `HANDOFF.md` and runs
+  `git log --oneline -5` and `python -m pytest --version` without a
+  soft-deny.
 - GEM-1: `antigravity` normalizer. Add `antigravity` to the normalizer
   providers. Each call runs `agy -p` from a private temp directory that holds
   only a dispatcher-written agent file
@@ -186,7 +232,9 @@ itself from 1.3.5 to 1.4.2 during the checks):
   CLI support was removed and why. Finish with a grep of `llm_handoff/`,
   `tests/`, `examples/`, and the config files for `gemini`: it may find only
   rejection code and tests, agy model ids, the agy settings path, and
-  `GEMINI.md`.
+  `GEMINI.md`. `.claude/agents/handoff-router.md` and its example copy name
+  Gemini, and Claude roles cannot write `.claude/` paths, so route those
+  edits to `user` (as in LIN-9d).
 
 ### 10. LINEAR-SWITCH - mode switching and onboarding
 
