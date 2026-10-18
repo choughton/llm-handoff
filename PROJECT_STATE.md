@@ -476,9 +476,12 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 
 ### 12. RECOVERY - interrupted-run recovery
 
-Fit: independent. Pick it when an interrupted run has just cost a manual
-cleanup, or before the loop is left to run unattended for long stretches;
-RECOVERY-1 alone removes the Ctrl+C hazard.
+Fit: RECOVERY-1 is independent and alone removes the Ctrl+C hazard.
+RECOVERY-2 needs HARD-5 first: its in-flight record on disk has the same
+forgeable-record exposure, so it must use HARD-5's operator-confirmation
+rule before carrying anything over. Pick the epic when an interrupted run
+has just cost a manual cleanup, or before the loop is left to run
+unattended for long stretches.
 
 A Ctrl+C, a closed window, or a crash at any point must leave the loop able
 to continue from a record it wrote, without the operator cleaning the working
@@ -502,7 +505,10 @@ bounces until the three-fix circuit breaker escalates.
   files that were clean when the record was written and are changed now are
   that agent's partial work: carry them over, restore a half-written
   `HANDOFF.md`, and re-dispatch the same role with a note that its previous
-  run was interrupted and its partial changes are in the tree. Files that
+  run was interrupted and its partial changes are in the tree. The record
+  is read from disk, where roles can write, so it is untrusted: apply
+  HARD-5's rule and ask the operator to confirm the story and files before
+  carrying anything over (TTY only; otherwise discard with a WARN). Files that
   were already dirty in the record stay operator-owned even if they changed
   (a fingerprint shows a change but cannot separate the operator's bytes from
   the agent's): they are never carried over or staged, and the dispatcher
