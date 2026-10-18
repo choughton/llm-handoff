@@ -290,6 +290,66 @@ APPROVED.
     assert not any("EVIDENCE_MISSING" in error for error in result.errors)
 
 
+
+_FINALIZER_EPIC_CLOSE_BODY = """# Finalizer Report - EPIC-1 close
+
+EPIC-1 was recorded in PROJECT_STATE.md at
+`877f54d07d06d033b6b3f6dded924d170e9e2116`.
+
+## Next Step
+
+- **planner:** Select the next bounded assignment.
+"""
+
+
+def _finalizer_epic_close(status: str = "verified_pass") -> str:
+    return _with_frontmatter(
+        _FINALIZER_EPIC_CLOSE_BODY,
+        next_agent="planner",
+        reason="Epic closed; planner should select the next assignment.",
+        status=status,
+        scope_sha="877f54d",
+        producer="finalizer",
+    )
+
+
+def test_finalizer_epic_close_needs_no_verification_evidence(
+    tmp_path: Path,
+) -> None:
+    # The dispatch loop does not run post-dispatch validation on finalizer
+    # output, so doctor and the supervisor preflight must accept this shape.
+    handoff_path = _write_handoff(tmp_path, _finalizer_epic_close())
+
+    result = validate_handoff(handoff_path, "finalizer", prior_handoff_sha="0" * 64)
+
+    assert result.errors == []
+    assert result.routing_instruction == "planner"
+
+
+def test_finalizer_evidence_exemption_covers_only_verified_pass(
+    tmp_path: Path,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path, _finalizer_epic_close(status="verified_fail")
+    )
+
+    result = validate_handoff(handoff_path, "finalizer", prior_handoff_sha="0" * 64)
+
+    assert any("EVIDENCE_MISSING" in error for error in result.errors)
+
+
+def test_finalizer_producer_label_does_not_exempt_another_role(
+    tmp_path: Path,
+) -> None:
+    # The loop validates by the dispatched role, so an auditor that writes
+    # producer: finalizer is still held to the evidence rule.
+    handoff_path = _write_handoff(tmp_path, _finalizer_epic_close())
+
+    result = validate_handoff(handoff_path, "auditor", prior_handoff_sha="0" * 64)
+
+    assert any("EVIDENCE_MISSING" in error for error in result.errors)
+
+
 def _evidence_errors(tmp_path: Path, evidence: str) -> list[str]:
     handoff_path = _write_handoff(
         tmp_path,

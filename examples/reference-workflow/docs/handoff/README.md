@@ -70,8 +70,9 @@ handoffs should emit the enum verbatim. Do not invent synonyms such as `done`,
 ## Verification Evidence
 
 The `## Verification Evidence` block is required when `status` is
-`ready_for_review`, `verified_pass`, or `verified_fail`. Use this exact
-five-field shape:
+`ready_for_review`, `verified_pass`, or `verified_fail`, except on the
+finalizer's `verified_pass` epic-close handoff, which carries the auditor's
+approval forward. Use this exact five-field shape:
 
 ```markdown
 ## Verification Evidence

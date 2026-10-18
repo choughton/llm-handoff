@@ -49,6 +49,9 @@ When `status` is `ready_for_review`, `verified_pass`, or `verified_fail`, includ
 - `Files changed or reviewed`
 - `Unresolved concerns`
 
+The finalizer's `verified_pass` epic-close handoff is exempt: it carries the
+auditor's approval forward and verifies no commit itself.
+
 Evidence must come from the current turn. Prior output, assumptions, and model
 confidence are not evidence.
 

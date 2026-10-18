@@ -482,6 +482,7 @@ def validate_handoff_text(
         _evidence_contract_errors(
             normalized_content,
             frontmatter,
+            previous_route=previous_route,
             git_cwd=git_cwd,
             dispatcher_commit_mode=dispatcher_commit_mode,
         )
@@ -601,11 +602,18 @@ def _evidence_contract_errors(
     handoff_content: str,
     frontmatter: HandoffRouting | None,
     *,
+    previous_route: str | None = None,
     git_cwd: Path | None = None,
     dispatcher_commit_mode: bool = False,
 ) -> list[str]:
     status = _frontmatter_status(frontmatter)
     if status not in COMPLETION_STATUSES:
+        return []
+    if previous_route == "finalizer" and status == HandoffStatus.VERIFIED_PASS:
+        # The finalizer's epic-close handoff carries the auditor's approval
+        # forward; it verifies no commit itself. The auditor handoff it
+        # replaces held the evidence, and the dispatch loop does not run
+        # post-dispatch validation on finalizer output.
         return []
 
     block = _verification_evidence_block(handoff_content)
