@@ -2015,16 +2015,23 @@ behind a Windows `.cmd` shim. A missing `codex` binary, a launch error, a
 timeout, a nonzero exit, or output that is not a valid role fails closed and
 leaves the handoff unchanged.
 
-The `gemini` adapter's CLI path runs `gemini --approval-mode plan
---sandbox=false --skip-trust --model <model> --output-format json -p <fixed
-instruction>` with the arguments passed as a list and no shell, and the
-request on stdin (headless Gemini CLI appends the `-p` text to stdin). Like
-the `codex` adapter it starts from a private temporary directory outside the
-repository, so project-level `.gemini/` settings do not apply and the call
-has nothing to read; plan mode keeps it read-only, and no container sandbox
-is used, so this path does not need Docker. The environment is the Gemini
-role allowlist with both Gemini API keys withheld. The answer is parsed from
-the JSON `response` field (a JSON object, a bare role name, or either inside
+The `gemini` adapter's CLI path runs `gemini --approval-mode plan --policy
+<deny-all policy> --sandbox=false --skip-trust --model <model> --output-format
+json -p <fixed instruction>` with the arguments passed as a list and no shell,
+and the request on stdin (headless Gemini CLI appends the `-p` text to
+stdin). Like the `codex` adapter it starts from a private temporary directory
+outside the repository, so project-level `.gemini/` settings do not apply and
+the call has nothing to read. Plan mode alone is not a tool boundary, because
+headless Gemini CLI auto-approves `exit_plan_mode` and then runs in YOLO mode.
+The temporary directory therefore also holds a policy file with one rule,
+`toolName = "*"`, `decision = "deny"`, `priority = 999`, which `--policy`
+loads in the user policy tier. It outranks the built-in plan and YOLO allow
+rules and the allow rules derived from Gemini CLI settings, so every tool
+call, including `exit_plan_mode` and MCP tools, is denied; only an admin or
+system policy on the machine ranks higher. With no tool able to run, no
+container sandbox is used, so this path does not need Docker. The environment
+is the Gemini role allowlist with both Gemini API keys withheld. The answer is
+parsed from the JSON `response` field (a JSON object, a bare role name, or either inside
 a code fence); anything else, a nonzero exit, a timeout, or a sign-in failure
 (for example `IneligibleTierError`, which Google now reports for the retired
 personal Gemini Code Assist tier) fails closed with the sign-in fix in the

@@ -27,6 +27,22 @@ GEMINI_CLI_NORMALIZER_INSTRUCTION = (
 )
 _CODE_FENCE_RE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 
+# Plan mode alone is not a tool boundary: headless Gemini CLI auto-approves
+# `exit_plan_mode` and then runs in YOLO mode (see docs/ARCHITECTURE.md,
+# Reviewer Security Posture). The normalizer answers from the prompt alone,
+# so it loads this deny-all rule through `--policy`, which puts it in the user
+# policy tier at the top priority (4.999). That outranks the built-in plan and
+# YOLO allow rules (tier 1) and every allow rule derived from settings, so
+# every tool call, `exit_plan_mode` and MCP tools included, is denied. Only an
+# admin or system policy on the machine ranks higher.
+GEMINI_NORMALIZER_POLICY_FILENAME = "llm-handoff-normalizer-deny-all.toml"
+GEMINI_NORMALIZER_DENY_ALL_POLICY = """[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+denyMessage = "llm-handoff next_agent normalization allows no tools; answer from the prompt."
+"""
+
 
 def normalize_next_agent_with_gemini(
     raw_value: str,
@@ -66,18 +82,23 @@ def _api_key_available(api_key: str | None = None) -> bool:
     )
 
 
-def build_gemini_normalizer_command(*, binary: str, model: str) -> list[str]:
+def build_gemini_normalizer_command(
+    *, binary: str, model: str, policy_path: Path
+) -> list[str]:
     return [
         binary,
-        # Read-only: the call needs no tools. Headless Gemini CLI auto-rejects
-        # any tool call plan mode would not allow.
         "--approval-mode",
         "plan",
-        # The run starts in an empty temp directory and reads nothing from
-        # the repository, so it needs no container sandbox (and no Docker).
+        # Deny every tool call, including `exit_plan_mode`, which headless
+        # plan mode would otherwise auto-approve into YOLO mode.
+        "--policy",
+        str(policy_path),
+        # With every tool denied, the turn cannot touch the host, so it needs
+        # no container sandbox (and no Docker).
         "--sandbox=false",
         # Headless Gemini CLI refuses to run in a folder it has not been told
-        # to trust; the private temp directory is ours and empty.
+        # to trust; the private temp directory is ours and holds only the
+    # policy file.
         "--skip-trust",
         "--model",
         model,
@@ -106,9 +127,12 @@ def _normalize_next_agent_with_gemini_cli(
     # next_agent text must not be able to steer Gemini CLI into reading
     # checkout files, and project-level .gemini/ settings do not apply.
     with tempfile.TemporaryDirectory(prefix="llm-handoff-normalizer-") as tmp:
+        policy_path = Path(tmp) / GEMINI_NORMALIZER_POLICY_FILENAME
+        policy_path.write_text(GEMINI_NORMALIZER_DENY_ALL_POLICY, encoding="utf-8")
         command = build_gemini_normalizer_command(
             binary=_resolve_command_binary(config.GEMINI_BINARY),
             model=model,
+            policy_path=policy_path,
         )
         try:
             completed = _run_cli_process(

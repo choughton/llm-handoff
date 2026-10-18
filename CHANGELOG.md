@@ -74,7 +74,9 @@ This project follows a simple pre-release changelog until the first public tag.
   through the Gemini CLI sign-in when no `GEMINI_API_KEY` or `GOOGLE_API_KEY`
   is set, as the Claude and Codex normalizers already did, so a Gemini-only
   machine needs no API key; `doctor` passes its `normalizer` line when the
-  `gemini` binary is on `PATH`.
+  `gemini` binary is on `PATH`. That CLI run loads a deny-all `--policy` file
+  so no tool call is approved, including the `exit_plan_mode` that headless
+  plan mode would otherwise approve into YOLO mode.
 - On Windows, provider CLIs installed through npm (`codex.cmd`, `gemini.cmd`)
   are now launched directly through their shim's target (`node <entry>.js`)
   instead of through the `.cmd` shim itself. Running the shim made `cmd.exe`

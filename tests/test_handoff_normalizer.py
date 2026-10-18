@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tomllib
 
 import pytest
 
@@ -205,11 +206,17 @@ class _FakeGeminiRun:
         self.returncode = returncode
         self.stderr = stderr
         self.calls: list[tuple[list[str], dict[str, object]]] = []
+        # The policy file lives in a temp directory removed after the run, so
+        # it is read while the fake "process" runs.
+        self.policies: list[str] = []
 
     def __call__(
         self, command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         self.calls.append((command, kwargs))
+        if "--policy" in command:
+            policy_path = Path(command[command.index("--policy") + 1])
+            self.policies.append(policy_path.read_text(encoding="utf-8"))
         return subprocess.CompletedProcess(
             command, self.returncode, stdout=self.stdout, stderr=self.stderr
         )
@@ -260,6 +267,38 @@ def test_gemini_normalizer_runs_the_gemini_cli_login_without_an_api_key(
     assert "GEMINI_API_KEY" not in {name.upper() for name in env}
     assert "GOOGLE_API_KEY" not in {name.upper() for name in env}
     assert list(tmp_path.iterdir()) == []
+
+
+def test_gemini_cli_normalizer_denies_every_tool_through_a_policy_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Headless plan mode auto-approves exit_plan_mode and then runs in YOLO
+    # mode, so plan mode alone does not keep the turn read-only.
+    _no_gemini_keys(monkeypatch)
+    fake_run = _FakeGeminiRun()
+    monkeypatch.setattr(gemini_normalizer, "_run_cli_process", fake_run)
+
+    assert (
+        gemini_normalizer.normalize_next_agent_with_gemini(
+            "implementer", model="gemini-flash-test", timeout_ms=1000
+        )
+        == "backend"
+    )
+
+    command, kwargs = fake_run.calls[0]
+    policy_path = Path(command[command.index("--policy") + 1])
+    # The policy sits in the private temp directory the turn runs from.
+    assert policy_path.parent == Path(str(kwargs["cwd"]))
+    assert not policy_path.exists()
+    assert fake_run.policies == [gemini_normalizer.GEMINI_NORMALIZER_DENY_ALL_POLICY]
+    rules = tomllib.loads(fake_run.policies[0])["rule"]
+    # One unconditional rule: every tool, any mode, top priority in its tier.
+    assert len(rules) == 1
+    assert rules[0]["toolName"] == "*"
+    assert rules[0]["decision"] == "deny"
+    assert rules[0]["priority"] == 999
+    assert set(rules[0]) == {"toolName", "decision", "priority", "denyMessage"}
 
 
 def test_gemini_normalizer_prefers_the_api_key_path_when_a_key_is_set(
