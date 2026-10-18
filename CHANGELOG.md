@@ -6,6 +6,20 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An `agy` deny-rule refusal now fails the dispatch. `agy` reports a refused
+  command as a `run_command` tool error inside a `SUCCESS` result with exit
+  code 0, so a role turn could end normally after a `git push` was refused.
+  The adapter now records each tool step in `ERROR` state whose message
+  contains `Matches user-configured deny rule` (once per step), sets a
+  nonzero exit code even when the role recovers, and adds one stderr line and
+  one `ERROR` log line per refusal, starting with the new
+  `ANTIGRAVITY_DENY_RULE_MARKER` and naming the command line and message.
+  Both fields pass through the new `redact_credentials()` first, which
+  replaces URL userinfo, authorization headers, bearer tokens, secret-named
+  `NAME=value` pairs and `--flag value` arguments, and common token prefixes
+  with `[REDACTED]`, so a refused `git push https://user:TOKEN@host/...` does
+  not write the token to the console or dispatch log. A resumed run that fails this way is not rerun in a fresh conversation. Other
+  tool errors, and commands that run and fail on their own, still pass.
 - The post-dispatch gate now fails a handoff rewrite that silently drops
   planned stories. It compares the new `remaining_stories` with the handoff
   the dispatch started from, matching stories by their leading ID token (a
@@ -41,8 +55,8 @@ This project follows a simple pre-release changelog until the first public tag.
   entry that matches a `git push` command line, says that legacy exact grants
   do not cover arguments, and prints regex backslashes without doubling them.
   `CONFIGURATION.md` lists the entries and the live `agy` 1.4.2 results
-  behind them, the deny breadth, that `python( .*)?` allows `python -c`, and
-  that a deny hit is not yet treated as a failed dispatch. The `python` and
+  behind them, the deny breadth, and that `python( .*)?` allows
+  `python -c`. The `python` and
   `python3` grants still let a role run `git push` from a subprocess, the
   same known gap as Claude's `Bash(python:*)`, tracked as GEM-0e.
 - Every shipped `agy` agent file under `.agents/agents/` (and its copy in

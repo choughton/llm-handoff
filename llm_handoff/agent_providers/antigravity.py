@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 import time
 
 from llm_handoff import config
@@ -30,6 +31,52 @@ from llm_handoff.usage_log import format_usage_line
 
 ANTIGRAVITY_SUCCESS_STATUS = "SUCCESS"
 ANTIGRAVITY_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--dangerously-skip-permissions",)
+# Marker on the stderr and log line written for each deny-rule refusal.
+ANTIGRAVITY_DENY_RULE_MARKER = "Antigravity deny rule refused a command"
+# Fixed text agy puts in a tool error when a permissions.deny entry matched.
+# The rule text before it varies (for example ``command(regex:...)``), so
+# detection keys on this text only.
+_DENY_RULE_ERROR_TEXT = "Matches user-configured deny rule"
+# Replacement text for credentials removed from a logged refusal.
+_REDACTED = "[REDACTED]"
+_SECRET_NAME = (
+    r"[A-Za-z0-9_.-]*(?:token|secret|password|passwd|api[_-]?key|apikey"
+    r"|access[_-]?key|private[_-]?key|credentials?|client[_-]?secret)"
+    r"[A-Za-z0-9_.-]*"
+)
+_SECRET_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s\"']+)"
+# Each pattern keeps group 1 and replaces the rest of the match with
+# _REDACTED. A refused command can carry credentials (for example
+# ``git push https://user:TOKEN@host/repo.git``), and agy repeats the
+# command in its error message, so both fields go through these patterns.
+_CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # URL userinfo in a quoted URL: everything between the scheme and the
+    # last ``@`` before the closing quote or the first ``/``, so quoted
+    # passwords with spaces or the other quote character are covered.
+    re.compile(r"((?P<q>[\"'])[A-Za-z][A-Za-z0-9+.-]*://)(?:(?!(?P=q))[^/])+(?=@)"),
+    # URL userinfo: scheme://user:pass@host or scheme://token@host. Userinfo
+    # may hold any punctuation, including quotes and a literal ``@``, so the
+    # match runs to the last ``@`` before whitespace or the first ``/``.
+    re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/]+(?=@)"),
+    # Authorization headers, with an optional scheme word.
+    re.compile(
+        r"(?i)(authorization\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?)"
+        + _SECRET_VALUE
+    ),
+    re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+"),
+    # NAME=value where NAME names a secret (env vars, --password=...).
+    re.compile(r"(?i)(\b" + _SECRET_NAME + r"\s*=\s*)" + _SECRET_VALUE),
+    # --token VALUE style flags; a following flag is not taken as the value.
+    re.compile(
+        r"(?i)((?<![\w-])--?" + _SECRET_NAME + r"\s+)(?!-)" + _SECRET_VALUE
+    ),
+    # Well-known token prefixes that appear without a name.
+    re.compile(
+        r"()\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+        r"|glpat-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}"
+        r"|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})"
+    ),
+)
 # step_type values whose text_delta is not the agent's own reply.
 _NON_RESPONSE_STEP_TYPES = frozenset({"user_input", "tool", "checkpoint"})
 
@@ -113,9 +160,11 @@ def invoke_antigravity(
         and result.exit_code != 0
         and find_permission_soft_deny(result.stderr) is None
         and find_auth_failure(result.stderr) is None
+        and ANTIGRAVITY_DENY_RULE_MARKER not in result.stderr
     ):
-        # A soft-denied or signed-out run would fail the same way in a fresh
-        # conversation, so only other resume failures get the one fresh rerun.
+        # A soft-denied, deny-rule-refused, or signed-out run would fail the
+        # same way in a fresh conversation, so only other resume failures get
+        # the one fresh rerun.
         session_invalidated = True
         if log is not None:
             role_phrase = str(role).strip().lower() or "agent"
@@ -230,6 +279,8 @@ class _AntigravityStreamJsonMonitor:
     _line_buffer: str = ""
     _response_line_buffer: str = ""
     _logged_tool_steps: set[object] = field(default_factory=set)
+    deny_rule_hits: list[tuple[str, str]] = field(default_factory=list)
+    _deny_rule_steps: set[object] = field(default_factory=set)
 
     def consume_stdout(self, chunk: str) -> None:
         if not chunk:
@@ -271,6 +322,15 @@ class _AntigravityStreamJsonMonitor:
                 "Antigravity stream-json output had no result event; the run "
                 "did not report a final status.",
             )
+
+        if self.deny_rule_hits:
+            # agy reports SUCCESS after a deny rule refuses a command, even
+            # when the role recovers; the refused action was still not done.
+            exit_code = exit_code or 1
+            for command_line, message in self.deny_rule_hits:
+                line = f"{ANTIGRAVITY_DENY_RULE_MARKER}: {command_line} ({message})"
+                stderr = _append_line(stderr, line)
+                self._emit("ERROR", f"{self.agent_name}: {line}")
 
         soft_deny = find_permission_soft_deny(result.stderr)
         if soft_deny is not None:
@@ -354,6 +414,7 @@ class _AntigravityStreamJsonMonitor:
 
         step_type = event.get("step_type")
         if step_type == "tool":
+            self._record_deny_rule_hit(event)
             tool_name = event.get("tool_name")
             if isinstance(tool_name, str) and tool_name:
                 step_key = event.get("step_index", object())
@@ -368,6 +429,36 @@ class _AntigravityStreamJsonMonitor:
             self.text_deltas.append(text_delta)
             self._response_line_buffer += text_delta
             self._flush_response_lines()
+
+    def _record_deny_rule_hit(self, event: dict[str, object]) -> None:
+        if event.get("state") != "ERROR":
+            return
+        tool_info = event.get("tool_info")
+        if not isinstance(tool_info, dict):
+            return
+        error = tool_info.get("error")
+        if not isinstance(error, dict):
+            return
+        message = error.get("message")
+        if not isinstance(message, str) or _DENY_RULE_ERROR_TEXT not in message:
+            return
+        step_key = event.get("step_index", object())
+        if step_key in self._deny_rule_steps:
+            return
+        self._deny_rule_steps.add(step_key)
+        parameters = tool_info.get("parameters")
+        command_line = (
+            parameters.get("CommandLine") if isinstance(parameters, dict) else None
+        )
+        if not isinstance(command_line, str) or not command_line.strip():
+            command_line = "unknown command"
+        # Redact before storing: these fields reach stderr and the dispatch log.
+        self.deny_rule_hits.append(
+            (
+                redact_credentials(command_line.strip()),
+                redact_credentials(message.strip()),
+            )
+        )
 
     def _handle_result(self, event: dict[str, object]) -> None:
         self.result_event = event
@@ -471,6 +562,18 @@ def _format_error(error: object) -> str:
     if error:
         return str(error)
     return "no error detail reported"
+
+
+def redact_credentials(text: str) -> str:
+    """Return ``text`` with credential-shaped substrings replaced.
+
+    Covers URL userinfo, authorization headers, bearer tokens, secret-named
+    ``NAME=value`` pairs and ``--flag value`` arguments, and common token
+    prefixes. This is a best-effort filter for log lines, not a guarantee.
+    """
+    for pattern in _CREDENTIAL_PATTERNS:
+        text = pattern.sub(lambda match: f"{match.group(1)}{_REDACTED}", text)
+    return text
 
 
 def _append_line(text: str, line: str) -> str:
