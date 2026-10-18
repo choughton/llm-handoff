@@ -7,7 +7,9 @@ by this module, under a fresh random name, and allows only the read tools in
 ``ANTIGRAVITY_SECURITY_TOOLS``: no ``run_command``, and no write, browser,
 image, MCP, or subagent tools. The review input is a copy of the review
 scope's diff inside the temp directory; the repository root is named as
-read-only context.
+read-only context. If the system temp directory (``TMPDIR``, ``TEMP``, or
+``TMP``) resolves inside the repository, the review fails closed before any
+file is written.
 
 Output parsing fails closed. Only ``init``, ``step_update``, and ``result``
 events are accepted; only ``user_input``, ``agent_response``, ``finish``, and
@@ -190,8 +192,41 @@ def run_antigravity_security_review(
     start = time.monotonic()
     resolved_binary = _resolve_reviewer_binary(binary, repo_root)
     command: list[str] = [resolved_binary]
-    with tempfile.TemporaryDirectory(prefix="llm-handoff-security-") as tmp:
+    temp_base = reviewer_temp_base(repo_root)
+    if temp_base is None:
+        # TMPDIR, TEMP, or TMP points inside the checkout. Fail closed rather
+        # than expose the reviewer workspace to the repository.
+        return AntigravitySecurityRun(
+            command=tuple(command),
+            exit_code=1,
+            elapsed_seconds=time.monotonic() - start,
+            stdout="",
+            stderr="",
+            error=(
+                f"{_FAILED} failed: the system temp directory is inside the "
+                "repository; point TMPDIR, TEMP, or TMP outside the repository."
+            ),
+            start_failure="preflight",
+        )
+    with tempfile.TemporaryDirectory(
+        prefix="llm-handoff-security-", dir=str(temp_base)
+    ) as tmp:
         tmp_dir = Path(tmp)
+        if _is_within(tmp_dir, repo_root):
+            # Defense in depth: the created directory resolves inside the
+            # repository, for example through a symlink or junction.
+            return AntigravitySecurityRun(
+                command=tuple(command),
+                exit_code=1,
+                elapsed_seconds=time.monotonic() - start,
+                stdout="",
+                stderr="",
+                error=(
+                    f"{_FAILED} failed: the reviewer temp directory resolves "
+                    "inside the repository."
+                ),
+                start_failure="preflight",
+            )
         schema_path = tmp_dir / ANTIGRAVITY_SECURITY_SCHEMA_FILENAME
         schema_path.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
         diff_path = tmp_dir / ANTIGRAVITY_SECURITY_DIFF_FILENAME
@@ -381,6 +416,23 @@ def _step_error(payload: Mapping[str, object], line_number: int) -> str | None:
             "tool is missing or outside the reviewer tool list."
         )
     return None
+
+
+def reviewer_temp_base(repo_root: Path) -> Path | None:
+    """Return the resolved system temp directory, or None if it is in the repo.
+
+    ``tempfile.gettempdir()`` honors ``TMPDIR``, ``TEMP``, and ``TMP``; a
+    value inside the checkout would put the reviewer workspace, its diff and
+    schema copies, and its agent file inside the repository.
+    """
+    base = Path(tempfile.gettempdir()).resolve()
+    if _is_within(base, repo_root):
+        return None
+    return base
+
+
+def _is_within(path: Path, repo_root: Path) -> bool:
+    return Path(path).resolve().is_relative_to(Path(repo_root).resolve())
 
 
 def _resolve_reviewer_binary(binary: str, repo_root: Path) -> str:

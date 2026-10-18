@@ -429,6 +429,8 @@ not chosen automatically but can still be set explicitly.
   file an implementer can edit defines the agent. The agent file allows only
   `view_file`, `list_dir`, `grep_search`, `find_by_name`, and `finish`, with
   `commandExecutionPolicy: off`, and the directory is removed after the run.
+  If the system temp directory (`TMPDIR`, `TEMP`, or `TMP`) resolves inside
+  the repository, the review fails closed before any file is written.
   The command never carries `--dangerously-skip-permissions`, even when the
   antigravity role sets `unsafe_bypass: true`. The dispatcher accepts only
   `user_input`, `agent_response`, `finish`, and allowed-tool steps and one

@@ -348,6 +348,56 @@ def test_temp_directory_is_outside_the_repo_and_removed_after_success(
     assert not cwd.exists()
 
 
+@pytest.mark.parametrize("inside", ["repo", "repo/.tmp/nested"])
+def test_temp_directory_inside_the_repo_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inside: str,
+) -> None:
+    # TMPDIR, TEMP, or TMP pointing into the checkout must not put the
+    # reviewer workspace there; tempfile.tempdir is what gettempdir returns.
+    repo = _repo(tmp_path)
+    temp_inside = tmp_path / inside
+    temp_inside.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(review.tempfile, "tempdir", str(temp_inside))
+    before = sorted(path.relative_to(repo) for path in repo.rglob("*"))
+    fake = _FakeAgy(stdout=_clean_stream())
+
+    run = _run(monkeypatch, tmp_path, fake, config=_config(repo))
+
+    assert fake.calls == []
+    assert run.verdict is None
+    assert run.start_failure == "preflight"
+    assert run.error is not None
+    assert run.error.startswith("security_reviewer_failed:")
+    assert "inside the repository" in run.error
+    after = sorted(
+        path.relative_to(repo)
+        for path in repo.rglob("*")
+        if not path.is_relative_to(repo / "docs")
+    )
+    assert after == before
+    assert not list(temp_inside.glob("llm-handoff-security-*"))
+
+
+def test_temp_directory_outside_the_repo_is_used_as_the_base(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    temp_outside = tmp_path / "sys-tmp"
+    temp_outside.mkdir()
+    monkeypatch.setattr(review.tempfile, "tempdir", str(temp_outside))
+    fake = _FakeAgy(stdout=_clean_stream())
+
+    run = _run(monkeypatch, tmp_path, fake, config=_config(repo))
+
+    assert run.error is None
+    assert fake.calls[0]["cwd"].resolve().parent == temp_outside.resolve()
+    assert review.reviewer_temp_base(repo) == temp_outside.resolve()
+    assert review.reviewer_temp_base(temp_outside) is None
+
+
 @pytest.mark.parametrize(
     "raises",
     [

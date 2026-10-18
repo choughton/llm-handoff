@@ -16,7 +16,9 @@ This project follows a simple pre-release changelog until the first public tag.
   verdict schema, and a dispatcher-written agent file named
   `llm-handoff-security-<random hex>` with
   `tools: [view_file, list_dir, grep_search, find_by_name, finish]` and
-  `commandExecutionPolicy: off`. `--model` is added only when the first
+  `commandExecutionPolicy: off`. If the system temp directory (`TMPDIR`,
+  `TEMP`, or `TMP`) resolves inside the repository, the review fails closed
+  before writing any file. `--model` is added only when the first
   `antigravity` role sets `model`; the unsafe-bypass argument is never added.
   Only `user_input`, `agent_response`, `finish`, and allowed-tool steps and
   exactly one `SUCCESS` result are accepted, the verdict comes only from
