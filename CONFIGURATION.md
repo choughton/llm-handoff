@@ -1128,23 +1128,59 @@ Only the Antigravity adapter checks for that phrase; output from other
 providers that says `authentication required` gets normal failure handling.
 
 Antigravity-mapped roles need these entries in
-`~/.gemini/antigravity-cli/settings.json`. Under `permissions.allow`:
-`command(git status)`, `command(git diff)`, `command(git log)`,
-`command(git show)`, `command(git cat-file)`, `command(git add)`,
-`command(git commit)`, `command(git rev-parse)`, `command(python)`,
-`command(python3)`, and `command(pytest)` (the same commands as the default
-Claude `Bash(...)` rules), plus `command(<cmd>)` for each Work Packet
-Verification command you expect. Under `permissions.deny`:
-`command(git push)` and `unsandboxed(git push)`. This is the minimal
-recommended set: it grants no `git push` and no wildcard or regex shell grant.
+`~/.gemini/antigravity-cli/settings.json`. Under `permissions.allow`, one
+anchored regex grant per command, so each covers the command with any
+arguments:
+
+- `command(regex:^git status( .*)?$)`
+- `command(regex:^git diff( .*)?$)`
+- `command(regex:^git log( .*)?$)`
+- `command(regex:^git show( .*)?$)`
+- `command(regex:^git cat-file( .*)?$)`
+- `command(regex:^git add( .*)?$)`
+- `command(regex:^git commit( .*)?$)`
+- `command(regex:^git rev-parse( .*)?$)`
+- `command(regex:^python( .*)?$)`
+- `command(regex:^python3( .*)?$)`
+- `command(regex:^pytest( .*)?$)`
+
+These are the same commands as the default Claude `Bash(...)` rules. Add
+`command(regex:^<cmd>( .*)?$)` for each Work Packet Verification command you
+expect, with a backslash before each regex metacharacter in `<cmd>`
+(`\ . + * ? ( ) | [ ] { } ^ $`); spaces and `-` stay as they are. Under
+`permissions.deny`:
+
+- `command(regex:^git( .*)? push( .*)?$)`
+- `unsandboxed(regex:^git( .*)? push( .*)?$)`
+
+The regex form was checked live on 2026-10-17 with `agy` 1.4.2:
+`git status --short`, `git log --oneline -5`, and `python -m pytest --version`
+ran under these grants, and `git statusx` was refused. In the same check, the
+earlier exact-string entries (`command(git status)` and so on) did not cover
+commands run with arguments, and the exact-string deny entries
+`command(git push)` and `unsandboxed(git push)` blocked only a bare
+`git push`: `git push origin main` ran when a broader `git` grant was
+present. The deny entries above also refused option-prefixed pushes such as
+`git -c core.pager=cat push origin main` and `git -C . push origin main`.
+
+The deny entries are deliberately broad: they refuse any `git` command line
+that contains ` push`, for example `git log --grep push`. The
+`command(regex:^python( .*)?$)` grant allows `python -c <code>`, which matches
+the Claude `Bash(python:*)` rule. Unanchored regex semantics, glob forms, `git`
+aliases, and `sh -c "git push"` were not checked.
+
+When a deny entry refuses a command, `agy` reports it as a `run_command` tool
+error inside a `SUCCESS` result with empty stderr. The adapter does not yet
+treat that as a failed dispatch, so the role's turn can still end normally.
+
 The grants are user-wide: they apply to every `agy` run for that user, in any
 repository, and since the adapter passes no `--sandbox` flag they are the
-only shell guardrail. Whether `command(git diff)` also covers
-`git diff --stat` has not been checked against a live `agy`.
+only shell guardrail.
 
 When `agy` is on `PATH`, `llm-handoff init` (including `--dry-run`) prints
-this list, adds `command(<cmd>)` for `--verification-command` when given, and
-asks you to add the entries yourself and then run `llm-handoff doctor`.
+this list, adds `command(regex:^<cmd>( .*)?$)` for `--verification-command`
+when given, and asks you to add the entries yourself and then run
+`llm-handoff doctor`.
 `agy` does not change the provider mapping `init` picks. When any role or
 fallback has `provider: antigravity` without `unsafe_bypass: true`,
 `llm-handoff doctor` reads the settings file and reports one
@@ -1157,18 +1193,28 @@ entries plus `verification_allowed_prefixes`:
   `deny` key counts as an empty list; an optional `ask` key must also be a
   list of strings).
 - FAIL when a `permissions.allow` entry starts with `command(git push` or
-  `unsandboxed(git push`.
+  `unsandboxed(git push`, or is a `command(regex:<p>)` or
+  `unsandboxed(regex:<p>)` entry whose pattern matches (by `re.search`) any of
+  `git push`, `git push origin main`, or `git -C . push origin main`. For
+  example, `command(regex:^git( .*)?$)` fails. A pattern that does not compile
+  is not counted.
 - WARN for each required allow entry or deny entry that is missing. Entries
-  match by exact string, so grants written another way, such as regex grants,
-  are not recognized.
+  match by exact string, and legacy `command(<cmd>)` exact grants do not cover
+  commands run with arguments, so settings that still hold them get this
+  warning. Legacy deny entries `command(git push)` and
+  `unsandboxed(git push)` get a warning naming both regex deny entries.
 - WARN when a `permissions.deny` or `permissions.ask` rule overrides a
   required allow entry. Antigravity applies Deny > Ask > Allow, and a headless
   `agy -p` run denies any command that needs approval, so a rule such as
-  `"ask": ["command(*)"]` blocks every required command. The doctor counts a
-  `command(...)` rule as overriding when it matches exactly, is a word prefix
-  (`command(git)` for `git status`), is a `*` or `?` wildcard pattern that
-  matches, or is a `regex:` pattern that matches. This errs toward warning;
-  the exact `agy` matching rules have not been checked against a live CLI.
+  `"ask": ["command(*)"]` blocks every required command. The doctor tests each
+  `command(...)` rule against the plain required commands (`git status`,
+  `python`, each verification command, and so on) and reports the matching
+  allow entries. It counts a rule as overriding when it matches exactly, is a
+  word prefix (`command(git)` for `git status`), is a `*` or `?` wildcard
+  pattern that matches, or is a `regex:` pattern that matches. The required
+  deny entries do not match any required command, so they are not reported.
+  This errs toward warning; the exact `agy` matching rules for every form have
+  not been checked against a live CLI.
 - PASS when none of the above applies.
 
 Roles with `unsafe_bypass: true` launch with `--dangerously-skip-permissions`

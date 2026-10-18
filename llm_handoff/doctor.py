@@ -61,6 +61,7 @@ from llm_handoff.agent_providers.gemini import (
 from llm_handoff.antigravity_permissions import (
     ANTIGRAVITY_REQUIRED_DENY,
     antigravity_allow_entries,
+    antigravity_allowed_commands,
     antigravity_settings_path,
 )
 from llm_handoff.config import (
@@ -457,6 +458,30 @@ def _check_container_runtime(
 
 _ANTIGRAVITY_CHECK_NAME = "antigravity permissions"
 _GIT_PUSH_GRANT_PREFIXES = ("command(git push", "unsandboxed(git push")
+_REGEX_GRANT_PREFIXES = ("command(regex:", "unsandboxed(regex:")
+# Push command lines a regex allow entry must not match.
+_GIT_PUSH_PROBES = ("git push", "git push origin main", "git -C . push origin main")
+
+
+def _regex_grant_allows_push(entry: str) -> bool:
+    """Return True when a regex allow ``entry`` matches a `git push` line.
+
+    Only ``command(regex:<p>)`` and ``unsandboxed(regex:<p>)`` entries are
+    checked; a pattern that does not compile is not counted.
+    """
+    if not entry.endswith(")"):
+        return False
+    for prefix in _REGEX_GRANT_PREFIXES:
+        if entry.startswith(prefix):
+            pattern = entry[len(prefix) : -1]
+            break
+    else:
+        return False
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        return False
+    return any(compiled.search(probe) is not None for probe in _GIT_PUSH_PROBES)
 
 
 def _read_antigravity_permissions(
@@ -519,15 +544,22 @@ def _command_rule_shadows(rule: str, command: str) -> bool:
 
 
 def _shadowing_rules(
-    rules: list[str], allow_required: tuple[str, ...]
+    rules: list[str],
+    allowed_commands: tuple[str, ...],
+    allow_required: tuple[str, ...],
 ) -> list[tuple[str, list[str]]]:
-    """Pair each rule in ``rules`` with the required allow entries it shadows."""
+    """Pair each rule in ``rules`` with the required allow entries it shadows.
+
+    Each rule is tested against the plain commands in ``allowed_commands``;
+    a hit reports the matching entry from ``allow_required``, which lines up
+    with ``allowed_commands`` one-to-one.
+    """
     shadowed: list[tuple[str, list[str]]] = []
     for rule in rules:
         hits = [
             entry
-            for entry in allow_required
-            if _command_rule_shadows(rule, entry[len("command(") : -1])
+            for command, entry in zip(allowed_commands, allow_required, strict=True)
+            if _command_rule_shadows(rule, command)
         ]
         if hits:
             shadowed.append((rule, hits))
@@ -535,7 +567,11 @@ def _shadowing_rules(
 
 
 def _ascii_entry(entry: str) -> str:
-    return entry.encode("unicode_escape").decode("ascii")
+    """Escape characters outside printable ASCII; keep regex backslashes as-is."""
+    return "".join(
+        ch if " " <= ch <= "~" else ch.encode("unicode_escape").decode("ascii")
+        for ch in entry
+    )
 
 
 def _describe_shadowing(shadowed: list[tuple[str, list[str]]]) -> str:
@@ -563,6 +599,9 @@ def _check_antigravity_permissions(
     if not labels:
         return
     covers = f"(covers {', '.join(labels)})"
+    allowed_commands = antigravity_allowed_commands(
+        dispatch_config.verification_allowed_prefixes
+    )
     allow_required = antigravity_allow_entries(
         dispatch_config.verification_allowed_prefixes
     )
@@ -594,7 +633,9 @@ def _check_antigravity_permissions(
     allow, deny, ask = result
     found = False
     for entry in allow:
-        if entry.startswith(_GIT_PUSH_GRANT_PREFIXES):
+        if entry.startswith(_GIT_PUSH_GRANT_PREFIXES) or _regex_grant_allows_push(
+            entry
+        ):
             found = True
             checks.append(
                 DoctorCheck(
@@ -610,7 +651,7 @@ def _check_antigravity_permissions(
     # soft-denies any command that needs approval, so a deny or ask rule that
     # matches a required allow entry blocks that command despite the grant.
     for key, rules in (("deny", deny), ("ask", ask)):
-        shadowed = _shadowing_rules(rules, allow_required)
+        shadowed = _shadowing_rules(rules, allowed_commands, allow_required)
         if shadowed:
             found = True
             checks.append(
@@ -633,9 +674,9 @@ def _check_antigravity_permissions(
                 "WARN",
                 _ANTIGRAVITY_CHECK_NAME,
                 f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow is missing "
-                f"{', '.join(missing_allow)} {covers}; only exact entries are "
-                "recognized, so grants written another way (for example regex "
-                "grants) are not counted",
+                f"{', '.join(missing_allow)} {covers}; entries are matched by "
+                "exact string, and legacy `command(<cmd>)` exact grants do not "
+                "cover commands run with arguments",
             )
         )
     missing_deny = [entry for entry in ANTIGRAVITY_REQUIRED_DENY if entry not in deny]

@@ -7,8 +7,13 @@ holds the one shared list of entries: `llm-handoff init` prints it, and
 writes that file; the user adds the entries.
 
 The allow entries mirror the `Bash(...)` rules in
-`CLAUDE_DEFAULT_ALLOWED_TOOLS`. `git push` is denied in both the plain and the
-unsandboxed form.
+`CLAUDE_DEFAULT_ALLOWED_TOOLS`. Each one is an anchored regex grant,
+``command(regex:^<cmd>( .*)?$)``, so it covers the command with any
+arguments (``git rev-parse HEAD``, ``git commit -m ...``) but not a longer
+command name (``git statusx``). `git push` is denied in both the plain and the
+unsandboxed form by a regex that also blocks option-prefixed pushes such as
+``git -C . push``; that deny also refuses any other `git` command line that
+contains `` push``.
 
 It also holds the `tools:` list that every shipped `agy` agent file under
 `.agents/agents/` declares. A file without that list gets only read tools and
@@ -23,22 +28,47 @@ from pathlib import Path
 
 from llm_handoff.provider_auth import ANTIGRAVITY_SETTINGS_PATH
 
-ANTIGRAVITY_REQUIRED_ALLOW: tuple[str, ...] = (
-    "command(git status)",
-    "command(git diff)",
-    "command(git log)",
-    "command(git show)",
-    "command(git cat-file)",
-    "command(git add)",
-    "command(git commit)",
-    "command(git rev-parse)",
-    "command(python)",
-    "command(python3)",
-    "command(pytest)",
+# The commands every Antigravity role may run, with any arguments.
+ANTIGRAVITY_ALLOWED_COMMANDS: tuple[str, ...] = (
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "git cat-file",
+    "git add",
+    "git commit",
+    "git rev-parse",
+    "python",
+    "python3",
+    "pytest",
+)
+
+# Regex metacharacters escaped in a grant. `re.escape` is not used because it
+# also escapes spaces, and RE2-style engines reject `\ `.
+_REGEX_METACHARACTERS = frozenset("\\.+*?()|[]{}^$")
+
+
+def antigravity_command_grant(command: str) -> str:
+    """Return the ``agy`` allow entry that covers ``command`` with arguments.
+
+    The result is ``command(regex:^<escaped>( .*)?$)``, where ``<escaped>`` is
+    the stripped command with a backslash before each regex metacharacter
+    (``\\ . + * ? ( ) | [ ] { } ^ $``). Spaces, ``-``, and every other
+    character are left as they are.
+    """
+
+    escaped = "".join(
+        f"\\{ch}" if ch in _REGEX_METACHARACTERS else ch for ch in command.strip()
+    )
+    return f"command(regex:^{escaped}( .*)?$)"
+
+
+ANTIGRAVITY_REQUIRED_ALLOW: tuple[str, ...] = tuple(
+    antigravity_command_grant(command) for command in ANTIGRAVITY_ALLOWED_COMMANDS
 )
 ANTIGRAVITY_REQUIRED_DENY: tuple[str, ...] = (
-    "command(git push)",
-    "unsandboxed(git push)",
+    "command(regex:^git( .*)? push( .*)?$)",
+    "unsandboxed(regex:^git( .*)? push( .*)?$)",
 )
 
 # The `tools:` list in each shipped `.agents/agents/*.md` file. A tool name
@@ -62,19 +92,35 @@ ANTIGRAVITY_AGENT_WRITE_TOOLS: tuple[str, ...] = (
 )
 
 
-def antigravity_allow_entries(verification_commands: Iterable[str]) -> tuple[str, ...]:
-    """Return the required allow entries plus one per verification command.
+def antigravity_allowed_commands(
+    verification_commands: Iterable[str],
+) -> tuple[str, ...]:
+    """Return the required commands plus each stripped verification command.
 
-    Each verification command becomes ``command(<cmd>)`` (stripped). Empty
-    commands are skipped, duplicates are dropped, and first-seen order is kept.
+    Empty commands are skipped, duplicates are dropped, and first-seen order
+    is kept. The result lines up one-to-one with `antigravity_allow_entries`.
     """
 
-    entries = list(ANTIGRAVITY_REQUIRED_ALLOW)
+    commands = list(ANTIGRAVITY_ALLOWED_COMMANDS)
     for command in verification_commands:
         stripped = command.strip()
         if stripped:
-            entries.append(f"command({stripped})")
-    return tuple(dict.fromkeys(entries))
+            commands.append(stripped)
+    return tuple(dict.fromkeys(commands))
+
+
+def antigravity_allow_entries(verification_commands: Iterable[str]) -> tuple[str, ...]:
+    """Return the required allow entries plus one per verification command.
+
+    Each verification command becomes ``antigravity_command_grant(<cmd>)``.
+    Empty commands are skipped, duplicates are dropped, and first-seen order
+    is kept.
+    """
+
+    return tuple(
+        antigravity_command_grant(command)
+        for command in antigravity_allowed_commands(verification_commands)
+    )
 
 
 def antigravity_settings_path() -> Path:

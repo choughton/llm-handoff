@@ -1329,6 +1329,7 @@ def test_supervisor_command_available_is_shared_with_doctor(
 # --- Antigravity permissions -------------------------------------------------
 
 AGY_CHECK = "antigravity permissions"
+_grant = agy_perms.antigravity_command_grant
 
 
 def _agy_repo(
@@ -1551,7 +1552,7 @@ def test_doctor_antigravity_warns_on_missing_allow_entries(
     )
     settings = _complete_agy_settings()
     allow = settings["permissions"]["allow"]  # type: ignore[index]
-    allow.remove("command(git diff)")
+    allow.remove(_grant("git diff"))
     allow.append("command(regex:^npm test$)")
     _write_agy_settings(tmp_path, settings)
 
@@ -1562,9 +1563,35 @@ def test_doctor_antigravity_warns_on_missing_allow_entries(
     assert len(lines) == 1
     line = lines[0]
     assert line.startswith(f"WARN {AGY_CHECK}:")
-    assert "permissions.allow is missing command(git diff), command(npm test)" in line
-    assert "regex grants" in line
+    assert (
+        f"permissions.allow is missing {_grant('git diff')}, {_grant('npm test')}"
+        in line
+    )
+    assert "entries are matched by exact string" in line
+    assert "legacy `command(<cmd>)` exact grants do not cover" in line
+    assert "regex grants" not in line
     assert "(covers planner, backend fallback)" in line
+
+
+def test_doctor_antigravity_warns_on_legacy_exact_allow_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    settings = _complete_agy_settings()
+    settings["permissions"]["allow"] = [  # type: ignore[index]
+        f"command({command})" for command in agy_perms.ANTIGRAVITY_ALLOWED_COMMANDS
+    ]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"WARN {AGY_CHECK}:")
+    assert "permissions.allow is missing " + ", ".join(
+        agy_perms.ANTIGRAVITY_REQUIRED_ALLOW
+    ) in lines[0]
 
 
 def test_doctor_antigravity_warns_on_missing_deny_entries(
@@ -1572,7 +1599,9 @@ def test_doctor_antigravity_warns_on_missing_deny_entries(
 ) -> None:
     repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
     settings = _complete_agy_settings()
-    settings["permissions"]["deny"] = ["command(git push)"]  # type: ignore[index]
+    settings["permissions"]["deny"] = [  # type: ignore[index]
+        "command(regex:^git( .*)? push( .*)?$)"
+    ]
     _write_agy_settings(tmp_path, settings)
 
     exit_code, output = _run(repo, capsys)
@@ -1581,19 +1610,111 @@ def test_doctor_antigravity_warns_on_missing_deny_entries(
     lines = _agy_lines(output)
     assert lines == [
         f"WARN {AGY_CHECK}: ~/.gemini/antigravity-cli/settings.json "
-        "permissions.deny is missing unsandboxed(git push) (covers planner)"
+        "permissions.deny is missing unsandboxed(regex:^git( .*)? push( .*)?$) "
+        "(covers planner)"
     ]
+
+
+def test_doctor_antigravity_warns_on_legacy_exact_deny_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    settings = _complete_agy_settings()
+    settings["permissions"]["deny"] = [  # type: ignore[index]
+        "command(git push)",
+        "unsandboxed(git push)",
+    ]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert lines == [
+        f"WARN {AGY_CHECK}: ~/.gemini/antigravity-cli/settings.json "
+        "permissions.deny is missing command(regex:^git( .*)? push( .*)?$), "
+        "unsandboxed(regex:^git( .*)? push( .*)?$) (covers planner)"
+    ]
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        "command(regex:^git( .*)?$)",
+        "command(regex:^git push( .*)?$)",
+        "unsandboxed(regex:^git( .*)?$)",
+        "command(regex:push)",
+        "command(regex:^git -C \\. push)",
+        "command(regex:.*)",
+    ],
+)
+def test_doctor_antigravity_fails_when_regex_allow_matches_git_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, grant: str
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(grant,)))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"FAIL {AGY_CHECK}:")
+    assert f"`{grant}`" in lines[0]
+    assert "agents must not push" in lines[0]
+
+
+def test_doctor_antigravity_push_fail_escapes_control_characters_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    grant = "command(regex:^git\\.? push\x1b?)"
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(grant,)))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert "\x1b" not in output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert "`command(regex:^git\\.? push\\x1b?)`" in lines[0]
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        "command(regex:[)",
+        "unsandboxed(regex:(push)",
+        "command(regex:^git status( .*)?$)",
+        "command(regex:^npm publish$)",
+    ],
+)
+def test_doctor_antigravity_ignores_non_push_and_uncompilable_regex_allows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, grant: str
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(grant,)))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"PASS {AGY_CHECK}:")
 
 
 @pytest.mark.parametrize(
     ("rule", "shadowed"),
     [
-        ("command(*)", "command(git status), command(git diff)"),
-        ("command(git)", "command(git status), command(git diff)"),
-        ("command(git *)", "command(git status), command(git diff)"),
-        ("command(regex:^py)", "command(python), command(python3), command(pytest)"),
-        ("command(git status)", "command(git status)"),
-        ("command(npm test)", "command(npm test)"),
+        ("command(*)", f"{_grant('git status')}, {_grant('git diff')}"),
+        ("command(git)", f"{_grant('git status')}, {_grant('git diff')}"),
+        ("command(git *)", f"{_grant('git status')}, {_grant('git diff')}"),
+        (
+            "command(regex:^py)",
+            f"{_grant('python')}, {_grant('python3')}, {_grant('pytest')}",
+        ),
+        ("command(git status)", _grant("git status")),
+        ("command(npm test)", _grant("npm test")),
     ],
 )
 def test_doctor_antigravity_warns_when_ask_rules_shadow_required_allows(
@@ -1608,7 +1729,7 @@ def test_doctor_antigravity_warns_when_ask_rules_shadow_required_allows(
         monkeypatch,
         extra_config='verification_allowed_prefixes: ["npm test"]\n',
     )
-    settings = _complete_agy_settings(extra_allow=("command(npm test)",))
+    settings = _complete_agy_settings(extra_allow=(_grant("npm test"),))
     settings["permissions"]["ask"] = [rule, "command(git push)"]  # type: ignore[index]
     _write_agy_settings(tmp_path, settings)
 
@@ -1642,7 +1763,7 @@ def test_doctor_antigravity_warns_when_deny_rules_shadow_required_allows(
     assert len(lines) == 1, output
     assert lines[0].startswith(f"WARN {AGY_CHECK}:")
     assert "permissions.deny has rules that override required allow entries" in lines[0]
-    assert "`command(pytest)` shadows command(pytest)" in lines[0]
+    assert f"`command(pytest)` shadows {_grant('pytest')}" in lines[0]
 
 
 @pytest.mark.parametrize(
@@ -1695,7 +1816,7 @@ def test_doctor_antigravity_passes_with_a_complete_settings_file(
         extra_config='verification_allowed_prefixes: ["npm test"]\n',
     )
     _write_agy_settings(
-        tmp_path, _complete_agy_settings(extra_allow=("command(npm test)",))
+        tmp_path, _complete_agy_settings(extra_allow=(_grant("npm test"),))
     )
 
     exit_code, output = _run(repo, capsys)
@@ -1705,6 +1826,53 @@ def test_doctor_antigravity_passes_with_a_complete_settings_file(
     assert len(lines) == 1
     assert lines[0].startswith(f"PASS {AGY_CHECK}:")
     assert "(covers planner, backend fallback)" in lines[0]
+
+
+def test_doctor_antigravity_passes_with_exactly_the_required_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    _write_agy_settings(
+        tmp_path,
+        {
+            "permissions": {
+                "allow": list(agy_perms.ANTIGRAVITY_REQUIRED_ALLOW),
+                "deny": list(agy_perms.ANTIGRAVITY_REQUIRED_DENY),
+            }
+        },
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert lines == [
+        f"PASS {AGY_CHECK}: ~/.gemini/antigravity-cli/settings.json has every "
+        "required allow and deny entry (covers planner)"
+    ]
+    assert "shadows" not in output
+
+
+def test_shadowing_rules_do_not_flag_the_required_deny_entries() -> None:
+    allow = agy_perms.antigravity_allow_entries(["npm test", "python -m pytest"])
+    commands = agy_perms.antigravity_allowed_commands(["npm test", "python -m pytest"])
+
+    assert (
+        doctor._shadowing_rules(
+            list(agy_perms.ANTIGRAVITY_REQUIRED_DENY), commands, allow
+        )
+        == []
+    )
+    assert doctor._shadowing_rules(["command(regex:^python)"], commands, allow) == [
+        (
+            "command(regex:^python)",
+            [
+                _grant("python"),
+                _grant("python3"),
+                _grant("python -m pytest"),
+            ],
+        )
+    ]
 
 
 def test_doctor_antigravity_leaves_the_settings_file_unchanged(

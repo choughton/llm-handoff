@@ -6,6 +6,24 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The `agy` permission grants now cover arguments. The exact-match
+  `command(<cmd>)` allow entries refused argument-bearing commands such as
+  `git rev-parse HEAD` and `git commit -m ...`; each allow entry is now an
+  anchored regex grant, `command(regex:^<cmd>( .*)?$)`, built by the new
+  `antigravity_command_grant()` from the new `ANTIGRAVITY_ALLOWED_COMMANDS`
+  list (verification commands get the same form, with regex metacharacters
+  escaped). The `git push` deny entries are now
+  `command(regex:^git( .*)? push( .*)?$)` and
+  `unsandboxed(regex:^git( .*)? push( .*)?$)`, which also refuse
+  option-prefixed pushes such as `git -C . push`, and any other `git` command
+  line containing ` push`. `llm-handoff init` prints the new entries.
+  `llm-handoff doctor` tests deny and ask rules against the plain commands
+  (from the new `antigravity_allowed_commands()`), fails on a regex allow
+  entry that matches a `git push` command line, says that legacy exact grants
+  do not cover arguments, and prints regex backslashes without doubling them.
+  `CONFIGURATION.md` lists the entries and the live `agy` 1.4.2 results
+  behind them, the deny breadth, that `python( .*)?` allows `python -c`, and
+  that a deny hit is not yet treated as a failed dispatch.
 - Every shipped `agy` agent file under `.agents/agents/` (and its copy in
   `examples/reference-workflow/`) now declares a `tools:` list. Without one,
   `agy` gives the agent only read tools and it cannot write files. The role
