@@ -30,6 +30,12 @@ from llm_handoff.usage_log import format_usage_line
 
 ANTIGRAVITY_SUCCESS_STATUS = "SUCCESS"
 ANTIGRAVITY_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--dangerously-skip-permissions",)
+# Marker on the stderr and log line written for each deny-rule refusal.
+ANTIGRAVITY_DENY_RULE_MARKER = "Antigravity deny rule refused a command"
+# Fixed text agy puts in a tool error when a permissions.deny entry matched.
+# The rule text before it varies (for example ``command(regex:...)``), so
+# detection keys on this text only.
+_DENY_RULE_ERROR_TEXT = "Matches user-configured deny rule"
 # step_type values whose text_delta is not the agent's own reply.
 _NON_RESPONSE_STEP_TYPES = frozenset({"user_input", "tool", "checkpoint"})
 
@@ -113,9 +119,11 @@ def invoke_antigravity(
         and result.exit_code != 0
         and find_permission_soft_deny(result.stderr) is None
         and find_auth_failure(result.stderr) is None
+        and ANTIGRAVITY_DENY_RULE_MARKER not in result.stderr
     ):
-        # A soft-denied or signed-out run would fail the same way in a fresh
-        # conversation, so only other resume failures get the one fresh rerun.
+        # A soft-denied, deny-rule-refused, or signed-out run would fail the
+        # same way in a fresh conversation, so only other resume failures get
+        # the one fresh rerun.
         session_invalidated = True
         if log is not None:
             role_phrase = str(role).strip().lower() or "agent"
@@ -230,6 +238,8 @@ class _AntigravityStreamJsonMonitor:
     _line_buffer: str = ""
     _response_line_buffer: str = ""
     _logged_tool_steps: set[object] = field(default_factory=set)
+    deny_rule_hits: list[tuple[str, str]] = field(default_factory=list)
+    _deny_rule_steps: set[object] = field(default_factory=set)
 
     def consume_stdout(self, chunk: str) -> None:
         if not chunk:
@@ -271,6 +281,15 @@ class _AntigravityStreamJsonMonitor:
                 "Antigravity stream-json output had no result event; the run "
                 "did not report a final status.",
             )
+
+        if self.deny_rule_hits:
+            # agy reports SUCCESS after a deny rule refuses a command, even
+            # when the role recovers; the refused action was still not done.
+            exit_code = exit_code or 1
+            for command_line, message in self.deny_rule_hits:
+                line = f"{ANTIGRAVITY_DENY_RULE_MARKER}: {command_line} ({message})"
+                stderr = _append_line(stderr, line)
+                self._emit("ERROR", f"{self.agent_name}: {line}")
 
         soft_deny = find_permission_soft_deny(result.stderr)
         if soft_deny is not None:
@@ -354,6 +373,7 @@ class _AntigravityStreamJsonMonitor:
 
         step_type = event.get("step_type")
         if step_type == "tool":
+            self._record_deny_rule_hit(event)
             tool_name = event.get("tool_name")
             if isinstance(tool_name, str) and tool_name:
                 step_key = event.get("step_index", object())
@@ -368,6 +388,30 @@ class _AntigravityStreamJsonMonitor:
             self.text_deltas.append(text_delta)
             self._response_line_buffer += text_delta
             self._flush_response_lines()
+
+    def _record_deny_rule_hit(self, event: dict[str, object]) -> None:
+        if event.get("state") != "ERROR":
+            return
+        tool_info = event.get("tool_info")
+        if not isinstance(tool_info, dict):
+            return
+        error = tool_info.get("error")
+        if not isinstance(error, dict):
+            return
+        message = error.get("message")
+        if not isinstance(message, str) or _DENY_RULE_ERROR_TEXT not in message:
+            return
+        step_key = event.get("step_index", object())
+        if step_key in self._deny_rule_steps:
+            return
+        self._deny_rule_steps.add(step_key)
+        parameters = tool_info.get("parameters")
+        command_line = (
+            parameters.get("CommandLine") if isinstance(parameters, dict) else None
+        )
+        if not isinstance(command_line, str) or not command_line.strip():
+            command_line = "unknown command"
+        self.deny_rule_hits.append((command_line.strip(), message.strip()))
 
     def _handle_result(self, event: dict[str, object]) -> None:
         self.result_event = event

@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An `agy` deny-rule refusal now fails the dispatch. `agy` reports a refused
+  command as a `run_command` tool error inside a `SUCCESS` result with exit
+  code 0, so a role turn could end normally after a `git push` was refused.
+  The adapter now records each tool step in `ERROR` state whose message
+  contains `Matches user-configured deny rule` (once per step), sets a
+  nonzero exit code even when the role recovers, and adds one stderr line and
+  one `ERROR` log line per refusal, starting with the new
+  `ANTIGRAVITY_DENY_RULE_MARKER` and naming the command line and message. A
+  resumed run that fails this way is not rerun in a fresh conversation. Other
+  tool errors, and commands that run and fail on their own, still pass.
 - The `agy` permission grants now cover arguments. The exact-match
   `command(<cmd>)` allow entries refused argument-bearing commands such as
   `git rev-parse HEAD` and `git commit -m ...`; each allow entry is now an
@@ -22,8 +32,8 @@ This project follows a simple pre-release changelog until the first public tag.
   entry that matches a `git push` command line, says that legacy exact grants
   do not cover arguments, and prints regex backslashes without doubling them.
   `CONFIGURATION.md` lists the entries and the live `agy` 1.4.2 results
-  behind them, the deny breadth, that `python( .*)?` allows `python -c`, and
-  that a deny hit is not yet treated as a failed dispatch. The `python` and
+  behind them, the deny breadth, and that `python( .*)?` allows
+  `python -c`. The `python` and
   `python3` grants still let a role run `git push` from a subprocess, the
   same known gap as Claude's `Bash(python:*)`, tracked as GEM-0e.
 - Every shipped `agy` agent file under `.agents/agents/` (and its copy in

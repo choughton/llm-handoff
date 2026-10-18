@@ -549,6 +549,222 @@ def test_clean_run_logs_no_soft_deny(
     assert _soft_deny_errors(logs) == []
 
 
+# Deny-rule tool errors (shapes from a live agy 1.4.2 capture)
+
+DENY_RULE_MESSAGE = (
+    'permission check failed for command "git push": Permission denied for '
+    "command(git push). Matches user-configured deny rule."
+)
+NOT_ALLOWLISTED_MESSAGE = (
+    'permission check failed for command "git remote -v": user denied '
+    "permission to run command:\ngit remote -v\nDo not attempt to circumvent "
+    "this denial by rephrasing the command, using alternative tools/scripts "
+    "(e.g. python, sh, curl), or accessing the same target resource. Proceed "
+    "without performing this action."
+)
+
+
+def _tool_step(
+    step_index: int,
+    state: str,
+    command_line: str,
+    *,
+    error_message: str | None = None,
+    output: str | None = None,
+) -> str:
+    tool_info: dict[str, object] = {
+        "name": "run_command",
+        "parameters": {"CommandLine": command_line},
+    }
+    if error_message is not None:
+        tool_info["error"] = {"type": "TOOL_ERROR", "message": error_message}
+    if output is not None:
+        tool_info["output"] = output
+    return _event(
+        type="step_update",
+        conversation_id="conv-deny",
+        step_index=step_index,
+        state=state,
+        step_type="tool",
+        tool_name="run_command",
+        duration_seconds=3.4471531,
+        tool_info=tool_info,
+    )
+
+
+def _success_result(**extra: object) -> str:
+    return _event(
+        type="result",
+        conversation_id="conv-deny",
+        status="SUCCESS",
+        response="I could not push; the command was refused.",
+        **extra,
+    )
+
+
+def _deny_stream(command_line: str = "git push", message: str = DENY_RULE_MESSAGE) -> str:
+    return _stream(
+        _event(type="init", cwd="/repo", permission_mode="default"),
+        _tool_step(2, "ACTIVE", command_line),
+        _tool_step(2, "ERROR", command_line, error_message=message),
+        _success_result(),
+    )
+
+
+def test_deny_rule_tool_error_fails_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(_ProcessResult(stdout=_deny_stream(), stderr="", exit_code=0))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    assert antigravity.ANTIGRAVITY_DENY_RULE_MARKER in result.stderr
+    assert "git push" in result.stderr
+    assert "Matches user-configured deny rule" in result.stderr
+    [error] = _soft_deny_errors(logs)
+    assert error.startswith("Antigravity planner: ")
+    assert antigravity.ANTIGRAVITY_DENY_RULE_MARKER in error
+    assert "git push" in error
+
+
+def test_deny_rule_with_regex_rule_text_fails_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    message = DENY_RULE_MESSAGE.replace(
+        "command(git push)", "command(regex:^git( .*)? push( .*)?$)"
+    )
+    runner = _Runner(
+        _ProcessResult(stdout=_deny_stream(message=message), stderr="", exit_code=0)
+    )
+
+    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    assert "command(regex:^git( .*)? push( .*)?$)" in result.stderr
+
+
+def test_deny_rule_after_recovery_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(
+        _tool_step(2, "ERROR", "git push", error_message=DENY_RULE_MESSAGE),
+        _tool_step(3, "DONE", "git status", output="nothing to commit"),
+        _success_result(),
+    )
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr="", exit_code=0))
+
+    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    assert result.stdout == "I could not push; the command was refused."
+
+
+def test_two_deny_rule_hits_are_each_reported(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    second_message = DENY_RULE_MESSAGE.replace("git push", "git push origin main")
+    stdout = _stream(
+        _tool_step(2, "ERROR", "git push", error_message=DENY_RULE_MESSAGE),
+        _tool_step(4, "ERROR", "git push origin main", error_message=second_message),
+        _tool_step(2, "ERROR", "git push", error_message=DENY_RULE_MESSAGE),
+        _success_result(),
+    )
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr="", exit_code=0))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    errors = _soft_deny_errors(logs)
+    assert len(errors) == 2
+    marker = antigravity.ANTIGRAVITY_DENY_RULE_MARKER
+    assert f"{marker}: git push (" in errors[0]
+    assert f"{marker}: git push origin main (" in errors[1]
+    assert result.stderr.count(marker) == 2
+
+
+def test_not_allowlisted_tool_error_is_reported_once_as_soft_deny(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(
+        _tool_step(2, "ACTIVE", "git remote -v"),
+        _tool_step(2, "ERROR", "git remote -v", error_message=NOT_ALLOWLISTED_MESSAGE),
+        _success_result(
+            denied_actions=[{"action": "command", "display_name": "RunCommand"}]
+        ),
+    )
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr=AGY_SOFT_DENY, exit_code=0))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    assert len(_soft_deny_errors(logs)) == 1
+    assert antigravity.ANTIGRAVITY_DENY_RULE_MARKER not in result.stderr
+
+
+def test_ordinary_command_failure_is_not_a_deny(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(
+        _tool_step(2, "ACTIVE", "git cat-file -t deadbeef"),
+        _tool_step(
+            2,
+            "DONE",
+            "git cat-file -t deadbeef",
+            output="fatal: Not a valid object name deadbeef",
+        ),
+        _success_result(),
+    )
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr="", exit_code=0))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert _soft_deny_errors(logs) == []
+
+
+def test_non_deny_tool_error_does_not_fail_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(
+        _tool_step(2, "ERROR", "type missing.txt", error_message="file not found"),
+        _success_result(),
+    )
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr="", exit_code=0))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 0
+    assert _soft_deny_errors(logs) == []
+
+
+def test_deny_rule_on_failed_resume_is_not_rerun_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(
+        _ProcessResult(stdout=_deny_stream(), stderr="", exit_code=0),
+        _ok(),
+    )
+
+    result, logs = _invoke(
+        monkeypatch, runner, tmp_path, use_resume=True, session_id="conv-old"
+    )
+
+    assert len(runner.commands) == 1
+    assert result.exit_code == 1
+    assert result.session_invalidated is False
+    assert not any(level == "WARN" and "conv-old" in m for level, m in logs)
+
+
 # Resume
 
 
