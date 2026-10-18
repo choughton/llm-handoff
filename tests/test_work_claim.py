@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from typing import Any
 import pytest
 
 from llm_handoff.agents import DispatchResult, SubagentResult
+from llm_handoff.antigravity_permissions import antigravity_command_grant
 from llm_handoff.config import DispatchConfig, ScannerConfig, load_dispatch_config
 from llm_handoff.dispatcher_commit import (
     PENDING_COMMIT_SHA,
@@ -2271,7 +2273,12 @@ def test_verification_command_allowed_with_an_empty_list_allows_everything(
 
 @pytest.mark.parametrize(
     "command",
-    ["python -m pytest", "python -m pytest tests -q", "  python   -m pytest\ttests"],
+    [
+        "python -m pytest",
+        "python -m pytest tests -q",
+        "  python -m pytest tests -q\t",
+        "\tpython -m pytest  ",
+    ],
 )
 def test_verification_command_allowed_accepts_a_token_prefix_match(
     command: str,
@@ -2305,6 +2312,13 @@ def test_verification_command_allowed_accepts_any_listed_prefix() -> None:
         ("python -m pytest !CD!", "'!'"),
         ("python -m pytest\rwhoami", "'\\r'"),
         ("python -m pytest\nwhoami", "'\\n'"),
+        ("python  -m pytest", "whitespace"),
+        ("python -m pytest\ttests", "whitespace"),
+        ("python -m pytest  -q", "whitespace"),
+        ("  python   -m pytest\ttests", "whitespace"),
+        ("python -m pytest\x0btests", "whitespace"),
+        ("python -m pytest\x0ctests", "whitespace"),
+        ("python -m pytest", "whitespace"),
     ],
 )
 def test_verification_command_allowed_rejects_with_a_one_line_reason(
@@ -2316,6 +2330,47 @@ def test_verification_command_allowed_rejects_with_a_one_line_reason(
     assert reason is not None
     assert fragment in reason
     assert "\n" not in reason and "\r" not in reason
+
+
+def _grant_regex(prefix: str) -> re.Pattern[str]:
+    grant = antigravity_command_grant(prefix)
+    assert grant.startswith("command(regex:") and grant.endswith(")")
+    return re.compile(grant[len("command(regex:") : -1])
+
+
+@pytest.mark.parametrize("prefix", ["python -m pytest", "git status", "npm test"])
+def test_verification_command_allowed_agrees_with_the_agy_grant(prefix: str) -> None:
+    words = prefix.split()
+    doubled = "  ".join(words)
+    candidates = [
+        prefix,
+        f"{prefix} -q",
+        f"{prefix} tests -q --tb=short",
+        f"{prefix}x",
+        f"{prefix}\t-q",
+        f"{prefix}  -q",
+        f"  {prefix} -q  ",
+        f"\t{prefix} -q",
+        doubled,
+        f"{doubled} -q",
+        "\t".join(words),
+        prefix.upper(),
+        words[0],
+    ]
+    grant = _grant_regex(prefix)
+    allowed = [
+        command
+        for command in candidates
+        if verification_command_allowed(command, (prefix,)) is None
+    ]
+
+    assert prefix in allowed and f"{prefix} -q" in allowed
+    for command in allowed:
+        # The gate strips surrounding whitespace; the agent runs the stripped line.
+        assert grant.fullmatch(command.strip(" \t")), command
+    for command in (doubled, f"{doubled} -q"):
+        assert verification_command_allowed(command, (prefix,)) is not None
+        assert grant.fullmatch(command) is None
 
 
 def _assignment_with_commands(*commands: str) -> str:

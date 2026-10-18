@@ -643,6 +643,40 @@ def test_verification_allowed_prefixes_rejects_each_forbidden_char(
     assert repr(char) in message
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "python  -m pytest",
+        "python -m\tpytest",
+        "  python -m   pytest  ",
+        "python\x0b-m pytest",
+        "python -m pytest",
+    ],
+)
+def test_verification_allowed_prefixes_rejects_irregular_whitespace(
+    tmp_path: Path,
+    entry: str,
+) -> None:
+    with pytest.raises(ValueError, match="verification_allowed_prefixes") as error:
+        DispatchConfig(repo_root=tmp_path, verification_allowed_prefixes=(entry,))
+    message = str(error.value)
+    assert repr(entry) in message
+    assert "single spaces between words" in message
+
+
+def test_load_dispatch_config_rejects_a_prefix_with_a_doubled_space(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        'verification_allowed_prefixes:\n  - "python  -m pytest"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="single spaces between words"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
 # --- tracker block -----------------------------------------------------------
 
 _DROP = object()

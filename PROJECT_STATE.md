@@ -7,7 +7,7 @@ belong in commits, handoffs, and pull requests.
 ## Current Status
 
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
-  in PR #122; GEM-0e1 next).
+  in PR #122; GEM-0e1 merged in PR #123; GEM-0f in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -200,7 +200,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
   WARN for each `unsafe_bypass: true` launch (no shell allowlist at all); and
   one PASS line when none apply and a Claude or `agy` launch exists. The
   lines are WARN or PASS only, so the doctor exit code is unchanged; no
-  default grant list changes.
+  default grant list changes. Merged in PR #123.
 - GEM-0f: Matching whitespace rules for verification commands and agy
   grants. `verification_command_allowed()` (`llm_handoff/work_claim.py`)
   compares whitespace-split tokens, but `antigravity_command_grant()`
@@ -212,7 +212,8 @@ itself from 1.3.5 to 1.4.2 during the checks):
   change), or the generated grants accept ` +` between tokens (this needs
   a live `agy` check, updates to `CONFIGURATION.md` and the `init`
   output, and a re-applied settings file). From the GEM-0c review
-  (PR #119, Finding 1).
+  (PR #119, Finding 1). Decided by the planner on 2026-10-18: the gate
+  matches literally.
 - GEM-0g: Doctor decides regex allow-entry push safety without fixed
   probes. `_regex_grant_allows_push()` (`llm_handoff/doctor.py`) tests
   only the three `_GIT_PUSH_PROBES` lines, so a push-capable allow entry

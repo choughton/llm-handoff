@@ -20,6 +20,7 @@ from llm_handoff.init_workflow import (
     InvalidVerificationCommandError,
     UnknownProviderError,
     UnknownTemplateError,
+    check_verification_command_chars,
     init_reference_workflow,
     render_config,
     resolve_provider_mapping,
@@ -917,6 +918,31 @@ def test_verification_command_with_shell_control_char_is_rejected(
     assert repr(char) in str(error.value)
     assert error.value.token == char
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python  -m pytest",
+        "python -m pytest\ttests",
+        "python -m pytest  -q",
+        "  python   -m pytest\ttests",
+        "npm\x0ctest",
+    ],
+)
+def test_verification_command_with_irregular_whitespace_is_rejected(
+    tmp_path: Path, command: str
+) -> None:
+    with pytest.raises(InvalidVerificationCommandError) as error:
+        init_reference_workflow(
+            tmp_path, available_providers=(), verification_command=command
+        )
+    assert "single spaces between words" in str(error.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_verification_command_with_surrounding_whitespace_is_accepted() -> None:
+    check_verification_command_chars("  python -m pytest -q\t")
 
 
 def test_verification_command_with_claude_mapping_covers_all_roles(
