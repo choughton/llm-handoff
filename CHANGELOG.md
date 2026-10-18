@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff doctor` no longer reports `FAIL handoff validation:
+  EVIDENCE_MISSING` for the finalizer's epic-close handoff (`producer:
+  finalizer`, `status: verified_pass`). The dispatch loop routes from that
+  handoff without validating it, so doctor and the supervisor preflight now
+  accept it too. The finalizer verifies no commit itself; the evidence lives
+  in the auditor handoff it replaces. The exemption covers only `verified_pass`
+  from the finalizer role. Implementer and auditor handoffs, and any handoff
+  the loop validates under another role, still need a populated `## Verification
+  Evidence` block.
 - A `pr`-mode merge of the base branch that git refuses no longer pauses with
   the wrong cause. The pause named the first line git printed, often a
   line-ending `warning:`, and asked the operator to resolve conflicts that did

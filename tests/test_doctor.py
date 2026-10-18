@@ -913,6 +913,69 @@ def test_doctor_accepts_handoff_without_work_packet_when_gate_is_off(
     assert "PASS handoff validation:" in output
 
 
+
+def _commit_handoff(repo: Path, *, producer: str) -> None:
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    handoff_path.parent.mkdir(parents=True)
+    handoff_path.write_text(
+        f"""---
+next_agent: planner
+reason: "Epic closed; planner should select the next assignment."
+status: verified_pass
+scope_sha: {head}
+producer: {producer}
+---
+
+# Epic close
+
+The epic was recorded in PROJECT_STATE.md at {head}.
+
+## Next Step
+
+- **planner:** Select the next bounded assignment.
+""",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "epic close")
+
+
+def test_doctor_accepts_finalizer_epic_close_without_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # The dispatch loop routes from this handoff without validating it, so
+    # doctor must not report it as a FAIL.
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _commit_handoff(repo, producer="finalizer")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert "EVIDENCE_MISSING" not in output
+    assert "PASS handoff validation:" in output
+
+
+def test_doctor_still_fails_auditor_verified_pass_without_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _commit_handoff(repo, producer="auditor")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    assert "FAIL handoff validation: EVIDENCE_MISSING" in output
+
+
 def test_doctor_warns_on_dirty_tree_and_falls_back_to_default_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
