@@ -40,6 +40,21 @@ producer: planner
 ---
 ```
 
+## Story List
+
+Copy `remaining_stories` forward. Remove an entry only when it is the story
+just closed or the story you assign as `story_id`. To drop any other story,
+list it under a `## Dropped Stories` section as `- <story id>: <reason>`. The
+dispatcher fails a rewrite that drops a story without one.
+
+When you plan a new story, also record it in `PROJECT_STATE.md`; a story kept
+only in `docs/handoff/HANDOFF.md` is lost when a later rewrite drops it.
+Record it through the next Work Packet: add `PROJECT_STATE.md` to Files in
+scope and make recording the story part of the Objective. In dispatcher commit
+mode your own edits are never committed, so do not edit `PROJECT_STATE.md`
+yourself. Until the project state file names the story, the dispatcher warns
+on every handoff that lists it.
+
 ## Routing Guidance
 
 - Use `next_agent: backend` for backend/data work.

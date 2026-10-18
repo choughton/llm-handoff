@@ -55,6 +55,19 @@ A missing auditor handoff in Git history is not evidence of a missing audit. The
 
 Quote every `reason`. If the next route is ambiguous, fail closed and route to `user` with a specific question.
 
+Copy `remaining_stories` forward. Remove an entry only when it is the story
+just closed or the story you assign as `story_id`. To drop any other story,
+list it under a `## Dropped Stories` section as `- <story id>: <reason>`. The
+dispatcher fails a rewrite that drops a story without one.
+
+When you plan a new story, also record it in `PROJECT_STATE.md`; a story kept
+only in `docs/handoff/HANDOFF.md` is lost when a later rewrite drops it.
+Record it through the next Work Packet: add `PROJECT_STATE.md` to Files in
+scope and make recording the story part of the Objective. In dispatcher commit
+mode your own edits are never committed, so do not edit `PROJECT_STATE.md`
+yourself. Until the project state file names the story, the dispatcher warns
+on every handoff that lists it.
+
 If `close_type` is set, run `git rev-parse HEAD` and write the concrete 7-40 character hex SHA. Do not write `scope_sha: HEAD`.
 
 ## Output Shape

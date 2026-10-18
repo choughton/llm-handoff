@@ -57,6 +57,11 @@ producer: auditor
 
 Use `next_agent: finalizer` only for an approved epic close. A story finishes its epic when the handoff lists `remaining_stories: []` (an explicit empty list, not an omitted field), when it otherwise names the story as the epic's last, or when the planner routed it with `close_type: epic`. Route that approval to `finalizer` yourself; do not send it to `planner` to decide. Only the auditor may hand off to `finalizer`. Use `next_agent: user` with `status: escalate_to_user` for unresolved risk or ambiguity. Match `status` to `next_agent`: `verified_pass` goes to `planner` (or `finalizer` with `close_type: epic`), and `verified_fail` goes to `backend`, `frontend`, or `planner`.
 
+Copy `remaining_stories` from the handoff you audit; remove only the story
+you approved. To drop any other story, list it under `## Dropped Stories` as
+`- <story id>: <reason>`. The dispatcher fails a rewrite that drops a story
+without one.
+
 Emit a `## Verification Evidence` block for every `verified_pass` or
 `verified_fail` handoff. Do not claim `verified_pass` without that block.
 Reference the schema in `docs/handoff/README.md`; do not invent another format.

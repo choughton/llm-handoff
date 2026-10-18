@@ -81,6 +81,7 @@ from llm_handoff.publish import (
     unfinished_story_pause_reason,
 )
 from llm_handoff.roles import normalize_next_agent_value
+from llm_handoff.story_list import STORIES_DROPPED_ERROR
 from llm_handoff.stop_request import (
     clear_stop_request,
     stop_request_path,
@@ -433,6 +434,20 @@ class HandoffRepairAttempt:
 
 
 @dataclass(frozen=True, slots=True)
+class StoryListBaseline:
+    """The story list the next dispatch must keep after a failed check.
+
+    A dispatch that drops planned stories leaves a handoff without them, so
+    the recovery dispatch that follows starts from a handoff that no longer
+    names them. While the handoff stays the one the failed dispatch left
+    (`handoff_sha`), the next dispatch is checked against `content` instead.
+    """
+
+    content: str
+    handoff_sha: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProtectedFileSnapshot:
     head_sha: str | None
     digests: tuple[tuple[str, str], ...]
@@ -501,6 +516,9 @@ def run_loop(
     # (story key, HEAD before that story's first gated dispatch).
     gate_story_base: tuple[str | None, str] | None = None
     implementer_leftovers = _restore_implementer_leftovers(config, log_fn)
+    # Set while a dispatch's rewrite has dropped planned stories and nobody
+    # has changed the handoff it left behind since.
+    story_baseline: StoryListBaseline | None = None
     stop_watch = _StopRequestWatch(config.repo_root)
     # Linear mode: one planner lease-rebuild cycle per missing-handoff streak.
     # A cycle that reads non-empty handoff content clears it.
@@ -1217,6 +1235,14 @@ def run_loop(
                 )
                 if implementer_base_sha is not None:
                     implementer_base_story_key = story_key
+            # The story-list check compares the rewrite with the handoff this
+            # dispatch started from, or with the list a failed dispatch dropped.
+            story_check_baseline = (
+                story_baseline.content
+                if story_baseline is not None
+                and story_baseline.handoff_sha == current_cycle.handoff_sha
+                else handoff_content
+            )
             planner_git_before = (
                 git_position(config.repo_root)
                 if current_cycle.route == "planner"
@@ -1439,6 +1465,11 @@ def run_loop(
                 require_work_packet=config.enforce_work_packet,
                 dispatcher_commit_mode=config.commit_mode == "dispatcher",
                 tracker_provider=config.tracker.provider,
+                prior_handoff_content=story_check_baseline,
+                project_state_path=config.project_state_full_path,
+            )
+            story_baseline = _next_story_baseline(
+                config, validation_result, story_check_baseline
             )
             _record_post_dispatch_status_transition(
                 config=config,
@@ -1494,7 +1525,14 @@ def run_loop(
                     validation_result=validation_result,
                     previous_agent=previous_agent,
                     log=log_fn,
+                    story_check_baseline=story_check_baseline,
                 )
+                if repair_attempt.attempted:
+                    story_baseline = _next_story_baseline(
+                        config,
+                        repair_attempt.validation_result or validation_result,
+                        story_check_baseline,
+                    )
                 if repair_attempt.protected_violation:
                     previous_cycle = current_cycle
                     consecutive_failures = 0
@@ -2034,6 +2072,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
     validation_result: ValidationResult,
     previous_agent: str,
     log: LogFn,
+    story_check_baseline: str | None = None,
 ) -> HandoffRepairAttempt:
     handoff_content = _read_required_text(config.handoff_full_path) or ""
     if not _is_repairable_handoff_hygiene_failure(
@@ -2154,6 +2193,10 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         require_work_packet=config.enforce_work_packet,
         dispatcher_commit_mode=config.commit_mode == "dispatcher",
         tracker_provider=config.tracker.provider,
+        # The repair is checked against the dispatch's starting handoff, not
+        # against the rewrite that dropped the stories.
+        prior_handoff_content=story_check_baseline,
+        project_state_path=config.project_state_full_path,
     )
     if repaired_validation.verdict == "NO":
         _log(
@@ -2194,6 +2237,8 @@ def _is_repairable_handoff_hygiene_failure(
         "scope_claim_mismatch:",
         "work_packet_missing:",
         "work_packet_unparseable:",
+        # The producer restores the dropped entries or explains each one.
+        f"{STORIES_DROPPED_ERROR}:",
     )
     for error in result.errors:
         if error.startswith("frontmatter_scope_sha_missing:"):
@@ -2359,7 +2404,24 @@ def _repair_mutable_frontmatter_fields(
             fields.add("scope_sha")
         elif error.startswith("frontmatter_close_type_invalid:"):
             fields.add("close_type")
+        elif error.startswith(f"{STORIES_DROPPED_ERROR}:"):
+            fields.add("remaining_stories")
     return frozenset(fields)
+
+
+def _next_story_baseline(
+    config: DispatchConfig,
+    result: ValidationResult,
+    story_check_baseline: str,
+) -> StoryListBaseline | None:
+    if not any(
+        error.startswith(f"{STORIES_DROPPED_ERROR}:") for error in result.errors
+    ):
+        return None
+    return StoryListBaseline(
+        content=story_check_baseline,
+        handoff_sha=_content_sha(_read_required_text(config.handoff_full_path) or ""),
+    )
 
 
 def _frontmatter_field_value(

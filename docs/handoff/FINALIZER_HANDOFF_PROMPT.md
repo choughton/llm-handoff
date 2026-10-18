@@ -7,7 +7,9 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 ## Scope
 
 - Read `docs/handoff/HANDOFF.md` and the auditor's approved epic-close result.
-- Update `PROJECT_STATE.md` if the consuming repo uses that file.
+- Update `PROJECT_STATE.md` if the consuming repo uses that file. Add every
+  story that `remaining_stories` names and `PROJECT_STATE.md` does not list
+  yet, so planned work outlives the handoff.
 - Rewrite `docs/handoff/HANDOFF.md` so the next cycle routes to `planner` or `user`.
 - Do not scope the next epic yourself.
 - Do not push unless the consuming repository explicitly authorizes this role to push.
