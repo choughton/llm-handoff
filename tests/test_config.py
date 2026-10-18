@@ -53,7 +53,7 @@ agents:
     assert loaded.normalizer.timeout_ms == 12345
     assert loaded.agents["backend"].provider == "codex"
     assert loaded.agents["planner"].mention == "@planner"
-    assert loaded.agents["frontend"].provider == "gemini"
+    assert loaded.agents["frontend"].provider == "antigravity"
     assert loaded.agents["validator"].provider == "claude"
     assert loaded.agents["finalizer"].provider == "claude"
     assert not hasattr(loaded, "auto_push")
@@ -95,6 +95,58 @@ def test_load_dispatch_config_uses_defaults_when_file_is_absent(
     assert loaded.agents["backend"].skill_name == "llm-handoff"
 
 
+def test_default_mapping_puts_planner_and_frontend_on_antigravity(
+    tmp_path: Path,
+) -> None:
+    assert config_module.DEFAULT_AGENT_PROVIDERS == {
+        "planner": "antigravity",
+        "backend": "codex",
+        "frontend": "antigravity",
+        "auditor": "claude",
+        "validator": "claude",
+        "finalizer": "claude",
+    }
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("handoff_path: HANDOFF.md\n", encoding="utf-8")
+
+    for loaded in (
+        load_dispatch_config(repo_root=tmp_path),
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path),
+    ):
+        for role in ("planner", "frontend"):
+            agent = loaded.agents[role]
+            assert agent.provider == "antigravity"
+            assert agent.binary == config_module.ANTIGRAVITY_BINARY
+            assert agent.mention is None
+        assert loaded.agents["planner"].resume is True
+        assert loaded.agents["frontend"].resume is False
+        assert loaded.agents["backend"].provider == "codex"
+        assert loaded.agents["auditor"].provider == "claude"
+
+
+def test_linear_config_that_omits_planner_fails_on_the_antigravity_default(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        _LINEAR_YAML
+        + """agents:
+  frontend:
+    provider: claude
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    message = str(excinfo.value)
+    assert "does not support provider: antigravity" in message
+    assert "agents.planner" in message
+    assert "agents.frontend" not in message
+    assert "Map these roles to claude or codex" in message
+
+
 def test_load_dispatch_config_accepts_non_default_role_provider_mapping(
     tmp_path: Path,
 ) -> None:
@@ -113,7 +165,7 @@ def test_load_dispatch_config_accepts_non_default_role_provider_mapping(
     assert loaded.agents["backend"].binary == config_module.CLAUDE_BINARY
     assert loaded.agents["backend"].model == config_module.CLAUDE_MODEL
     assert loaded.agents["backend"].skill_name is None
-    assert loaded.agents["planner"].provider == "gemini"
+    assert loaded.agents["planner"].provider == "antigravity"
 
 
 def test_load_dispatch_config_uses_provider_defaults_when_role_provider_changes(
@@ -169,7 +221,7 @@ def test_antigravity_is_a_runtime_and_normalizer_adapter() -> None:
     # The default normalizer stays claude.
     assert config_module.NORMALIZER_PROVIDER == "claude"
     assert config_module.ANTIGRAVITY_BINARY == config_module._binary_name("agy")
-    assert config_module.DEFAULT_AGENT_PROVIDERS["planner"] == "gemini"
+    assert config_module.DEFAULT_AGENT_PROVIDERS["planner"] == "antigravity"
     assert ".agents/**" in config_module.DEFAULT_PROTECTED_PATHS
 
 
@@ -405,6 +457,30 @@ def test_load_dispatch_config_rejects_unsupported_normalizer_provider(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
+def test_load_dispatch_config_rejects_removed_gemini_normalizer_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """normalizer:
+  provider: gemini
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as error:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert (
+        "The gemini provider was removed: Gemini CLI no longer serves personal "
+        "Google accounts. Use provider: antigravity (the agy CLI)."
+    ) in str(error.value)
+    assert "no next-agent normalizer adapter is registered" not in str(error.value)
+    assert "gemini" not in config_module.NORMALIZER_PROVIDER_ADAPTERS
+    assert "gemini" not in config_module.NORMALIZER_PROVIDER_MODELS
+    assert not hasattr(config_module, "GEMINI_NORMALIZER_MODEL")
+
+
 def test_normalizer_adapters_and_default_models_cover_the_same_providers() -> None:
     assert config_module.NORMALIZER_PROVIDER_ADAPTERS == frozenset(
         config_module.NORMALIZER_PROVIDER_MODELS
@@ -417,7 +493,6 @@ def test_normalizer_adapters_and_default_models_cover_the_same_providers() -> No
     [
         ("antigravity", config_module.ANTIGRAVITY_NORMALIZER_MODEL),
         ("codex", config_module.CODEX_NORMALIZER_MODEL),
-        ("gemini", config_module.GEMINI_NORMALIZER_MODEL),
         ("openai", config_module.OPENAI_NORMALIZER_MODEL),
     ],
 )
@@ -732,6 +807,33 @@ def _linear_tracker(**overrides: object) -> dict[str, object]:
     return tracker
 
 
+# Linear mode rejects antigravity roles, and planner and frontend default to
+# antigravity, so Linear-mode tests put those two roles on codex explicitly.
+_LINEAR_SAFE_ROLES = ("planner", "frontend")
+
+
+def _linear_agents(**overrides: object) -> dict[str, object]:
+    agents: dict[str, object] = {
+        **config_module._default_agent_configs(),
+        **{
+            role: config_module.AgentConfig(provider="codex")
+            for role in _LINEAR_SAFE_ROLES
+        },
+    }
+    agents.update(overrides)
+    return agents
+
+
+def _linear_roles_yaml(*, skip: tuple[str, ...] = ()) -> str:
+    """Return `agents:` stanzas putting planner and frontend on codex."""
+
+    return "".join(
+        f"  {role}:\n    provider: codex\n"
+        for role in _LINEAR_SAFE_ROLES
+        if role not in skip
+    )
+
+
 def _write_config(tmp_path: Path, text: str) -> Path:
     config_path = tmp_path / "dispatch_config.yaml"
     config_path.write_text(text, encoding="utf-8")
@@ -814,7 +916,9 @@ def test_tracker_linear_loads_and_strips_strings(tmp_path: Path) -> None:
   blocked_state: " Blocked "
   user_attention_label: " needs-operator "
   mcp_server: " linear "
-""",
+agents:
+"""
+        + _linear_roles_yaml(),
     )
     loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
     tracker = loaded.tracker
@@ -867,7 +971,9 @@ def test_tracker_linear_rejects_neither_project_nor_label(tmp_path: Path) -> Non
 
 def test_tracker_linear_accepts_label_instead_of_project(tmp_path: Path) -> None:
     config = DispatchConfig(
-        repo_root=tmp_path, tracker=_linear_tracker(project=_DROP, label="repo-a")
+        repo_root=tmp_path,
+        agents=_linear_agents(),
+        tracker=_linear_tracker(project=_DROP, label="repo-a"),
     )
     assert config.tracker.label == "repo-a"
     assert config.tracker.project is None
@@ -888,7 +994,9 @@ def test_tracker_linear_rejects_blank_optional_values(
 
 
 def test_tracker_linear_optional_keys_may_be_omitted(tmp_path: Path) -> None:
-    config = DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker())
+    config = DispatchConfig(
+        repo_root=tmp_path, agents=_linear_agents(), tracker=_linear_tracker()
+    )
     assert config.tracker.blocked_state is None
     assert config.tracker.user_attention_label is None
 
@@ -896,7 +1004,9 @@ def test_tracker_linear_optional_keys_may_be_omitted(tmp_path: Path) -> None:
 @pytest.mark.parametrize("server", ["linear", "Linear_2", "my-linear", "a"])
 def test_tracker_mcp_server_accepts_simple_names(tmp_path: Path, server: str) -> None:
     config = DispatchConfig(
-        repo_root=tmp_path, tracker=_linear_tracker(mcp_server=server)
+        repo_root=tmp_path,
+        agents=_linear_agents(),
+        tracker=_linear_tracker(mcp_server=server),
     )
     assert config.tracker.mcp_server == server
 
@@ -929,7 +1039,9 @@ def test_tracker_claude_mcp_config_resolves_relative_to_repo_root(
   success_state: In Review
   mcp_server: linear
   claude_mcp_config: config/linear-mcp.json
-""",
+agents:
+"""
+        + _linear_roles_yaml(),
     )
     loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
     assert loaded.tracker.claude_mcp_config == Path("config/linear-mcp.json")
@@ -943,7 +1055,9 @@ def test_tracker_claude_mcp_config_accepts_absolute_path(tmp_path: Path) -> None
     mcp_file.parent.mkdir()
     mcp_file.write_text("{}", encoding="utf-8")
     config = DispatchConfig(
-        repo_root=repo_root, tracker=_linear_tracker(claude_mcp_config=mcp_file)
+        repo_root=repo_root,
+        agents=_linear_agents(),
+        tracker=_linear_tracker(claude_mcp_config=mcp_file),
     )
     assert config.tracker_claude_mcp_config_path == mcp_file
 
@@ -952,6 +1066,7 @@ def test_tracker_claude_mcp_config_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="tracker.claude_mcp_config") as error:
         DispatchConfig(
             repo_root=tmp_path,
+            agents=_linear_agents(),
             tracker=_linear_tracker(claude_mcp_config="missing/linear-mcp.json"),
         )
     expected = (tmp_path / "missing" / "linear-mcp.json").resolve()
@@ -962,7 +1077,9 @@ def test_tracker_claude_mcp_config_rejects_directory(tmp_path: Path) -> None:
     (tmp_path / "mcp").mkdir()
     with pytest.raises(ValueError, match="tracker.claude_mcp_config"):
         DispatchConfig(
-            repo_root=tmp_path, tracker=_linear_tracker(claude_mcp_config="mcp")
+            repo_root=tmp_path,
+            agents=_linear_agents(),
+            tracker=_linear_tracker(claude_mcp_config="mcp"),
         )
 
 
@@ -993,10 +1110,7 @@ def test_tracker_linear_rejects_antigravity_role(tmp_path: Path) -> None:
     with pytest.raises(ValueError) as error:
         DispatchConfig(
             repo_root=tmp_path,
-            agents={
-                **config_module._default_agent_configs(),
-                "planner": {"provider": "antigravity"},
-            },
+            agents=_linear_agents(planner={"provider": "antigravity"}),
             tracker=_linear_tracker(),
         )
     message = str(error.value)
@@ -1014,8 +1128,9 @@ def test_tracker_linear_rejects_antigravity_fallback(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,
         _LINEAR_YAML
-        + """agents:
-  backend:
+        + "agents:\n"
+        + _linear_roles_yaml()
+        + """  backend:
     provider: claude
     fallback:
       provider: antigravity
@@ -1035,8 +1150,9 @@ def test_tracker_linear_names_every_antigravity_location_in_role_order(
     config_path = _write_config(
         tmp_path,
         _LINEAR_YAML
-        + """agents:
-  backend:
+        + "agents:\n"
+        + _linear_roles_yaml(skip=("planner",))
+        + """  backend:
     provider: claude
     fallback:
       provider: antigravity
@@ -1055,8 +1171,9 @@ def test_tracker_linear_rejects_antigravity_role_with_unsafe_bypass(
     config_path = _write_config(
         tmp_path,
         _LINEAR_YAML
-        + """agents:
-  frontend:
+        + "agents:\n"
+        + _linear_roles_yaml(skip=("frontend",))
+        + """  frontend:
     provider: antigravity
     unsafe_bypass: true
 """,
@@ -1206,14 +1323,13 @@ def test_interpreter_grants_do_not_mutate_the_callers_agent_config(
 def test_uses_default_allowed_tools_tracks_the_list_source(tmp_path: Path) -> None:
     explicit = config_module.AgentConfig(provider="claude", allowed_tools=("Read",))
     fallback_default = config_module.AgentConfig(provider="claude", model="other")
-    agents = {
-        **config_module._default_agent_configs(),
-        "planner": config_module.AgentConfig(provider="claude"),
-        "auditor": explicit,
-        "validator": config_module.AgentConfig(
+    agents = _linear_agents(
+        planner=config_module.AgentConfig(provider="claude"),
+        auditor=explicit,
+        validator=config_module.AgentConfig(
             provider="claude", allowed_tools=("Read",), fallback=fallback_default
         ),
-    }
+    )
 
     for tracker in (None, _linear_tracker()):
         kwargs = {} if tracker is None else {"tracker": tracker}
@@ -1249,8 +1365,9 @@ def test_linear_mode_load_derives_claude_allowed_tools(tmp_path: Path) -> None:
     config_path = _write_config(
         tmp_path,
         _LINEAR_YAML
-        + """agents:
-  planner:
+        + "agents:\n"
+        + _linear_roles_yaml(skip=("planner",))
+        + """  planner:
     provider: claude
   backend:
     provider: claude
@@ -1273,8 +1390,8 @@ def test_linear_mode_load_derives_claude_allowed_tools(tmp_path: Path) -> None:
             *config_module.CLAUDE_DEFAULT_ALLOWED_TOOLS,
             *config_module.linear_tools_for_role(role, "linear"),
         )
-    # Default frontend is Gemini, which has no per-role tool list.
-    assert loaded.agents["frontend"].provider == "gemini"
+    # Frontend is on Codex here, which has no per-role tool list.
+    assert loaded.agents["frontend"].provider == "codex"
     assert loaded.agents["frontend"].allowed_tools is None
     # The config file itself is never rewritten.
     assert "mcp__" not in config_path.read_text(encoding="utf-8")
@@ -1284,7 +1401,11 @@ def test_linear_mode_model_validate_derives_claude_allowed_tools(
     tmp_path: Path,
 ) -> None:
     loaded = DispatchConfig.model_validate(
-        {"repo_root": tmp_path, "tracker": _linear_tracker()}
+        {
+            "repo_root": tmp_path,
+            "agents": _linear_agents(),
+            "tracker": _linear_tracker(),
+        }
     )
 
     assert loaded.agents["auditor"].allowed_tools == (
@@ -1298,7 +1419,9 @@ def test_linear_mode_model_validate_derives_claude_allowed_tools(
 def test_linear_mode_derivation_is_idempotent_on_revalidation(
     tmp_path: Path,
 ) -> None:
-    loaded = DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker())
+    loaded = DispatchConfig(
+        repo_root=tmp_path, agents=_linear_agents(), tracker=_linear_tracker()
+    )
     revalidated = DispatchConfig.model_validate(loaded.model_dump())
 
     assert revalidated.agents["validator"].allowed_tools == (
@@ -1311,6 +1434,7 @@ def test_linear_mode_mcp_config_path_lives_on_derived_agent(tmp_path: Path) -> N
     mcp_file.write_text("{}", encoding="utf-8")
     loaded = DispatchConfig(
         repo_root=tmp_path,
+        agents=_linear_agents(),
         tracker=_linear_tracker(claude_mcp_config="linear-mcp.json"),
     )
 

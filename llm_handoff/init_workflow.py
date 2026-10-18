@@ -74,16 +74,14 @@ _EXCLUDED_TEMPLATE_FILES = frozenset({Path("README.md")})
 # Provider mappings `init` can write into dispatch_config.yaml. `reference`
 # keeps the template's mixed mapping; `claude` puts every role on Claude Code;
 # `codex` puts every role on the Codex CLI; `antigravity` puts every role on
-# the Antigravity CLI (`agy`); `gemini` puts every role on Gemini CLI and is
-# only written when asked for by name.
+# the Antigravity CLI (`agy`).
 REFERENCE_MAPPING = "reference"
 CLAUDE_MAPPING = "claude"
 CODEX_MAPPING = "codex"
 ANTIGRAVITY_MAPPING = "antigravity"
-GEMINI_MAPPING = "gemini"
-PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING, GEMINI_MAPPING)
+PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING)
 # Provider CLIs the mapping auto-detect looks for on PATH. `agy` selects the
-# antigravity mapping; Gemini CLI is not detected.
+# antigravity mapping.
 PROVIDER_CLIS = ("claude", "codex", "agy")
 _ANTIGRAVITY_CLI = "agy"
 _CONFIG_PATH = Path("dispatch_config.yaml")
@@ -99,6 +97,18 @@ _VALIDATOR_AGENT_PATH = Path(".claude/agents/handoff-validator.md")
 # Tools the handoff-validator subagent keeps in every mode; Linear init appends
 # the validator's `mcp__<tracker.mcp_server>__*` tools after them.
 _VALIDATOR_BASE_TOOLS = "Read, Grep, Glob, Bash"
+# Claude subagent files whose `tools:` allowlist Linear init rewrites, mapped
+# to (role whose Linear tools are appended, built-in tools kept in every
+# mode). A subagent's `tools:` list is an allowlist, so without the appended
+# names the subagent cannot call the Linear MCP tools its role launch allows.
+_PLANNER_AGENT_PATH = Path(".claude/agents/planner.md")
+_FRONTEND_AGENT_PATH = Path(".claude/agents/frontend.md")
+_WRITER_BASE_TOOLS = "Read, Edit, Write, Grep, Glob, Bash"
+_LINEAR_AGENT_TOOLS: dict[Path, tuple[str, str]] = {
+    _VALIDATOR_AGENT_PATH: ("validator", _VALIDATOR_BASE_TOOLS),
+    _PLANNER_AGENT_PATH: ("planner", _WRITER_BASE_TOOLS),
+    _FRONTEND_AGENT_PATH: ("frontend", _WRITER_BASE_TOOLS),
+}
 
 # `init --tracker` values. `none` keeps vanilla output byte for byte.
 TRACKER_NONE = "none"
@@ -280,53 +290,6 @@ _ANTIGRAVITY_AGENTS_BLOCK = """agents:
     timeout_ms: 900000
 
 """
-_GEMINI_AGENTS_BLOCK = """agents:
-  # All-Gemini mapping written by `llm-handoff init` (Gemini CLI only).
-  # Each role runs the matching agent file in .gemini/agents/ through its
-  # mention, and every role needs the container sandbox runtime.
-  planner:
-    provider: gemini
-    binary: gemini
-    mention: "@planner"
-    resume: false
-    timeout_ms: 1200000
-
-  backend:
-    provider: gemini
-    binary: gemini
-    mention: "@backend"
-    resume: false
-    timeout_ms: 1200000
-
-  frontend:
-    provider: gemini
-    binary: gemini
-    mention: "@frontend"
-    resume: false
-    timeout_ms: 1200000
-
-  auditor:
-    provider: gemini
-    binary: gemini
-    mention: "@auditor"
-    resume: false
-    timeout_ms: 900000
-
-  validator:
-    provider: gemini
-    binary: gemini
-    mention: "@validator"
-    resume: false
-    timeout_ms: 900000
-
-  finalizer:
-    provider: gemini
-    binary: gemini
-    mention: "@finalizer"
-    resume: false
-    timeout_ms: 900000
-
-"""
 _REFERENCE_SECURITY_PROVIDER_LINE = (
     "  # security_provider: claude   # claude | codex | antigravity | gemini; "
     "unset = auto\n"
@@ -343,11 +306,6 @@ _ANTIGRAVITY_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available.\n"
     "  security_provider: antigravity\n"
 )
-_GEMINI_SECURITY_PROVIDER_LINE = (
-    "  # Same vendor as the implementer: the only CLI available. The Gemini\n"
-    "  # reviewer needs the Gemini CLI security extension installed.\n"
-    "  security_provider: gemini\n"
-)
 _REFERENCE_NORMALIZER_LINES = (
     "normalizer:\n"
     "  provider: claude\n"
@@ -363,12 +321,6 @@ _ANTIGRAVITY_NORMALIZER_LINES = (
     "  # All-Antigravity mapping: the normalizer runs through the agy CLI login.\n"
     "  provider: antigravity\n"
 )
-_GEMINI_NORMALIZER_LINES = (
-    "normalizer:\n"
-    "  # All-Gemini mapping: the normalizer runs through the Gemini CLI login,\n"
-    "  # or through the API when GEMINI_API_KEY (or GOOGLE_API_KEY) is set.\n"
-    "  provider: gemini\n"
-)
 # The template's top-level commit_mode line (anchored at the start of a line
 # so an indented key never matches). The all-Codex mapping switches it: the
 # Codex workspace-write sandbox keeps .git read-only, so an agent-mode
@@ -383,24 +335,35 @@ _MAPPING_AGENTS_BLOCKS = {
     CLAUDE_MAPPING: _CLAUDE_AGENTS_BLOCK,
     CODEX_MAPPING: _CODEX_AGENTS_BLOCK,
     ANTIGRAVITY_MAPPING: _ANTIGRAVITY_AGENTS_BLOCK,
-    GEMINI_MAPPING: _GEMINI_AGENTS_BLOCK,
 }
 _MAPPING_SECURITY_PROVIDER_LINES = {
     CLAUDE_MAPPING: _CLAUDE_SECURITY_PROVIDER_LINE,
     CODEX_MAPPING: _CODEX_SECURITY_PROVIDER_LINE,
     ANTIGRAVITY_MAPPING: _ANTIGRAVITY_SECURITY_PROVIDER_LINE,
-    GEMINI_MAPPING: _GEMINI_SECURITY_PROVIDER_LINE,
 }
 # Mappings whose normalizer cannot stay on the template's claude default
 # because that CLI is not installed; the others keep the template lines.
 _MAPPING_NORMALIZER_LINES = {
     CODEX_MAPPING: _CODEX_NORMALIZER_LINES,
     ANTIGRAVITY_MAPPING: _ANTIGRAVITY_NORMALIZER_LINES,
-    GEMINI_MAPPING: _GEMINI_NORMALIZER_LINES,
 }
 # Mappings that put a role on `provider: antigravity`; `init --tracker linear`
 # refuses them because config load rejects antigravity in Linear mode.
 _LINEAR_UNSUPPORTED_MAPPINGS = frozenset({ANTIGRAVITY_MAPPING})
+# The reference mapping puts these roles on antigravity. `init --tracker
+# linear` with that mapping rewrites their stanzas to claude so the written
+# config loads; the other roles keep the template's mapping.
+_LINEAR_REFERENCE_CLAUDE_ROLES = ("planner", "frontend")
+_LINEAR_REFERENCE_CLAUDE_COMMENT = (
+    "  # Linear mode does not support antigravity roles, so planner and "
+    "frontend run on Claude."
+)
+_LINEAR_REFERENCE_CLAUDE_STANZA = (
+    "    provider: claude",
+    "    binary: claude",
+    "    resume: false",
+    "    timeout_ms: 1200000",
+)
 # The executable of a confirmed verification command becomes one
 # `Bash(<exe>:*)` rule, so it must be a bare program name: no path separators,
 # shell operators, quotes, or whitespace.
@@ -539,8 +502,7 @@ def resolve_provider_mapping(
 
     Auto-detection switches to a single-provider mapping only when that
     provider's CLI (Claude Code, Codex, or `agy`) is the only provider CLI
-    installed; any other combination keeps the reference mapping. Gemini CLI
-    is not auto-detected; the all-Gemini mapping needs `--provider gemini`.
+    installed; any other combination keeps the reference mapping.
     """
 
     if provider is not None:
@@ -601,6 +563,56 @@ def render_config(template_text: str, mapping: str) -> str:
             lambda _match: _CODEX_COMMIT_MODE_LINE, rendered
         )
     return rendered
+
+
+def render_linear_reference_agents(config_text: str) -> str:
+    """Move the reference mapping's antigravity roles to claude for Linear mode.
+
+    Replaces the `planner` and `frontend` stanzas under the top-level
+    `agents:` key with `provider: claude` stanzas and writes a one-line
+    comment above `planner`. The new lines use the text's line ending; every
+    other line is unchanged. Raises InitWorkflowError unless the `agents:`
+    block holds exactly one stanza for each role.
+    """
+
+    lines = config_text.splitlines(keepends=True)
+    newline = (_line_ending(lines[0]) if lines else "") or "\n"
+    for role in _LINEAR_REFERENCE_CLAUDE_ROLES:
+        agents_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if line.rstrip("\r\n") == "agents:"
+        ]
+        if len(agents_indexes) != 1:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has exactly one "
+                "agents: block."
+            )
+        block_start = agents_indexes[0] + 1
+        block_end = block_start
+        while block_end < len(lines) and (
+            not lines[block_end].strip() or lines[block_end][0] in " \t#"
+        ):
+            block_end += 1
+        headers = [
+            index
+            for index in range(block_start, block_end)
+            if lines[index].rstrip("\r\n") == f"  {role}:"
+        ]
+        if len(headers) != 1:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has exactly one "
+                f"agents.{role} stanza."
+            )
+        header = headers[0]
+        stop = header + 1
+        while stop < block_end and lines[stop].startswith("    "):
+            stop += 1
+        replacement = [f"  {role}:"] + list(_LINEAR_REFERENCE_CLAUDE_STANZA)
+        if role == "planner":
+            replacement.insert(0, _LINEAR_REFERENCE_CLAUDE_COMMENT)
+        lines[header:stop] = [f"{line}{newline}" for line in replacement]
+    return "".join(lines)
 
 
 def verification_executable(command: str) -> str:
@@ -967,6 +979,22 @@ def render_validator_agent_tools(template: bytes, mcp_server: str) -> bytes:
     frontmatter holds exactly one line that starts with `tools: `.
     """
 
+    return render_linear_agent_tools(_VALIDATOR_AGENT_PATH, template, mcp_server)
+
+
+def render_linear_agent_tools(
+    relative_path: Path, template: bytes, mcp_server: str
+) -> bytes:
+    """Rewrite the `tools:` frontmatter line of one Claude subagent file.
+
+    `relative_path` must be a key of `_LINEAR_AGENT_TOOLS`. The new line lists
+    that file's built-in tools followed by its role's Linear MCP tools for
+    `mcp_server`. The line keeps its original ending; every other byte is
+    unchanged. Raises InitWorkflowError unless the leading `---` frontmatter
+    holds exactly one line that starts with `tools: `.
+    """
+
+    role, base_tools = _LINEAR_AGENT_TOOLS[relative_path]
     lines = template.splitlines(keepends=True)
     tools_indexes: list[int] = []
     if lines and lines[0].rstrip(b"\r\n") == b"---":
@@ -977,14 +1005,14 @@ def render_validator_agent_tools(template: bytes, mcp_server: str) -> bytes:
                 tools_indexes.append(index)
     if len(tools_indexes) != 1:
         raise InitWorkflowError(
-            f"Template {_VALIDATOR_AGENT_PATH.as_posix()} must have exactly one "
+            f"Template {relative_path.as_posix()} must have exactly one "
             "'tools: ' line in its frontmatter."
         )
     index = tools_indexes[0]
     line = lines[index]
     ending = line[len(line.rstrip(b"\r\n")) :]
-    tools = ", ".join(linear_tools_for_role("validator", mcp_server))
-    lines[index] = f"tools: {_VALIDATOR_BASE_TOOLS}, {tools}".encode("utf-8") + ending
+    tools = ", ".join(linear_tools_for_role(role, mcp_server))
+    lines[index] = f"tools: {base_tools}, {tools}".encode("utf-8") + ending
     return b"".join(lines)
 
 
@@ -1003,9 +1031,8 @@ def _source_is_rendered(
     if relative_path == _CONFIG_PATH:
         return _config_is_rendered(mapping, executable, tracker)
     return (
-        relative_path in (_HANDBOOK_PATH, _VALIDATOR_AGENT_PATH)
-        and tracker is not None
-    )
+        relative_path == _HANDBOOK_PATH or relative_path in _LINEAR_AGENT_TOOLS
+    ) and tracker is not None
 
 
 def _source_bytes(
@@ -1022,6 +1049,9 @@ def _source_bytes(
         if mapping == REFERENCE_MAPPING:
             # Keep the template's bytes, line endings included.
             text = source_path.read_bytes().decode("utf-8")
+            if tracker is not None:
+                # Config load rejects antigravity roles in Linear mode.
+                text = render_linear_reference_agents(text)
         else:
             text = render_config(source_path.read_text(encoding="utf-8"), mapping)
         # An interpreter executable writes no allowed_tools list: the claude
@@ -1036,9 +1066,11 @@ def _source_bytes(
         return text.encode("utf-8")
     if relative_path == _HANDBOOK_PATH and tracker is not None:
         return _append_linear_handbook(source_path.read_bytes())
-    if relative_path == _VALIDATOR_AGENT_PATH and tracker is not None:
-        return render_validator_agent_tools(
-            source_path.read_bytes(), tracker.mcp_server or DEFAULT_TRACKER_MCP_SERVER
+    if relative_path in _LINEAR_AGENT_TOOLS and tracker is not None:
+        return render_linear_agent_tools(
+            relative_path,
+            source_path.read_bytes(),
+            tracker.mcp_server or DEFAULT_TRACKER_MCP_SERVER,
         )
     return source_path.read_bytes()
 

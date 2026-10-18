@@ -9,7 +9,8 @@ belong in commits, handoffs, and pull requests.
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
-  GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134; GEM-3c in progress).
+  GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
+  GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -97,17 +98,15 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: the operator live checks passed on 2026-10-18, so the epic is
-unblocked; finish GEM-3c, then GEM-3b (its Linear-mode mapping question must
-be decided when it is planned), GEM-4, and GEM-5 in order. GEM-5 deletes the
-`.gemini/` trees, so no later epic may recreate them.
+Fit: GEM-3 is done; take GEM-4a, GEM-4b, GEM-4c, then GEM-5, in order. GEM-5
+deletes the `.gemini/` trees, so no later epic may recreate them.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
 `antigravity` role adapter already ships (ANTIGRAVITY-ADAPTER). Gemini CLI
-still backs `planner` and `frontend` in the default mapping, the `init
---provider gemini` mapping, the `gemini` security reviewer, and the `gemini`
-normalizer (API and CLI paths). GEM-0 first makes `agy` roles work (the first
+still backs the `gemini` security reviewer and the `gemini` role provider;
+GEM-4a removes the `gemini` normalizer and the `init --provider gemini`
+mapping. GEM-0 first makes `agy` roles work (the first
 live `agy` planner run could not write files); then replace each Gemini path
 with `agy`, then remove the `gemini` provider. After removal, a config value or
 flag that names `gemini` fails at load with a message that points to
@@ -365,10 +364,17 @@ itself from 1.3.5 to 1.4.2 during the checks):
     `.agents/agents/` file (AGY-3). No default mapping changes.
   - GEM-3b: `DEFAULT_AGENT_PROVIDERS`, `dispatch_config.example.yaml`, and
     `examples/reference-workflow/dispatch_config.yaml` map `planner` and
-    `frontend` to `antigravity`. Open question: what Linear mode maps
-    `planner` and `frontend` to, since config load rejects `antigravity`
-    there and `init --tracker linear` with the reference mapping must keep
-    writing a loadable config.
+    `frontend` to `antigravity`. Decided by the planner on 2026-10-18:
+    `init --tracker linear` with the reference mapping writes `planner` and
+    `frontend` on `claude` (`provider: claude`, `binary: claude`,
+    `resume: false`, `timeout_ms: 1200000`), with a one-line comment above
+    `planner` saying Linear mode does not support `antigravity` roles;
+    `backend`, `auditor`, `validator`, and `finalizer` keep the template
+    mapping. `init --tracker linear --provider antigravity` stays refused.
+    The config-load rejection in `_validate_tracker` is unchanged, so a
+    hand-written Linear config that omits `planner` or `frontend` now fails
+    at load with the existing message; recorded in `CHANGELOG.md` as a
+    behavior change.
   - GEM-3c: Antigravity-safe supervised repair. Supervised repair
     (`--repair-role`) with an `antigravity` role launches
     `agy --agent supervisor-repair`: `llm_handoff/supervisor.py`
@@ -387,23 +393,40 @@ itself from 1.3.5 to 1.4.2 during the checks):
     eight-tool list) rather than an adapter fallback, and add
     `.agents/agents/` to the default repair allowlist.
 - GEM-4: Remove the `gemini` provider from the runtime and reject the old
-  names. Delete `llm_handoff/agent_providers/gemini.py`,
-  `llm_handoff/normalizer_providers/gemini.py` (API and CLI paths), and the
-  `google-genai` dependency. Remove the Gemini sandbox checks in
-  `orchestrator.py`, the Gemini security reviewer and its extension check in
-  `audit_review.py` (closes AUDIT-COST followup (b)), the Gemini checks in
-  `doctor.py`, the Gemini environment allowlist and API key rule in
-  `agent_process.py`, the Gemini sign-in patterns in `provider_auth.py`, the
-  `gemini` entry in `roles.py`, the Gemini re-exports in `agents.py`,
-  `init --provider gemini`, and `--use-planner-api-key-env`. Each of these
-  fails at load or parse with a message naming `antigravity`:
-  `provider: gemini` on any role, `normalizer.provider: gemini`,
-  `audit.security_provider: gemini`, `init --provider gemini`, and
-  `--use-planner-api-key-env`. Suggested text: "The gemini provider was
-  removed: Gemini CLI no longer serves personal Google accounts. Use
-  provider: antigravity (the agy CLI)." Delete or rewrite the Gemini tests and
-  add rejection tests. Split into runtime removal and rejection if it is too
-  large for one Work Packet.
+  names, so each fails at load or parse with a message naming `antigravity`.
+  Split by the planner on 2026-10-18 into one Work Packet per story:
+  - GEM-4a (this story): delete `llm_handoff/normalizer_providers/gemini.py`
+    (API and CLI paths), its registration in `handoff_normalizer.py` and
+    `normalizer_providers/__init__.py`, `GEMINI_NORMALIZER_MODEL` and the
+    `gemini` normalizer entries in `config.py`, the `gemini` normalizer
+    entries in `doctor.py`, the `google-genai` dependency, and the all-Gemini
+    `init` mapping (`GEMINI_MAPPING` and its blocks in `init_workflow.py`).
+    Reject `normalizer.provider: gemini` with "The gemini provider was
+    removed: Gemini CLI no longer serves personal Google accounts. Use
+    provider: antigravity (the agy CLI)." and `init --provider gemini`
+    (nonzero exit, no file written) with the same text ending "Use
+    --provider antigravity (the agy CLI)." Update the example configs, the
+    normalizer and init docs, and `CHANGELOG.md`; delete the Gemini
+    normalizer and all-Gemini `init` tests and add both rejection tests.
+  - GEM-4b: delete the Gemini security reviewer and its extension check in
+    `audit_review.py` and the matching security-extension check in
+    `doctor.py`, closing AUDIT-COST followups (b) and (c). Reject
+    `audit.security_provider: gemini` with "The gemini provider was removed:
+    Gemini CLI no longer serves personal Google accounts. Use
+    security_provider: antigravity (the agy CLI)." Delete or rewrite the
+    Gemini reviewer tests and add a rejection test.
+  - GEM-4c: delete `llm_handoff/agent_providers/gemini.py`, the Gemini
+    sandbox checks in `orchestrator.py` and `doctor.py`, the Gemini
+    environment allowlist and API key rule in `agent_process.py`, the Gemini
+    sign-in patterns in `provider_auth.py`, the `gemini` entry in `roles.py`,
+    the Gemini re-exports in `agents.py`, the Gemini constants in
+    `config.py`, and `--use-planner-api-key-env`. Reject `provider: gemini`
+    on any role with "The gemini provider was removed: Gemini CLI no longer
+    serves personal Google accounts. Use provider: antigravity (the agy
+    CLI)." and `--use-planner-api-key-env` with "--use-planner-api-key-env
+    was removed with the gemini provider: Gemini CLI no longer serves
+    personal Google accounts. Use provider: antigravity (the agy CLI)."
+    Delete or rewrite the Gemini role tests and add rejection tests.
 - GEM-5: Remove the shipped Gemini files and docs. Delete `.gemini/agents/`,
   `.gemini/policies/`, and their copies under `examples/reference-workflow/`.
   Delete both `.geminiignore` files; `agy` does not read them (see the facts
@@ -1037,6 +1060,12 @@ The remaining letters are unchanged.
     hierarchy (initiative, project, issue) with project-open and project-close
     gates. This repo has epic and story in `remaining_stories` plus this file;
     the TPM-ROLE epic scopes the picker to one epic for that reason.
+
+- From the GEM-3b audit (info):
+  - Claude backend, auditor, and ledger-updater subagent templates under
+    `examples/reference-workflow/.claude/agents/` do not list Linear MCP
+    tools; GEM-3b renders them for planner and frontend only. Claude roles
+    cannot write `.claude/` paths, so a fix routes to `user` (as in LIN-9d).
 
 - From the 2026-10-18 pause review (low,
   `llm_handoff/agent_providers/claude.py`):

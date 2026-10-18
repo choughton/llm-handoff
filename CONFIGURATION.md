@@ -19,8 +19,8 @@ planner_api_key_env: false
 
 agents:
   planner:
-    provider: gemini
-    binary: gemini
+    provider: antigravity
+    binary: agy
     resume: true
     timeout_ms: 1200000
 
@@ -1674,14 +1674,27 @@ present. If a role changes providers, omitted provider-specific fields are
 filled from that provider's default field bundle rather than the role's old
 provider defaults.
 
-| Role | Reference Provider |
-| --- | --- |
-| `planner` | `gemini` |
-| `backend` | `codex` |
-| `frontend` | `gemini` or manual frontend pause |
-| `auditor` | `claude` |
-| `validator` | `claude` |
-| `finalizer` | `claude` |
+| Role | Reference Provider | Reference agent file |
+| --- | --- | --- |
+| `planner` | `antigravity` (`agy`) | `.agents/agents/planner.md` |
+| `backend` | `codex` | `.codex/skills/llm-handoff/SKILL.md` |
+| `frontend` | `antigravity` (`agy`) or manual frontend pause | `.agents/agents/frontend.md` |
+| `auditor` | `claude` | `.claude/agents/auditor.md` |
+| `validator` | `claude` | `.claude/agents/handoff-validator.md` |
+| `finalizer` | `claude` | `.claude/agents/ledger-updater.md` |
+
+The `planner` and `frontend` roles on `antigravity` need the `agy` user
+settings entries described in
+[Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
+
+Linear mode does not support `antigravity` roles (see
+[Tracker](#tracker-optional-linear-mode)). `llm-handoff init --tracker linear` with the reference
+mapping therefore writes `planner` and `frontend` on `provider: claude`
+(`binary: claude`, `resume: false`, `timeout_ms: 1200000`), with a comment
+above `planner` saying why, and keeps the other roles as the template has
+them. A hand-written Linear-mode config that omits `planner` or `frontend`
+gets the `antigravity` default for that role and fails at load; map both
+roles to `claude` or `codex`.
 
 The table documents the shipped reference workflow defaults, not a hard
 runtime matrix. If you map a role to another registered provider, make sure the
@@ -1783,55 +1796,6 @@ report and the finalizer's `PROJECT STATE UPDATED` report must be the whole
 `summary`. Output that is not an envelope, such as a resumed session's
 answer, is parsed as it is.
 
-### All-Gemini Mapping
-
-The reference workflow ships a Gemini agent file for every role, so a machine
-with only Gemini CLI installed can run the whole loop. Each role's `mention`
-names its agent file (`@<role>` selects `.gemini/agents/<role>.md`), and the
-Gemini adapter puts that mention at the front of the prompt:
-
-| Role | Gemini agent file |
-| --- | --- |
-| `planner` | `.gemini/agents/planner.md` |
-| `backend` | `.gemini/agents/backend.md` |
-| `frontend` | `.gemini/agents/frontend.md` |
-| `auditor` | `.gemini/agents/auditor.md` |
-| `validator` | `.gemini/agents/validator.md` |
-| `finalizer` | `.gemini/agents/finalizer.md` |
-
-The validator file covers both the handoff validation and handoff routing
-tasks; the dispatcher's prompt names which one applies.
-
-`llm-handoff init --provider gemini` writes this mapping into
-`dispatch_config.yaml`, with every role on `provider: gemini`,
-`audit.security_provider: gemini`, and `normalizer.provider: gemini`.
-`init` does not detect Gemini CLI, so this mapping is written only with
-`--provider gemini`. `--verification-command` changes no `agents:`
-entry under this mapping, because it only adds `allowed_tools` to Claude
-roles.
-
-Every role runs inside Gemini CLI's container sandbox, so the machine needs
-Docker or Podman on `PATH` (macOS can use `sandbox-exec`); see
-[Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
-With every role on Gemini, the security reviewer runs on the same vendor as
-the implementer, so it is a second read-only review rather than an
-independent one, and the dispatcher logs a warning saying so. That reviewer
-also needs the Gemini CLI security extension installed and enabled;
-`llm-handoff doctor` checks it.
-
-The normalizer runs through the Gemini CLI sign-in, the same login the roles
-use, so no API key is needed; see
-[Next-Agent Normalizer](#next-agent-normalizer) for the command it runs.
-Setting `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in the dispatcher's
-environment switches it to the API path. The normalizer runs only when a
-handoff's `next_agent` is not a canonical role; when it fails, that handoff
-is left unchanged and the loop pauses.
-
-Gemini CLI returns the role's final answer as plain text in its
-`stream-json` output, so the validator's `VALID:` report and the finalizer's
-`PROJECT STATE UPDATED` report are parsed as written; the agent files ask
-for them as plain lines rather than inside a code fence.
-
 ### All-Antigravity Mapping
 
 The reference workflow ships an `agy` agent file for every role under
@@ -1860,6 +1824,11 @@ automatically when `agy` is the only provider CLI on `PATH`; with `agy` and
 another provider CLI on `PATH`, `init` keeps the reference mapping.
 `--verification-command` changes no `agents:` entry under this mapping,
 because it only adds `allowed_tools` to Claude roles.
+
+The all-Gemini mapping was removed. `llm-handoff init --provider gemini`
+exits nonzero before writing any file, with: "The gemini provider was
+removed: Gemini CLI no longer serves personal Google accounts. Use
+--provider antigravity (the agy CLI)."
 
 Every role needs the `permissions.allow` and `permissions.deny` entries in
 the `agy` user settings described in
@@ -2295,21 +2264,23 @@ normalizer:
   on_unknown: fail_closed
 ```
 
-The registered normalizer adapters are `antigravity`, `claude`, `codex`,
-`gemini`, and `openai`. `claude` is the reference default. If `provider` changes and `model`
+The registered normalizer adapters are `antigravity`, `claude`, `codex`, and
+`openai`. `claude` is the reference default. If `provider` changes and `model`
 is omitted, the loader fills a provider-specific default model.
+
+The `gemini` normalizer was removed. `normalizer: {provider: gemini}` fails
+config load with: "The gemini provider was removed: Gemini CLI no longer
+serves personal Google accounts. Use provider: antigravity (the agy CLI)."
 
 The normalizer has two runtime auth shapes:
 
 - API key path: the configured provider API is called with the
-  `NormalizedNextAgent` Pydantic schema. Gemini uses `GEMINI_API_KEY` or
-  `GOOGLE_API_KEY` when present; OpenAI requires `OPENAI_API_KEY`; Claude uses
-  `ANTHROPIC_API_KEY` when present.
+  `NormalizedNextAgent` Pydantic schema. OpenAI requires `OPENAI_API_KEY`;
+  Claude uses `ANTHROPIC_API_KEY` when present.
 - CLI auth path: Claude falls back to the local Claude Code CLI session when
-  no Anthropic API key is available, and Gemini falls back to the local Gemini
-  CLI sign-in when neither Gemini key is set. The `codex` adapter always uses
-  the local Codex CLI login, and the `antigravity` adapter always uses the
-  local `agy` sign-in. The OpenAI normalizer adapter is API-only.
+  no Anthropic API key is available. The `codex` adapter always uses the
+  local Codex CLI login, and the `antigravity` adapter always uses the local
+  `agy` sign-in. The OpenAI normalizer adapter is API-only.
 
 Choose `provider: codex` when the machine has the Codex CLI signed in (for
 example with a ChatGPT account) but no `OPENAI_API_KEY`, such as an all-Codex
@@ -2336,28 +2307,6 @@ the dispatcher terminates Codex and its descendants, including the process
 behind a Windows `.cmd` shim. A missing `codex` binary, a launch error, a
 timeout, a nonzero exit, or output that is not a valid role fails closed and
 leaves the handoff unchanged.
-
-The `gemini` adapter's CLI path runs `gemini --approval-mode plan --policy
-<deny-all policy> --sandbox=false --skip-trust --model <model> --output-format
-json -p <fixed instruction>` with the arguments passed as a list and no shell,
-and the request on stdin (headless Gemini CLI appends the `-p` text to
-stdin). Like the `codex` adapter it starts from a private temporary directory
-outside the repository, so project-level `.gemini/` settings do not apply and
-the call has nothing to read. Plan mode alone is not a tool boundary, because
-headless Gemini CLI auto-approves `exit_plan_mode` and then runs in YOLO mode.
-The temporary directory therefore also holds a policy file with one rule,
-`toolName = "*"`, `decision = "deny"`, `priority = 999`, which `--policy`
-loads in the user policy tier. It outranks the built-in plan and YOLO allow
-rules and the allow rules derived from Gemini CLI settings, so every tool
-call, including `exit_plan_mode` and MCP tools, is denied; only an admin or
-system policy on the machine ranks higher. With no tool able to run, no
-container sandbox is used, so this path does not need Docker. The environment
-is the Gemini role allowlist with both Gemini API keys withheld. The answer is
-parsed from the JSON `response` field (a JSON object, a bare role name, or either inside
-a code fence); anything else, a nonzero exit, a timeout, or a sign-in failure
-(for example `IneligibleTierError`, which Google now reports for the retired
-personal Gemini Code Assist tier) fails closed with the sign-in fix in the
-message. Setting `GEMINI_API_KEY` selects the API path instead.
 
 The `antigravity` adapter (`provider: antigravity`, model default
 `gemini-3.8-flash-low`) runs `agy -p <fixed instruction> --agent <agent name>
@@ -2405,9 +2354,7 @@ should treat role allowlists as a guardrail, not a sandbox (see
 configured normalizer cannot run: for `codex`, the `codex` binary is not
 found; for `antigravity`, the `agy` binary is not found; for `claude`,
 neither `ANTHROPIC_API_KEY` nor the `claude` binary is
-available; for `openai`, `OPENAI_API_KEY` is not set; for `gemini`, none of
-`GEMINI_API_KEY`, `GOOGLE_API_KEY`, or the `gemini` binary is available. The
-doctor never calls the provider, so a passing line reports auth as not
+available; for `openai`, `OPENAI_API_KEY` is not set. The doctor never calls the provider, so a passing line reports auth as not
 verified. When the provider is `antigravity`, the doctor also prints a
 `normalizer boundary` WARN line, whether or not `agy` is found, that states
 the execution boundary above; it does not change the exit code.

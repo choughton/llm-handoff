@@ -6,6 +6,40 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Removed the `gemini` next-agent normalizer (its Gemini CLI and API paths,
+  `llm_handoff/normalizer_providers/gemini.py`) and the all-Gemini `init`
+  mapping. `normalizer: {provider: gemini}` now fails config load with "The
+  gemini provider was removed: Gemini CLI no longer serves personal Google
+  accounts. Use provider: antigravity (the agy CLI)."
+  `llm-handoff init --provider gemini` now exits nonzero before writing any
+  file, with "The gemini provider was removed: Gemini CLI no longer serves
+  personal Google accounts. Use --provider antigravity (the agy CLI)." The
+  `google-genai` dependency is dropped from `pyproject.toml` and
+  `requirements-dev.txt`. `llm-handoff doctor` no longer has Gemini entries
+  in its normalizer check. The Gemini role provider and the Gemini security
+  reviewer are unchanged.
+- The default provider for `planner` and `frontend` is now `antigravity`
+  (`binary: agy`) instead of `gemini`. `DEFAULT_AGENT_PROVIDERS`,
+  `dispatch_config.example.yaml`, and
+  `examples/reference-workflow/dispatch_config.yaml` all change; the two
+  stanzas drop their `mention:` lines and keep their `resume` and
+  `timeout_ms` values. `backend`, `auditor`, `validator`, and `finalizer`
+  are unchanged. `llm-handoff init --tracker linear` with the reference
+  mapping now writes `planner` and `frontend` on `provider: claude`
+  (`binary: claude`, `resume: false`, `timeout_ms: 1200000`) with a comment
+  above `planner`, because Linear mode does not support `antigravity`
+  roles; `init --tracker linear --provider antigravity` is still refused.
+  In Linear mode `init` also appends each role's
+  `mcp__<tracker.mcp_server>__*` tools to the `tools:` line of the copied
+  `.claude/agents/planner.md` and `.claude/agents/frontend.md`, as it
+  already did for `handoff-validator.md`, because a Claude subagent's
+  `tools:` list is an allowlist that otherwise blocks the Linear MCP tools.
+  Behavior change: a hand-written Linear-mode config that omits `planner` or
+  `frontend` now gets the `antigravity` default for that role and fails at
+  load with the existing `tracker.provider: linear does not support
+  provider: antigravity` message. Map both roles to `claude` or `codex`.
+  A config without an `agents:` block now needs `agy` on `PATH` and the
+  `agy` user settings entries for those two roles.
 - Supervised repair now works with an `antigravity` repair role. The
   supervisor already launched the repair turn as
   `agy --agent supervisor-repair`, but no agent file had that name, so `agy`

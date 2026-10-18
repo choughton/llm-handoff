@@ -41,10 +41,10 @@ def _config(
         "claude": "auditor",
         "gemini": "planner",
         "codex": "backend",
-        "antigravity": "frontend",
+        "antigravity": "planner",
     }[provider]
-    if provider == "antigravity":
-        base = {"provider": "antigravity"}
+    if provider in ("gemini", "antigravity"):
+        base = {"provider": provider}
     else:
         base = agents[role].model_dump(exclude_none=True)
     agents[role] = AgentConfig(

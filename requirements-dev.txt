@@ -1,6 +1,5 @@
 anthropic
 click
-google-genai
 instructor
 openai
 pydantic

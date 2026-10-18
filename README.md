@@ -77,11 +77,14 @@ role prompts under `docs/handoff/`, and provider agent files under `.claude/`,
 changed files stop the run unless you pass `--force`.
 
 `init` picks a role-to-provider mapping for you. When only one of Claude
-Code, Codex, or Gemini CLI is on `PATH`, every role goes on that one CLI.
-Otherwise it writes the reference mapping (Gemini planner, Codex backend,
-Claude auditor). Pass `--provider claude`, `--provider codex`, or
-`--provider gemini` to force a single-vendor setup. The command prints the
-mapping it chose.
+Code, Codex, or Antigravity (`agy`) is on `PATH`, every role goes on that
+one CLI.
+Otherwise it writes the reference mapping (Antigravity `agy` planner and
+frontend, Codex backend, Claude auditor, validator, and finalizer). With
+`--tracker linear`, the reference mapping puts `planner` and `frontend` on
+Claude instead, because Linear mode does not support `antigravity` roles.
+Pass `--provider claude`, `--provider codex`, or `--provider antigravity` to
+force a single-vendor setup. The command prints the mapping it chose.
 
 With every role on Codex, `init` also writes `commit_mode: dispatcher` in
 place of the template's `commit_mode: agent`. Codex's sandbox keeps `.git`
@@ -229,11 +232,7 @@ Things that stop a first run or quietly change what the loop does.
 
 - **Gemini roles need a container runtime.** Gemini CLI runs in its sandbox,
   so any role on `gemini` needs Docker or Podman on `PATH` (macOS:
-  `sandbox-exec`). Without one the dispatcher refuses to start. An
-  all-Gemini setup (`init --provider gemini`) puts every role in that
-  sandbox and needs the Gemini CLI security extension for the security
-  reviewer; the next-agent normalizer runs on the same Gemini CLI sign-in,
-  with no API key required.
+  `sandbox-exec`). Without one the dispatcher refuses to start.
 - **All-Codex setups need dispatcher commits.** Codex's `workspace-write`
   sandbox cannot write to `.git`, so `init --provider codex` writes
   `commit_mode: dispatcher` for you. Keep it, and keep the work-claim gate

@@ -14,11 +14,11 @@ from llm_handoff.init_workflow import (
     ANTIGRAVITY_MAPPING,
     CLAUDE_MAPPING,
     CODEX_MAPPING,
-    GEMINI_MAPPING,
     REFERENCE_MAPPING,
     InitConflictError,
     InitWorkflowError,
     InvalidVerificationCommandError,
+    TrackerUnsupportedMappingError,
     UnknownProviderError,
     UnknownTemplateError,
     check_verification_command_chars,
@@ -476,9 +476,7 @@ def test_init_reports_a_mapping_change_as_a_config_conflict(tmp_path: Path) -> N
 def test_init_rejects_an_unknown_provider_mapping(tmp_path: Path) -> None:
     with pytest.raises(UnknownProviderError) as error:
         init_reference_workflow(tmp_path, provider="openai", available_providers=())
-    assert "Available mappings: claude, codex, antigravity, gemini." in str(
-        error.value
-    )
+    assert "Available mappings: claude, codex, antigravity." in str(error.value)
     assert not (tmp_path / "AGENTS.md").exists()
 
 
@@ -532,7 +530,9 @@ def test_render_config_codex_uses_the_all_claude_timeouts() -> None:
     }
 
 
-@pytest.mark.parametrize("mapping", [CLAUDE_MAPPING, CODEX_MAPPING, GEMINI_MAPPING])
+@pytest.mark.parametrize(
+    "mapping", [CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING]
+)
 @pytest.mark.parametrize(
     "anchor",
     [
@@ -558,10 +558,10 @@ def test_render_config_rejects_a_template_without_an_anchor(
     [
         "normalizer:\n",
         "normalizer:\n  provider: claude\n",
-        "normalizer:\n  provider: gemini\n  model: claude-haiku-5-5\n",
+        "normalizer:\n  provider: codex\n  model: claude-haiku-5-5\n",
     ],
 )
-@pytest.mark.parametrize("mapping", [CODEX_MAPPING, GEMINI_MAPPING])
+@pytest.mark.parametrize("mapping", [CODEX_MAPPING, ANTIGRAVITY_MAPPING])
 def test_render_config_rejects_a_template_without_the_normalizer_lines(
     mapping: str,
     replacement: str,
@@ -596,7 +596,7 @@ def test_render_config_commit_mode_stays_agent_outside_the_codex_mapping() -> No
 
     assert yaml.safe_load(template)["commit_mode"] == "agent"
     assert render_config(template, REFERENCE_MAPPING) == template
-    for mapping in (CLAUDE_MAPPING, GEMINI_MAPPING):
+    for mapping in (CLAUDE_MAPPING, ANTIGRAVITY_MAPPING):
         rendered = render_config(template, mapping)
         assert rendered.count("\ncommit_mode: agent\n") == 1, mapping
         assert "commit_mode: dispatcher\n" not in rendered, mapping
@@ -625,7 +625,7 @@ def test_render_config_codex_rejects_a_template_without_the_commit_mode_line(
         render_config(broken, CODEX_MAPPING)
     # The other mappings never touch the line, so they still render.
     assert render_config(broken, CLAUDE_MAPPING)
-    assert render_config(broken, GEMINI_MAPPING)
+    assert render_config(broken, ANTIGRAVITY_MAPPING)
     assert render_config(broken, REFERENCE_MAPPING) == broken
 
 
@@ -702,86 +702,6 @@ def test_verification_command_with_codex_mapping_changes_no_agent(
     assert yaml.safe_load(text)["verification_allowed_prefixes"] == ["npm test"]
 
 
-GEMINI_ROLE_MENTIONS = {
-    "planner": "@planner",
-    "backend": "@backend",
-    "frontend": "@frontend",
-    "auditor": "@auditor",
-    "validator": "@validator",
-    "finalizer": "@finalizer",
-}
-
-
-def test_render_config_gemini_puts_every_role_on_gemini() -> None:
-    template = _template_config_text()
-    rendered = render_config(template, GEMINI_MAPPING)
-    data = yaml.safe_load(rendered)
-    reference = yaml.safe_load(template)
-
-    assert set(data["agents"]) == set(GEMINI_ROLE_MENTIONS)
-    for role, mention in GEMINI_ROLE_MENTIONS.items():
-        agent = data["agents"][role]
-        assert agent == {
-            "provider": "gemini",
-            "binary": "gemini",
-            "mention": mention,
-            "resume": False,
-            "timeout_ms": reference["agents"][role]["timeout_ms"],
-        }, role
-    assert data["audit"]["security_provider"] == "gemini"
-    assert "  # Same vendor as the implementer: the only CLI available." in rendered
-    assert data["normalizer"]["provider"] == "gemini"
-    assert "model" not in data["normalizer"]
-    assert "Gemini CLI login" in rendered
-    assert "claude-haiku-5-5" not in rendered
-    assert "provider: claude" not in rendered
-    assert "provider: codex" not in rendered
-
-
-def test_render_config_gemini_uses_the_all_claude_timeouts() -> None:
-    template = _template_config_text()
-    claude = yaml.safe_load(render_config(template, CLAUDE_MAPPING))["agents"]
-    gemini = yaml.safe_load(render_config(template, GEMINI_MAPPING))["agents"]
-
-    assert {role: agent["timeout_ms"] for role, agent in gemini.items()} == {
-        role: agent["timeout_ms"] for role, agent in claude.items()
-    }
-
-
-def test_render_config_gemini_leaves_the_other_mappings_unchanged() -> None:
-    template = _template_config_text()
-
-    assert render_config(template, REFERENCE_MAPPING) == template
-    for mapping in (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING):
-        rendered = render_config(template, mapping)
-        assert "provider: gemini" not in rendered, mapping
-        assert "Gemini CLI login" not in rendered, mapping
-
-
-def test_init_provider_gemini_writes_a_loadable_all_gemini_config(
-    tmp_path: Path,
-) -> None:
-    result = init_reference_workflow(
-        tmp_path,
-        provider="gemini",
-        available_providers=("claude", "codex", "gemini"),
-    )
-
-    assert result.provider_mapping == GEMINI_MAPPING
-    config = load_dispatch_config(
-        repo_root=tmp_path,
-        config_path=tmp_path / "dispatch_config.yaml",
-    )
-    assert set(config.agents) == set(GEMINI_ROLE_MENTIONS)
-    for role, mention in GEMINI_ROLE_MENTIONS.items():
-        assert config.agents[role].provider == "gemini", role
-        assert config.agents[role].mention == mention, role
-    assert config.audit.security_provider == "gemini"
-    assert config.normalizer.provider == "gemini"
-    for role in GEMINI_ROLE_MENTIONS:
-        assert (tmp_path / ".gemini" / "agents" / f"{role}.md").is_file(), role
-
-
 def test_init_keeps_the_reference_mapping_on_a_gemini_only_machine(
     tmp_path: Path,
 ) -> None:
@@ -792,34 +712,6 @@ def test_init_keeps_the_reference_mapping_on_a_gemini_only_machine(
     assert (tmp_path / "dispatch_config.yaml").read_bytes() == (
         TEMPLATE_ROOT / "dispatch_config.yaml"
     ).read_bytes()
-
-
-def test_init_gemini_mapping_is_repeatable(tmp_path: Path) -> None:
-    init_reference_workflow(tmp_path, provider="gemini", available_providers=())
-    second = init_reference_workflow(
-        tmp_path, provider="gemini", available_providers=()
-    )
-
-    assert second.copied == ()
-    assert Path("dispatch_config.yaml") in second.skipped
-    assert second.conflicts == ()
-
-
-def test_verification_command_with_gemini_mapping_changes_no_agent(
-    tmp_path: Path,
-) -> None:
-    init_reference_workflow(
-        tmp_path,
-        provider="gemini",
-        available_providers=(),
-        verification_command="npm test",
-    )
-
-    tools = _loaded_allowed_tools(tmp_path)
-    assert all(value is None for value in tools.values())
-    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
-    assert "allowed_tools" not in text
-    assert yaml.safe_load(text)["verification_allowed_prefixes"] == ["npm test"]
 
 
 ANTIGRAVITY_ROLES = ("planner", "backend", "frontend", "auditor", "validator", "finalizer")
@@ -1297,8 +1189,6 @@ def test_resolve_provider_mapping_prefers_an_explicit_choice() -> None:
     assert resolve_provider_mapping(None, ("codex",)) == CODEX_MAPPING
     assert resolve_provider_mapping(None, ("claude", "codex")) == REFERENCE_MAPPING
     assert resolve_provider_mapping(None, ("codex", "gemini")) == REFERENCE_MAPPING
-    assert resolve_provider_mapping("gemini", ("claude", "codex")) == GEMINI_MAPPING
-    assert resolve_provider_mapping("gemini", ("agy",)) == GEMINI_MAPPING
     assert resolve_provider_mapping(None, ("gemini",)) == REFERENCE_MAPPING
     assert (
         resolve_provider_mapping("antigravity", ("claude", "codex"))
@@ -1313,9 +1203,13 @@ def test_resolve_provider_mapping_prefers_an_explicit_choice() -> None:
 def test_unknown_provider_error_lists_every_mapping() -> None:
     with pytest.raises(UnknownProviderError) as error:
         resolve_provider_mapping("openai", ())
-    assert "Available mappings: claude, codex, antigravity, gemini." in str(
-        error.value
-    )
+    assert "Available mappings: claude, codex, antigravity." in str(error.value)
+
+
+def test_resolve_provider_mapping_rejects_the_removed_gemini_mapping() -> None:
+    with pytest.raises(UnknownProviderError):
+        resolve_provider_mapping("gemini", ("claude", "codex"))
+    assert not hasattr(init_workflow_module, "GEMINI_MAPPING")
 
 
 def test_provider_mapping_and_cli_order() -> None:
@@ -1323,7 +1217,6 @@ def test_provider_mapping_and_cli_order() -> None:
         "claude",
         "codex",
         "antigravity",
-        "gemini",
     )
     assert init_workflow_module.PROVIDER_CLIS == ("claude", "codex", "agy")
 
@@ -1408,3 +1301,95 @@ def test_init_does_not_touch_the_agy_settings_file(
     init_reference_workflow(target, available_providers=(), antigravity_available=True)
 
     assert not home.exists()
+
+
+def _reference_linear_init(target: Path, **kwargs: object):
+    return init_reference_workflow(
+        target,
+        available_providers=(),
+        antigravity_available=False,
+        tracker="linear",
+        tracker_team="ENG",
+        tracker_project="Platform",
+        **kwargs,
+    )
+
+
+def test_reference_linear_init_puts_planner_and_frontend_on_claude(
+    tmp_path: Path,
+) -> None:
+    result = _reference_linear_init(tmp_path)
+
+    assert result.provider_mapping == REFERENCE_MAPPING
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "provider: antigravity" not in text
+    assert (
+        "  # Linear mode does not support antigravity roles, so planner and "
+        "frontend run on Claude.\n  planner:\n"
+    ) in text
+    config = load_dispatch_config(repo_root=tmp_path)
+    assert config.tracker.provider == "linear"
+    for role in ("planner", "frontend"):
+        agent = config.agents[role]
+        assert agent.provider == "claude"
+        assert agent.binary == "claude"
+        assert agent.resume is False
+        assert agent.timeout_ms == 1200000
+    # The other roles keep the template mapping.
+    template = load_dispatch_config(
+        repo_root=TEMPLATE_ROOT,
+        config_path=TEMPLATE_ROOT / "dispatch_config.yaml",
+    )
+    for role in ("backend", "auditor", "validator", "finalizer"):
+        assert config.agents[role].provider == template.agents[role].provider
+        assert config.agents[role].binary == template.agents[role].binary
+        assert config.agents[role].resume == template.agents[role].resume
+
+
+def test_reference_linear_init_dry_run_writes_nothing(tmp_path: Path) -> None:
+    _reference_linear_init(tmp_path, dry_run=True)
+
+    assert not any(tmp_path.iterdir())
+
+
+def test_antigravity_linear_init_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(TrackerUnsupportedMappingError):
+        _reference_linear_init(tmp_path, provider="antigravity")
+
+    assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_render_linear_reference_agents_keeps_other_lines_and_line_endings(
+    newline: str,
+) -> None:
+    template = (TEMPLATE_ROOT / "dispatch_config.yaml").read_text(encoding="utf-8")
+    source = template.replace("\n", newline)
+
+    rendered = init_workflow_module.render_linear_reference_agents(source)
+
+    assert rendered.count(newline) == rendered.count("\n")
+    assert "provider: antigravity" not in rendered
+    assert "binary: agy" not in rendered
+    loaded = yaml.safe_load(rendered)
+    for role in ("planner", "frontend"):
+        assert loaded["agents"][role] == {
+            "provider": "claude",
+            "binary": "claude",
+            "resume": False,
+            "timeout_ms": 1200000,
+        }
+    original = yaml.safe_load(source)
+    for role in ("backend", "auditor", "validator", "finalizer"):
+        assert loaded["agents"][role] == original["agents"][role]
+    assert {k: v for k, v in loaded.items() if k != "agents"} == {
+        k: v for k, v in original.items() if k != "agents"
+    }
+
+
+def test_render_linear_reference_agents_rejects_a_missing_stanza() -> None:
+    template = (TEMPLATE_ROOT / "dispatch_config.yaml").read_text(encoding="utf-8")
+    broken = template.replace("  frontend:\n", "  ui:\n")
+
+    with pytest.raises(InitWorkflowError, match="agents.frontend"):
+        init_workflow_module.render_linear_reference_agents(broken)
