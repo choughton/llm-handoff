@@ -854,9 +854,12 @@ def _set_aside_pause(
     if paths:
         one = len(paths) == 1
         them = "it" if one else "them"
-        quoted = " ".join(
-            path if re.fullmatch(r"[\w./-]+", path) else f'"{path}"'
-            for path in paths
+        # The operator may paste the command into any shell, so it names the
+        # paths only when none needs quoting there.
+        quoted = (
+            " ".join(paths)
+            if all(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", path) for path in paths)
+            else "<the files named above>"
         )
         remedy = (
             "Nothing was merged, and the dispatcher left "

@@ -947,6 +947,31 @@ def test_a_merge_git_refuses_names_the_blocking_files_not_conflicts(
     assert _gh_calls(tmp_path) == []
 
 
+def test_a_dirty_path_a_shell_would_expand_is_left_out_of_the_stash_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    risky = "notes $(id).md"
+    _commit_all(repo, {risky: "notes\n"}, "Add notes")
+    _git(repo, "push", "-q", "origin", "main")
+    _start_story(repo)
+    _commit_on_remote(tmp_path, remote, "main", {risky: "base notes\n"}, "Notes")
+    (repo / risky).write_text("local notes\n", encoding="utf-8")
+    _entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log)
+
+    assert outcome.stop is True
+    assert f"`{risky}`" in outcome.message
+    assert (
+        "`git stash push --include-untracked -- <the files named above>`"
+        in outcome.message
+    )
+    assert f"-- {risky}" not in outcome.message
+
+
 def test_a_failed_merge_reports_the_git_error_after_warnings() -> None:
     from llm_handoff.publish import _blocking_paths, _first_line
 
