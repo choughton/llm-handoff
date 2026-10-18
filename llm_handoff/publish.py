@@ -140,6 +140,9 @@ class StoryState:
     tracker_issue: str = ""
     tracker_url: str = ""
     selection_basis: str = ""
+    # The story's pull request once `pr` mode opened or found it, so a pause
+    # can name it without a `gh` call.
+    pull_request_url: str = ""
 
 
 _TRACKER_FIELDS = ("tracker_issue", "tracker_url", "selection_basis")
@@ -252,6 +255,60 @@ def ensure_story_branch(
     )
     (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
     return None
+
+
+def unfinished_story_pause_reason(
+    *,
+    repo_root: Path,
+    prefix: str,
+    assignment_content: str,
+    route: str,
+) -> str | None:
+    """Explain why an assignment for another story cannot start yet, or None.
+
+    The checkout is still on the branch of the story the saved state tracks,
+    so that story is not published: its pull request may be open with
+    unresolved review findings. Starting the other story would leave it
+    behind, so the dispatcher pauses with the recovery steps instead of
+    stopping at :func:`ensure_story_branch`.
+    """
+
+    state = _load_state(repo_root)
+    if state is None or _current_branch(repo_root) != state.branch:
+        return None
+    try:
+        frontmatter = parse_handoff_frontmatter_text(assignment_content)
+    except HandoffFrontmatterError:
+        frontmatter = None
+    story_id = (frontmatter.story_id or "").strip() if frontmatter else ""
+    if not story_id:
+        return None
+    story_title = (frontmatter.story_title or "").strip() if frontmatter else ""
+    if story_branch_name(prefix, story_id, story_title) == state.branch:
+        return None
+    unresolved = sum(
+        1
+        for finding in (*state.open_findings, *state.deferred_findings)
+        if not finding.get("resolved")
+    )
+    if state.pull_request_url:
+        published = f"its pull request {state.pull_request_url} is still open"
+    else:
+        published = "it is not merged yet"
+    if unresolved:
+        published += f" with {unresolved} unresolved review finding(s)"
+    return (
+        f"UNFINISHED STORY: HANDOFF.md routes `{route}` to `{story_id}`, but "
+        f"the checkout is still on `{state.branch}` for `{state.story_id}`, "
+        f"and {published}. Starting `{story_id}` would leave that story "
+        f"unpublished. Either route HANDOFF.md back to `{state.implementer}` "
+        f"with `story_id: {state.story_id}` to finish it (deferring a finding "
+        "is a `ready_for_review` handback with a `Deferred:` response), or "
+        "resolve its review threads and merge or close its pull request "
+        f"yourself, then run `git switch {state.base_branch}` and `git pull`. "
+        "Update HANDOFF.md (or type `retry` at the operator prompt); dispatch "
+        "will resume after the file changes."
+    )
 
 
 def _unpushed_handoff_commits(
@@ -513,6 +570,9 @@ def publish_story(
             return _stop(log, f"gh pr create failed: {_first_line(created)}")
         url = (created.stdout or "").strip().splitlines()[-1] if created.stdout else ""
         log("AGENT", f"Opened pull request for {state.branch}: {url or '(no URL printed)'}")
+    if url and url != state.pull_request_url:
+        state = replace(state, pull_request_url=url)
+        _save_state(repo_root, state)
 
     if not auto_merge:
         _clear_state(repo_root)
@@ -1328,6 +1388,15 @@ def build_review_bounce_handoff(
         "example because the fix is outside the Work Packet's scope, start its "
         "response with `Deferred:`; the dispatcher posts that reply but leaves "
         "the thread unresolved, and the planner decides before the merge. "
+        "Deferring every finding is still a `ready_for_review` handback to "
+        "`auditor`: change no file, answer each finding with `Deferred:`, run "
+        "the verification command, and write `pending-dispatcher-commit` as "
+        "the `Commit SHA verified` value as usual. The dispatcher records the "
+        "branch head as the claim, and the work-claim gate counts the story's "
+        "earlier commits on this branch, so no new commit is needed. Do "
+        "not hand back a `blocked_*` status to defer a finding: a blocked "
+        "handback skips the gate, the audit, and the replies, so the planner "
+        "never gets its pass and the pull request stays open. "
         + (
             "This is the last correction round: the dispatcher then merges the "
             "pull request without another Codex review. "
@@ -1454,9 +1523,31 @@ def settle_deferred_findings(
     pull request then merges once every review thread is resolved. Findings
     sent back to the implementer, or a route to the user, leave the pull
     request open. Anything else pauses for a person.
+
+    Decisions written outside that pass are never acted on. While the story
+    still has unresolved review findings, they pause instead of being ignored,
+    and the story state is kept so the story can be routed back to its
+    implementer.
     """
 
     state = _load_state(repo_root)
+    if (
+        state is not None
+        and not state.deferral_planner_pass
+        and _has_deferred_decisions(handoff_content)
+    ):
+        unresolved = [
+            finding
+            for finding in (*state.open_findings, *state.deferred_findings)
+            if not finding.get("resolved")
+        ]
+        if unresolved:
+            return _pause(
+                repo_root,
+                log,
+                _unarmed_decisions_message(state, len(unresolved)),
+                keep_state=True,
+            )
     if state is None or not state.deferral_planner_pass or not state.open_findings:
         return PublishOutcome()
     if _current_branch(repo_root) != state.branch:
@@ -1571,6 +1662,29 @@ def settle_deferred_findings(
         state=state,
         url=url,
         log=log,
+    )
+
+
+_DECISIONS_HEADING_RE = re.compile(r"(?m)^## Deferred Finding Decisions[ \t]*$")
+
+
+def _has_deferred_decisions(handoff_content: str) -> bool:
+    return _DECISIONS_HEADING_RE.search(handoff_content.replace("\r\n", "\n")) is not None
+
+
+def _unarmed_decisions_message(state: StoryState, count: int) -> str:
+    where = state.pull_request_url or f"the pull request for `{state.branch}`"
+    return (
+        "The planner wrote `## Deferred Finding Decisions`, but the dispatcher "
+        f"has not routed deferred findings of `{state.story_id}` to the planner, "
+        f"so it did not act on them: {count} review finding(s) on {where} are "
+        "still unresolved, and nothing was replied to, resolved, or merged. "
+        "The planner gets that pass only after the implementer hands back "
+        "`ready_for_review` with `Deferred:` responses and the audit passes. "
+        f"Either route HANDOFF.md back to `{state.implementer}` with `story_id: "
+        f"{state.story_id}` and ask for that handback, or resolve the threads "
+        f"and merge the pull request yourself, run `git switch "
+        f"{state.base_branch}` and `git pull`. Then start the dispatcher again."
     )
 
 

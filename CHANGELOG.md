@@ -6,6 +6,20 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `pr` mode no longer strands a pull request whose review finding was
+  deferred. The review bounce now says that deferring every finding is still
+  a `ready_for_review` handback with no code change (the work-claim gate
+  counts the story's earlier commits), and that a `blocked_*` handback skips
+  the gate, the audit, the reply, and the planner's pass. A planner handoff
+  with `## Deferred Finding Decisions` written outside that pass, while the
+  story still has unresolved findings, used to be ignored silently; the
+  dispatcher now fails closed and pauses, naming the pull request, keeping
+  the story state, and giving the recovery steps. A handoff that routes an
+  implementer to another story while the checkout is still on the current
+  story's branch now pauses (with pause recovery, the operator prompt, and a
+  `--dry-run` preview) naming the open pull request and its unresolved
+  findings, instead of stopping with `ERROR Story branch not ready`. The
+  story state records the pull request URL for these messages.
 - Linear mode (`tracker.provider: linear`) now rejects `provider:
   antigravity` on any role or role fallback when the config loads, whether
   or not the role sets `unsafe_bypass`. The error names each offending

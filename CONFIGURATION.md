@@ -686,6 +686,11 @@ The outcomes:
   a real finding left unfixed for later work, often because its fix is
   outside the Work Packet's Files in scope: the dispatcher posts the reply,
   logs a `WARN` naming the finding, and leaves the thread unresolved.
+  Deferring every finding is still a `ready_for_review` handback with no code
+  change: the dispatcher records the branch head as the claim, and the
+  work-claim gate counts the story's earlier commits since the story base. A
+  `blocked_*` handback skips the gate, the audit, and the replies, so the
+  planner's pass below never starts; the bounce says so.
 - Deferred findings only: when the only unresolved review threads are
   deferred findings, the dispatcher does not pause. It rewrites `HANDOFF.md`
   to route to `planner` with each deferred finding, the implementer's
@@ -706,6 +711,22 @@ The outcomes:
   neither accepted nor sent back, when the implementer defers a finding
   again after the planner's pass, or when any other review thread, such as
   a finding without a response or a person's comment, is still unresolved.
+
+  The dispatcher acts on `## Deferred Finding Decisions` only during that
+  pass. When a planner handoff has the section but the pass never started
+  and the story still has unresolved findings, the dispatcher fails closed:
+  it replies to, resolves, and merges nothing, and pauses with the pull
+  request and the recovery steps. It keeps the story state, so you can route
+  `HANDOFF.md` back to the implementer for the `ready_for_review` deferral,
+  or resolve the threads and merge the pull request yourself. A leftover
+  section with no unresolved findings is ignored.
+- Another story while one is open: when `HANDOFF.md` routes an implementer
+  to a different story while the checkout is still on the current story's
+  branch, the dispatcher does not start the new branch. It pauses (pause
+  recovery and the operator prompt apply) with the open pull request, its
+  unresolved finding count, and the recovery steps: route back to the
+  current story, or merge or close its pull request and return to the base
+  branch. `--dry-run` reports the same pause.
 - One correction round by default (`max_review_rounds: 1`). The first review
   should surface what matters most; each review of a fix tends to find new
   edge cases in the new code, so the dispatcher does not wait for another
