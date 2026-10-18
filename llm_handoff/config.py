@@ -307,6 +307,9 @@ class AgentConfig(BaseModel):
     # Set only by DispatchConfig from the top-level `interpreter_grants`; a
     # private attribute, so no role-level YAML key can set it.
     _interpreter_grants: bool = PrivateAttr(default=False)
+    # Set only by the Linear-mode derivation when it builds `allowed_tools` on
+    # the flag-aware default list (the role left `allowed_tools` unset).
+    _allowed_tools_from_default: bool = PrivateAttr(default=False)
 
     @property
     def claude_mcp_config_path(self) -> Path | None:
@@ -319,6 +322,18 @@ class AgentConfig(BaseModel):
         """The loaded config's ``interpreter_grants`` value for this launch."""
 
         return self._interpreter_grants
+
+    @property
+    def uses_default_allowed_tools(self) -> bool:
+        """Whether this launch's Claude allowlist builds on the default list.
+
+        True when the role leaves ``allowed_tools`` unset, or when the
+        Linear-mode derivation appended its tools to that default list. False
+        for a list the role writes itself, which ``interpreter_grants`` does
+        not change.
+        """
+
+        return self.allowed_tools is None or self._allowed_tools_from_default
 
     @property
     def claude_allowed_tools(self) -> tuple[str, ...]:
@@ -773,6 +788,7 @@ def _with_linear_tools(
     derived = agent_config.model_copy(update={"allowed_tools": (*base, *added)})
     derived._claude_mcp_config = mcp_config_path
     derived._interpreter_grants = agent_config._interpreter_grants
+    derived._allowed_tools_from_default = agent_config.uses_default_allowed_tools
     return derived
 
 
@@ -795,6 +811,7 @@ def _with_interpreter_grants(
     updated = agent_config.model_copy(update={"fallback": fallback})
     updated._claude_mcp_config = private
     updated._interpreter_grants = interpreter_grants
+    updated._allowed_tools_from_default = agent_config._allowed_tools_from_default
     return updated
 
 
@@ -1096,8 +1113,10 @@ class DispatchConfig(BaseModel):
                 )
                 if fallback is not agent_config.fallback:
                     private = updated._claude_mcp_config
+                    from_default = updated._allowed_tools_from_default
                     updated = updated.model_copy(update={"fallback": fallback})
                     updated._claude_mcp_config = private
+                    updated._allowed_tools_from_default = from_default
             derived[role] = updated
         # The model is frozen; set the derived agents once, during validation.
         object.__setattr__(self, "agents", derived)

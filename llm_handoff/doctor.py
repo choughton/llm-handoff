@@ -911,11 +911,13 @@ def _check_interpreter_grants(
             matches = [rule for rule in tools if _claude_interpreter_rule(rule)]
             if matches:
                 added = True
-                # Name the flag whenever a listed rule is one it adds (the
-                # default list, or a Linear-mode list built on it).
+                # Name the flag only when the list came from it: the default
+                # list, or a Linear-mode list built on it. A list the role
+                # writes itself is unaffected by the flag.
                 cause = (
                     flag_cause
-                    if any(rule in CLAUDE_INTERPRETER_ALLOWED_TOOLS for rule in matches)
+                    if agent_config.uses_default_allowed_tools
+                    and any(rule in CLAUDE_INTERPRETER_ALLOWED_TOOLS for rule in matches)
                     else ""
                 )
                 checks.append(

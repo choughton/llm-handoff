@@ -1181,6 +1181,37 @@ def test_interpreter_grants_do_not_mutate_the_callers_agent_config(
     assert agent.interpreter_grants is False
 
 
+def test_uses_default_allowed_tools_tracks_the_list_source(tmp_path: Path) -> None:
+    explicit = config_module.AgentConfig(provider="claude", allowed_tools=("Read",))
+    fallback_default = config_module.AgentConfig(provider="claude", model="other")
+    agents = {
+        **config_module._default_agent_configs(),
+        "planner": config_module.AgentConfig(provider="claude"),
+        "auditor": explicit,
+        "validator": config_module.AgentConfig(
+            provider="claude", allowed_tools=("Read",), fallback=fallback_default
+        ),
+    }
+
+    for tracker in (None, _linear_tracker()):
+        kwargs = {} if tracker is None else {"tracker": tracker}
+        loaded = DispatchConfig(
+            repo_root=tmp_path, agents=agents, interpreter_grants=True, **kwargs
+        )
+        planner = loaded.agents["planner"]
+        assert planner.uses_default_allowed_tools is True
+        assert loaded.agents["auditor"].uses_default_allowed_tools is False
+        validator = loaded.agents["validator"]
+        assert validator.uses_default_allowed_tools is False
+        assert validator.fallback is not None
+        # The Linear derivation sets allowed_tools on default-list launches
+        # but keeps the record that the list built on the default.
+        assert validator.fallback.uses_default_allowed_tools is True
+        if tracker is not None:
+            assert planner.allowed_tools is not None
+            assert validator.fallback.allowed_tools is not None
+
+
 _LINEAR_YAML = """tracker:
   provider: linear
   team: ENG

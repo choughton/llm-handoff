@@ -3516,6 +3516,75 @@ def test_doctor_interpreter_grants_explicit_bash_warn_names_no_flag(
     assert "interpreter_grants" not in lines[0]
 
 
+def test_doctor_interpreter_grants_explicit_python_rule_names_no_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # An explicit allowed_tools list is unaffected by the flag, so turning the
+    # flag off would not remove the grant; the doctor must not blame it.
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["auditor"] = (
+        "provider: claude\nbinary: fake-claude\n"
+        'allowed_tools: ["Read", "Bash(python:*)"]'
+    )
+    repo = _interp_repo(tmp_path, monkeypatch, blocks, "interpreter_grants: true\n")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert lines == [
+        f"WARN {INTERP_CHECK}: auditor (provider claude) allows "
+        "`Bash(python:*)`; an interpreter can run any command, including "
+        "`git push`, past the allowlist, so the allowlist is a guardrail, not "
+        "a sandbox"
+    ]
+
+
+def test_doctor_interpreter_grants_linear_default_list_names_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["auditor"] = "provider: claude\nbinary: fake-claude"
+    repo = _interp_repo(
+        tmp_path, monkeypatch, blocks, LINEAR_TRACKER + "interpreter_grants: true\n"
+    )
+
+    _exit_code, output = _run(repo, capsys)
+
+    lines = _interp_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(
+        f"WARN {INTERP_CHECK}: auditor (provider claude) allows "
+        "`Bash(python:*)`, `Bash(python3:*)`, `Bash(pytest:*)`; "
+    )
+    assert lines[0].endswith(INTERP_FLAG_CAUSE)
+
+
+def test_doctor_interpreter_grants_linear_explicit_list_names_no_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["auditor"] = (
+        "provider: claude\nbinary: fake-claude\n"
+        'allowed_tools: ["Read", "Bash(python:*)"]'
+    )
+    repo = _interp_repo(
+        tmp_path, monkeypatch, blocks, LINEAR_TRACKER + "interpreter_grants: true\n"
+    )
+
+    _exit_code, output = _run(repo, capsys)
+
+    lines = _interp_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(
+        f"WARN {INTERP_CHECK}: auditor (provider claude) allows `Bash(python:*)`; "
+    )
+    assert "interpreter_grants" not in lines[0]
+
+
 def test_doctor_interpreter_grants_pass_when_claude_drops_interpreters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
