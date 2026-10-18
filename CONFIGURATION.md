@@ -1857,14 +1857,21 @@ behaves as described above. The dispatcher still never calls Linear itself.
   passes `--mcp-config <path> --strict-mcp-config`. Codex, Gemini,
   Antigravity, and `unsafe_bypass` auditors cannot be limited at launch: for
   them the prompt forbids file edits and shell commands, and only the
-  post-checks below enforce that no repository file changed.
+  post-checks below detect a repository file change after the fact. The
+  post-checks do not prevent an edit, and they do not cover paths the
+  dispatcher writes itself (`logs/dispatch/`, `.dispatch.lock`, and
+  `__pycache__` folders) or files outside the repository.
 - The dispatcher writes `HANDOFF.md` only after the step verifies. The step
   fails when the handoff has no `tracker_issue`, the dispatch exits non-zero
   or raises, no JSON object with a `linear_evidence` key is found,
   `linear_evidence` is not `posted`, `issue` is not the `tracker_issue`, the
   last item of `events` is not the expected outcome event, or `HANDOFF.md`,
   `git rev-parse HEAD`, or the `git status --porcelain` output changed during
-  the dispatch.
+  the dispatch. Because an edit to a file that is already modified, untracked,
+  or ignored leaves the porcelain output unchanged, the step also compares a
+  snapshot taken before and after the dispatch: the Git index entries, the
+  contents of modified tracked and untracked files, and the size and
+  modification time of ignored files. Any difference fails the step.
 - On failure the dispatcher keeps (or restores) the pre-fan-out
   `HANDOFF.md`, saves the rendered audit handoff to `audit-handoff.md` and
   the step's stdout and stderr to `linear-evidence.log` in the cycle's audit

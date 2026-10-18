@@ -573,6 +573,29 @@ def _dirty_side_effect(repo: Path) -> Callable[[str, Any], SubagentResult]:
     return evidence
 
 
+def _edit_existing_side_effect(
+    relative: str, before: str, after: str
+) -> Callable[[Path], Callable[[str, Any], SubagentResult]]:
+    """Seed ``relative`` before the run, then edit it during the evidence step.
+
+    The porcelain status line for the path is the same before and after, so
+    only the content snapshot can catch the edit.
+    """
+
+    def make(repo: Path) -> Callable[[str, Any], SubagentResult]:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(before, encoding="utf-8")
+
+        def evidence(_prompt: str, _agent_config: Any) -> SubagentResult:
+            path.write_text(after, encoding="utf-8")
+            return _subagent(_evidence_stdout(["audit_passed"]))
+
+        return evidence
+
+    return make
+
+
 def _raise(_prompt: str, _agent_config: Any) -> SubagentResult:
     raise RuntimeError("CLI exploded")
 
@@ -616,6 +639,22 @@ FAILURE_CASES: dict[str, tuple[Callable[[Path], Any], str]] = {
     "handoff_changed": (_write_handoff_side_effect, "changed docs/handoff/HANDOFF.md"),
     "head_changed": (_commit_side_effect, "git HEAD changed"),
     "status_changed": (_dirty_side_effect, "`git status --porcelain` output changed"),
+    "modified_file_edited": (
+        _edit_existing_side_effect(
+            "src/app.py", "query = 'SELECT ?'\n", "import os; os.system('x')\n"
+        ),
+        "repository file contents changed",
+    ),
+    "untracked_file_edited": (
+        _edit_existing_side_effect("notes.txt", "draft\n", "injected payload\n"),
+        "repository file contents changed",
+    ),
+    "ignored_file_edited": (
+        _edit_existing_side_effect(
+            "logs/other/state.txt", "a\n", "a longer injected value\n"
+        ),
+        "repository file contents changed",
+    ),
 }
 
 
@@ -681,6 +720,57 @@ def test_evidence_log_keeps_the_dispatch_output(
     text = (_audit_log_dir(repo) / "linear-evidence.log").read_text(encoding="utf-8")
     assert "partial stdout" in text
     assert "oops" in text
+
+
+def test_dispatcher_runtime_writes_do_not_fail_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, _head, handoff = _repo(tmp_path)
+    (repo / "logs" / "dispatch").mkdir(parents=True, exist_ok=True)
+    dispatch_log = repo / "logs" / "dispatch" / "dispatch.log"
+    dispatch_log.write_text("start\n", encoding="utf-8")
+    pycache = repo / "src" / "__pycache__"
+
+    def evidence(_prompt: str, _agent_config: Any) -> SubagentResult:
+        dispatch_log.write_text("start\nmore dispatcher output\n", encoding="utf-8")
+        (repo / "logs" / "dispatch" / "stop-request").write_text("", encoding="utf-8")
+        (repo / ".dispatch.lock").write_text("pid 1\n", encoding="utf-8")
+        pycache.mkdir(parents=True, exist_ok=True)
+        (pycache / "app.cpython-312.pyc").write_bytes(b"\0")
+        return _subagent(_evidence_stdout(["audit_passed"]))
+
+    (repo / ".gitignore").write_text(
+        "logs/\ndocs/handoff/\n.dispatch.lock\n__pycache__/\n", encoding="utf-8"
+    )
+    result, _log = _run(
+        _linear_config(repo), handoff, monkeypatch, base=base, evidence=evidence
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stop_loop is not True
+
+
+def test_worktree_snapshot_tracks_index_and_skips_runtime_paths(
+    tmp_path: Path,
+) -> None:
+    repo, _base, _head, _handoff = _repo(tmp_path)
+    before = audit_review._worktree_snapshot(repo)
+    assert before is not None
+    assert audit_review._worktree_snapshot(repo) == before
+
+    (repo / "logs" / "dispatch").mkdir(parents=True, exist_ok=True)
+    (repo / "logs" / "dispatch" / "dispatch.log").write_text("x\n", encoding="utf-8")
+    assert audit_review._worktree_snapshot(repo) == before
+
+    (repo / "src" / "app.py").write_text("changed = 1\n", encoding="utf-8")
+    _git(repo, "add", "src/app.py")
+    staged = audit_review._worktree_snapshot(repo)
+    assert staged != before
+    # Re-stage different content: the index entry changes even though the
+    # porcelain line stays "M ".
+    (repo / "src" / "app.py").write_text("changed = 2\n", encoding="utf-8")
+    _git(repo, "add", "src/app.py")
+    assert audit_review._worktree_snapshot(repo) != staged
 
 
 def test_missing_invoker_in_linear_mode_fails_closed(

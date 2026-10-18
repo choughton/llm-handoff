@@ -1501,6 +1501,7 @@ def _run_linear_evidence_step(
     handoff_before = _handoff_sha(handoff_path)
     head_before = _git_rev_parse(config.repo_root, "HEAD")
     status_before = _git_stdout(config.repo_root, ["git", "status", "--porcelain"])
+    snapshot_before = _worktree_snapshot(config.repo_root)
     try:
         result = invoker(prompt, agent_config)
     except Exception as exc:  # noqa: BLE001 - fail closed on any error
@@ -1509,6 +1510,7 @@ def _run_linear_evidence_step(
     handoff_after = _handoff_sha(handoff_path)
     head_after = _git_rev_parse(config.repo_root, "HEAD")
     status_after = _git_stdout(config.repo_root, ["git", "status", "--porcelain"])
+    snapshot_after = _worktree_snapshot(config.repo_root)
 
     if result.exit_code != 0:
         return fail(
@@ -1531,6 +1533,13 @@ def _run_linear_evidence_step(
         return fail(
             "`git status --porcelain` output changed during the evidence "
             "dispatch",
+            stdout,
+            stderr,
+        )
+    if snapshot_before is None or snapshot_after != snapshot_before:
+        return fail(
+            "repository file contents changed during the evidence dispatch "
+            "(index, modified, untracked, or ignored files)",
             stdout,
             stderr,
         )
@@ -2457,6 +2466,96 @@ def _git_stdout(repo_root: Path, command: list[str]) -> str | None:
     if completed.returncode != 0:
         return None
     return completed.stdout.strip()
+
+
+# Paths the dispatcher itself (or the operator, for stop-request) writes while
+# the evidence dispatch runs. They are left out of the worktree snapshot so the
+# dispatcher's own logging does not fail the step.
+_SNAPSHOT_SKIPPED_PREFIXES: tuple[str, ...] = (
+    AUDIT_LOG_DIRECTORY.parent.as_posix() + "/",
+)
+_SNAPSHOT_SKIPPED_NAMES: frozenset[str] = frozenset({".dispatch.lock"})
+_SNAPSHOT_SKIPPED_PARTS: frozenset[str] = frozenset({"__pycache__"})
+
+
+def _git_paths(repo_root: Path, args: list[str]) -> list[str] | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args, "-z"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    text = completed.stdout.decode("utf-8", errors="surrogateescape")
+    return [path for path in text.split("\0") if path]
+
+
+def _snapshot_skips(path: str) -> bool:
+    if path.startswith(_SNAPSHOT_SKIPPED_PREFIXES):
+        return True
+    parts = path.split("/")
+    if parts[-1] in _SNAPSHOT_SKIPPED_NAMES:
+        return True
+    return any(part in _SNAPSHOT_SKIPPED_PARTS for part in parts)
+
+
+def _worktree_snapshot(repo_root: Path) -> str | None:
+    """Fingerprint the working tree beyond what porcelain status shows.
+
+    Covers the index entries, the contents of modified tracked and untracked
+    files, and the size and mtime of ignored files, so an edit to an already
+    modified, untracked, or ignored file changes the fingerprint. Paths the
+    dispatcher writes itself (``logs/dispatch/``, ``.dispatch.lock``,
+    ``__pycache__``) are skipped. Returns None when Git cannot list the files.
+    """
+
+    digest = sha256()
+    try:
+        index = subprocess.run(
+            ["git", "ls-files", "--stage", "-z"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if index.returncode != 0:
+        return None
+    digest.update(b"index\0")
+    digest.update(index.stdout)
+    changed = _git_paths(
+        repo_root, ["ls-files", "--modified", "--others", "--exclude-standard"]
+    )
+    ignored = _git_paths(
+        repo_root, ["ls-files", "--others", "--ignored", "--exclude-standard"]
+    )
+    if changed is None or ignored is None:
+        return None
+    for path in sorted(set(changed)):
+        if _snapshot_skips(path):
+            continue
+        digest.update(b"content\0" + path.encode("utf-8", "surrogateescape") + b"\0")
+        try:
+            digest.update(sha256((repo_root / path).read_bytes()).digest())
+        except FileNotFoundError:
+            digest.update(b"<missing>")
+        except OSError as exc:
+            digest.update(f"<unreadable {exc.errno}>".encode("ascii"))
+    for path in sorted(set(ignored)):
+        if _snapshot_skips(path):
+            continue
+        digest.update(b"ignored\0" + path.encode("utf-8", "surrogateescape") + b"\0")
+        try:
+            stat = (repo_root / path).stat()
+        except OSError:
+            digest.update(b"<missing>")
+            continue
+        digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+    return digest.hexdigest()
 
 
 def _log(log: LogFn | None, level: str, message: str) -> None:
