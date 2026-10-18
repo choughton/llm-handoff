@@ -6,6 +6,25 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `audit.security_provider: antigravity` is now a read-only security
+  reviewer that runs `agy`, and the automatic security reviewer order is
+  `claude`, `codex`, `antigravity`. `gemini` left the automatic order; an
+  explicit `audit.security_provider: gemini` still works. Each review runs
+  `agy -p <fixed instruction> --agent <name> --output-format stream-json
+  --json-schema <schema> --print-timeout <N>s` from a new private temp
+  directory outside the repository that holds a copy of the scope diff, the
+  verdict schema, and a dispatcher-written agent file named
+  `llm-handoff-security-<random hex>` with
+  `tools: [view_file, list_dir, grep_search, find_by_name, finish]` and
+  `commandExecutionPolicy: off`. `--model` is added only when the first
+  `antigravity` role sets `model`; the unsafe-bypass argument is never added.
+  Only `user_input`, `agent_response`, `finish`, and allowed-tool steps and
+  exactly one `SUCCESS` result are accepted, the verdict comes only from
+  `structured_output`, and error text never quotes `agy` output. The
+  user-wide `agy` `permissions.allow` grants still apply, and the step checks
+  run only after `agy` exits. `audit.security_model` is now rejected for
+  every provider other than `claude`. The antigravity reviewer has not yet
+  passed an operator-run live check.
 - Breaking default change: interpreter grants are now an operator opt-in.
   `CLAUDE_DEFAULT_ALLOWED_TOOLS` no longer holds `Bash(python:*)`,
   `Bash(python3:*)`, or `Bash(pytest:*)`, and the generated `agy` allow

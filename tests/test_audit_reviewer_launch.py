@@ -37,10 +37,19 @@ def _config(
     **role_overrides: object,
 ) -> DispatchConfig:
     agents = config_module._default_agent_configs()
-    role = {"claude": "auditor", "gemini": "planner", "codex": "backend"}[provider]
+    role = {
+        "claude": "auditor",
+        "gemini": "planner",
+        "codex": "backend",
+        "antigravity": "frontend",
+    }[provider]
+    if provider == "antigravity":
+        base = {"provider": "antigravity"}
+    else:
+        base = agents[role].model_dump(exclude_none=True)
     agents[role] = AgentConfig(
         **{
-            **agents[role].model_dump(exclude_none=True),
+            **base,
             "env_passthrough": ("HTTPS_PROXY",),
             **role_overrides,
         }
@@ -81,7 +90,7 @@ def _assert_allowlisted(env: dict[str, str] | None) -> None:
     assert "PATH" in upper
 
 
-@pytest.mark.parametrize("provider", ["claude", "gemini", "codex"])
+@pytest.mark.parametrize("provider", ["claude", "gemini", "codex", "antigravity"])
 def test_security_reviewer_env_uses_the_role_allowlist(
     provider: str,
     tmp_path: Path,
@@ -205,6 +214,46 @@ def test_gemini_reviewer_fails_closed_without_sandbox_runtime(
     assert outcome.run.error.startswith("security_reviewer_failed:")
     assert "agents.planner.unsafe_bypass: true" in outcome.run.error
     assert "audit.security_provider" in outcome.run.error
+
+
+def test_antigravity_reviewer_ignores_unsafe_bypass(tmp_path: Path) -> None:
+    plan = _plan(
+        _config(tmp_path, "antigravity", unsafe_bypass=True),
+        "antigravity",
+        tmp_path,
+    )
+
+    assert plan.kind == "antigravity"
+    assert "--dangerously-skip-permissions" not in plan.command
+    assert plan.preflight_error is None
+
+
+def test_antigravity_reviewer_run_passes_its_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_handoff import antigravity_security_review as review
+
+    (tmp_path / "scope.diff").write_text("diff\n", encoding="utf-8")
+    recorded: dict[str, object] = {}
+
+    def fake_process(command, *, cwd, env, timeout):
+        recorded["env"] = env
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(review, "_run_antigravity_process", fake_process)
+    plan = _plan(_config(tmp_path, "antigravity"), "antigravity", tmp_path)
+
+    audit_review._run_security_reviewer(
+        plan,
+        timeout_ms=1000,
+        repo_root=tmp_path,
+        handoff_path=tmp_path / "HANDOFF.md",
+        log=None,
+    )
+
+    assert recorded["env"] == plan.env
+    _assert_allowlisted(recorded["env"])
 
 
 def test_codex_exec_reviewer_run_passes_its_env(

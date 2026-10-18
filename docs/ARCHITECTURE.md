@@ -398,8 +398,9 @@ dispatch. Any malformed or missing verdict fails closed the same way.
 
 Choosing a security vendor different from the implementer's provider avoids
 asking a model family to grade its own output. When `audit.security_provider`
-is unset, the dispatcher picks the first of `claude`, `codex`, and `gemini`
-that differs from the implementer role's provider.
+is unset, the dispatcher picks the first of `claude`, `codex`, and
+`antigravity` that differs from the implementer role's provider. `gemini` is
+not chosen automatically but can still be set explicitly.
 
 ### Reviewer Security Posture
 
@@ -421,6 +422,23 @@ that differs from the implementer role's provider.
   `audit.security_provider` is `gemini`, `run` checks for a sandbox runtime
   at startup and refuses to start without one, unless the Gemini role whose
   config the reviewer uses sets `unsafe_bypass: true`.
+- The antigravity reviewer runs `agy` with a new private temp directory
+  outside the repository as its working directory. The dispatcher writes a
+  copy of the scope diff, the verdict JSON schema, and a workspace agent file
+  under a random `llm-handoff-security-<hex>` name into that directory; no
+  file an implementer can edit defines the agent. The agent file allows only
+  `view_file`, `list_dir`, `grep_search`, `find_by_name`, and `finish`, with
+  `commandExecutionPolicy: off`, and the directory is removed after the run.
+  The command never carries `--dangerously-skip-permissions`, even when the
+  antigravity role sets `unsafe_bypass: true`. The dispatcher accepts only
+  `user_input`, `agent_response`, `finish`, and allowed-tool steps and one
+  `SUCCESS` result, and reads the verdict only from `structured_output`.
+  Residual risk: the user-wide `agy` `permissions.allow` grants still apply,
+  so the boundary rests on agy enforcing the agent's tool list, which has no
+  `run_command`; and the step checks run only after `agy` exits, so they
+  detect a disallowed tool call but do not prevent it. The reviewer can read
+  any file under the repository root. It has not yet passed an operator-run
+  live check.
 - The quality reviewer keeps the configured auditor permissions because it
   runs verification commands. The handoff hash check, not a sandbox, enforces
   that it does not write `HANDOFF.md`. Other file writes by the quality
@@ -429,7 +447,10 @@ that differs from the implementer role's provider.
   allowlisted environment as its provider's role (`env_mode`,
   `env_passthrough`, and the vendor API key rule). Claude reviewers run
   without `ANTHROPIC_API_KEY`, and Gemini reviewers run without
-  `GOOGLE_API_KEY` and, unless opted in, without `GEMINI_API_KEY`.
+  `GOOGLE_API_KEY` and, unless opted in, without `GEMINI_API_KEY`. The
+  antigravity reviewer uses the environment of the first role whose provider
+  is `antigravity`, or the default antigravity rules when no role uses it,
+  and never receives a vendor API key.
 - Vendor security reviewers are LLM tools. They are not hardened against
   prompt injection in repository content such as source comments, docs, or
   commit messages. The fan-out reduces that risk by bounding the scope,

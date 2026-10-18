@@ -118,15 +118,17 @@ normalizer:
 # Audit fan-out. By default a read-only security reviewer runs next to the
 # quality reviewer, and the dispatcher writes HANDOFF.md from both structured
 # verdicts. With security_provider unset, the dispatcher picks the first
-# installed CLI (claude, codex, gemini) that differs from the implementer's
-# provider, else the implementer's own vendor with a warning. A reviewer that
-# cannot launch stops the dispatcher at startup. To opt out, set
+# installed CLI (claude, codex, antigravity) that differs from the
+# implementer's provider, else the implementer's own vendor with a warning.
+# gemini is not chosen automatically but can still be set. The antigravity
+# (agy) reviewer has not yet passed an operator-run live check. A reviewer
+# that cannot launch stops the dispatcher at startup. To opt out, set
 #   reviewers: [quality]
 #   security_opt_out_reason: "<why this repository skips security review>"
 # Every dispatcher start and `llm-handoff doctor` warn with that reason.
 audit:
   reviewers: [quality, security]
-  # security_provider: claude   # claude | gemini | codex; unset = auto
+  # security_provider: claude   # claude | codex | antigravity | gemini; unset = auto
   # security_model: <model>   # claude reviewer only; unset = borrow the first claude role's model
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000

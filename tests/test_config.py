@@ -221,13 +221,35 @@ def test_load_dispatch_config_accepts_antigravity_normalizer(tmp_path: Path) -> 
     assert loaded.normalizer.model == "gemini-3.8-flash-low"
 
 
-def test_load_dispatch_config_rejects_antigravity_security_provider(
+def test_load_dispatch_config_accepts_antigravity_security_provider(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "dispatch_config.yaml"
     config_path.write_text(
         "audit:\n  security_provider: antigravity\n", encoding="utf-8"
     )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.audit.security_provider == "antigravity"
+
+
+def test_load_dispatch_config_still_accepts_explicit_gemini_security_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("audit:\n  security_provider: gemini\n", encoding="utf-8")
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.audit.security_provider == "gemini"
+
+
+def test_load_dispatch_config_rejects_unknown_security_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("audit:\n  security_provider: openai\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="security_provider"):
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
@@ -287,7 +309,7 @@ def test_load_dispatch_config_rejects_security_model_without_security_reviewer(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
-@pytest.mark.parametrize("provider", ["gemini", "codex"])
+@pytest.mark.parametrize("provider", ["gemini", "codex", "antigravity"])
 def test_load_dispatch_config_rejects_security_model_for_non_claude_provider(
     tmp_path: Path,
     provider: str,

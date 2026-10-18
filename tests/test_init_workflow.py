@@ -530,7 +530,8 @@ def test_render_config_codex_uses_the_all_claude_timeouts() -> None:
     [
         "agents:\n",
         "normalizer:\n",
-        "  # security_provider: claude   # claude | gemini | codex; unset = auto\n",
+        "  # security_provider: claude   # claude | codex | antigravity | gemini; "
+        "unset = auto\n",
     ],
 )
 def test_render_config_rejects_a_template_without_an_anchor(
