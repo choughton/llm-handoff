@@ -249,14 +249,19 @@ security]`), also confirm:
 
 ### Scenario B: One Forced Audit Failure
 
-Force one audit failure on a second issue. One way: an issue whose
-Verification command is an existing repository test that fails and that
-the Objective cannot fix, for example a test file listed under Files out of
-bounds. Another way: an Objective that asks for a change the security
-reviewer blocks, such as building a shell command from user input. If the
-implementer routes to the planner with `blocked_implementation_failure`
-instead of handing back for review, record that as a deviation and try the
-other way.
+Force one audit failure on a second issue. The Verification command must
+pass: with `enforce_work_packet: true` the work-claim gate runs it before
+any reviewer, and a failing command is bounced to the implementer as
+`verification_failed` without reaching the auditor, so it produces no
+`audit_failed` comment. Instead, write an issue whose Verification command
+is an existing repository test that passes, and whose Objective asks for a
+committed change an audit reviewer blocks. For example, with the default
+`audit.reviewers: [quality, security]`, ask for a helper that builds a
+shell command from a user-supplied string and runs it with `shell=True`;
+the security reviewer reports that at or above `block_severity`. If the
+implementer declines the change, or routes to the planner with
+`blocked_implementation_failure` instead of handing back for review, record
+that as a deviation.
 
 Record:
 
@@ -267,12 +272,16 @@ Record:
 - `HANDOFF.md` routes back to the implementer with
   `status: verified_fail` and the same `tracker_issue`.
 
-Stop the loop with `llm-handoff stop` once the failure is recorded, or let
-the implementer retry and record the outcome.
+Stop the loop with `llm-handoff stop --repo-root <target>` once the failure
+is recorded, or let the implementer retry and record the outcome. Without
+`--repo-root`, `stop` resolves the repository from the current directory
+and reports nothing to stop when you run it from outside `<target>`.
 
 ### Scenario C: Deleted Lease
 
-Between assignments (stop the loop with `llm-handoff stop` first), delete
+Between assignments (stop the loop with
+`llm-handoff stop --repo-root <target>` first, and wait for the dispatcher
+to exit), delete
 `docs/handoff/HANDOFF.md` in the target, or empty it, then start the loop
 again with `llm-handoff --repo-root <target>`.
 
