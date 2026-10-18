@@ -1196,7 +1196,7 @@ def _check_tracker_connectors(
     """Report, per provider CLI, whether its MCP config defines the tracker server.
 
     Runs only in Linear mode. Lines are grouped per provider (claude, codex,
-    gemini, antigravity), each ending with the role labels it covers. Only
+    gemini), each ending with the role labels it covers. Only
     MCP config files are read; no provider CLI is run, nothing is written,
     and no value from a config file is printed. Only Claude launches that
     load ``tracker.claude_mcp_config`` with ``--strict-mcp-config`` can FAIL.
@@ -1211,7 +1211,6 @@ def _check_tracker_connectors(
         "claude": [],
         "codex": [],
         "gemini": [],
-        "antigravity": [],
     }
     for label, agent_config in _role_launches(dispatch_config):
         provider = agent_config.provider
@@ -1255,16 +1254,6 @@ def _check_tracker_connectors(
                     "mcpServers",
                     server,
                     covers,
-                )
-            )
-        elif group == "antigravity":
-            checks.append(
-                DoctorCheck(
-                    "WARN",
-                    _TRACKER_CONNECTOR_CHECK_NAME,
-                    "antigravity: the doctor cannot check the Antigravity CLI's "
-                    "MCP configuration; confirm that a server named "
-                    f"`{server}` is configured there {covers}",
                 )
             )
 

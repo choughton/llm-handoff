@@ -1192,8 +1192,12 @@ settings can run; the startup banner logs one WARN naming those roles and
 asking you to set `tracker.claude_mcp_config`.
 
 Claude roles with `unsafe_bypass: true`, the audit fan-out security reviewer,
-and the next-agent normalizer get no Linear tools. Codex, Gemini, and
-Antigravity roles have no per-role tool list and are unchanged.
+and the next-agent normalizer get no Linear tools. Codex and Gemini roles
+have no per-role tool list and are unchanged. Linear mode rejects
+`provider: antigravity` on any role or fallback at config load, naming each
+offending `agents.<role>` or `agents.<role>.fallback`: `agy` agent files
+limit each role's tools and give it no Linear MCP access. Map those roles to
+claude or codex, or set `tracker.provider: none`.
 
 With the audit fan-out on (`audit.reviewers` includes `security`, the
 default), the fan-out quality reviewer gets only the auditor's Linear read
@@ -1208,7 +1212,7 @@ checked.
 
 In Linear mode, `llm-handoff doctor` prints `tracker connector` lines, one
 per provider CLI the configured roles and fallbacks launch (in the order
-claude, codex, gemini, antigravity), each ending with `(covers <labels>)`.
+claude, codex, gemini), each ending with `(covers <labels>)`.
 Each line says whether that CLI's MCP config defines a server named
 `tracker.mcp_server`:
 
