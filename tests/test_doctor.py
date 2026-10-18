@@ -1637,17 +1637,7 @@ def test_doctor_antigravity_warns_on_legacy_exact_deny_entries(
     ]
 
 
-@pytest.mark.parametrize(
-    "grant",
-    [
-        "command(regex:^git( .*)?$)",
-        "command(regex:^git push( .*)?$)",
-        "unsandboxed(regex:^git( .*)?$)",
-        "command(regex:push)",
-        "command(regex:^git -C \\. push)",
-        "command(regex:.*)",
-    ],
-)
+@pytest.mark.parametrize("grant", ["command(regex:push)", "command(regex:.*)"])
 def test_doctor_antigravity_fails_when_regex_allow_matches_git_push(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, grant: str
 ) -> None:
@@ -1662,6 +1652,144 @@ def test_doctor_antigravity_fails_when_regex_allow_matches_git_push(
     assert lines[0].startswith(f"FAIL {AGY_CHECK}:")
     assert f"`{grant}`" in lines[0]
     assert "agents must not push" in lines[0]
+    assert "cannot verify" not in lines[0]
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        "command(regex:^git push --force$)",
+        "command(regex:^git push origin feature-x$)",
+        "command(regex:^git -c x=y push origin main$)",
+        "command(regex:^git status$)",
+        "command(regex:^GIT( .*)?$)",
+        "unsandboxed(regex:^git status( .*)?$)",
+        "command(regex:^git( .*)?$)",
+        "command(regex:^git push( .*)?$)",
+        "unsandboxed(regex:^git( .*)?$)",
+        "command(regex:^git -C \\. push)",
+        "command(regex:^git[)",
+    ],
+)
+def test_doctor_antigravity_fails_when_regex_allow_names_git_unverifiably(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, grant: str
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(grant,)))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    line = lines[0]
+    assert line.startswith(f"FAIL {AGY_CHECK}:")
+    assert f"`{grant}`" in line
+    assert "(covers planner, backend fallback)" in line
+    assert "cannot verify that this regex entry does not allow `git push`" in line
+    assert "remove it or replace it with a generated grant" in line
+    assert "agents must not push" not in line
+
+
+@pytest.mark.parametrize("prefix", ["git", "git -c x=y", "git push", "git -C ."])
+def test_doctor_antigravity_fails_on_generated_grant_for_push_capable_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, prefix: str
+) -> None:
+    repo = _agy_repo(
+        tmp_path,
+        monkeypatch,
+        extra_config=f'verification_allowed_prefixes: ["{prefix}"]\n',
+    )
+    grant = _grant(prefix)
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(grant,)))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    # A `git push` prefix also draws the deny-shadowing WARN; only FAILs count.
+    fails = [
+        line for line in _agy_lines(output) if line.startswith(f"FAIL {AGY_CHECK}:")
+    ]
+    assert len(fails) == 1, output
+    assert f"`{grant}`" in fails[0]
+    assert "agents must not push" in fails[0]
+
+
+@pytest.mark.parametrize(
+    ("prefixes", "grants"),
+    [
+        ([], ("command(regex:^git status( .*)?$)",)),
+        (["python -m pytest"], ("command(regex:^python -m pytest( .*)?$)",)),
+        (["git stash list"], (_grant("git stash list"),)),
+    ],
+)
+def test_doctor_antigravity_accepts_generated_grants_that_cannot_push(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    prefixes: list[str],
+    grants: tuple[str, ...],
+) -> None:
+    repo = _agy_repo(
+        tmp_path,
+        monkeypatch,
+        extra_config=f"verification_allowed_prefixes: {json.dumps(prefixes)}\n",
+    )
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=grants))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"PASS {AGY_CHECK}:")
+
+
+@pytest.mark.parametrize(
+    ("command", "can_push"),
+    [
+        ("git", True),
+        ("git -c x=y", True),
+        ("git -C .", True),
+        ("git push", True),
+        ("git remote push", True),
+        ("git  status", False),
+        ("git status", False),
+        ("git pushx", False),
+        ("python -m pytest", False),
+        ("npm push", False),
+        ("", False),
+    ],
+)
+def test_plain_command_can_push(command: str, can_push: bool) -> None:
+    assert doctor._plain_command_can_push(command) is can_push
+
+
+def test_doctor_antigravity_reports_one_push_fail_per_allow_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(
+        tmp_path,
+        monkeypatch,
+        extra_config='verification_allowed_prefixes: ["git push"]\n',
+    )
+    grants = (
+        _grant("git push"),
+        "command(regex:^git push --force$)",
+        "command(regex:.*)",
+        "command(git push)",
+    )
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=grants))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    fails = [
+        line for line in _agy_lines(output) if line.startswith(f"FAIL {AGY_CHECK}:")
+    ]
+    assert len(fails) == len(grants), output
+    for line, grant in zip(fails, grants, strict=True):
+        assert f"`{grant}`" in line
 
 
 def test_doctor_antigravity_push_fail_escapes_control_characters_only(
@@ -1687,6 +1815,7 @@ def test_doctor_antigravity_push_fail_escapes_control_characters_only(
         "unsandboxed(regex:(push)",
         "command(regex:^git status( .*)?$)",
         "command(regex:^npm publish$)",
+        "command(regex:^npm test$)",
     ],
 )
 def test_doctor_antigravity_ignores_non_push_and_uncompilable_regex_allows(

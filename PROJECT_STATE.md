@@ -7,7 +7,8 @@ belong in commits, handoffs, and pull requests.
 ## Current Status
 
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
-  in PR #122; GEM-0e1 merged in PR #123; GEM-0f in progress).
+  in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
+  in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -223,7 +224,10 @@ itself from 1.3.5 to 1.4.2 during the checks):
   generated `antigravity_command_grant()` value and fail any other regex
   allow entry that names `git` with a "cannot verify" message. Add tests
   for `--force`, a non-main branch, and `git -c x=y push`. From the
-  GEM-0c review (PR #119, Finding 2).
+  GEM-0c review (PR #119, Finding 2). Decided by the planner on
+  2026-10-18: generated grants pass unless push-capable; other regex allow
+  entries naming `git` fail as unverifiable; the probe check remains a
+  backstop for the rest.
 - GEM-0h: Refusal logs carry no raw command arguments. The `agy`
   deny-rule refusal logs in `llm_handoff/agent_providers/antigravity.py`
   keep raw command arguments after best-effort redaction, so a secret in an

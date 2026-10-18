@@ -1222,11 +1222,28 @@ entries plus `verification_allowed_prefixes`:
   `deny` key counts as an empty list; an optional `ask` key must also be a
   list of strings).
 - FAIL when a `permissions.allow` entry starts with `command(git push` or
-  `unsandboxed(git push`, or is a `command(regex:<p>)` or
-  `unsandboxed(regex:<p>)` entry whose pattern matches (by `re.search`) any of
-  `git push`, `git push origin main`, or `git -C . push origin main`. For
-  example, `command(regex:^git( .*)?$)` fails. A pattern that does not compile
-  is not counted.
+  `unsandboxed(git push`. A regex allow entry (`command(regex:<p>)` or
+  `unsandboxed(regex:<p>)`) is decided in this order, with at most one FAIL
+  per entry:
+  - An entry that equals one of the required allow entries by exact string
+    (a generated grant) passes, unless its plain command can push: its first
+    word is `git` and it has no second word, its second word starts with `-`,
+    or a later word is `push`. So a `verification_allowed_prefixes` entry of
+    `git`, `git -c x=y`, or `git push` fails for its generated grant, while
+    `command(regex:^git status( .*)?$)` passes.
+  - Any other entry whose pattern contains `git` (case-insensitive), whether
+    or not it compiles, fails: the doctor cannot verify that it does not allow
+    `git push`, so remove it or replace it with a generated grant. For
+    example, `command(regex:^git push --force$)`,
+    `command(regex:^git status$)`, and `unsandboxed(regex:^git status( .*)?$)`
+    fail.
+  - Any other entry fails when its pattern compiles and matches (by
+    `re.search`) any of `git push`, `git push origin main`, or
+    `git -C . push origin main`; for example, `command(regex:.*)` fails. A
+    pattern that does not compile is not counted.
+
+  Known limit: a pattern that spells `git` through escapes (for example
+  `\x67it`) is caught only by the probe check in the last step.
 - WARN for each required allow entry or deny entry that is missing. Entries
   match by exact string, and legacy `command(<cmd>)` exact grants do not cover
   commands run with arguments, so settings that still hold them get this
