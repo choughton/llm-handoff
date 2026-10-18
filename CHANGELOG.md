@@ -15,6 +15,11 @@ This project follows a simple pre-release changelog until the first public tag.
   a Linear tracker still load antigravity roles unchanged. `llm-handoff
   doctor` reports such a config as a config load failure and no longer
   prints an antigravity `tracker connector` WARN line.
+- Audit reviewer verdicts are now read even when the JSON has raw newlines or
+  tabs inside a string. A Codex quality reviewer prints its multi-line
+  `report` that way, and strict JSON parsing rejected the whole verdict as
+  `quality_verdict_malformed`, so an audit with a passing review failed three
+  times and stopped the loop.
 - `llm-handoff doctor` no longer reports `FAIL handoff validation:
   EVIDENCE_MISSING` for the finalizer's epic-close handoff (`producer:
   finalizer`, `status: verified_pass`). The dispatch loop routes from that

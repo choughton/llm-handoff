@@ -1872,7 +1872,10 @@ def _extract_json_object(text: str, *, required_key: str, depth: int) -> dict | 
         return None
     for candidate in _iter_json_candidates(text):
         try:
-            payload = json.loads(candidate)
+            # strict=False accepts raw newlines and tabs inside strings. A Codex
+            # quality reviewer prints its verdict with a multi-line `report`
+            # that way, and strict parsing rejected an otherwise valid verdict.
+            payload = json.loads(candidate, strict=False)
         except json.JSONDecodeError:
             continue
         found = _locate_object(payload, required_key=required_key, depth=depth)
