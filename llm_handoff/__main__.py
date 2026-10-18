@@ -61,6 +61,11 @@ from llm_handoff.stop_request import (
 )
 
 _WINDOWS = os.name == "nt"
+# `init --provider gemini` wrote the all-Gemini mapping, which was removed.
+_INIT_GEMINI_REMOVED_MESSAGE = (
+    "The gemini provider was removed: Gemini CLI no longer serves personal "
+    "Google accounts. Use --provider antigravity (the agy CLI)."
+)
 app = typer.Typer(
     add_completion=False,
     help="File-based handoff dispatcher for multi-CLI AI coding workflows.",
@@ -258,12 +263,11 @@ def init_command(
         None,
         "--provider",
         help=(
-            "Put every role on one provider CLI: claude, codex, antigravity, "
-            "or gemini. Default: claude when Claude Code is the only provider "
+            "Put every role on one provider CLI: claude, codex, or "
+            "antigravity. Default: claude when Claude Code is the only provider "
             "CLI on PATH, codex when Codex is the only provider CLI on PATH, "
             "antigravity when agy is the only provider CLI on PATH, otherwise "
-            "the reference mapping. Gemini CLI is not detected. Linear mode "
-            "does not support antigravity."
+            "the reference mapping. Linear mode does not support antigravity."
         ),
     ),
     verification_command: str | None = typer.Option(
@@ -314,6 +318,9 @@ def init_command(
     ),
 ) -> None:
     _configure_stdio_encoding()
+    if provider == "gemini":
+        typer.echo(_INIT_GEMINI_REMOVED_MESSAGE, err=True)
+        raise typer.Exit(2)
     try:
         result = init_reference_workflow(
             target_root,

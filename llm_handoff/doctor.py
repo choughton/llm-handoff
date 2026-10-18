@@ -77,7 +77,6 @@ from llm_handoff.config import (
     CODEX_BINARY,
     DEFAULT_CONFIG_PATH,
     DEFAULT_HANDOFF_PATH,
-    GEMINI_BINARY,
     AgentConfig,
     DispatchConfig,
     claude_default_allowed_tools,
@@ -963,17 +962,15 @@ def _check_interpreter_grants(
 
 _NORMALIZER_API_KEY_NAMES: dict[str, tuple[str, ...]] = {
     "claude": ("ANTHROPIC_API_KEY",),
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "openai": ("OPENAI_API_KEY",),
 }
 # Providers whose normalizer can run through a local CLI login. The codex and
 # antigravity (`agy`) normalizers are CLI-only, so they have no API key entry
-# above; claude and gemini use the CLI login only when no API key is set.
+# above; claude uses the CLI login only when no API key is set.
 _NORMALIZER_CLI_BINARIES: dict[str, str] = {
     "antigravity": ANTIGRAVITY_BINARY,
     "claude": CLAUDE_BINARY,
     "codex": CODEX_BINARY,
-    "gemini": GEMINI_BINARY,
 }
 
 

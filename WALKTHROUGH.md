@@ -47,14 +47,13 @@ The reference workflow maps generic roles to provider CLIs:
 
 These are adapter choices, not handoff protocol names. Handoffs use the generic
 roles. `init` writes this mapping when more than one provider CLI is on
-`PATH`; when only one of Claude Code, Codex, or Gemini CLI is installed, it
-puts every role on that CLI, and `--provider claude`, `--provider codex`, or
-`--provider gemini` forces that choice. With `--tracker linear`, the
+`PATH`; when only one of Claude Code, Codex, or Antigravity (`agy`) is
+installed, it puts every role on that CLI, and `--provider claude`,
+`--provider codex`, or `--provider antigravity` forces that choice. With `--tracker linear`, the
 reference mapping puts `planner` and `frontend` on Claude Code, because
 Linear mode does not support `antigravity` roles. See [Agent Roles](CONFIGURATION.md#agent-roles) for the mapping
 shape and the single-vendor variants, and the README's
-[Gotchas](README.md#gotchas) for what all-Codex and all-Gemini setups need
-in addition.
+[Gotchas](README.md#gotchas) for what all-Codex setups need in addition.
 
 If a provider CLI is not signed in, fix that before running a real dispatch.
 The dispatcher invokes provider tools; it does not manage their login flow.

@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Removed the `gemini` next-agent normalizer (its Gemini CLI and API paths,
+  `llm_handoff/normalizer_providers/gemini.py`) and the all-Gemini `init`
+  mapping. `normalizer: {provider: gemini}` now fails config load with "The
+  gemini provider was removed: Gemini CLI no longer serves personal Google
+  accounts. Use provider: antigravity (the agy CLI)."
+  `llm-handoff init --provider gemini` now exits nonzero before writing any
+  file, with "The gemini provider was removed: Gemini CLI no longer serves
+  personal Google accounts. Use --provider antigravity (the agy CLI)." The
+  `google-genai` dependency is dropped from `pyproject.toml` and
+  `requirements-dev.txt`. `llm-handoff doctor` no longer has Gemini entries
+  in its normalizer check. The Gemini role provider and the Gemini security
+  reviewer are unchanged.
 - The default provider for `planner` and `frontend` is now `antigravity`
   (`binary: agy`) instead of `gemini`. `DEFAULT_AGENT_PROVIDERS`,
   `dispatch_config.example.yaml`, and

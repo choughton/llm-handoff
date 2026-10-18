@@ -16,7 +16,6 @@ license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "anthropic",
     "click",
-    "google-genai",
     "instructor",
     "openai",
     "pydantic",

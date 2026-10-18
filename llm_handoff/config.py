@@ -87,7 +87,6 @@ GEMINI_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo", "--sandbox=false")
 CLAUDE_MODEL = "claude-opus-5-5"
 NORMALIZER_PROVIDER = "claude"
 NORMALIZER_MODEL = "claude-haiku-5-5"
-GEMINI_NORMALIZER_MODEL = "gemini-2.5-flash"
 OPENAI_NORMALIZER_MODEL = "gpt-5.4-mini"
 # The codex normalizer runs through the Codex CLI login instead of the API.
 CODEX_NORMALIZER_MODEL = OPENAI_NORMALIZER_MODEL
@@ -249,16 +248,18 @@ DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "finalizer": "claude",
 }
 RUNTIME_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini", "antigravity"})
-NORMALIZER_PROVIDER_ADAPTERS = frozenset(
-    {"antigravity", "claude", "codex", "gemini", "openai"}
-)
+NORMALIZER_PROVIDER_ADAPTERS = frozenset({"antigravity", "claude", "codex", "openai"})
 NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
     "antigravity": ANTIGRAVITY_NORMALIZER_MODEL,
     "claude": NORMALIZER_MODEL,
     "codex": CODEX_NORMALIZER_MODEL,
-    "gemini": GEMINI_NORMALIZER_MODEL,
     "openai": OPENAI_NORMALIZER_MODEL,
 }
+# The gemini next-agent normalizer was removed; naming it fails with this.
+GEMINI_NORMALIZER_REMOVED_MESSAGE = (
+    "The gemini provider was removed: Gemini CLI no longer serves personal "
+    "Google accounts. Use provider: antigravity (the agy CLI)."
+)
 REQUIRED_AGENT_ROLES = frozenset(DEFAULT_AGENT_PROVIDERS)
 
 # Vendor API keys are never copied from one provider's launch to another's.
@@ -473,6 +474,8 @@ class NormalizerConfig(BaseModel):
     @field_validator("provider", mode="after")
     @classmethod
     def _validate_provider(cls, value: ProviderName) -> ProviderName:
+        if value == "gemini":
+            raise ValueError(GEMINI_NORMALIZER_REMOVED_MESSAGE)
         if value not in NORMALIZER_PROVIDER_ADAPTERS:
             raise ValueError(
                 "no next-agent normalizer adapter is registered for provider "

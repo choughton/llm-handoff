@@ -406,11 +406,9 @@ ALL_GEMINI = {role: "gemini" for role in ROLES}
 
 
 def _make_all_gemini_repo(tmp_path: Path) -> Path:
-    # The shape `llm-handoff init --provider gemini` writes: every role on
-    # Gemini CLI, the Gemini normalizer, and the Gemini security reviewer.
-    repo = _make_repo(
-        tmp_path, ALL_GEMINI, normalizer_provider="gemini", commit=False
-    )
+    # Every role on Gemini CLI with the Gemini security reviewer; the
+    # normalizer stays on the claude default.
+    repo = _make_repo(tmp_path, ALL_GEMINI, commit=False)
     config_path = repo / "dispatch_config.yaml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8")
@@ -455,11 +453,6 @@ def test_doctor_passes_the_gemini_security_extension_when_active(
         f"({audit_review.GEMINI_SECURITY_EXTENSION_NAME}) is active"
     ) in output
     assert "PASS container runtime:" in output
-    # No API key is set: the Gemini normalizer runs on the CLI login.
-    assert (
-        f"PASS normalizer: provider gemini binary `{config_module.GEMINI_BINARY}` "
-        "is on PATH (auth not verified)"
-    ) in output
 
 
 def test_doctor_fails_when_the_gemini_security_extension_is_missing(
@@ -1195,54 +1188,6 @@ def test_doctor_fails_claude_normalizer_without_key_or_binary(
     assert _normalizer_lines(output) == [
         "FAIL normalizer: provider claude cannot run: neither ANTHROPIC_API_KEY "
         f"nor the `{config_module.CLAUDE_BINARY}` binary is available"
-    ]
-
-
-def test_doctor_passes_gemini_normalizer_with_google_api_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="gemini")
-    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
-    monkeypatch.setenv("GOOGLE_API_KEY", "doctor-test-key")
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 0, output
-    assert _normalizer_lines(output) == [
-        "PASS normalizer: provider gemini can use GOOGLE_API_KEY (auth not verified)"
-    ]
-
-
-def test_doctor_passes_gemini_normalizer_with_only_the_gemini_cli(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _make_repo(tmp_path, MIXED, normalizer_provider="gemini")
-    _stub_which(
-        monkeypatch,
-        {"fake-gemini", "fake-codex", "fake-claude", config_module.GEMINI_BINARY, "docker"},
-    )
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 0, output
-    assert _normalizer_lines(output) == [
-        f"PASS normalizer: provider gemini binary `{config_module.GEMINI_BINARY}` "
-        "is on PATH (auth not verified)"
-    ]
-
-
-def test_doctor_fails_gemini_normalizer_without_key_or_binary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="gemini")
-    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 1
-    assert _normalizer_lines(output) == [
-        "FAIL normalizer: provider gemini cannot run: none of GEMINI_API_KEY, "
-        f"GOOGLE_API_KEY, the `{config_module.GEMINI_BINARY}` binary is available"
     ]
 
 
