@@ -23,7 +23,9 @@ This project follows a simple pre-release changelog until the first public tag.
   do not cover arguments, and prints regex backslashes without doubling them.
   `CONFIGURATION.md` lists the entries and the live `agy` 1.4.2 results
   behind them, the deny breadth, that `python( .*)?` allows `python -c`, and
-  that a deny hit is not yet treated as a failed dispatch.
+  that a deny hit is not yet treated as a failed dispatch. The `python` and
+  `python3` grants still let a role run `git push` from a subprocess, the
+  same known gap as Claude's `Bash(python:*)`, tracked as GEM-0e.
 - Every shipped `agy` agent file under `.agents/agents/` (and its copy in
   `examples/reference-workflow/`) now declares a `tools:` list. Without one,
   `agy` gives the agent only read tools and it cannot write files. The role
