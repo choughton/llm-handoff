@@ -72,13 +72,26 @@ from llm_handoff.router import (
     HandoffRouting,
     parse_handoff_frontmatter_text,
 )
-from llm_handoff.work_claim import extract_work_packet_section, git_head
+from llm_handoff.work_claim import (
+    WorkPacketError,
+    extract_work_packet_section,
+    git_dirty_files,
+    git_head,
+    normalize_repo_path,
+    parse_work_packet,
+    path_is_in_scope,
+)
 
 
 LogFn = Callable[[str, str], None]
 STATE_PATH = Path("logs") / "dispatch" / "publish" / "story.json"
 MESSAGE_PATH = Path("logs") / "dispatch" / "publish" / "message.md"
 RESPONSES_PATH = Path("logs") / "dispatch" / "publish" / "responses.md"
+# The handoff an orphaned-story recovery set aside to give the planner its
+# pass at the story's open findings; the planner restores its route.
+DISPLACED_HANDOFF_PATH = (
+    Path("logs") / "dispatch" / "publish" / "displaced-handoff.md"
+)
 _THREADS_QUERY = (
     "query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { "
     "repository(owner: $owner, name: $name) { pullRequest(number: $number) { "
@@ -140,6 +153,12 @@ class StoryState:
     tracker_issue: str = ""
     tracker_url: str = ""
     selection_basis: str = ""
+    # The story's pull request once `pr` mode opened or found it, so a pause
+    # can name it without a `gh` call.
+    pull_request_url: str = ""
+    # The commit the Codex review last finished reviewing. Only it, or it
+    # plus clean base-branch merges, may merge outside the normal publish.
+    reviewed_head: str = ""
 
 
 _TRACKER_FIELDS = ("tracker_issue", "tracker_url", "selection_basis")
@@ -151,13 +170,16 @@ class PublishOutcome:
 
     ``handoff`` is a replacement ``HANDOFF.md`` (a review bounce to the
     implementer, or deferred findings for the planner) that the orchestrator
-    writes before the next cycle.
+    writes before the next cycle. ``pause`` asks the loop to pause with
+    ``message`` as the reason (pause recovery and the operator prompt apply)
+    instead of stopping.
     """
 
     stop: bool = False
     exit_code: int = 0
     message: str = ""
     handoff: str | None = None
+    pause: bool = False
 
 
 def story_branch_name(prefix: str, story_id: str, story_title: str | None) -> str:
@@ -252,6 +274,60 @@ def ensure_story_branch(
     )
     (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
     return None
+
+
+def unfinished_story_pause_reason(
+    *,
+    repo_root: Path,
+    prefix: str,
+    assignment_content: str,
+    route: str,
+) -> str | None:
+    """Explain why an assignment for another story cannot start yet, or None.
+
+    The checkout is still on the branch of the story the saved state tracks,
+    so that story is not published: its pull request may be open with
+    unresolved review findings. Starting the other story would leave it
+    behind, so the dispatcher pauses with the recovery steps instead of
+    stopping at :func:`ensure_story_branch`.
+    """
+
+    state = _load_state(repo_root)
+    if state is None or _current_branch(repo_root) != state.branch:
+        return None
+    try:
+        frontmatter = parse_handoff_frontmatter_text(assignment_content)
+    except HandoffFrontmatterError:
+        frontmatter = None
+    story_id = (frontmatter.story_id or "").strip() if frontmatter else ""
+    if not story_id:
+        return None
+    story_title = (frontmatter.story_title or "").strip() if frontmatter else ""
+    if story_branch_name(prefix, story_id, story_title) == state.branch:
+        return None
+    unresolved = sum(
+        1
+        for finding in (*state.open_findings, *state.deferred_findings)
+        if not finding.get("resolved")
+    )
+    if state.pull_request_url:
+        published = f"its pull request {state.pull_request_url} is still open"
+    else:
+        published = "it is not merged yet"
+    if unresolved:
+        published += f" with {unresolved} unresolved review finding(s)"
+    return (
+        f"UNFINISHED STORY: HANDOFF.md routes `{route}` to `{story_id}`, but "
+        f"the checkout is still on `{state.branch}` for `{state.story_id}`, "
+        f"and {published}. Starting `{story_id}` would leave that story "
+        f"unpublished. Either route HANDOFF.md back to `{state.implementer}` "
+        f"with `story_id: {state.story_id}` to finish it (deferring a finding "
+        "is a `ready_for_review` handback with a `Deferred:` response), or "
+        "resolve its review threads and merge or close its pull request "
+        f"yourself, then run `git switch {state.base_branch}` and `git pull`. "
+        "Update HANDOFF.md (or type `retry` at the operator prompt); dispatch "
+        "will resume after the file changes."
+    )
 
 
 def _unpushed_handoff_commits(
@@ -513,6 +589,9 @@ def publish_story(
             return _stop(log, f"gh pr create failed: {_first_line(created)}")
         url = (created.stdout or "").strip().splitlines()[-1] if created.stdout else ""
         log("AGENT", f"Opened pull request for {state.branch}: {url or '(no URL printed)'}")
+    if url and url != state.pull_request_url:
+        state = replace(state, pull_request_url=url)
+        _save_state(repo_root, state)
 
     if not auto_merge:
         _clear_state(repo_root)
@@ -1240,8 +1319,14 @@ def _route_deferred_to_planner(
     deferred: Sequence[dict[str, object]],
     url: str,
     log: LogFn,
+    *,
+    displaced: Path | None = None,
 ) -> PublishOutcome:
-    """Give the planner its one pass at the deferred findings."""
+    """Give the planner its one pass at the deferred findings.
+
+    ``displaced`` names the saved handoff an orphaned-story recovery set
+    aside; the planner handoff tells the planner to restore its route.
+    """
 
     findings = sorted(deferred, key=lambda finding: int(finding.get("number") or 0))
     _save_state(
@@ -1268,7 +1353,9 @@ def _route_deferred_to_planner(
     )
     return PublishOutcome(
         message=f"Deferred review findings on {url}",
-        handoff=build_deferred_findings_handoff(state=state, findings=findings, url=url),
+        handoff=build_deferred_findings_handoff(
+            state=state, findings=findings, url=url, displaced=displaced
+        ),
     )
 
 
@@ -1328,6 +1415,15 @@ def build_review_bounce_handoff(
         "example because the fix is outside the Work Packet's scope, start its "
         "response with `Deferred:`; the dispatcher posts that reply but leaves "
         "the thread unresolved, and the planner decides before the merge. "
+        "Deferring every finding is still a `ready_for_review` handback to "
+        "`auditor`: change no file, answer each finding with `Deferred:`, run "
+        "the verification command, and write `pending-dispatcher-commit` as "
+        "the `Commit SHA verified` value as usual. The dispatcher records the "
+        "branch head as the claim, and the work-claim gate counts the story's "
+        "earlier commits on this branch, so no new commit is needed. Do "
+        "not hand back a `blocked_*` status to defer a finding: a blocked "
+        "handback skips the gate, the audit, and the replies, so the planner "
+        "never gets its pass and the pull request stays open. "
         + (
             "This is the last correction round: the dispatcher then merges the "
             "pull request without another Codex review. "
@@ -1352,6 +1448,7 @@ def build_deferred_findings_handoff(
     state: StoryState,
     findings: Sequence[dict[str, object]],
     url: str,
+    displaced: Path | None = None,
 ) -> str:
     """Route deferred review findings to the planner for one decision pass."""
 
@@ -1413,6 +1510,21 @@ def build_deferred_findings_handoff(
         "its thread open, and the dispatcher pauses for a person.",
         "",
     ]
+    if displaced is not None:
+        lines += [
+            "## Displaced Handoff",
+            "",
+            f"`HANDOFF.md` had already moved on from `{state.story_id}` while "
+            "its pull request was still open. The dispatcher saved that "
+            f"handoff to `{displaced.as_posix()}`. After you decide the "
+            "findings above, restore its route: when you accept every finding "
+            "as follow-up work, copy that handoff's frontmatter and sections "
+            "back into `HANDOFF.md` and add your `## Deferred Finding "
+            "Decisions` section; the dispatcher merges the pull request, then "
+            "continues with the restored route. If you widen the scope or ask "
+            "the user instead, leave the saved handoff for later.",
+            "",
+        ]
     for finding in findings:
         number = finding.get("number")
         location = finding.get("location") or "pull request"
@@ -1454,9 +1566,41 @@ def settle_deferred_findings(
     pull request then merges once every review thread is resolved. Findings
     sent back to the implementer, or a route to the user, leave the pull
     request open. Anything else pauses for a person.
+
+    Decisions written outside that pass are acted on only when they are
+    provably safe: every unresolved finding has a decision, the checkout is on
+    the story branch, and the pull request head is the commit the Codex review
+    reviewed (plus only clean base-branch merges). Otherwise, while the story
+    still has unresolved review findings, they pause instead of being
+    ignored, and the story state is kept so the story can be routed back to
+    its implementer.
     """
 
     state = _load_state(repo_root)
+    if (
+        state is not None
+        and not state.deferral_planner_pass
+        and _has_deferred_decisions(handoff_content)
+    ):
+        unresolved = _unresolved_findings(state)
+        if unresolved:
+            problem = _decisions_cannot_settle(
+                repo_root, remote, state, unresolved, handoff_content, gh_command
+            )
+            if problem is not None:
+                return _pause(
+                    repo_root,
+                    log,
+                    _unarmed_decisions_message(state, len(unresolved), problem),
+                    keep_state=True,
+                )
+            state = _armed(state, unresolved)
+            _save_state(repo_root, state)
+            log(
+                "AGENT",
+                f"The planner decided every open finding of `{state.story_id}` "
+                "on its reviewed pull request head; acting on the decisions.",
+            )
     if state is None or not state.deferral_planner_pass or not state.open_findings:
         return PublishOutcome()
     if _current_branch(repo_root) != state.branch:
@@ -1574,6 +1718,561 @@ def settle_deferred_findings(
     )
 
 
+_DECISIONS_HEADING_RE = re.compile(r"(?m)^## Deferred Finding Decisions[ \t]*$")
+
+
+def _has_deferred_decisions(handoff_content: str) -> bool:
+    return _DECISIONS_HEADING_RE.search(handoff_content.replace("\r\n", "\n")) is not None
+
+
+def _unarmed_decisions_message(state: StoryState, count: int, problem: str) -> str:
+    where = state.pull_request_url or f"the pull request for `{state.branch}`"
+    return (
+        "The planner wrote `## Deferred Finding Decisions`, but the dispatcher "
+        f"has not routed deferred findings of `{state.story_id}` to the planner, "
+        f"and it cannot act on them safely: {problem}. {count} review "
+        f"finding(s) on {where} are still unresolved, and nothing was replied "
+        "to, resolved, or merged. "
+        f"Either route HANDOFF.md back to `{state.implementer}` with `story_id: "
+        f"{state.story_id}` and ask for a `ready_for_review` handback with "
+        "`Deferred:` responses, or resolve the threads and merge the pull "
+        f"request yourself, run `git switch {state.base_branch}` and "
+        "`git pull`. Then start the dispatcher again."
+    )
+
+
+def _unresolved_findings(state: StoryState) -> list[dict[str, object]]:
+    """The saved review findings not yet resolved, open and deferred."""
+
+    return [
+        finding
+        for finding in (*state.open_findings, *state.deferred_findings)
+        if not finding.get("resolved")
+    ]
+
+
+def _armed(state: StoryState, findings: Sequence[dict[str, object]]) -> StoryState:
+    """``state`` with the planner's pass open on ``findings``."""
+
+    return replace(
+        state,
+        open_findings=tuple(
+            {
+                key: finding[key]
+                for key in ("number", "comment_id", "location", "body")
+                if key in finding
+            }
+            for finding in sorted(
+                findings, key=lambda finding: int(finding.get("number") or 0)
+            )
+        ),
+        deferred_findings=(),
+        deferral_planner_pass=True,
+    )
+
+
+def _decisions_cannot_settle(
+    repo_root: Path,
+    remote: str,
+    state: StoryState,
+    unresolved: Sequence[dict[str, object]],
+    handoff_content: str,
+    gh_command: Sequence[str],
+) -> str | None:
+    """Why decisions written outside the planner's pass cannot be acted on."""
+
+    decisions = parse_review_responses(
+        handoff_content, heading="Deferred Finding Decisions"
+    )
+    undecided = [
+        str(finding.get("number"))
+        for finding in unresolved
+        if finding.get("number") not in decisions
+    ]
+    if undecided:
+        return f"finding(s) {', '.join(undecided)} have no decision"
+    if _current_branch(repo_root) != state.branch:
+        return f"the checkout is not on `{state.branch}`"
+    view, error = _view_pull_request(gh_command, repo_root, state.branch)
+    if view is None:
+        return f"`gh pr view {state.branch}` failed ({error})"
+    if view.get("state") != "OPEN":
+        return f"its pull request is {str(view.get('state') or 'unknown').lower()}"
+    return _pull_request_head_problem(repo_root, remote, state, view, gh_command)
+
+
+def _pull_request_head_problem(
+    repo_root: Path,
+    remote: str,
+    state: StoryState,
+    view: dict[str, object],
+    gh_command: Sequence[str],
+) -> str | None:
+    """Why the pull request head is not safe to merge, or None.
+
+    Safe means the checkout is at the pull request head, and that head is the
+    commit the Codex review reviewed or that commit plus only clean
+    base-branch merges. Any check that cannot run is a problem.
+    """
+
+    pr_head = str(view.get("headRefOid") or "")
+    local = git_head(repo_root) or ""
+    if not _OBJECT_ID_RE.fullmatch(pr_head):
+        return "gh pr view did not report the pull request head"
+    if local != pr_head:
+        return (
+            f"the local head {local[:12] or 'unknown'} is not the pull request "
+            f"head {pr_head[:12]}"
+        )
+    reviewed, error = _reviewed_head(repo_root, state, view, gh_command)
+    if reviewed is None:
+        return error
+    return _clean_merges_problem(repo_root, remote, state, reviewed, pr_head)
+
+
+def _reviewed_head(
+    repo_root: Path,
+    state: StoryState,
+    view: dict[str, object],
+    gh_command: Sequence[str],
+) -> tuple[str | None, str]:
+    """The commit Codex reviewed: the saved one, or for a state saved by an
+    older version, the commit its open findings were made on."""
+
+    if _OBJECT_ID_RE.fullmatch(state.reviewed_head or ""):
+        return state.reviewed_head, ""
+    number = view.get("number")
+    if not isinstance(number, int):
+        return None, "gh pr view did not report the pull request number"
+    comments = _fetch_json(
+        gh_command, repo_root, f"repos/{{owner}}/{{repo}}/pulls/{number}/comments"
+    )
+    if comments is None:
+        return None, "the review comments could not be read"
+    by_id = {comment.get("id"): comment for comment in comments}
+    commits: set[str] = set()
+    for finding in _unresolved_findings(state):
+        comment = by_id.get(finding.get("comment_id"))
+        commit = (
+            str(comment.get("original_commit_id") or comment.get("commit_id") or "")
+            if comment
+            else ""
+        )
+        if not _OBJECT_ID_RE.fullmatch(commit):
+            return None, (
+                f"the review comment of finding {finding.get('number')} was not "
+                "found, so the reviewed commit is unknown"
+            )
+        commits.add(commit)
+    if len(commits) != 1:
+        return None, "the saved findings were not all made on one reviewed commit"
+    return commits.pop(), ""
+
+
+def _clean_merges_problem(
+    repo_root: Path, remote: str, state: StoryState, reviewed: str, head: str
+) -> str | None:
+    """Why ``head`` is not ``reviewed`` plus only clean base-branch merges.
+
+    Each commit after ``reviewed`` that is not on the base branch must be a
+    two-parent merge of the base branch whose tree equals the automatic merge
+    of its parents, with no conflicts.
+    """
+
+    if head == reviewed:
+        return None
+    upstream = f"{remote}/{state.base_branch}"
+    fetched = _fetch_base(repo_root, remote, state.base_branch)
+    if fetched.returncode != 0:
+        return f"git fetch {remote} {state.base_branch} failed ({_first_line(fetched)})"
+    ancestor = _git(repo_root, ["merge-base", "--is-ancestor", reviewed, head])
+    if ancestor.returncode != 0:
+        return (
+            f"the pull request head {head[:12]} does not build on the reviewed "
+            f"commit {reviewed[:12]}"
+        )
+    listed = _git(
+        repo_root, ["rev-list", "--parents", f"{reviewed}..{head}", f"^{upstream}"]
+    )
+    if listed.returncode != 0:
+        return f"git rev-list failed ({_first_line(listed)})"
+    for line in listed.stdout.splitlines():
+        words = line.split()
+        if not words:
+            continue
+        commit = words[0]
+        unreviewed = (
+            f"commit `{_describe_commit(repo_root, commit)}` after the reviewed "
+            f"commit {reviewed[:12]} is not a clean merge of {upstream}, so it "
+            "was not audited and reviewed"
+        )
+        if len(words) != 3 or not all(_OBJECT_ID_RE.fullmatch(w) for w in words):
+            return unreviewed
+        first, second = words[1:]
+        on_base = _git(repo_root, ["merge-base", "--is-ancestor", second, upstream])
+        if on_base.returncode != 0:
+            return unreviewed
+        automatic = _git(
+            repo_root, ["merge-tree", "--write-tree", "--no-messages", first, second]
+        )
+        tree = _git(repo_root, ["rev-parse", f"{commit}^{{tree}}"])
+        automatic_tree = (automatic.stdout or "").strip().splitlines()[:1]
+        if (
+            automatic.returncode != 0
+            or tree.returncode != 0
+            or automatic_tree != [(tree.stdout or "").strip()]
+        ):
+            return unreviewed
+    return None
+
+
+def _uncommitted_story_files(
+    repo_root: Path, state: StoryState, handoff_path: Path
+) -> list[str] | None:
+    """Uncommitted files in the story's scope; None when git status fails.
+
+    Without a parsable saved Work Packet, every uncommitted file other than
+    the handoff and the dispatcher's own logs counts.
+    """
+
+    dirty = git_dirty_files(repo_root)
+    if dirty is None:
+        return None
+    try:
+        packet = parse_work_packet(state.work_packet)
+    except WorkPacketError:
+        packet = None
+    handoff = normalize_repo_path(handoff_path.as_posix())
+    candidates = [
+        path
+        for path in dirty
+        if path != handoff and not path.startswith("logs/dispatch/")
+    ]
+    if packet is None:
+        return candidates
+    return [path for path in candidates if path_is_in_scope(path, packet)]
+
+
+def _moves_on(state: StoryState, handoff_content: str) -> str | None:
+    """Describe how ``handoff_content`` moves on from the saved story, or None.
+
+    It moves on when it names another story, routes to the finalizer, or
+    records the story or epic as passed.
+    """
+
+    try:
+        frontmatter = parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        return None
+    if frontmatter is None:
+        return None
+    story_id = (frontmatter.story_id or "").strip()
+    route = normalize_next_agent_value(frontmatter.next_agent) or "an unknown role"
+    if story_id and story_id != state.story_id:
+        return f"routes `{route}` to `{story_id}`"
+    if route == "finalizer":
+        return "routes to `finalizer`"
+    close_type = (frontmatter.close_type or "").strip()
+    if (frontmatter.status or "") == "verified_pass" and close_type in {
+        "story",
+        "epic",
+    }:
+        return f"records the {close_type} as passed"
+    return None
+
+
+def _finding_list(findings: Sequence[dict[str, object]]) -> str:
+    return ", ".join(
+        f"{finding.get('number')} (`{finding.get('location') or 'pull request'}`)"
+        for finding in findings
+    )
+
+
+def _moved_on_message(state: StoryState, moves_on: str, url: str, problem: str) -> str:
+    unresolved = _unresolved_findings(state)
+    findings = (
+        f" Unresolved review findings: {_finding_list(unresolved)}."
+        if unresolved
+        else ""
+    )
+    where = url or state.pull_request_url or f"the pull request for `{state.branch}`"
+    return (
+        f"PULL REQUEST NOT MERGED: HANDOFF.md {moves_on}, but story "
+        f"`{state.story_id}` on `{state.branch}` is not finished: {problem}."
+        f"{findings} Either finish its correction round: route HANDOFF.md back "
+        f"to `{state.implementer}` with `story_id: {state.story_id}` (deferring "
+        "a finding is a `ready_for_review` handback with a `Deferred:` "
+        "response); or merge it by hand: resolve its review threads, merge "
+        f"{where} yourself, run `git switch {state.base_branch}` and "
+        "`git pull`. Update HANDOFF.md (or type `retry` at the operator "
+        "prompt); dispatch will resume after the file changes."
+    )
+
+
+def recover_orphaned_story(
+    *,
+    repo_root: Path,
+    mode: str,
+    remote: str,
+    handoff_content: str,
+    handoff_path: Path,
+    log: LogFn,
+    gh_command: Sequence[str] = ("gh",),
+) -> PublishOutcome:
+    """Gate a handoff that moves on from a saved ``pr`` story, recovering
+    when that is provably safe.
+
+    Runs before each cycle in ``pr`` mode. Does nothing unless the saved story
+    state names a story and ``handoff_content`` moves on from it (see
+    :func:`_moves_on`). Then the story's pull request must be merged:
+
+    - Merged with every review thread resolved: the saved state is cleared,
+      the checkout returns to the updated base branch, and the loop goes on.
+    - Open with only the story's saved findings unresolved, the planner not
+      yet given its pass, the checkout on the story branch at the pull
+      request head, that head the reviewed commit plus only clean base-branch
+      merges, and no story file uncommitted: the handoff is saved to
+      ``DISPLACED_HANDOFF_PATH`` and the planner gets its deferred-findings
+      pass; ``settle_deferred_findings`` then acts on its decisions.
+    - Anything else, including a ``gh`` or ``git`` failure, returns a pause
+      with the recovery steps.
+    """
+
+    if mode != "pr":
+        return PublishOutcome()
+    state = _load_state(repo_root)
+    if state is None:
+        return PublishOutcome()
+    moves_on = _moves_on(state, handoff_content)
+    if moves_on is None:
+        return PublishOutcome()
+    url = state.pull_request_url
+
+    def blocked(problem: str) -> PublishOutcome:
+        return PublishOutcome(
+            pause=True, message=_moved_on_message(state, moves_on, url, problem)
+        )
+
+    view, error = _view_pull_request(gh_command, repo_root, state.branch)
+    if view is None:
+        return blocked(
+            f"`gh pr view {state.branch}` failed ({error}), so its pull request "
+            "could not be confirmed as merged"
+        )
+    url = str(view.get("url") or url)
+    number = view.get("number")
+    pr_state = str(view.get("state") or "")
+    threads = (
+        _review_threads(gh_command, repo_root, number)
+        if isinstance(number, int)
+        else None
+    )
+    if threads is None:
+        return blocked(f"the review threads of {url or state.branch} could not be read")
+    unresolved_threads = [thread for thread in threads if not thread["resolved"]]
+    resolved_ids = {thread["comment_id"] for thread in threads if thread["resolved"]}
+    saved = [
+        finding
+        for finding in _unresolved_findings(state)
+        if finding.get("comment_id") not in resolved_ids
+    ]
+
+    if pr_state == "MERGED":
+        if unresolved_threads or saved:
+            return blocked(
+                f"its pull request {url} merged with "
+                f"{max(len(unresolved_threads), len(saved))} unresolved review "
+                "thread(s); resolve them, then retry"
+            )
+        return _clean_up_merged_story(repo_root, remote, state, url, log, blocked)
+    if pr_state != "OPEN":
+        return blocked(
+            f"its pull request {url} is {pr_state.lower() or 'in an unknown state'}"
+        )
+    if not unresolved_threads:
+        return blocked(f"its pull request {url} is open and was not merged")
+    if state.deferral_planner_pass:
+        return blocked(
+            "the planner already had its one pass at the story's findings and "
+            f"{len(unresolved_threads)} review thread(s) are still unresolved"
+        )
+    by_comment = {finding.get("comment_id"): finding for finding in saved}
+    if not all(thread["comment_id"] in by_comment for thread in unresolved_threads):
+        return blocked(
+            "an unresolved review thread is not one of the story's saved "
+            "findings, such as a person's comment"
+        )
+    if _current_branch(repo_root) != state.branch:
+        return blocked(f"the checkout is not on `{state.branch}`")
+    problem = _pull_request_head_problem(repo_root, remote, state, view, gh_command)
+    if problem is not None:
+        return blocked(problem)
+    uncommitted = _uncommitted_story_files(repo_root, state, handoff_path)
+    if uncommitted is None:
+        return blocked(
+            "git status failed, so uncommitted story files could not be checked"
+        )
+    if uncommitted:
+        return blocked(
+            f"story files are uncommitted ({_path_list(uncommitted)}) and were "
+            "not audited"
+        )
+    displaced = repo_root / DISPLACED_HANDOFF_PATH
+    displaced.parent.mkdir(parents=True, exist_ok=True)
+    displaced.write_text(handoff_content, encoding="utf-8")
+    findings = [by_comment[thread["comment_id"]] for thread in unresolved_threads]
+    log(
+        "AGENT",
+        f"HANDOFF.md {moves_on}, but {url} for `{state.story_id}` is still open "
+        "on its reviewed head with open review finding(s); saved the handoff to "
+        f"{DISPLACED_HANDOFF_PATH.as_posix()} for the planner to restore.",
+    )
+    return _route_deferred_to_planner(
+        repo_root,
+        state,
+        findings,
+        url,
+        log,
+        displaced=DISPLACED_HANDOFF_PATH,
+    )
+
+
+def _clean_up_merged_story(
+    repo_root: Path,
+    remote: str,
+    state: StoryState,
+    url: str,
+    log: LogFn,
+    blocked: Callable[[str], PublishOutcome],
+) -> PublishOutcome:
+    """Clear a merged story's state and return to the updated base branch."""
+
+    if _current_branch(repo_root) == state.branch:
+        for args in (
+            ["switch", state.base_branch],
+            ["pull", "--ff-only", remote, state.base_branch],
+        ):
+            result = _git(repo_root, args)
+            if result.returncode != 0:
+                return blocked(
+                    f"its pull request {url} merged, but `git {' '.join(args[:2])}` "
+                    f"failed ({_first_line(result)})"
+                )
+        merged = _git(repo_root, ["merge-base", "--is-ancestor", state.branch, "HEAD"])
+        if merged.returncode == 0:
+            _git(repo_root, ["branch", "-D", state.branch])
+        else:
+            log(
+                "WARN",
+                f"Kept the local branch `{state.branch}`: it has commits that "
+                f"are not on `{state.base_branch}`.",
+            )
+    _clear_state(repo_root)
+    log(
+        "AGENT",
+        f"The pull request {url} for `{state.story_id}` is merged; cleared its "
+        f"saved story state and continued on `{state.base_branch}`.",
+    )
+    return PublishOutcome()
+
+
+def defer_blocked_handback(
+    *,
+    repo_root: Path,
+    remote: str,
+    handoff_path: Path,
+    claim_content: str,
+    head_before: str | None,
+    log: LogFn,
+    gh_command: Sequence[str] = ("gh",),
+) -> PublishOutcome | None:
+    """Treat a blocked correction-round handback that only defers as a deferral.
+
+    Applies when the saved story has open review findings, the checkout is on
+    its branch, the handback is not ``ready_for_review``, answers every open
+    finding under ``## Review Responses`` with ``Deferred:``, and changed no
+    story file (no new commit since ``head_before`` and nothing uncommitted
+    in scope). Then the replies are posted, the threads stay unresolved, and
+    the planner gets its deferred-findings pass. Returns None when the
+    handback does not qualify, so it routes as written. Once it qualifies,
+    a check that fails or cannot run pauses.
+    """
+
+    state = _load_state(repo_root)
+    if state is None or not state.open_findings or state.deferral_planner_pass:
+        return None
+    try:
+        frontmatter = parse_handoff_frontmatter_text(claim_content)
+    except HandoffFrontmatterError:
+        return None
+    if frontmatter is None or (frontmatter.status or "") == "ready_for_review":
+        return None
+    if (frontmatter.story_id or "").strip() != state.story_id:
+        return None
+    if _current_branch(repo_root) != state.branch:
+        return None
+    pending = [finding for finding in state.open_findings if not finding.get("resolved")]
+    responses = parse_review_responses(claim_content)
+    if not pending or not all(
+        isinstance(finding.get("number"), int)
+        and is_deferred_response(responses.get(finding["number"]) or "")
+        for finding in pending
+    ):
+        return None
+    head = git_head(repo_root)
+    if head is None or head != head_before:
+        return None
+    uncommitted = _uncommitted_story_files(repo_root, state, handoff_path)
+    if uncommitted is None or uncommitted:
+        return None
+
+    def paused(problem: str) -> PublishOutcome:
+        return _pause(
+            repo_root,
+            log,
+            f"The `{state.implementer}` handback for `{state.story_id}` defers "
+            f"every open review finding, but {problem}, so nothing was posted. "
+            "Route HANDOFF.md back to "
+            f"`{state.implementer}` for a `ready_for_review` handback with the "
+            "`Deferred:` responses, then start the dispatcher again.",
+            keep_state=True,
+        )
+
+    view, error = _view_pull_request(gh_command, repo_root, state.branch)
+    if view is None:
+        return paused(f"`gh pr view {state.branch}` failed ({error})")
+    number = view.get("number")
+    if view.get("state") != "OPEN" or not isinstance(number, int):
+        return paused("its pull request is not open")
+    problem = _pull_request_head_problem(repo_root, remote, state, view, gh_command)
+    if problem is not None:
+        return paused(problem)
+    url = str(view.get("url") or state.pull_request_url or state.branch)
+    log(
+        "AGENT",
+        f"The `{state.implementer}` handback (status `{frontmatter.status}`) "
+        f"defers every open finding on {url} and changed no story file; "
+        "treating it as a deferral.",
+    )
+    save_review_responses(repo_root, claim_content)
+    answered = _answer_findings(
+        repo_root=repo_root,
+        state=state,
+        gh_command=gh_command,
+        pr_number=number,
+        head_sha=head,
+        log=log,
+    )
+    if answered is not None:
+        return _stop(log, answered)
+    state = _load_state(repo_root) or state
+    if not state.deferred_findings:
+        return paused("no finding was recorded as deferred")
+    return _route_deferred_to_planner(
+        repo_root, state, state.deferred_findings, url, log
+    )
+
+
 def _handoff_route(handoff_content: str) -> tuple[str | None, str | None]:
     try:
         frontmatter = parse_handoff_frontmatter_text(handoff_content)
@@ -1649,6 +2348,7 @@ def _wait_for_reviewers(
         **({"sleep": sleep} if sleep is not None else {}),
     )
     if result.outcome == "clean":
+        _save_state(repo_root, replace(state, reviewed_head=head_sha))
         log("AGENT", f"Codex review of {head_sha[:12]} finished with no findings.")
         return None
     resume = (
@@ -1662,6 +2362,7 @@ def _wait_for_reviewers(
             replace(
                 state,
                 review_rounds=review_round,
+                reviewed_head=head_sha,
                 open_findings=tuple(
                     {
                         "number": index,
@@ -1941,20 +2642,31 @@ def _pause(
 def _open_pull_request(
     gh_command: Sequence[str], repo_root: Path, branch: str
 ) -> dict[str, object] | None:
+    data, _error = _view_pull_request(gh_command, repo_root, branch)
+    if data is None or data.get("state") != "OPEN":
+        return None
+    return data
+
+
+def _view_pull_request(
+    gh_command: Sequence[str], repo_root: Path, branch: str
+) -> tuple[dict[str, object] | None, str]:
+    """Return the branch's pull request in any state, or None and the error."""
+
     viewed = _run(
-        [*gh_command, "pr", "view", branch, "--json", "number,url,state"],
+        [*gh_command, "pr", "view", branch, "--json", "number,url,state,headRefOid"],
         repo_root,
         _GH_TIMEOUT_SECONDS,
     )
     if viewed.returncode != 0:
-        return None
+        return None, _first_line(viewed)
     try:
         data = json.loads(viewed.stdout or "")
     except ValueError:
-        return None
-    if not isinstance(data, dict) or data.get("state") != "OPEN":
-        return None
-    return data
+        return None, "gh pr view printed no JSON"
+    if not isinstance(data, dict):
+        return None, "gh pr view printed no pull request"
+    return data, ""
 
 
 def _fetch_json(

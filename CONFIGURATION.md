@@ -686,6 +686,17 @@ The outcomes:
   a real finding left unfixed for later work, often because its fix is
   outside the Work Packet's Files in scope: the dispatcher posts the reply,
   logs a `WARN` naming the finding, and leaves the thread unresolved.
+  Deferring every finding is still a `ready_for_review` handback with no code
+  change: the dispatcher records the branch head as the claim, and the
+  work-claim gate counts the story's earlier commits since the story base. A
+  `blocked_*` handback skips the gate, the audit, and the replies, so the
+  planner's pass below would never start; the bounce says so. As a
+  deterministic backup, a correction-round handback under any other status
+  counts as a deferral when its `## Review Responses` answer every open
+  finding with `Deferred:` and it changed no story file (no new commit and
+  nothing uncommitted in Files in scope): the dispatcher posts the replies,
+  leaves the threads unresolved, and routes to the planner's pass. Mixed
+  responses or any change leave the handback as written.
 - Deferred findings only: when the only unresolved review threads are
   deferred findings, the dispatcher does not pause. It rewrites `HANDOFF.md`
   to route to `planner` with each deferred finding, the implementer's
@@ -706,6 +717,45 @@ The outcomes:
   neither accepted nor sent back, when the implementer defers a finding
   again after the planner's pass, or when any other review thread, such as
   a finding without a response or a person's comment, is still unresolved.
+
+  A planner handoff can also carry `## Deferred Finding Decisions` when that
+  pass never started, for example after a blocked handback. The dispatcher
+  acts on it only when that is provably safe: every unresolved finding has
+  a decision, the checkout is on the story branch, and the pull request
+  head is the commit the Codex review reviewed. That head may also carry
+  clean base-branch merges, whose tree must equal the automatic merge.
+  Otherwise it fails closed and pauses with the reason and the recovery
+  steps; it posts, resolves, and merges nothing, and it keeps the story
+  state. A leftover section with no unresolved findings is ignored. The
+  story state records the reviewed commit as `reviewed_head`. For a state
+  saved by an older version, the dispatcher reads the commit the open
+  findings were made on from GitHub.
+- A handoff that moves on while a story is unpublished: before each cycle
+  that is not a planner dispatch, `pr` mode checks whether `HANDOFF.md`
+  moves on from the saved story. That means it names another story, routes
+  to `finalizer`, or records the story or epic as `verified_pass`. If it
+  does, the saved story's pull request must be merged on GitHub with every
+  review thread resolved. A merged story's state is cleared, the checkout
+  returns to the updated base branch, and the cycle goes on. An open pull
+  request is recovered without a person when all of these hold:
+  - only the story's saved findings are unresolved;
+  - the planner has not had its pass;
+  - the checkout is on the story branch at the pull request head;
+  - that head is the reviewed commit, plus only clean base-branch merges;
+  - no file in scope is uncommitted.
+
+  The dispatcher then saves `HANDOFF.md` to
+  `logs/dispatch/publish/displaced-handoff.md` and routes to the planner's
+  deferred-findings pass. The handoff tells the planner to restore the saved
+  route after deciding. Every other case pauses with the pull request, its
+  unresolved findings, and the two recovery paths: finish the correction
+  round, or resolve the threads and merge by hand. That includes a `gh` or
+  `git` failure, a moved or unreviewed head, a person's comment, and
+  findings still open after the planner's pass. Pause recovery and the
+  operator prompt apply. A handoff that names the saved story itself passes
+  the check, and so does any handoff in `local` mode or when there is no
+  saved story. `--dry-run` makes no `gh` calls. Instead it reports a local
+  pause when an implementer would start another story on the story branch.
 - One correction round by default (`max_review_rounds: 1`). The first review
   should surface what matters most; each review of a fix tends to find new
   edge cases in the new code, so the dispatcher does not wait for another
