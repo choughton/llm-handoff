@@ -70,6 +70,7 @@ from llm_handoff.config import (
     CODEX_BINARY,
     DEFAULT_CONFIG_PATH,
     DEFAULT_HANDOFF_PATH,
+    GEMINI_BINARY,
     AgentConfig,
     DispatchConfig,
     detect_repo_root,
@@ -665,10 +666,12 @@ _NORMALIZER_API_KEY_NAMES: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
 }
 # Providers whose normalizer can run through a local CLI login. The codex
-# normalizer is CLI-only, so it has no API key entry above.
+# normalizer is CLI-only, so it has no API key entry above; claude and gemini
+# use the CLI login only when no API key is set.
 _NORMALIZER_CLI_BINARIES: dict[str, str] = {
     "claude": CLAUDE_BINARY,
     "codex": CODEX_BINARY,
+    "gemini": GEMINI_BINARY,
 }
 
 

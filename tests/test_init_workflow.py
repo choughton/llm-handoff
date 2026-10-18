@@ -721,7 +721,7 @@ def test_render_config_gemini_puts_every_role_on_gemini() -> None:
     assert "  # Same vendor as the implementer: the only CLI available." in rendered
     assert data["normalizer"]["provider"] == "gemini"
     assert "model" not in data["normalizer"]
-    assert "GEMINI_API_KEY" in rendered
+    assert "Gemini CLI login" in rendered
     assert "claude-haiku-5-5" not in rendered
     assert "provider: claude" not in rendered
     assert "provider: codex" not in rendered
@@ -744,7 +744,7 @@ def test_render_config_gemini_leaves_the_other_mappings_unchanged() -> None:
     for mapping in (CLAUDE_MAPPING, CODEX_MAPPING):
         rendered = render_config(template, mapping)
         assert "provider: gemini" not in rendered, mapping
-        assert "GEMINI_API_KEY" not in rendered, mapping
+        assert "Gemini CLI login" not in rendered, mapping
 
 
 def test_init_provider_gemini_writes_a_loadable_all_gemini_config(

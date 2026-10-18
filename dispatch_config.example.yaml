@@ -172,8 +172,8 @@ normalizer:
   timeout_ms: 60000
   on_unknown: fail_closed
   # Registered normalizer providers: claude, codex, gemini, openai.
-  # Claude can fall back to CLI auth; Codex always uses the Codex CLI
-  # login; Gemini and OpenAI are API-key only.
+  # Claude and Gemini fall back to their CLI login without an API key;
+  # Codex always uses the Codex CLI login; OpenAI is API-key only.
   # `model` must name a model of the selected provider; when you change the
   # provider, change or remove `model` too. Omitting it selects that
   # provider's default.

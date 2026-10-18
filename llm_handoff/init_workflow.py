@@ -306,10 +306,8 @@ _CODEX_NORMALIZER_LINES = (
 )
 _GEMINI_NORMALIZER_LINES = (
     "normalizer:\n"
-    "  # All-Gemini mapping: the Gemini normalizer is API-only, so it needs\n"
-    "  # GEMINI_API_KEY (or GOOGLE_API_KEY) in the dispatcher's environment.\n"
-    "  # It runs only when a handoff's next_agent is not a canonical role;\n"
-    "  # without the key that handoff stays unchanged and the loop pauses.\n"
+    "  # All-Gemini mapping: the normalizer runs through the Gemini CLI login,\n"
+    "  # or through the API when GEMINI_API_KEY (or GOOGLE_API_KEY) is set.\n"
     "  provider: gemini\n"
 )
 # The template's top-level commit_mode line (anchored at the start of a line

@@ -100,8 +100,9 @@ step. It is a constrained resolver for obvious freeform values.
 
 The normalizer has two execution paths. If a provider API key is available, it
 uses a structured API call with the Pydantic `NormalizedNextAgent` schema. If
-no API key is available, the Claude adapter can fall back to the local Claude
-Code CLI session. Gemini and OpenAI normalizer adapters are API-only. Once the
+no API key is available, the Claude and Gemini adapters fall back to the local
+Claude Code or Gemini CLI sign-in, and the Codex adapter always uses the Codex
+CLI login. The OpenAI normalizer adapter is API-only. Once the
 API path is selected, API errors fail closed instead of silently switching to
 local OAuth state.
 
