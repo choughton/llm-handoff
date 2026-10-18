@@ -21,6 +21,7 @@ from llm_handoff.normalizer_providers import claude as claude_normalizer
 from llm_handoff.normalizer_providers import codex as codex_normalizer
 from llm_handoff.normalizer_providers import gemini as gemini_normalizer
 from llm_handoff.normalizer_providers import openai as openai_normalizer
+from llm_handoff.provider_auth import find_antigravity_auth_failure
 
 
 def test_normalizer_uses_structured_api_path_when_api_key_is_available(
@@ -1167,7 +1168,7 @@ def _agy_fail_closed_cases() -> list[object]:
                 _AGY_RUN_2_STREAM,
                 stderr="Error: authentication required. Run agy to sign in.\n",
             ),
-            "agy is not authenticated: Error: authentication required",
+            "agy is not authenticated: authentication required",
             id="auth-failure",
         ),
         pytest.param(
@@ -1178,7 +1179,7 @@ def _agy_fail_closed_cases() -> list[object]:
                     "and print mode cannot prompt for it.\n"
                 ),
             ),
-            "agy denied the \"command\" permission",
+            "agy auto-denied a tool permission; the normalizer allows no tools",
             id="permission-soft-deny",
         ),
     ]
@@ -1202,6 +1203,54 @@ def test_antigravity_normalizer_fails_closed_on_unclean_output(
     assert raw not in message
     assert "toolAction" not in message
     assert "<conv>" not in message
+
+
+def test_antigravity_normalizer_auth_error_omits_stderr_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        antigravity_normalizer,
+        "_run_antigravity_process",
+        _FakeAgyRun(
+            _AGY_RUN_2_STREAM,
+            stderr=(
+                "Error: authentication required. Run agy to sign in.\n"
+                "token=sk-SECRET123\n"
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _normalize_with_agy()
+
+    message = str(excinfo.value)
+    assert "sk-SECRET123" not in message
+    assert find_antigravity_auth_failure(message) is not None
+
+
+def test_antigravity_normalizer_soft_deny_error_omits_stderr_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        antigravity_normalizer,
+        "_run_antigravity_process",
+        _FakeAgyRun(
+            _AGY_RUN_2_STREAM,
+            stderr=(
+                "Tool call auto-denied: print mode cannot prompt for the "
+                '"command" permission. Add an allow entry, e.g. '
+                'command(curl -H "X-Api-Key: sk-SECRET123" https://x)\n'
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _normalize_with_agy()
+
+    message = str(excinfo.value)
+    assert "sk-SECRET123" not in message
+    assert "permissions.allow" not in message
+    assert "allows no tools" in message
 
 
 def test_antigravity_normalizer_never_reads_response(

@@ -277,8 +277,15 @@ itself from 1.3.5 to 1.4.2 during the checks):
   `result` events, a non-JSON stdout line, a nonzero exit, a timeout, an
   `agy` sign-in failure, or a permission soft-deny fails closed and leaves
   the handoff unchanged. `commandExecutionPolicy: off` is accepted by `agy`
-  but not shown to be honored; `tools: [finish]` and the step-type check are
-  the boundary. Default model: `gemini-3.8-flash-low` (not exercised in the
+  but not shown to be honored. The pre-execution boundary is `agy`'s
+  enforcement of `tools: [finish]` alone; the user-wide `permissions.allow`
+  grants apply to the normalizer run, and the step-type and result checks
+  run after `agy` exits, so they cannot undo a command that already ran. The
+  planner accepted this residual risk on 2026-10-18 (decision A, same class
+  as GEM-0c) because the provider is opt-in and adds no command the handoff
+  writer lacks; `doctor` prints a `normalizer boundary` WARN line for it.
+  Sign-in and soft-deny errors use fixed text and never copy `agy` stderr.
+  Default model: `gemini-3.8-flash-low` (not exercised in the
   capture). `doctor` passes the normalizer line when `agy` is on `PATH` and
   fails naming `agy` when it is not. `antigravity` still cannot be the
   `audit.security_provider` (GEM-2).
@@ -306,7 +313,13 @@ itself from 1.3.5 to 1.4.2 during the checks):
   GEM-3 until a person has run the GEM-0 live check (an operator-run `agy`
   planner turn that writes a valid `HANDOFF.md` and runs
   `git log --oneline -5` and `python -m pytest --version` without a
-  soft-deny) and reported pass. Deferred by the user on 2026-10-18.
+  soft-deny) and reported pass. Deferred by the user on 2026-10-18. Second
+  operator live check (added by the planner on 2026-10-18 for GEM-1): an
+  `agy` run of a `tools: [finish]` normalizer agent from a scratch
+  directory, with an injected request for a user-wide-granted command (for
+  example `python -c "open('PWNED','w')"`). It passes when no `tool` step
+  appears and no `PWNED` file exists. If it fails, GEM-3 must not make
+  `antigravity` the default normalizer.
 - GEM-4: Remove the `gemini` provider from the runtime and reject the old
   names. Delete `llm_handoff/agent_providers/gemini.py`,
   `llm_handoff/normalizer_providers/gemini.py` (API and CLI paths), and the

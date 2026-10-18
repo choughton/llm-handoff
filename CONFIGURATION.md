@@ -2238,7 +2238,21 @@ raw `finish` arguments with extra keys, is never read. A missing `agy`
 binary, a launch error, a timeout (the whole process tree is killed), a
 nonzero exit, an agy sign-in failure or permission auto-deny on stderr, a
 non-JSON stdout line, or any other shape fails closed and leaves the handoff
-unchanged. Error messages never quote stdout or the raw value.
+unchanged. Error messages never quote stdout, stderr, or the raw value; a
+sign-in failure or permission auto-deny is reported with fixed text.
+
+Execution boundary: the only pre-execution boundary for the `antigravity`
+normalizer is agy's enforcement of the agent file's `tools: [finish]`. The
+user-wide `permissions.allow` grants in `~/.gemini/antigravity-cli/settings.json`
+still apply to the normalizer run, as they do to every `agy` run for that
+user. `tools: [finish]` was seen to block an injected `run_command` request,
+but no live check has yet shown agy refusing a command those grants allow
+(for example `python ...`). The step-type and result checks run after agy
+exits: they protect the handoff, not the machine, and cannot undo a command
+that already ran. The provider is opt-in; the default normalizer stays
+`claude`. Operators who enable it should keep the agy grant set narrow, and
+should treat role allowlists as a guardrail, not a sandbox (see
+[Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing)).
 
 `llm-handoff doctor` prints one `normalizer` line. It fails when the
 configured normalizer cannot run: for `codex`, the `codex` binary is not
@@ -2247,7 +2261,9 @@ neither `ANTHROPIC_API_KEY` nor the `claude` binary is
 available; for `openai`, `OPENAI_API_KEY` is not set; for `gemini`, none of
 `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or the `gemini` binary is available. The
 doctor never calls the provider, so a passing line reports auth as not
-verified.
+verified. When the provider is `antigravity`, the doctor also prints a
+`normalizer boundary` WARN line, whether or not `agy` is found, that states
+the execution boundary above; it does not change the exit code.
 
 The API path should not silently fall back to CLI auth after selecting an API
 key. If the structured API call fails, the dispatcher should fail closed and

@@ -897,8 +897,32 @@ def _check_normalizer(
 ) -> None:
     """Report whether the configured normalizer has a key or CLI to run with.
 
-    The provider is never called, so auth is reported as not verified.
+    The provider is never called, so auth is reported as not verified. The
+    antigravity provider also gets the ``normalizer boundary`` WARN line,
+    whether or not its binary is found.
     """
+    _check_normalizer_runnable(dispatch_config, repo_root, checks)
+    if dispatch_config.normalizer.provider == "antigravity":
+        checks.append(
+            DoctorCheck("WARN", _NORMALIZER_BOUNDARY_CHECK_NAME, _NORMALIZER_BOUNDARY_RISK)
+        )
+
+
+_NORMALIZER_BOUNDARY_CHECK_NAME = "normalizer boundary"
+_NORMALIZER_BOUNDARY_RISK = (
+    "provider antigravity: the only pre-execution boundary is agy's enforcement "
+    "of the agent file's `tools: [finish]`; the user-wide permissions.allow "
+    f"grants in {ANTIGRAVITY_SETTINGS_PATH} still apply to the normalizer run, "
+    "and the post-run step and result checks keep the handoff unchanged but "
+    "cannot undo a command that already ran"
+)
+
+
+def _check_normalizer_runnable(
+    dispatch_config: DispatchConfig,
+    repo_root: Path,
+    checks: list[DoctorCheck],
+) -> None:
     provider = dispatch_config.normalizer.provider
     key_names = _NORMALIZER_API_KEY_NAMES.get(provider, ())
     binary = _NORMALIZER_CLI_BINARIES.get(provider)

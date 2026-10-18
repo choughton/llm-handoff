@@ -31,7 +31,6 @@ from llm_handoff.provider_auth import (
     antigravity_auth_failure_line,
     find_antigravity_auth_failure,
     find_permission_soft_deny,
-    permission_soft_deny_message,
 )
 
 # Each call names its agent with a fresh random suffix, so no global agent
@@ -129,7 +128,9 @@ def antigravity_normalizer_agent_file(agent_name: str, raw_value: str) -> str:
     The body is ``normalizer_prompt(raw_value)``, which quotes the value with
     ``repr``, so a newline or ``---`` in the value cannot end the frontmatter.
     ``commandExecutionPolicy: off`` is accepted by agy 1.4.2 but not shown to
-    be honored; ``tools: [finish]`` and the step-type check are the boundary.
+    be honored. The only pre-execution boundary is agy's enforcement of
+    ``tools: [finish]``; user-wide ``permissions.allow`` grants still apply,
+    and the step-type and result checks run only after agy exits.
     """
     return (
         "---\n"
@@ -218,19 +219,24 @@ def _parse_antigravity_normalizer_result(
     """Return the normalized value from one agy run, or raise RuntimeError.
 
     Error messages never quote stdout, which can echo the raw next_agent
-    value; only the result status value is named.
+    value, or stderr, which can echo command arguments; only fixed text and
+    the result status value are named.
     """
     stderr = completed.stderr or ""
-    auth_failure = find_antigravity_auth_failure(stderr)
-    if auth_failure is not None:
+    if find_antigravity_auth_failure(stderr) is not None:
+        # Fixed text: the stderr line can carry tokens or arguments. The
+        # shared auth marker in the line keeps the failure recognizable.
         raise RuntimeError(
             f"{_ERROR_PREFIX} failed: "
-            f"{antigravity_auth_failure_line(auth_failure)}"
+            f"{antigravity_auth_failure_line('authentication required')} "
+            "(sign in by running `agy`)."
         )
-    soft_deny = find_permission_soft_deny(stderr)
-    if soft_deny is not None:
+    if find_permission_soft_deny(stderr) is not None:
+        # Fixed text: the notice quotes the denied command and its arguments,
+        # and the normalizer needs no allow entry, so none is suggested.
         raise RuntimeError(
-            f"{_ERROR_PREFIX} failed: {permission_soft_deny_message(soft_deny)}"
+            f"{_ERROR_PREFIX} failed: agy auto-denied a tool permission; the "
+            "normalizer allows no tools."
         )
     if completed.returncode != 0:
         raise RuntimeError(
