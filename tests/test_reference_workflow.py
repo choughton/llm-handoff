@@ -289,6 +289,26 @@ def test_reference_workflow_ships_an_antigravity_agent_for_every_role() -> None:
                 assert tools == list(ANTIGRAVITY_AGENT_TOOLS), path
 
 
+def test_antigravity_validator_limits_run_command_to_read_only_git() -> None:
+    relative_path = Path(".agents") / "agents" / "handoff-validator.md"
+    for root in (REPO_ROOT, REFERENCE_WORKFLOW):
+        path = root / relative_path
+        content = " ".join(path.read_text(encoding="utf-8").split())
+        for command in (
+            "`git cat-file`",
+            "`git status`",
+            "`git rev-parse`",
+            "`git log`",
+            "`git show`",
+            "`git diff`",
+        ):
+            assert command in content, (path, command)
+        assert (
+            "Never run `git add`, `git commit`, `python`, `python3`, `pytest`, or"
+            in content
+        ), path
+
+
 def test_claude_role_agents_do_not_point_at_dispatcher_docs() -> None:
     for name in ("planner", "backend", "frontend"):
         content = (REFERENCE_WORKFLOW / ".claude" / "agents" / f"{name}.md").read_text(

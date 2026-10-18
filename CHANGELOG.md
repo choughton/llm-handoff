@@ -15,7 +15,9 @@ This project follows a simple pre-release changelog until the first public tag.
   write tools. The lists come from the new `ANTIGRAVITY_AGENT_TOOLS` and
   `ANTIGRAVITY_AGENT_WRITE_TOOLS` constants in
   `llm_handoff/antigravity_permissions.py`, and tests check every file
-  against them.
+  against them. The `handoff-validator` file keeps `run_command` for its git
+  checks, its prompt limits it to read-only git commands, and the docs state
+  that this limit is a guardrail, not a shell boundary.
 - Linear mode (`tracker.provider: linear`) now rejects `provider:
   antigravity` on any role or role fallback when the config loads, whether
   or not the role sets `unsafe_bypass`. The error names each offending
