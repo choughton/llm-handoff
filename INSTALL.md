@@ -20,13 +20,11 @@ with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
   Claude Code, so it needs all three. With `init --tracker linear` the
   reference mapping puts `planner` and `frontend` on Claude Code instead
   (Linear mode does not support `antigravity` roles), so it needs only
-  Claude Code and Codex. A single-vendor setup (`init --provider claude`, `codex`, or
-  `gemini`) needs only that one CLI. For all-Codex, `init` writes
-  `commit_mode: dispatcher` into `dispatch_config.yaml`; keep it, and keep
-  the work-claim gate on (see
-  [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits)). All-Gemini
-  also needs the Gemini CLI security extension for the security reviewer and
-  `GEMINI_API_KEY` for the next-agent normalizer.
+  Claude Code and Codex. A single-vendor setup (`init --provider claude`,
+  `codex`, or `antigravity`) needs only that one CLI. For all-Codex, `init`
+  writes `commit_mode: dispatcher` into `dispatch_config.yaml`; keep it, and
+  keep the work-claim gate on (see
+  [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits)).
 - Docker or Podman on `PATH` for any role mapped to Gemini CLI (macOS can use
   `sandbox-exec`). Gemini roles run in its container sandbox and the
   dispatcher refuses to start without one.

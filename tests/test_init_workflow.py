@@ -538,7 +538,7 @@ def test_render_config_codex_uses_the_all_claude_timeouts() -> None:
     [
         "agents:\n",
         "normalizer:\n",
-        "  # security_provider: claude   # claude | codex | antigravity | gemini; "
+        "  # security_provider: claude   # claude | codex | antigravity; "
         "unset = auto\n",
     ],
 )

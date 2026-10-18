@@ -2008,7 +2008,7 @@ written reason.
 ```yaml
 audit:
   reviewers: [quality, security]  # the default
-  security_provider: null       # claude | codex | antigravity | gemini; null = auto
+  security_provider: null       # claude | codex | antigravity; null = auto
   security_model: null          # claude reviewer only; null = borrowed
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000
@@ -2041,12 +2041,12 @@ route then uses the single-auditor path, which writes `HANDOFF.md` itself.
 When it is unset, the claude reviewer borrows the `model` of the first role
 whose provider is `claude` (checked in the order `auditor`, `validator`,
 `finalizer`, `planner`, `backend`, `frontend`), else the built-in Claude
-default. The gemini and codex reviewers pass no model flag and run with their
-CLI's default model. The antigravity reviewer passes `--model` only when the
+default. The codex reviewer passes no model flag and runs with its CLI's
+default model. The antigravity reviewer passes `--model` only when the
 first role whose provider is `antigravity` (same role order) sets `model`;
 otherwise it runs with `agy`'s default model. A config that sets
 `audit.security_model` while `audit.security_provider` is anything other
-than `claude` (`codex`, `antigravity`, or `gemini`), or while
+than `claude` (`codex` or `antigravity`), or while
 `audit.reviewers` leaves out `security`, fails to load. With `audit.security_provider` unset,
 the setting applies when the claude reviewer is chosen; when another vendor
 is chosen, each audit logs a `WARN` that `audit.security_model` was not
@@ -2063,8 +2063,10 @@ reviewer for each implementer role (`backend` and `frontend`) in this order:
 3. otherwise `run` refuses to start with an error that begins
    `security_reviewer_failed:`.
 
-`gemini` is not in the automatic order. It can still be set explicitly with
-`audit.security_provider: gemini` until the Gemini provider is removed.
+The `gemini` security reviewer was removed: `audit.security_provider: gemini`
+fails at load with "The gemini provider was removed: Gemini CLI no longer
+serves personal Google accounts. Use security_provider: antigravity (the agy
+CLI)."
 
 The CLI lookup is the one `llm-handoff doctor` uses for role binaries, and the
 binary is the one configured for the first role that uses that provider
@@ -2093,13 +2095,8 @@ call to one. That part rests on the agent file's `tools` list, which leaves
 
 At startup, before any agent launches, `run` checks the security reviewer for
 each implementer role, whether configured or chosen automatically: its CLI
-must be on `PATH`, and a Gemini reviewer also needs a sandbox runtime (unless
-the Gemini role sets `unsafe_bypass: true`) and the Gemini CLI security
-extension. A failed check stops the run with a `security_reviewer_failed:`
-error. `--dry-run` skips this check. `llm-handoff doctor` runs the same
-extension check (`gemini extensions list`, no model call) when a reviewer
-resolves to Gemini and prints a `security extension` line that fails when
-the extension is missing or disabled.
+must be on `PATH`. A failed check stops the run with a
+`security_reviewer_failed:` error. `--dry-run` skips this check.
 
 With `security` enabled, the auditor route works differently:
 
@@ -2128,15 +2125,13 @@ With `security` enabled, the auditor route works differently:
   timestamp prefix keeps a restarted dispatcher from overwriting earlier
   cycles. The same folder holds `usage.json`, which records each reviewer's
   provider, token counts, and cost, plus a `total_cost_usd` summed across
-  reviewers. A reviewer whose CLI reports no usage (Gemini, `codex-security`,
-  or Claude's buffered text mode) shows `null`, and when a provider retries,
+  reviewers. A reviewer whose CLI reports no usage (`codex-security` or
+  Claude's buffered text mode) shows `null`, and when a provider retries,
   the counts cover only the last attempt.
 - A reviewer that fails to start (missing binary, CLI argument error, sign-in
-  failure, missing Gemini sandbox or security extension) stops the run with
-  exit 1 after one attempt and logs its stderr in an
-  `audit_reviewer_start_failed:` line. Other reviewer errors (timeout, rate
-  limit, other non-zero exits, malformed verdict, a Gemini extension check
-  that itself times out or hits a rate limit) count toward
+  failure) stops the run with exit 1 after one attempt and logs its stderr in
+  an `audit_reviewer_start_failed:` line. Other reviewer errors (timeout,
+  rate limit, other non-zero exits, malformed verdict) count toward
   `max_consecutive_failures`. Either way the dispatcher writes no audit
   verdict, so a missing verdict is never a pass.
 
@@ -2202,26 +2197,6 @@ Security reviewer invocation by provider:
   read and `git diff`/`git show`/`git log` tools, edit tools denied, and
   `--json-schema` structured output. The prompt asks for Claude Code's
   built-in security review restricted to the given range.
-- `gemini`: `gemini -p "/security:analyze ..."` in `--approval-mode plan`
-  with `--sandbox`, so it needs Docker or Podman like the Gemini roles. Plan
-  mode is not enough by itself: headless Gemini CLI auto-approves
-  `exit_plan_mode` and then continues in YOLO mode. When Gemini is the
-  security reviewer, `run` refuses to start when no sandbox runtime is found,
-  instead of failing at the first audit.
-  The target repository's Gemini CLI must have the security extension
-  installed:
-
-  ```bash
-  gemini extensions install https://github.com/gemini-cli-extensions/security
-  ```
-
-  The dispatcher checks `gemini extensions list` at startup and again before
-  each review, and fails closed with `security_extension_missing:` when the
-  extension is absent or listed as disabled for the repository (a cross
-  marker, or `Enabled (Workspace): false`). Enable a disabled extension with
-  `gemini extensions enable gemini-cli-security`. The extension
-  documents its analyze command as interactive-first, so headless results
-  depend on the installed extension version.
 - `codex`: when `codex-security` is on `PATH` and `scope_sha` is the
   checked-out `HEAD`, the dispatcher runs `codex-security scan . --diff <base>
   --json`. Otherwise it runs `codex exec --sandbox read-only --json

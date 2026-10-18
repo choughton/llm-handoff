@@ -348,7 +348,7 @@ def test_audit_config_loads_from_yaml(tmp_path: Path) -> None:
     (tmp_path / "dispatch_config.yaml").write_text(
         """audit:
   reviewers: [quality, security]
-  security_provider: gemini
+  security_provider: codex
   block_severity: medium
   review_timeout_ms: 1234
 """,
@@ -358,7 +358,7 @@ def test_audit_config_loads_from_yaml(tmp_path: Path) -> None:
     loaded = load_dispatch_config(repo_root=tmp_path)
 
     assert loaded.audit.reviewers == ("quality", "security")
-    assert loaded.audit.security_provider == "gemini"
+    assert loaded.audit.security_provider == "codex"
     assert loaded.audit.block_severity == "medium"
     assert loaded.audit.review_timeout_ms == 1234
     assert loaded.audit.security_enabled is True
@@ -589,13 +589,10 @@ _PROVIDER_CLI_STEMS = {
     "claude": "claude",
     "codex": "codex",
     "antigravity": "agy",
-    "gemini": "gemini",
 }
 
 
-@pytest.mark.parametrize(
-    "security_provider", ["claude", "codex", "antigravity", "gemini"]
-)
+@pytest.mark.parametrize("security_provider", ["claude", "codex", "antigravity"])
 def test_startup_check_fails_when_the_configured_reviewer_cli_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -998,7 +995,7 @@ def test_describe_security_reviewer_model_falls_back_to_the_default(
     assert _claude_plan_model(config, tmp_path) == config_module.CLAUDE_MODEL
 
 
-@pytest.mark.parametrize("provider", ["gemini", "codex"])
+@pytest.mark.parametrize("provider", ["codex"])
 def test_describe_security_reviewer_model_for_non_claude_provider(
     tmp_path: Path,
     provider: str,
@@ -1062,34 +1059,6 @@ def test_describe_security_reviewer_model_does_no_path_lookup(
     monkeypatch.setattr(audit_review, "_reviewer_cli_available", fail_available)
 
     audit_review.describe_security_reviewer_model(_security_model_config(tmp_path))
-
-
-def test_gemini_security_command_uses_extension_in_plan_mode(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GOOGLE_API_KEY", "secret")
-    config = _fan_out_config(tmp_path, security_provider="gemini")
-    scope = _scope(tmp_path)
-
-    plan = audit_review.build_security_reviewer_plan(
-        config,
-        provider="gemini",
-        scope=scope,
-        handoff_display="docs/handoff/HANDOFF.md",
-        log_dir=tmp_path,
-    )
-
-    command = list(plan.command)
-    assert plan.kind == "gemini"
-    assert command[0] == config_module.GEMINI_BINARY
-    assert command[command.index("--approval-mode") + 1] == "plan"
-    assert "--yolo" not in command
-    assert command[-2] == "-p"
-    assert command[-1].startswith("/security:analyze ")
-    assert scope.base_sha in command[-1] and scope.head_sha in command[-1]
-    assert plan.precheck_command == (config_module.GEMINI_BINARY, "extensions", "list")
-    assert plan.env is not None and "GOOGLE_API_KEY" not in plan.env
 
 
 def test_codex_prefers_codex_security_cli_when_on_path(
@@ -2120,69 +2089,6 @@ def test_fan_out_fails_closed_on_malformed_quality_output(
     assert "quality_verdict_malformed:" in result.stderr
 
 
-def test_fan_out_fails_closed_when_gemini_extension_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repo, base, _head, handoff = _fan_out_repo(tmp_path)
-    commands: list[list[str]] = []
-
-    def fake_runner(_name: str, command: list[str], **_kwargs: Any) -> _ProcessResult:
-        commands.append(command)
-        return _process("No extensions installed.")
-
-    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_runner)
-
-    result, _log = _run_fan_out(
-        _fan_out_config(repo, security_provider="gemini"),
-        handoff,
-        quality_stdout=json.dumps(_quality_payload()),
-        base_sha=base,
-    )
-
-    assert result.exit_code == 1
-    assert "security_extension_missing:" in result.stderr
-    assert (
-        "gemini extensions install https://github.com/gemini-cli-extensions/security"
-        in (result.stderr)
-    )
-    assert commands == [[config_module.GEMINI_BINARY, "extensions", "list"]]
-    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
-        encoding="utf-8"
-    ) == handoff
-
-
-def test_fan_out_runs_gemini_review_when_extension_installed(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repo, base, _head, handoff = _fan_out_repo(tmp_path)
-    commands: list[list[str]] = []
-
-    def fake_runner(_name: str, command: list[str], **_kwargs: Any) -> _ProcessResult:
-        commands.append(command)
-        if command[1:] == ["extensions", "list"]:
-            return _process("gemini-cli-security (0.5.0)\n")
-        return _process(
-            "Report follows.\n"
-            + json.dumps(_security_payload(findings=[_finding("medium")]))
-        )
-
-    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_runner)
-
-    result, _log = _run_fan_out(
-        _fan_out_config(repo, security_provider="gemini", block_severity="medium"),
-        handoff,
-        quality_stdout=json.dumps(_quality_payload()),
-        base_sha=base,
-    )
-
-    assert result.exit_code == 0, result.stderr
-    assert len(commands) == 2
-    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
-    assert "status: verified_fail" in written
-
-
 def test_fan_out_reads_codex_exec_last_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2631,52 +2537,6 @@ def test_start_failure_message_truncates_stderr_and_marks_empty() -> None:
     )
 
 
-def test_security_reviewer_preflight_error_is_a_start_failure(
-    tmp_path: Path,
-) -> None:
-    handoff_path = _write_handoff(tmp_path, "handoff\n")
-    plan = audit_review.SecurityReviewerPlan(
-        provider="gemini",
-        kind="gemini",
-        command=(config_module.GEMINI_BINARY,),
-        preflight_error="security_reviewer_failed: no sandbox runtime for Gemini CLI.",
-    )
-
-    outcome = audit_review._run_security_reviewer(
-        plan,
-        timeout_ms=1000,
-        repo_root=tmp_path,
-        handoff_path=handoff_path,
-        log=None,
-    )
-
-    assert outcome.run.start_failure == "preflight"
-    assert outcome.run.error == plan.preflight_error
-
-
-def test_gemini_extension_missing_is_a_start_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repo, base, _head, handoff = _fan_out_repo(tmp_path)
-    monkeypatch.setattr(
-        audit_review,
-        "_run_logged_agent_command",
-        lambda _name, _command, **_kwargs: _process("No extensions installed."),
-    )
-
-    result, log = _run_fan_out(
-        _fan_out_config(repo, security_provider="gemini"),
-        handoff,
-        quality_stdout=json.dumps(_quality_payload()),
-        base_sha=base,
-    )
-
-    assert result.exit_code == 1
-    assert result.stop_loop is True
-    assert "could not start (preflight)" in log.text()
-
-
 def test_security_reviewer_timeout_does_not_stop_the_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2700,49 +2560,6 @@ def test_security_reviewer_timeout_does_not_stop_the_loop(
     assert result.exit_code == 1
     assert result.stop_loop is False
     assert "audit_reviewer_start_failed" not in log.text()
-    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
-        encoding="utf-8"
-    ) == handoff
-
-
-@pytest.mark.parametrize(
-    ("precheck_stderr", "expected_stop", "expected_start_failure"),
-    [
-        ("Process timed out after 5 seconds.", False, None),
-        ("429 Too Many Requests: rate limit exceeded", False, None),
-        ("[WinError 2] The system cannot find the file specified", True, "launch"),
-    ],
-)
-def test_gemini_extension_check_failure_stops_only_on_start_errors(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    precheck_stderr: str,
-    expected_stop: bool,
-    expected_start_failure: str | None,
-) -> None:
-    repo, base, _head, handoff = _fan_out_repo(tmp_path)
-    monkeypatch.setattr(
-        audit_review,
-        "_run_logged_agent_command",
-        lambda _name, _command, **_kwargs: _process(
-            "", exit_code=1, stderr=precheck_stderr
-        ),
-    )
-
-    result, log = _run_fan_out(
-        _fan_out_config(repo, security_provider="gemini"),
-        handoff,
-        quality_stdout=json.dumps(_quality_payload()),
-        base_sha=base,
-    )
-
-    assert result.exit_code == 1
-    assert result.stop_loop is expected_stop
-    text = log.text()
-    if expected_start_failure is None:
-        assert "audit_reviewer_start_failed" not in text
-    else:
-        assert f"could not start ({expected_start_failure})" in text
     assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
         encoding="utf-8"
     ) == handoff
@@ -2781,8 +2598,8 @@ class _ProviderPopenRecorder:
     """Record the environment each provider CLI launch actually receives.
 
     Git runs for real. Every other command is replaced by a Python child that
-    prints the Gemini security extension name, so the Gemini precheck passes
-    and the reviewer launch itself is reached.
+    prints a placeholder line, so the reviewer launch is recorded without
+    running a real provider CLI.
     """
 
     def __init__(self) -> None:
@@ -2800,7 +2617,7 @@ class _ProviderPopenRecorder:
                 (command, dict(os.environ) if env is None else dict(env))
             )
         return self.real_popen(
-            [sys.executable, "-c", "print('gemini-cli-security')"],
+            [sys.executable, "-c", "print('reviewer-stub')"],
             *popen_args,
             **kwargs,
         )
@@ -2810,7 +2627,7 @@ class _ProviderPopenRecorder:
 
 
 def _launched_cli_stem(command: list[str]) -> str:
-    """Name the CLI a recorded launch ran, e.g. ``codex`` or ``gemini``.
+    """Name the CLI a recorded launch ran, e.g. ``codex`` or ``claude``.
 
     On Windows an npm-installed CLI is launched as ``node <entry>.js ...``
     (see ``agent_process._resolve_command_argv``), so the CLI name is the
@@ -2858,7 +2675,7 @@ def _binary_stem(provider: str) -> str:
         ("claude", "codex", False),
         ("claude", "codex", True),
         ("codex", "claude", False),
-        ("gemini", "gemini", False),
+        ("claude", "antigravity", False),
     ],
 )
 def test_no_reviewer_subprocess_receives_unrelated_secrets(
@@ -2907,276 +2724,15 @@ def test_no_reviewer_subprocess_receives_unrelated_secrets(
 
 
 # --------------------------------------------------------------------------
-# Gemini reviewer startup check
+# Security reviewer startup check
 # --------------------------------------------------------------------------
 
 
-def _no_gemini_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        audit_review.gemini_provider,
-        "detect_gemini_sandbox_runtime",
-        lambda: None,
-    )
-
-
-def _agents_without_gemini() -> dict[str, Any]:
-    return _default_agents(
-        planner={"provider": "codex"},
-        frontend={"provider": "codex"},
-    )
-
-
-def test_run_loop_refuses_to_start_when_gemini_reviewer_has_no_sandbox(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _no_gemini_sandbox(monkeypatch)
-    config = _fan_out_config(
-        tmp_path,
-        security_provider="gemini",
-        agents=_agents_without_gemini(),
-    )
-    log = _Recorder()
-
-    exit_code = orchestrator.run_loop(config, max_cycles=1, log=log)
-
-    assert exit_code == 1
-    errors = [message for level, message in log.messages if level == "ERROR"]
-    assert len(errors) == 1
-    assert errors[0].startswith("security_reviewer_failed:")
-    assert "audit.security_provider" in errors[0]
-    assert "unsafe_bypass" not in errors[0]
-
-
-def _gemini_extensions_list(
-    monkeypatch: pytest.MonkeyPatch,
-    stdout: str,
-    exit_code: int = 0,
-) -> list[list[str]]:
-    calls: list[list[str]] = []
-
-    def fake_run(_agent_name: str, command: list[str], **_kwargs: Any) -> _ProcessResult:
-        calls.append(command)
-        return _process(stdout, exit_code=exit_code)
-
-    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_run)
-    return calls
-
-
-def test_startup_check_follows_gemini_role_unsafe_bypass(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _no_gemini_sandbox(monkeypatch)
-    calls = _gemini_extensions_list(
-        monkeypatch, f"{audit_review.GEMINI_SECURITY_EXTENSION_NAME} (0.3.0)\n"
-    )
-    config = _fan_out_config(
-        tmp_path,
-        security_provider="gemini",
-        agents=_default_agents(
-            planner={"provider": "gemini", "unsafe_bypass": True},
-            frontend={"provider": "codex"},
-        ),
-    )
-
-    assert audit_review.security_reviewer_startup_error(config) is None
-    assert [command[1:] for command in calls] == [["extensions", "list"]]
-
-
-@pytest.mark.parametrize(
-    ("stdout", "exit_code"),
-    [("some-other-extension (1.0.0)\n", 0), ("", 1)],
-)
-def test_startup_check_fails_when_gemini_security_extension_is_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    stdout: str,
-    exit_code: int,
-) -> None:
-    _gemini_extensions_list(monkeypatch, stdout, exit_code=exit_code)
-    config = _fan_out_config(tmp_path, security_provider="gemini")
-
-    error = audit_review.security_reviewer_startup_error(config)
-
-    assert error is not None
-    assert error.startswith("security_reviewer_failed:")
-    assert "security_extension_missing" in error
-    assert audit_review.GEMINI_SECURITY_EXTENSION_URL in error
-
-
-_GEMINI_EXTENSION_ENTRY = (
-    "{marker} gemini-cli-security (0.3.0)\n"
-    " Path: /home/user/.gemini/extensions/gemini-cli-security\n"
-    " Source: https://github.com/gemini-cli-extensions/security (Type: git)\n"
-    " Enabled (User): {user}\n"
-    " Enabled (Workspace): {workspace}\n"
-)
-
-
-@pytest.mark.parametrize(
-    ("stdout", "expected"),
-    [
-        ("gemini-cli-security (0.3.0)\n", "active"),
-        (
-            _GEMINI_EXTENSION_ENTRY.format(
-                marker="✓", user="true", workspace="true"
-            ),
-            "active",
-        ),
-        (
-            _GEMINI_EXTENSION_ENTRY.format(
-                marker="✓", user="false", workspace="true"
-            ),
-            "active",
-        ),
-        (
-            "\x1b[32m✓\x1b[39m gemini-cli-security (0.3.0)\n"
-            " Enabled (Workspace): true\n",
-            "active",
-        ),
-        (
-            _GEMINI_EXTENSION_ENTRY.format(
-                marker="✗", user="false", workspace="false"
-            ),
-            "inactive",
-        ),
-        (
-            _GEMINI_EXTENSION_ENTRY.format(
-                marker="✓", user="true", workspace="false"
-            ),
-            "inactive",
-        ),
-        ("gemini-cli-security (0.3.0)\n Enabled: false\n", "inactive"),
-        ("✗ gemini-cli-security (0.3.0)\n", "inactive"),
-        (
-            "✓ other-extension (1.0.0)\n"
-            " Path: /home/user/.gemini/extensions/gemini-cli-security\n"
-            " Enabled (Workspace): true\n",
-            "missing",
-        ),
-        ("✓ gemini-cli-security-fork (1.0.0)\n", "missing"),
-        ("No extensions installed.\n", "missing"),
-        ("", "missing"),
-    ],
-)
-def test_gemini_extension_state_parses_the_matching_entry(
-    stdout: str,
-    expected: str,
-) -> None:
-    assert audit_review.gemini_extension_state(stdout) == expected
-
-
-def test_gemini_extension_state_reads_only_the_matching_entry() -> None:
-    stdout = (
-        _GEMINI_EXTENSION_ENTRY.format(marker="✓", user="true", workspace="true")
-        + "\n"
-        + "✗ other-extension (1.0.0)\n"
-        + " Enabled (User): false\n"
-        + " Enabled (Workspace): false\n"
-    )
-
-    assert audit_review.gemini_extension_state(stdout) == "active"
-
-
-def test_startup_check_fails_when_gemini_security_extension_is_disabled(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _gemini_extensions_list(
-        monkeypatch,
-        _GEMINI_EXTENSION_ENTRY.format(
-            marker="✗", user="false", workspace="false"
-        ),
-    )
-    config = _fan_out_config(tmp_path, security_provider="gemini")
-
-    error = audit_review.security_reviewer_startup_error(config)
-
-    assert error is not None
-    assert error.startswith("security_reviewer_failed:")
-    assert "security_extension_missing" in error
-    assert "installed but disabled" in error
-    assert "gemini extensions enable gemini-cli-security" in error
-
-
-def test_fan_out_fails_closed_when_gemini_extension_disabled(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repo, base, _head, handoff = _fan_out_repo(tmp_path)
-    commands: list[list[str]] = []
-
-    def fake_runner(_name: str, command: list[str], **_kwargs: Any) -> _ProcessResult:
-        commands.append(command)
-        return _process(
-            _GEMINI_EXTENSION_ENTRY.format(
-                marker="✓", user="true", workspace="false"
-            )
-        )
-
-    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_runner)
-
-    result, _log = _run_fan_out(
-        _fan_out_config(repo, security_provider="gemini"),
-        handoff,
-        quality_stdout=json.dumps(_quality_payload()),
-        base_sha=base,
-    )
-
-    assert result.exit_code == 1
-    assert "security_extension_missing:" in result.stderr
-    assert "installed but disabled" in result.stderr
-    assert commands == [[config_module.GEMINI_BINARY, "extensions", "list"]]
-    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
-        encoding="utf-8"
-    ) == handoff
-
-
-def test_run_loop_refuses_to_start_when_gemini_security_extension_is_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _gemini_extensions_list(monkeypatch, "")
-    config = _fan_out_config(
-        tmp_path,
-        security_provider="gemini",
-        agents=_agents_without_gemini(),
-    )
-    log = _Recorder()
-
-    exit_code = orchestrator.run_loop(config, max_cycles=1, log=log)
-
-    assert exit_code == 1
-    errors = [message for level, message in log.messages if level == "ERROR"]
-    assert len(errors) == 1
-    assert "security_extension_missing" in errors[0]
-
-
-def test_startup_check_names_gemini_role_bypass(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _no_gemini_sandbox(monkeypatch)
-    config = _fan_out_config(
-        tmp_path,
-        security_provider="gemini",
-        agents=_default_agents(planner={"provider": "gemini"}),
-    )
-
-    error = audit_review.security_reviewer_startup_error(config)
-
-    assert error is not None
-    assert "agents.planner.unsafe_bypass: true" in error
-
-
 @pytest.mark.parametrize("security_provider", [None, "claude", "codex"])
-def test_startup_check_skips_non_gemini_security_reviewers(
+def test_startup_check_passes_for_available_security_reviewers(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     security_provider: str | None,
 ) -> None:
-    _no_gemini_sandbox(monkeypatch)
     config = _fan_out_config(tmp_path, security_provider=security_provider)
 
     assert audit_review.security_reviewer_startup_error(config) is None
@@ -3186,11 +2742,10 @@ def test_startup_check_is_off_when_security_review_is_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _no_gemini_sandbox(monkeypatch)
     _installed_clis(monkeypatch)
     config = DispatchConfig(
         repo_root=tmp_path,
-        audit={**QUALITY_ONLY_AUDIT, "security_provider": "gemini"},
+        audit={**QUALITY_ONLY_AUDIT, "security_provider": "codex"},
     )
 
     assert audit_review.security_reviewer_startup_error(config) is None

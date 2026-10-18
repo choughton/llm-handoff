@@ -286,15 +286,21 @@ def test_load_dispatch_config_accepts_antigravity_security_provider(
     assert loaded.audit.security_provider == "antigravity"
 
 
-def test_load_dispatch_config_still_accepts_explicit_gemini_security_provider(
+def test_load_dispatch_config_rejects_removed_gemini_security_provider(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "dispatch_config.yaml"
     config_path.write_text("audit:\n  security_provider: gemini\n", encoding="utf-8")
 
-    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    with pytest.raises(ValueError) as error:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
-    assert loaded.audit.security_provider == "gemini"
+    assert (
+        "The gemini provider was removed: Gemini CLI no longer serves personal "
+        "Google accounts. Use security_provider: antigravity (the agy CLI)."
+    ) in str(error.value)
+    assert config_module.GEMINI_SECURITY_PROVIDER_REMOVED_MESSAGE in str(error.value)
+    assert "Input should be" not in str(error.value)
 
 
 def test_load_dispatch_config_rejects_unknown_security_provider(
@@ -361,7 +367,7 @@ def test_load_dispatch_config_rejects_security_model_without_security_reviewer(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
-@pytest.mark.parametrize("provider", ["gemini", "codex", "antigravity"])
+@pytest.mark.parametrize("provider", ["codex", "antigravity"])
 def test_load_dispatch_config_rejects_security_model_for_non_claude_provider(
     tmp_path: Path,
     provider: str,

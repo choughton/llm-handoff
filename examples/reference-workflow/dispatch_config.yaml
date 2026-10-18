@@ -129,7 +129,7 @@ normalizer:
 # Every dispatcher start and `llm-handoff doctor` warn with that reason.
 audit:
   reviewers: [quality, security]
-  # security_provider: claude   # claude | codex | antigravity | gemini; unset = auto
+  # security_provider: claude   # claude | codex | antigravity; unset = auto
   # security_model: <model>   # claude reviewer only; unset = borrow the first claude role's model
   block_severity: high          # critical | high | medium | low
   review_timeout_ms: 900000

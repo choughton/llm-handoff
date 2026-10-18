@@ -291,7 +291,7 @@ _ANTIGRAVITY_AGENTS_BLOCK = """agents:
 
 """
 _REFERENCE_SECURITY_PROVIDER_LINE = (
-    "  # security_provider: claude   # claude | codex | antigravity | gemini; "
+    "  # security_provider: claude   # claude | codex | antigravity; "
     "unset = auto\n"
 )
 _CLAUDE_SECURITY_PROVIDER_LINE = (
