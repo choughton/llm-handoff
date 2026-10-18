@@ -88,7 +88,8 @@ old provider. Keep the strings that belong to `agy` itself: its model ids
 (`gemini-3.8-flash-low`, ...), its settings path
 `~/.gemini/antigravity-cli/settings.json`, and its `GEMINI.md` rules file.
 
-`agy` facts checked live on 2026-10-17 (agy 1.3.5, Windows, signed in):
+`agy` facts checked live on 2026-10-17 (Windows, signed in; `agy` updated
+itself from 1.3.5 to 1.4.2 during the checks):
 
 - Without an agent tools list, print mode offers about 55 tools, including
   file writes, `run_command`, browser control, MCP calls, and subagents.
@@ -105,6 +106,16 @@ old provider. Keep the strings that belong to `agy` itself: its model ids
   (`{"normalized": "backend"}`, one turn, about 8 seconds), and an injected
   `run_command` request did not run. `tools: []` also removes `finish`, and
   `--json-schema` then yields no `structured_output`.
+- `agy` reads none of the Gemini CLI workspace files. An agent that exists
+  only under `.gemini/agents/` fails `--agent` with `unknown agent` (the
+  error lists only `.agents/agents/` agents). A file named in
+  `.geminiignore` was listed and read, and a `.gemini/policies/` deny rule
+  for `view_file` had no effect. The `agy` binary contains none of the
+  strings `geminiignore`, `.gemini/agents`, `.gemini/policies`, or
+  `.gemini/settings`; it does contain `AGENTS.md`, `GEMINI.md`,
+  `.agents/rules`, and `.agents/agents`. It has no `agentignore` string and
+  does contain `.gitignore` (not tested). `.geminiignore` is what kept `.env`,
+  `logs/`, and `.git` out of Gemini CLI's reach; `agy` roles never had it.
 
 - GEM-1: `antigravity` normalizer. Add `antigravity` to the normalizer
   providers. Each call runs `agy -p` from a private temp directory that holds
@@ -162,7 +173,10 @@ old provider. Keep the strings that belong to `agy` itself: its model ids
   large for one Work Packet.
 - GEM-5: Remove the shipped Gemini files and docs. Delete `.gemini/agents/`,
   `.gemini/policies/`, and their copies under `examples/reference-workflow/`.
-  Delete both `.geminiignore` files unless `agy` reads them (check its docs).
+  Delete both `.geminiignore` files; `agy` does not read them (see the facts
+  above), so nothing changes for `agy` roles. Check whether `agy` honors
+  `.gitignore`, and say in `SECURITY.md` which of those paths `agy` roles
+  can read.
   `init` stops writing these into target repositories and leaves existing
   copies alone. Drop `.gemini/agents/` from the supervisor repair allowlist
   (`llm_handoff/supervisor.py`). Rewrite `README.md`, `CONFIGURATION.md`,
