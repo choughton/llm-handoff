@@ -71,7 +71,9 @@ Rules:
   `verified_fail`, `blocked_missing_context`,
   `blocked_implementation_failure`, or `escalate_to_user`.
 - Completion-class statuses require a `## Verification Evidence` block with
-  commands, output summary, commit SHA, files, and unresolved concerns.
+  commands, output summary, commit SHA, files, and unresolved concerns. The
+  finalizer's `verified_pass` epic-close handoff is exempt: it carries the
+  auditor's approval forward and verifies no commit itself.
 
 ## Git Discipline
 
