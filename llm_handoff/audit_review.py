@@ -53,7 +53,7 @@ from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
 from llm_handoff.config import AgentConfig, AgentRole, DispatchConfig
 from llm_handoff.failover import classify_fatal_failure
 from llm_handoff.roles import normalize_agent_label
-from llm_handoff.router import HandoffRouting
+from llm_handoff.router import HandoffRouting, parse_handoff_frontmatter_text
 from llm_handoff.text_io import read_dispatch_text
 from llm_handoff.work_claim import extract_work_packet_section
 
@@ -235,6 +235,13 @@ CODEX_QUALITY_ENVELOPE_SUFFIX = (
     "summary fields: set status to the verdict and put the entire verdict JSON "
     "object, serialized as a string, in summary."
 )
+QUALITY_LINEAR_MODE_SUFFIX = (
+    " Do not post Linear comments or change Linear issue state: the "
+    "dispatcher runs a separate Linear evidence step after both verdicts."
+)
+# Linear MCP write tools the fan-out quality reviewer must not get; the
+# post-verdict evidence step posts the audit evidence instead.
+_LINEAR_WRITE_TOOLS: tuple[str, ...] = ("save_comment", "save_issue")
 
 
 class ReviewFinding(BaseModel):
@@ -474,8 +481,10 @@ def run_audit_fan_out(
     frontmatter: HandoffRouting | None,
     quality_invoker: QualityInvoker,
     log: LogFn,
+    linear_evidence_invoker: QualityInvoker | None = None,
 ) -> DispatchResult:
     start_time = time.monotonic()
+    linear_mode = config.tracker.provider == "linear"
     handoff_path = config.handoff_full_path
     handoff_display = config.handoff_path.as_posix()
     before_sha = _content_sha(context.handoff_content)
@@ -539,6 +548,7 @@ def run_audit_fan_out(
         scope,
         handoff_display=handoff_display,
         provider=quality_provider,
+        linear_mode=linear_mode,
     )
     quality_agent_config = _quality_reviewer_agent_config(config)
     security_plan = build_security_reviewer_plan(
@@ -644,6 +654,23 @@ def run_audit_fan_out(
         block_severity=config.audit.block_severity,
         source_handoff=context.handoff_content,
     )
+    if linear_mode:
+        # The Linear evidence step runs only after both verdicts merged and
+        # the audit handoff is rendered; HANDOFF.md is written only after it
+        # verifies, so a failed step never routes the story onward.
+        evidence_failure = _run_linear_evidence_step(
+            config,
+            invoker=linear_evidence_invoker,
+            handoff_text=handoff_text,
+            decision=decision,
+            quality=quality_verdict,
+            log_dir=log_dir,
+            source_handoff=context.handoff_content,
+            start_time=start_time,
+            log=log,
+        )
+        if evidence_failure is not None:
+            return evidence_failure
     handoff_path.write_text(handoff_text, encoding="utf-8")
     if decision.blocked:
         _log(
@@ -826,6 +853,7 @@ def build_quality_fan_out_prompt(
     *,
     handoff_display: str,
     provider: str,
+    linear_mode: bool = False,
 ) -> str:
     prompt = QUALITY_FAN_OUT_PROMPT_TEMPLATE.format(
         handoff_path=handoff_display,
@@ -835,6 +863,8 @@ def build_quality_fan_out_prompt(
         diff_path=scope.diff_path.as_posix(),
         shape_hint=QUALITY_VERDICT_SHAPE_HINT,
     )
+    if linear_mode:
+        prompt += QUALITY_LINEAR_MODE_SUFFIX
     if provider == "codex":
         prompt += CODEX_QUALITY_ENVELOPE_SUFFIX
     return prompt
@@ -1324,7 +1354,36 @@ def _quality_reviewer_agent_config(config: DispatchConfig) -> AgentConfig:
         fallback = fallback.model_copy(update=review_timeout)
     else:
         fallback = None
-    return auditor.model_copy(update={**review_timeout, "fallback": fallback})
+    quality = auditor.model_copy(update={**review_timeout, "fallback": fallback})
+    if config.tracker.provider != "linear" or config.tracker.mcp_server is None:
+        return quality
+    # Linear mode: the quality reviewer keeps the Linear read tools but not
+    # save_comment or save_issue, so it cannot post before the security
+    # verdict exists. The evidence step posts after both verdicts merge.
+    blocked = {
+        f"mcp__{config.tracker.mcp_server}__{tool}" for tool in _LINEAR_WRITE_TOOLS
+    }
+    if quality.fallback is not None:
+        quality = _copy_agent_config(
+            quality,
+            {"fallback": _without_tools(quality.fallback, blocked)},
+        )
+    return _without_tools(quality, blocked)
+
+
+def _without_tools(agent: AgentConfig, blocked: set[str]) -> AgentConfig:
+    if agent.allowed_tools is None:
+        return agent
+    kept = tuple(tool for tool in agent.allowed_tools if tool not in blocked)
+    return _copy_agent_config(agent, {"allowed_tools": kept})
+
+
+def _copy_agent_config(agent: AgentConfig, update: dict[str, object]) -> AgentConfig:
+    # Keep the private tracker.claude_mcp_config path across the copy.
+    mcp_config_path = agent.claude_mcp_config_path
+    copied = agent.model_copy(update=update)
+    copied._claude_mcp_config = mcp_config_path
+    return copied
 
 
 def _run_quality_reviewer(
@@ -1367,6 +1426,220 @@ def _run_quality_reviewer(
         ),
         handoff_sha_after=after_sha,
     )
+
+
+LINEAR_EVIDENCE_HANDOFF_FILENAME = "audit-handoff.md"
+LINEAR_EVIDENCE_LOG_FILENAME = "linear-evidence.log"
+
+
+def _run_linear_evidence_step(
+    config: DispatchConfig,
+    *,
+    invoker: QualityInvoker | None,
+    handoff_text: str,
+    decision: MergeDecision,
+    quality: QualityReviewVerdict,
+    log_dir: Path,
+    source_handoff: str,
+    start_time: float,
+    log: LogFn,
+) -> DispatchResult | None:
+    """Run the post-verdict Linear evidence dispatch; None when it verified.
+
+    Any failure returns a stop-loop ``DispatchResult``: ``HANDOFF.md`` keeps
+    its pre-fan-out content and the rendered audit handoff is saved to
+    ``<log_dir>/audit-handoff.md`` instead.
+    """
+
+    # Imported here: audit_linear_evidence imports this module's types.
+    from llm_handoff import audit_linear_evidence as evidence
+
+    handoff_path = config.handoff_full_path
+    handoff_display = config.handoff_path.as_posix()
+    rendered = parse_handoff_frontmatter_text(handoff_text)
+    tracker_issue = (rendered.tracker_issue or "").strip() if rendered else ""
+
+    def fail(cause: str, stdout: str = "", stderr: str = "") -> DispatchResult:
+        return _linear_evidence_failure(
+            cause,
+            handoff_path=handoff_path,
+            handoff_display=handoff_display,
+            handoff_text=handoff_text,
+            source_handoff=source_handoff,
+            log_dir=log_dir,
+            stdout=stdout,
+            stderr=stderr,
+            start_time=start_time,
+            log=log,
+        )
+
+    if rendered is None or not tracker_issue:
+        return fail(
+            "the handoff has no tracker_issue, so the evidence step has no "
+            "leased issue to post on"
+        )
+    if invoker is None:
+        return fail("no Linear evidence invoker was configured")
+
+    outcome = evidence.expected_linear_outcome(rendered)
+    agent_config = evidence.linear_evidence_agent_config(config)
+    prompt = evidence.build_linear_evidence_prompt(
+        config.tracker,
+        decision=decision,
+        rendered=rendered,
+        quality=quality,
+        unresolved_concerns=_unresolved_text(quality, decision),
+        provider=agent_config.provider,
+        handoff_display=handoff_display,
+    )
+    _log(
+        log,
+        "DISPATCH",
+        f"Dispatching the Linear evidence step ({agent_config.provider}) for "
+        f"{tracker_issue}: expected outcome `{outcome.event}`.",
+    )
+    handoff_before = _safe_handoff_sha(handoff_path)
+    head_before = _git_rev_parse(config.repo_root, "HEAD")
+    status_before = _git_stdout(config.repo_root, ["git", "status", "--porcelain"])
+    snapshot_before = _worktree_snapshot(config.repo_root)
+    try:
+        result = invoker(prompt, agent_config)
+    except Exception as exc:  # noqa: BLE001 - fail closed on any error
+        return fail(f"the evidence dispatch raised {exc!r}", stderr=str(exc))
+    stdout, stderr = result.stdout, result.stderr
+    handoff_after = _safe_handoff_sha(handoff_path)
+    head_after = _git_rev_parse(config.repo_root, "HEAD")
+    status_after = _git_stdout(config.repo_root, ["git", "status", "--porcelain"])
+    snapshot_after = _worktree_snapshot(config.repo_root)
+
+    if result.exit_code != 0:
+        return fail(
+            f"the evidence dispatch exited with code {result.exit_code}",
+            stdout,
+            stderr,
+        )
+    if handoff_after != handoff_before:
+        return fail(
+            f"the evidence dispatch changed {handoff_display}", stdout, stderr
+        )
+    if head_before is None or head_after != head_before:
+        return fail(
+            "git HEAD changed during the evidence dispatch "
+            f"({head_before or 'unknown'} -> {head_after or 'unknown'})",
+            stdout,
+            stderr,
+        )
+    if status_before is None or status_after != status_before:
+        return fail(
+            "`git status --porcelain` output changed during the evidence "
+            "dispatch",
+            stdout,
+            stderr,
+        )
+    if snapshot_before is None or snapshot_after != snapshot_before:
+        return fail(
+            "repository file contents changed during the evidence dispatch "
+            "(index, modified, untracked, or ignored files)",
+            stdout,
+            stderr,
+        )
+    try:
+        parsed = evidence.parse_linear_evidence_result(stdout)
+    except ValueError as exc:
+        return fail(
+            f"malformed evidence result: {_single_line(str(exc))}", stdout, stderr
+        )
+    mismatch = evidence.check_linear_evidence_result(
+        parsed,
+        tracker_issue=tracker_issue,
+        expected_event=outcome.event,
+    )
+    if mismatch is not None:
+        return fail(mismatch, stdout, stderr)
+    _write_linear_evidence_log(log_dir / LINEAR_EVIDENCE_LOG_FILENAME, stdout, stderr)
+    _log(
+        log,
+        "AGENT",
+        f"Linear evidence posted on {tracker_issue}: events "
+        f"{', '.join(parsed.events)}; state_to {parsed.state_to or 'unchanged'}.",
+    )
+    return None
+
+
+def _linear_evidence_failure(
+    cause: str,
+    *,
+    handoff_path: Path,
+    handoff_display: str,
+    handoff_text: str,
+    source_handoff: str,
+    log_dir: Path,
+    stdout: str,
+    stderr: str,
+    start_time: float,
+    log: LogFn,
+) -> DispatchResult:
+    restore_text = ""
+    if _safe_handoff_sha(handoff_path) != _content_sha(source_handoff):
+        # An unrestricted evidence agent may have deleted or renamed the
+        # handoff's parent directory; recreate it, and never let a failed
+        # restoration skip the rest of the fail-closed path.
+        try:
+            handoff_path.parent.mkdir(parents=True, exist_ok=True)
+            handoff_path.write_text(source_handoff, encoding="utf-8")
+        except OSError as exc:
+            restore_text = (
+                f" Restoring {handoff_display} to its pre-fan-out content "
+                f"failed ({exc}); restore it before starting the dispatcher."
+            )
+            _log(log, "ERROR", restore_text.strip())
+        else:
+            _log(
+                log,
+                "ERROR",
+                f"Restored {handoff_display} to its pre-fan-out content after "
+                "the Linear evidence step.",
+            )
+    saved_path = log_dir / LINEAR_EVIDENCE_HANDOFF_FILENAME
+    log_path = log_dir / LINEAR_EVIDENCE_LOG_FILENAME
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    try:
+        saved_path.write_text(handoff_text, encoding="utf-8")
+        saved_text = f"the rendered audit handoff is saved at {saved_path.as_posix()}"
+    except OSError as exc:
+        saved_text = (
+            f"the rendered audit handoff could not be saved to "
+            f"{saved_path.as_posix()} ({exc})"
+        )
+    _write_linear_evidence_log(log_path, stdout, stderr)
+    message = (
+        f"linear_evidence_failed: {cause}; {saved_text}, and the evidence "
+        f"dispatch output is in {log_path.as_posix()}. {handoff_display} was "
+        "not updated. Check the leased issue, then start the dispatcher again."
+        f"{restore_text}"
+    )
+    _log(log, "ERROR", message)
+    return DispatchResult(
+        stdout="",
+        stderr=message,
+        exit_code=1,
+        elapsed_seconds=time.monotonic() - start_time,
+        stop_loop=True,
+        stop_reason=message,
+    )
+
+
+def _write_linear_evidence_log(path: Path, stdout: str, stderr: str) -> None:
+    try:
+        path.write_text(
+            f"== stdout ==\n{stdout}\n== stderr ==\n{stderr}\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        return
 
 
 def _log_claude_json_usage(
@@ -2187,6 +2460,19 @@ def _handoff_sha(handoff_path: Path) -> str:
     return _content_sha(read_dispatch_text(handoff_path))
 
 
+def _safe_handoff_sha(handoff_path: Path) -> str:
+    """Like ``_handoff_sha`` but never raises; unreadable paths get a marker.
+
+    The Linear evidence step uses it, because an unrestricted evidence agent
+    can replace the handoff with a directory or an unreadable file.
+    """
+
+    try:
+        return _handoff_sha(handoff_path)
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"unreadable:{type(exc).__name__}"
+
+
 def _content_sha(content: str) -> str:
     return sha256(content.lstrip("﻿").encode("utf-8")).hexdigest()
 
@@ -2211,6 +2497,96 @@ def _git_stdout(repo_root: Path, command: list[str]) -> str | None:
     if completed.returncode != 0:
         return None
     return completed.stdout.strip()
+
+
+# Paths the dispatcher itself (or the operator, for stop-request) writes while
+# the evidence dispatch runs. They are left out of the worktree snapshot so the
+# dispatcher's own logging does not fail the step.
+_SNAPSHOT_SKIPPED_PREFIXES: tuple[str, ...] = (
+    AUDIT_LOG_DIRECTORY.parent.as_posix() + "/",
+)
+_SNAPSHOT_SKIPPED_NAMES: frozenset[str] = frozenset({".dispatch.lock"})
+_SNAPSHOT_SKIPPED_PARTS: frozenset[str] = frozenset({"__pycache__"})
+
+
+def _git_paths(repo_root: Path, args: list[str]) -> list[str] | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args, "-z"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    text = completed.stdout.decode("utf-8", errors="surrogateescape")
+    return [path for path in text.split("\0") if path]
+
+
+def _snapshot_skips(path: str) -> bool:
+    if path.startswith(_SNAPSHOT_SKIPPED_PREFIXES):
+        return True
+    parts = path.split("/")
+    if parts[-1] in _SNAPSHOT_SKIPPED_NAMES:
+        return True
+    return any(part in _SNAPSHOT_SKIPPED_PARTS for part in parts)
+
+
+def _worktree_snapshot(repo_root: Path) -> str | None:
+    """Fingerprint the working tree beyond what porcelain status shows.
+
+    Covers the index entries, the contents of modified tracked and untracked
+    files, and the size and mtime of ignored files, so an edit to an already
+    modified, untracked, or ignored file changes the fingerprint. Paths the
+    dispatcher writes itself (``logs/dispatch/``, ``.dispatch.lock``,
+    ``__pycache__``) are skipped. Returns None when Git cannot list the files.
+    """
+
+    digest = sha256()
+    try:
+        index = subprocess.run(
+            ["git", "ls-files", "--stage", "-z"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if index.returncode != 0:
+        return None
+    digest.update(b"index\0")
+    digest.update(index.stdout)
+    changed = _git_paths(
+        repo_root, ["ls-files", "--modified", "--others", "--exclude-standard"]
+    )
+    ignored = _git_paths(
+        repo_root, ["ls-files", "--others", "--ignored", "--exclude-standard"]
+    )
+    if changed is None or ignored is None:
+        return None
+    for path in sorted(set(changed)):
+        if _snapshot_skips(path):
+            continue
+        digest.update(b"content\0" + path.encode("utf-8", "surrogateescape") + b"\0")
+        try:
+            digest.update(sha256((repo_root / path).read_bytes()).digest())
+        except FileNotFoundError:
+            digest.update(b"<missing>")
+        except OSError as exc:
+            digest.update(f"<unreadable {exc.errno}>".encode("ascii"))
+    for path in sorted(set(ignored)):
+        if _snapshot_skips(path):
+            continue
+        digest.update(b"ignored\0" + path.encode("utf-8", "surrogateescape") + b"\0")
+        try:
+            stat = (repo_root / path).stat()
+        except OSError:
+            digest.update(b"<missing>")
+            continue
+        digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+    return digest.hexdigest()
 
 
 def _log(log: LogFn | None, level: str, message: str) -> None:

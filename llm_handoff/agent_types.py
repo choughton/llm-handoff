@@ -53,6 +53,9 @@ class DispatchResult:
     # Set when a run failed in a way a retry cannot fix (for example, an
     # audit reviewer CLI that could not start); run_loop stops with exit 1.
     stop_loop: bool = False
+    # Optional message run_loop logs when it stops for stop_loop; without
+    # it, run_loop logs the audit-reviewer start failure message.
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True)

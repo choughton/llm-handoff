@@ -1178,6 +1178,17 @@ Claude roles with `unsafe_bypass: true`, the audit fan-out security reviewer,
 and the next-agent normalizer get no Linear tools. Codex, Gemini, and
 Antigravity roles have no per-role tool list and are unchanged.
 
+With the audit fan-out on (`audit.reviewers` includes `security`, the
+default), the fan-out quality reviewer gets only the auditor's Linear read
+tools (`get_issue`, `list_issues`, `list_comments`); `save_comment` and
+`save_issue` are removed from its `allowed_tools` and its kept fallback, and
+its prompt says not to post Linear comments or change issue state. After
+both verdicts merge, the dispatcher runs one short Linear evidence dispatch
+as the auditor, which posts the `audit_passed`, `audit_failed`, or
+`user_attention_requested` comment and does the state change on the leased
+issue. See [Audit Fan-Out](#audit-fan-out) for how that step is launched and
+checked.
+
 In Linear mode, `llm-handoff doctor` prints `tracker connector` lines, one
 per provider CLI the configured roles and fallbacks launch (in the order
 claude, codex, gemini, antigravity), each ending with `(covers <labels>)`.
@@ -1815,6 +1826,62 @@ With `security` enabled, the auditor route works differently:
   that itself times out or hits a rate limit) count toward
   `max_consecutive_failures`. Either way the dispatcher writes no audit
   verdict, so a missing verdict is never a pass.
+
+In Linear mode (`tracker.provider: linear`) the fan-out adds a post-verdict
+Linear evidence step. With `tracker.provider: none`, or with
+`audit.reviewers: [quality]`, nothing below applies and the auditor route
+behaves as described above. The dispatcher still never calls Linear itself.
+
+- The step runs only after both reviewers returned without an error and the
+  dispatcher rendered the audit handoff. It is one auditor dispatch built
+  from `agents.auditor`, with `audit.review_timeout_ms` as its timeout and
+  only a same-provider fallback kept.
+- Its prompt carries literal values: `tracker_issue`, `tracker_url`, the
+  `scope_sha` as `commit_sha`, the quality reviewer's `commands_run` and
+  `output_summary`, the unresolved concerns, and the configured state and
+  label names. It first posts `user_attention_cleared` when the latest
+  evidence comment is `user_attention_requested` (removing
+  `user_attention_label` and moving the issue from `blocked_state` back to
+  `in_progress_state` when those are set). It then posts the outcome: on
+  `verified_pass`, `audit_passed` and a move to `success_state`; on
+  `verified_fail`, `audit_failed` listing every blocking finding, with the
+  issue left in `in_progress_state`; on a `user` route,
+  `user_attention_requested`, adding `user_attention_label` and moving to
+  `blocked_state` when set. Each comment is posted before its state change,
+  and a retry does not repost an event already present for the same
+  `commit_sha`. The agent must return one JSON object:
+  `{"linear_evidence": "posted", "issue": "<tracker_issue>", "events": [...], "state_to": ...}`.
+- A Claude auditor without `unsafe_bypass` launches with `allowed_tools` set
+  to exactly the auditor's five Linear tools and no built-in tools, so the
+  launch passes `--tools ""`; with `tracker.claude_mcp_config` set it also
+  passes `--mcp-config <path> --strict-mcp-config`. Codex, Gemini,
+  Antigravity, and `unsafe_bypass` auditors cannot be limited at launch: for
+  them the prompt forbids file edits and shell commands, and only the
+  post-checks below detect a repository file change after the fact. The
+  post-checks do not prevent an edit, and they do not cover paths the
+  dispatcher writes itself (`logs/dispatch/`, `.dispatch.lock`, and
+  `__pycache__` folders) or files outside the repository.
+- The dispatcher writes `HANDOFF.md` only after the step verifies. The step
+  fails when the handoff has no `tracker_issue`, the dispatch exits non-zero
+  or raises, no JSON object with a `linear_evidence` key is found,
+  `linear_evidence` is not `posted`, `issue` is not the `tracker_issue`, the
+  last item of `events` is not the expected outcome event, or `HANDOFF.md`,
+  `git rev-parse HEAD`, or the `git status --porcelain` output changed during
+  the dispatch. Because an edit to a file that is already modified, untracked,
+  or ignored leaves the porcelain output unchanged, the step also compares a
+  snapshot taken before and after the dispatch: the Git index entries, the
+  contents of modified tracked and untracked files, and the size and
+  modification time of ignored files. Any difference fails the step.
+- On failure the dispatcher keeps (or restores) the pre-fan-out
+  `HANDOFF.md`, saves the rendered audit handoff to `audit-handoff.md` and
+  the step's stdout and stderr to `linear-evidence.log` in the cycle's audit
+  log folder, logs one `ERROR` line that starts with
+  `linear_evidence_failed:` and names the cause and the saved path, and stops
+  the loop with exit 1. The story is never routed to the planner, the
+  finalizer, or the implementer as if the evidence were posted. Check the
+  leased issue, then start the dispatcher again; the handoff still routes to
+  the auditor. The step's output is also written to `linear-evidence.log`
+  when it succeeds.
 
 Security reviewer invocation by provider:
 

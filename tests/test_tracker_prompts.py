@@ -320,6 +320,17 @@ def test_auditor_clear_step_restores_in_progress_state() -> None:
     assert restore < clear_step.index("before you post `audit_passed`")
 
 
+def test_auditor_section_describes_the_fan_out_evidence_dispatch() -> None:
+    text = " ".join(linear_role_section("auditor").split())
+    fan_out = text.index("Audit fan-out.")
+    assert text.index("User attention.") < fan_out
+    paragraph = text[fan_out:]
+    assert "When `audit.reviewers` includes `security`" in paragraph
+    assert "posts nothing to Linear" in paragraph
+    assert "a separate Linear-only auditor dispatch does the steps" in paragraph
+    assert "After both the quality and security verdicts merge" in paragraph
+
+
 def test_auditor_section_keeps_existing_bullets() -> None:
     text = linear_role_section("auditor")
     for phrase in (
