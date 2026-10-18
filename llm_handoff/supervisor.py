@@ -30,6 +30,7 @@ from llm_handoff.agent_types import SubagentResult
 from llm_handoff.config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_HANDOFF_PATH,
+    AgentConfig,
     AgentRole,
     DispatchConfig,
     detect_repo_root,
@@ -725,7 +726,9 @@ def _run_repair_role(
         config_path=config.config_path_full_path,
         dry_run=False,
     )
-    agent_config = dispatch_config.agents[config.repair_role]
+    agent_config = _supervisor_repair_agent_config(
+        dispatch_config.agents[config.repair_role]
+    )
     prompt = _build_supervisor_repair_prompt(
         config,
         failure_packet_path,
@@ -739,6 +742,33 @@ def _run_repair_role(
         log=log,
         repo_root=dispatch_config.repo_root,
     )
+
+
+def _supervisor_repair_agent_config(agent_config: AgentConfig) -> AgentConfig:
+    """Drop Antigravity `agent_name` overrides for a supervised repair launch.
+
+    An Antigravity launch resolves `--agent` as the role's `agent_name` before
+    the helper name, so a role override would load the role's normal agent
+    file instead of `.agents/agents/supervisor-repair.md`. Clearing the
+    override on the primary and on an Antigravity fallback forces
+    `--agent supervisor-repair`. Other providers keep their config as written.
+    """
+
+    fallback = agent_config.fallback
+    if (
+        fallback is not None
+        and fallback.provider == "antigravity"
+        and fallback.agent_name is not None
+    ):
+        fallback = fallback.model_copy(update={"agent_name": None})
+    update: dict[str, object] = {}
+    if fallback is not agent_config.fallback:
+        update["fallback"] = fallback
+    if agent_config.provider == "antigravity" and agent_config.agent_name is not None:
+        update["agent_name"] = None
+    if not update:
+        return agent_config
+    return agent_config.model_copy(update=update)
 
 
 def _build_supervisor_repair_prompt(

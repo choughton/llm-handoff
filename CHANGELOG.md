@@ -12,8 +12,11 @@ This project follows a simple pre-release changelog until the first public tag.
   rejected the launch. The reference workflow now ships
   `.agents/agents/supervisor-repair.md` (root and
   `examples/reference-workflow/` copies, with the full eight-tool list and
-  repair-only instructions). Behavior change: the default supervised repair
-  scope now admits `.agents/agents/`, in the order `docs/`,
+  repair-only instructions). The repair launch also drops an `agent_name`
+  override on an `antigravity` repair role and on an `antigravity` fallback,
+  so it always passes `--agent supervisor-repair`; before, a role override
+  launched the role's normal agent instead. Behavior change: the default
+  supervised repair scope now admits `.agents/agents/`, in the order `docs/`,
   `.claude/agents/`, `.codex/skills/llm-handoff/`, `.agents/agents/`,
   `.gemini/agents/`.
 - The work-claim gate now reports on the console while it runs. In steady

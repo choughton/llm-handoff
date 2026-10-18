@@ -1873,7 +1873,9 @@ Supervised repair works with an `antigravity` repair role. Whichever role
 `--repair-role` names, the supervisor launches the repair turn as
 `agy --agent supervisor-repair`, which loads the shipped
 `.agents/agents/supervisor-repair.md`. That file carries repair-only
-instructions, not the role's normal Work Packet instructions.
+instructions, not the role's normal Work Packet instructions. The repair
+launch ignores an `agent_name` override on that role and on an `antigravity`
+fallback, so a custom role agent never replaces `supervisor-repair`.
 
 Linear mode does not support `provider: antigravity` (see
 [Tracker (Optional Linear Mode)](#tracker-optional-linear-mode)).
