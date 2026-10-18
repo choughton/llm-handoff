@@ -91,7 +91,8 @@ planner decides each deferred finding:
 
 A finding the planner neither accepts nor sends back, or one deferred again
 after the planner's pass, pauses the dispatcher for a person. Decisions written
-outside that pass are not acted on; while findings are open, they pause the
+outside that pass are acted on only when they decide every open finding and
+the pull request head is the reviewed commit; otherwise they pause the
 dispatcher too.
 
 ## When To Flag Uncertainty

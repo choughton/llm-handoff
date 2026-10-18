@@ -15,14 +15,17 @@ from llm_handoff.agents import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
 from llm_handoff.pr_review import ReviewGate, parse_review_responses
 from llm_handoff.publish import (
+    DISPLACED_HANDOFF_PATH,
     RESPONSES_PATH,
     STATE_PATH,
     PublishOutcome,
     StoryState,
     build_review_bounce_handoff,
+    defer_blocked_handback,
     ensure_story_branch,
     keep_review_responses,
     publish_story,
+    recover_orphaned_story,
     resume_paused_publish,
     save_review_responses,
     saved_story_base,
@@ -107,10 +110,18 @@ if args[:2] == ["pr", "create"]:
     save()
     print("https://github.example/acme/repo/pull/7")
 elif args[:2] == ["pr", "view"]:
+    if state.get("fail_view"):
+        sys.exit("HTTP 502: Bad Gateway")
     if "pr" not in state:
         sys.exit("no pull requests found for branch")
+    # Like GitHub: the head is the branch as pushed; a merged branch is gone.
+    head = state.get("head") or subprocess.run(
+        ["git", "--git-dir", os.environ["FAKE_GH_REMOTE"], "rev-parse", "-q",
+         "--verify", f"refs/heads/{args[2]}"],
+        capture_output=True, text=True,
+    ).stdout.strip()
     print(json.dumps({"number": 7, "url": "https://github.example/acme/repo/pull/7",
-                      "state": state["pr"]}))
+                      "state": state["pr"], "headRefOid": head}))
 elif args[:2] == ["pr", "merge"]:
     branch = args[2]
     git_dir = ["git", "--git-dir", os.environ["FAKE_GH_REMOTE"]]
@@ -2742,34 +2753,89 @@ def test_a_deferral_only_handback_reaches_the_planner_and_merges(
     assert _git(repo, "rev-parse", "HEAD") == story_head
 
 
-def test_planner_decisions_without_a_planner_pass_pause_with_the_story_kept(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A blocked correction handback skips the gate, the audit, and the
-    deferred reply, so the planner's pass is never armed. Its decisions must
-    not be silently ignored."""
+SECOND_FINDING_ID = 5000
 
-    repo, _remote, gh, env = _with_remote(tmp_path)
+
+def _second_finding(sha: str) -> dict:
+    return {
+        **_codex_finding(sha),
+        "id": SECOND_FINDING_ID,
+        "line": 2,
+        "body": "**P2 Name the widget**\n\nWIDGET needs a docstring.",
+    }
+
+
+def _bounce_findings(
+    tmp_path: Path, repo: Path, gh: list[str], log, *, two: bool = False
+) -> str:
+    """Publish the story and bounce one (or two) Codex findings on its head."""
+
+    head = _git(repo, "rev-parse", "HEAD")
+    findings = [_codex_finding(head)] + ([_second_finding(head)] if two else [])
+    _set_api(tmp_path, comments=[_codex_summary(head)], review_comments=findings)
+    _set_threads(
+        tmp_path,
+        {"id": "T1", "isResolved": False, "comment_id": 4279958834},
+        *(
+            [{"id": "T2", "isResolved": False, "comment_id": SECOND_FINDING_ID}]
+            if two
+            else []
+        ),
+    )
+    bounce = _publish_with_review(repo, gh, log).handoff
+    assert bounce is not None
+    return bounce
+
+
+def _remote_pr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo, remote, gh, env = _with_remote(tmp_path)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     _start_story(repo)
-    first = _git(repo, "rev-parse", "HEAD")
-    _set_api(
-        tmp_path,
-        comments=[_codex_summary(first)],
-        review_comments=[_codex_finding(first)],
-    )
-    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    return repo, remote, gh
+
+
+def test_complete_planner_decisions_without_a_pass_merge_the_reviewed_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blocked correction handback never arms the planner's pass. When the
+    planner still decides every open finding and the pull request head is the
+    reviewed commit, the decisions are acted on instead of ignored."""
+
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
     entries, log = _logs()
-    assert _publish_with_review(repo, gh, log).handoff is not None
+    _bounce_findings(tmp_path, repo, gh, log)
+    story_head = _git(repo, "rev-parse", "HEAD")
+    assert _saved_state(repo)["reviewed_head"] == story_head
+
+    outcome = _settle(repo, gh, log, PLANNER_ACCEPTS)
+
+    assert outcome == PublishOutcome(), outcome.message
+    gh_state = _gh_state(tmp_path)
+    [decision_reply] = gh_state["replies"]
+    assert decision_reply["body"].startswith("Follow-up: W9.10 Guard the widget")
+    assert gh_state["threads"][0]["isResolved"] is True
+    assert gh_state["pr"] == "MERGED"
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert any("decided every open finding" in message for _l, message in entries)
+
+
+def test_partial_planner_decisions_without_a_pass_pause_and_merge_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
+    entries, log = _logs()
+    _bounce_findings(tmp_path, repo, gh, log, two=True)
     calls_before = len(_gh_calls(tmp_path))
     asks_user = PLANNER_ACCEPTS.replace("next_agent: backend", "next_agent: user")
 
     outcome = _settle(repo, gh, log, asks_user)
 
     assert outcome.stop is True and outcome.exit_code == 0
-    assert "did not act on them" in outcome.message
-    assert "1 review finding(s) on https://github.example/acme/repo/pull/7" in (
+    assert "cannot act on them safely: finding(s) 2 have no decision" in (
+        outcome.message
+    )
+    assert "2 review finding(s) on https://github.example/acme/repo/pull/7" in (
         outcome.message
     )
     assert "route HANDOFF.md back to `backend` with `story_id: W9.9`" in (
@@ -2781,8 +2847,25 @@ def test_planner_decisions_without_a_planner_pass_pause_with_the_story_kept(
     assert _git(repo, "branch", "--show-current") == BRANCH
     state = _saved_state(repo)
     assert state["deferral_planner_pass"] is False
-    assert [finding["number"] for finding in state["open_findings"]] == [1]
+    assert [finding["number"] for finding in state["open_findings"]] == [1, 2]
     assert state["pull_request_url"] == "https://github.example/acme/repo/pull/7"
+
+
+def test_planner_decisions_without_a_pass_on_an_unreviewed_head_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
+    _entries, log = _logs()
+    _bounce_findings(tmp_path, repo, gh, log)
+    (repo / "src" / "widget.py").write_text("WIDGET = 9\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "Unaudited change")
+
+    outcome = _settle(repo, gh, log, PLANNER_ACCEPTS)
+
+    assert outcome.stop is True
+    assert "is not the pull request head" in outcome.message
+    assert "replies" not in _gh_state(tmp_path)
+    assert _gh_state(tmp_path)["pr"] == "OPEN"
 
 
 def test_a_stale_decisions_section_without_open_findings_is_ignored(
@@ -2832,51 +2915,356 @@ def test_another_story_on_an_open_story_branch_names_the_pull_request(
     assert reason(PLANNER_ACCEPTS) is None
 
 
+# The planner moved on to W9.10 without deciding W9.9's open finding, as the
+# planner did with GEM-0c while GEM-0b's pull request was still open.
+NEXT_STORY = PLANNER_ACCEPTS.replace(
+    "## Deferred Finding Decisions\n\n### Finding 1\n"
+    "Follow-up: W9.10 Guard the widget fixes this with its own Work Packet.\n\n",
+    "",
+)
+
+
+def _sweep(repo: Path, gh: list[str], log, handoff: str = NEXT_STORY, **kwargs):
+    options: dict[str, object] = {
+        "repo_root": repo,
+        "mode": "pr",
+        "remote": "origin",
+        "handoff_content": handoff,
+        "handoff_path": Path("docs/handoff/HANDOFF.md"),
+        "log": log,
+        "gh_command": gh,
+    }
+    options.update(kwargs)
+    return recover_orphaned_story(**options)
+
+
+def test_the_sweep_does_nothing_without_a_story_or_outside_pr_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
+    _entries, log = _logs()
+    bounce = _bounce_findings(tmp_path, repo, gh, log)
+    calls_before = len(_gh_calls(tmp_path))
+
+    assert _sweep(repo, gh, log, mode="local") == PublishOutcome()
+    assert _sweep(repo, gh, log, mode="merge-commit") == PublishOutcome()
+    # The story's own handoffs do not move on from it.
+    assert _sweep(repo, gh, log, handoff=bounce) == PublishOutcome()
+    assert _sweep(repo, gh, log, handoff=ASSIGNMENT) == PublishOutcome()
+    assert _sweep(tmp_path / "nowhere", gh, log) == PublishOutcome()
+    assert len(_gh_calls(tmp_path)) == calls_before
+    assert _saved_state(repo)["open_findings"]
+
+
+def test_the_sweep_cleans_up_a_merged_story_and_continues_on_the_base_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
+    entries, log = _logs()
+    _bounce_findings(tmp_path, repo, gh, log)
+    story_head = _git(repo, "rev-parse", "HEAD")
+    # A person resolved the thread and merged the pull request.
+    subprocess.run([*gh, "pr", "merge", BRANCH, "--merge"], check=True)
+    _set_threads(tmp_path, {"id": "T1", "isResolved": True, "comment_id": 4279958834})
+
+    outcome = _sweep(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "HEAD") == story_head
+    assert BRANCH not in _git(repo, "branch", "--list")
+    assert not (repo / STATE_PATH).exists()
+    assert any("is merged; cleared its saved story state" in m for _l, m in entries)
+
+
+@pytest.mark.parametrize(
+    "case, expected",
+    [
+        ("merged_with_open_thread", "merged with 1 unresolved review thread(s)"),
+        ("open_all_resolved", "is open and was not merged"),
+        ("gh_error", "`gh pr view llm-handoff/w9.9-add-a-widget` failed (HTTP 502"),
+        ("head_moved", "is not the pull request head"),
+        ("person_comment", "not one of the story's saved findings"),
+        ("uncommitted", "story files are uncommitted (`src/widget.py`)"),
+        ("planner_had_its_pass", "already had its one pass"),
+    ],
+)
+def test_the_sweep_pauses_when_the_story_cannot_be_recovered_safely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, expected: str
+) -> None:
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
+    _entries, log = _logs()
+    _bounce_findings(tmp_path, repo, gh, log)
+    unresolved = {"id": "T1", "isResolved": False, "comment_id": 4279958834}
+    if case == "merged_with_open_thread":
+        subprocess.run([*gh, "pr", "merge", BRANCH, "--merge"], check=True)
+    elif case == "open_all_resolved":
+        _set_threads(tmp_path, {**unresolved, "isResolved": True})
+    elif case == "gh_error":
+        _set_gh(tmp_path, fail_view=True)
+    elif case == "head_moved":
+        (repo / "src" / "widget.py").write_text("WIDGET = 9\n", encoding="utf-8")
+        _git(repo, "commit", "-q", "-am", "Unaudited change")
+    elif case == "person_comment":
+        _set_threads(tmp_path, unresolved, {"id": "T9", "isResolved": False, "comment_id": 9})
+    elif case == "uncommitted":
+        (repo / "src" / "widget.py").write_text("WIDGET = 9\n", encoding="utf-8")
+    elif case == "planner_had_its_pass":
+        state = _saved_state(repo)
+        state["deferral_planner_pass"] = True
+        (repo / STATE_PATH).write_text(json.dumps(state), encoding="utf-8")
+    calls_before = len(_gh_calls(tmp_path))
+    before = _saved_state(repo)
+
+    outcome = _sweep(repo, gh, log)
+
+    assert outcome.pause is True and outcome.stop is False and outcome.handoff is None
+    assert outcome.message.startswith(
+        "PULL REQUEST NOT MERGED: HANDOFF.md routes `backend` to `W9.10`, but "
+        f"story `W9.9` on `{BRANCH}` is not finished"
+    )
+    assert expected in outcome.message
+    assert "Unresolved review findings: 1 (`src/widget.py:1`)" in outcome.message
+    assert "route HANDOFF.md back to `backend` with `story_id: W9.9`" in outcome.message
+    assert "merge it by hand" in outcome.message
+    assert _saved_state(repo) == before
+    assert not (repo / DISPLACED_HANDOFF_PATH).exists()
+    new_calls = [call[:2] for call in _gh_calls(tmp_path)[calls_before:]]
+    assert ["pr", "merge"] not in new_calls
+    assert not any("/replies" in call[-1] for call in _gh_calls(tmp_path))
+
+
+def test_the_sweep_gives_the_planner_its_pass_on_a_safe_open_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
+    _entries, log = _logs()
+    _bounce_findings(tmp_path, repo, gh, log)
+
+    outcome = _sweep(repo, gh, log)
+
+    assert outcome.stop is False and outcome.pause is False
+    handoff = outcome.handoff
+    assert handoff is not None
+    assert route(handoff).route == "planner"
+    assert "## Displaced Handoff" in handoff
+    assert DISPLACED_HANDOFF_PATH.as_posix() in handoff
+    assert "WIDGET can be unset." in handoff
+    assert (repo / DISPLACED_HANDOFF_PATH).read_text(encoding="utf-8") == NEXT_STORY
+    state = _saved_state(repo)
+    assert state["deferral_planner_pass"] is True
+    assert [finding["number"] for finding in state["open_findings"]] == [1]
+    assert "replies" not in _gh_state(tmp_path)
+
+    # The planner decides the finding and restores the displaced route.
+    assert _settle(repo, gh, log, PLANNER_ACCEPTS) == PublishOutcome()
+    assert _gh_state(tmp_path)["pr"] == "MERGED"
+    assert _git(repo, "branch", "--show-current") == "main"
+
+
+def _blocked_claim(response: str) -> str:
+    return f"""---
+next_agent: planner
+reason: "Finding 1 is real but outside this story's scope."
+epic_id: E1
+story_id: W9.9
+story_title: Add a widget
+status: blocked_implementation_failure
+producer: backend
+---
+
+# Backend Handback
+
+## Completed Work
+
+- No code change.
+
+## Review Responses
+
+### Finding 1: `src/widget.py:1`
+{response}
+"""
+
+
+@pytest.mark.parametrize("variant", ["deferred", "not_deferred", "changed"])
+def test_a_blocked_correction_handback_that_only_defers_counts_as_a_deferral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str
+) -> None:
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
+    entries, log = _logs()
+    bounce = _bounce_findings(tmp_path, repo, gh, log)
+    config = _pr_loop_config(repo)
+    config.handoff_full_path.parent.mkdir(parents=True, exist_ok=True)
+    config.handoff_full_path.write_text(bounce, encoding="utf-8")
+    response = (
+        "Deferred: the fix needs src/guard.py, which is outside Files in scope."
+        if variant != "not_deferred"
+        else "This finding does not hold up: WIDGET is always set."
+    )
+    claim = _blocked_claim(response)
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        if variant == "changed":
+            (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+        path.write_text(claim, encoding="utf-8")
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def validate(path: Path, previous_agent: str, **_kwargs: object):
+        return ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="planner"
+        )
+
+    def defer(**kwargs: object):
+        return defer_blocked_handback(**kwargs, gh_command=gh)
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+    monkeypatch.setattr(orchestrator, "defer_blocked_handback", defer)
+    ledger.reset_bounce("W9.9")
+    try:
+        assert orchestrator.run_loop(config, max_cycles=1, log=log) == 0
+    finally:
+        ledger.reset_bounce("W9.9")
+
+    handoff = config.handoff_full_path.read_text(encoding="utf-8")
+    state = _saved_state(repo)
+    if variant == "deferred":
+        [reply] = _gh_state(tmp_path)["replies"]
+        assert reply["body"].startswith("Deferred: the fix needs src/guard.py")
+        assert _gh_state(tmp_path)["threads"][0]["isResolved"] is False
+        assert "## Deferred Review Findings" in handoff
+        assert route(handoff).route == "planner"
+        assert state["deferral_planner_pass"] is True
+        assert any("treating it as a deferral" in m for _l, m in entries)
+    else:
+        assert "replies" not in _gh_state(tmp_path)
+        assert handoff == claim
+        assert state["deferral_planner_pass"] is False
+        assert not any("treating it as a deferral" in m for _l, m in entries)
+
+
+def test_a_fresh_start_recovers_a_story_left_open_like_gem_0b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real stall: story.json (saved before reviewed heads were recorded)
+    has finding 1 open and no planner pass, the pull request head is the base
+    merge Codex reviewed, the checkout is on it, and HANDOFF.md already routes
+    the follow-up story. One planner pass merges the pull request, and the
+    follow-up story starts from the updated base branch."""
+
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    entries, log = _logs()
+    _bounce_after_a_base_merge(tmp_path, repo, remote, gh, log)
+    reviewed = _git(repo, "rev-parse", "HEAD")
+    state = _saved_state(repo)
+    del state["reviewed_head"], state["pull_request_url"]
+    assert state["open_findings"][0]["number"] == 1
+    assert state["review_rounds"] == 1 and state["deferral_planner_pass"] is False
+    (repo / STATE_PATH).write_text(json.dumps(state), encoding="utf-8")
+
+    config = _pr_loop_config(repo)
+    config.handoff_full_path.parent.mkdir(parents=True, exist_ok=True)
+    config.handoff_full_path.write_text(NEXT_STORY, encoding="utf-8")
+    dispatches: list[tuple[str, str]] = []
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append(("planner", _git(repo, "branch", "--show-current")))
+        handoff = path.read_text(encoding="utf-8")
+        assert "## Displaced Handoff" in handoff
+        displaced = (repo / DISPLACED_HANDOFF_PATH).read_text(encoding="utf-8")
+        restored = displaced.replace(
+            "## Work Packet",
+            "## Deferred Finding Decisions\n\n### Finding 1\n"
+            "Follow-up: W9.10 Guard the widget fixes this.\n\n## Work Packet",
+        )
+        path.write_text(restored, encoding="utf-8")
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append(("backend", _git(repo, "branch", "--show-current")))
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def validate(path: Path, previous_agent: str, **_kwargs: object):
+        return ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="backend"
+        )
+
+    def sweep(**kwargs: object):
+        return recover_orphaned_story(**kwargs, gh_command=gh)
+
+    def settle(**kwargs: object) -> PublishOutcome:
+        return settle_deferred_findings(**kwargs, gh_command=gh)
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+    monkeypatch.setattr(orchestrator, "recover_orphaned_story", sweep)
+    monkeypatch.setattr(orchestrator, "settle_deferred_findings", settle)
+
+    assert orchestrator.run_loop(config, max_cycles=3, log=log) == 0
+
+    assert dispatches == [
+        ("planner", BRANCH),
+        ("backend", "llm-handoff/w9.10-guard-the-widget"),
+    ]
+    gh_state = _gh_state(tmp_path)
+    [decision_reply] = gh_state["replies"]
+    assert decision_reply["body"].startswith("Follow-up: W9.10")
+    assert gh_state["threads"][0]["isResolved"] is True
+    assert gh_state["pr"] == "MERGED"
+    main = subprocess.run(
+        ["git", "--git-dir", str(remote), "rev-parse", "refs/heads/main"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert main == reviewed
+    assert not any(level == "ERROR" for level, _message in entries)
+    assert _saved_state(repo)["story_id"] == "W9.10"
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_the_loop_pauses_instead_of_stopping_when_another_story_starts_early(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
 ) -> None:
-    """The planner routes a follow-up story while the current story's pull
-    request is still open with an unresolved finding."""
+    """The handoff routes a follow-up story while the current story's pull
+    request is open on a head nobody reviewed, so nothing can recover it."""
 
-    repo, _remote, gh, env = _with_remote(tmp_path)
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    _start_story(repo)
-    first = _git(repo, "rev-parse", "HEAD")
-    _set_api(
-        tmp_path,
-        comments=[_codex_summary(first)],
-        review_comments=[_codex_finding(first)],
-    )
-    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    repo, _remote, gh = _remote_pr(tmp_path, monkeypatch)
     entries, log = _logs()
-    assert _publish_with_review(repo, gh, log).handoff is not None
+    _bounce_findings(tmp_path, repo, gh, log)
+    (repo / "src" / "widget.py").write_text("WIDGET = 9\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "Unaudited change")
 
     config = _pr_loop_config(repo, dry_run=dry_run)
     config.handoff_full_path.parent.mkdir(parents=True, exist_ok=True)
-    config.handoff_full_path.write_text(PLANNER_ACCEPTS, encoding="utf-8")
+    config.handoff_full_path.write_text(NEXT_STORY, encoding="utf-8")
     dispatches: list[str] = []
 
     def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
         dispatches.append("backend")
         return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
 
+    def sweep(**kwargs: object):
+        return recover_orphaned_story(**kwargs, gh_command=gh)
+
     monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "recover_orphaned_story", sweep)
 
     assert orchestrator.run_loop(config, max_cycles=1, log=log) == 0
 
     assert dispatches == []
     assert not any(level == "ERROR" for level, _message in entries)
-    pauses = [
-        message
-        for level, message in entries
-        if level == ("WARN" if dry_run else "PAUSE") and "UNFINISHED STORY" in message
-    ]
-    assert len(pauses) == 1
-    assert "https://github.example/acme/repo/pull/7 is still open" in pauses[0]
     if dry_run:
-        assert pauses[0].startswith("[DRY RUN] Would pause: UNFINISHED STORY")
+        # The dry run makes no gh calls; it previews the local check.
+        [pause] = [m for level, m in entries if level == "WARN" and "UNFINISHED" in m]
+        assert pause.startswith("[DRY RUN] Would pause: UNFINISHED STORY")
+        assert "https://github.example/acme/repo/pull/7 is still open" in pause
+    else:
+        [pause] = [m for level, m in entries if level == "PAUSE" and "NOT MERGED" in m]
+        assert "https://github.example/acme/repo/pull/7" in pause
+        assert "is not the pull request head" in pause
     assert _git(repo, "branch", "--show-current") == BRANCH
     assert "llm-handoff/w9.10-guard-the-widget" not in _git(repo, "branch", "--list")
     assert [finding["number"] for finding in _saved_state(repo)["open_findings"]] == [1]

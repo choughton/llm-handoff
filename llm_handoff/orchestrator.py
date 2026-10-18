@@ -69,9 +69,11 @@ from llm_handoff.operator_prompt import (
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
 from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
+    defer_blocked_handback,
     ensure_story_branch,
     keep_review_responses,
     publish_story,
+    recover_orphaned_story,
     resume_paused_publish,
     save_review_responses,
     saved_story_base,
@@ -729,6 +731,55 @@ def run_loop(
                 pending_planner_recovery = pause.pending_planner_recovery
             continue
 
+        if (
+            config.publish.mode == "pr"
+            and not config.dry_run
+            and not tracker_lease_rebuild
+            and decision.route != "planner"
+        ):
+            # A handoff that moves on from a saved story needs that story's
+            # pull request merged. A planner dispatch moves nothing, so it
+            # runs first: recovery and the deferred-findings pass use it.
+            orphan = recover_orphaned_story(
+                repo_root=config.repo_root,
+                mode=config.publish.mode,
+                remote=config.publish.remote,
+                handoff_content=handoff_content,
+                handoff_path=config.handoff_path,
+                log=log_fn,
+            )
+            if orphan.stop:
+                return orphan.exit_code
+            if orphan.handoff is not None:
+                config.handoff_full_path.write_text(orphan.handoff, encoding="utf-8")
+                previous_cycle = None
+                continue
+            if orphan.pause:
+                if _pause_recovery_available(config, pause_recovery_used, log_fn):
+                    pending_planner_recovery = _schedule_pause_recovery(
+                        config,
+                        pause_reason=orphan.message,
+                        validation_result=None,
+                        log=log_fn,
+                    )
+                    pause_recovery_used = True
+                    continue
+                pause = _pause_at_dispatcher_pause(
+                    config,
+                    handoff_sha=handoff_sha,
+                    reason=orphan.message,
+                    log=log_fn,
+                    operator_prompt=operator_prompt,
+                    stop_watch=stop_watch,
+                )
+                if pause.stop:
+                    return 0
+                if pause.kind == "retry":
+                    previous_cycle = None
+                elif pause.pending_planner_recovery is not None:
+                    pending_planner_recovery = pause.pending_planner_recovery
+                continue
+
         if decision.route in {"backend", "frontend"} and cycle_frontmatter is not None:
             story_id = cycle_frontmatter.story_id
             if story_id and bounce_count(story_id) >= 3:
@@ -1173,6 +1224,12 @@ def run_loop(
                 else None
             )
             protected_before = _capture_protected_snapshot(config)
+            implementer_head_before = (
+                _git_head(config.repo_root)
+                if config.publish.mode == "pr"
+                and current_cycle.route in {"backend", "frontend"}
+                else None
+            )
             dispatch_result, previous_agent = _dispatch_route(
                 current_cycle.route,
                 config,
@@ -1324,6 +1381,30 @@ def run_loop(
                         "The planner lease-rebuild cycle left HANDOFF.md "
                         "missing or empty; skipping post-dispatch validation.",
                     )
+                    previous_cycle = current_cycle
+                    consecutive_failures = 0
+                    if max_cycles is not None and cycle_number >= max_cycles:
+                        return 0
+                    continue
+
+            if implementer_head_before is not None:
+                # A correction-round handback that only defers, under any
+                # status, still gives the planner its deferred-findings pass.
+                deferral = defer_blocked_handback(
+                    repo_root=config.repo_root,
+                    remote=config.publish.remote,
+                    handoff_path=config.handoff_path,
+                    claim_content=_read_required_text(config.handoff_full_path) or "",
+                    head_before=implementer_head_before,
+                    log=log_fn,
+                )
+                if deferral is not None:
+                    if deferral.handoff is not None:
+                        config.handoff_full_path.write_text(
+                            deferral.handoff, encoding="utf-8"
+                        )
+                    if deferral.stop:
+                        return deferral.exit_code
                     previous_cycle = current_cycle
                     consecutive_failures = 0
                     if max_cycles is not None and cycle_number >= max_cycles:
