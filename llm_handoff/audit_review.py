@@ -1498,7 +1498,7 @@ def _run_linear_evidence_step(
         f"Dispatching the Linear evidence step ({agent_config.provider}) for "
         f"{tracker_issue}: expected outcome `{outcome.event}`.",
     )
-    handoff_before = _handoff_sha(handoff_path)
+    handoff_before = _safe_handoff_sha(handoff_path)
     head_before = _git_rev_parse(config.repo_root, "HEAD")
     status_before = _git_stdout(config.repo_root, ["git", "status", "--porcelain"])
     snapshot_before = _worktree_snapshot(config.repo_root)
@@ -1507,7 +1507,7 @@ def _run_linear_evidence_step(
     except Exception as exc:  # noqa: BLE001 - fail closed on any error
         return fail(f"the evidence dispatch raised {exc!r}", stderr=str(exc))
     stdout, stderr = result.stdout, result.stderr
-    handoff_after = _handoff_sha(handoff_path)
+    handoff_after = _safe_handoff_sha(handoff_path)
     head_after = _git_rev_parse(config.repo_root, "HEAD")
     status_after = _git_stdout(config.repo_root, ["git", "status", "--porcelain"])
     snapshot_after = _worktree_snapshot(config.repo_root)
@@ -1579,16 +1579,33 @@ def _linear_evidence_failure(
     start_time: float,
     log: LogFn,
 ) -> DispatchResult:
-    if _handoff_sha(handoff_path) != _content_sha(source_handoff):
-        handoff_path.write_text(source_handoff, encoding="utf-8")
-        _log(
-            log,
-            "ERROR",
-            f"Restored {handoff_display} to its pre-fan-out content after the "
-            "Linear evidence step.",
-        )
+    restore_text = ""
+    if _safe_handoff_sha(handoff_path) != _content_sha(source_handoff):
+        # An unrestricted evidence agent may have deleted or renamed the
+        # handoff's parent directory; recreate it, and never let a failed
+        # restoration skip the rest of the fail-closed path.
+        try:
+            handoff_path.parent.mkdir(parents=True, exist_ok=True)
+            handoff_path.write_text(source_handoff, encoding="utf-8")
+        except OSError as exc:
+            restore_text = (
+                f" Restoring {handoff_display} to its pre-fan-out content "
+                f"failed ({exc}); restore it before starting the dispatcher."
+            )
+            _log(log, "ERROR", restore_text.strip())
+        else:
+            _log(
+                log,
+                "ERROR",
+                f"Restored {handoff_display} to its pre-fan-out content after "
+                "the Linear evidence step.",
+            )
     saved_path = log_dir / LINEAR_EVIDENCE_HANDOFF_FILENAME
     log_path = log_dir / LINEAR_EVIDENCE_LOG_FILENAME
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     try:
         saved_path.write_text(handoff_text, encoding="utf-8")
         saved_text = f"the rendered audit handoff is saved at {saved_path.as_posix()}"
@@ -1602,6 +1619,7 @@ def _linear_evidence_failure(
         f"linear_evidence_failed: {cause}; {saved_text}, and the evidence "
         f"dispatch output is in {log_path.as_posix()}. {handoff_display} was "
         "not updated. Check the leased issue, then start the dispatcher again."
+        f"{restore_text}"
     )
     _log(log, "ERROR", message)
     return DispatchResult(
@@ -2440,6 +2458,19 @@ def _handoff_sha(handoff_path: Path) -> str:
     if not handoff_path.exists():
         return ""
     return _content_sha(read_dispatch_text(handoff_path))
+
+
+def _safe_handoff_sha(handoff_path: Path) -> str:
+    """Like ``_handoff_sha`` but never raises; unreadable paths get a marker.
+
+    The Linear evidence step uses it, because an unrestricted evidence agent
+    can replace the handoff with a directory or an unreadable file.
+    """
+
+    try:
+        return _handoff_sha(handoff_path)
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"unreadable:{type(exc).__name__}"
 
 
 def _content_sha(content: str) -> str:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Any, Callable
 
@@ -701,6 +702,69 @@ def test_evidence_failure_stops_the_loop_and_keeps_the_handoff(
     ]
     assert error_lines == [result.stop_reason]
     assert calls == ([] if case == "no_tracker_issue" else ["evidence"])
+
+
+def test_deleted_handoff_directory_is_recreated_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, _head, handoff = _repo(tmp_path)
+
+    def evidence(_prompt: str, _agent_config: Any) -> SubagentResult:
+        shutil.rmtree(repo / "docs" / "handoff")
+        return _subagent(_evidence_stdout(["audit_passed"]))
+
+    result, log = _run(
+        _linear_config(repo), handoff, monkeypatch, base=base, evidence=evidence
+    )
+
+    assert result.exit_code == 1
+    assert result.stop_loop is True
+    assert result.stop_reason is not None
+    assert result.stop_reason.startswith("linear_evidence_failed:")
+    assert "changed docs/handoff/HANDOFF.md" in result.stop_reason
+    assert _handoff_text(repo) == handoff
+    assert (_audit_log_dir(repo) / "audit-handoff.md").is_file()
+    assert any("Restored docs/handoff/HANDOFF.md" in m for _l, m in log.messages)
+
+
+def test_failed_handoff_restoration_still_stops_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, head, handoff = _repo(tmp_path)
+
+    def evidence(_prompt: str, _agent_config: Any) -> SubagentResult:
+        # Replace the handoff directory with a file, so the dispatcher can
+        # neither recreate the directory nor write the handoff back.
+        shutil.rmtree(repo / "docs" / "handoff")
+        (repo / "docs" / "handoff").write_text("not a directory\n", encoding="utf-8")
+        return _subagent(_evidence_stdout(["audit_passed"]))
+
+    result, log = _run(
+        _linear_config(repo), handoff, monkeypatch, base=base, evidence=evidence
+    )
+
+    assert result.exit_code == 1
+    assert result.stop_loop is True
+    assert result.stop_reason is not None
+    assert result.stop_reason.startswith("linear_evidence_failed:")
+    assert "Restoring docs/handoff/HANDOFF.md to its pre-fan-out content failed" in (
+        result.stop_reason
+    )
+    log_dir = _audit_log_dir(repo)
+    saved = log_dir / "audit-handoff.md"
+    assert saved.is_file()
+    saved_frontmatter = parse_handoff_frontmatter_text(
+        saved.read_text(encoding="utf-8")
+    )
+    assert saved_frontmatter is not None
+    assert saved_frontmatter.scope_sha == head
+    assert (log_dir / "linear-evidence.log").is_file()
+    error_lines = [
+        message
+        for level, message in log.messages
+        if level == "ERROR" and message.startswith("linear_evidence_failed:")
+    ]
+    assert error_lines == [result.stop_reason]
 
 
 def test_evidence_log_keeps_the_dispatch_output(
