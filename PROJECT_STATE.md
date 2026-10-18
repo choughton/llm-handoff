@@ -572,7 +572,10 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
   `llm_handoff/agent_process.py`). `dispatch_config.example.yaml` maps `tpm`
   to codex with `skill_name: llm-handoff-tpm`, commented out, with a note that
   the planner picks stories when it is absent. Add `tpm:` patterns to
-  `llm_handoff/rationalization_patterns.yaml`.
+  `llm_handoff/rationalization_patterns.yaml`. `AGENTS.md` and
+  `examples/reference-workflow/AGENTS.md` add `tpm` to the public role
+  vocabulary (~lines 61-71); both are protected paths, so list them in Files
+  in scope.
 - TPM-2: Validator rules for `producer: tpm` (`llm_handoff/validator.py`).
   `next_agent` must be one of `backend`, `frontend`, `auditor`, `planner`, or
   `user`; `finalizer` and `validator` are rejected as
@@ -589,7 +592,9 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
   is not configured, the orchestrator treats the handoff as not dispatchable
   and schedules the existing planner repair with the instruction `tpm is not
   configured; route to planner or an implementer` instead of pausing.
-- TPM-3: Routing when the role is configured (`llm_handoff/orchestrator.py`
+- TPM-3: Routing when the role is configured (`llm_handoff/orchestrator.py`;
+  `build_audit_handoff()` in `llm_handoff/audit_review.py` ~line 1147, which
+  hard-codes the non-epic pass route to `planner`, and its routing tests;
   plus the prompts under `docs/handoff/`, which are protected paths and must
   be in Files in scope). The auditor's story-level `verified_pass` routes to
   `tpm`; the epic-level `verified_pass` with `close_type: epic` still routes
@@ -613,9 +618,10 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
   describes both configurations (tpm present, tpm absent).
 - TPM-4: Provider adapters and the reference workflow. Add
   `.codex/skills/llm-handoff-tpm/SKILL.md` with `agents/openai.yaml`,
-  `.claude/agents/tpm.md`, `.gemini/agents/tpm.md`, and `.agents/agents/tpm.md`
-  to the source checkout and to `examples/reference-workflow/`; `init`
-  copies them and `init --tracker linear` renders the tpm section.
+  `.claude/agents/tpm.md`, and `.agents/agents/tpm.md` (agy) to the source
+  checkout and to `examples/reference-workflow/`; `init` copies them and
+  `init --tracker linear` renders the tpm section. No `.gemini/agents/`
+  file: GEM-5 deletes both of those trees, and nothing may recreate them.
   Codex artifacts are keyed per role: today every Codex role shares
   `logs/dispatch/codex/last-message.json` and `session.json`
   (`llm_handoff/agent_providers/codex.py` ~line 410), so a Codex tpm and a
@@ -637,7 +643,11 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
   route to `planner`; an eligible issue with no priority is reported in the
   `lease_opened` comment as picked without one (rule 5 already covers the
   wording). The handoff-validator's `LINEAR-EVIDENCE` check accepts `tpm` as
-  the lease producer.
+  the lease producer. `expected_linear_outcome()` in
+  `llm_handoff/audit_linear_evidence.py` ~line 81 treats `verified_pass`
+  routed to `tpm` as `audit_passed`; today only `planner` and `finalizer`
+  count and every other route is recorded as `audit_failed`, so without this
+  a successful audit would post a failure comment. Add route tests for it.
 - TPM-6: Documentation and changelog. `README.md` role table and loop diagram,
   `docs/ARCHITECTURE.md` (role list, "planner picks stories unless tpm is
   configured"), `CONFIGURATION.md` (`agents.tpm` reference and the per-role
@@ -710,7 +720,14 @@ handbook and the code from drifting.
   `producer: finalizer` and the previous route was `finalizer`. `producer:
   finalizer` may route only to `planner`, `user`, or `tpm` when configured,
   and never with `close_type` set. `producer: validator` may route anywhere
-  except `finalizer` and may not emit a completion status. The post-dispatch
+  except `finalizer` and may not emit a completion status, with one
+  exemption: the dispatcher's own publish handoffs,
+  `build_review_bounce_handoff()` and the deferred-decision pass in
+  `llm_handoff/publish.py` (~lines 1387 and 1469), write
+  `producer: validator` with `verified_fail` or `verified_pass`. Either the
+  orchestrator marks those writes as dispatcher-authored where it validates
+  them, or the builders move to a distinct producer value in the same story;
+  the review-bounce fixtures must keep validating. The post-dispatch
   validation already knows the previous route; a `producer` that names a
   role other than the one just dispatched is rejected as
   `frontmatter_producer_mismatch` unless the handoff is a dispatcher-written
