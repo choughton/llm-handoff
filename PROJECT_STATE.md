@@ -826,6 +826,124 @@ handbook and the code from drifting.
   `handoff-validator` helper prompts and `.codex/skills/llm-handoff-validator`
   cite the table instead of restating it.
 
+### 18. ACTIVE-PLANNER - finish stories without a person at the console
+
+Fit: pick it right after a run has paused on an implementer environment
+refusal (a permission rule, a missing binary) rather than on a question. The
+four stories are independent; ACTIVE-3 and ACTIVE-4 change the planner's own
+protocol, so they go before a feature. Does not overlap ESCALATION-RECONCILE,
+which re-checks a stale `user` route; this epic keeps the loop from reaching
+`user` for a config line it could have named.
+
+On 2026-10-18 one story took three implementer dispatches and two planner
+passes before the auditor saw it, with no code problem: the backend's
+allowlist refused `python -m pytest`, so it could not post the fresh
+`Commands run` the handbook demands, handed back
+`blocked_implementation_failure`, and the planner re-dispatched the same
+Work Packet. The work-claim gate runs the Verification command itself
+whenever it applies (`verify_work_claim`, `llm_handoff/work_claim.py` ~line
+1498; `_work_claim_gate_applies`, `llm_handoff/orchestrator.py` ~line
+3174), so the implementer's own run is redundant evidence when the gate is
+on. The validator checks only that each evidence field is non-empty
+(`llm_handoff/validator.py` ~lines 646-669); the "fresh commands" rule
+lives in the handbook (`docs/handoff/HANDBOOK.md` ~lines 62-77), the
+implementer prompts (`docs/handoff/BACKEND_HANDOFF_PROMPT.md` ~line 61,
+`FRONTEND_HANDOFF_PROMPT.md` ~line 68), and the auditor. Nothing checks,
+before a dispatch, that the role can run the command it was given.
+
+- ACTIVE-1: Gate-verified handback. When an implementer cannot run the Work
+  Packet's Verification command (a permission refusal, a missing tool), it
+  may still hand back `status: ready_for_review` with a `## Verification
+  Evidence` block whose `Commands run` reads `deferred to the work-claim
+  gate: <the refusal, quoted>` and whose `Output summary` names the
+  refusal; the other three fields stay as today. This is legal only when
+  `enforce_work_packet: true`; without the gate the current rule stands.
+  The validator accepts it as it does now (the field is non-empty). The
+  gate runs the command as it does today and, on a pass,
+  `record_passed_verification` (`llm_handoff/work_claim.py` ~line 2390,
+  called at `llm_handoff/orchestrator.py` ~line 3367) writes the `##
+  Dispatcher Verification` section the auditor helper files already tell
+  the auditor to trust (`.claude/agents/auditor.md` ~line 46 and the Codex
+  and agy copies); that section is the evidence the auditor reads. Update
+  the handbook's Evidence Block Reference, both implementer prompts, the
+  `llm-handoff` and `llm-handoff-frontend` Codex skills, the Claude and agy
+  `backend.md` and `frontend.md` agent files, and the auditor prompt (a
+  deferred `Commands run` with a PASS section is not a finding). The
+  backend and frontend `verification deferred` patterns in
+  `llm_handoff/rationalization_patterns.yaml` (~lines 10-12 and 20-22) must
+  not match the new wording. Tests: the validator accepts the block, the
+  gate still runs the command on such a claim, and an auditor fixture with
+  a deferred `Commands run` plus a PASS section validates.
+- ACTIVE-2: Preflight the Verification command against role grants. In
+  `llm-handoff doctor` and at dispatcher startup (`run_loop`,
+  `llm_handoff/orchestrator.py` ~line 456, next to the pre-launch checks
+  there), parse the live Work Packet when the handoff routes to an
+  implementer (`doctor._check_handoff`, `llm_handoff/doctor.py` ~line 1873,
+  already reads and routes it) and check that each command's leading
+  executable (`command_executable`, `llm_handoff/work_claim.py` ~line 1455)
+  is allowed by that role's launch, fallback included (`_role_launches`,
+  `llm_handoff/doctor.py` ~line 370): for Claude, the `Bash(prefix:*)`
+  rules of `claude_allowed_tools` (`llm_handoff/config.py` ~line 340, built
+  from `claude_default_allowed_tools` ~line 65 and per-role `allowed_tools`
+  ~line 300, parsed as `_BASH_RULE_RE` does in
+  `llm_handoff/agent_providers/claude.py` ~line 22); for agy, the grants
+  `antigravity_allowed_commands` builds
+  (`llm_handoff/antigravity_permissions.py` ~line 111); for Codex, which
+  runs in a workspace-write sandbox with no command allowlist
+  (`codex_permission_args`, `llm_handoff/agent_providers/codex.py` ~line
+  294), only that the executable resolves. Report `WARN verification
+  preflight: backend (claude) cannot run python; set interpreter_grants:
+  true or an allowed_tools rule`, never FAIL, so the planner can re-scope.
+  Also run `verification_command_allowed` (`llm_handoff/work_claim.py`
+  ~line 1833) against the same commands, so a prefix mismatch is reported
+  before the gate bounces it. Tests in `tests/test_doctor.py`; a startup
+  test in `tests/ported/test_orchestrator.py` with `--dry-run`.
+- ACTIVE-3: Test scope policy. In `docs/handoff/PLANNER_HANDOFF_PROMPT.md`
+  (the Work Packet section, ~lines 78-150) and the handbook: for a story
+  that changes behaviour, tests that assert the old behaviour are in scope
+  by definition. The planner lists `tests/` (a directory, which
+  `path_matches_entry` in `llm_handoff/work_claim.py` ~line 618 already
+  supports) or the specific test files, and never writes "stop if a test
+  outside Files in scope must change" or a variant. With
+  `interpreter_grants: true` the planner's default allowlist includes
+  `pytest` (`claude_default_allowed_tools`, `llm_handoff/config.py` ~line
+  65), so the prompt tells it to run the relevant tests read-only while
+  scoping, to find which files assert the old behaviour. Add a `planner`
+  pattern for the forbidden phrase in
+  `llm_handoff/rationalization_patterns.yaml` (~line 24; the validator
+  surfaces it through `_rationalization_warnings`,
+  `llm_handoff/validator.py` ~line 747) and mirror the rule in
+  `.claude/agents/planner.md`, `.codex/skills/llm-handoff-planner/SKILL.md`,
+  and `.gemini/agents/planner.md`. Tests: `parse_work_packet` accepts
+  `tests/` as a Files in scope entry and the gate treats a new file under
+  it as in scope (`tests/test_work_claim.py`, next to the parser tests at
+  ~line 301), and `tests/test_rationalization_detector.py` catches the
+  phrase.
+- ACTIVE-4: No pointless re-dispatch. When the planner receives
+  `blocked_implementation_failure` whose handback names an environment
+  refusal (a permission rule, a missing binary, no TTY), it must not
+  re-dispatch the same role with an unchanged Work Packet: it either applies
+  ACTIVE-1 (re-dispatch with an instruction to hand back gate-verified) or
+  routes to `user` with the exact config line to add, such as
+  `interpreter_grants: true`. Encode this in the planner prompt's handback
+  review and the handbook's Escalation Protocol (`docs/handoff/HANDBOOK.md`
+  ~lines 125-142), and in the three planner helper files named in
+  ACTIVE-3. Add a validator warning `planner_redispatch_after_refusal` when
+  a planner handoff routes to the implementer that produced the previous
+  handoff, the Work Packet section (`extract_work_packet_section`,
+  `llm_handoff/work_claim.py` ~line 452) is unchanged, and the previous
+  handoff contains `refused by the permission rules` (the WARN text the
+  Claude provider logs, `llm_handoff/agent_providers/claude.py` ~lines
+  203-208) or the agy deny-rule marker
+  (`llm_handoff/agent_providers/antigravity.py` ~line 35).
+  `validate_handoff_text` already takes `previous_route` and
+  `prior_handoff_content` (`llm_handoff/validator.py` ~lines 376-385); the
+  orchestrator passes the story baseline there (~line 1468), so the story
+  confirms that baseline is the implementer handback the planner read or
+  passes the handback separately. The `agent_self_loop` check (~line 466)
+  does not cover this case, since planner to backend is a different role.
+  Tests in `tests/ported/test_validator.py`.
+
 ## Open Followups
 
 Promoted to HARDENING stories and removed below: AUDIT-COST (a),
@@ -906,6 +1024,16 @@ The remaining letters are unchanged.
     hierarchy (initiative, project, issue) with project-open and project-close
     gates. This repo has epic and story in `remaining_stories` plus this file;
     the TPM-ROLE epic scopes the picker to one epic for that reason.
+
+- From the 2026-10-18 pause review (low,
+  `llm_handoff/agent_providers/claude.py`):
+  - (a) the dispatcher logs `refused by the permission rules` as a WARN per
+    refused command (~lines 203-208) and nothing else; count refusals per
+    dispatch in `_ClaudeStreamJsonMonitor` and print one summary line with
+    the `Claude result` line at the end of the dispatch (~line 165), so the
+    operator sees the pattern without reading every WARN. The agy provider
+    already collects one entry per deny-rule refusal (~line 244); give it
+    the same summary line.
 
 ## Completed Scope Ledger
 
