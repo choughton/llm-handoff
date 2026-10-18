@@ -6,9 +6,10 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** LINEAR-WORKFLOW (next; LIN-7 not started).
-  LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY,
-  PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER closed.
+- **Active Epic:** LINEAR-SWITCH (next; LIN-11 not started).
+  LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
+  PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
+  closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -21,8 +22,8 @@ story is one Work Packet; the planner writes its Files in scope, Verification
 command, and acceptance criteria from the code. A story too large for one
 Work Packet may be split. Re-order, add, or drop epics by editing this list.
 
-Epics 6 (CONFIG-CLEANUP) and 7 (LINEAR-FOUNDATIONS) are closed; see the
-Completed Scope Ledger.
+Epics 6 (CONFIG-CLEANUP), 7 (LINEAR-FOUNDATIONS), and 8 (LINEAR-WORKFLOW) are
+closed; see the Completed Scope Ledger.
 
 ### 7. LINEAR-FOUNDATIONS - optional Linear mode, groundwork
 
@@ -248,6 +249,18 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   - (e) info: a stop request without `target_pid` is honored
     (`llm_handoff/stop_request.py` ~line 146); document it or require the pid.
 
+- From the LINEAR-WORKFLOW close (info, LIN-10):
+  - (a) `docs/TESTING.md` (~line 104) Preflight expects one tracker connector
+    line per CLI, but `doctor` groups Claude launches as `claude strict` and
+    `claude` (`llm_handoff/doctor.py` ~lines 1206-1212), so two Claude lines
+    can print; reword it and match `CONFIGURATION.md` (~lines 1192-1194).
+  - (b) planner guidance: do not suggest a failing Verification command as the
+    forced audit failure; the work-claim gate stops it as `verification_failed`
+    before any reviewer runs (`docs/TESTING.md` Scenario B).
+  - (c) `docs/TESTING.md` (~line 16) Current State full-suite counts are stale
+    (1344 passed, 18 skipped; actual 2275 passed, 20 skipped); update them or
+    drop the hard-coded numbers.
+
 ## Completed Scope Ledger
 
 - **Phase 0 bootstrap (W0.1)** - pinned dispatcher took its first assignment
@@ -318,6 +331,21 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   `cf49bf40a061c2c26c335c4e6f6ca02aa5a3b213`, audited at that SHA). Audit
   approved with sub-threshold findings only (see Open Followups). Verification:
   full test suite, 2126 passed, 20 skipped.
+- **LINEAR-WORKFLOW** - agent-side Linear workflow. LIN-7 planner lease rebuild
+  (PR #89 merge `5a7493aed9812fed177d8696ef51d56a8f9e06b9`); LIN-8 planner
+  selection rules and issue template (PR #90 merge
+  `717c4e30e7151a16568679d357e2d3282037a012`); LIN-9a (PR #91 merge
+  `4b298e0b9f909aed1b21362170f9a78202f45a28`); LIN-9b (PR #92 merge
+  `f9373a4243f21c78bcbcd485a3598e2f418b678b`); LIN-9c validator Linear
+  evidence check (PR #94 merge `f5f2b9737b3e6a1f52133729b12ecd0429a74393`);
+  LIN-9d Claude validator helper evidence row (PR #105 merge
+  `59e2533a568d06cff84e9798ff0da8da87b96002`); LIN-9e post-verdict Linear
+  evidence dispatch (PR #106 merge
+  `d012a8e6830e86f363d829c09cd81787e92c649c`); LIN-10 acceptance runbook in
+  `docs/TESTING.md` (PR #107 merge
+  `f4dc618e2bd52b417460ba6135708c1ff0ebaa84`, audited at that SHA). Audit
+  approved with info findings only (see Open Followups). Verification: full
+  test suite, 2275 passed, 20 skipped.
 
 ## Notes
 
