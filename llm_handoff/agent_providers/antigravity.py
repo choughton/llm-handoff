@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 import time
 
 from llm_handoff import config
@@ -36,6 +37,40 @@ ANTIGRAVITY_DENY_RULE_MARKER = "Antigravity deny rule refused a command"
 # The rule text before it varies (for example ``command(regex:...)``), so
 # detection keys on this text only.
 _DENY_RULE_ERROR_TEXT = "Matches user-configured deny rule"
+# Replacement text for credentials removed from a logged refusal.
+_REDACTED = "[REDACTED]"
+_SECRET_NAME = (
+    r"[A-Za-z0-9_.-]*(?:token|secret|password|passwd|api[_-]?key|apikey"
+    r"|access[_-]?key|private[_-]?key|credentials?|client[_-]?secret)"
+    r"[A-Za-z0-9_.-]*"
+)
+_SECRET_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s\"']+)"
+# Each pattern keeps group 1 and replaces the rest of the match with
+# _REDACTED. A refused command can carry credentials (for example
+# ``git push https://user:TOKEN@host/repo.git``), and agy repeats the
+# command in its error message, so both fields go through these patterns.
+_CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # URL userinfo: scheme://user:pass@host or scheme://token@host.
+    re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@\"']+(?=@)"),
+    # Authorization headers, with an optional scheme word.
+    re.compile(
+        r"(?i)(authorization\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?)"
+        + _SECRET_VALUE
+    ),
+    re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+"),
+    # NAME=value where NAME names a secret (env vars, --password=...).
+    re.compile(r"(?i)(\b" + _SECRET_NAME + r"\s*=\s*)" + _SECRET_VALUE),
+    # --token VALUE style flags; a following flag is not taken as the value.
+    re.compile(
+        r"(?i)((?<![\w-])--?" + _SECRET_NAME + r"\s+)(?!-)" + _SECRET_VALUE
+    ),
+    # Well-known token prefixes that appear without a name.
+    re.compile(
+        r"()\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+        r"|glpat-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}"
+        r"|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})"
+    ),
+)
 # step_type values whose text_delta is not the agent's own reply.
 _NON_RESPONSE_STEP_TYPES = frozenset({"user_input", "tool", "checkpoint"})
 
@@ -411,7 +446,13 @@ class _AntigravityStreamJsonMonitor:
         )
         if not isinstance(command_line, str) or not command_line.strip():
             command_line = "unknown command"
-        self.deny_rule_hits.append((command_line.strip(), message.strip()))
+        # Redact before storing: these fields reach stderr and the dispatch log.
+        self.deny_rule_hits.append(
+            (
+                redact_credentials(command_line.strip()),
+                redact_credentials(message.strip()),
+            )
+        )
 
     def _handle_result(self, event: dict[str, object]) -> None:
         self.result_event = event
@@ -515,6 +556,18 @@ def _format_error(error: object) -> str:
     if error:
         return str(error)
     return "no error detail reported"
+
+
+def redact_credentials(text: str) -> str:
+    """Return ``text`` with credential-shaped substrings replaced.
+
+    Covers URL userinfo, authorization headers, bearer tokens, secret-named
+    ``NAME=value`` pairs and ``--flag value`` arguments, and common token
+    prefixes. This is a best-effort filter for log lines, not a guarantee.
+    """
+    for pattern in _CREDENTIAL_PATTERNS:
+        text = pattern.sub(lambda match: f"{match.group(1)}{_REDACTED}", text)
+    return text
 
 
 def _append_line(text: str, line: str) -> str:

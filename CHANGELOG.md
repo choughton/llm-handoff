@@ -13,8 +13,12 @@ This project follows a simple pre-release changelog until the first public tag.
   contains `Matches user-configured deny rule` (once per step), sets a
   nonzero exit code even when the role recovers, and adds one stderr line and
   one `ERROR` log line per refusal, starting with the new
-  `ANTIGRAVITY_DENY_RULE_MARKER` and naming the command line and message. A
-  resumed run that fails this way is not rerun in a fresh conversation. Other
+  `ANTIGRAVITY_DENY_RULE_MARKER` and naming the command line and message.
+  Both fields pass through the new `redact_credentials()` first, which
+  replaces URL userinfo, authorization headers, bearer tokens, secret-named
+  `NAME=value` pairs and `--flag value` arguments, and common token prefixes
+  with `[REDACTED]`, so a refused `git push https://user:TOKEN@host/...` does
+  not write the token to the console or dispatch log. A resumed run that fails this way is not rerun in a fresh conversation. Other
   tool errors, and commands that run and fail on their own, still pass.
 - The `agy` permission grants now cover arguments. The exact-match
   `command(<cmd>)` allow entries refused argument-bearing commands such as

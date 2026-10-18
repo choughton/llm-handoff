@@ -746,6 +746,78 @@ def test_non_deny_tool_error_does_not_fail_the_dispatch(
     assert _soft_deny_errors(logs) == []
 
 
+def test_deny_rule_report_redacts_credential_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    command_line = "git push https://user:s3cr3t-T0KEN@example.com/repo.git main"
+    message = DENY_RULE_MESSAGE.replace("git push", command_line, 1)
+    runner = _Runner(
+        _ProcessResult(
+            stdout=_deny_stream(command_line=command_line, message=message),
+            stderr="",
+            exit_code=0,
+        )
+    )
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    [error] = _soft_deny_errors(logs)
+    for text in (result.stderr, error):
+        assert "s3cr3t-T0KEN" not in text
+        assert "user:" not in text
+        assert "https://[REDACTED]@example.com/repo.git" in text
+        assert "Matches user-configured deny rule" in text
+    assert all("s3cr3t-T0KEN" not in m for _level, m in logs)
+
+
+@pytest.mark.parametrize(
+    ("command_line", "secret"),
+    [
+        ("GITHUB_TOKEN=abc123secret git push", "abc123secret"),
+        ("gh auth login --with-token --token abc123secret", "abc123secret"),
+        ("mysql --password=abc123secret -u root", "abc123secret"),
+        ('curl -H "Authorization: Bearer abc123secret" https://x', "abc123secret"),
+        ("git push ghp_abcdefghijklmnopqrstuvwxyz0123", "ghp_abcdefghij"),
+        ("deploy --api-key 'abc 123 secret'", "abc 123 secret"),
+    ],
+)
+def test_deny_rule_report_redacts_secret_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command_line: str,
+    secret: str,
+) -> None:
+    message = DENY_RULE_MESSAGE.replace("git push", command_line, 1)
+    runner = _Runner(
+        _ProcessResult(
+            stdout=_deny_stream(command_line=command_line, message=message),
+            stderr="",
+            exit_code=0,
+        )
+    )
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    [error] = _soft_deny_errors(logs)
+    assert secret not in result.stderr
+    assert secret not in error
+    assert "[REDACTED]" in error
+    assert result.stderr.count("[REDACTED]") >= 2
+
+
+def test_redact_credentials_keeps_ordinary_command_text() -> None:
+    text = (
+        'permission check failed for command "git log --grep push": '
+        "Permission denied for command(regex:^git( .*)? push( .*)?$). "
+        "Matches user-configured deny rule."
+    )
+
+    assert antigravity.redact_credentials(text) == text
+
+
 def test_deny_rule_on_failed_resume_is_not_rerun_fresh(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
