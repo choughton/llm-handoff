@@ -4117,6 +4117,16 @@ def _restart_mid_story(
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["story_id"] = saved_story_id
         state_path.write_text(json.dumps(state), encoding="utf-8")
+        # A handoff for another story would need the saved story's pull
+        # request merged (tests/test_publish.py covers that gate); this test
+        # is only about the saved story base.
+        from llm_handoff.publish import PublishOutcome
+
+        monkeypatch.setattr(
+            orchestrator,
+            "recover_orphaned_story",
+            lambda **_kwargs: PublishOutcome(),
+        )
     messages: list[tuple[str, str]] = []
     orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
     assert len(dispatches) == 2

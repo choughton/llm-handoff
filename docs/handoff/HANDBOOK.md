@@ -69,7 +69,10 @@ response with `Deferred:`, for example
 `Deferred: out of scope for this story; needs its own Work Packet.` The
 dispatcher posts that reply but leaves the thread unresolved, so the pull
 request is not merged yet. Do not use `Deferred:` for a finding you rejected
-as wrong; explain why it does not hold up instead.
+as wrong; explain why it does not hold up instead. Deferring every finding is
+still a `ready_for_review` handback, with no code change: do not hand back a
+`blocked_*` status to defer a finding, because the dispatcher then posts no
+reply and the planner never decides it.
 
 When deferred threads are all that keep a pull request from merging, the
 dispatcher routes the handoff to the planner once per pull request. The
@@ -87,7 +90,10 @@ planner decides each deferred finding:
 - Ask the user: route to `user` with one specific question.
 
 A finding the planner neither accepts nor sends back, or one deferred again
-after the planner's pass, pauses the dispatcher for a person.
+after the planner's pass, pauses the dispatcher for a person. Decisions written
+outside that pass are acted on only when they decide every open finding and
+the pull request head is the reviewed commit; otherwise they pause the
+dispatcher too.
 
 ## When To Flag Uncertainty
 

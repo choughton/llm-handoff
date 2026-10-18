@@ -6,6 +6,28 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `pr` mode no longer strands a pull request whose review finding was
+  deferred. The review bounce now says that deferring every finding is still
+  a `ready_for_review` handback with no code change (the work-claim gate
+  counts the story's earlier commits), and that a `blocked_*` handback skips
+  the gate, the audit, the reply, and the planner's pass. A blocked
+  handback that answers every open finding with `Deferred:` and changes no
+  story file now counts as a deferral. A planner handoff with
+  `## Deferred Finding Decisions` written outside that pass used to be
+  ignored silently. Now it is acted on when every unresolved finding has a
+  decision and the pull request head is the commit Codex reviewed (plus
+  only clean base-branch merges); otherwise the dispatcher pauses and keeps
+  the story state. Before each non-planner cycle, a handoff that moves on
+  from a saved story requires that story's pull request to be merged:
+  - a merged story is cleaned up;
+  - an open one on its reviewed head gets one planner pass, with the moved-on
+    handoff saved to `logs/dispatch/publish/displaced-handoff.md` for the
+    planner to restore;
+  - anything else, including a `gh` failure, pauses naming the pull request
+    and the recovery steps.
+
+  This replaces the `ERROR Story branch not ready` exit. The story state
+  now records `pull_request_url` and `reviewed_head`.
 - Linear mode (`tracker.provider: linear`) now rejects `provider:
   antigravity` on any role or role fallback when the config loads, whether
   or not the role sets `unsafe_bypass`. The error names each offending
