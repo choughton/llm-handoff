@@ -323,7 +323,7 @@ def test_init_dry_run_prints_agy_permissions_when_agy_is_on_path(
     ]
     for entry in expected_entries:
         assert entry in block
-    assert "    - command(npm test)" not in block
+    assert "    - command(regex:^npm test( .*)?$)" not in block
     assert not home.exists()
     assert not target.exists()
 
@@ -341,7 +341,7 @@ def test_init_prints_the_verification_command_agy_entry(
     lines = capsys.readouterr().out.splitlines()
     start = lines.index(AGY_HEADER)
     deny_index = lines.index("  permissions.deny:")
-    assert lines[deny_index - 1] == "    - command(npm test)"
+    assert lines[deny_index - 1] == "    - command(regex:^npm test( .*)?$)"
     assert start < deny_index
     assert lines[-1] == AGY_FOOTER
 

@@ -163,7 +163,21 @@ itself from 1.3.5 to 1.4.2 during the checks):
   checked"). Done when an operator-run `agy` planner turn (Claude roles
   cannot run `agy`) writes a valid `HANDOFF.md` and runs
   `git log --oneline -5` and `python -m pytest --version` without a
-  soft-deny.
+  soft-deny. On 2026-10-18 the user accepted this risk for GEM-0c: the `agy`
+  `python` and `python3` grants (`command(regex:^python( .*)?$)` and
+  `command(regex:^python3( .*)?$)`), like Claude's `Bash(python:*)` and
+  `Bash(python3:*)` in `CLAUDE_DEFAULT_ALLOWED_TOOLS`
+  (`llm_handoff/config.py`), let a role run a subprocess `git push` past the
+  deny entries, and `write_to_file` plus `python <script>` or `pytest` with a
+  written `conftest.py` does the same, so narrowing the grant does not close
+  it. Follow-up: GEM-0e.
+- GEM-0e: Interpreter-bypass boundary for shell grants. Enforce "no push"
+  outside the agent process, or keep remote-write credentials out of the
+  agent environment. Make interpreter grants (`python`, `python3`, `pytest`)
+  an explicit operator opt-in rather than a silent default. Have
+  `llm-handoff doctor` report the bypass risk for each role that has an
+  interpreter grant (Claude and `agy`). Until GEM-0e ships, the role
+  allowlists are a guardrail, not a sandbox.
 - GEM-1: `antigravity` normalizer. Add `antigravity` to the normalizer
   providers. Each call runs `agy -p` from a private temp directory that holds
   only a dispatcher-written agent file
