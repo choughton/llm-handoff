@@ -1815,12 +1815,19 @@ def test_doctor_antigravity_fails_on_generated_grant_for_push_capable_prefix(
     assert "agents must not push" in fails[0]
 
 
+_INTERP_GRANTS = (_grant("python"), _grant("python3"), _grant("pytest"))
+
+
 @pytest.mark.parametrize(
-    ("prefixes", "grants"),
+    ("prefixes", "grants", "opt_in"),
     [
-        ([], ("command(regex:^git status( .*)?$)",)),
-        (["python -m pytest"], ("command(regex:^python -m pytest( .*)?$)",)),
-        (["git stash list"], (_grant("git stash list"),)),
+        ([], ("command(regex:^git status( .*)?$)",), False),
+        (
+            ["python -m pytest"],
+            (*_INTERP_GRANTS, "command(regex:^python -m pytest( .*)?$)"),
+            True,
+        ),
+        (["git stash list"], (_grant("git stash list"),), False),
     ],
 )
 def test_doctor_antigravity_accepts_generated_grants_that_cannot_push(
@@ -1829,11 +1836,13 @@ def test_doctor_antigravity_accepts_generated_grants_that_cannot_push(
     capsys,
     prefixes: list[str],
     grants: tuple[str, ...],
+    opt_in: bool,
 ) -> None:
     repo = _agy_repo(
         tmp_path,
         monkeypatch,
-        extra_config=f"verification_allowed_prefixes: {json.dumps(prefixes)}\n",
+        extra_config=f"verification_allowed_prefixes: {json.dumps(prefixes)}\n"
+        + ("interpreter_grants: true\n" if opt_in else ""),
     )
     _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=grants))
 
@@ -1939,8 +1948,8 @@ def test_doctor_antigravity_ignores_non_push_and_uncompilable_regex_allows(
         ("command(git)", f"{_grant('git status')}, {_grant('git diff')}"),
         ("command(git *)", f"{_grant('git status')}, {_grant('git diff')}"),
         (
-            "command(regex:^py)",
-            f"{_grant('python')}, {_grant('python3')}, {_grant('pytest')}",
+            "command(regex:^git (st|di))",
+            f"{_grant('git status')}, {_grant('git diff')}",
         ),
         ("command(git status)", _grant("git status")),
         ("command(npm test)", _grant("npm test")),
@@ -1982,7 +1991,7 @@ def test_doctor_antigravity_warns_when_deny_rules_shadow_required_allows(
 ) -> None:
     repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
     settings = _complete_agy_settings()
-    settings["permissions"]["deny"].append("command(pytest)")  # type: ignore[index]
+    settings["permissions"]["deny"].append("command(git log)")  # type: ignore[index]
     _write_agy_settings(tmp_path, settings)
 
     exit_code, output = _run(repo, capsys)
@@ -1992,6 +2001,27 @@ def test_doctor_antigravity_warns_when_deny_rules_shadow_required_allows(
     assert len(lines) == 1, output
     assert lines[0].startswith(f"WARN {AGY_CHECK}:")
     assert "permissions.deny has rules that override required allow entries" in lines[0]
+    assert f"`command(git log)` shadows {_grant('git log')}" in lines[0]
+
+
+def test_doctor_antigravity_shadowing_covers_opt_in_interpreter_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(
+        tmp_path,
+        monkeypatch,
+        backend_fallback=False,
+        extra_config="interpreter_grants: true\n",
+    )
+    settings = _complete_agy_settings(extra_allow=_INTERP_GRANTS)
+    settings["permissions"]["deny"].append("command(pytest)")  # type: ignore[index]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
     assert f"`command(pytest)` shadows {_grant('pytest')}" in lines[0]
 
 
@@ -2083,8 +2113,12 @@ def test_doctor_antigravity_passes_with_exactly_the_required_entries(
 
 
 def test_shadowing_rules_do_not_flag_the_required_deny_entries() -> None:
-    allow = agy_perms.antigravity_allow_entries(["npm test", "python -m pytest"])
-    commands = agy_perms.antigravity_allowed_commands(["npm test", "python -m pytest"])
+    allow = agy_perms.antigravity_allow_entries(
+        ["npm test", "python -m pytest"], interpreter_grants=True
+    )
+    commands = agy_perms.antigravity_allowed_commands(
+        ["npm test", "python -m pytest"], interpreter_grants=True
+    )
 
     assert (
         doctor._shadowing_rules(
@@ -2102,6 +2136,100 @@ def test_shadowing_rules_do_not_flag_the_required_deny_entries() -> None:
             ],
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        _grant("python"),
+        _grant("python3"),
+        _grant("pytest"),
+        _grant("python -m pytest tests -q"),
+        "command(python)",
+        "command(pytest -q)",
+    ],
+)
+def test_doctor_antigravity_warns_on_user_wide_interpreter_grants_with_flag_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, entry: str
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(entry,)))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    line = lines[0]
+    assert line.startswith(f"WARN {AGY_CHECK}:")
+    assert f"grants the interpreter entry `{entry}`" in line
+    assert "user-wide and still applies" in line
+    assert "including `git push`" in line
+    assert "remove it, or set interpreter_grants: true" in line
+    assert "(covers planner, backend fallback)" in line
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "command(regex:^python3?( .*)?$)",
+        "command(regex:^npm test( .*)?$)",
+        _grant("pythonx"),
+        "command(npm test)",
+        "unsandboxed(python)",
+    ],
+)
+def test_doctor_antigravity_ignores_other_entries_for_the_interpreter_warn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, entry: str
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(entry,)))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert "interpreter entry" not in output
+
+
+def test_doctor_antigravity_accepts_interpreter_grants_with_flag_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(
+        tmp_path, monkeypatch, extra_config="interpreter_grants: true\n"
+    )
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=_INTERP_GRANTS))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"PASS {AGY_CHECK}:")
+
+
+def test_doctor_antigravity_requires_interpreter_grants_with_flag_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(
+        tmp_path, monkeypatch, extra_config="interpreter_grants: true\n"
+    )
+    _write_agy_settings(tmp_path, _complete_agy_settings())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"WARN {AGY_CHECK}:")
+    assert "permissions.allow is missing " + ", ".join(_INTERP_GRANTS) in lines[0]
+
+
+def test_settings_interpreter_grant_matches_generated_and_exact_forms() -> None:
+    assert doctor._settings_interpreter_grant(_grant("python -m pytest"))
+    assert doctor._settings_interpreter_grant("command(python3 -m pytest)")
+    assert not doctor._settings_interpreter_grant(_grant("git status"))
+    assert not doctor._settings_interpreter_grant("command(regex:^python.*$)")
+    assert not doctor._settings_interpreter_grant("unsandboxed(regex:^python( .*)?$)")
 
 
 def test_doctor_antigravity_leaves_the_settings_file_unchanged(
@@ -3315,10 +3443,39 @@ def _safe_claude_block() -> str:
     return f"provider: claude\nbinary: fake-claude\nallowed_tools: {SAFE_CLAUDE_TOOLS}"
 
 
-def test_doctor_interpreter_grants_warn_on_the_default_claude_list(
+INTERP_PASS_LINE = (
+    f"PASS {INTERP_CHECK}: no role has an interpreter grant for `python`, "
+    "`python3`, `pytest`, bare `Bash`, or `Bash(*)`; only these are "
+    "checked, so review any other interpreter rule (for example "
+    "`Bash(node:*)` or `Bash(sh:*)`) by hand"
+)
+INTERP_FLAG_CAUSE = (
+    "; cause: interpreter_grants: true adds the python, python3, and pytest "
+    "grants to the default lists"
+)
+
+
+def test_doctor_interpreter_grants_pass_on_the_default_claude_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _interp_lines(output) == [INTERP_PASS_LINE]
+
+
+def test_doctor_interpreter_grants_warn_on_the_opt_in_default_claude_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None, commit=False)
+    config_path = repo / "dispatch_config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + "interpreter_grants: true\n",
+        encoding="utf-8",
+    )
     _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
 
     exit_code, output = _run(repo, capsys)
@@ -3333,8 +3490,30 @@ def test_doctor_interpreter_grants_warn_on_the_default_claude_list(
             "`Bash(python:*)`, `Bash(python3:*)`, `Bash(pytest:*)`; an "
             "interpreter can run any command, including `git push`, past the "
             "allowlist, so the allowlist is a guardrail, not a sandbox"
+            + INTERP_FLAG_CAUSE
         )
     assert not any(line.startswith(f"WARN {INTERP_CHECK}: backend") for line in lines)
+
+
+def test_doctor_interpreter_grants_explicit_bash_warn_names_no_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["auditor"] = (
+        'provider: claude\nbinary: fake-claude\nallowed_tools: ["Read", "Bash"]'
+    )
+    repo = _interp_repo(tmp_path, monkeypatch, blocks, "interpreter_grants: true\n")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(
+        f"WARN {INTERP_CHECK}: auditor (provider claude) allows `Bash`; "
+    )
+    assert "interpreter_grants" not in lines[0]
 
 
 def test_doctor_interpreter_grants_pass_when_claude_drops_interpreters(
@@ -3414,7 +3593,7 @@ def test_doctor_interpreter_grants_label_claude_fallbacks(
         "provider: codex\nbinary: fake-codex\n"
         "fallback:\n  provider: claude\n  binary: fake-claude"
     )
-    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+    repo = _interp_repo(tmp_path, monkeypatch, blocks, "interpreter_grants: true\n")
 
     exit_code, output = _run(repo, capsys)
 
@@ -3425,6 +3604,37 @@ def test_doctor_interpreter_grants_label_claude_fallbacks(
         f"WARN {INTERP_CHECK}: backend fallback (provider claude) allows "
         "`Bash(python:*)`, `Bash(python3:*)`, `Bash(pytest:*)`; "
     )
+    assert lines[0].endswith(INTERP_FLAG_CAUSE)
+
+
+def test_doctor_interpreter_grants_pass_on_default_claude_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = (
+        "provider: codex\nbinary: fake-codex\n"
+        "fallback:\n  provider: claude\n  binary: fake-claude"
+    )
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _interp_lines(output) == [INTERP_PASS_LINE]
+
+
+def test_doctor_interpreter_grants_pass_on_antigravity_roles_with_flag_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["planner"] = "provider: antigravity\nbinary: fake-agy"
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _interp_lines(output) == [INTERP_PASS_LINE]
 
 
 def test_doctor_interpreter_grants_warn_on_antigravity_roles(
@@ -3433,7 +3643,7 @@ def test_doctor_interpreter_grants_warn_on_antigravity_roles(
     blocks = {role: _safe_claude_block() for role in ROLES}
     blocks["backend"] = _codex_block()
     blocks["planner"] = "provider: antigravity\nbinary: fake-agy"
-    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+    repo = _interp_repo(tmp_path, monkeypatch, blocks, "interpreter_grants: true\n")
 
     exit_code, output = _run(repo, capsys)
 
@@ -3454,10 +3664,12 @@ def test_doctor_interpreter_grants_warn_on_antigravity_roles(
     assert "including `git push`" in line
     assert "guardrail, not a sandbox" in line
     assert "user-wide" in line
+    assert line.endswith(INTERP_FLAG_CAUSE)
 
 
+@pytest.mark.parametrize("opt_in", [False, True])
 def test_doctor_interpreter_grants_name_antigravity_verification_prefixes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, opt_in: bool
 ) -> None:
     blocks = {role: _safe_claude_block() for role in ROLES}
     blocks["backend"] = (
@@ -3468,19 +3680,25 @@ def test_doctor_interpreter_grants_name_antigravity_verification_prefixes(
         tmp_path,
         monkeypatch,
         blocks,
-        extra='verification_allowed_prefixes: ["python -m pytest", "npm test"]\n',
+        extra='verification_allowed_prefixes: ["python -m pytest", "npm test"]\n'
+        + ("interpreter_grants: true\n" if opt_in else ""),
     )
 
     exit_code, output = _run(repo, capsys)
 
     assert exit_code == 0, output
     lines = _interp_lines(output)
+    if not opt_in:
+        # The python prefix gets no agy grant with the flag off.
+        assert lines == [INTERP_PASS_LINE]
+        return
     assert len(lines) == 1
     assert lines[0].startswith(
         f"WARN {INTERP_CHECK}: backend fallback (provider antigravity) "
     )
     assert "`command(regex:^python -m pytest( .*)?$)`" in lines[0]
     assert "npm test" not in lines[0]
+    assert lines[0].endswith(INTERP_FLAG_CAUSE)
 
 
 def test_doctor_interpreter_grants_warn_on_unsafe_bypass_launches(
@@ -3522,7 +3740,7 @@ def test_doctor_interpreter_grant_warnings_keep_exit_code_zero(
     }
     blocks["backend"] = "provider: codex\nbinary: fake-codex\nunsafe_bypass: true"
     blocks["planner"] = "provider: antigravity\nbinary: fake-agy"
-    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+    repo = _interp_repo(tmp_path, monkeypatch, blocks, "interpreter_grants: true\n")
 
     report = doctor.run_doctor(repo_root=repo)
 

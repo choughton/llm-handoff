@@ -345,11 +345,9 @@ def claude_permission_args(
             or agent_config.permissions_flag
             or config.CLAUDE_PERMISSIONS_FLAG
         ]
-    allowed_tools = (
-        config.CLAUDE_DEFAULT_ALLOWED_TOOLS
-        if agent_config.allowed_tools is None
-        else agent_config.allowed_tools
-    )
+    # `allowed_tools` as written, or the default list for the loaded config's
+    # `interpreter_grants` (`config.claude_default_allowed_tools`).
+    allowed_tools = agent_config.claude_allowed_tools
     args = [
         "--permission-mode",
         config.CLAUDE_PERMISSION_MODE,

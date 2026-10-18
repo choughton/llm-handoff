@@ -6,6 +6,32 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Breaking default change: interpreter grants are now an operator opt-in.
+  `CLAUDE_DEFAULT_ALLOWED_TOOLS` no longer holds `Bash(python:*)`,
+  `Bash(python3:*)`, or `Bash(pytest:*)`, and the generated `agy` allow
+  entries (`ANTIGRAVITY_REQUIRED_ALLOW`, the list `init` prints, and the list
+  `doctor` checks) no longer hold the `python`, `python3`, or `pytest`
+  grants or a grant for a `verification_allowed_prefixes` entry that starts
+  with one of them. A new top-level `interpreter_grants: true` restores the
+  previous default lists exactly. Any interpreter grant lets an agent run any
+  command, `git push` included, past the allowlist, so role allowlists are a
+  guardrail, not a sandbox; the docs now recommend server-side branch
+  protection. A role's own `allowed_tools` list, `unsafe_bypass` launches,
+  Codex launches, and the work-claim gate (which runs the Verification
+  command itself) are unchanged.
+  - `antigravity_allowed_commands()` and `antigravity_allow_entries()` take a
+    required keyword-only `interpreter_grants` argument; the new constants
+    are `CLAUDE_INTERPRETER_ALLOWED_TOOLS` and
+    `ANTIGRAVITY_INTERPRETER_COMMANDS`.
+  - `llm-handoff init --verification-command` with a `python`, `python3`, or
+    `pytest` executable adds no rule and writes no `allowed_tools` list, and
+    prints one line explaining the opt-in. `init` never writes
+    `interpreter_grants`.
+  - `llm-handoff doctor` reports `interpreter grants` as PASS for the default
+    lists with the key off, names `interpreter_grants: true` as the cause in
+    each warning about a grant the key adds, and warns (with the key off)
+    about any `agy` settings `permissions.allow` entry that still grants an
+    interpreter, since that grant is user-wide.
 - `normalizer.provider: antigravity` is now a registered next-agent
   normalizer (default model `gemini-3.8-flash-low`; the default provider
   stays `claude`). Each call runs `agy` with `--output-format stream-json`

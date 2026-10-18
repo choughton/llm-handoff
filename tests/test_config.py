@@ -1108,6 +1108,79 @@ def test_linear_tools_for_role_prefixes_in_table_order() -> None:
     )
 
 
+def test_interpreter_grants_defaults_to_false(tmp_path: Path) -> None:
+    loaded = load_dispatch_config(repo_root=tmp_path)
+
+    assert loaded.interpreter_grants is False
+    for agent in loaded.agents.values():
+        assert agent.interpreter_grants is False
+        if agent.provider == "claude":
+            assert agent.claude_allowed_tools == (
+                config_module.CLAUDE_DEFAULT_ALLOWED_TOOLS
+            )
+            assert "Bash(python:*)" not in agent.claude_allowed_tools
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_interpreter_grants_loads_from_yaml(tmp_path: Path, value: bool) -> None:
+    config_path = _write_config(
+        tmp_path,
+        f"interpreter_grants: {str(value).lower()}\n"
+        "agents:\n"
+        "  backend:\n"
+        "    provider: codex\n"
+        "    fallback:\n"
+        "      provider: claude\n"
+        "  auditor:\n"
+        "    provider: claude\n"
+        "    allowed_tools: [Read]\n",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.interpreter_grants is value
+    expected = config_module.claude_default_allowed_tools(value)
+    assert loaded.agents["validator"].claude_allowed_tools == expected
+    fallback = loaded.agents["backend"].fallback
+    assert fallback is not None
+    assert fallback.interpreter_grants is value
+    assert fallback.claude_allowed_tools == expected
+    # An explicit list is kept as written whatever the flag says.
+    assert loaded.agents["auditor"].claude_allowed_tools == ("Read",)
+
+
+def test_interpreter_grants_is_not_a_role_key(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        "agents:\n  auditor:\n    provider: claude\n    interpreter_grants: true\n",
+    )
+
+    with pytest.raises(ValueError, match="interpreter_grants"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+def test_interpreter_grants_survive_revalidation(tmp_path: Path) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path, interpreter_grants=True)
+    revalidated = DispatchConfig.model_validate(loaded.model_dump())
+
+    assert revalidated.interpreter_grants is True
+    assert revalidated.agents["auditor"].claude_allowed_tools == (
+        config_module.claude_default_allowed_tools(True)
+    )
+
+
+def test_interpreter_grants_do_not_mutate_the_callers_agent_config(
+    tmp_path: Path,
+) -> None:
+    agent = config_module.AgentConfig(provider="claude")
+    agents = {**config_module._default_agent_configs(), "auditor": agent}
+
+    loaded = DispatchConfig(repo_root=tmp_path, agents=agents, interpreter_grants=True)
+
+    assert loaded.agents["auditor"].interpreter_grants is True
+    assert agent.interpreter_grants is False
+
+
 _LINEAR_YAML = """tracker:
   provider: linear
   team: ENG

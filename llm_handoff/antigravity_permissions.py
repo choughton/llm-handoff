@@ -7,7 +7,14 @@ holds the one shared list of entries: `llm-handoff init` prints it, and
 writes that file; the user adds the entries.
 
 The allow entries mirror the `Bash(...)` rules in
-`CLAUDE_DEFAULT_ALLOWED_TOOLS`. Each one is an anchored regex grant,
+`CLAUDE_DEFAULT_ALLOWED_TOOLS`. The interpreter commands (`python`, `python3`,
+`pytest`) are an operator opt-in: they are added, like
+`CLAUDE_INTERPRETER_ALLOWED_TOOLS` on the Claude side, only when the config
+sets `interpreter_grants: true`, because an interpreter can run any command,
+`git push` included, past these grants. With the flag off, a verification
+command whose first token is one of those interpreters gets no grant either;
+the dispatcher's work-claim gate still runs it. Each entry is an anchored
+regex grant,
 ``command(regex:^<cmd>( .*)?$)``, so it covers the command with any
 arguments (``git rev-parse HEAD``, ``git commit -m ...``) but not a longer
 command name (``git statusx``). `git push` is denied in both the plain and the
@@ -26,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
+from llm_handoff.config import INTERPRETER_EXECUTABLES
 from llm_handoff.provider_auth import ANTIGRAVITY_SETTINGS_PATH
 
 # The commands every Antigravity role may run, with any arguments.
@@ -38,10 +46,9 @@ ANTIGRAVITY_ALLOWED_COMMANDS: tuple[str, ...] = (
     "git add",
     "git commit",
     "git rev-parse",
-    "python",
-    "python3",
-    "pytest",
 )
+# Interpreter commands granted only with `interpreter_grants: true`.
+ANTIGRAVITY_INTERPRETER_COMMANDS: tuple[str, ...] = INTERPRETER_EXECUTABLES
 
 # Regex metacharacters escaped in a grant. `re.escape` is not used because it
 # also escapes spaces, and RE2-style engines reject `\ `.
@@ -63,6 +70,7 @@ def antigravity_command_grant(command: str) -> str:
     return f"command(regex:^{escaped}( .*)?$)"
 
 
+# The required allow entries with `interpreter_grants` off (the default).
 ANTIGRAVITY_REQUIRED_ALLOW: tuple[str, ...] = tuple(
     antigravity_command_grant(command) for command in ANTIGRAVITY_ALLOWED_COMMANDS
 )
@@ -92,34 +100,59 @@ ANTIGRAVITY_AGENT_WRITE_TOOLS: tuple[str, ...] = (
 )
 
 
+def is_interpreter_command(command: str) -> bool:
+    """Return True when the first whitespace token of ``command`` is an
+    interpreter in ``ANTIGRAVITY_INTERPRETER_COMMANDS``."""
+
+    tokens = command.split()
+    return bool(tokens) and tokens[0] in ANTIGRAVITY_INTERPRETER_COMMANDS
+
+
 def antigravity_allowed_commands(
     verification_commands: Iterable[str],
+    *,
+    interpreter_grants: bool,
 ) -> tuple[str, ...]:
     """Return the required commands plus each stripped verification command.
 
-    Empty commands are skipped, duplicates are dropped, and first-seen order
-    is kept. The result lines up one-to-one with `antigravity_allow_entries`.
+    With ``interpreter_grants`` the interpreter commands follow the base
+    commands. Without it, verification commands that start with an
+    interpreter are skipped too; the dispatcher gate still runs them. Empty
+    commands are skipped, duplicates are dropped, and first-seen order is
+    kept. The result lines up one-to-one with `antigravity_allow_entries`.
     """
 
     commands = list(ANTIGRAVITY_ALLOWED_COMMANDS)
+    if interpreter_grants:
+        commands.extend(ANTIGRAVITY_INTERPRETER_COMMANDS)
     for command in verification_commands:
         stripped = command.strip()
-        if stripped:
-            commands.append(stripped)
+        if not stripped:
+            continue
+        if not interpreter_grants and is_interpreter_command(stripped):
+            continue
+        commands.append(stripped)
     return tuple(dict.fromkeys(commands))
 
 
-def antigravity_allow_entries(verification_commands: Iterable[str]) -> tuple[str, ...]:
+def antigravity_allow_entries(
+    verification_commands: Iterable[str],
+    *,
+    interpreter_grants: bool,
+) -> tuple[str, ...]:
     """Return the required allow entries plus one per verification command.
 
-    Each verification command becomes ``antigravity_command_grant(<cmd>)``.
+    Each command from `antigravity_allowed_commands` (same
+    ``interpreter_grants`` rule) becomes ``antigravity_command_grant(<cmd>)``.
     Empty commands are skipped, duplicates are dropped, and first-seen order
     is kept.
     """
 
     return tuple(
         antigravity_command_grant(command)
-        for command in antigravity_allowed_commands(verification_commands)
+        for command in antigravity_allowed_commands(
+            verification_commands, interpreter_grants=interpreter_grants
+        )
     )
 
 

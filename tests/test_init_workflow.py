@@ -25,6 +25,7 @@ from llm_handoff.init_workflow import (
     render_config,
     resolve_provider_mapping,
     template_files,
+    verification_allowed_tools,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -963,16 +964,68 @@ def test_verification_command_with_claude_mapping_covers_all_roles(
     assert all(value == expected for value in tools.values())
 
 
-def test_verification_command_does_not_duplicate_a_default_rule(
-    tmp_path: Path,
-) -> None:
-    init_reference_workflow(
-        tmp_path, available_providers=(), verification_command="python -m pytest"
+@pytest.mark.parametrize("executable", ["python", "python3", "pytest"])
+def test_verification_allowed_tools_adds_no_interpreter_rule(executable: str) -> None:
+    tools = verification_allowed_tools(executable)
+
+    assert tools == CLAUDE_DEFAULT_ALLOWED_TOOLS
+    assert f"Bash({executable}:*)" not in tools
+
+
+def test_verification_allowed_tools_adds_other_executables() -> None:
+    assert verification_allowed_tools("npm") == (
+        *CLAUDE_DEFAULT_ALLOWED_TOOLS,
+        "Bash(npm:*)",
     )
 
-    tools = _loaded_allowed_tools(tmp_path)
-    assert tools["auditor"] == CLAUDE_DEFAULT_ALLOWED_TOOLS
-    assert tools["auditor"].count("Bash(python:*)") == 1
+
+@pytest.mark.parametrize("provider", [None, "claude"])
+def test_python_verification_command_leaves_roles_on_the_default_list(
+    tmp_path: Path, provider: str | None
+) -> None:
+    command = "python -m pytest tests -q"
+    init_reference_workflow(
+        tmp_path,
+        provider=provider,
+        available_providers=(),
+        verification_command=command,
+    )
+
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    data = yaml.safe_load(text)
+    assert "interpreter_grants" not in data
+    assert "Bash(python:*)" not in text
+    assert "allowed_tools" not in data and all(
+        "allowed_tools" not in agent for agent in data["agents"].values()
+    )
+    assert data["verification_allowed_prefixes"] == [command]
+    loaded = load_dispatch_config(
+        repo_root=tmp_path, config_path=tmp_path / "dispatch_config.yaml"
+    )
+    assert loaded.interpreter_grants is False
+    for agent in loaded.agents.values():
+        assert agent.allowed_tools is None
+        if agent.provider == "claude":
+            assert agent.claude_allowed_tools == CLAUDE_DEFAULT_ALLOWED_TOOLS
+
+
+def test_python_verification_roles_follow_a_later_opt_in(tmp_path: Path) -> None:
+    init_reference_workflow(
+        tmp_path,
+        provider="claude",
+        available_providers=(),
+        verification_command="python -m pytest",
+    )
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "interpreter_grants: true\n" + config_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    for agent in loaded.agents.values():
+        assert "Bash(python:*)" in agent.claude_allowed_tools
 
 
 @pytest.mark.parametrize(

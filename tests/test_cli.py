@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from llm_handoff import __main__ as main_module
 from llm_handoff import antigravity_permissions as agy_perms
@@ -344,6 +345,52 @@ def test_init_prints_the_verification_command_agy_entry(
     assert lines[deny_index - 1] == "    - command(regex:^npm test( .*)?$)"
     assert start < deny_index
     assert lines[-1] == AGY_FOOTER
+
+
+INTERPRETER_INIT_LINE = (
+    "Verification command: python -m pytest tests -q; no role gets a python "
+    "grant. The dispatcher gate runs this command itself. Roles can run it "
+    "only after you set interpreter_grants: true in dispatch_config.yaml, "
+    "which lets an agent run any command, git push included."
+)
+
+
+@pytest.mark.parametrize("executable", ["python", "python3", "pytest"])
+def test_init_interpreter_verification_command_prints_the_opt_in_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, executable: str
+) -> None:
+    _stub_provider_which(monkeypatch, {"agy", "claude", "codex"})
+    command = f"{executable} -m pytest tests -q"
+
+    exit_code = main_module.main(
+        ["init", str(tmp_path), "--verification-command", command]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    lines = output.splitlines()
+    expected = INTERPRETER_INIT_LINE.replace(
+        "python -m pytest tests -q", command
+    ).replace("a python grant", f"a {executable} grant")
+    assert lines.count(expected) == 1
+    expected.encode("ascii")
+    assert f"allowed_tools adds Bash({executable}:*)" not in output
+    # The printed agy grants are the flag-off set.
+    start = lines.index(AGY_HEADER)
+    deny_index = lines.index("  permissions.deny:")
+    assert lines[start + 2 : deny_index] == [
+        f"    - {entry}" for entry in agy_perms.ANTIGRAVITY_REQUIRED_ALLOW
+    ]
+    assert "python( .*)?$)" not in output
+    assert "pytest( .*)?$)" not in output
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    data = yaml.safe_load(text)
+    assert "interpreter_grants" not in data
+    assert not any(
+        line.startswith("interpreter_grants") for line in text.splitlines()
+    )
+    assert f"Bash({executable}:*)" not in text
+    assert data["verification_allowed_prefixes"] == [command]
 
 
 def test_init_omits_agy_permissions_when_agy_is_not_on_path(

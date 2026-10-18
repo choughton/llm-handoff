@@ -8,7 +8,8 @@ belong in commits, handoffs, and pull requests.
 
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
-  merged in PR #125; GEM-0h merged in PR #126; GEM-1 in progress).
+  merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
+  GEM-0e in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -205,7 +206,12 @@ itself from 1.3.5 to 1.4.2 during the checks):
   Directions (a) (keep remote-write credentials out of the agent
   environment) and (b) (a pre-push hook or refusing credential helper) are
   dropped. The GEM-0e1 doctor wording update for opt-in grants stays inside
-  GEM-0e.
+  GEM-0e. Key decided by the planner on 2026-10-18: top-level
+  `interpreter_grants: bool` on `DispatchConfig`, default `false`; `true`
+  restores the previous Claude default list and `agy` allow set exactly, and
+  a role's own `allowed_tools` is unaffected. Self-host opt-in: the operator
+  adds the top-level line `interpreter_grants: true` to the outside self-host
+  config before re-pinning onto the GEM-0e merge.
 - GEM-0e1: Doctor reports interpreter-grant bypass risk per role.
   `llm-handoff doctor` adds `interpreter grants` lines per role or fallback
   launch: a WARN for each Claude launch without `unsafe_bypass` whose
