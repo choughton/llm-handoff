@@ -464,29 +464,69 @@ def _check_container_runtime(
 _ANTIGRAVITY_CHECK_NAME = "antigravity permissions"
 _GIT_PUSH_GRANT_PREFIXES = ("command(git push", "unsandboxed(git push")
 _REGEX_GRANT_PREFIXES = ("command(regex:", "unsandboxed(regex:")
-# Push command lines a regex allow entry must not match.
+# Push command lines a regex allow entry that does not name `git` must not
+# match. This is a backstop only: a pattern that names `git` is decided by
+# `_regex_grant_push_problem` without these probes.
 _GIT_PUSH_PROBES = ("git push", "git push origin main", "git -C . push origin main")
 
 
-def _regex_grant_allows_push(entry: str) -> bool:
-    """Return True when a regex allow ``entry`` matches a `git push` line.
+def _regex_allow_pattern(entry: str) -> str | None:
+    """Return the pattern of a regex allow ``entry``, or None for other entries.
 
-    Only ``command(regex:<p>)`` and ``unsandboxed(regex:<p>)`` entries are
-    checked; a pattern that does not compile is not counted.
+    A regex allow entry starts with ``command(regex:`` or
+    ``unsandboxed(regex:`` and ends with ``)``; its pattern is the text
+    between them.
     """
     if not entry.endswith(")"):
-        return False
+        return None
     for prefix in _REGEX_GRANT_PREFIXES:
         if entry.startswith(prefix):
-            pattern = entry[len(prefix) : -1]
-            break
-    else:
+            return entry[len(prefix) : -1]
+    return None
+
+
+def _plain_command_can_push(command: str) -> bool:
+    """Return True when the plain ``command`` may run `git push`.
+
+    That is the case when its first whitespace token is ``git`` and it has no
+    second token, its second token starts with ``-`` (an option such as
+    ``-c x=y`` or ``-C .`` can come before ``push``), or any token after the
+    first is ``push``.
+    """
+    tokens = command.split()
+    if not tokens or tokens[0] != "git":
         return False
+    if len(tokens) == 1 or tokens[1].startswith("-"):
+        return True
+    return "push" in tokens[1:]
+
+
+def _regex_grant_push_problem(
+    entry: str, generated_commands: dict[str, str]
+) -> str | None:
+    """Return why a regex allow ``entry`` may allow `git push`, or None.
+
+    ``generated_commands`` maps each required allow entry to its plain
+    command. The result is ``"push"`` when the entry is a generated grant for
+    a push-capable command, or a pattern without ``git`` that matches one of
+    ``_GIT_PUSH_PROBES``; ``"unverifiable"`` when the entry is any other
+    pattern naming ``git`` (case-insensitive, compiled or not); None for
+    accepted entries and entries that are not regex allow entries.
+    """
+    pattern = _regex_allow_pattern(entry)
+    if pattern is None:
+        return None
+    if entry in generated_commands:
+        return "push" if _plain_command_can_push(generated_commands[entry]) else None
+    if "git" in pattern.lower():
+        return "unverifiable"
     try:
         compiled = re.compile(pattern)
     except re.error:
-        return False
-    return any(compiled.search(probe) is not None for probe in _GIT_PUSH_PROBES)
+        return None
+    if any(compiled.search(probe) is not None for probe in _GIT_PUSH_PROBES):
+        return "push"
+    return None
 
 
 def _read_antigravity_permissions(
@@ -637,21 +677,30 @@ def _check_antigravity_permissions(
         return
     allow, deny, ask = result
     found = False
+    generated_commands = dict(zip(allow_required, allowed_commands, strict=True))
     for entry in allow:
-        if entry.startswith(_GIT_PUSH_GRANT_PREFIXES) or _regex_grant_allows_push(
-            entry
-        ):
-            found = True
-            checks.append(
-                DoctorCheck(
-                    "FAIL",
-                    _ANTIGRAVITY_CHECK_NAME,
-                    f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow grants "
-                    f"`{_ascii_entry(entry)}` "
-                    f"{covers}; remove it, because agents must not "
-                    "push",
-                )
+        if entry.startswith(_GIT_PUSH_GRANT_PREFIXES):
+            problem: str | None = "push"
+        else:
+            problem = _regex_grant_push_problem(entry, generated_commands)
+        if problem is None:
+            continue
+        found = True
+        if problem == "unverifiable":
+            advice = (
+                "the doctor cannot verify that this regex entry does not allow "
+                "`git push`, so remove it or replace it with a generated grant"
             )
+        else:
+            advice = "remove it, because agents must not push"
+        checks.append(
+            DoctorCheck(
+                "FAIL",
+                _ANTIGRAVITY_CHECK_NAME,
+                f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow grants "
+                f"`{_ascii_entry(entry)}` {covers}; {advice}",
+            )
+        )
     # Antigravity applies Deny > Ask > Allow, and a headless `agy -p` run
     # soft-denies any command that needs approval, so a deny or ask rule that
     # matches a required allow entry blocks that command despite the grant.

@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff doctor` no longer decides whether a regex `agy` allow entry is
+  push-safe only by testing three example `git push` lines. A regex allow
+  entry that equals a generated required grant passes unless its command can
+  push (`git` alone, `git` followed by an option such as `-c x=y`, or a
+  command with a `push` word); any other regex allow entry whose pattern
+  names `git` now FAILs because the doctor cannot verify it, so entries such
+  as `command(regex:^git push --force$)` and `command(regex:^git status$)`
+  fail. Patterns that do not name `git` keep the example-line check as a
+  backstop. Each allow entry yields at most one push FAIL. No grant or default
+  grant list changed.
 - The work-claim gate now matches Verification commands against
   `verification_allowed_prefixes` literally instead of word by word. After
   surrounding spaces and tabs are stripped, a command must equal a prefix or
