@@ -863,23 +863,28 @@ before a dispatch, that the role can run the command it was given.
   `record_passed_verification` (`llm_handoff/work_claim.py` ~line 2390,
   called at `llm_handoff/orchestrator.py` ~line 3367) writes the `##
   Dispatcher Verification` section the auditor helper files already tell
-  the auditor to trust (`.claude/agents/auditor.md` ~line 46 and the Codex
-  and agy copies); that section is the evidence the auditor reads. Update
-  the handbook's Evidence Block Reference, both implementer prompts, the
-  `llm-handoff` and `llm-handoff-frontend` Codex skills, the Claude and agy
-  `backend.md` and `frontend.md` agent files, and the auditor prompt (a
-  deferred `Commands run` with a PASS section is not a finding). The
+  the auditor to trust (`.claude/agents/auditor.md` ~line 46,
+  `.agents/agents/auditor.md` ~line 40, and the Codex auditor skill); that
+  section is the evidence the auditor reads. Update the handbook's
+  Evidence Block Reference, both implementer prompts, the `llm-handoff`
+  and `llm-handoff-frontend` Codex skills, the `backend.md` and
+  `frontend.md` files under `.claude/agents/` and `.agents/agents/`, and
+  the auditor prompt (a deferred `Commands run` with a PASS section is not
+  a finding). The
   backend and frontend `verification deferred` patterns in
   `llm_handoff/rationalization_patterns.yaml` (~lines 10-12 and 20-22) must
   not match the new wording. Tests: the validator accepts the block, the
   gate still runs the command on such a claim, and an auditor fixture with
   a deferred `Commands run` plus a PASS section validates.
 - ACTIVE-2: Preflight the Verification command against role grants. In
-  `llm-handoff doctor` and at dispatcher startup (`run_loop`,
+  `llm-handoff doctor` and in the dispatcher, both at startup (`run_loop`,
   `llm_handoff/orchestrator.py` ~line 456, next to the pre-launch checks
-  there), parse the live Work Packet when the handoff routes to an
-  implementer (`doctor._check_handoff`, `llm_handoff/doctor.py` ~line 1873,
-  already reads and routes it) and check that each command's leading
+  there) and in every cycle that dispatches an implementer, next to
+  `capture_pre_dispatch_state` (~line 1170), because a Work Packet the
+  planner writes mid-run never passes startup; parse the live Work Packet
+  when the handoff routes to an implementer (`doctor._check_handoff`,
+  `llm_handoff/doctor.py` ~line 1873, already reads and routes it) and
+  check that each command's leading
   executable (`command_executable`, `llm_handoff/work_claim.py` ~line 1455)
   is allowed by that role's launch, fallback included (`_role_launches`,
   `llm_handoff/doctor.py` ~line 370): for Claude, the `Bash(prefix:*)`
@@ -896,8 +901,8 @@ before a dispatch, that the role can run the command it was given.
   true or an allowed_tools rule`, never FAIL, so the planner can re-scope.
   Also run `verification_command_allowed` (`llm_handoff/work_claim.py`
   ~line 1833) against the same commands, so a prefix mismatch is reported
-  before the gate bounces it. Tests in `tests/test_doctor.py`; a startup
-  test in `tests/ported/test_orchestrator.py` with `--dry-run`.
+  before the gate bounces it. Tests in `tests/test_doctor.py`; startup and
+  per-cycle tests in `tests/ported/test_orchestrator.py` with `--dry-run`.
 - ACTIVE-3: Test scope policy. In `docs/handoff/PLANNER_HANDOFF_PROMPT.md`
   (the Work Packet section, ~lines 78-150) and the handbook: for a story
   that changes behaviour, tests that assert the old behaviour are in scope
@@ -914,7 +919,8 @@ before a dispatch, that the role can run the command it was given.
   surfaces it through `_rationalization_warnings`,
   `llm_handoff/validator.py` ~line 747) and mirror the rule in
   `.claude/agents/planner.md`, `.codex/skills/llm-handoff-planner/SKILL.md`,
-  and `.gemini/agents/planner.md`. Tests: `parse_work_packet` accepts
+  and `.agents/agents/planner.md` (not `.gemini/agents/`, which GEM-5
+  deletes). Tests: `parse_work_packet` accepts
   `tests/` as a Files in scope entry and the gate treats a new file under
   it as in scope (`tests/test_work_claim.py`, next to the parser tests at
   ~line 301), and `tests/test_rationalization_detector.py` catches the
@@ -928,14 +934,21 @@ before a dispatch, that the role can run the command it was given.
   `interpreter_grants: true`. Encode this in the planner prompt's handback
   review and the handbook's Escalation Protocol (`docs/handoff/HANDBOOK.md`
   ~lines 125-142), and in the three planner helper files named in
-  ACTIVE-3. Add a validator warning `planner_redispatch_after_refusal` when
-  a planner handoff routes to the implementer that produced the previous
-  handoff, the Work Packet section (`extract_work_packet_section`,
+  ACTIVE-3. So the validator can see the refusal, an implementer that
+  hands back `blocked_implementation_failure` for an environment reason
+  writes one bullet in the handback body, `- **Environment refusal:**
+  <permission rule | missing binary | no TTY>: <the refusal text,
+  quoted>`; the implementer prompts and helper files named in ACTIVE-1
+  add it, and `_bullet_field_values` (`llm_handoff/validator.py` ~line
+  834) already parses bullets of that shape. The dispatcher's own refusal
+  log lines (`llm_handoff/agent_providers/claude.py` ~lines 203-208,
+  `antigravity.py` ~line 35) are not handoff content and cover only
+  permission rules, so the validator does not key on them. Add a
+  validator warning `planner_redispatch_after_refusal` when a planner
+  handoff routes to the implementer that produced the previous handoff,
+  the Work Packet section (`extract_work_packet_section`,
   `llm_handoff/work_claim.py` ~line 452) is unchanged, and the previous
-  handoff contains `refused by the permission rules` (the WARN text the
-  Claude provider logs, `llm_handoff/agent_providers/claude.py` ~lines
-  203-208) or the agy deny-rule marker
-  (`llm_handoff/agent_providers/antigravity.py` ~line 35).
+  handoff carries that bullet.
   `validate_handoff_text` already takes `previous_route` and
   `prior_handoff_content` (`llm_handoff/validator.py` ~lines 376-385); the
   orchestrator passes the story baseline there (~line 1468), so the story
