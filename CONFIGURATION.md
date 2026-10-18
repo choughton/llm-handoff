@@ -1017,7 +1017,8 @@ allowed_tools:
 subagent, and `git cat-file` because the shipped `handoff-validator` resolves
 SHAs with it. Setting `allowed_tools` on a role replaces the whole list. The
 list is a guardrail, not a sandbox: `Bash(python:*)` still lets the agent run
-arbitrary Python. `git push` is not on the list.
+arbitrary Python. `git push` is not on the list. `llm-handoff doctor` reports
+these interpreter rules per role as `interpreter grants` warnings.
 
 Claude Code also protects some paths, and `dontAsk` mode denies every write
 to them before it reads `allowed_tools` or settings allow rules. One of them
@@ -1238,6 +1239,21 @@ entries plus `verification_allowed_prefixes`:
 Roles with `unsafe_bypass: true` launch with `--dangerously-skip-permissions`
 and are not checked. Neither `init` nor `doctor` writes the `agy` settings
 file.
+
+`llm-handoff doctor` also reports `interpreter grants` lines, one per role or
+fallback launch. A Claude launch without `unsafe_bypass` gets a WARN naming
+each rule in its effective list (`allowed_tools`, or the default list above)
+that is bare `Bash`, `Bash(*)`, or `Bash(<cmd>...)` starting with `python`,
+`python3`, or `pytest`. An Antigravity launch without `unsafe_bypass` gets a
+WARN naming each required `command(regex:...)` allow entry, including those
+built from `verification_allowed_prefixes`, whose command starts with one of
+those interpreters, and noting that `agy` grants are user-wide; this check
+does not read the settings file. Both warnings say that an interpreter can run
+any command, including `git push`, past the allowlist. Any launch with
+`unsafe_bypass: true` gets a WARN that it has no shell allowlist at all; Codex
+launches without it get no line. When no line is added and at least one
+Claude or Antigravity launch exists, the doctor prints one PASS line. These
+lines are never FAIL, so they do not change the doctor's exit code.
 
 `permissions_flag` now only applies together with `unsafe_bypass: true`. It
 replaces `--dangerously-skip-permissions` for that role. Setting it without

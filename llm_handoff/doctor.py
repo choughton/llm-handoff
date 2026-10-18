@@ -16,7 +16,10 @@ dispatch loop applies. When a role or fallback runs on Antigravity without
 `unsafe_bypass`, it also checks the `agy` user settings file for the required
 `permissions.allow` and `permissions.deny` entries, and for `permissions.deny`
 or `permissions.ask` rules that override a required allow entry, reading that
-file only. In Linear mode (`tracker.provider: linear`) it reports, for each
+file only. It also warns, per role launch, about interpreter grants (shell
+rules that let an agent run `python`, `python3`, or `pytest`, or any command)
+and `unsafe_bypass` launches, because an interpreter can run any command past
+the shell allowlist; these lines are warnings only. In Linear mode (`tracker.provider: linear`) it reports, for each
 provider CLI the configured roles launch, whether that CLI's MCP config files
 define a server named `tracker.mcp_server`; it reads those MCP config files
 only, never prints a value from them, and never runs the provider CLI.
@@ -66,6 +69,7 @@ from llm_handoff.antigravity_permissions import (
 )
 from llm_handoff.config import (
     CLAUDE_BINARY,
+    CLAUDE_DEFAULT_ALLOWED_TOOLS,
     CLAUDE_DISALLOWED_TOOLS,
     CLAUDE_MODEL,
     CODEX_BINARY,
@@ -170,6 +174,7 @@ def run_doctor(
         _check_role_binaries(dispatch_config, resolved_root, checks)
         _check_container_runtime(dispatch_config, checks)
         _check_antigravity_permissions(dispatch_config, checks)
+        _check_interpreter_grants(dispatch_config, checks)
         _check_normalizer(dispatch_config, resolved_root, checks)
         _check_security_review(dispatch_config, checks)
         _check_work_claim_gate(dispatch_config, checks)
@@ -697,6 +702,120 @@ def _check_antigravity_permissions(
                 _ANTIGRAVITY_CHECK_NAME,
                 f"{ANTIGRAVITY_SETTINGS_PATH} has every required allow and deny "
                 f"entry {covers}",
+            )
+        )
+
+
+_INTERPRETER_CHECK_NAME = "interpreter grants"
+_INTERPRETER_EXECUTABLES = ("python", "python3", "pytest")
+_INTERPRETER_BYPASS_RISK = (
+    "an interpreter can run any command, including `git push`, past the "
+    "allowlist, so the allowlist is a guardrail, not a sandbox"
+)
+_CLAUDE_BASH_TOKEN_END = re.compile(r"[ :*]")
+
+
+def _claude_interpreter_rule(rule: str) -> bool:
+    """Return True when the Claude ``rule`` grants an interpreter or any command.
+
+    Counts bare ``Bash``, ``Bash(*)``, and ``Bash(<x>)`` where the first token
+    of ``<x>`` (text up to the first space, ``:``, or ``*``) is in
+    ``_INTERPRETER_EXECUTABLES``.
+    """
+    if rule in ("Bash", "Bash(*)"):
+        return True
+    if not (rule.startswith("Bash(") and rule.endswith(")")):
+        return False
+    inner = rule[len("Bash(") : -1]
+    first = _CLAUDE_BASH_TOKEN_END.split(inner, maxsplit=1)[0]
+    return first in _INTERPRETER_EXECUTABLES
+
+
+def _antigravity_interpreter_command(command: str) -> bool:
+    tokens = command.split()
+    return bool(tokens) and tokens[0] in _INTERPRETER_EXECUTABLES
+
+
+def _check_interpreter_grants(
+    dispatch_config: DispatchConfig,
+    checks: list[DoctorCheck],
+) -> None:
+    """Warn, per role launch, about grants that bypass the shell allowlist.
+
+    Claude launches use ``allowed_tools`` or ``CLAUDE_DEFAULT_ALLOWED_TOOLS``
+    (the rule in ``agent_providers/claude.py``); Antigravity launches use the
+    required ``agy`` allow entries plus the verification prefixes (the
+    settings file is not read here). ``unsafe_bypass`` launches have no shell
+    allowlist at all. Every line is WARN or PASS, never FAIL.
+    """
+    allowed_commands = antigravity_allowed_commands(
+        dispatch_config.verification_allowed_prefixes
+    )
+    allow_entries = antigravity_allow_entries(
+        dispatch_config.verification_allowed_prefixes
+    )
+    agy_matches = [
+        entry
+        for command, entry in zip(allowed_commands, allow_entries, strict=True)
+        if _antigravity_interpreter_command(command)
+    ]
+    added = False
+    allowlisted_launch = False
+    for label, agent_config in _role_launches(dispatch_config):
+        provider = agent_config.provider
+        if agent_config.unsafe_bypass:
+            added = True
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    _INTERPRETER_CHECK_NAME,
+                    f"{label} (provider {provider}) sets unsafe_bypass: true, so "
+                    "the launch has no shell allowlist at all",
+                )
+            )
+            continue
+        if provider == "claude":
+            allowlisted_launch = True
+            tools = (
+                CLAUDE_DEFAULT_ALLOWED_TOOLS
+                if agent_config.allowed_tools is None
+                else agent_config.allowed_tools
+            )
+            matches = [rule for rule in tools if _claude_interpreter_rule(rule)]
+            if matches:
+                added = True
+                checks.append(
+                    DoctorCheck(
+                        "WARN",
+                        _INTERPRETER_CHECK_NAME,
+                        f"{label} (provider claude) allows "
+                        + ", ".join(f"`{_ascii_entry(rule)}`" for rule in matches)
+                        + f"; {_INTERPRETER_BYPASS_RISK}",
+                    )
+                )
+        elif provider == "antigravity":
+            allowlisted_launch = True
+            if agy_matches:
+                added = True
+                checks.append(
+                    DoctorCheck(
+                        "WARN",
+                        _INTERPRETER_CHECK_NAME,
+                        f"{label} (provider antigravity) needs the agy allow "
+                        "entries "
+                        + ", ".join(
+                            f"`{_ascii_entry(entry)}`" for entry in agy_matches
+                        )
+                        + f"; {_INTERPRETER_BYPASS_RISK}, and these grants are "
+                        "user-wide, so they apply to every agy run for this user",
+                    )
+                )
+    if not added and allowlisted_launch:
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                _INTERPRETER_CHECK_NAME,
+                "no role has an interpreter grant",
             )
         )
 

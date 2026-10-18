@@ -101,7 +101,7 @@ llm-handoff doctor --repo-root path/to/your-project
 
 `doctor` checks Git, each configured role's CLI binary, the Gemini sandbox
 runtime and security extension, the gate and reviewer settings, configured
-scanners, and whether the handoff file routes. It exits `1` on any error. Fix every `FAIL` before
+scanners, interpreter grants, and whether the handoff file routes. It exits `1` on any error. Fix every `FAIL` before
 continuing; read the `WARN` lines too.
 
 ### 4. Tell the planner what to build

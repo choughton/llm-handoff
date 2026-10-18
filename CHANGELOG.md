@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff doctor` now reports `interpreter grants` lines per role or
+  fallback launch: a WARN for each Claude launch whose effective
+  `allowed_tools` list has bare `Bash`, `Bash(*)`, or a `python`, `python3`,
+  or `pytest` rule; a WARN for each Antigravity launch naming the required
+  user-wide `agy` allow entries for those interpreters (including ones built
+  from `verification_allowed_prefixes`); and a WARN for each `unsafe_bypass:
+  true` launch, which has no shell allowlist at all. An interpreter can run
+  any command, including `git push`, past the allowlist. When none apply and a
+  Claude or Antigravity launch exists, one PASS line is printed. These lines
+  are warnings only and do not change the doctor's exit code; no default grant
+  list changed.
 - An `agy` deny-rule refusal now fails the dispatch. `agy` reports a refused
   command as a `run_command` tool error inside a `SUCCESS` result with exit
   code 0, so a role turn could end normally after a `git push` was refused.

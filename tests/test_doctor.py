@@ -3041,3 +3041,239 @@ def test_doctor_probe_writes_no_file(
 
     assert exit_code == 0, output
     assert sorted(p for p in tmp_path.rglob("*") if ".git" not in p.parts) == before
+
+
+# --- Interpreter grants ------------------------------------------------------
+
+INTERP_CHECK = "interpreter grants"
+SAFE_CLAUDE_TOOLS = '["Read", "Edit", "Bash(git status:*)", "Bash(git diff:*)"]'
+
+
+def _interp_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if f" {INTERP_CHECK}:" in line]
+
+
+def _write_agents(repo: Path, blocks: dict[str, str], extra: str = "") -> None:
+    lines = ["agents:"]
+    for role in ROLES:
+        lines.append(f"  {role}:")
+        lines.extend(f"    {line}" for line in blocks[role].strip().splitlines())
+    (repo / "dispatch_config.yaml").write_text(
+        "\n".join(lines) + "\n" + extra, encoding="utf-8"
+    )
+
+
+def _interp_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    blocks: dict[str, str],
+    extra: str = "",
+) -> Path:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None, commit=False)
+    _write_agents(repo, blocks, extra)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    _stub_which(monkeypatch, {"fake-agy", "fake-codex", "fake-claude"})
+    return repo
+
+
+def _codex_block() -> str:
+    return "provider: codex\nbinary: fake-codex"
+
+
+def _safe_claude_block() -> str:
+    return f"provider: claude\nbinary: fake-claude\nallowed_tools: {SAFE_CLAUDE_TOOLS}"
+
+
+def test_doctor_interpreter_grants_warn_on_the_default_claude_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    claude_roles = [role for role in ROLES if NO_GEMINI[role] == "claude"]
+    assert len(lines) == len(claude_roles)
+    for role, line in zip(claude_roles, lines, strict=True):
+        assert line == (
+            f"WARN {INTERP_CHECK}: {role} (provider claude) allows "
+            "`Bash(python:*)`, `Bash(python3:*)`, `Bash(pytest:*)`; an "
+            "interpreter can run any command, including `git push`, past the "
+            "allowlist, so the allowlist is a guardrail, not a sandbox"
+        )
+    assert not any(line.startswith(f"WARN {INTERP_CHECK}: backend") for line in lines)
+
+
+def test_doctor_interpreter_grants_pass_when_claude_drops_interpreters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _interp_lines(output) == [
+        f"PASS {INTERP_CHECK}: no role has an interpreter grant"
+    ]
+
+
+def test_doctor_interpreter_grants_warn_on_bare_bash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["auditor"] = (
+        'provider: claude\nbinary: fake-claude\nallowed_tools: ["Read", "Bash"]'
+    )
+    blocks["validator"] = (
+        "provider: claude\nbinary: fake-claude\n"
+        'allowed_tools: ["Read", "Bash(*)", "Bash(git log:*)", "Bash(python)"]'
+    )
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert len(lines) == 2
+    assert lines[0].startswith(
+        f"WARN {INTERP_CHECK}: auditor (provider claude) allows `Bash`; "
+    )
+    assert lines[1].startswith(
+        f"WARN {INTERP_CHECK}: validator (provider claude) allows `Bash(*)`, "
+        "`Bash(python)`; "
+    )
+    assert "PASS" not in " ".join(lines)
+
+
+def test_doctor_interpreter_grants_label_claude_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = (
+        "provider: codex\nbinary: fake-codex\n"
+        "fallback:\n  provider: claude\n  binary: fake-claude"
+    )
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(
+        f"WARN {INTERP_CHECK}: backend fallback (provider claude) allows "
+        "`Bash(python:*)`, `Bash(python3:*)`, `Bash(pytest:*)`; "
+    )
+
+
+def test_doctor_interpreter_grants_warn_on_antigravity_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["planner"] = "provider: antigravity\nbinary: fake-agy"
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.startswith(f"WARN {INTERP_CHECK}: planner (provider antigravity) ")
+    expected = [
+        "`command(regex:^python( .*)?$)`",
+        "`command(regex:^python3( .*)?$)`",
+        "`command(regex:^pytest( .*)?$)`",
+    ]
+    for entry in expected:
+        assert entry in line
+    assert line.index(expected[0]) < line.index(expected[1]) < line.index(expected[2])
+    assert "git status" not in line
+    assert "including `git push`" in line
+    assert "guardrail, not a sandbox" in line
+    assert "user-wide" in line
+
+
+def test_doctor_interpreter_grants_name_antigravity_verification_prefixes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = (
+        "provider: codex\nbinary: fake-codex\n"
+        "fallback:\n  provider: antigravity\n  binary: fake-agy"
+    )
+    repo = _interp_repo(
+        tmp_path,
+        monkeypatch,
+        blocks,
+        extra='verification_allowed_prefixes: ["python -m pytest", "npm test"]\n',
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(
+        f"WARN {INTERP_CHECK}: backend fallback (provider antigravity) "
+    )
+    assert "`command(regex:^python -m pytest( .*)?$)`" in lines[0]
+    assert "npm test" not in lines[0]
+
+
+def test_doctor_interpreter_grants_warn_on_unsafe_bypass_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = "provider: codex\nbinary: fake-codex\nunsafe_bypass: true"
+    blocks["auditor"] = "provider: claude\nbinary: fake-claude\nunsafe_bypass: true"
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _interp_lines(output) == [
+        f"WARN {INTERP_CHECK}: backend (provider codex) sets unsafe_bypass: "
+        "true, so the launch has no shell allowlist at all",
+        f"WARN {INTERP_CHECK}: auditor (provider claude) sets unsafe_bypass: "
+        "true, so the launch has no shell allowlist at all",
+    ]
+
+
+def test_doctor_interpreter_grants_absent_for_codex_only_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _codex_block() for role in ROLES}
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert INTERP_CHECK not in output
+
+
+def test_doctor_interpreter_grant_warnings_keep_exit_code_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {
+        role: "provider: claude\nbinary: fake-claude" for role in ROLES
+    }
+    blocks["backend"] = "provider: codex\nbinary: fake-codex\nunsafe_bypass: true"
+    blocks["planner"] = "provider: antigravity\nbinary: fake-agy"
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    report = doctor.run_doctor(repo_root=repo)
+
+    interp = [check for check in report.checks if check.name == INTERP_CHECK]
+    assert len(interp) == len(ROLES)
+    assert {check.status for check in interp} == {"WARN"}
+    assert [check for check in report.checks if check.status == "FAIL"] == []
+    assert report.exit_code == 0
