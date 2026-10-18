@@ -265,9 +265,12 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   followup (d)). An `@auditor` dispatch with an operator message tells the
   reviewers to apply that message within the review, and nothing records it:
   `audit_review.py` has no operator marker. Mark the audit result as
-  operator-influenced, with the message text, in the audit record under
-  `logs/dispatch/audit/`, in the handoff the auditor writes, and in the pull
-  request body when the story publishes. CHAT-4 reuses this marker.
+  operator-influenced in the audit record under `logs/dispatch/audit/`, in
+  the handoff the auditor writes, and in the pull request body when the
+  story publishes. Record only the marker, the time, and a SHA-256 digest of
+  the message, never its text: an operator may type private context or a
+  credential at the console, and `SECURITY.md` keeps secrets out of
+  `HANDOFF.md`, logs, and anything published. CHAT-4 reuses this marker.
 - HARD-4: Validate `handoff_path` and `project_state_path` (closes
   CONFIG-CLEANUP followup (b)). The validator in `llm_handoff/config.py`
   (`_normalize_relative_path`) accepts any value, and the dispatcher builds
@@ -276,14 +279,24 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   segments, and control characters at config load, and check that the
   resolved path stays under `repo_root`. Name the key and the rule in the
   error.
-- HARD-5: Bind the carry-over record to the run that wrote it (closes
+- HARD-5: Stop trusting a carry-over record from disk (closes
   LINEAR-FOUNDATIONS followup (d)). `_restore_implementer_leftovers` in
   `llm_handoff/orchestrator.py` loads `logs/dispatch/carry-over.json` at
-  startup. Files carry over only while their recorded fingerprints still
-  match, but nothing ties the record to the handoff or Git state it was
-  saved with, and roles can write under `logs/`. Save the handoff SHA and
-  `HEAD` with the record, and at startup discard a record whose values do
-  not match, with a WARN that names the mismatch.
+  startup, and `capture_pre_dispatch_state` (`llm_handoff/work_claim.py`)
+  drops every listed file whose fingerprint still matches from the
+  operator-dirty set, so later commit logic treats it as implementer work.
+  Roles can write under `logs/`, and values saved in that same file (such
+  as the handoff SHA or `HEAD`) prove nothing: a role can read the current
+  values and fingerprints and forge a matching record that claims the
+  operator's edits. Treat a record read from disk as untrusted. At startup,
+  name its story and files and ask the operator to confirm them
+  (`Carry these over as <story>'s work? [y/N]`, TTY only); without a TTY or
+  on no, discard it with a WARN and leave the files operator-owned. Only an
+  in-memory record from the current run applies without asking. Use a
+  location roles cannot write only if one exists for every provider; Claude
+  roles' `Write` tool is not path-limited, so do not assume one.
+  RECOVERY-2's in-flight record has the same exposure and should follow the
+  same rule.
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 
