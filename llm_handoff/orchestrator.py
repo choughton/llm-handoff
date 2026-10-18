@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 from hashlib import sha256
 import inspect
@@ -297,6 +297,18 @@ PAUSE_RECOVERY_INSTRUCTION_TEMPLATE = (
     "one specific question for the user."
 )
 PAUSE_RECOVERY_NO_DIAGNOSIS = "The validator returned no diagnosis."
+# In Linear mode a validator report must carry a well-formed LINEAR-EVIDENCE
+# row, in the same shape the validator's check-row parser reads. A missing or
+# malformed row counts as a failed evidence check, never as a pass. The match
+# is case-sensitive: the parser records a status only when it is exactly
+# PASS, WARN, or FAIL, so a row like "fail - x" must not satisfy this guard.
+_LINEAR_EVIDENCE_ROW_RE = re.compile(
+    r"(?m)^\s{2}LINEAR-EVIDENCE:\s*(PASS|WARN|FAIL)\s*(?:-|\u2014)\s*(.+)$"
+)
+LINEAR_EVIDENCE_ROW_MISSING_ERROR = (
+    "linear-evidence: the validator report has no parseable LINEAR-EVIDENCE "
+    "row, so the evidence check did not report a status."
+)
 # Planner dispatch requested by a person at the operator prompt. The operator
 # text is passed as a keyword value, so braces in it are not parsed again.
 OPERATOR_PAUSE_INSTRUCTION_TEMPLATE = (
@@ -689,7 +701,9 @@ def run_loop(
             pause_reason = (
                 "No routing instruction found in HANDOFF.md. Update the handoff; dispatch will resume after the file changes."
             )
-            if _pause_recovery_available(config, pause_recovery_used, log_fn):
+            if _pause_recovery_available(
+                config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+            ):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -809,7 +823,9 @@ def run_loop(
             pause_reason = (
                 f"STALE ROUTING DETECTED: same route ({current_cycle.route}) and unchanged HANDOFF hash."
             )
-            if _pause_recovery_available(config, pause_recovery_used, log_fn):
+            if _pause_recovery_available(
+                config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+            ):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -867,7 +883,9 @@ def run_loop(
             pause_reason = (
                 f"Routing instruction {decision.route} is only {decision.confidence} confidence. Update HANDOFF.md; dispatch will resume after the file changes."
             )
-            if _pause_recovery_available(config, pause_recovery_used, log_fn):
+            if _pause_recovery_available(
+                config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+            ):
                 pending_planner_recovery = _schedule_pause_recovery(
                     config,
                     pause_reason=pause_reason,
@@ -985,7 +1003,9 @@ def run_loop(
                 pause_reason = (
                     "finalizer ledger-updater output was unparseable. Update HANDOFF.md; dispatch will resume after the file changes."
                 )
-                if _pause_recovery_available(config, pause_recovery_used, log_fn):
+                if _pause_recovery_available(
+                    config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+                ):
                     pending_planner_recovery = _schedule_pause_recovery(
                         config,
                         pause_reason=pause_reason,
@@ -1256,6 +1276,14 @@ def run_loop(
             ):
                 return 1
             if dispatch_result.stop_loop:
+                if dispatch_result.stop_reason:
+                    _log(
+                        log_fn,
+                        "ERROR",
+                        "Stopping the dispatch loop: "
+                        f"{dispatch_result.stop_reason}",
+                    )
+                    return 1
                 _log(
                     log_fn,
                     "ERROR",
@@ -1500,7 +1528,9 @@ def run_loop(
                     _log(log_fn, "ERROR", pause_reason)
                 if ungated_claim:
                     pause_reason += UNGATED_CLAIM_PAUSE_NOTE
-                elif _pause_recovery_available(config, pause_recovery_used, log_fn):
+                elif _pause_recovery_available(
+                    config, pause_recovery_used, log_fn, diagnosis=pause_diagnosis
+                ):
                     pending_planner_recovery = _schedule_pause_recovery(
                         config,
                         pause_reason=pause_reason,
@@ -1785,12 +1815,37 @@ def _dispatch_audit_fan_out(
             **failover_kwargs,
         )
 
+    def linear_evidence_invoker(
+        prompt: str, agent_config: AgentConfig
+    ) -> SubagentResult:
+        # The post-verdict Linear evidence step (Linear mode only). The
+        # operator's additional instruction is for the audit itself, so it is
+        # not appended here; the failover guard snapshots the protected files
+        # when this step starts.
+        return _invoke_support_callable(
+            "auditor",
+            prompt,
+            role="auditor",
+            handoff_path=handoff_path,
+            agent_config=agent_config,
+            log=log,
+            repo_root=config.repo_root,
+            **_failover_kwargs(config, "auditor"),
+        )
+
+    # Vanilla mode keeps the original call exactly.
+    linear_kwargs: dict[str, object] = (
+        {"linear_evidence_invoker": linear_evidence_invoker}
+        if config.tracker.provider == "linear"
+        else {}
+    )
     return run_audit_fan_out(
         config,
         context=audit_context,
         frontmatter=_parse_frontmatter_or_none(audit_context.handoff_content),
         quality_invoker=quality_invoker,
         log=log,
+        **linear_kwargs,
     )
 
 
@@ -2686,12 +2741,37 @@ def _run_validator(
         _log(log, "WARN", f"{label} returned unparseable output.")
         return None
 
+    if config.tracker.provider == "linear":
+        validation_result = _require_linear_evidence_row(
+            validation_result, result.stdout
+        )
+
     _log(log, "AGENT", f"Handoff validation verdict: {validation_result.verdict}")
     for warning in validation_result.warnings:
         _log(log, "WARN", warning)
     for error in validation_result.errors:
         _log(log, "ERROR", error)
     return validation_result
+
+
+def _require_linear_evidence_row(
+    validation_result: ValidationResult, stdout: str
+) -> ValidationResult:
+    """Treat a missing or malformed LINEAR-EVIDENCE row as a failed check.
+
+    In Linear mode the validator report must carry a well-formed
+    ``LINEAR-EVIDENCE`` row. ``parse_validation_output`` drops a row it cannot
+    parse, such as ``LINEAR-EVIDENCE: FAIL`` with no detail, so an absent
+    status would otherwise read as a pass and let planner recovery run.
+    """
+
+    if _LINEAR_EVIDENCE_ROW_RE.search(stdout.lstrip("\ufeff")) is not None:
+        return validation_result
+    return replace(
+        validation_result,
+        verdict="NO",
+        errors=[*validation_result.errors, LINEAR_EVIDENCE_ROW_MISSING_ERROR],
+    )
 
 
 def _run_unknown_route_validator(
@@ -3758,9 +3838,26 @@ def _pause_at_dispatcher_pause(
 
 
 def _pause_recovery_available(
-    config: DispatchConfig, used: bool, log: LogFn
+    config: DispatchConfig,
+    used: bool,
+    log: LogFn,
+    *,
+    diagnosis: ValidationResult | None = None,
 ) -> bool:
     if config.pause_recovery != "planner" or config.dry_run or used:
+        return False
+    # In Linear mode, an evidence-comment mismatch goes to a person, never to
+    # automatic planner recovery.
+    if (
+        config.tracker.provider == "linear"
+        and diagnosis is not None
+        and any(error.startswith("linear-evidence:") for error in diagnosis.errors)
+    ):
+        _log(
+            log,
+            "PAUSE",
+            "Linear evidence check failed; not scheduling planner recovery.",
+        )
         return False
     # The pause validator may have rewritten HANDOFF.md to route to `user`,
     # for example the protected-file escalation. A user route never gets

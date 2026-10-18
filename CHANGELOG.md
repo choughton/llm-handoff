@@ -23,6 +23,28 @@ This project follows a simple pre-release changelog until the first public tag.
   diff. The range now starts at the saved story branch base when it names the
   handoff's `story_id` and its branch is checked out. `local` mode is
   unchanged.
+- Added a `## Linear Mode Acceptance Run` section to `docs/TESTING.md`: a
+  manual runbook for an operator to check Linear mode against a sandbox
+  Linear team and a disposable repository. It covers prerequisites, `init
+  --tracker linear`, connector setup per CLI, `doctor` and
+  `--probe-tracker` preflight (including a check that a project hook does
+  not fire during the probe), one passing issue, one forced audit failure,
+  a deleted lease, the validator's `LINEAR-EVIDENCE` check, caveats, and
+  what to record. The test suite does not run it.
+- The Codex and Antigravity `handoff-validator` helpers (root and
+  `examples/reference-workflow/` copies) gain checklist item 13 and a
+  `LINEAR-EVIDENCE` row in their report. When `docs/handoff/HANDBOOK.md` has a
+  `## Linear Mode: validator` section, the helper runs that section's evidence
+  check read-only and reports each mismatched field as `FAIL`, naming both the
+  comment value and the handoff value; without that section it reports
+  `PASS - Linear mode is off`. The Linear-mode validator prompt's step 6 now
+  puts each mismatch on a validation-only turn on that row. In Linear mode,
+  the dispatcher no longer schedules planner pause recovery when the pause
+  diagnosis fails the `LINEAR-EVIDENCE` row; it logs
+  `Linear evidence check failed; not scheduling planner recovery.` and waits
+  for a person. A validator report whose `LINEAR-EVIDENCE` row is missing or
+  does not parse counts as a failed row, so recovery needs a parsed `PASS` or
+  `WARN` status. The Claude `handoff-validator` helper files follow in LIN-9d.
 - Gave each first-run guide one job so the install, init, dry-run, and run
   steps appear only in the README quick start: `QUICKSTART.md` is now the
   Windows PowerShell and macOS/Linux command sheet for those five steps,

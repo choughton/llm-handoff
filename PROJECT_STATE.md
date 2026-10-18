@@ -62,6 +62,12 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
   helper file) gains a Linear evidence check row, and the dispatcher's validator
   output handling acts on it, so a validation-only turn reports evidence-comment
   mismatches end to end. From the LIN-9a review (PR #91, Finding 1).
+- LIN-9d: Apply the LIN-9c `LINEAR-EVIDENCE` item and row to
+  `.claude/agents/handoff-validator.md` and
+  `examples/reference-workflow/.claude/agents/handoff-validator.md`. Decide
+  how that Claude subagent reaches the Linear read tools, since its `tools:`
+  line currently lists only Read, Grep, Glob, and Bash. The story routes to
+  `user` because Claude roles cannot write `.claude/` paths.
 - LIN-10: `docs/TESTING.md` runbook for a manual acceptance run against a
   sandbox Linear team.
 
