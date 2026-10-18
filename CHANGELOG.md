@@ -6,6 +6,27 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `normalizer.provider: antigravity` is now a registered next-agent
+  normalizer (default model `gemini-3.8-flash-low`; the default provider
+  stays `claude`). Each call runs `agy` with `--output-format stream-json`
+  and a `--json-schema` file from a new private temp directory that holds a
+  one-off agent file named `llm-handoff-normalizer-<random hex>` with
+  `tools: [finish]` and `commandExecutionPolicy: off`. The raw `next_agent`
+  value goes only in the agent file body, never on the command line. Only
+  `user_input`, `agent_response`, and `finish` steps and exactly one
+  `SUCCESS` result are accepted, and the answer comes only from
+  `structured_output`, never `response`; anything else, including any `tool`
+  step, fails closed and leaves the handoff unchanged. `llm-handoff doctor`
+  checks for the `agy` binary for this provider. `antigravity` still cannot
+  be the `audit.security_provider`.
+  - A sign-in failure or permission auto-deny from the `antigravity`
+    normalizer now raises fixed error text and never copies `agy`'s stderr,
+    which can carry tokens or command arguments.
+  - `llm-handoff doctor` prints a `normalizer boundary` WARN line when the
+    normalizer provider is `antigravity`: the only pre-execution boundary is
+    agy's enforcement of `tools: [finish]`, the user-wide
+    `permissions.allow` grants still apply, and the post-run checks cannot
+    undo a command that already ran.
 - An `agy` deny-rule refusal line no longer includes the refused command line
   or `agy`'s error message, which repeats the command; best-effort redaction
   could not cover every secret shape, such as

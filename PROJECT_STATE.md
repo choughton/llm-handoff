@@ -8,7 +8,7 @@ belong in commits, handoffs, and pull requests.
 
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
-  merged in PR #125; GEM-0h in progress).
+  merged in PR #125; GEM-0h merged in PR #126; GEM-1 in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -189,7 +189,23 @@ itself from 1.3.5 to 1.4.2 during the checks):
   `llm-handoff doctor` report the bypass risk for each role that has an
   interpreter grant (Claude and `agy`). Until GEM-0e ships, the role
   allowlists are a guardrail, not a sandbox. The `doctor` reporting part is
-  split out as GEM-0e1.
+  split out as GEM-0e1. Decided by the user on 2026-10-18: direction (c).
+  The interpreter grants (`python`, `python3`, `pytest`) become an explicit
+  operator opt-in: they leave `CLAUDE_DEFAULT_ALLOWED_TOOLS` and the
+  generated `agy` grant set unless the operator turns them on in config. The
+  planner picks the config key name and shape when it plans GEM-0e and
+  records it here. Self-host keeps the grants on: the outside self-host
+  config cannot be edited by agents, so the GEM-0e handback must name the
+  exact opt-in setting, which the operator adds before re-pinning onto the
+  GEM-0e merge. `CONFIGURATION.md` (and the README if it describes the
+  allowlists) states that role allowlists are a guardrail, not a sandbox,
+  since any interpreter grant can run any command, `git push` included, and
+  recommends server-side branch protection (a ruleset requiring pull
+  requests with no bypass actors); the dispatcher does not configure it.
+  Directions (a) (keep remote-write credentials out of the agent
+  environment) and (b) (a pre-push hook or refusing credential helper) are
+  dropped. The GEM-0e1 doctor wording update for opt-in grants stays inside
+  GEM-0e.
 - GEM-0e1: Doctor reports interpreter-grant bypass risk per role.
   `llm-handoff doctor` adds `interpreter grants` lines per role or fallback
   launch: a WARN for each Claude launch without `unsafe_bypass` whose
@@ -239,20 +255,40 @@ itself from 1.3.5 to 1.4.2 during the checks):
   refusal reason, the step identifier, and the matched required deny entry
   only; remove `redact_credentials()`.
 - GEM-1: `antigravity` normalizer. Add `antigravity` to the normalizer
-  providers. Each call runs `agy -p` from a private temp directory that holds
-  only a dispatcher-written agent file
-  (`.agents/agents/llm-handoff-normalizer.md`, `tools: [finish]`,
-  `commandExecutionPolicy: off`), with `--agent llm-handoff-normalizer
-  --output-format json --json-schema <next_agent schema> --print-timeout
-  <timeout_ms>`, the Antigravity role environment allowlist, and arguments as
-  a list with no shell. The answer comes only from `structured_output`. A
-  status other than `SUCCESS`, a missing or invalid `structured_output`, a
-  nonzero exit, a timeout, a sign-in failure, or any tool call other than
-  `finish` in the output fails closed and leaves the handoff unchanged. Check
-  whether a global agent of the same name (`~/.gemini/config/agents/`) can
-  shadow the workspace file, and whether the raw `next_agent` text can travel
-  on stdin instead of the command line. Default model: a flash id from
-  `agy models`. `doctor` passes the normalizer line when `agy` is on `PATH`.
+  providers (`llm_handoff/normalizer_providers/antigravity.py`). Each call
+  runs `agy` from a new private temp directory that holds the closed
+  `normalizer.schema.json` and a dispatcher-written agent file
+  `.agents/agents/llm-handoff-normalizer-<uuid4 hex>.md` (`tools: [finish]`,
+  `commandExecutionPolicy: off`). The random name is both the file name and
+  the frontmatter `name:`, so no global agent can shadow it. The agent file
+  body is `normalizer_prompt(raw_value)`, which `repr`-quotes the value, so
+  the raw `next_agent` text never reaches the command line or stdin. The
+  command is `agy -p <fixed instruction> --agent <name> --output-format
+  stream-json --json-schema <schema path> --print-timeout <N>s --model
+  <model>`, as a list with no shell, in the Antigravity role environment
+  allowlist; a timeout kills the process tree. `stream-json` replaces `json`
+  because only stream-json shows the steps (captured live with `agy` 1.4.2
+  on 2026-10-18). Only `user_input`, `agent_response`, and `finish` steps are
+  allowed; any `tool` step, whatever its `tool_name`, or a missing or
+  unknown step type fails closed. The answer comes only from the single
+  `result` event's `structured_output`, which must hold exactly the schema
+  keys; `response` (raw `finish` arguments with `toolAction` and
+  `toolSummary`) is never read. A status other than `SUCCESS`, no or several
+  `result` events, a non-JSON stdout line, a nonzero exit, a timeout, an
+  `agy` sign-in failure, or a permission soft-deny fails closed and leaves
+  the handoff unchanged. `commandExecutionPolicy: off` is accepted by `agy`
+  but not shown to be honored. The pre-execution boundary is `agy`'s
+  enforcement of `tools: [finish]` alone; the user-wide `permissions.allow`
+  grants apply to the normalizer run, and the step-type and result checks
+  run after `agy` exits, so they cannot undo a command that already ran. The
+  planner accepted this residual risk on 2026-10-18 (decision A, same class
+  as GEM-0c) because the provider is opt-in and adds no command the handoff
+  writer lacks; `doctor` prints a `normalizer boundary` WARN line for it.
+  Sign-in and soft-deny errors use fixed text and never copy `agy` stderr.
+  Default model: `gemini-3.8-flash-low` (not exercised in the
+  capture). `doctor` passes the normalizer line when `agy` is on `PATH` and
+  fails naming `agy` when it is not. `antigravity` still cannot be the
+  `audit.security_provider` (GEM-2).
 - GEM-2: `antigravity` security reviewer. `audit.security_provider` accepts
   `antigravity`, and the automatic order becomes `claude`, `codex`,
   `antigravity`. The reviewer's agent allows only read tools (`view_file`,
@@ -277,7 +313,13 @@ itself from 1.3.5 to 1.4.2 during the checks):
   GEM-3 until a person has run the GEM-0 live check (an operator-run `agy`
   planner turn that writes a valid `HANDOFF.md` and runs
   `git log --oneline -5` and `python -m pytest --version` without a
-  soft-deny) and reported pass. Deferred by the user on 2026-10-18.
+  soft-deny) and reported pass. Deferred by the user on 2026-10-18. Second
+  operator live check (added by the planner on 2026-10-18 for GEM-1): an
+  `agy` run of a `tools: [finish]` normalizer agent from a scratch
+  directory, with an injected request for a user-wide-granted command (for
+  example `python -c "open('PWNED','w')"`). It passes when no `tool` step
+  appears and no `PWNED` file exists. If it fails, GEM-3 must not make
+  `antigravity` the default normalizer.
 - GEM-4: Remove the `gemini` provider from the runtime and reject the old
   names. Delete `llm_handoff/agent_providers/gemini.py`,
   `llm_handoff/normalizer_providers/gemini.py` (API and CLI paths), and the

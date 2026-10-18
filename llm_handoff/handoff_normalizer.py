@@ -7,6 +7,9 @@ from typing import Callable, Protocol
 
 from llm_handoff import config
 from llm_handoff.normalizer_models import NormalizedNextAgent, normalizer_prompt
+from llm_handoff.normalizer_providers.antigravity import (
+    normalize_next_agent_with_antigravity,
+)
 from llm_handoff.normalizer_providers.claude import normalize_next_agent_with_claude
 from llm_handoff.normalizer_providers.codex import normalize_next_agent_with_codex
 from llm_handoff.normalizer_providers.gemini import normalize_next_agent_with_gemini
@@ -38,6 +41,7 @@ class NormalizerAdapter(Protocol):
 
 
 _NORMALIZER_PROVIDER_ADAPTERS: dict[str, NormalizerAdapter] = {
+    "antigravity": normalize_next_agent_with_antigravity,
     "claude": normalize_next_agent_with_claude,
     "codex": normalize_next_agent_with_codex,
     "gemini": normalize_next_agent_with_gemini,

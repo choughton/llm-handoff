@@ -70,6 +70,8 @@ GEMINI_NORMALIZER_MODEL = "gemini-2.5-flash"
 OPENAI_NORMALIZER_MODEL = "gpt-5.4-mini"
 # The codex normalizer runs through the Codex CLI login instead of the API.
 CODEX_NORMALIZER_MODEL = OPENAI_NORMALIZER_MODEL
+# The antigravity normalizer runs through the agy CLI login.
+ANTIGRAVITY_NORMALIZER_MODEL = "gemini-3.8-flash-low"
 NORMALIZER_TIMEOUT_MS = 60_000
 
 AGENT_TIMEOUT_MS = 1_200_000
@@ -225,8 +227,11 @@ DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "finalizer": "claude",
 }
 RUNTIME_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini", "antigravity"})
-NORMALIZER_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini", "openai"})
+NORMALIZER_PROVIDER_ADAPTERS = frozenset(
+    {"antigravity", "claude", "codex", "gemini", "openai"}
+)
 NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
+    "antigravity": ANTIGRAVITY_NORMALIZER_MODEL,
     "claude": NORMALIZER_MODEL,
     "codex": CODEX_NORMALIZER_MODEL,
     "gemini": GEMINI_NORMALIZER_MODEL,

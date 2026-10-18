@@ -68,6 +68,7 @@ from llm_handoff.antigravity_permissions import (
     antigravity_settings_path,
 )
 from llm_handoff.config import (
+    ANTIGRAVITY_BINARY,
     CLAUDE_BINARY,
     CLAUDE_DEFAULT_ALLOWED_TOOLS,
     CLAUDE_DISALLOWED_TOOLS,
@@ -878,10 +879,11 @@ _NORMALIZER_API_KEY_NAMES: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "openai": ("OPENAI_API_KEY",),
 }
-# Providers whose normalizer can run through a local CLI login. The codex
-# normalizer is CLI-only, so it has no API key entry above; claude and gemini
-# use the CLI login only when no API key is set.
+# Providers whose normalizer can run through a local CLI login. The codex and
+# antigravity (`agy`) normalizers are CLI-only, so they have no API key entry
+# above; claude and gemini use the CLI login only when no API key is set.
 _NORMALIZER_CLI_BINARIES: dict[str, str] = {
+    "antigravity": ANTIGRAVITY_BINARY,
     "claude": CLAUDE_BINARY,
     "codex": CODEX_BINARY,
     "gemini": GEMINI_BINARY,
@@ -895,8 +897,32 @@ def _check_normalizer(
 ) -> None:
     """Report whether the configured normalizer has a key or CLI to run with.
 
-    The provider is never called, so auth is reported as not verified.
+    The provider is never called, so auth is reported as not verified. The
+    antigravity provider also gets the ``normalizer boundary`` WARN line,
+    whether or not its binary is found.
     """
+    _check_normalizer_runnable(dispatch_config, repo_root, checks)
+    if dispatch_config.normalizer.provider == "antigravity":
+        checks.append(
+            DoctorCheck("WARN", _NORMALIZER_BOUNDARY_CHECK_NAME, _NORMALIZER_BOUNDARY_RISK)
+        )
+
+
+_NORMALIZER_BOUNDARY_CHECK_NAME = "normalizer boundary"
+_NORMALIZER_BOUNDARY_RISK = (
+    "provider antigravity: the only pre-execution boundary is agy's enforcement "
+    "of the agent file's `tools: [finish]`; the user-wide permissions.allow "
+    f"grants in {ANTIGRAVITY_SETTINGS_PATH} still apply to the normalizer run, "
+    "and the post-run step and result checks keep the handoff unchanged but "
+    "cannot undo a command that already ran"
+)
+
+
+def _check_normalizer_runnable(
+    dispatch_config: DispatchConfig,
+    repo_root: Path,
+    checks: list[DoctorCheck],
+) -> None:
     provider = dispatch_config.normalizer.provider
     key_names = _NORMALIZER_API_KEY_NAMES.get(provider, ())
     binary = _NORMALIZER_CLI_BINARIES.get(provider)

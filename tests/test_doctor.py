@@ -1242,6 +1242,106 @@ def test_doctor_fails_gemini_normalizer_without_key_or_binary(
     ]
 
 
+def test_doctor_passes_antigravity_normalizer_with_the_agy_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="antigravity")
+    _stub_which(
+        monkeypatch,
+        {"fake-codex", "fake-claude", config_module.ANTIGRAVITY_BINARY},
+    )
+    # No API key is set: the agy normalizer runs on the CLI login.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _normalizer_lines(output) == [
+        "PASS normalizer: provider antigravity binary "
+        f"`{config_module.ANTIGRAVITY_BINARY}` is on PATH (auth not verified)"
+    ]
+
+
+def test_doctor_fails_antigravity_normalizer_without_agy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="antigravity")
+    # The role binaries resolve; only the normalizer's agy CLI is missing.
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    # API keys do not make the CLI-only agy normalizer runnable.
+    monkeypatch.setenv("GEMINI_API_KEY", "doctor-test-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "doctor-test-key")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    assert _normalizer_lines(output) == [
+        "FAIL normalizer: provider antigravity cannot run: the "
+        f"`{config_module.ANTIGRAVITY_BINARY}` binary is not available"
+    ]
+    assert output.strip().splitlines()[-1].startswith("Doctor FAIL: 1 error(s)")
+    # The boundary WARN is added even when the agy binary is missing.
+    assert _normalizer_boundary_lines(output) == [_NORMALIZER_BOUNDARY_LINE]
+
+
+def _normalizer_boundary_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if " normalizer boundary:" in line]
+
+
+_NORMALIZER_BOUNDARY_LINE = (
+    "WARN normalizer boundary: provider antigravity: the only pre-execution "
+    "boundary is agy's enforcement of the agent file's `tools: [finish]`; the "
+    "user-wide permissions.allow grants in "
+    f"{doctor.ANTIGRAVITY_SETTINGS_PATH} still apply to the normalizer run, "
+    "and the post-run step and result checks keep the handoff unchanged but "
+    "cannot undo a command that already ran"
+)
+
+
+def test_doctor_warns_on_antigravity_normalizer_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, normalizer_provider="antigravity")
+    _stub_which(
+        monkeypatch,
+        {"fake-codex", "fake-claude", config_module.ANTIGRAVITY_BINARY},
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert _normalizer_boundary_lines(output) == [_NORMALIZER_BOUNDARY_LINE]
+    # The WARN does not change the exit code: the same checks without the
+    # boundary line give the same result.
+    report = doctor.run_doctor(repo_root=repo)
+    boundary = [
+        check for check in report.checks if check.name == "normalizer boundary"
+    ]
+    assert [check.status for check in boundary] == ["WARN"]
+    without = doctor.DoctorReport(
+        repo_root=report.repo_root,
+        checks=tuple(c for c in report.checks if c.name != "normalizer boundary"),
+    )
+    assert exit_code == report.exit_code == without.exit_code == 0, output
+
+
+def test_doctor_has_no_normalizer_boundary_line_for_claude(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI)
+    _stub_which(
+        monkeypatch,
+        {"fake-codex", "fake-claude", config_module.CLAUDE_BINARY},
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert "PASS normalizer: provider claude" in output
+    assert _normalizer_boundary_lines(output) == []
+    assert "normalizer boundary" not in output
+
+
 def _fake_codex_bin(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir()
