@@ -369,6 +369,20 @@ itself from 1.3.5 to 1.4.2 during the checks):
     `planner` and `frontend` to, since config load rejects `antigravity`
     there and `init --tracker linear` with the reference mapping must keep
     writing a loadable config.
+  - GEM-3c: Antigravity-safe supervised repair. Supervised repair
+    (`--repair-role`) with an `antigravity` role launches
+    `agy --agent supervisor-repair`: `llm_handoff/supervisor.py`
+    `_run_repair_role` passes subagent name `supervisor-repair`, and
+    `llm_handoff/agent_providers/antigravity.py` resolves
+    `agent_name or subagent_name or role`. No shipped
+    `.agents/agents/supervisor-repair.md` exists, so `agy` fails with
+    `unknown agent`. The fix either ships a `supervisor-repair` agy agent file
+    (root and `examples/reference-workflow/` copies, with a `tools:` list from
+    the GEM-0 allowed names) or makes the adapter fall back to the repair
+    role's own agent file, and adds a launch regression test. The story also
+    decides whether `.agents/agents/` joins the default repair allowlist. It
+    must land before GEM-3b. From the GEM-3a audit, decided by the planner on
+    2026-10-18.
 - GEM-4: Remove the `gemini` provider from the runtime and reject the old
   names. Delete `llm_handoff/agent_providers/gemini.py`,
   `llm_handoff/normalizer_providers/gemini.py` (API and CLI paths), and the

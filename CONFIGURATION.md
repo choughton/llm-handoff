@@ -1868,6 +1868,11 @@ the security reviewer runs on the same vendor as the implementer, so it is a
 second read-only review rather than an independent one, and the dispatcher
 logs a warning saying so.
 
+Supervised repair does not yet work with an `antigravity` repair role. The
+supervisor launches the repair turn as `agy --agent supervisor-repair`, and
+no shipped agent file has that name, so `agy` rejects the launch. With this
+mapping, leave `--repair-role` unset until that is fixed.
+
 Linear mode does not support `provider: antigravity` (see
 [Tracker (Optional Linear Mode)](#tracker-optional-linear-mode)).
 `init --tracker linear` with this mapping, whether passed with `--provider
