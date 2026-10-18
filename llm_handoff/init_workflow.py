@@ -19,6 +19,7 @@ from llm_handoff.config import (
     VERIFICATION_FORBIDDEN_CHARS,
     TrackerConfig,
     linear_tools_for_role,
+    verification_whitespace_problem,
 )
 from llm_handoff.stack_detect import Candidate, detect_candidates
 from llm_handoff.tracker_prompts import (
@@ -558,7 +559,9 @@ def check_verification_command_chars(command: str) -> None:
     """Reject a confirmed verification command with a shell control character.
 
     `init` writes the command into `verification_allowed_prefixes`, whose
-    entries may not contain any character in `VERIFICATION_FORBIDDEN_CHARS`.
+    entries may not contain any character in `VERIFICATION_FORBIDDEN_CHARS`,
+    nor, once stripped, a tab, other non-space whitespace, or a run of two or
+    more spaces (see `verification_whitespace_problem`).
     """
 
     for char in command:
@@ -570,6 +573,15 @@ def check_verification_command_chars(command: str) -> None:
                 "a verification command must be a single command without "
                 "chaining, pipes, redirection, substitution, or line breaks",
             )
+    problem = verification_whitespace_problem(command.strip())
+    if problem is not None:
+        raise InvalidVerificationCommandError(
+            command,
+            command,
+            f"the command contains {problem}; a verification command must use "
+            "single spaces between words so it matches the agy grant built "
+            "from it",
+        )
 
 
 def add_verification_allowed_prefixes(config_text: str, command: str) -> str:

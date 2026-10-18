@@ -320,7 +320,7 @@ work_packet_verification_timeout_seconds: 600
 | `work_packet_opt_out_reason` | unset | Required, non-empty text when `enforce_work_packet` is `false`; rejected while the gate is on. |
 | `work_packet_verification_timeout_seconds` | `600` | Timeout in seconds for the Verification command. |
 | `work_claim_env_passthrough` | `[]` | Extra environment variable names the Verification command and scanners receive. They always get only `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`, `USERNAME`, `USER`, `LOGNAME`, `COMSPEC`, `PATHEXT`, `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, and `SHELL`, plus these names. Names match case-insensitively. Vendor API keys are rejected at config load; `CLAUDE_*`, `CODEX_*`, and `GEMINI_*` names are never passed. |
-| `verification_allowed_prefixes` | `[]` | Command prefixes a Work Packet Verification command must start with, matched word by word. A command that matches none, or that contains a shell control character, fails `verification_not_allowed` and routes to `planner`. Empty runs any command, with a startup and `doctor` `WARN`. See [Verification Command Allowlist](#verification-command-allowlist). |
+| `verification_allowed_prefixes` | `[]` | Command prefixes a Work Packet Verification command must start with, matched literally with single spaces between words. A command that matches none, or that contains a shell control character, fails `verification_not_allowed` and routes to `planner`. Empty runs any command, with a startup and `doctor` `WARN`. See [Verification Command Allowlist](#verification-command-allowlist). |
 
 To turn the gate off, set `enforce_work_packet: false` and say why:
 
@@ -436,17 +436,26 @@ the gate runs. It is optional but recommended:
 verification_allowed_prefixes: ["python -m pytest", "npm test"]
 ```
 
-- Matching is by whole words. The command and each prefix are split on
-  whitespace, and the command's leading words must equal a prefix's words,
-  case-sensitively. `python -m pytest` allows `python -m pytest tests -q` and
-  rejects `python -m pytestx` and `python -c "..."`.
+- Matching is literal. Surrounding spaces and tabs are stripped from the
+  command, which must then equal a prefix or start with a prefix followed by
+  one space, case-sensitively. `python -m pytest` allows `python -m pytest`
+  and `python -m pytest tests -q`, and rejects `python -m pytestx` and
+  `python -c "..."`.
+- Words must be separated by single spaces. A command containing a tab,
+  another whitespace character other than a space, or a run of two or more
+  spaces (`python  -m pytest`, `python -m pytest  -q`,
+  `python -m pytest<TAB>tests`) is rejected with a `whitespace` reason. The
+  rule matches the `agy` grants: `llm-handoff init` prints each grant as
+  `command(regex:^<prefix>( .*)?$)`, which matches the exact command line, so
+  the gate refuses every command that grant would refuse.
 - Once the list is set, a command containing any of `&`, `|`, `;`, `<`, `>`,
   `$`, backtick, `(`, `)`, `%`, `!`, a carriage return, or a newline is
   rejected even if its first words match, so an allowed prefix cannot be
   chained to a second command. `%` and `!` are included because on Windows
   the command runs through `cmd.exe`, which expands `%NAME%` (and `!NAME!`
-  with delayed expansion) before parsing. Entries are stripped of surrounding whitespace; an empty entry or
-  an entry containing one of these characters fails config load.
+  with delayed expansion) before parsing. Entries are stripped of surrounding
+  whitespace; an empty entry, an entry containing one of these characters, or
+  an entry without single spaces between words fails config load.
 - The gate checks every Verification command in the packet before it runs
   any. If one is rejected, none runs, the claim fails
   `verification_not_allowed`, and the bounce routes to `planner` with
@@ -460,7 +469,8 @@ verification_allowed_prefixes: ["python -m pytest", "npm test"]
   line appears while the gate is off.
 - `llm-handoff init --verification-command "<cmd>"` writes the confirmed
   command as the single entry. `init` rejects a command that contains one of
-  the characters above.
+  the characters above or, once stripped, a tab, other non-space whitespace,
+  or a run of two or more spaces.
 
 Scanner commands are operator-authored config and are not prefix-checked. The
 dispatcher logs the exact text of each scanner command and each Verification

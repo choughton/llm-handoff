@@ -58,6 +58,7 @@ from llm_handoff.config import (
     VERIFICATION_FORBIDDEN_CHARS,
     ScannerConfig,
     scanner_command_placeholders,
+    verification_whitespace_problem,
 )
 from llm_handoff.router import (
     HandoffFrontmatterError,
@@ -1834,9 +1835,13 @@ def verification_command_allowed(
     """Return ``None`` when ``command`` may run, or a one-line reason why not.
 
     An empty ``allowed_prefixes`` allows every command. Otherwise the command
-    must contain no character in ``VERIFICATION_FORBIDDEN_CHARS`` and its
-    whitespace-split tokens must begin with the whitespace-split tokens of at
-    least one prefix, compared case-sensitively.
+    must contain no character in ``VERIFICATION_FORBIDDEN_CHARS``. With
+    surrounding spaces and tabs stripped, it must then separate its words by
+    single spaces (no tab, other non-space whitespace, or run of spaces) and
+    either equal a prefix or start with a prefix followed by one space,
+    compared case-sensitively. This literal match is what the `agy` grant
+    ``antigravity_command_grant(prefix)`` accepts, so the gate never allows a
+    command that grant would refuse.
     """
 
     if not allowed_prefixes:
@@ -1848,10 +1853,16 @@ def verification_command_allowed(
                 f"Verification command `{shown}` contains the shell control "
                 f"character {char!r}."
             )
-    tokens = command.split()
+    stripped = command.strip(" \t")
+    problem = verification_whitespace_problem(stripped)
+    if problem is not None:
+        return (
+            f"Verification command `{shown}` contains {problem}; words must be "
+            "separated by single spaces with no other whitespace."
+        )
     for prefix in allowed_prefixes:
-        prefix_tokens = prefix.split()
-        if prefix_tokens and tokens[: len(prefix_tokens)] == prefix_tokens:
+        literal = prefix.strip()
+        if literal and (stripped == literal or stripped.startswith(f"{literal} ")):
             return None
     listed = ", ".join(f"`{_single_line(prefix)}`" for prefix in allowed_prefixes)
     return (

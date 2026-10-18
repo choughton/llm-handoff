@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The work-claim gate now matches Verification commands against
+  `verification_allowed_prefixes` literally instead of word by word. After
+  surrounding spaces and tabs are stripped, a command must equal a prefix or
+  start with a prefix followed by one space, and a command containing a tab,
+  other non-space whitespace, or a run of two or more spaces fails
+  `verification_not_allowed` with a `whitespace` reason. This is the rule the
+  `agy` grant `command(regex:^<prefix>( .*)?$)` applies, so the gate no longer
+  allows a command such as `python  -m pytest` that the grant would refuse.
+  Config load rejects a prefix without single spaces between words, and
+  `llm-handoff init --verification-command` rejects such a command. No grant
+  or default grant list changed.
 - `llm-handoff doctor` now reports `interpreter grants` lines per role or
   fallback launch: a WARN for each Claude launch whose effective
   `allowed_tools` list has bare `Bash`, `Bash(*)`, or a `python`, `python3`,

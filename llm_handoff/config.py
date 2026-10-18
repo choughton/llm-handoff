@@ -90,6 +90,25 @@ WORK_PACKET_VERIFICATION_TIMEOUT_SECONDS = 600
 VERIFICATION_FORBIDDEN_CHARS: frozenset[str] = frozenset(
     {"&", "|", ";", "<", ">", "$", "`", "(", ")", "%", "!", "\r", "\n"}
 )
+
+
+def verification_whitespace_problem(text: str) -> str | None:
+    """Describe the whitespace in ``text`` that literal prefix matching refuses.
+
+    ``text`` is a stripped Verification command or
+    `verification_allowed_prefixes` entry. The `agy` grant for a prefix
+    matches the exact command line, so words must be separated by single
+    spaces: a tab, any other non-space whitespace character, or a run of two
+    or more spaces is refused. Returns ``None`` when ``text`` has none.
+    """
+
+    for char in text:
+        if char.isspace() and char != " ":
+            return f"the whitespace character {char!r}"
+    if "  " in text:
+        return "a run of two or more spaces"
+    return None
+
 SCANNER_TIMEOUT_MS = 300_000
 SCANNER_PLACEHOLDERS = frozenset(
     {"diff_range", "changed_files", "changed_py_files", "repo_root"}
@@ -1146,6 +1165,13 @@ class DispatchConfig(BaseModel):
                         f"the shell control character {char!r}; prefixes must "
                         "not contain any of & | ; < > $ ` ( ) or a line break."
                     )
+            problem = verification_whitespace_problem(prefix)
+            if problem is not None:
+                raise ValueError(
+                    f"verification_allowed_prefixes entry {entry!r} contains "
+                    f"{problem}; prefixes must use single spaces between words "
+                    "so they match the agy grants built from them."
+                )
             normalized.append(prefix)
         return tuple(normalized)
 
