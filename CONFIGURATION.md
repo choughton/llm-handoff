@@ -68,7 +68,17 @@ project_state_path: PROJECT_STATE.md
 This file is an optional durable project-status document. Consumers can point it
 at an existing file if their workflow already uses one. The finalizer prompt
 names this configured path when it tells the finalizer which file to update
-and commit.
+and commit, and tells it to add every story that `remaining_stories` names and
+this file does not list yet.
+
+After each dispatch, the post-dispatch gate warns
+(`remaining_story_not_in_project_state`) when `remaining_stories` names a
+story ID that this file does not contain. A story that exists only in the
+handoff is lost when a later rewrite drops it, and in dispatcher commit mode
+the planner's own edits to this file are never committed, so the planner
+records new stories through the next Work Packet. The warning does not fail
+the gate. It is skipped when the file does not exist and in Linear mode, where
+the tracker holds the stories.
 
 ## Auto Push
 
@@ -2194,5 +2204,38 @@ Expected keys:
 - `scope_sha`: optional commit SHA related to the completed work.
 - `prior_sha`: optional prior handoff or work commit.
 - `close_type`: optional workflow close marker.
+- `epic_id`, `story_id`, `story_title`: optional scope of the current work.
+- `remaining_stories`: optional list of the epic's open stories, each
+  starting with its story ID, such as `S2 Add the login form`.
 
 The dispatcher should fail closed on invalid or ambiguous frontmatter.
+
+### Story List Check
+
+The post-dispatch gate compares a dispatch's `remaining_stories` with the
+handoff the dispatch started from. Stories match by their leading ID token
+(`S2` in `S2 Add the login form`), ignoring case and surrounding `**`,
+backticks, or a trailing colon. An entry may leave the list only when it is
+the prior or the new `story_id` (the story just closed, or the one now
+assigned), or when the rewrite lists it under a `## Dropped Stories` section
+with a reason:
+
+```markdown
+## Dropped Stories
+
+- S4: Merged into S3 at the user's request.
+```
+
+Any other missing entry fails the gate with `remaining_stories_dropped`,
+naming each dropped entry. A rewrite that leaves out `remaining_stories`
+entirely drops every open story. The check is skipped when both handoffs name
+different `epic_id` values, since a new epic has its own list; a rewrite that
+leaves out `epic_id` is still checked against the prior list.
+
+The failure goes through the existing handoff hygiene path: one producer
+repair for an auditor, backend, or frontend handoff (the repair may change
+`remaining_stories`), then planner recovery or a pause. Until a dispatch
+passes the check, or someone changes the handoff the failed dispatch left
+behind, the next dispatch is checked against the list that was dropped, so a
+recovering planner that rebuilds the list from the project state file cannot
+lose the story again. No configuration key turns the check off.

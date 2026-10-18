@@ -80,6 +80,11 @@ Routing guidance:
 
 Each status names its route, and the dispatcher rejects a handoff whose `next_agent` disagrees with its `status`.
 
+Copy `remaining_stories` from the handoff you audit; remove only the story
+you approved. To drop any other story, list it under `## Dropped Stories` as
+`- <story id>: <reason>`. The dispatcher fails a rewrite that drops a story
+without one.
+
 Run `git rev-parse HEAD` for concrete SHAs. Do not write `scope_sha: HEAD`.
 
 Every `verified_pass` or `verified_fail` handoff must include the

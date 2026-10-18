@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The post-dispatch gate now fails a handoff rewrite that silently drops
+  planned stories. It compares the new `remaining_stories` with the handoff
+  the dispatch started from, matching stories by their leading ID token. An
+  entry may leave the list only when it is the prior or the new `story_id`,
+  or when the rewrite lists it under `## Dropped Stories` with a reason;
+  otherwise validation fails with `remaining_stories_dropped`, naming the
+  entries. The rule applies only within one epic. The failure is repairable
+  through the existing producer repair, and planner recovery after it is
+  checked against the dropped list, not the rewrite that lost it. A new
+  `remaining_story_not_in_project_state` warning names story IDs that the
+  configured `project_state_path` does not list (skipped in Linear mode).
+  The handbook, the planner and auditor prompts, and their agent files now
+  say to copy the list forward and to record new stories in
+  `PROJECT_STATE.md` through the next Work Packet. The finalizer prompt adds
+  any listed story the project state file is missing. Before this, an auditor
+  rewrite without `remaining_stories` lost a story that existed only in the
+  handoff, and the next planner rebuilt the list without it.
 - The `agy` permission grants now cover arguments. The exact-match
   `command(<cmd>)` allow entries refused argument-bearing commands such as
   `git rev-parse HEAD` and `git commit -m ...`; each allow entry is now an

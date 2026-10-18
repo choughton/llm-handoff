@@ -22,6 +22,8 @@ LEDGER_UPDATER_PROMPT_TEMPLATE = (
     "Use the finalizer or ledger-updater agent to update the project state. "
     "Read {handoff_path} for the completed scope and validation verdict. "
     "Update {project_state_path} with the completed scope, next state, and durable commit references. "
+    "Also add every story that {handoff_path} names in remaining_stories and "
+    "{project_state_path} does not list yet, so planned work outlives the handoff. "
     "Rewrite {handoff_path} so YAML frontmatter routes the next cycle "
     "to planner for the next phase or to user if blocked; do not leave it "
     "routing to finalizer after the state update is complete. "
