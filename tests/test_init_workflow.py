@@ -11,6 +11,7 @@ import yaml
 from llm_handoff import init_workflow as init_workflow_module
 from llm_handoff.config import CLAUDE_DEFAULT_ALLOWED_TOOLS, load_dispatch_config
 from llm_handoff.init_workflow import (
+    ANTIGRAVITY_MAPPING,
     CLAUDE_MAPPING,
     CODEX_MAPPING,
     GEMINI_MAPPING,
@@ -433,6 +434,11 @@ def test_init_auto_detects_a_claude_only_machine(tmp_path: Path) -> None:
         ("claude", "codex"),
         ("codex", "gemini"),
         ("claude", "codex", "gemini"),
+        ("gemini",),
+        ("claude", "agy"),
+        ("codex", "agy"),
+        ("agy", "gemini"),
+        ("claude", "codex", "agy"),
     ],
 )
 def test_init_keeps_the_reference_mapping_unless_a_single_provider(
@@ -470,7 +476,9 @@ def test_init_reports_a_mapping_change_as_a_config_conflict(tmp_path: Path) -> N
 def test_init_rejects_an_unknown_provider_mapping(tmp_path: Path) -> None:
     with pytest.raises(UnknownProviderError) as error:
         init_reference_workflow(tmp_path, provider="openai", available_providers=())
-    assert "Available mappings: claude, codex, gemini." in str(error.value)
+    assert "Available mappings: claude, codex, antigravity, gemini." in str(
+        error.value
+    )
     assert not (tmp_path / "AGENTS.md").exists()
 
 
@@ -744,7 +752,7 @@ def test_render_config_gemini_leaves_the_other_mappings_unchanged() -> None:
     template = _template_config_text()
 
     assert render_config(template, REFERENCE_MAPPING) == template
-    for mapping in (CLAUDE_MAPPING, CODEX_MAPPING):
+    for mapping in (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING):
         rendered = render_config(template, mapping)
         assert "provider: gemini" not in rendered, mapping
         assert "Gemini CLI login" not in rendered, mapping
@@ -774,14 +782,16 @@ def test_init_provider_gemini_writes_a_loadable_all_gemini_config(
         assert (tmp_path / ".gemini" / "agents" / f"{role}.md").is_file(), role
 
 
-def test_init_auto_detects_a_gemini_only_machine(tmp_path: Path) -> None:
+def test_init_keeps_the_reference_mapping_on_a_gemini_only_machine(
+    tmp_path: Path,
+) -> None:
     result = init_reference_workflow(tmp_path, available_providers=("gemini",))
 
-    assert result.provider_mapping == GEMINI_MAPPING
+    assert result.provider_mapping == REFERENCE_MAPPING
     assert result.detected_providers == ("gemini",)
-    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
-    assert "provider: claude" not in text
-    assert "provider: codex" not in text
+    assert (tmp_path / "dispatch_config.yaml").read_bytes() == (
+        TEMPLATE_ROOT / "dispatch_config.yaml"
+    ).read_bytes()
 
 
 def test_init_gemini_mapping_is_repeatable(tmp_path: Path) -> None:
@@ -810,6 +820,191 @@ def test_verification_command_with_gemini_mapping_changes_no_agent(
     text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
     assert "allowed_tools" not in text
     assert yaml.safe_load(text)["verification_allowed_prefixes"] == ["npm test"]
+
+
+ANTIGRAVITY_ROLES = ("planner", "backend", "frontend", "auditor", "validator", "finalizer")
+
+
+def test_render_config_antigravity_puts_every_role_on_antigravity() -> None:
+    template = _template_config_text()
+    rendered = render_config(template, ANTIGRAVITY_MAPPING)
+    data = yaml.safe_load(rendered)
+    reference = yaml.safe_load(template)
+
+    assert set(data["agents"]) == set(ANTIGRAVITY_ROLES)
+    for role in ANTIGRAVITY_ROLES:
+        agent = data["agents"][role]
+        assert agent == {
+            "provider": "antigravity",
+            "binary": "agy",
+            "resume": False,
+            "timeout_ms": reference["agents"][role]["timeout_ms"],
+        }, role
+    assert "unsafe_bypass" not in rendered
+    assert data["audit"]["security_provider"] == "antigravity"
+    assert (
+        "  # Same vendor as the implementer: the only CLI available.\n"
+        "  security_provider: antigravity\n"
+    ) in rendered
+    assert data["normalizer"]["provider"] == "antigravity"
+    assert "model" not in data["normalizer"]
+    assert "agy CLI login" in rendered
+    assert "claude-haiku-5-5" not in rendered
+    assert "provider: claude" not in rendered
+    assert "provider: codex" not in rendered
+    assert "provider: gemini" not in rendered
+    # Template defaults the mapping leaves alone.
+    assert data["commit_mode"] == reference["commit_mode"]
+    assert "interpreter_grants" not in data
+    assert "# interpreter_grants: false\n" in rendered
+
+
+def test_render_config_antigravity_uses_the_all_claude_timeouts() -> None:
+    template = _template_config_text()
+    claude = yaml.safe_load(render_config(template, CLAUDE_MAPPING))["agents"]
+    agy = yaml.safe_load(render_config(template, ANTIGRAVITY_MAPPING))["agents"]
+
+    assert {role: agent["timeout_ms"] for role, agent in agy.items()} == {
+        role: agent["timeout_ms"] for role, agent in claude.items()
+    }
+
+
+def test_init_provider_antigravity_writes_a_loadable_all_agy_config(
+    tmp_path: Path,
+) -> None:
+    result = init_reference_workflow(
+        tmp_path,
+        provider="antigravity",
+        available_providers=("claude", "codex", "agy"),
+    )
+
+    assert result.provider_mapping == ANTIGRAVITY_MAPPING
+    config = load_dispatch_config(
+        repo_root=tmp_path,
+        config_path=tmp_path / "dispatch_config.yaml",
+    )
+    assert set(config.agents) == set(ANTIGRAVITY_ROLES)
+    for role in ANTIGRAVITY_ROLES:
+        assert config.agents[role].provider == "antigravity", role
+        assert config.agents[role].binary == "agy", role
+        assert config.agents[role].agent_name is None, role
+        assert config.agents[role].unsafe_bypass is False, role
+    assert config.audit.security_provider == "antigravity"
+    assert config.normalizer.provider == "antigravity"
+    assert config.normalizer.model == "gemini-3.8-flash-low"
+
+
+def test_init_auto_detects_an_agy_only_machine(tmp_path: Path) -> None:
+    result = init_reference_workflow(tmp_path, available_providers=("agy",))
+
+    assert result.provider_mapping == ANTIGRAVITY_MAPPING
+    assert result.detected_providers == ("agy",)
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert text == render_config(_template_config_text(), ANTIGRAVITY_MAPPING)
+
+
+def test_init_antigravity_mapping_is_repeatable(tmp_path: Path) -> None:
+    init_reference_workflow(tmp_path, provider="antigravity", available_providers=())
+    second = init_reference_workflow(
+        tmp_path, provider="antigravity", available_providers=()
+    )
+
+    assert second.copied == ()
+    assert Path("dispatch_config.yaml") in second.skipped
+    assert second.conflicts == ()
+
+
+def test_verification_command_with_antigravity_mapping_changes_no_agent(
+    tmp_path: Path,
+) -> None:
+    init_reference_workflow(
+        tmp_path,
+        provider="antigravity",
+        available_providers=(),
+        verification_command="npm test",
+    )
+
+    tools = _loaded_allowed_tools(tmp_path)
+    assert all(value is None for value in tools.values())
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "allowed_tools" not in text
+    data = yaml.safe_load(text)
+    assert data["verification_allowed_prefixes"] == ["npm test"]
+    assert data["agents"] == yaml.safe_load(
+        render_config(_template_config_text(), ANTIGRAVITY_MAPPING)
+    )["agents"]
+
+
+def _antigravity_launch_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, set[str]]:
+    """Return the `agy --agent` names each all-agy role launches with.
+
+    The provider command runner is stubbed, so no CLI starts. Each role is
+    invoked the way the dispatcher invokes it: planner, backend, and frontend
+    through `invoke_role` with no subagent name; auditor, validator, and
+    finalizer through `invoke_support_role` with the subagent names the
+    orchestrator and ledger pass (`auditor`; `handoff-validator` and
+    `handoff-router`; `ledger-updater`).
+    """
+
+    from llm_handoff import agent_roles
+    from llm_handoff.agent_providers import antigravity as agy_provider
+    from llm_handoff.agent_types import _ProcessResult
+
+    target = tmp_path / "target"
+    init_reference_workflow(target, provider="antigravity", available_providers=())
+    config = load_dispatch_config(
+        repo_root=target, config_path=target / "dispatch_config.yaml"
+    )
+    seen: list[str] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> _ProcessResult:
+        seen.append(command[command.index("--agent") + 1])
+        return _ProcessResult(stdout="", stderr="", exit_code=0)
+
+    monkeypatch.setattr(agy_provider, "_run_antigravity_command", fake_run)
+    handoff = target / "docs" / "handoff" / "HANDOFF.md"
+    launches: dict[str, set[str]] = {}
+    for role in ("planner", "backend", "frontend"):
+        seen.clear()
+        agent_roles.invoke_role(
+            role, handoff, agent_config=config.agents[role], repo_root=target
+        )
+        launches[role] = set(seen)
+    for role, subagents in (
+        ("auditor", ("auditor",)),
+        ("validator", ("handoff-validator", "handoff-router")),
+        ("finalizer", ("ledger-updater",)),
+    ):
+        seen.clear()
+        for subagent in subagents:
+            agent_roles.invoke_support_role(
+                subagent,
+                "prompt",
+                role=role,
+                handoff_path=handoff,
+                agent_config=config.agents[role],
+                repo_root=target,
+            )
+        launches[role] = set(seen)
+    return launches
+
+
+def test_every_all_agy_role_resolves_to_a_shipped_agent_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launches = _antigravity_launch_agents(tmp_path, monkeypatch)
+
+    assert set(launches) == set(ANTIGRAVITY_ROLES)
+    assert launches["validator"] == {"handoff-validator", "handoff-router"}
+    assert launches["finalizer"] == {"ledger-updater"}
+    for role, names in launches.items():
+        assert names, role
+        for name in names:
+            for root in (REPO_ROOT, TEMPLATE_ROOT):
+                path = root / ".agents" / "agents" / f"{name}.md"
+                assert path.is_file(), (role, path)
 
 
 def _loaded_allowed_tools(root: Path) -> dict[str, tuple[str, ...] | None]:
@@ -1103,14 +1298,34 @@ def test_resolve_provider_mapping_prefers_an_explicit_choice() -> None:
     assert resolve_provider_mapping(None, ("claude", "codex")) == REFERENCE_MAPPING
     assert resolve_provider_mapping(None, ("codex", "gemini")) == REFERENCE_MAPPING
     assert resolve_provider_mapping("gemini", ("claude", "codex")) == GEMINI_MAPPING
-    assert resolve_provider_mapping(None, ("gemini",)) == GEMINI_MAPPING
+    assert resolve_provider_mapping("gemini", ("agy",)) == GEMINI_MAPPING
+    assert resolve_provider_mapping(None, ("gemini",)) == REFERENCE_MAPPING
+    assert (
+        resolve_provider_mapping("antigravity", ("claude", "codex"))
+        == ANTIGRAVITY_MAPPING
+    )
+    assert resolve_provider_mapping(None, ("agy",)) == ANTIGRAVITY_MAPPING
+    assert resolve_provider_mapping(None, ("claude", "agy")) == REFERENCE_MAPPING
+    assert resolve_provider_mapping(None, ("agy", "gemini")) == REFERENCE_MAPPING
     assert resolve_provider_mapping(None, ()) == REFERENCE_MAPPING
 
 
 def test_unknown_provider_error_lists_every_mapping() -> None:
     with pytest.raises(UnknownProviderError) as error:
         resolve_provider_mapping("openai", ())
-    assert "Available mappings: claude, codex, gemini." in str(error.value)
+    assert "Available mappings: claude, codex, antigravity, gemini." in str(
+        error.value
+    )
+
+
+def test_provider_mapping_and_cli_order() -> None:
+    assert init_workflow_module.PROVIDER_MAPPINGS == (
+        "claude",
+        "codex",
+        "antigravity",
+        "gemini",
+    )
+    assert init_workflow_module.PROVIDER_CLIS == ("claude", "codex", "agy")
 
 
 def test_init_antigravity_available_sets_antigravity_detected(tmp_path: Path) -> None:
@@ -1132,7 +1347,7 @@ def _fake_which(names: set[str]):
     return fake_which
 
 
-def test_init_detects_agy_on_path_without_changing_the_mapping(
+def test_init_detects_agy_beside_claude_as_the_reference_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -1142,9 +1357,34 @@ def test_init_detects_agy_on_path_without_changing_the_mapping(
     result = init_reference_workflow(tmp_path, dry_run=True)
 
     assert result.antigravity_detected is True
-    assert result.detected_providers == ("claude",)
-    assert result.provider_mapping == CLAUDE_MAPPING
-    assert "agy" not in init_workflow_module.PROVIDER_CLIS
+    assert result.detected_providers == ("claude", "agy")
+    assert result.provider_mapping == REFERENCE_MAPPING
+
+
+def test_init_detects_an_agy_only_path_as_the_antigravity_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(init_workflow_module.shutil, "which", _fake_which({"agy"}))
+
+    result = init_reference_workflow(tmp_path, dry_run=True)
+
+    assert result.antigravity_detected is True
+    assert result.detected_providers == ("agy",)
+    assert result.provider_mapping == ANTIGRAVITY_MAPPING
+
+
+def test_init_ignores_gemini_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        init_workflow_module.shutil, "which", _fake_which({"gemini"})
+    )
+
+    result = init_reference_workflow(tmp_path, dry_run=True)
+
+    assert result.antigravity_detected is False
+    assert result.detected_providers == ()
+    assert result.provider_mapping == REFERENCE_MAPPING
 
 
 def test_init_reports_no_agy_when_it_is_not_on_path(

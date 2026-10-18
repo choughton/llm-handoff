@@ -14,6 +14,7 @@ from llm_handoff.init_workflow import (
     InitWorkflowError,
     InvalidTrackerOptionsError,
     TrackerRequiresFreshRepoError,
+    TrackerUnsupportedMappingError,
     UnknownTrackerError,
     init_reference_workflow,
 )
@@ -275,6 +276,61 @@ def test_existing_config_refuses_linear_init(
     assert "no dispatch_config.yaml yet" in message
     assert "switching an initialized repository is not supported yet" in message
     assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"provider": "antigravity"},
+        {"available_providers": ("agy",)},
+    ],
+    ids=["explicit", "auto-detected"],
+)
+def test_linear_refuses_the_antigravity_mapping_before_writing(
+    tmp_path: Path, kwargs: dict[str, object], dry_run: bool
+) -> None:
+    target = tmp_path / "repo"
+    with pytest.raises(TrackerUnsupportedMappingError) as excinfo:
+        _linear(target, dry_run=dry_run, **kwargs)
+    assert isinstance(excinfo.value, InvalidTrackerOptionsError)
+    assert isinstance(excinfo.value, InitWorkflowError)
+    message = str(excinfo.value)
+    assert "Linear mode does not support provider: antigravity" in message
+    for option in ("--provider claude", "--provider codex", "--tracker none"):
+        assert option in message
+    assert "\n" not in message
+    assert not target.exists()
+
+
+def test_antigravity_mapping_without_linear_is_written(tmp_path: Path) -> None:
+    result = _init(tmp_path, provider="antigravity", tracker="none")
+    assert result.provider_mapping == "antigravity"
+    config = load_dispatch_config(repo_root=tmp_path)
+    assert config.tracker.enabled is False
+
+
+def test_cli_linear_with_auto_detected_agy_exits_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        init_workflow.shutil,
+        "which",
+        lambda name, *args, **kwargs: "/usr/bin/agy" if name == "agy" else None,
+    )
+    result = _invoke(
+        str(tmp_path),
+        "--tracker",
+        "linear",
+        "--tracker-team",
+        "ENG",
+        "--tracker-project",
+        "P",
+    )
+    assert result.exit_code == 2, result.output
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "Linear mode does not support provider: antigravity" in result.stderr
+    assert not any(tmp_path.iterdir())
 
 
 def test_existing_config_does_not_affect_vanilla_init(tmp_path: Path) -> None:

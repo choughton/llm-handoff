@@ -73,14 +73,19 @@ _EXCLUDED_TEMPLATE_FILES = frozenset({Path("README.md")})
 
 # Provider mappings `init` can write into dispatch_config.yaml. `reference`
 # keeps the template's mixed mapping; `claude` puts every role on Claude Code;
-# `codex` puts every role on the Codex CLI; `gemini` puts every role on
-# Gemini CLI.
+# `codex` puts every role on the Codex CLI; `antigravity` puts every role on
+# the Antigravity CLI (`agy`); `gemini` puts every role on Gemini CLI and is
+# only written when asked for by name.
 REFERENCE_MAPPING = "reference"
 CLAUDE_MAPPING = "claude"
 CODEX_MAPPING = "codex"
+ANTIGRAVITY_MAPPING = "antigravity"
 GEMINI_MAPPING = "gemini"
-PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, GEMINI_MAPPING)
-PROVIDER_CLIS = ("claude", "codex", "gemini")
+PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING, GEMINI_MAPPING)
+# Provider CLIs the mapping auto-detect looks for on PATH. `agy` selects the
+# antigravity mapping; Gemini CLI is not detected.
+PROVIDER_CLIS = ("claude", "codex", "agy")
+_ANTIGRAVITY_CLI = "agy"
 _CONFIG_PATH = Path("dispatch_config.yaml")
 _TEXT_MARKERS = {
     Path("AGENTS.md"): (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->"),
@@ -233,6 +238,48 @@ _CODEX_AGENTS_BLOCK = """agents:
     timeout_ms: 900000
 
 """
+_ANTIGRAVITY_AGENTS_BLOCK = """agents:
+  # All-Antigravity mapping written by `llm-handoff init` (agy only).
+  # Each role runs the matching agent file in .agents/agents/: planner,
+  # backend, frontend, and auditor by role name; validator runs
+  # handoff-validator or handoff-router, and finalizer runs ledger-updater.
+  planner:
+    provider: antigravity
+    binary: agy
+    resume: false
+    timeout_ms: 1200000
+
+  backend:
+    provider: antigravity
+    binary: agy
+    resume: false
+    timeout_ms: 1200000
+
+  frontend:
+    provider: antigravity
+    binary: agy
+    resume: false
+    timeout_ms: 1200000
+
+  auditor:
+    provider: antigravity
+    binary: agy
+    resume: false
+    timeout_ms: 900000
+
+  validator:
+    provider: antigravity
+    binary: agy
+    resume: false
+    timeout_ms: 900000
+
+  finalizer:
+    provider: antigravity
+    binary: agy
+    resume: false
+    timeout_ms: 900000
+
+"""
 _GEMINI_AGENTS_BLOCK = """agents:
   # All-Gemini mapping written by `llm-handoff init` (Gemini CLI only).
   # Each role runs the matching agent file in .gemini/agents/ through its
@@ -292,6 +339,10 @@ _CODEX_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available.\n"
     "  security_provider: codex\n"
 )
+_ANTIGRAVITY_SECURITY_PROVIDER_LINE = (
+    "  # Same vendor as the implementer: the only CLI available.\n"
+    "  security_provider: antigravity\n"
+)
 _GEMINI_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available. The Gemini\n"
     "  # reviewer needs the Gemini CLI security extension installed.\n"
@@ -306,6 +357,11 @@ _CODEX_NORMALIZER_LINES = (
     "normalizer:\n"
     "  # All-Codex mapping: the normalizer runs through the Codex CLI login.\n"
     "  provider: codex\n"
+)
+_ANTIGRAVITY_NORMALIZER_LINES = (
+    "normalizer:\n"
+    "  # All-Antigravity mapping: the normalizer runs through the agy CLI login.\n"
+    "  provider: antigravity\n"
 )
 _GEMINI_NORMALIZER_LINES = (
     "normalizer:\n"
@@ -326,19 +382,25 @@ _CODEX_COMMIT_MODE_LINE = (
 _MAPPING_AGENTS_BLOCKS = {
     CLAUDE_MAPPING: _CLAUDE_AGENTS_BLOCK,
     CODEX_MAPPING: _CODEX_AGENTS_BLOCK,
+    ANTIGRAVITY_MAPPING: _ANTIGRAVITY_AGENTS_BLOCK,
     GEMINI_MAPPING: _GEMINI_AGENTS_BLOCK,
 }
 _MAPPING_SECURITY_PROVIDER_LINES = {
     CLAUDE_MAPPING: _CLAUDE_SECURITY_PROVIDER_LINE,
     CODEX_MAPPING: _CODEX_SECURITY_PROVIDER_LINE,
+    ANTIGRAVITY_MAPPING: _ANTIGRAVITY_SECURITY_PROVIDER_LINE,
     GEMINI_MAPPING: _GEMINI_SECURITY_PROVIDER_LINE,
 }
 # Mappings whose normalizer cannot stay on the template's claude default
 # because that CLI is not installed; the others keep the template lines.
 _MAPPING_NORMALIZER_LINES = {
     CODEX_MAPPING: _CODEX_NORMALIZER_LINES,
+    ANTIGRAVITY_MAPPING: _ANTIGRAVITY_NORMALIZER_LINES,
     GEMINI_MAPPING: _GEMINI_NORMALIZER_LINES,
 }
+# Mappings that put a role on `provider: antigravity`; `init --tracker linear`
+# refuses them because config load rejects antigravity in Linear mode.
+_LINEAR_UNSUPPORTED_MAPPINGS = frozenset({ANTIGRAVITY_MAPPING})
 # The executable of a confirmed verification command becomes one
 # `Bash(<exe>:*)` rule, so it must be a bare program name: no path separators,
 # shell operators, quotes, or whitespace.
@@ -364,9 +426,9 @@ class InitResult:
     merged: tuple[Path, ...] = ()
     candidates: tuple[Candidate, ...] = ()
     verification_command: str | None = None
-    # Whether the Antigravity CLI (`agy`) is on PATH. It only decides whether
-    # `init` prints the agy permission entries; the provider mapping
-    # auto-detect does not use it.
+    # Whether the Antigravity CLI (`agy`) is on PATH. It decides whether
+    # `init` prints the agy permission entries. The provider mapping
+    # auto-detect finds `agy` on its own through `detected_providers`.
     antigravity_detected: bool = False
     tracker: str = TRACKER_NONE
 
@@ -419,6 +481,18 @@ class InvalidTrackerOptionsError(InitWorkflowError):
         self.detail = detail
 
 
+class TrackerUnsupportedMappingError(InvalidTrackerOptionsError):
+    """`--tracker linear` with a mapping that puts roles on antigravity."""
+
+    def __init__(self, mapping: str) -> None:
+        super().__init__(
+            f"Linear mode does not support provider: antigravity, and the "
+            f"{mapping} mapping puts every role on it. Use --provider claude, "
+            "--provider codex, or --tracker none."
+        )
+        self.mapping = mapping
+
+
 class TrackerRequiresFreshRepoError(InitWorkflowError):
     def __init__(self, target_root: Path) -> None:
         super().__init__(
@@ -464,8 +538,9 @@ def resolve_provider_mapping(
     """Pick the mapping to write: an explicit choice, else auto-detect.
 
     Auto-detection switches to a single-provider mapping only when that
-    provider's CLI (Claude Code, Codex, or Gemini CLI) is the only provider
-    CLI installed; any other combination keeps the reference mapping.
+    provider's CLI (Claude Code, Codex, or `agy`) is the only provider CLI
+    installed; any other combination keeps the reference mapping. Gemini CLI
+    is not auto-detected; the all-Gemini mapping needs `--provider gemini`.
     """
 
     if provider is not None:
@@ -477,8 +552,8 @@ def resolve_provider_mapping(
         return CLAUDE_MAPPING
     if available == {"codex"}:
         return CODEX_MAPPING
-    if available == {"gemini"}:
-        return GEMINI_MAPPING
+    if available == {_ANTIGRAVITY_CLI}:
+        return ANTIGRAVITY_MAPPING
     return REFERENCE_MAPPING
 
 
@@ -1114,6 +1189,10 @@ def init_reference_workflow(
         detect_provider_clis() if available_providers is None else available_providers
     )
     mapping = resolve_provider_mapping(provider, detected)
+    if tracker_config is not None and mapping in _LINEAR_UNSUPPORTED_MAPPINGS:
+        # The dispatcher would refuse to load the written config, so fail
+        # before any file is planned (dry_run included).
+        raise TrackerUnsupportedMappingError(mapping)
     antigravity_detected = (
         shutil.which("agy") is not None
         if antigravity_available is None
