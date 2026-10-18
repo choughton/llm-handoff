@@ -106,10 +106,9 @@ normalizer:
   model: claude-haiku-5-5
   timeout_ms: 60000
   on_unknown: fail_closed
-  # Registered normalizer providers: antigravity, claude, codex, gemini,
-  # openai. Claude and Gemini fall back to their CLI login without an API
-  # key; Codex and Antigravity (`agy`) always use their CLI login; OpenAI is
-  # API-key only.
+  # Registered normalizer providers: antigravity, claude, codex, openai.
+  # Claude falls back to its CLI login without an API key; Codex and
+  # Antigravity (`agy`) always use their CLI login; OpenAI is API-key only.
   # `model` must name a model of the selected provider; when you change the
   # provider, change or remove `model` too. Omitting it selects that
   # provider's default.

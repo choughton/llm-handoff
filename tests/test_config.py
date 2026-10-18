@@ -457,6 +457,30 @@ def test_load_dispatch_config_rejects_unsupported_normalizer_provider(
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
+def test_load_dispatch_config_rejects_removed_gemini_normalizer_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        """normalizer:
+  provider: gemini
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as error:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert (
+        "The gemini provider was removed: Gemini CLI no longer serves personal "
+        "Google accounts. Use provider: antigravity (the agy CLI)."
+    ) in str(error.value)
+    assert "no next-agent normalizer adapter is registered" not in str(error.value)
+    assert "gemini" not in config_module.NORMALIZER_PROVIDER_ADAPTERS
+    assert "gemini" not in config_module.NORMALIZER_PROVIDER_MODELS
+    assert not hasattr(config_module, "GEMINI_NORMALIZER_MODEL")
+
+
 def test_normalizer_adapters_and_default_models_cover_the_same_providers() -> None:
     assert config_module.NORMALIZER_PROVIDER_ADAPTERS == frozenset(
         config_module.NORMALIZER_PROVIDER_MODELS
@@ -469,7 +493,6 @@ def test_normalizer_adapters_and_default_models_cover_the_same_providers() -> No
     [
         ("antigravity", config_module.ANTIGRAVITY_NORMALIZER_MODEL),
         ("codex", config_module.CODEX_NORMALIZER_MODEL),
-        ("gemini", config_module.GEMINI_NORMALIZER_MODEL),
         ("openai", config_module.OPENAI_NORMALIZER_MODEL),
     ],
 )

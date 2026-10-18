@@ -74,16 +74,14 @@ _EXCLUDED_TEMPLATE_FILES = frozenset({Path("README.md")})
 # Provider mappings `init` can write into dispatch_config.yaml. `reference`
 # keeps the template's mixed mapping; `claude` puts every role on Claude Code;
 # `codex` puts every role on the Codex CLI; `antigravity` puts every role on
-# the Antigravity CLI (`agy`); `gemini` puts every role on Gemini CLI and is
-# only written when asked for by name.
+# the Antigravity CLI (`agy`).
 REFERENCE_MAPPING = "reference"
 CLAUDE_MAPPING = "claude"
 CODEX_MAPPING = "codex"
 ANTIGRAVITY_MAPPING = "antigravity"
-GEMINI_MAPPING = "gemini"
-PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING, GEMINI_MAPPING)
+PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING)
 # Provider CLIs the mapping auto-detect looks for on PATH. `agy` selects the
-# antigravity mapping; Gemini CLI is not detected.
+# antigravity mapping.
 PROVIDER_CLIS = ("claude", "codex", "agy")
 _ANTIGRAVITY_CLI = "agy"
 _CONFIG_PATH = Path("dispatch_config.yaml")
@@ -292,53 +290,6 @@ _ANTIGRAVITY_AGENTS_BLOCK = """agents:
     timeout_ms: 900000
 
 """
-_GEMINI_AGENTS_BLOCK = """agents:
-  # All-Gemini mapping written by `llm-handoff init` (Gemini CLI only).
-  # Each role runs the matching agent file in .gemini/agents/ through its
-  # mention, and every role needs the container sandbox runtime.
-  planner:
-    provider: gemini
-    binary: gemini
-    mention: "@planner"
-    resume: false
-    timeout_ms: 1200000
-
-  backend:
-    provider: gemini
-    binary: gemini
-    mention: "@backend"
-    resume: false
-    timeout_ms: 1200000
-
-  frontend:
-    provider: gemini
-    binary: gemini
-    mention: "@frontend"
-    resume: false
-    timeout_ms: 1200000
-
-  auditor:
-    provider: gemini
-    binary: gemini
-    mention: "@auditor"
-    resume: false
-    timeout_ms: 900000
-
-  validator:
-    provider: gemini
-    binary: gemini
-    mention: "@validator"
-    resume: false
-    timeout_ms: 900000
-
-  finalizer:
-    provider: gemini
-    binary: gemini
-    mention: "@finalizer"
-    resume: false
-    timeout_ms: 900000
-
-"""
 _REFERENCE_SECURITY_PROVIDER_LINE = (
     "  # security_provider: claude   # claude | codex | antigravity | gemini; "
     "unset = auto\n"
@@ -355,11 +306,6 @@ _ANTIGRAVITY_SECURITY_PROVIDER_LINE = (
     "  # Same vendor as the implementer: the only CLI available.\n"
     "  security_provider: antigravity\n"
 )
-_GEMINI_SECURITY_PROVIDER_LINE = (
-    "  # Same vendor as the implementer: the only CLI available. The Gemini\n"
-    "  # reviewer needs the Gemini CLI security extension installed.\n"
-    "  security_provider: gemini\n"
-)
 _REFERENCE_NORMALIZER_LINES = (
     "normalizer:\n"
     "  provider: claude\n"
@@ -375,12 +321,6 @@ _ANTIGRAVITY_NORMALIZER_LINES = (
     "  # All-Antigravity mapping: the normalizer runs through the agy CLI login.\n"
     "  provider: antigravity\n"
 )
-_GEMINI_NORMALIZER_LINES = (
-    "normalizer:\n"
-    "  # All-Gemini mapping: the normalizer runs through the Gemini CLI login,\n"
-    "  # or through the API when GEMINI_API_KEY (or GOOGLE_API_KEY) is set.\n"
-    "  provider: gemini\n"
-)
 # The template's top-level commit_mode line (anchored at the start of a line
 # so an indented key never matches). The all-Codex mapping switches it: the
 # Codex workspace-write sandbox keeps .git read-only, so an agent-mode
@@ -395,20 +335,17 @@ _MAPPING_AGENTS_BLOCKS = {
     CLAUDE_MAPPING: _CLAUDE_AGENTS_BLOCK,
     CODEX_MAPPING: _CODEX_AGENTS_BLOCK,
     ANTIGRAVITY_MAPPING: _ANTIGRAVITY_AGENTS_BLOCK,
-    GEMINI_MAPPING: _GEMINI_AGENTS_BLOCK,
 }
 _MAPPING_SECURITY_PROVIDER_LINES = {
     CLAUDE_MAPPING: _CLAUDE_SECURITY_PROVIDER_LINE,
     CODEX_MAPPING: _CODEX_SECURITY_PROVIDER_LINE,
     ANTIGRAVITY_MAPPING: _ANTIGRAVITY_SECURITY_PROVIDER_LINE,
-    GEMINI_MAPPING: _GEMINI_SECURITY_PROVIDER_LINE,
 }
 # Mappings whose normalizer cannot stay on the template's claude default
 # because that CLI is not installed; the others keep the template lines.
 _MAPPING_NORMALIZER_LINES = {
     CODEX_MAPPING: _CODEX_NORMALIZER_LINES,
     ANTIGRAVITY_MAPPING: _ANTIGRAVITY_NORMALIZER_LINES,
-    GEMINI_MAPPING: _GEMINI_NORMALIZER_LINES,
 }
 # Mappings that put a role on `provider: antigravity`; `init --tracker linear`
 # refuses them because config load rejects antigravity in Linear mode.
@@ -565,8 +502,7 @@ def resolve_provider_mapping(
 
     Auto-detection switches to a single-provider mapping only when that
     provider's CLI (Claude Code, Codex, or `agy`) is the only provider CLI
-    installed; any other combination keeps the reference mapping. Gemini CLI
-    is not auto-detected; the all-Gemini mapping needs `--provider gemini`.
+    installed; any other combination keeps the reference mapping.
     """
 
     if provider is not None:
