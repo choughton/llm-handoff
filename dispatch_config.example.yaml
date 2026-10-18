@@ -192,8 +192,11 @@ normalizer:
 # installed CLI (claude, codex, antigravity) that differs from the
 # implementer's provider, else the implementer's own vendor with a warning.
 # gemini is not chosen automatically but can still be set. The antigravity
-# (agy) reviewer has not yet passed an operator-run live check. A reviewer
-# that cannot launch stops the dispatcher at startup. To opt out, set
+# (agy) reviewer passed an operator-run live check (agy 1.4.2): it used only
+# view_file and flagged an injected tool request. See
+# llm-handoff's CONFIGURATION.md for what that check does and does not show.
+# A reviewer that cannot launch stops the dispatcher at startup. To opt out,
+# set
 #   reviewers: [quality]
 #   security_opt_out_reason: "<why this repository skips security review>"
 # Every dispatcher start and `llm-handoff doctor` warn with that reason.

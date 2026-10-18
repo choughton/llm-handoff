@@ -6,6 +6,24 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff init --provider antigravity` writes a new all-Antigravity
+  mapping: every role on `provider: antigravity` and `binary: agy` with the
+  all-Claude timeouts and no `unsafe_bypass`, `audit.security_provider:
+  antigravity`, and `normalizer.provider: antigravity` with the default
+  model. Each role resolves to a shipped `.agents/agents/` file; validator
+  and finalizer keep the `handoff-validator`, `handoff-router`, and
+  `ledger-updater` names the dispatcher passes. Behavior change: `init`
+  provider auto-detect now looks for `claude`, `codex`, and `agy` instead of
+  `gemini`. An `agy`-only machine gets the all-Antigravity mapping, and a
+  `gemini`-only machine now gets the reference mapping; `--provider gemini`
+  still writes the all-Gemini mapping. `init --tracker linear` with the
+  all-Antigravity mapping, explicit or detected, now fails before writing any
+  file, because Linear mode does not support `provider: antigravity`. The
+  antigravity security reviewer passed an operator-run live check on
+  2026-10-18 with `agy` 1.4.2: it returned `pass` on a real range and `fail`
+  with a `high` finding on an injected range, using only `view_file`. The
+  model declined the injected request, so the check does not show `agy`
+  refusing a forced call to a tool outside the agent file's `tools` list.
 - `audit.security_provider: antigravity` is now a read-only security
   reviewer that runs `agy`, and the automatic security reviewer order is
   `claude`, `codex`, `antigravity`. `gemini` left the automatic order; an

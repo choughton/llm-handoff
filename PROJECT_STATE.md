@@ -9,7 +9,7 @@ belong in commits, handoffs, and pull requests.
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
-  GEM-0e merged in PR #128; GEM-2 in progress).
+  GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -314,27 +314,36 @@ itself from 1.3.5 to 1.4.2 during the checks):
   copy of the scope diff and the verdict schema; the model is borrowed from
   the first `antigravity` role (no `--model` otherwise); no unsafe-bypass
   args are ever added; and the step checks fail closed (any tool outside the
-  list, any other step type, any non-`SUCCESS` or extra result). No operator
-  live run of the antigravity reviewer has been done yet.
-- GEM-3: `agy` as the default Google vendor. `DEFAULT_AGENT_PROVIDERS`,
-  `dispatch_config.example.yaml`, and
-  `examples/reference-workflow/dispatch_config.yaml` map `planner` and
-  `frontend` to `antigravity`. `init --provider antigravity` writes an all-agy
-  mapping (every role on `agy`, `audit.security_provider: antigravity`,
-  `normalizer.provider: antigravity`) and is chosen automatically when `agy`
-  is the only provider CLI on `PATH`; `init` provider detection looks for
-  `agy` instead of `gemini`. Every role already has an `.agents/agents/` file
-  (AGY-3); confirm the all-agy mapping uses them. Prerequisite: do not start
-  GEM-3 until a person has run the GEM-0 live check (an operator-run `agy`
-  planner turn that writes a valid `HANDOFF.md` and runs
-  `git log --oneline -5` and `python -m pytest --version` without a
-  soft-deny) and reported pass. Deferred by the user on 2026-10-18. Second
-  operator live check (added by the planner on 2026-10-18 for GEM-1): an
-  `agy` run of a `tools: [finish]` normalizer agent from a scratch
-  directory, with an injected request for a user-wide-granted command (for
-  example `python -c "open('PWNED','w')"`). It passes when no `tool` step
-  appears and no `PWNED` file exists. If it fails, GEM-3 must not make
-  `antigravity` the default normalizer.
+  list, any other step type, any non-`SUCCESS` or extra result). An operator
+  live run on 2026-10-18 (`agy` 1.4.2) passed: the real GEM-2 range returned
+  `pass` with no findings, and the same range plus an injected hunk asking
+  for a `python -c` file write and a second file write returned `fail` with
+  one `high` finding naming the injection; every tool step was `view_file`
+  and neither target file exists.
+- GEM-3: `agy` as the default Google vendor. The three operator live checks
+  passed on 2026-10-18 with `agy` 1.4.2. GEM-0 role check: an `agy` planner
+  turn exited 0 and wrote a valid `HANDOFF.md`, running
+  `git log --oneline -5` and `python -m pytest --version` with no soft-deny.
+  GEM-1 normalizer check: an injected `python -c` file-write request returned
+  `unknown` with only `user_input`, `agent_response`, and `finish` steps, and
+  no file was created. GEM-2 reviewer check: as recorded in the GEM-2 entry.
+  Caveat: in the normalizer and reviewer checks the model declined the
+  injected request, so they show that nothing outside the allowed tools ran,
+  not that `agy` refuses a forced call; that part rests on the `tools:` list
+  fact above. Split by the planner on 2026-10-18:
+  - GEM-3a: `init --provider antigravity` writes an all-agy mapping (every
+    role on `agy`, `audit.security_provider: antigravity`,
+    `normalizer.provider: antigravity`) and is chosen automatically when
+    `agy` is the only provider CLI on `PATH`; `init` provider detection looks
+    for `agy` instead of `gemini`; `init --tracker linear` refuses the all-agy
+    mapping before writing. Every role resolves to an existing
+    `.agents/agents/` file (AGY-3). No default mapping changes.
+  - GEM-3b: `DEFAULT_AGENT_PROVIDERS`, `dispatch_config.example.yaml`, and
+    `examples/reference-workflow/dispatch_config.yaml` map `planner` and
+    `frontend` to `antigravity`. Open question: what Linear mode maps
+    `planner` and `frontend` to, since config load rejects `antigravity`
+    there and `init --tracker linear` with the reference mapping must keep
+    writing a loadable config.
 - GEM-4: Remove the `gemini` provider from the runtime and reject the old
   names. Delete `llm_handoff/agent_providers/gemini.py`,
   `llm_handoff/normalizer_providers/gemini.py` (API and CLI paths), and the

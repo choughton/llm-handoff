@@ -164,14 +164,62 @@ def test_init_command_provider_gemini_writes_all_gemini_mapping(
     assert 'mention: "@auditor"' in text
 
 
+def test_init_command_provider_antigravity_writes_all_agy_mapping(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    exit_code = main_module.main(
+        ["init", str(tmp_path), "--provider", "antigravity"]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Provider mapping: all roles on antigravity" in output
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "provider: claude" not in text
+    assert "provider: codex" not in text
+    assert "provider: gemini" not in text
+    assert text.count("binary: agy") == 6
+
+
+def test_init_command_rejects_antigravity_with_linear(tmp_path: Path, capsys) -> None:
+    for extra in ((), ("--dry-run",)):
+        exit_code = main_module.main(
+            [
+                "init",
+                str(tmp_path),
+                "--provider",
+                "antigravity",
+                "--tracker",
+                "linear",
+                "--tracker-team",
+                "ENG",
+                "--tracker-project",
+                "P",
+                *extra,
+            ]
+        )
+
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert len(err.strip().splitlines()) == 1
+        assert "Linear mode does not support provider: antigravity" in err
+        assert "--provider claude" in err
+        assert "--provider codex" in err
+        assert "--tracker none" in err
+        assert not any(tmp_path.iterdir())
+
+
 def test_init_help_names_every_single_provider_mapping(capsys) -> None:
     assert main_module.main(["init", "--help"]) == 0
 
     # Drop the help panel borders so wrapped help text reads as one line.
     output = " ".join(capsys.readouterr().out.replace("\u2502", " ").split())
-    assert "claude, codex, or gemini" in output
+    assert "claude, codex, antigravity, or gemini" in output
     assert "codex when Codex is the only provider CLI on PATH" in output
-    assert "gemini when Gemini CLI is the only provider CLI on PATH" in output
+    assert "antigravity when agy is the only provider CLI on PATH" in output
+    assert "Gemini CLI is not detected" in output
+    assert "gemini when Gemini CLI is the only provider CLI on PATH" not in output
 
 
 def _node_fixture(root: Path) -> None:
@@ -311,7 +359,10 @@ def test_init_dry_run_prints_agy_permissions_when_agy_is_on_path(
     assert main_module.main(["init", str(target), "--dry-run"]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert "Provider mapping: all roles on claude; provider CLIs found: claude" in lines
+    assert (
+        "Provider mapping: reference (mixed providers); provider CLIs found: "
+        "claude, agy"
+    ) in lines
     start = lines.index(AGY_HEADER)
     assert lines[-1] == AGY_FOOTER
     block = lines[start:]
