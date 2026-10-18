@@ -50,8 +50,14 @@ _SECRET_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s\"']+)"
 # ``git push https://user:TOKEN@host/repo.git``), and agy repeats the
 # command in its error message, so both fields go through these patterns.
 _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # URL userinfo: scheme://user:pass@host or scheme://token@host.
-    re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@\"']+(?=@)"),
+    # URL userinfo in a quoted URL: everything between the scheme and the
+    # last ``@`` before the closing quote or the first ``/``, so quoted
+    # passwords with spaces or the other quote character are covered.
+    re.compile(r"((?P<q>[\"'])[A-Za-z][A-Za-z0-9+.-]*://)(?:(?!(?P=q))[^/])+(?=@)"),
+    # URL userinfo: scheme://user:pass@host or scheme://token@host. Userinfo
+    # may hold any punctuation, including quotes and a literal ``@``, so the
+    # match runs to the last ``@`` before whitespace or the first ``/``.
+    re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/]+(?=@)"),
     # Authorization headers, with an optional scheme word.
     re.compile(
         r"(?i)(authorization\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?)"

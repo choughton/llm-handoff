@@ -808,6 +808,64 @@ def test_deny_rule_report_redacts_secret_arguments(
     assert result.stderr.count("[REDACTED]") >= 2
 
 
+def test_deny_rule_report_redacts_shell_quoted_url_with_apostrophe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    command_line = 'git push "https://user:pa\'ss@example.com/repo.git"'
+    message = DENY_RULE_MESSAGE.replace("git push", command_line, 1)
+    runner = _Runner(
+        _ProcessResult(
+            stdout=_deny_stream(command_line=command_line, message=message),
+            stderr="",
+            exit_code=0,
+        )
+    )
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 1
+    [error] = _soft_deny_errors(logs)
+    for text in (result.stderr, error):
+        assert "pa'ss" not in text
+        assert "ss@" not in text
+        assert "user:" not in text
+        assert '"https://[REDACTED]@example.com/repo.git"' in text
+    assert all("pa'ss" not in m for _level, m in logs)
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        ("git push https://user:pa'ss@example.com/r.git", "pa'ss"),
+        ('git push "https://user:pa\'ss@example.com/r.git"', "pa'ss"),
+        ("git push 'https://user:pa\"ss@example.com/r.git'", 'pa"ss'),
+        ("git push 'https://user:pa'\\''ss@example.com/r.git'", "ss@"),
+        ("git push https://user:p!$&()*+,;=ss@example.com/r.git", "p!$&()*+"),
+        ("git push https://user:p@ss@example.com/r.git", "p@ss"),
+        ("git push https://user:p%40ss%27@example.com/r.git", "p%40ss"),
+        ('git push "https://user:pa ss@example.com/r.git"', "pa ss"),
+        ("git push 'https://user:pa ss@example.com/r.git'", "pa ss"),
+        ("git push https://ghtoken123@example.com/r.git", "ghtoken123"),
+    ],
+)
+def test_redact_credentials_covers_url_userinfo_punctuation(
+    text: str,
+    secret: str,
+) -> None:
+    redacted = antigravity.redact_credentials(text)
+
+    assert secret not in redacted
+    assert "user" not in redacted
+    assert "[REDACTED]@example.com/r.git" in redacted
+
+
+def test_redact_credentials_keeps_url_without_userinfo() -> None:
+    text = 'git push "https://example.com/repo.git" main; echo a@b'
+
+    assert antigravity.redact_credentials(text) == text
+
+
 def test_redact_credentials_keeps_ordinary_command_text() -> None:
     text = (
         'permission check failed for command "git log --grep push": '
