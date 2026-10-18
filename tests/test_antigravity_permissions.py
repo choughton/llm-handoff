@@ -41,6 +41,50 @@ def test_required_deny_entries_are_exact() -> None:
     )
 
 
+def test_agent_tools_are_exact_and_ordered() -> None:
+    assert perms.ANTIGRAVITY_AGENT_TOOLS == (
+        "view_file",
+        "list_dir",
+        "grep_search",
+        "find_by_name",
+        "write_to_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+        "run_command",
+    )
+
+
+def test_agent_tools_have_no_duplicates() -> None:
+    tools = perms.ANTIGRAVITY_AGENT_TOOLS
+    assert len(tools) == len(set(tools))
+
+
+def test_agent_tools_contain_every_write_tool() -> None:
+    assert perms.ANTIGRAVITY_AGENT_WRITE_TOOLS == (
+        "write_to_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+    )
+    for tool in perms.ANTIGRAVITY_AGENT_WRITE_TOOLS:
+        assert tool in perms.ANTIGRAVITY_AGENT_TOOLS
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "search_web",
+        "read_url_content",
+        "generate_image",
+        "call_mcp_tool",
+        "send_message",
+        "schedule",
+        "manage_task",
+    ],
+)
+def test_agent_tools_leave_out_web_image_mcp_and_subagent_tools(tool: str) -> None:
+    assert tool not in perms.ANTIGRAVITY_AGENT_TOOLS
+
+
 def test_allow_entries_without_verification_commands() -> None:
     assert perms.antigravity_allow_entries(()) == perms.ANTIGRAVITY_REQUIRED_ALLOW
 

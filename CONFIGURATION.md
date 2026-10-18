@@ -1096,12 +1096,22 @@ The reference workflow ships one agent file per `--agent` name under
 `.agents/agents/`: `planner`, `backend`, `frontend`, and `auditor`, plus
 `handoff-validator` and `handoff-router` for the validator and
 `ledger-updater` for the finalizer. Each file follows the documented `agy`
-custom-agent format, and its frontmatter carries only `name` and
-`description`; it sets no `tools` list, because unknown tool names can hang
-`agy`. Whether `agy -p --agent <name>` loads these files has not yet been
-checked against a live CLI. Setting `agent_name` on a role changes the
-`--agent` value, and so which file `agy` loads. `.agents/**` is a default
-protected path.
+custom-agent format, and its frontmatter carries `name`, `description`, and a
+`tools` list. The role files list eight tools: `view_file`, `list_dir`,
+`grep_search`, `find_by_name`, `write_to_file`, `replace_file_content`,
+`multi_replace_file_content`, and `run_command`. The read-only
+`handoff-validator` file leaves out the three write tools (`write_to_file`,
+`replace_file_content`, `multi_replace_file_content`). Leaving out the write
+tools is not a shell boundary. `handoff-validator` keeps `run_command`
+because it resolves SHAs with `git cat-file` and checks git state, and the
+user-wide `permissions.allow` grants, including `git add`, `git commit`,
+`python`, and `pytest`, apply to it as to every `agy` run. Its prompt limits
+it to read-only git commands; that limit is a guardrail, not a sandbox. Web,
+browser, image, MCP, and subagent tools are left out on purpose. A tool name
+`agy` does not know makes it exit before the run starts.
+`agy -p --agent <name>` loading these files was checked against a live CLI.
+Setting `agent_name` on a role changes the `--agent` value, and so which file
+`agy` loads. `.agents/**` is a default protected path.
 
 When print mode auto-denies a shell command (or another tool permission it
 cannot prompt for), `agy` prints a notice on stderr and still exits 0. The
@@ -1285,8 +1295,6 @@ Each line says whether that CLI's MCP config defines a server named
 - Gemini: `<repo>/.gemini/settings.json`, then `~/.gemini/settings.json`
   (or `$GEMINI_CLI_HOME/.gemini/settings.json` when `GEMINI_CLI_HOME` is set
   and non-empty). PASS when either has `mcpServers.<server>`; otherwise WARN.
-- Antigravity: always WARN, because the doctor cannot check the Antigravity
-  CLI's MCP configuration; confirm the server is configured there.
 
 A missing file is skipped. A file that cannot be read or parsed adds its
 reason to the line instead of stopping the doctor. Only the

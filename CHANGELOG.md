@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Every shipped `agy` agent file under `.agents/agents/` (and its copy in
+  `examples/reference-workflow/`) now declares a `tools:` list. Without one,
+  `agy` gives the agent only read tools and it cannot write files. The role
+  files list `view_file`, `list_dir`, `grep_search`, `find_by_name`,
+  `write_to_file`, `replace_file_content`, `multi_replace_file_content`, and
+  `run_command`; the read-only `handoff-validator` file leaves out the three
+  write tools. The lists come from the new `ANTIGRAVITY_AGENT_TOOLS` and
+  `ANTIGRAVITY_AGENT_WRITE_TOOLS` constants in
+  `llm_handoff/antigravity_permissions.py`, and tests check every file
+  against them. The `handoff-validator` file keeps `run_command` for its git
+  checks, its prompt limits it to read-only git commands, and the docs state
+  that this limit is a guardrail, not a shell boundary.
 - `pr` mode no longer strands a pull request whose review finding was
   deferred. The review bounce now says that deferring every finding is still
   a `ready_for_review` handback with no code change (the work-claim gate

@@ -6,6 +6,10 @@ import re
 import pytest
 import yaml
 
+from llm_handoff.antigravity_permissions import (
+    ANTIGRAVITY_AGENT_TOOLS,
+    ANTIGRAVITY_AGENT_WRITE_TOOLS,
+)
 from llm_handoff.config import load_dispatch_config
 from llm_handoff.init_workflow import template_files
 from llm_handoff.router import parse_handoff_frontmatter, route
@@ -255,19 +259,54 @@ def test_reference_workflow_ships_a_claude_agent_for_every_role() -> None:
 
 
 def test_reference_workflow_ships_an_antigravity_agent_for_every_role() -> None:
+    read_only_tools = [
+        tool
+        for tool in ANTIGRAVITY_AGENT_TOOLS
+        if tool not in ANTIGRAVITY_AGENT_WRITE_TOOLS
+    ]
     for relative_path in ANTIGRAVITY_AGENT_FILES:
         template_path = REFERENCE_WORKFLOW / relative_path
         assert template_path.is_file(), relative_path
         assert template_path.read_bytes() == (REPO_ROOT / relative_path).read_bytes()
-        content = template_path.read_text(encoding="utf-8")
-        assert content.startswith("---\n"), relative_path
-        frontmatter = yaml.safe_load(content.split("---\n", 2)[1])
-        assert isinstance(frontmatter, dict), relative_path
-        assert frontmatter.get("name") == Path(relative_path).stem, relative_path
-        description = frontmatter.get("description")
-        assert isinstance(description, str) and description.strip(), relative_path
-        assert "tools" not in frontmatter, relative_path
-        assert set(frontmatter) == {"name", "description"}, relative_path
+        for root in (REPO_ROOT, REFERENCE_WORKFLOW):
+            path = root / relative_path
+            content = path.read_text(encoding="utf-8")
+            assert content.startswith("---\n"), path
+            frontmatter = yaml.safe_load(content.split("---\n", 2)[1])
+            assert isinstance(frontmatter, dict), path
+            assert frontmatter.get("name") == Path(relative_path).stem, path
+            description = frontmatter.get("description")
+            assert isinstance(description, str) and description.strip(), path
+            assert set(frontmatter) == {"name", "description", "tools"}, path
+            tools = frontmatter["tools"]
+            assert isinstance(tools, list), path
+            assert all(isinstance(tool, str) for tool in tools), path
+            assert len(tools) == len(set(tools)), path
+            assert all(tool in ANTIGRAVITY_AGENT_TOOLS for tool in tools), path
+            if Path(relative_path).stem == "handoff-validator":
+                assert tools == read_only_tools, path
+            else:
+                assert tools == list(ANTIGRAVITY_AGENT_TOOLS), path
+
+
+def test_antigravity_validator_limits_run_command_to_read_only_git() -> None:
+    relative_path = Path(".agents") / "agents" / "handoff-validator.md"
+    for root in (REPO_ROOT, REFERENCE_WORKFLOW):
+        path = root / relative_path
+        content = " ".join(path.read_text(encoding="utf-8").split())
+        for command in (
+            "`git cat-file`",
+            "`git status`",
+            "`git rev-parse`",
+            "`git log`",
+            "`git show`",
+            "`git diff`",
+        ):
+            assert command in content, (path, command)
+        assert (
+            "Never run `git add`, `git commit`, `python`, `python3`, `pytest`, or"
+            in content
+        ), path
 
 
 def test_claude_role_agents_do_not_point_at_dispatcher_docs() -> None:

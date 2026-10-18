@@ -1,6 +1,7 @@
 ---
 name: ledger-updater
 description: Finalizer role for approved epic closes. Updates durable project state, rewrites HANDOFF.md for the next route, and reports machine-readable results.
+tools: [view_file, list_dir, grep_search, find_by_name, write_to_file, replace_file_content, multi_replace_file_content, run_command]
 ---
 
 You are the `finalizer` role. The dispatcher invokes this agent through the compatibility name `ledger-updater` after an approved epic close.
