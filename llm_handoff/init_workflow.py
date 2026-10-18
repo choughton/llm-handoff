@@ -18,6 +18,7 @@ from llm_handoff.config import (
     CLAUDE_DEFAULT_ALLOWED_TOOLS,
     VERIFICATION_FORBIDDEN_CHARS,
     TrackerConfig,
+    linear_tools_for_role,
 )
 from llm_handoff.stack_detect import Candidate, detect_candidates
 from llm_handoff.tracker_prompts import (
@@ -87,6 +88,10 @@ _TEXT_MARKERS = {
 _SETTINGS_PATH = Path(".claude/settings.json")
 _AGENTS_PATH = Path("AGENTS.md")
 _HANDBOOK_PATH = Path("docs/handoff/HANDBOOK.md")
+_VALIDATOR_AGENT_PATH = Path(".claude/agents/handoff-validator.md")
+# Tools the handoff-validator subagent keeps in every mode; Linear init appends
+# the validator's `mcp__<tracker.mcp_server>__*` tools after them.
+_VALIDATOR_BASE_TOOLS = "Read, Grep, Glob, Bash"
 
 # `init --tracker` values. `none` keeps vanilla output byte for byte.
 TRACKER_NONE = "none"
@@ -853,6 +858,36 @@ def _merge_linear_agents(existing: bytes) -> bytes:
     return existing + separator + block + b"\n"
 
 
+def render_validator_agent_tools(template: bytes, mcp_server: str) -> bytes:
+    """Rewrite the `tools:` frontmatter line of the handoff-validator agent.
+
+    The new line lists the base tools followed by the validator's Linear MCP
+    tools for `mcp_server`. The line keeps its original ending; every other
+    byte is unchanged. Raises InitWorkflowError unless the leading `---`
+    frontmatter holds exactly one line that starts with `tools: `.
+    """
+
+    lines = template.splitlines(keepends=True)
+    tools_indexes: list[int] = []
+    if lines and lines[0].rstrip(b"\r\n") == b"---":
+        for index in range(1, len(lines)):
+            if lines[index].rstrip(b"\r\n") == b"---":
+                break
+            if lines[index].startswith(b"tools: "):
+                tools_indexes.append(index)
+    if len(tools_indexes) != 1:
+        raise InitWorkflowError(
+            f"Template {_VALIDATOR_AGENT_PATH.as_posix()} must have exactly one "
+            "'tools: ' line in its frontmatter."
+        )
+    index = tools_indexes[0]
+    line = lines[index]
+    ending = line[len(line.rstrip(b"\r\n")) :]
+    tools = ", ".join(linear_tools_for_role("validator", mcp_server))
+    lines[index] = f"tools: {_VALIDATOR_BASE_TOOLS}, {tools}".encode("utf-8") + ending
+    return b"".join(lines)
+
+
 def _config_is_rendered(
     mapping: str, executable: str | None, tracker: TrackerConfig | None = None
 ) -> bool:
@@ -867,7 +902,10 @@ def _source_is_rendered(
 ) -> bool:
     if relative_path == _CONFIG_PATH:
         return _config_is_rendered(mapping, executable, tracker)
-    return relative_path == _HANDBOOK_PATH and tracker is not None
+    return (
+        relative_path in (_HANDBOOK_PATH, _VALIDATOR_AGENT_PATH)
+        and tracker is not None
+    )
 
 
 def _source_bytes(
@@ -895,6 +933,10 @@ def _source_bytes(
         return text.encode("utf-8")
     if relative_path == _HANDBOOK_PATH and tracker is not None:
         return _append_linear_handbook(source_path.read_bytes())
+    if relative_path == _VALIDATOR_AGENT_PATH and tracker is not None:
+        return render_validator_agent_tools(
+            source_path.read_bytes(), tracker.mcp_server or DEFAULT_TRACKER_MCP_SERVER
+        )
     return source_path.read_bytes()
 
 

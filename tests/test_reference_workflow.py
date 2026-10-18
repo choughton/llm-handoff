@@ -386,6 +386,8 @@ LINEAR_EVIDENCE_HELPER_FILES = (
     REFERENCE_WORKFLOW / ".codex" / "skills" / "llm-handoff-validator" / "SKILL.md",
     REPO_ROOT / ".agents" / "agents" / "handoff-validator.md",
     REFERENCE_WORKFLOW / ".agents" / "agents" / "handoff-validator.md",
+    REPO_ROOT / ".claude" / "agents" / "handoff-validator.md",
+    REFERENCE_WORKFLOW / ".claude" / "agents" / "handoff-validator.md",
 )
 
 

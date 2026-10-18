@@ -549,6 +549,80 @@ def test_linear_changes_only_config_agents_and_handbook(tmp_path: Path) -> None:
     assert changed == {CONFIG, AGENTS, HANDBOOK}
 
 
+# Claude handoff-validator tools line follows tracker.mcp_server.
+
+VALIDATOR_AGENT = Path(".claude/agents/handoff-validator.md")
+
+
+def _validator_template() -> bytes:
+    return (init_workflow._TEMPLATE_ROOT / VALIDATOR_AGENT).read_bytes()
+
+
+def test_validator_tools_line_uses_custom_mcp_server(tmp_path: Path) -> None:
+    _linear(tmp_path, tracker_mcp_server="team-linear")
+    rendered = (tmp_path / VALIDATOR_AGENT).read_bytes().splitlines(keepends=True)
+    template = _validator_template().splitlines(keepends=True)
+    assert len(rendered) == len(template)
+    differing = [i for i, (a, b) in enumerate(zip(rendered, template)) if a != b]
+    assert len(differing) == 1
+    line = rendered[differing[0]]
+    assert line.rstrip(b"\r\n") == (
+        b"tools: Read, Grep, Glob, Bash, mcp__team-linear__get_issue, "
+        b"mcp__team-linear__list_issues, mcp__team-linear__list_comments"
+    )
+    assert template[differing[0]].startswith(b"tools: ")
+
+
+def test_validator_default_linear_init_matches_template(tmp_path: Path) -> None:
+    _linear(tmp_path)
+    assert (tmp_path / VALIDATOR_AGENT).read_bytes() == _validator_template()
+
+
+def test_validator_vanilla_init_matches_template(tmp_path: Path) -> None:
+    _init(tmp_path)
+    assert (tmp_path / VALIDATOR_AGENT).read_bytes() == _validator_template()
+
+
+def test_validator_rerun_on_custom_server_output_is_skipped(tmp_path: Path) -> None:
+    _linear(tmp_path, tracker_mcp_server="team-linear")
+    agent = (tmp_path / VALIDATOR_AGENT).read_bytes()
+    (tmp_path / CONFIG).unlink()
+    result = _linear(tmp_path, tracker_mcp_server="team-linear", dry_run=True)
+    assert VALIDATOR_AGENT in result.skipped
+    assert VALIDATOR_AGENT not in result.conflicts
+    assert (tmp_path / VALIDATOR_AGENT).read_bytes() == agent
+
+
+def test_validator_render_preserves_crlf_line_ending() -> None:
+    template = (
+        b"---\r\nname: handoff-validator\r\n"
+        b"tools: Read, Grep, Glob, Bash, mcp__linear__get_issue\r\n"
+        b"model: haiku\r\n---\r\n\r\nbody tools: x\r\n"
+    )
+    rendered = init_workflow.render_validator_agent_tools(template, "team-linear")
+    assert rendered == (
+        b"---\r\nname: handoff-validator\r\n"
+        b"tools: Read, Grep, Glob, Bash, mcp__team-linear__get_issue, "
+        b"mcp__team-linear__list_issues, mcp__team-linear__list_comments\r\n"
+        b"model: haiku\r\n---\r\n\r\nbody tools: x\r\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        b"---\nname: x\n---\ntools: Read\n",
+        b"---\ntools: Read\ntools: Grep\n---\n",
+        b"tools: Read\n",
+    ],
+)
+def test_validator_render_requires_one_frontmatter_tools_line(
+    template: bytes,
+) -> None:
+    with pytest.raises(InitWorkflowError):
+        init_workflow.render_validator_agent_tools(template, "linear")
+
+
 # Check 8: dry run.
 
 
