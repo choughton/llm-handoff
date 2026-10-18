@@ -1195,10 +1195,12 @@ When a deny entry refuses a command, `agy` reports it as a `run_command` tool
 error inside a `SUCCESS` result with empty stderr. The adapter fails the
 dispatch on any `run_command` tool error whose message contains
 `Matches user-configured deny rule`, even when the role recovers and
-finishes, and logs the refused command line and the error message with
-credential-shaped text (URL userinfo, authorization headers, bearer tokens,
-secret-named arguments, common token prefixes) replaced by `[REDACTED]`. The
-redaction is best effort, so keep secrets out of command lines. Because
+finishes. For each refusal it logs a fixed line with the step number and,
+when it is one of the required deny entries above, the matched entry, for
+example `Antigravity deny rule refused a command at step 2 (matched deny rule
+command(regex:^git( .*)? push( .*)?$))`; any other rule is reported as
+`matched a user-configured deny rule`. The refused command line and `agy`'s
+error text are never logged, because they can carry credentials. Because
 the deny entries are broad, they also fail turns that run harmless lines such
 as `git log --grep push`.
 

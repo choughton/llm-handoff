@@ -602,13 +602,29 @@ def _success_result(**extra: object) -> str:
     )
 
 
-def _deny_stream(command_line: str = "git push", message: str = DENY_RULE_MESSAGE) -> str:
+def _deny_stream(
+    command_line: str = "git push",
+    message: str = DENY_RULE_MESSAGE,
+    *,
+    init: bool = True,
+) -> str:
+    # init=False drops the session-start log line, whose "default" permission
+    # mode text would collide with short secret fragments such as "def".
+    init_lines = (
+        [_event(type="init", cwd="/repo", permission_mode="default")] if init else []
+    )
     return _stream(
-        _event(type="init", cwd="/repo", permission_mode="default"),
+        *init_lines,
         _tool_step(2, "ACTIVE", command_line),
         _tool_step(2, "ERROR", command_line, error_message=message),
         _success_result(),
     )
+
+
+def _assert_not_logged(result, logs: list[tuple[str, str]], *texts: str) -> None:
+    for text in texts:
+        assert text not in result.stderr
+        assert all(text not in message for _level, message in logs)
 
 
 def test_deny_rule_tool_error_fails_the_dispatch(
@@ -619,14 +635,16 @@ def test_deny_rule_tool_error_fails_the_dispatch(
 
     result, logs = _invoke(monkeypatch, runner, tmp_path)
 
+    expected = (
+        "Antigravity deny rule refused a command at step 2 "
+        "(matched a user-configured deny rule)"
+    )
     assert result.exit_code == 1
-    assert antigravity.ANTIGRAVITY_DENY_RULE_MARKER in result.stderr
-    assert "git push" in result.stderr
-    assert "Matches user-configured deny rule" in result.stderr
+    assert result.stderr == expected
+    assert expected.startswith(antigravity.ANTIGRAVITY_DENY_RULE_MARKER)
     [error] = _soft_deny_errors(logs)
-    assert error.startswith("Antigravity planner: ")
-    assert antigravity.ANTIGRAVITY_DENY_RULE_MARKER in error
-    assert "git push" in error
+    assert error == f"Antigravity planner: {expected}"
+    _assert_not_logged(result, logs, "git push", "Matches user-configured")
 
 
 def test_deny_rule_with_regex_rule_text_fails_the_dispatch(
@@ -640,10 +658,16 @@ def test_deny_rule_with_regex_rule_text_fails_the_dispatch(
         _ProcessResult(stdout=_deny_stream(message=message), stderr="", exit_code=0)
     )
 
-    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
 
+    expected = (
+        "Antigravity deny rule refused a command at step 2 "
+        "(matched deny rule command(regex:^git( .*)? push( .*)?$))"
+    )
     assert result.exit_code == 1
-    assert "command(regex:^git( .*)? push( .*)?$)" in result.stderr
+    assert result.stderr == expected
+    assert _soft_deny_errors(logs) == [f"Antigravity planner: {expected}"]
+    _assert_not_logged(result, logs, "git push", "permission check failed")
 
 
 def test_deny_rule_after_recovery_still_fails(
@@ -678,13 +702,21 @@ def test_two_deny_rule_hits_are_each_reported(
 
     result, logs = _invoke(monkeypatch, runner, tmp_path)
 
+    first = (
+        "Antigravity deny rule refused a command at step 2 "
+        "(matched a user-configured deny rule)"
+    )
+    second = (
+        "Antigravity deny rule refused a command at step 4 "
+        "(matched a user-configured deny rule)"
+    )
     assert result.exit_code == 1
-    errors = _soft_deny_errors(logs)
-    assert len(errors) == 2
-    marker = antigravity.ANTIGRAVITY_DENY_RULE_MARKER
-    assert f"{marker}: git push (" in errors[0]
-    assert f"{marker}: git push origin main (" in errors[1]
-    assert result.stderr.count(marker) == 2
+    assert _soft_deny_errors(logs) == [
+        f"Antigravity planner: {first}",
+        f"Antigravity planner: {second}",
+    ]
+    assert result.stderr == f"{first}\n{second}"
+    _assert_not_logged(result, logs, "git push", "origin main")
 
 
 def test_not_allowlisted_tool_error_is_reported_once_as_soft_deny(
@@ -762,37 +794,50 @@ def test_deny_rule_report_redacts_credential_url(
 
     result, logs = _invoke(monkeypatch, runner, tmp_path)
 
+    expected = (
+        "Antigravity deny rule refused a command at step 2 "
+        "(matched a user-configured deny rule)"
+    )
     assert result.exit_code == 1
-    [error] = _soft_deny_errors(logs)
-    for text in (result.stderr, error):
-        assert "s3cr3t-T0KEN" not in text
-        assert "user:" not in text
-        assert "https://[REDACTED]@example.com/repo.git" in text
-        assert "Matches user-configured deny rule" in text
-    assert all("s3cr3t-T0KEN" not in m for _level, m in logs)
+    assert result.stderr == expected
+    assert _soft_deny_errors(logs) == [f"Antigravity planner: {expected}"]
+    _assert_not_logged(
+        result, logs, command_line, "s3cr3t-T0KEN", "user:", "example.com"
+    )
 
 
 @pytest.mark.parametrize(
-    ("command_line", "secret"),
+    ("command_line", "secrets"),
     [
-        ("GITHUB_TOKEN=abc123secret git push", "abc123secret"),
-        ("gh auth login --with-token --token abc123secret", "abc123secret"),
-        ("mysql --password=abc123secret -u root", "abc123secret"),
-        ('curl -H "Authorization: Bearer abc123secret" https://x', "abc123secret"),
-        ("git push ghp_abcdefghijklmnopqrstuvwxyz0123", "ghp_abcdefghij"),
-        ("deploy --api-key 'abc 123 secret'", "abc 123 secret"),
+        ("GITHUB_TOKEN=abc123secret git push", ("abc123secret",)),
+        ("gh auth login --with-token --token abc123secret", ("abc123secret",)),
+        ("mysql --password=abc123secret -u root", ("abc123secret",)),
+        ('curl -H "Authorization: Bearer abc123secret" https://x', ("abc123secret",)),
+        ("git push ghp_abcdefghijklmnopqrstuvwxyz0123", ("ghp_abcdefghij",)),
+        ("deploy --api-key 'abc 123 secret'", ("abc 123 secret",)),
+        ('git -c http.extraHeader="X-Api-Key: value" push', ("value",)),
+        (
+            'git -c "http.extraHeader=X-Api-Key: a\\"b\\"c" push',
+            ('a\\"b\\"c', "b"),
+        ),
+        (
+            "git -c http.extraHeader='X-Api-Key: 'abc'def' push",
+            ("abc", "def"),
+        ),
     ],
 )
 def test_deny_rule_report_redacts_secret_arguments(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     command_line: str,
-    secret: str,
+    secrets: tuple[str, ...],
 ) -> None:
+    # agy repeats the command inside its error message, so both carry it.
     message = DENY_RULE_MESSAGE.replace("git push", command_line, 1)
+    assert command_line in message
     runner = _Runner(
         _ProcessResult(
-            stdout=_deny_stream(command_line=command_line, message=message),
+            stdout=_deny_stream(command_line=command_line, message=message, init=False),
             stderr="",
             exit_code=0,
         )
@@ -800,12 +845,14 @@ def test_deny_rule_report_redacts_secret_arguments(
 
     result, logs = _invoke(monkeypatch, runner, tmp_path)
 
+    expected = (
+        "Antigravity deny rule refused a command at step 2 "
+        "(matched a user-configured deny rule)"
+    )
     assert result.exit_code == 1
-    [error] = _soft_deny_errors(logs)
-    assert secret not in result.stderr
-    assert secret not in error
-    assert "[REDACTED]" in error
-    assert result.stderr.count("[REDACTED]") >= 2
+    assert result.stderr == expected
+    assert _soft_deny_errors(logs) == [f"Antigravity planner: {expected}"]
+    _assert_not_logged(result, logs, command_line, *secrets)
 
 
 def test_deny_rule_report_redacts_shell_quoted_url_with_apostrophe(
@@ -824,56 +871,83 @@ def test_deny_rule_report_redacts_shell_quoted_url_with_apostrophe(
 
     result, logs = _invoke(monkeypatch, runner, tmp_path)
 
+    expected = (
+        "Antigravity deny rule refused a command at step 2 "
+        "(matched a user-configured deny rule)"
+    )
     assert result.exit_code == 1
-    [error] = _soft_deny_errors(logs)
-    for text in (result.stderr, error):
-        assert "pa'ss" not in text
-        assert "ss@" not in text
-        assert "user:" not in text
-        assert '"https://[REDACTED]@example.com/repo.git"' in text
-    assert all("pa'ss" not in m for _level, m in logs)
+    assert result.stderr == expected
+    assert _soft_deny_errors(logs) == [f"Antigravity planner: {expected}"]
+    _assert_not_logged(result, logs, command_line, "pa'ss", "ss@", "user:")
 
 
 @pytest.mark.parametrize(
-    ("text", "secret"),
+    ("rule_text", "rule_phrase"),
     [
-        ("git push https://user:pa'ss@example.com/r.git", "pa'ss"),
-        ('git push "https://user:pa\'ss@example.com/r.git"', "pa'ss"),
-        ("git push 'https://user:pa\"ss@example.com/r.git'", 'pa"ss'),
-        ("git push 'https://user:pa'\\''ss@example.com/r.git'", "ss@"),
-        ("git push https://user:p!$&()*+,;=ss@example.com/r.git", "p!$&()*+"),
-        ("git push https://user:p@ss@example.com/r.git", "p@ss"),
-        ("git push https://user:p%40ss%27@example.com/r.git", "p%40ss"),
-        ('git push "https://user:pa ss@example.com/r.git"', "pa ss"),
-        ("git push 'https://user:pa ss@example.com/r.git'", "pa ss"),
-        ("git push https://ghtoken123@example.com/r.git", "ghtoken123"),
+        (
+            "command(regex:^git( .*)? push( .*)?$)",
+            "matched deny rule command(regex:^git( .*)? push( .*)?$)",
+        ),
+        (
+            "unsandboxed(regex:^git( .*)? push( .*)?$)",
+            "matched deny rule unsandboxed(regex:^git( .*)? push( .*)?$)",
+        ),
+        ("command(git push)", "matched a user-configured deny rule"),
+        ("command(regex:^git push --token .*$)", "matched a user-configured deny rule"),
     ],
 )
-def test_redact_credentials_covers_url_userinfo_punctuation(
-    text: str,
-    secret: str,
+def test_deny_rule_report_names_only_required_deny_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    rule_text: str,
+    rule_phrase: str,
 ) -> None:
-    redacted = antigravity.redact_credentials(text)
-
-    assert secret not in redacted
-    assert "user" not in redacted
-    assert "[REDACTED]@example.com/r.git" in redacted
-
-
-def test_redact_credentials_keeps_url_without_userinfo() -> None:
-    text = 'git push "https://example.com/repo.git" main; echo a@b'
-
-    assert antigravity.redact_credentials(text) == text
-
-
-def test_redact_credentials_keeps_ordinary_command_text() -> None:
-    text = (
-        'permission check failed for command "git log --grep push": '
-        "Permission denied for command(regex:^git( .*)? push( .*)?$). "
-        "Matches user-configured deny rule."
+    message = DENY_RULE_MESSAGE.replace("command(git push)", rule_text)
+    runner = _Runner(
+        _ProcessResult(stdout=_deny_stream(message=message), stderr="", exit_code=0)
     )
 
-    assert antigravity.redact_credentials(text) == text
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    expected = f"Antigravity deny rule refused a command at step 2 ({rule_phrase})"
+    assert result.exit_code == 1
+    assert result.stderr == expected
+    assert _soft_deny_errors(logs) == [f"Antigravity planner: {expected}"]
+
+
+@pytest.mark.parametrize("step_index", [None, "7", True, 2.0])
+def test_deny_rule_report_without_integer_step_index_says_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    step_index: object,
+) -> None:
+    fields: dict[str, object] = {
+        "type": "step_update",
+        "conversation_id": "conv-deny",
+        "state": "ERROR",
+        "step_type": "tool",
+        "tool_name": "run_command",
+        "tool_info": {
+            "name": "run_command",
+            "parameters": {"CommandLine": "git push"},
+            "error": {"type": "TOOL_ERROR", "message": DENY_RULE_MESSAGE},
+        },
+    }
+    if step_index is not None:
+        fields["step_index"] = step_index
+    stdout = _stream(_event(**fields), _success_result())
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr="", exit_code=0))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    expected = (
+        "Antigravity deny rule refused a command at step unknown "
+        "(matched a user-configured deny rule)"
+    )
+    assert result.exit_code == 1
+    assert result.stderr == expected
+    assert _soft_deny_errors(logs) == [f"Antigravity planner: {expected}"]
+    _assert_not_logged(result, logs, "git push")
 
 
 def test_deny_rule_on_failed_resume_is_not_rerun_fresh(
