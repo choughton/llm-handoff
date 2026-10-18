@@ -126,3 +126,217 @@ python -m pytest tests -q
 
 The release checklist should also include a smoke test against a disposable
 target repo using the reference workflow template.
+
+## Linear Mode Acceptance Run
+
+This is a manual runbook for checking optional Linear mode end to end. An
+operator follows it by hand; the test suite never runs it, and nothing here
+is automated. Run it only against a sandbox Linear team and a disposable
+target repository. Never run it against a production team or a repository
+whose history matters: the run posts comments, changes issue states, and
+creates commits.
+
+The dispatcher never calls Linear. Agents read and write the issues through
+their own CLI's Linear MCP connector, so every Linear-side result below is
+checked by the operator in Linear directly. The placeholders in this section
+are `<target>` (the disposable repository path), `<KEY>` (the sandbox team
+key), and issue identifiers such as `ENG-123`; substitute your own sandbox
+values and never paste a real token into a file you commit.
+
+### Prerequisites
+
+- A sandbox Linear team whose workflow states include the names you will
+  use for `eligible_state`, `in_progress_state`, and `success_state`, plus
+  `blocked_state` if you set it. `init` writes `eligible_state: Todo`,
+  `in_progress_state: In Progress`, and `success_state: In Review`; edit
+  `dispatch_config.yaml` if your sandbox team uses other names.
+- A Linear project or a label in that team that defines the pool for this
+  repository. Use exactly one of them.
+- At least three issues in `eligible_state` in that pool, each written from
+  the issue template in
+  `llm_handoff/prompt_templates/linear/ISSUE_TEMPLATE.md` (`init` also
+  renders it into the target's `docs/handoff/HANDBOOK.md`). One is for
+  Scenario A, one for Scenario B, and one for Scenario C.
+- A disposable target repository with at least one commit and a test command
+  the repository already defines, so a Verification command can run it.
+- `enforce_work_packet: true` in the target's `dispatch_config.yaml`. Linear
+  mode rejects a config without it.
+- The provider CLIs your role mapping uses, signed in, each with a Linear MCP
+  server configured (see Connector Setup).
+
+### Setup
+
+Preview the init first, then run it:
+
+```bash
+llm-handoff init <target> --tracker linear --tracker-team <KEY> --tracker-project <name> --dry-run
+llm-handoff init <target> --tracker linear --tracker-team <KEY> --tracker-project <name>
+```
+
+Use `--tracker-label <name>` instead of `--tracker-project <name>` when a
+label defines the pool. Give exactly one of the two. `--tracker-mcp-server
+<name>` sets `tracker.mcp_server` and defaults to `linear`. `init --tracker
+linear` sets up only a repository that has no `dispatch_config.yaml` yet.
+
+Record the `commit_mode` value in the generated `dispatch_config.yaml`. The
+expected `implementation_handoff` evidence in Scenario A depends on it.
+
+### Connector Setup
+
+Configure the Linear MCP server for each provider CLI that the role mapping
+launches. The files are the ones "Tracker (Optional Linear Mode)" in
+`CONFIGURATION.md` names. In every case the server name must equal
+`tracker.mcp_server`.
+
+- Claude: `<target>/.mcp.json`, the user file `~/.claude.json`, or a file
+  named by `tracker.claude_mcp_config`. Set `tracker.claude_mcp_config` for
+  this run: Claude launches then pass `--strict-mcp-config` and load only
+  that file's servers, and the probe is limited to them.
+- Codex: an `[mcp_servers.<server>]` table in `config.toml`
+  (`$CODEX_HOME/config.toml` or `~/.codex/config.toml`, or
+  `<target>/.codex/config.toml`).
+- Gemini: `mcpServers.<server>` in `settings.json`
+  (`<target>/.gemini/settings.json` or `~/.gemini/settings.json`).
+- Antigravity: `doctor` cannot read its MCP configuration. Confirm by hand
+  that the Antigravity CLI has the server configured.
+
+### Preflight
+
+1. Run `llm-handoff doctor --repo-root <target>`. Expect one
+   `tracker connector` line for each provider CLI the roles and fallbacks
+   launch. Fix any FAIL. A WARN for Antigravity is expected; a WARN for
+   another CLI means `doctor` did not find the server in the files it reads.
+2. Run `llm-handoff doctor --repo-root <target> --probe-tracker ENG-123`
+   with one of the sandbox issue identifiers. Expect a `tracker probe` PASS:
+   the issue was read and every configured state name is one of the team's
+   workflow states.
+3. Hook check. Back up the target's `.claude/settings.json`, then add a
+   project hook that leaves a marker file, for example a `SessionStart` and
+   a `UserPromptSubmit` hook whose command creates `hook-fired.txt` in the
+   target root. Run the probe from step 2 again and confirm that
+   `hook-fired.txt` does not exist: the probe passes
+   `--setting-sources user` and `--settings '{"disableAllHooks": true}'`,
+   so project hooks must not fire. Then restore the backed-up settings file
+   and delete any marker file.
+4. Run `llm-handoff --repo-root <target> --dry-run` and confirm it
+   completes without errors.
+
+### Scenario A: One Passing Issue
+
+Start the loop with `llm-handoff --repo-root <target>`. Let it lease one
+issue and take it through the auditor. Record, in order, on the leased
+issue:
+
+1. A `lease_opened` evidence comment from the planner, and the issue moving
+   to `in_progress_state`.
+2. An `implementation_handoff` comment from the implementer. Under
+   `commit_mode: dispatcher` it carries
+   `commit_sha: pending-dispatcher-commit`. Under `commit_mode: agent` it
+   carries the concrete commit SHA.
+3. An `audit_passed` comment that carries the concrete `scope_sha` from
+   `HANDOFF.md` as `commit_sha`.
+4. The issue moving to `success_state`, after the `audit_passed` comment.
+
+With the audit fan-out on (the default `audit.reviewers: [quality,
+security]`), also confirm:
+
+- The fan-out quality reviewer posted no comment: there is exactly one
+  `audit_passed` comment for that `commit_sha`.
+- The post-verdict Linear evidence step posted `audit_passed`: the cycle's
+  `logs/dispatch/audit/<timestamp>-cycle<N>/linear-evidence.log` holds a
+  JSON object with `"linear_evidence": "posted"`, the leased issue, and
+  `audit_passed` as the last event.
+
+### Scenario B: One Forced Audit Failure
+
+Force one audit failure on a second issue. The Verification command must
+pass: with `enforce_work_packet: true` the work-claim gate runs it before
+any reviewer, and a failing command is bounced to the implementer as
+`verification_failed` without reaching the auditor, so it produces no
+`audit_failed` comment. Instead, write an issue whose Verification command
+is an existing repository test that passes, and whose Objective asks for a
+committed change an audit reviewer blocks. For example, with the default
+`audit.reviewers: [quality, security]`, ask for a helper that builds a
+shell command from a user-supplied string and runs it with `shell=True`;
+the security reviewer reports that at or above `block_severity`. If the
+implementer declines the change, or routes to the planner with
+`blocked_implementation_failure` instead of handing back for review, record
+that as a deviation.
+
+Record:
+
+- An `audit_failed` comment on the issue that lists the blocking findings
+  and carries the concrete `scope_sha` as `commit_sha`.
+- The issue stays in `in_progress_state`; it does not move to
+  `success_state`.
+- `HANDOFF.md` routes back to the implementer with
+  `status: verified_fail` and the same `tracker_issue`.
+
+Stop the loop with `llm-handoff stop --repo-root <target>` once the failure
+is recorded, or let the implementer retry and record the outcome. Without
+`--repo-root`, `stop` resolves the repository from the current directory
+and reports nothing to stop when you run it from outside `<target>`.
+
+### Scenario C: Deleted Lease
+
+Between assignments (stop the loop with
+`llm-handoff stop --repo-root <target>` first, and wait for the dispatcher
+to exit), delete
+`docs/handoff/HANDOFF.md` in the target, or empty it, then start the loop
+again with `llm-handoff --repo-root <target>`.
+
+- Expect one `WARN` line and one planner cycle with routing source
+  `tracker_lease_rebuild`. The planner rebuilds the lease from the pool: it
+  picks an issue and posts `lease_opened`, or routes to `user` with
+  `status: blocked_missing_context` when no issue qualifies.
+- A second miss in a row pauses the loop: if `HANDOFF.md` is still missing
+  or empty at the next cycle, the dispatcher pauses until it has content,
+  with no second planner dispatch and no pause recovery. A cycle that reads
+  content resets this, so the second miss is seen only when the rebuild
+  planner leaves the handoff missing or empty. Record it if it occurs.
+
+### Validator Check
+
+1. On an issue with a current lease, edit one field of the latest evidence
+   comment in Linear (for example `next_agent` or `commit_sha`) so it no
+   longer matches `HANDOFF.md`. Leave the handoff as it is.
+2. Run a validation-only turn: the validator report the dispatcher runs,
+   read-only, at one of the pauses listed under Pause Recovery in
+   `CONFIGURATION.md`, for example a stale route on an unchanged handoff.
+   The dispatcher has no command that runs one on demand.
+3. Expect the report's `LINEAR-EVIDENCE` row to be `FAIL`, naming both the
+   comment value and the handoff value of the edited field.
+4. Expect the dispatcher to wait for a person. With
+   `pause_recovery: planner` it logs
+   `Linear evidence check failed; not scheduling planner recovery.` and
+   does not dispatch planner pause recovery.
+5. Restore the comment field before you continue.
+
+### Caveats
+
+- The post-verdict Linear evidence step fails closed when another process
+  writes to an ignored path while the step runs, for example
+  `.pytest_cache`, editor swap files, or build output. Close test watchers,
+  editors, and builds on the target before an audit runs. A failure logs a
+  `linear_evidence_failed:` line and stops the loop with exit 1.
+- The step's checks only detect a repository file change after the fact.
+  They do not prevent one.
+- The dispatcher never calls Linear and cannot verify a Linear write. Check
+  every comment and state change on the issue in Linear directly.
+- The validator's evidence check is an agent check, not a dispatcher check.
+
+### What To Record
+
+Record one row per issue, plus any deviation from the expected results.
+
+| Item | Value |
+|---|---|
+| Tracker issue | `ENG-123` |
+| Scenario | A, B, or C |
+| Evidence comment events seen, in order | `lease_opened`, `implementation_handoff`, ... |
+| State transitions | `Todo` -> `In Progress` -> `In Review` |
+| `scope_sha` of each passed story | concrete SHA |
+| Audit log folders | `logs/dispatch/audit/<timestamp>-cycle<N>/` |
+| Doctor and probe results | PASS, WARN, or FAIL per line |
+| Hook check | marker file absent or present |
+| Deviations | what differed from the expected result |
