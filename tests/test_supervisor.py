@@ -344,9 +344,70 @@ def test_supervisor_repair_prompt_lists_generic_default_paths(
 
     assert (
         "Allowed paths: docs/, .claude/agents/, .codex/skills/llm-handoff/, "
-        ".gemini/agents/." in prompt
+        ".agents/agents/, .gemini/agents/." in prompt
     )
     assert "llm_handoff/" not in prompt
+
+
+def test_supervisor_default_repair_scope_admits_antigravity_agent_files() -> None:
+    supervisor = _load_supervisor_module()
+
+    assert supervisor._out_of_scope_repair_files(
+        (
+            ".agents/agents/supervisor-repair.md",
+            ".agents/agents/planner.md",
+            ".agents/settings.json",
+        )
+    ) == (".agents/settings.json",)
+
+
+@pytest.mark.parametrize("repair_role", ["validator", "backend"])
+def test_antigravity_repair_role_launches_shipped_supervisor_repair_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repair_role: str,
+) -> None:
+    from llm_handoff.agent_providers import antigravity as agy_provider
+    from llm_handoff.agent_types import _ProcessResult
+    from llm_handoff.init_workflow import init_reference_workflow
+
+    supervisor = _load_supervisor_module()
+    target = tmp_path / "target"
+    init_reference_workflow(target, provider="antigravity", available_providers=())
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> _ProcessResult:
+        del kwargs
+        commands.append(list(command))
+        return _ProcessResult(stdout="", stderr="", exit_code=0)
+
+    monkeypatch.setattr(agy_provider, "_run_antigravity_command", fake_run)
+    config = supervisor.SupervisorConfig(
+        repo_root=target,
+        config_path=target / "dispatch_config.yaml",
+        repair_role=repair_role,
+        max_repair_attempts=1,
+    )
+
+    supervisor._run_repair_role(
+        config,
+        target / "failure-packet.json",
+        lambda level, message: None,
+    )
+
+    assert len(commands) == 1
+    command = commands[0]
+    assert command[command.index("--agent") + 1] == "supervisor-repair"
+    assert (target / ".agents" / "agents" / "supervisor-repair.md").is_file()
+    repo_root = Path(__file__).resolve().parent.parent
+    assert (
+        repo_root
+        / "examples"
+        / "reference-workflow"
+        / ".agents"
+        / "agents"
+        / "supervisor-repair.md"
+    ).is_file()
 
 
 def test_supervisor_main_parses_options_and_forwards_dispatch_args(

@@ -58,6 +58,7 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .agents/agents/handoff-validator.md
 .agents/agents/handoff-router.md
 .agents/agents/ledger-updater.md
+.agents/agents/supervisor-repair.md
 ```
 
 `AGENTS.md`, `.gitignore`, `.geminiignore`, and `.claude/settings.json` are

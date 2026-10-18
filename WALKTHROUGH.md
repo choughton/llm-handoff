@@ -111,6 +111,7 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .agents/agents/handoff-validator.md
 .agents/agents/handoff-router.md
 .agents/agents/ledger-updater.md
+.agents/agents/supervisor-repair.md
 ```
 
 Four of these are merged rather than copied when the target already has them:

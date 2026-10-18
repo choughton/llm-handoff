@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Supervised repair now works with an `antigravity` repair role. The
+  supervisor already launched the repair turn as
+  `agy --agent supervisor-repair`, but no agent file had that name, so `agy`
+  rejected the launch. The reference workflow now ships
+  `.agents/agents/supervisor-repair.md` (root and
+  `examples/reference-workflow/` copies, with the full eight-tool list and
+  repair-only instructions). Behavior change: the default supervised repair
+  scope now admits `.agents/agents/`, in the order `docs/`,
+  `.claude/agents/`, `.codex/skills/llm-handoff/`, `.agents/agents/`,
+  `.gemini/agents/`.
 - The work-claim gate now reports on the console while it runs. In steady
   state the console showed only `Running deterministic work-claim gate` and
   the PASSED or FAILED line, with everything else in the log file, so a

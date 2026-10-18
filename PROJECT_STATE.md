@@ -9,7 +9,7 @@ belong in commits, handoffs, and pull requests.
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
-  GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a in progress).
+  GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134; GEM-3c in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -97,10 +97,10 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: GEM-3 waits on the operator's live agy checks (GEM-0, GEM-1, and the
-GEM-2 reviewer check); park it until those results arrive, then finish GEM-3
-to GEM-5 in order. GEM-5 deletes the `.gemini/` trees, so no later epic may
-recreate them.
+Fit: the operator live checks passed on 2026-10-18, so the epic is
+unblocked; finish GEM-3c, then GEM-3b (its Linear-mode mapping question must
+be decided when it is planned), GEM-4, and GEM-5 in order. GEM-5 deletes the
+`.gemini/` trees, so no later epic may recreate them.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
@@ -382,7 +382,10 @@ itself from 1.3.5 to 1.4.2 during the checks):
     role's own agent file, and adds a launch regression test. The story also
     decides whether `.agents/agents/` joins the default repair allowlist. It
     must land before GEM-3b. From the GEM-3a audit, decided by the planner on
-    2026-10-18.
+    2026-10-18. Decided by the planner on 2026-10-18: ship a dedicated
+    `supervisor-repair` agy agent file (root and example copies, full
+    eight-tool list) rather than an adapter fallback, and add
+    `.agents/agents/` to the default repair allowlist.
 - GEM-4: Remove the `gemini` provider from the runtime and reject the old
   names. Delete `llm_handoff/agent_providers/gemini.py`,
   `llm_handoff/normalizer_providers/gemini.py` (API and CLI paths), and the

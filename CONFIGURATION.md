@@ -1129,8 +1129,9 @@ as a failed dispatch.
 
 The reference workflow ships one agent file per `--agent` name under
 `.agents/agents/`: `planner`, `backend`, `frontend`, and `auditor`, plus
-`handoff-validator` and `handoff-router` for the validator and
-`ledger-updater` for the finalizer. Each file follows the documented `agy`
+`handoff-validator` and `handoff-router` for the validator,
+`ledger-updater` for the finalizer, and `supervisor-repair` for a supervised
+repair turn. Each file follows the documented `agy`
 custom-agent format, and its frontmatter carries `name`, `description`, and a
 `tools` list. The role files list eight tools: `view_file`, `list_dir`,
 `grep_search`, `find_by_name`, `write_to_file`, `replace_file_content`,
@@ -1868,10 +1869,11 @@ the security reviewer runs on the same vendor as the implementer, so it is a
 second read-only review rather than an independent one, and the dispatcher
 logs a warning saying so.
 
-Supervised repair does not yet work with an `antigravity` repair role. The
-supervisor launches the repair turn as `agy --agent supervisor-repair`, and
-no shipped agent file has that name, so `agy` rejects the launch. With this
-mapping, leave `--repair-role` unset until that is fixed.
+Supervised repair works with an `antigravity` repair role. Whichever role
+`--repair-role` names, the supervisor launches the repair turn as
+`agy --agent supervisor-repair`, which loads the shipped
+`.agents/agents/supervisor-repair.md`. That file carries repair-only
+instructions, not the role's normal Work Packet instructions.
 
 Linear mode does not support `provider: antigravity` (see
 [Tracker (Optional Linear Mode)](#tracker-optional-linear-mode)).

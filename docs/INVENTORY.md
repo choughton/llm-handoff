@@ -138,6 +138,7 @@ dispatcher role writes `HANDOFF.md`; see
 | [.agents/agents/handoff-validator.md](../.agents/agents/handoff-validator.md) | Validator agent template. |
 | [.agents/agents/handoff-router.md](../.agents/agents/handoff-router.md) | Routing clarification agent template. |
 | [.agents/agents/ledger-updater.md](../.agents/agents/ledger-updater.md) | Finalizer agent template. |
+| [.agents/agents/supervisor-repair.md](../.agents/agents/supervisor-repair.md) | Supervised dispatcher repair agent template. |
 
 ## Linear-Mode Prompt Templates
 
@@ -228,6 +229,7 @@ guide to that directory.
 | [.agents/agents/handoff-validator.md](../examples/reference-workflow/.agents/agents/handoff-validator.md) | Antigravity validator agent. |
 | [.agents/agents/handoff-router.md](../examples/reference-workflow/.agents/agents/handoff-router.md) | Antigravity router agent. |
 | [.agents/agents/ledger-updater.md](../examples/reference-workflow/.agents/agents/ledger-updater.md) | Antigravity finalizer agent. |
+| [.agents/agents/supervisor-repair.md](../examples/reference-workflow/.agents/agents/supervisor-repair.md) | Antigravity supervised repair agent. |
 
 </details>
 
