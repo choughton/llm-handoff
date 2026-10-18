@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** GEMINI-REMOVAL (GEM-0b and GEM-0c merged; GEM-0d next).
+- **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
+  in PR #122; GEM-0e1 next).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -178,14 +179,28 @@ itself from 1.3.5 to 1.4.2 during the checks):
   `SUCCESS` result with empty stderr, so the AGY-2 stderr check misses
   it. The adapter (`llm_handoff/agent_providers/antigravity.py`) treats
   it as a failed dispatch. Add stream-json fixtures for it. Decided by
-  the planner on 2026-10-17 from the operator's live `agy` notes.
+  the planner on 2026-10-17 from the operator's live `agy` notes. Merged in
+  PR #122.
 - GEM-0e: Interpreter-bypass boundary for shell grants. Enforce "no push"
   outside the agent process, or keep remote-write credentials out of the
   agent environment. Make interpreter grants (`python`, `python3`, `pytest`)
   an explicit operator opt-in rather than a silent default. Have
   `llm-handoff doctor` report the bypass risk for each role that has an
   interpreter grant (Claude and `agy`). Until GEM-0e ships, the role
-  allowlists are a guardrail, not a sandbox.
+  allowlists are a guardrail, not a sandbox. The `doctor` reporting part is
+  split out as GEM-0e1.
+- GEM-0e1: Doctor reports interpreter-grant bypass risk per role.
+  `llm-handoff doctor` adds `interpreter grants` lines per role or fallback
+  launch: a WARN for each Claude launch without `unsafe_bypass` whose
+  effective list (`allowed_tools`, or `CLAUDE_DEFAULT_ALLOWED_TOOLS`) has
+  bare `Bash`, `Bash(*)`, or a `python`, `python3`, or `pytest` rule; a WARN
+  for each `agy` launch without `unsafe_bypass` naming the required
+  `command(regex:...)` allow entries for those interpreters (including ones
+  from `verification_allowed_prefixes`), noting the grants are user-wide; a
+  WARN for each `unsafe_bypass: true` launch (no shell allowlist at all); and
+  one PASS line when none apply and a Claude or `agy` launch exists. The
+  lines are WARN or PASS only, so the doctor exit code is unchanged; no
+  default grant list changes.
 - GEM-0f: Matching whitespace rules for verification commands and agy
   grants. `verification_command_allowed()` (`llm_handoff/work_claim.py`)
   compares whitespace-split tokens, but `antigravity_command_grant()`
@@ -208,6 +223,14 @@ itself from 1.3.5 to 1.4.2 during the checks):
   allow entry that names `git` with a "cannot verify" message. Add tests
   for `--force`, a non-main branch, and `git -c x=y push`. From the
   GEM-0c review (PR #119, Finding 2).
+- GEM-0h: Refusal logs carry no raw command arguments. The `agy`
+  deny-rule refusal logs in `llm_handoff/agent_providers/antigravity.py`
+  keep raw command arguments after best-effort redaction, so a secret in an
+  unrecognized form, for example a `-c http.extraHeader="X-Api-Key: value"`
+  value, reaches stderr and the dispatch log. Recommendation: log a fixed
+  refusal reason and step identifier instead, or add secret-header redaction
+  with tests for escaped and concatenated quoted values. From the GEM-0d
+  security review (low).
 - GEM-1: `antigravity` normalizer. Add `antigravity` to the normalizer
   providers. Each call runs `agy -p` from a private temp directory that holds
   only a dispatcher-written agent file
