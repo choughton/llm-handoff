@@ -236,7 +236,69 @@ itself from 1.3.5 to 1.4.2 during the checks):
   Gemini, and Claude roles cannot write `.claude/` paths, so route those
   edits to `user` (as in LIN-9d).
 
-### 10. LINEAR-SWITCH - mode switching and onboarding
+### 10. HARDENING - security followups
+
+The security-relevant Open Followups, promoted to stories. Each story names
+the followup it closes; all five were confirmed in the code at `d67722e`.
+
+- HARD-1: Redact reviewer stderr in start-failure messages (closes
+  AUDIT-COST followup (a)). `_start_failure_message` in
+  `llm_handoff/audit_review.py` puts the last 2000 characters of raw reviewer
+  stderr (`_START_FAILURE_STDERR_CHARS`), newlines included, into the
+  `audit_reviewer_start_failed` error that the dispatcher logs. The package
+  has no redaction helper. Add one shared helper that masks secret-shaped
+  values (vendor key prefixes such as `sk-` and `AIza`, bearer tokens, and
+  `NAME=value` pairs whose name ends in `_KEY`, `_TOKEN`, or `_SECRET`), run
+  the stderr through it and `_single_line`, and cap it near the 300
+  characters other reviewer errors use. Apply the helper wherever else
+  provider stderr reaches a log line or a pause reason. Test with a planted
+  key.
+- HARD-2: Delimit operator text in operator-role prompts (closes
+  PAUSE-RECOVERY followup (c)). `OPERATOR_ROLE_INSTRUCTION_TEMPLATE` and
+  `OPERATOR_ROLE_AUDIT_FAN_OUT_INSTRUCTION_TEMPLATE` in
+  `llm_handoff/orchestrator.py` put the pause reason and the operator's
+  message (`Operator guidance: <text>`) inline in the instruction. Wrap each
+  in labelled delimiters and neutralize a closing delimiter that appears
+  inside the text, so neither can pass as dispatcher instructions. Test with
+  text that contains the delimiter.
+- HARD-3: Record operator influence on audits (closes PAUSE-RECOVERY
+  followup (d)). An `@auditor` dispatch with an operator message tells the
+  reviewers to apply that message within the review, and nothing records it:
+  `audit_review.py` has no operator marker. Mark the audit result as
+  operator-influenced in the audit record under `logs/dispatch/audit/`, in
+  the handoff the auditor writes, and in the pull request body when the
+  story publishes. Record only the marker, the time, and a SHA-256 digest of
+  the message, never its text: an operator may type private context or a
+  credential at the console, and `SECURITY.md` keeps secrets out of
+  `HANDOFF.md`, logs, and anything published. CHAT-4 reuses this marker.
+- HARD-4: Validate `handoff_path` and `project_state_path` (closes
+  CONFIG-CLEANUP followup (b)). The validator in `llm_handoff/config.py`
+  (`_normalize_relative_path`) accepts any value, and the dispatcher builds
+  `repo_root / path`, so an absolute path or a `..` segment points outside
+  the repository. Reject absolute paths, drive-letter and UNC paths, `..`
+  segments, and control characters at config load, and check that the
+  resolved path stays under `repo_root`. Name the key and the rule in the
+  error.
+- HARD-5: Stop trusting a carry-over record from disk (closes
+  LINEAR-FOUNDATIONS followup (d)). `_restore_implementer_leftovers` in
+  `llm_handoff/orchestrator.py` loads `logs/dispatch/carry-over.json` at
+  startup, and `capture_pre_dispatch_state` (`llm_handoff/work_claim.py`)
+  drops every listed file whose fingerprint still matches from the
+  operator-dirty set, so later commit logic treats it as implementer work.
+  Roles can write under `logs/`, and values saved in that same file (such
+  as the handoff SHA or `HEAD`) prove nothing: a role can read the current
+  values and fingerprints and forge a matching record that claims the
+  operator's edits. Treat a record read from disk as untrusted. At startup,
+  name its story and files and ask the operator to confirm them
+  (`Carry these over as <story>'s work? [y/N]`, TTY only); without a TTY or
+  on no, discard it with a WARN and leave the files operator-owned. Only an
+  in-memory record from the current run applies without asking. Use a
+  location roles cannot write only if one exists for every provider; Claude
+  roles' `Write` tool is not path-limited, so do not assume one.
+  RECOVERY-2's in-flight record has the same exposure and should follow the
+  same rule.
+
+### 11. LINEAR-SWITCH - mode switching and onboarding
 
 - LIN-11: `init --tracker linear` and `init --tracker none` switch an
   initialized repository between modes, only between assignments and never
@@ -245,7 +307,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 
-### 11. RECOVERY - interrupted-run recovery
+### 12. RECOVERY - interrupted-run recovery
 
 A Ctrl+C, a closed window, or a crash at any point must leave the loop able
 to continue from a record it wrote, without the operator cleaning the working
@@ -288,7 +350,7 @@ bounces until the three-fix circuit breaker escalates.
   these as <role>'s interrupted <story> work? [y/N]`; yes carries them over,
   no leaves them as operator edits. Never decide this without the operator.
 
-### 12. CHAT - talk to the agents while the loop runs
+### 13. CHAT - talk to the agents while the loop runs
 
 The operator types at any time; a message holds the loop and is answered by
 the agent it is about, from that agent's own session, read-only. Chat never
@@ -331,10 +393,10 @@ dependencies; Windows (`msvcrt`) and POSIX.
   low-confidence pick shows a numbered list instead. Questions about the loop
   as a whole go to the planner. An action asks `Re-dispatch <role> with this
   guidance? [y/N]`; yes uses the existing operator role dispatch, and the
-  handoff and pull request record the result as operator-influenced (closes
-  PAUSE-RECOVERY followup (d)).
+  handoff and pull request record the result as operator-influenced (reuses
+  the HARD-3 operator-influenced marker).
 
-### 13. WORK-INTAKE - turn a plain request into epics and stories
+### 14. WORK-INTAKE - turn a plain request into epics and stories
 
 Before scoping INTAKE-1, route to `user` for a short design check.
 
@@ -350,10 +412,11 @@ Before scoping INTAKE-1, route to `user` for a short design check.
 
 ## Open Followups
 
+Promoted to HARDENING stories and removed below: AUDIT-COST (a),
+PAUSE-RECOVERY (c) and (d), CONFIG-CLEANUP (b), and LINEAR-FOUNDATIONS (d).
+The remaining letters are unchanged.
+
 - From the AUDIT-COST close (low, `llm_handoff/audit_review.py`):
-  - (a) the start-failure ERROR line logs up to 2000 characters of raw reviewer
-    stderr without redaction and with newlines intact (~line 1273); redact it or
-    pass it through `_single_line`.
   - (b) when `gemini extensions list` itself fails, the error still says the
     extension is not installed (~line 1444); give the check failure its own
     message.
@@ -366,12 +429,6 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   - (b) no WARN or counter when the same role is targeted again on an unchanged
     handoff SHA, since `operator_role` cycles skip the stale-route check
     (~line 679).
-  - (c) the pause reason and operator text are not delimited in
-    `OPERATOR_ROLE_INSTRUCTION_TEMPLATE` (~line 3268); wrap them in labelled
-    delimiters.
-  - (d) an operator message appended to the `@auditor` reviewer prompts can
-    steer the audit (~line 1540); log the instruction with the audit result or
-    mark the verdict as operator-influenced.
 - From the SCANNERS close (low/info, SCAN-1):
   - (a) `CHANGELOG.md` line 19 is over-long; rewrap it.
   - (b) a scanner command that starts with a placeholder gets the generic
@@ -388,9 +445,6 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   - (a) the planner, backend, frontend, auditor, validator, and router helper
     files still name `PROJECT_STATE.md` literally; give them the same deferral
     wording if wanted.
-  - (b) `project_state_path` and `handoff_path` are not validated in
-    `llm_handoff/config.py` (~line 785); reject absolute paths, `..` segments,
-    and control characters.
 
 - From the LINEAR-FOUNDATIONS close (low/info, LIN-6b):
   - (a) low: non-ASCII literals in `tests/test_doctor.py` (~lines 2561, 2582,
@@ -403,9 +457,6 @@ Before scoping INTAKE-1, route to `user` for a short design check.
     (`llm_handoff/doctor.py` ~line 1217); deny every tracker-server tool except
     the two read tools, or keep the documented risk and recommend
     `claude_mcp_config`.
-  - (d) low: `logs/dispatch/carry-over.json` is trusted at startup
-    (`llm_handoff/orchestrator.py` ~line 3171); bind it to the handoff SHA and
-    lock holder, or check it against git state.
   - (e) info: a stop request without `target_pid` is honored
     (`llm_handoff/stop_request.py` ~line 146); document it or require the pid.
 

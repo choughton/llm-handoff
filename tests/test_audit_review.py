@@ -1169,6 +1169,53 @@ def test_parse_quality_verdict_reads_codex_envelope() -> None:
     assert verdict.commands_run == ["python -m pytest -q"]
 
 
+def _with_raw_control_characters(payload: dict[str, Any]) -> str:
+    # A Codex quality reviewer prints its verdict object with real newlines
+    # and tabs inside string values instead of `\n` and `\t` escapes.
+    text = json.dumps(payload).replace("\\n", "\n").replace("\\t", "\t")
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
+    return text
+
+
+@pytest.mark.parametrize("prefix", ["", "Review complete.\n\n"])
+def test_parse_quality_verdict_accepts_raw_newlines_in_strings(prefix: str) -> None:
+    report = (
+        "## Phase 1 - Spec Compliance\nAll 19 files match the Work Packet.\n\n"
+        "## Findings\nNone.\n\n## Next Step\n**planner:**\tClose the story."
+    )
+    payload = {**_quality_payload(), "report": report}
+
+    verdict = audit_review.parse_quality_verdict(
+        prefix + _with_raw_control_characters(payload)
+    )
+
+    assert verdict.verdict == "pass"
+    assert verdict.next_agent == "planner"
+    assert verdict.report == report
+
+
+def test_parse_security_verdict_accepts_raw_newlines_in_strings() -> None:
+    payload = _security_payload(
+        findings=[
+            {
+                "severity": "medium",
+                "file": "src/app.py",
+                "line": 4,
+                "title": "Shell access",
+                "description": "First line.\nSecond line.",
+                "recommendation": "Remove it.",
+            }
+        ]
+    )
+
+    verdict = audit_review.parse_security_verdict(
+        _with_raw_control_characters(payload)
+    )
+
+    assert verdict.findings[0].description == "First line.\nSecond line."
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
