@@ -1262,6 +1262,14 @@ def run_loop(
             ):
                 return 1
             if dispatch_result.stop_loop:
+                if dispatch_result.stop_reason:
+                    _log(
+                        log_fn,
+                        "ERROR",
+                        "Stopping the dispatch loop: "
+                        f"{dispatch_result.stop_reason}",
+                    )
+                    return 1
                 _log(
                     log_fn,
                     "ERROR",
@@ -1793,12 +1801,37 @@ def _dispatch_audit_fan_out(
             **failover_kwargs,
         )
 
+    def linear_evidence_invoker(
+        prompt: str, agent_config: AgentConfig
+    ) -> SubagentResult:
+        # The post-verdict Linear evidence step (Linear mode only). The
+        # operator's additional instruction is for the audit itself, so it is
+        # not appended here; the failover guard snapshots the protected files
+        # when this step starts.
+        return _invoke_support_callable(
+            "auditor",
+            prompt,
+            role="auditor",
+            handoff_path=handoff_path,
+            agent_config=agent_config,
+            log=log,
+            repo_root=config.repo_root,
+            **_failover_kwargs(config, "auditor"),
+        )
+
+    # Vanilla mode keeps the original call exactly.
+    linear_kwargs: dict[str, object] = (
+        {"linear_evidence_invoker": linear_evidence_invoker}
+        if config.tracker.provider == "linear"
+        else {}
+    )
     return run_audit_fan_out(
         config,
         context=audit_context,
         frontmatter=_parse_frontmatter_or_none(audit_context.handoff_content),
         quality_invoker=quality_invoker,
         log=log,
+        **linear_kwargs,
     )
 
 

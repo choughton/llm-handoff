@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -3130,3 +3131,190 @@ def test_blocked_fan_out_keeps_an_explicit_empty_remaining_stories(
     loaded = yaml.safe_load(written.split("---")[1])
     assert loaded["status"] == "verified_fail"
     assert loaded.get("remaining_stories") == expected
+
+
+# --------------------------------------------------------------------------
+# Linear mode: evidence step wiring and quality reviewer tools (LIN-9e)
+# --------------------------------------------------------------------------
+
+
+_LINEAR_TRACKER: dict[str, Any] = {
+    "provider": "linear",
+    "team": "ENG",
+    "project": "Platform",
+    "eligible_state": "Todo",
+    "in_progress_state": "In Progress",
+    "success_state": "In Review",
+    "mcp_server": "linear",
+}
+_ALL_ROLES = ("planner", "backend", "frontend", "auditor", "validator", "finalizer")
+
+
+def _normalize_run_text(text: str) -> str:
+    text = re.sub(r"\d+\.\ds\b", "<elapsed>", text)
+    return re.sub(r"\S*scope\.diff", "<diff>", text)
+
+
+def test_vanilla_fan_out_never_calls_the_evidence_invoker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(_security_payload())
+        ),
+    )
+    config = _fan_out_config(repo)
+    assert config.tracker.provider == "none"
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    evidence_calls: list[str] = []
+    outputs: list[tuple[str, str, Any]] = []
+
+    for pass_invoker in (True, False):
+        handoff_path.write_text(handoff, encoding="utf-8")
+        prompts: list[str] = []
+        agent_configs: list[Any] = []
+
+        def quality_invoker(prompt: str, agent_config) -> SubagentResult:
+            prompts.append(prompt)
+            agent_configs.append(agent_config)
+            return _subagent(json.dumps(_quality_payload()))
+
+        kwargs: dict[str, Any] = {}
+        if pass_invoker:
+            kwargs["linear_evidence_invoker"] = (
+                lambda prompt, _config: evidence_calls.append(prompt)
+            )
+        result = audit_review.run_audit_fan_out(
+            config,
+            context=AuditFanOutContext(
+                cycle_number=2, handoff_content=handoff, implementer_base_sha=base
+            ),
+            frontmatter=parse_handoff_frontmatter_text(handoff),
+            quality_invoker=quality_invoker,
+            log=_Recorder(),
+            **kwargs,
+        )
+        assert result.exit_code == 0, result.stderr
+        outputs.append(
+            (
+                handoff_path.read_text(encoding="utf-8"),
+                prompts[0],
+                agent_configs[0],
+            )
+        )
+
+    assert evidence_calls == []
+    (with_handoff, with_prompt, with_config), (plain_handoff, plain_prompt, _c) = (
+        outputs
+    )
+    assert _normalize_run_text(with_handoff) == _normalize_run_text(plain_handoff)
+    assert with_prompt == with_prompt.replace(
+        audit_review.QUALITY_LINEAR_MODE_SUFFIX, ""
+    )
+    assert _normalize_run_text(with_prompt) == _normalize_run_text(plain_prompt)
+    diff_path = re.search(r"saved at (\S*scope\.diff)", with_prompt)
+    assert diff_path is not None
+    head = parse_handoff_frontmatter_text(handoff).scope_sha  # type: ignore[union-attr]
+    assert with_prompt == audit_review.QUALITY_FAN_OUT_PROMPT_TEMPLATE.format(
+        handoff_path="docs/handoff/HANDOFF.md",
+        range_text=f"{base}..{head}",
+        base_sha=base,
+        head_sha=head,
+        diff_path=diff_path.group(1),
+        shape_hint=audit_review.QUALITY_VERDICT_SHAPE_HINT,
+    )
+    assert with_config.allowed_tools is None
+
+
+def test_linear_quality_reviewer_loses_the_linear_write_tools(
+    tmp_path: Path,
+) -> None:
+    agents: dict[str, Any] = {role: {"provider": "claude"} for role in _ALL_ROLES}
+    agents["auditor"] = {
+        "provider": "claude",
+        "fallback": {"provider": "claude", "model": "fallback-model"},
+    }
+    config = DispatchConfig(
+        repo_root=tmp_path, agents=agents, tracker=_LINEAR_TRACKER
+    )
+    assert "mcp__linear__save_comment" in (config.agents["auditor"].allowed_tools or ())
+
+    quality = audit_review._quality_reviewer_agent_config(config)
+
+    for agent in (quality, quality.fallback):
+        assert agent is not None
+        tools = agent.allowed_tools or ()
+        assert "mcp__linear__save_comment" not in tools
+        assert "mcp__linear__save_issue" not in tools
+        for kept in (
+            "mcp__linear__get_issue",
+            "mcp__linear__list_issues",
+            "mcp__linear__list_comments",
+            "Read",
+        ):
+            assert kept in tools, kept
+        assert agent.timeout_ms == config.audit.review_timeout_ms
+
+
+def test_linear_quality_prompt_adds_the_no_linear_posting_sentence(
+    tmp_path: Path,
+) -> None:
+    scope = _scope(tmp_path)
+    vanilla = audit_review.build_quality_fan_out_prompt(
+        scope, handoff_display="docs/handoff/HANDOFF.md", provider="claude"
+    )
+    linear = audit_review.build_quality_fan_out_prompt(
+        scope,
+        handoff_display="docs/handoff/HANDOFF.md",
+        provider="claude",
+        linear_mode=True,
+    )
+    codex = audit_review.build_quality_fan_out_prompt(
+        scope,
+        handoff_display="docs/handoff/HANDOFF.md",
+        provider="codex",
+        linear_mode=True,
+    )
+
+    assert linear == vanilla + audit_review.QUALITY_LINEAR_MODE_SUFFIX
+    assert "Do not post Linear comments or change Linear issue state" in linear
+    assert audit_review.QUALITY_LINEAR_MODE_SUFFIX not in vanilla
+    assert codex.endswith(
+        audit_review.QUALITY_LINEAR_MODE_SUFFIX
+        + audit_review.CODEX_QUALITY_ENVELOPE_SUFFIX
+    )
+
+
+def test_run_loop_logs_the_stop_reason_when_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _base = _init_repo(tmp_path)
+    head = _commit_file(repo, "src/app.py", "x = 1\n", "feature")
+    handoff = _backend_handoff(head)
+    _write_handoff(repo, handoff)
+    reason = "linear_evidence_failed: the evidence dispatch exited with code 2"
+
+    def fake_fan_out(*_args: Any, **_kwargs: Any) -> DispatchResult:
+        return DispatchResult(
+            stdout="",
+            stderr=reason,
+            exit_code=1,
+            elapsed_seconds=0.01,
+            stop_loop=True,
+            stop_reason=reason,
+        )
+
+    monkeypatch.setattr(orchestrator, "_dispatch_audit_fan_out", fake_fan_out)
+    log = _Recorder()
+
+    exit_code = orchestrator.run_loop(_fan_out_config(repo), max_cycles=3, log=log)
+
+    assert exit_code == 1
+    assert ("ERROR", f"Stopping the dispatch loop: {reason}") in log.messages
+    assert "An audit reviewer failed to start" not in log.text()
+    assert "Failure count:" not in log.text()

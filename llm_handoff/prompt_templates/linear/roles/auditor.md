@@ -35,3 +35,9 @@ remove that label. When `tracker.blocked_state` is set and the issue is in
 `tracker.in_progress_state` and record `state_from` and `state_to` in the
 `user_attention_cleared` comment. Do all of this before you post
 `audit_passed` or `audit_failed`.
+
+Audit fan-out. When `audit.reviewers` includes `security`, the quality
+reviewer is read-only and posts nothing to Linear. After both the quality and
+security verdicts merge, a separate Linear-only auditor dispatch does the
+steps in this section on the leased issue, and the dispatcher, not that
+dispatch, rewrites `HANDOFF.md`.
