@@ -19,11 +19,31 @@ belong in commits, handoffs, and pull requests.
 
 ## Backlog
 
-Epics run in the order listed. The planner takes the next story of the active
-epic, or the first story of the next epic when the active one closes. Each
-story is one Work Packet; the planner writes its Files in scope, Verification
-command, and acceptance criteria from the code. A story too large for one
-Work Packet may be split. Re-order, add, or drop epics by editing this list.
+The planner chooses the next epic by fit, not by position in this list.
+Numbers are labels, not priorities. When the active epic closes, or when its
+next story waits on something outside the loop, the planner reads every open
+epic's intro and `Fit:` line and picks the one whose first story is unblocked,
+whose dependencies are closed, and whose result the loop needs soonest. A
+story that unblocks a parked epic, fixes what the last run broke, or changes
+the planner's own protocol goes before a feature; a cheap story that fills a
+wait goes before a long one that would hold it. The planner states the choice
+and the reason in the handoff `reason`, and has the next Work Packet record it
+in Current Status.
+
+Parking. An epic whose next story waits on the operator (a live check, a
+decision, a merge) is parked, not closed. Instead of routing to `user` and
+pausing the loop, the planner picks another epic and has that epic's first
+Work Packet record the parked epic in Current Status: its name, its remaining
+stories, and the exact operator action it waits for, so the ask survives the
+next handoff rewrite. One epic is active at a time. The planner returns to a
+parked epic when the operator reports the blocker cleared, in this file or at
+the operator prompt. Route to `user` only when no open epic has an unblocked
+story.
+
+Each story is one Work Packet; the planner writes its Files in scope,
+Verification command, and acceptance criteria from the code. A story too
+large for one Work Packet may be split. Add, drop, or re-shape epics by
+editing this list.
 
 Epics 6 (CONFIG-CLEANUP), 7 (LINEAR-FOUNDATIONS), and 8 (LINEAR-WORKFLOW) are
 closed; see the Completed Scope Ledger.
@@ -76,6 +96,11 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
   sandbox Linear team.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
+
+Fit: GEM-3 waits on the operator's live agy checks (GEM-0, GEM-1, and the
+GEM-2 reviewer check); park it until those results arrive, then finish GEM-3
+to GEM-5 in order. GEM-5 deletes the `.gemini/` trees, so no later epic may
+recreate them.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
@@ -373,6 +398,10 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 ### 10. HARDENING - security followups
 
+Fit: independent and cheap; each story closes one confirmed followup, so
+it fills a wait well. CHAT-4 reuses the HARD-3 marker, so take HARD-3 before
+CHAT.
+
 The security-relevant Open Followups, promoted to stories. Each story names
 the followup it closes; all five were confirmed in the code at `d67722e`.
 
@@ -435,6 +464,9 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 
+Fit: low urgency; only repositories that switch tracker modes need it.
+LINEAR-WORKFLOW is closed, so nothing blocks it.
+
 - LIN-11: `init --tracker linear` and `init --tracker none` switch an
   initialized repository between modes, only between assignments and never
   while `.dispatch.lock` exists; `--dry-run`; `--force` reports what is left
@@ -443,6 +475,10 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 
 ### 12. RECOVERY - interrupted-run recovery
+
+Fit: independent. Pick it when an interrupted run has just cost a manual
+cleanup, or before the loop is left to run unattended for long stretches;
+RECOVERY-1 alone removes the Ctrl+C hazard.
 
 A Ctrl+C, a closed window, or a crash at any point must leave the loop able
 to continue from a record it wrote, without the operator cleaning the working
@@ -486,6 +522,10 @@ bounces until the three-fix circuit breaker escalates.
   no leaves them as operator edits. Never decide this without the operator.
 
 ### 13. CHAT - talk to the agents while the loop runs
+
+Fit: operator-facing; pick it once the loop runs unattended reliably
+(RECOVERY first is the natural order) and after HARD-3 for the marker CHAT-4
+reuses.
 
 The operator types at any time; a message holds the loop and is answered by
 the agent it is about, from that agent's own session, read-only. Chat never
@@ -533,6 +573,10 @@ dependencies; Windows (`msvcrt`) and POSIX.
 
 ### 14. WORK-INTAKE - turn a plain request into epics and stories
 
+Fit: needs a user design check before INTAKE-1. INTAKE-2 rewrites how the
+planner turns a request into this file's epics, so take TPM-ROLE first and
+write the intake rules once for the planner/tpm split.
+
 Before scoping INTAKE-1, route to `user` for a short design check.
 
 - INTAKE-1: A command that takes a plain-language request ("build me a web page
@@ -546,6 +590,11 @@ Before scoping INTAKE-1, route to `user` for a short design check.
   issues instead (after LINEAR-WORKFLOW).
 
 ### 15. TPM-ROLE - routine story picker split out of the planner
+
+Fit: structural; it changes who picks stories, so every later planner
+epic (WORK-INTAKE, TRANSITION-RULES) is simpler once it lands. Independent of
+GEMINI-REMOVAL apart from TPM-4 not recreating `.gemini/`; a good pick while
+GEM-3 is parked.
 
 The source project's dispatcher separates product and boundary judgment (its
 planner lane) from routine sequencing (a TPM lane that picks the next ready
@@ -658,6 +707,9 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
 
 ### 16. ESCALATION-RECONCILE - a stale user escalation gets one planner pass
 
+Fit: small (two stories) and independent. Pick it right after a run has
+paused on a user escalation that turned out to be stale.
+
 A `next_agent: user` handoff can be stale by the time a run starts: the
 operator may have answered the question in a commit, merged the blocking pull
 request, or edited `PROJECT_STATE.md` without touching the handoff. The source
@@ -696,6 +748,9 @@ normally with no second pass.
   when the key is on.
 
 ### 17. TRANSITION-RULES - per-producer legality in the validator
+
+Fit: after TPM-ROLE, because TRANS-2 names `tpm`; otherwise independent,
+and each story is small enough to fill a wait.
 
 The validator checks that `status` implies `next_agent` and that `finalizer`
 is reached only from the auditor with `close_type: epic`
