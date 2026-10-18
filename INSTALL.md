@@ -14,10 +14,13 @@ with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
 - Python 3.11 or newer.
 - Git.
 - At least one provider CLI signed in: Claude Code (`claude`), Codex CLI
-  (`codex`), or Gemini CLI (`gemini`). The reference mapping puts the
-  `planner` and `frontend` on Gemini, the `backend` on Codex, and the
-  `auditor`, `validator`, and `finalizer` on Claude Code, so it needs all
-  three. A single-vendor setup (`init --provider claude`, `codex`, or
+  (`codex`), Antigravity (`agy`), or Gemini CLI (`gemini`). The reference
+  mapping puts the `planner` and `frontend` on Antigravity (`agy`), the
+  `backend` on Codex, and the `auditor`, `validator`, and `finalizer` on
+  Claude Code, so it needs all three. With `init --tracker linear` the
+  reference mapping puts `planner` and `frontend` on Claude Code instead
+  (Linear mode does not support `antigravity` roles), so it needs only
+  Claude Code and Codex. A single-vendor setup (`init --provider claude`, `codex`, or
   `gemini`) needs only that one CLI. For all-Codex, `init` writes
   `commit_mode: dispatcher` into `dispatch_config.yaml`; keep it, and keep
   the work-claim gate on (see

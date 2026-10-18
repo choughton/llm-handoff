@@ -19,6 +19,7 @@ from llm_handoff.init_workflow import (
     InitConflictError,
     InitWorkflowError,
     InvalidVerificationCommandError,
+    TrackerUnsupportedMappingError,
     UnknownProviderError,
     UnknownTemplateError,
     check_verification_command_chars,
@@ -1408,3 +1409,95 @@ def test_init_does_not_touch_the_agy_settings_file(
     init_reference_workflow(target, available_providers=(), antigravity_available=True)
 
     assert not home.exists()
+
+
+def _reference_linear_init(target: Path, **kwargs: object):
+    return init_reference_workflow(
+        target,
+        available_providers=(),
+        antigravity_available=False,
+        tracker="linear",
+        tracker_team="ENG",
+        tracker_project="Platform",
+        **kwargs,
+    )
+
+
+def test_reference_linear_init_puts_planner_and_frontend_on_claude(
+    tmp_path: Path,
+) -> None:
+    result = _reference_linear_init(tmp_path)
+
+    assert result.provider_mapping == REFERENCE_MAPPING
+    text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
+    assert "provider: antigravity" not in text
+    assert (
+        "  # Linear mode does not support antigravity roles, so planner and "
+        "frontend run on Claude.\n  planner:\n"
+    ) in text
+    config = load_dispatch_config(repo_root=tmp_path)
+    assert config.tracker.provider == "linear"
+    for role in ("planner", "frontend"):
+        agent = config.agents[role]
+        assert agent.provider == "claude"
+        assert agent.binary == "claude"
+        assert agent.resume is False
+        assert agent.timeout_ms == 1200000
+    # The other roles keep the template mapping.
+    template = load_dispatch_config(
+        repo_root=TEMPLATE_ROOT,
+        config_path=TEMPLATE_ROOT / "dispatch_config.yaml",
+    )
+    for role in ("backend", "auditor", "validator", "finalizer"):
+        assert config.agents[role].provider == template.agents[role].provider
+        assert config.agents[role].binary == template.agents[role].binary
+        assert config.agents[role].resume == template.agents[role].resume
+
+
+def test_reference_linear_init_dry_run_writes_nothing(tmp_path: Path) -> None:
+    _reference_linear_init(tmp_path, dry_run=True)
+
+    assert not any(tmp_path.iterdir())
+
+
+def test_antigravity_linear_init_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(TrackerUnsupportedMappingError):
+        _reference_linear_init(tmp_path, provider="antigravity")
+
+    assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_render_linear_reference_agents_keeps_other_lines_and_line_endings(
+    newline: str,
+) -> None:
+    template = (TEMPLATE_ROOT / "dispatch_config.yaml").read_text(encoding="utf-8")
+    source = template.replace("\n", newline)
+
+    rendered = init_workflow_module.render_linear_reference_agents(source)
+
+    assert rendered.count(newline) == rendered.count("\n")
+    assert "provider: antigravity" not in rendered
+    assert "binary: agy" not in rendered
+    loaded = yaml.safe_load(rendered)
+    for role in ("planner", "frontend"):
+        assert loaded["agents"][role] == {
+            "provider": "claude",
+            "binary": "claude",
+            "resume": False,
+            "timeout_ms": 1200000,
+        }
+    original = yaml.safe_load(source)
+    for role in ("backend", "auditor", "validator", "finalizer"):
+        assert loaded["agents"][role] == original["agents"][role]
+    assert {k: v for k, v in loaded.items() if k != "agents"} == {
+        k: v for k, v in original.items() if k != "agents"
+    }
+
+
+def test_render_linear_reference_agents_rejects_a_missing_stanza() -> None:
+    template = (TEMPLATE_ROOT / "dispatch_config.yaml").read_text(encoding="utf-8")
+    broken = template.replace("  frontend:\n", "  ui:\n")
+
+    with pytest.raises(InitWorkflowError, match="agents.frontend"):
+        init_workflow_module.render_linear_reference_agents(broken)

@@ -9,7 +9,8 @@ belong in commits, handoffs, and pull requests.
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
-  GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134; GEM-3c in progress).
+  GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
+  GEM-3c merged in PR #135; GEM-3b in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -98,15 +99,13 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
 Fit: the operator live checks passed on 2026-10-18, so the epic is
-unblocked; finish GEM-3c, then GEM-3b (its Linear-mode mapping question must
-be decided when it is planned), GEM-4, and GEM-5 in order. GEM-5 deletes the
+unblocked; finish GEM-3b, then GEM-4 and GEM-5 in order. GEM-5 deletes the
 `.gemini/` trees, so no later epic may recreate them.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
 `antigravity` role adapter already ships (ANTIGRAVITY-ADAPTER). Gemini CLI
-still backs `planner` and `frontend` in the default mapping, the `init
---provider gemini` mapping, the `gemini` security reviewer, and the `gemini`
+still backs the `init --provider gemini` mapping, the `gemini` security reviewer, and the `gemini`
 normalizer (API and CLI paths). GEM-0 first makes `agy` roles work (the first
 live `agy` planner run could not write files); then replace each Gemini path
 with `agy`, then remove the `gemini` provider. After removal, a config value or
@@ -365,10 +364,17 @@ itself from 1.3.5 to 1.4.2 during the checks):
     `.agents/agents/` file (AGY-3). No default mapping changes.
   - GEM-3b: `DEFAULT_AGENT_PROVIDERS`, `dispatch_config.example.yaml`, and
     `examples/reference-workflow/dispatch_config.yaml` map `planner` and
-    `frontend` to `antigravity`. Open question: what Linear mode maps
-    `planner` and `frontend` to, since config load rejects `antigravity`
-    there and `init --tracker linear` with the reference mapping must keep
-    writing a loadable config.
+    `frontend` to `antigravity`. Decided by the planner on 2026-10-18:
+    `init --tracker linear` with the reference mapping writes `planner` and
+    `frontend` on `claude` (`provider: claude`, `binary: claude`,
+    `resume: false`, `timeout_ms: 1200000`), with a one-line comment above
+    `planner` saying Linear mode does not support `antigravity` roles;
+    `backend`, `auditor`, `validator`, and `finalizer` keep the template
+    mapping. `init --tracker linear --provider antigravity` stays refused.
+    The config-load rejection in `_validate_tracker` is unchanged, so a
+    hand-written Linear config that omits `planner` or `frontend` now fails
+    at load with the existing message; recorded in `CHANGELOG.md` as a
+    behavior change.
   - GEM-3c: Antigravity-safe supervised repair. Supervised repair
     (`--repair-role`) with an `antigravity` role launches
     `agy --agent supervisor-repair`: `llm_handoff/supervisor.py`

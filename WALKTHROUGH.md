@@ -38,9 +38,9 @@ The reference workflow maps generic roles to provider CLIs:
 
 | Role | Reference Provider |
 | --- | --- |
-| `planner` | Gemini CLI |
+| `planner` | Antigravity (`agy`) |
 | `backend` | Codex CLI |
-| `frontend` | Gemini CLI, or manual work with `--manual-frontend` |
+| `frontend` | Antigravity (`agy`), or manual work with `--manual-frontend` |
 | `auditor` | Claude Code |
 | `validator` | Claude Code |
 | `finalizer` | Claude Code |
@@ -49,8 +49,9 @@ These are adapter choices, not handoff protocol names. Handoffs use the generic
 roles. `init` writes this mapping when more than one provider CLI is on
 `PATH`; when only one of Claude Code, Codex, or Gemini CLI is installed, it
 puts every role on that CLI, and `--provider claude`, `--provider codex`, or
-`--provider gemini` forces that choice. Antigravity is also a registered
-adapter. See [Agent Roles](CONFIGURATION.md#agent-roles) for the mapping
+`--provider gemini` forces that choice. With `--tracker linear`, the
+reference mapping puts `planner` and `frontend` on Claude Code, because
+Linear mode does not support `antigravity` roles. See [Agent Roles](CONFIGURATION.md#agent-roles) for the mapping
 shape and the single-vendor variants, and the README's
 [Gotchas](README.md#gotchas) for what all-Codex and all-Gemini setups need
 in addition.

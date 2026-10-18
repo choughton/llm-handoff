@@ -401,6 +401,20 @@ _MAPPING_NORMALIZER_LINES = {
 # Mappings that put a role on `provider: antigravity`; `init --tracker linear`
 # refuses them because config load rejects antigravity in Linear mode.
 _LINEAR_UNSUPPORTED_MAPPINGS = frozenset({ANTIGRAVITY_MAPPING})
+# The reference mapping puts these roles on antigravity. `init --tracker
+# linear` with that mapping rewrites their stanzas to claude so the written
+# config loads; the other roles keep the template's mapping.
+_LINEAR_REFERENCE_CLAUDE_ROLES = ("planner", "frontend")
+_LINEAR_REFERENCE_CLAUDE_COMMENT = (
+    "  # Linear mode does not support antigravity roles, so planner and "
+    "frontend run on Claude."
+)
+_LINEAR_REFERENCE_CLAUDE_STANZA = (
+    "    provider: claude",
+    "    binary: claude",
+    "    resume: false",
+    "    timeout_ms: 1200000",
+)
 # The executable of a confirmed verification command becomes one
 # `Bash(<exe>:*)` rule, so it must be a bare program name: no path separators,
 # shell operators, quotes, or whitespace.
@@ -601,6 +615,56 @@ def render_config(template_text: str, mapping: str) -> str:
             lambda _match: _CODEX_COMMIT_MODE_LINE, rendered
         )
     return rendered
+
+
+def render_linear_reference_agents(config_text: str) -> str:
+    """Move the reference mapping's antigravity roles to claude for Linear mode.
+
+    Replaces the `planner` and `frontend` stanzas under the top-level
+    `agents:` key with `provider: claude` stanzas and writes a one-line
+    comment above `planner`. The new lines use the text's line ending; every
+    other line is unchanged. Raises InitWorkflowError unless the `agents:`
+    block holds exactly one stanza for each role.
+    """
+
+    lines = config_text.splitlines(keepends=True)
+    newline = (_line_ending(lines[0]) if lines else "") or "\n"
+    for role in _LINEAR_REFERENCE_CLAUDE_ROLES:
+        agents_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if line.rstrip("\r\n") == "agents:"
+        ]
+        if len(agents_indexes) != 1:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has exactly one "
+                "agents: block."
+            )
+        block_start = agents_indexes[0] + 1
+        block_end = block_start
+        while block_end < len(lines) and (
+            not lines[block_end].strip() or lines[block_end][0] in " \t#"
+        ):
+            block_end += 1
+        headers = [
+            index
+            for index in range(block_start, block_end)
+            if lines[index].rstrip("\r\n") == f"  {role}:"
+        ]
+        if len(headers) != 1:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has exactly one "
+                f"agents.{role} stanza."
+            )
+        header = headers[0]
+        stop = header + 1
+        while stop < block_end and lines[stop].startswith("    "):
+            stop += 1
+        replacement = [f"  {role}:"] + list(_LINEAR_REFERENCE_CLAUDE_STANZA)
+        if role == "planner":
+            replacement.insert(0, _LINEAR_REFERENCE_CLAUDE_COMMENT)
+        lines[header:stop] = [f"{line}{newline}" for line in replacement]
+    return "".join(lines)
 
 
 def verification_executable(command: str) -> str:
@@ -1022,6 +1086,9 @@ def _source_bytes(
         if mapping == REFERENCE_MAPPING:
             # Keep the template's bytes, line endings included.
             text = source_path.read_bytes().decode("utf-8")
+            if tracker is not None:
+                # Config load rejects antigravity roles in Linear mode.
+                text = render_linear_reference_agents(text)
         else:
             text = render_config(source_path.read_text(encoding="utf-8"), mapping)
         # An interpreter executable writes no allowed_tools list: the claude

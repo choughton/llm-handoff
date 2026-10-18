@@ -363,6 +363,9 @@ def test_config_block_round_trips_for_every_mapping(
     )
     vanilla = (vanilla_root / CONFIG).read_text(encoding="utf-8")
     linear = (linear_root / CONFIG).read_text(encoding="utf-8")
+    if provider is None:
+        # The reference mapping moves its antigravity roles to claude.
+        vanilla = init_workflow.render_linear_reference_agents(vanilla)
     assert linear.startswith(vanilla)
     appended = linear[len(vanilla) :]
     lines = appended.strip("\n").splitlines()

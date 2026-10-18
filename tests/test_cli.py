@@ -131,6 +131,7 @@ def test_init_command_provider_claude_writes_all_claude_mapping(
     assert "Provider mapping: all roles on claude" in output
     text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
     assert "provider: gemini" not in text
+    assert "provider: antigravity" not in text
     assert "provider: codex" not in text
 
 
@@ -145,6 +146,7 @@ def test_init_command_provider_codex_writes_all_codex_mapping(
     assert "Provider mapping: all roles on codex" in output
     text = (tmp_path / "dispatch_config.yaml").read_text(encoding="utf-8")
     assert "provider: gemini" not in text
+    assert "provider: antigravity" not in text
     assert "provider: claude" not in text
     assert "skill_name: llm-handoff-planner" in text
 

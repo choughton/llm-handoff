@@ -104,9 +104,12 @@ Public role names:
 - `finalizer`
 - `user`
 
-Provider CLIs are configured separately. For example, a repo can map
-`planner` to Gemini and `backend` to Codex without making those provider
-names part of the handoff protocol.
+Provider CLIs are configured separately. For example, the shipped
+`dispatch_config.yaml` maps `planner` and `frontend` to Antigravity (`agy`)
+and `backend` to Codex without making those provider names part of the
+handoff protocol. `llm-handoff init --tracker linear` writes `planner` and
+`frontend` on Claude instead, because Linear mode does not support
+`antigravity` roles.
 
 ## Handoff Contract
 

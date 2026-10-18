@@ -559,9 +559,12 @@ def test_run_loop_fails_closed_at_startup_without_gemini_sandbox(
         lambda *args, **kwargs: dispatched.append(args),
     )
     logs: list[tuple[str, str]] = []
+    agents = config._default_agent_configs()
+    agents["planner"] = AgentConfig(provider="gemini")
+    agents["frontend"] = AgentConfig(provider="gemini")
 
     exit_code = orchestrator.run_loop(
-        DispatchConfig(repo_root=tmp_path, poll_interval_seconds=0),
+        DispatchConfig(repo_root=tmp_path, agents=agents, poll_interval_seconds=0),
         max_cycles=1,
         log=lambda level, message: logs.append((level, message)),
     )
@@ -592,7 +595,10 @@ def test_startup_banner_shows_launch_posture_and_warns_on_unsafe_bypass(
         if level == "WARN" and not message.startswith("Verification allowlist:")
     ]
     assert any(
-        m.startswith("Launch planner:") and "--yolo --sandbox" in m for m in info
+        m.startswith("Launch planner:")
+        and "antigravity" in m
+        and "permissions.allow" in m
+        for m in info
     )
     assert any(m.startswith("Launch auditor:") and "dontAsk" in m for m in info)
     assert any(m.startswith("Launch backend:") and "--yolo" in m for m in info)
@@ -1044,6 +1050,8 @@ def test_linear_mode_uses_the_configured_mcp_server_name(tmp_path: Path) -> None
 def test_linear_mode_claude_fallback_gets_its_roles_tools(tmp_path: Path) -> None:
     mcp_file = _mcp_file(tmp_path)
     agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["planner"] = {"provider": "codex"}
+    agents["frontend"] = {"provider": "codex"}
     agents["backend"] = {
         "provider": "codex",
         "fallback": {"provider": "claude", "allowed_tools": ["Read"]},
@@ -1085,8 +1093,10 @@ def test_linear_mode_leaves_non_claude_and_bypass_agents_unchanged(
 ) -> None:
     _mcp_file(tmp_path)
     agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["planner"] = {"provider": "codex"}
+    agents["frontend"] = {"provider": "codex"}
     agents["auditor"] = {"provider": "claude", "unsafe_bypass": True}
-    vanilla = DispatchConfig(repo_root=tmp_path, agents=agents)
+    vanilla =DispatchConfig(repo_root=tmp_path, agents=agents)
     loaded = _linear_config(tmp_path, agents, claude_mcp_config="linear-mcp.json")
 
     for role in ("planner", "backend", "frontend", "auditor"):
@@ -1171,6 +1181,8 @@ def test_linear_mode_without_mcp_config_warns_once_at_startup(
     tmp_path: Path,
 ) -> None:
     agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["planner"] = {"provider": "codex"}
+    agents["frontend"] = {"provider": "codex"}
     agents["backend"] = {
         "provider": "codex",
         "fallback": {"provider": "claude"},
