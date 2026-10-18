@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Callable, Final, TextIO
+import unicodedata
 
 
 DEFAULT_LOG_DIRECTORY: Final[Path] = Path("logs") / "dispatch"
@@ -21,7 +22,40 @@ STEADY_STATE_INFO_CONSOLE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"^[^:]+ exited with code \d+$"),
     re.compile(r"^[^:]+ updated .+HANDOFF\.md \(hash changed\)$"),
     re.compile(r"^New SHA\(s\) found in handoff file: "),
+    # Work-claim gate progress and per-check results. The command output
+    # tails (``work-claim | ...``) stay file-only.
+    re.compile(
+        r"^work-claim: (?:running |pre-dispatch HEAD |changed files since "
+        r"dispatch: |(?:PASS|FAIL|SKIP) |verification command `)"
+    ),
 )
+
+# Unicode categories a terminal may act on: control (Cc, which includes
+# ESC, BEL, CR, and LF), format (Cf: bidi overrides and zero-width joiners),
+# surrogates (Cs), and line/paragraph separators (Zl, Zp).
+_UNSAFE_TERMINAL_CATEGORIES: Final[frozenset[str]] = frozenset(
+    {"Cc", "Cf", "Cs", "Zl", "Zp"}
+)
+
+
+def terminal_safe(text: str) -> str:
+    """Escape characters a terminal could act on, as ``\\xNN`` or ``\\uNNNN``.
+
+    Console lines quote repository-derived text: Work Packet Verification
+    commands, Git file names, scanner and command output, and agent messages.
+    A crafted value could carry ANSI or OSC sequences that spoof the status
+    the operator reads, a carriage return or line feed that forges a log
+    line, or a lone surrogate that fails a strict UTF-8 stream. Only the
+    console rendering is escaped; the log file keeps the exact text.
+    """
+
+    return "".join(
+        ch.encode("unicode_escape").decode("ascii")
+        if unicodedata.category(ch) in _UNSAFE_TERMINAL_CATEGORIES
+        else ch
+        for ch in text
+    )
+
 
 LEVEL_TO_COLOR: Final[dict[str, str]] = {
     "DEBUG": "\x1b[90m",
@@ -188,7 +222,7 @@ class DispatchLogger:
 
     def _write_console(self, level: str, text: str) -> None:
         color = LEVEL_TO_COLOR[level]
-        self.console.write(f"{color}{text}{RESET_COLOR}\n")
+        self.console.write(f"{color}{terminal_safe(text)}{RESET_COLOR}\n")
         flush = getattr(self.console, "flush", None)
         if callable(flush):
             flush()
@@ -205,4 +239,9 @@ class DispatchLogger:
         )
 
 
-__all__ = ["DispatchLogger", "DEFAULT_LOG_DIRECTORY", "LEVEL_TO_COLOR"]
+__all__ = [
+    "DispatchLogger",
+    "DEFAULT_LOG_DIRECTORY",
+    "LEVEL_TO_COLOR",
+    "terminal_safe",
+]

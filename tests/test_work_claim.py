@@ -4108,6 +4108,58 @@ def test_record_passed_verification_replaces_an_earlier_section() -> None:
     assert "- **Verdict:** PASS" in updated
 
 
+def test_log_work_claim_result_reports_each_scanner_outcome() -> None:
+    from llm_handoff.work_claim import ScannerRun, WorkClaimCheck, WorkClaimResult
+
+    orchestrator = _load_orchestrator()
+    result = WorkClaimResult(
+        checks=(WorkClaimCheck("diff_scope", "PASS", "every changed file is in scope."),),
+        errors=(),
+        pre_dispatch_head="b" * 40,
+        head_sha="a" * 40,
+        scope_sha="a" * 40,
+        changed_files=("src/app.py",),
+        verification_runs=(),
+        work_packet=None,
+        work_packet_text=None,
+        scanner_runs=(
+            ScannerRun(
+                name="gitleaks",
+                command="gitleaks git .",
+                outcome="PASS",
+                detail="`gitleaks git .` exited 0 after 1.0s.",
+            ),
+            ScannerRun(
+                name="bandit",
+                command="bandit -q {changed_py_files}",
+                outcome="SKIP",
+                detail="not installed.",
+                required=False,
+                missing=True,
+            ),
+        ),
+    )
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._log_work_claim_result(
+        result, lambda level, message: messages.append((level, message))
+    )
+
+    assert (
+        "INFO",
+        "work-claim: PASS diff_scope: every changed file is in scope.",
+    ) in messages
+    assert (
+        "INFO",
+        "work-claim: PASS scanner gitleaks: `gitleaks git .` exited 0 after 1.0s.",
+    ) in messages
+    assert ("INFO", "work-claim: SKIP scanner bandit: not installed.") in messages
+    assert (
+        "WARN",
+        "work-claim: optional scanner bandit skipped: not installed.",
+    ) in messages
+
+
 def test_run_loop_puts_implementer_work_on_a_story_branch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
