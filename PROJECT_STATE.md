@@ -106,8 +106,9 @@ itself from 1.3.5 to 1.4.2 during the checks):
   (`{"normalized": "backend"}`, one turn, about 8 seconds), and an injected
   `run_command` request did not run. `tools: []` also removes `finish`, and
   `--json-schema` then yields no `structured_output`.
-- `agy` reads none of the Gemini CLI workspace files. An agent that exists
-  only under `.gemini/agents/` fails `--agent` with `unknown agent` (the
+- `agy` ignores `.gemini/agents/`, `.gemini/policies/`, and `.geminiignore`
+  (it does read `GEMINI.md`, kept above). An agent that exists only under
+  `.gemini/agents/` fails `--agent` with `unknown agent` (the
   error lists only `.agents/agents/` agents). A file named in
   `.geminiignore` was listed and read, and a `.gemini/policies/` deny rule
   for `view_file` had no effect. The `agy` binary contains none of the
