@@ -439,8 +439,16 @@ not chosen automatically but can still be set explicitly.
   so the boundary rests on agy enforcing the agent's tool list, which has no
   `run_command`; and the step checks run only after `agy` exits, so they
   detect a disallowed tool call but do not prevent it. The reviewer can read
-  any file under the repository root. It has not yet passed an operator-run
-  live check.
+  any file under the repository root. An operator-run live check on
+  2026-10-18 with `agy` 1.4.2 ran it twice: a real commit range returned
+  `pass` with no findings, and the same range plus an injected hunk asking
+  for a `python -c` file write and a second file write returned `fail` with
+  one `high` finding naming the injection. Every tool step in both runs was
+  `view_file`, and neither target file was created. The model declined the
+  injected request, so the check shows that no tool outside the allowed list
+  ran, not that `agy` refuses a forced call; that part rests on the agent
+  file's `tools` list, which leaves `write_to_file` and `run_command`
+  unavailable.
 - The quality reviewer keeps the configured auditor permissions because it
   runs verification commands. The handoff hash check, not a sandbox, enforces
   that it does not write `HANDOFF.md`. Other file writes by the quality

@@ -1229,7 +1229,9 @@ this list with `interpreter_grants` off, adds `command(regex:^<cmd>( .*)?$)`
 for `--verification-command` when given (unless its first word is `python`,
 `python3`, or `pytest`), and asks you to add the entries yourself and then
 run `llm-handoff doctor`.
-`agy` does not change the provider mapping `init` picks. When any role or
+When `agy` is the only provider CLI on `PATH`, `init` writes the
+[All-Antigravity Mapping](#all-antigravity-mapping); otherwise `agy` does not
+change the provider mapping `init` picks. When any role or
 fallback has `provider: antigravity` without `unsafe_bypass: true`,
 `llm-handoff doctor` reads the settings file and reports one
 `antigravity permissions` result, with the allow list built from the default
@@ -1802,8 +1804,8 @@ tasks; the dispatcher's prompt names which one applies.
 `llm-handoff init --provider gemini` writes this mapping into
 `dispatch_config.yaml`, with every role on `provider: gemini`,
 `audit.security_provider: gemini`, and `normalizer.provider: gemini`.
-Without `--provider`, `init` writes it automatically when `gemini` is the
-only provider CLI on `PATH`. `--verification-command` changes no `agents:`
+`init` does not detect Gemini CLI, so this mapping is written only with
+`--provider gemini`. `--verification-command` changes no `agents:`
 entry under this mapping, because it only adds `allowed_tools` to Claude
 roles.
 
@@ -1828,6 +1830,49 @@ Gemini CLI returns the role's final answer as plain text in its
 `stream-json` output, so the validator's `VALID:` report and the finalizer's
 `PROJECT STATE UPDATED` report are parsed as written; the agent files ask
 for them as plain lines rather than inside a code fence.
+
+### All-Antigravity Mapping
+
+The reference workflow ships an `agy` agent file for every role under
+`.agents/agents/`, so a machine with only the Antigravity CLI (`agy`)
+installed can run the whole loop. The Antigravity adapter passes the agent
+name as `agy --agent <name>`; no role needs `agent_name`, because the
+dispatcher already names the validator and finalizer files:
+
+| Role | `agy` agent file |
+| --- | --- |
+| `planner` | `.agents/agents/planner.md` |
+| `backend` | `.agents/agents/backend.md` |
+| `frontend` | `.agents/agents/frontend.md` |
+| `auditor` | `.agents/agents/auditor.md` |
+| `validator` | `.agents/agents/handoff-validator.md` and `.agents/agents/handoff-router.md` |
+| `finalizer` | `.agents/agents/ledger-updater.md` |
+
+`llm-handoff init --provider antigravity` writes this mapping into
+`dispatch_config.yaml`, with every role on `provider: antigravity` and
+`binary: agy`, `audit.security_provider: antigravity`, and
+`normalizer.provider: antigravity` with no `model`, so the normalizer uses
+its default `gemini-3.8-flash-low` through the `agy` CLI login. No role gets
+`unsafe_bypass`, and `commit_mode` and the commented `interpreter_grants`
+line stay as the template has them. Without `--provider`, `init` writes it
+automatically when `agy` is the only provider CLI on `PATH`; with `agy` and
+another provider CLI on `PATH`, `init` keeps the reference mapping.
+`--verification-command` changes no `agents:` entry under this mapping,
+because it only adds `allowed_tools` to Claude roles.
+
+Every role needs the `permissions.allow` and `permissions.deny` entries in
+the `agy` user settings described in
+[Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing);
+`init` prints them when `agy` is on `PATH`. With every role on Antigravity,
+the security reviewer runs on the same vendor as the implementer, so it is a
+second read-only review rather than an independent one, and the dispatcher
+logs a warning saying so.
+
+Linear mode does not support `provider: antigravity` (see
+[Tracker (Optional Linear Mode)](#tracker-optional-linear-mode)).
+`init --tracker linear` with this mapping, whether passed with `--provider
+antigravity` or detected from `PATH`, fails before writing any file and asks
+for `--provider claude`, `--provider codex`, or `--tracker none`.
 
 ### Fallback Agents
 
@@ -2057,8 +2102,16 @@ even when the antigravity role sets `unsafe_bypass: true`, and it uses that
 role's environment rules. Any other tool step, a non-`SUCCESS` result, or a
 verdict outside the schema fails the review. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#reviewer-security-posture) for
-the residual risk. The antigravity reviewer has not yet passed an
-operator-run live check.
+the residual risk. An operator-run live check on 2026-10-18 with `agy` 1.4.2
+ran the antigravity reviewer twice. On a real commit range it returned
+`pass` with no findings. On the same range plus an injected diff hunk telling
+the reviewer to run a `python -c` file write and to write a second file, it
+returned `fail` with one `high` finding naming the injection. In both runs
+every tool step was `view_file`, and neither target file was created. In
+the second run the model declined the injected request, so the check shows
+that no tool outside the allowed list ran, not that `agy` refuses a forced
+call to one. That part rests on the agent file's `tools` list, which leaves
+`write_to_file` and `run_command` unavailable.
 
 At startup, before any agent launches, `run` checks the security reviewer for
 each implementer role, whether configured or chosen automatically: its CLI
