@@ -99,6 +99,18 @@ _VALIDATOR_AGENT_PATH = Path(".claude/agents/handoff-validator.md")
 # Tools the handoff-validator subagent keeps in every mode; Linear init appends
 # the validator's `mcp__<tracker.mcp_server>__*` tools after them.
 _VALIDATOR_BASE_TOOLS = "Read, Grep, Glob, Bash"
+# Claude subagent files whose `tools:` allowlist Linear init rewrites, mapped
+# to (role whose Linear tools are appended, built-in tools kept in every
+# mode). A subagent's `tools:` list is an allowlist, so without the appended
+# names the subagent cannot call the Linear MCP tools its role launch allows.
+_PLANNER_AGENT_PATH = Path(".claude/agents/planner.md")
+_FRONTEND_AGENT_PATH = Path(".claude/agents/frontend.md")
+_WRITER_BASE_TOOLS = "Read, Edit, Write, Grep, Glob, Bash"
+_LINEAR_AGENT_TOOLS: dict[Path, tuple[str, str]] = {
+    _VALIDATOR_AGENT_PATH: ("validator", _VALIDATOR_BASE_TOOLS),
+    _PLANNER_AGENT_PATH: ("planner", _WRITER_BASE_TOOLS),
+    _FRONTEND_AGENT_PATH: ("frontend", _WRITER_BASE_TOOLS),
+}
 
 # `init --tracker` values. `none` keeps vanilla output byte for byte.
 TRACKER_NONE = "none"
@@ -1031,6 +1043,22 @@ def render_validator_agent_tools(template: bytes, mcp_server: str) -> bytes:
     frontmatter holds exactly one line that starts with `tools: `.
     """
 
+    return render_linear_agent_tools(_VALIDATOR_AGENT_PATH, template, mcp_server)
+
+
+def render_linear_agent_tools(
+    relative_path: Path, template: bytes, mcp_server: str
+) -> bytes:
+    """Rewrite the `tools:` frontmatter line of one Claude subagent file.
+
+    `relative_path` must be a key of `_LINEAR_AGENT_TOOLS`. The new line lists
+    that file's built-in tools followed by its role's Linear MCP tools for
+    `mcp_server`. The line keeps its original ending; every other byte is
+    unchanged. Raises InitWorkflowError unless the leading `---` frontmatter
+    holds exactly one line that starts with `tools: `.
+    """
+
+    role, base_tools = _LINEAR_AGENT_TOOLS[relative_path]
     lines = template.splitlines(keepends=True)
     tools_indexes: list[int] = []
     if lines and lines[0].rstrip(b"\r\n") == b"---":
@@ -1041,14 +1069,14 @@ def render_validator_agent_tools(template: bytes, mcp_server: str) -> bytes:
                 tools_indexes.append(index)
     if len(tools_indexes) != 1:
         raise InitWorkflowError(
-            f"Template {_VALIDATOR_AGENT_PATH.as_posix()} must have exactly one "
+            f"Template {relative_path.as_posix()} must have exactly one "
             "'tools: ' line in its frontmatter."
         )
     index = tools_indexes[0]
     line = lines[index]
     ending = line[len(line.rstrip(b"\r\n")) :]
-    tools = ", ".join(linear_tools_for_role("validator", mcp_server))
-    lines[index] = f"tools: {_VALIDATOR_BASE_TOOLS}, {tools}".encode("utf-8") + ending
+    tools = ", ".join(linear_tools_for_role(role, mcp_server))
+    lines[index] = f"tools: {base_tools}, {tools}".encode("utf-8") + ending
     return b"".join(lines)
 
 
@@ -1067,9 +1095,8 @@ def _source_is_rendered(
     if relative_path == _CONFIG_PATH:
         return _config_is_rendered(mapping, executable, tracker)
     return (
-        relative_path in (_HANDBOOK_PATH, _VALIDATOR_AGENT_PATH)
-        and tracker is not None
-    )
+        relative_path == _HANDBOOK_PATH or relative_path in _LINEAR_AGENT_TOOLS
+    ) and tracker is not None
 
 
 def _source_bytes(
@@ -1103,9 +1130,11 @@ def _source_bytes(
         return text.encode("utf-8")
     if relative_path == _HANDBOOK_PATH and tracker is not None:
         return _append_linear_handbook(source_path.read_bytes())
-    if relative_path == _VALIDATOR_AGENT_PATH and tracker is not None:
-        return render_validator_agent_tools(
-            source_path.read_bytes(), tracker.mcp_server or DEFAULT_TRACKER_MCP_SERVER
+    if relative_path in _LINEAR_AGENT_TOOLS and tracker is not None:
+        return render_linear_agent_tools(
+            relative_path,
+            source_path.read_bytes(),
+            tracker.mcp_server or DEFAULT_TRACKER_MCP_SERVER,
         )
     return source_path.read_bytes()
 

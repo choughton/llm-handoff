@@ -17,6 +17,11 @@ This project follows a simple pre-release changelog until the first public tag.
   (`binary: claude`, `resume: false`, `timeout_ms: 1200000`) with a comment
   above `planner`, because Linear mode does not support `antigravity`
   roles; `init --tracker linear --provider antigravity` is still refused.
+  In Linear mode `init` also appends each role's
+  `mcp__<tracker.mcp_server>__*` tools to the `tools:` line of the copied
+  `.claude/agents/planner.md` and `.claude/agents/frontend.md`, as it
+  already did for `handoff-validator.md`, because a Claude subagent's
+  `tools:` list is an allowlist that otherwise blocks the Linear MCP tools.
   Behavior change: a hand-written Linear-mode config that omits `planner` or
   `frontend` now gets the `antigravity` default for that role and fails at
   load with the existing `tracker.provider: linear does not support

@@ -596,7 +596,9 @@ def test_cli_tracker_none_matches_cli_without_option(tmp_path: Path) -> None:
     assert _snapshot(default_root) == _snapshot(none_root)
 
 
-def test_linear_changes_only_config_agents_and_handbook(tmp_path: Path) -> None:
+def test_linear_changes_only_config_agents_handbook_and_subagent_tools(
+    tmp_path: Path,
+) -> None:
     vanilla_root = tmp_path / "vanilla"
     linear_root = tmp_path / "linear"
     _init(vanilla_root)
@@ -605,7 +607,79 @@ def test_linear_changes_only_config_agents_and_handbook(tmp_path: Path) -> None:
     linear = _snapshot(linear_root)
     assert vanilla.keys() == linear.keys()
     changed = {path for path in vanilla if vanilla[path] != linear[path]}
-    assert changed == {CONFIG, AGENTS, HANDBOOK}
+    assert changed == {CONFIG, AGENTS, HANDBOOK, PLANNER_AGENT, FRONTEND_AGENT}
+
+
+# Claude planner and frontend subagent tools lines gain their role's Linear
+# MCP tools, since a subagent's `tools:` list is an allowlist.
+
+PLANNER_AGENT = Path(".claude/agents/planner.md")
+FRONTEND_AGENT = Path(".claude/agents/frontend.md")
+_WRITER_TOOLS = b"tools: Read, Edit, Write, Grep, Glob, Bash"
+
+
+def _single_changed_line(root: Path, relative_path: Path) -> bytes:
+    rendered = (root / relative_path).read_bytes().splitlines(keepends=True)
+    template = (
+        (init_workflow._TEMPLATE_ROOT / relative_path)
+        .read_bytes()
+        .splitlines(keepends=True)
+    )
+    assert len(rendered) == len(template)
+    differing = [i for i, (a, b) in enumerate(zip(rendered, template)) if a != b]
+    assert len(differing) == 1
+    assert template[differing[0]].rstrip(b"\r\n") == _WRITER_TOOLS
+    return rendered[differing[0]].rstrip(b"\r\n")
+
+
+@pytest.mark.parametrize("server", ["linear", "team-linear"])
+def test_planner_and_frontend_tools_lines_add_linear_tools(
+    tmp_path: Path, server: str
+) -> None:
+    _linear(tmp_path, tracker_mcp_server=server)
+    prefix = f"mcp__{server}__".encode()
+    assert _single_changed_line(tmp_path, PLANNER_AGENT) == _WRITER_TOOLS + b"".join(
+        b", " + prefix + tool
+        for tool in (
+            b"get_issue",
+            b"list_issues",
+            b"list_comments",
+            b"save_comment",
+            b"save_issue",
+        )
+    )
+    assert _single_changed_line(tmp_path, FRONTEND_AGENT) == _WRITER_TOOLS + b"".join(
+        b", " + prefix + tool
+        for tool in (b"get_issue", b"list_issues", b"list_comments", b"save_comment")
+    )
+
+
+def test_claude_provider_linear_init_adds_planner_linear_tools(
+    tmp_path: Path,
+) -> None:
+    _linear(tmp_path, provider="claude")
+    line = _single_changed_line(tmp_path, PLANNER_AGENT)
+    assert line.endswith(b", mcp__linear__save_issue")
+
+
+@pytest.mark.parametrize("relative_path", [PLANNER_AGENT, FRONTEND_AGENT])
+def test_vanilla_init_keeps_planner_and_frontend_templates(
+    tmp_path: Path, relative_path: Path
+) -> None:
+    _init(tmp_path)
+    assert (tmp_path / relative_path).read_bytes() == (
+        init_workflow._TEMPLATE_ROOT / relative_path
+    ).read_bytes()
+
+
+def test_planner_tools_rerun_on_linear_output_is_skipped(tmp_path: Path) -> None:
+    _linear(tmp_path)
+    agent = (tmp_path / PLANNER_AGENT).read_bytes()
+    (tmp_path / CONFIG).unlink()
+    result = _linear(tmp_path, dry_run=True)
+    assert PLANNER_AGENT in result.skipped
+    assert PLANNER_AGENT not in result.conflicts
+    assert (tmp_path / PLANNER_AGENT).read_bytes() == agent
 
 
 # Claude handoff-validator tools line follows tracker.mcp_server.
