@@ -64,6 +64,7 @@ REQUIRED_TEMPLATE_FILES = (
     ".agents/agents/handoff-validator.md",
     ".agents/agents/handoff-router.md",
     ".agents/agents/ledger-updater.md",
+    ".agents/agents/supervisor-repair.md",
 )
 
 COPIED_TEMPLATE_FILES = (
@@ -105,11 +106,13 @@ COPIED_TEMPLATE_FILES = (
     ".agents/agents/handoff-validator.md",
     ".agents/agents/handoff-router.md",
     ".agents/agents/ledger-updater.md",
+    ".agents/agents/supervisor-repair.md",
     ".geminiignore",
 )
 
 # The Antigravity agent files, named for the `--agent` value the adapter
-# passes: the role, or the support subagent name for validator and finalizer.
+# passes: the role, the support subagent name for validator and finalizer,
+# or `supervisor-repair` for a supervised repair launch.
 ANTIGRAVITY_AGENT_FILES = (
     ".agents/agents/planner.md",
     ".agents/agents/backend.md",
@@ -118,6 +121,7 @@ ANTIGRAVITY_AGENT_FILES = (
     ".agents/agents/handoff-validator.md",
     ".agents/agents/handoff-router.md",
     ".agents/agents/ledger-updater.md",
+    ".agents/agents/supervisor-repair.md",
 )
 
 # The Gemini agent file each role's default `mention` selects when it is

@@ -211,6 +211,7 @@ The default allowed repair scope is deliberately narrow:
 - `docs/`
 - `.claude/agents/`
 - `.codex/skills/llm-handoff/`
+- `.agents/agents/`
 - `.gemini/agents/`
 
 The default no longer includes dispatcher source, tests, or top-level docs,

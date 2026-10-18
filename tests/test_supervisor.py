@@ -344,9 +344,160 @@ def test_supervisor_repair_prompt_lists_generic_default_paths(
 
     assert (
         "Allowed paths: docs/, .claude/agents/, .codex/skills/llm-handoff/, "
-        ".gemini/agents/." in prompt
+        ".agents/agents/, .gemini/agents/." in prompt
     )
     assert "llm_handoff/" not in prompt
+
+
+def test_supervisor_default_repair_scope_admits_antigravity_agent_files() -> None:
+    supervisor = _load_supervisor_module()
+
+    assert supervisor._out_of_scope_repair_files(
+        (
+            ".agents/agents/supervisor-repair.md",
+            ".agents/agents/planner.md",
+            ".agents/settings.json",
+        )
+    ) == (".agents/settings.json",)
+
+
+@pytest.mark.parametrize("repair_role", ["validator", "backend"])
+def test_antigravity_repair_role_launches_shipped_supervisor_repair_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repair_role: str,
+) -> None:
+    from llm_handoff.agent_providers import antigravity as agy_provider
+    from llm_handoff.agent_types import _ProcessResult
+    from llm_handoff.init_workflow import init_reference_workflow
+
+    supervisor = _load_supervisor_module()
+    target = tmp_path / "target"
+    init_reference_workflow(target, provider="antigravity", available_providers=())
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> _ProcessResult:
+        del kwargs
+        commands.append(list(command))
+        return _ProcessResult(stdout="", stderr="", exit_code=0)
+
+    monkeypatch.setattr(agy_provider, "_run_antigravity_command", fake_run)
+    config = supervisor.SupervisorConfig(
+        repo_root=target,
+        config_path=target / "dispatch_config.yaml",
+        repair_role=repair_role,
+        max_repair_attempts=1,
+    )
+
+    supervisor._run_repair_role(
+        config,
+        target / "failure-packet.json",
+        lambda level, message: None,
+    )
+
+    assert len(commands) == 1
+    command = commands[0]
+    assert command[command.index("--agent") + 1] == "supervisor-repair"
+    assert (target / ".agents" / "agents" / "supervisor-repair.md").is_file()
+    repo_root = Path(__file__).resolve().parent.parent
+    assert (
+        repo_root
+        / "examples"
+        / "reference-workflow"
+        / ".agents"
+        / "agents"
+        / "supervisor-repair.md"
+    ).is_file()
+
+
+@pytest.mark.parametrize("repair_role", ["validator", "backend"])
+def test_antigravity_repair_ignores_role_agent_name_on_primary_and_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repair_role: str,
+) -> None:
+    from llm_handoff.agent_providers import antigravity as agy_provider
+    from llm_handoff.agent_types import _ProcessResult
+    from llm_handoff.failover import TIMEOUT_MARKER
+    from llm_handoff.init_workflow import init_reference_workflow
+
+    supervisor = _load_supervisor_module()
+    target = tmp_path / "target"
+    init_reference_workflow(target, provider="antigravity", available_providers=())
+    real_load = supervisor.load_dispatch_config
+
+    def load_with_agent_names(**kwargs: Any) -> Any:
+        loaded = real_load(**kwargs)
+        role_config = loaded.agents[repair_role]
+        assert role_config.provider == "antigravity"
+        fallback = role_config.model_copy(
+            update={
+                "agent_name": "custom-fallback-agent",
+                "model": "other-model",
+                "fallback": None,
+            }
+        )
+        overridden = role_config.model_copy(
+            update={"agent_name": "custom-role-agent", "fallback": fallback}
+        )
+        return loaded.model_copy(
+            update={"agents": {**loaded.agents, repair_role: overridden}}
+        )
+
+    monkeypatch.setattr(supervisor, "load_dispatch_config", load_with_agent_names)
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> _ProcessResult:
+        del kwargs
+        commands.append(list(command))
+        if len(commands) == 1:
+            # A fatal primary timeout makes the fallback launch too.
+            return _ProcessResult(
+                stdout="",
+                stderr=f"{TIMEOUT_MARKER} 1 seconds",
+                exit_code=124,
+            )
+        return _ProcessResult(stdout="", stderr="", exit_code=0)
+
+    monkeypatch.setattr(agy_provider, "_run_antigravity_command", fake_run)
+    config = supervisor.SupervisorConfig(
+        repo_root=target,
+        config_path=target / "dispatch_config.yaml",
+        repair_role=repair_role,
+        max_repair_attempts=1,
+    )
+
+    supervisor._run_repair_role(
+        config,
+        target / "failure-packet.json",
+        lambda level, message: None,
+    )
+
+    assert len(commands) == 2
+    for command in commands:
+        assert command[command.index("--agent") + 1] == "supervisor-repair"
+        assert "custom-role-agent" not in command
+        assert "custom-fallback-agent" not in command
+
+
+def test_supervisor_repair_agent_config_keeps_non_antigravity_agent_names() -> None:
+    from llm_handoff.config import AgentConfig
+
+    supervisor = _load_supervisor_module()
+    claude = AgentConfig(provider="claude", agent_name="custom-claude-agent")
+
+    assert supervisor._supervisor_repair_agent_config(claude) is claude
+
+    mixed = AgentConfig(
+        provider="claude",
+        agent_name="custom-claude-agent",
+        fallback=AgentConfig(provider="antigravity", agent_name="custom-agy-agent"),
+    )
+    repaired = supervisor._supervisor_repair_agent_config(mixed)
+
+    assert repaired.agent_name == "custom-claude-agent"
+    assert repaired.fallback is not None
+    assert repaired.fallback.agent_name is None
 
 
 def test_supervisor_main_parses_options_and_forwards_dispatch_args(
