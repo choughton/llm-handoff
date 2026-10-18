@@ -14,7 +14,9 @@ This project follows a simple pre-release changelog until the first public tag.
   from `verification_allowed_prefixes`); and a WARN for each `unsafe_bypass:
   true` launch, which has no shell allowlist at all. An interpreter can run
   any command, including `git push`, past the allowlist. When none apply and a
-  Claude or Antigravity launch exists, one PASS line is printed. These lines
+  Claude or Antigravity launch exists, one PASS line is printed that names
+  the interpreters checked; other interpreter rules such as `Bash(node:*)`
+  are not detected and need a manual review. These lines
   are warnings only and do not change the doctor's exit code; no default grant
   list changed.
 - An `agy` deny-rule refusal now fails the dispatch. `agy` reports a refused

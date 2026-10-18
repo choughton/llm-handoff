@@ -3119,8 +3119,33 @@ def test_doctor_interpreter_grants_pass_when_claude_drops_interpreters(
 
     assert exit_code == 0, output
     assert _interp_lines(output) == [
-        f"PASS {INTERP_CHECK}: no role has an interpreter grant"
+        f"PASS {INTERP_CHECK}: no role has an interpreter grant for `python`, "
+        "`python3`, `pytest`, bare `Bash`, or `Bash(*)`; only these are "
+        "checked, so review any other interpreter rule (for example "
+        "`Bash(node:*)` or `Bash(sh:*)`) by hand"
     ]
+
+
+def test_doctor_interpreter_grants_pass_names_only_the_checked_interpreters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["auditor"] = (
+        "provider: claude\nbinary: fake-claude\n"
+        'allowed_tools: ["Read", "Bash(node:*)", "Bash(sh:*)"]'
+    )
+    repo = _interp_repo(tmp_path, monkeypatch, blocks)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith(f"PASS {INTERP_CHECK}: ")
+    assert "only these are checked" in lines[0]
+    assert "by hand" in lines[0]
+    assert lines[0] != f"PASS {INTERP_CHECK}: no role has an interpreter grant"
 
 
 def test_doctor_interpreter_grants_warn_on_bare_bash(

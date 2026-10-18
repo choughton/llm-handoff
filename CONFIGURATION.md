@@ -1252,7 +1252,9 @@ does not read the settings file. Both warnings say that an interpreter can run
 any command, including `git push`, past the allowlist. Any launch with
 `unsafe_bypass: true` gets a WARN that it has no shell allowlist at all; Codex
 launches without it get no line. When no line is added and at least one
-Claude or Antigravity launch exists, the doctor prints one PASS line. These
+Claude or Antigravity launch exists, the doctor prints one PASS line that
+names the interpreters it checked. Other interpreter rules, such as
+`Bash(node:*)` or `Bash(sh:*)`, are not detected; review them by hand. These
 lines are never FAIL, so they do not change the doctor's exit code.
 
 `permissions_flag` now only applies together with `unsafe_bypass: true`. It

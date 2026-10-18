@@ -811,11 +811,15 @@ def _check_interpreter_grants(
                     )
                 )
     if not added and allowlisted_launch:
+        checked = ", ".join(f"`{name}`" for name in _INTERPRETER_EXECUTABLES)
         checks.append(
             DoctorCheck(
                 "PASS",
                 _INTERPRETER_CHECK_NAME,
-                "no role has an interpreter grant",
+                "no role has an interpreter grant for "
+                f"{checked}, bare `Bash`, or `Bash(*)`; only these are "
+                "checked, so review any other interpreter rule (for example "
+                "`Bash(node:*)` or `Bash(sh:*)`) by hand",
             )
         )
 
