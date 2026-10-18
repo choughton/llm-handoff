@@ -25,6 +25,26 @@ Every handoff write starts with YAML frontmatter containing `next_agent`,
 Quote every `reason`. Run `git rev-parse HEAD` for concrete SHAs. Never write
 `scope_sha: HEAD`.
 
+## Story List
+
+`remaining_stories` is the epic's live story list. Every role that rewrites
+`docs/handoff/HANDOFF.md` copies it forward. Remove an entry only when it is
+the story just closed or the story the planner assigns as `story_id`. To drop
+any other story, add a `## Dropped Stories` section with one bullet per story,
+starting with its ID:
+
+```markdown
+## Dropped Stories
+
+- S4: Merged into S3 at the user's request.
+```
+
+The dispatcher matches stories by their leading ID token and fails the
+post-dispatch gate when a rewrite for the same epic drops a story without such
+an entry. A new story belongs in `PROJECT_STATE.md` too; the dispatcher warns
+when `remaining_stories` names a story ID the project state file does not
+list.
+
 ## Status Enum Reference
 
 Use exactly one of these values when status is needed:

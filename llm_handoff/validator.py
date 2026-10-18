@@ -14,6 +14,7 @@ from llm_handoff.agent_types import (
 )
 from llm_handoff.dispatcher_commit import PENDING_COMMIT_SHA
 from llm_handoff.rationalization_detector import detect as detect_rationalizations
+from llm_handoff.story_list import project_state_story_warnings, story_list_errors
 from llm_handoff.router import (
     HandoffFrontmatterError,
     HandoffRouting,
@@ -350,8 +351,15 @@ def validate_handoff(
     require_work_packet: bool = False,
     dispatcher_commit_mode: bool = False,
     tracker_provider: str = "none",
+    prior_handoff_content: str | None = None,
+    project_state_path: Path | None = None,
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
+    project_state_content = (
+        read_dispatch_text(project_state_path)
+        if project_state_path is not None and project_state_path.is_file()
+        else None
+    )
     return validate_handoff_text(
         handoff_content,
         previous_agent,
@@ -360,6 +368,8 @@ def validate_handoff(
         require_work_packet=require_work_packet,
         dispatcher_commit_mode=dispatcher_commit_mode,
         tracker_provider=tracker_provider,
+        prior_handoff_content=prior_handoff_content,
+        project_state_content=project_state_content,
     )
 
 
@@ -372,7 +382,18 @@ def validate_handoff_text(
     require_work_packet: bool = False,
     dispatcher_commit_mode: bool = False,
     tracker_provider: str = "none",
+    prior_handoff_content: str | None = None,
+    project_state_content: str | None = None,
 ) -> ValidationResult:
+    """Validate a post-dispatch handoff.
+
+    With `prior_handoff_content`, the handoff the dispatch started from, a
+    rewrite that drops `remaining_stories` entries without saying why fails.
+    With `project_state_content`, story IDs the project state file never names
+    are warnings; Linear mode skips that check because the tracker holds the
+    stories.
+    """
+
     normalized_content = handoff_content.lstrip("\ufeff")
     current_handoff_sha = sha256(normalized_content.encode("utf-8")).hexdigest()
     warnings: list[str] = []
@@ -526,6 +547,12 @@ def validate_handoff_text(
             routing_instruction,
         )
     )
+    if prior_handoff_content is not None:
+        errors.extend(story_list_errors(prior_handoff_content, normalized_content))
+    if tracker_provider == "none":
+        warnings.extend(
+            project_state_story_warnings(normalized_content, project_state_content)
+        )
 
     return ValidationResult(
         verdict=_derive_verdict(errors, warnings),
