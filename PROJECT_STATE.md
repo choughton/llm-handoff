@@ -6,7 +6,7 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** GEMINI-REMOVAL (next; GEM-0 not started).
+- **Active Epic:** GEMINI-REMOVAL (GEM-0b and GEM-0c merged; GEM-0d next).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -170,7 +170,15 @@ itself from 1.3.5 to 1.4.2 during the checks):
   (`llm_handoff/config.py`), let a role run a subprocess `git push` past the
   deny entries, and `write_to_file` plus `python <script>` or `pytest` with a
   written `conftest.py` does the same, so narrowing the grant does not close
-  it. Follow-up: GEM-0e.
+  it. Follow-up: GEM-0e. Parts (1) and (2) are merged (GEM-0b, PR #117;
+  GEM-0c, PR #119). Only the operator-run live check in the done condition
+  remains; on 2026-10-18 the user deferred it to a prerequisite of GEM-3.
+- GEM-0d: Treat `agy` deny-rule tool errors as a failed dispatch. A
+  deny-rule hit comes back as a `run_command` tool error inside a
+  `SUCCESS` result with empty stderr, so the AGY-2 stderr check misses
+  it. The adapter (`llm_handoff/agent_providers/antigravity.py`) treats
+  it as a failed dispatch. Add stream-json fixtures for it. Decided by
+  the planner on 2026-10-17 from the operator's live `agy` notes.
 - GEM-0e: Interpreter-bypass boundary for shell grants. Enforce "no push"
   outside the agent process, or keep remote-write credentials out of the
   agent environment. Make interpreter grants (`python`, `python3`, `pytest`)
@@ -178,6 +186,28 @@ itself from 1.3.5 to 1.4.2 during the checks):
   `llm-handoff doctor` report the bypass risk for each role that has an
   interpreter grant (Claude and `agy`). Until GEM-0e ships, the role
   allowlists are a guardrail, not a sandbox.
+- GEM-0f: Matching whitespace rules for verification commands and agy
+  grants. `verification_command_allowed()` (`llm_handoff/work_claim.py`)
+  compares whitespace-split tokens, but `antigravity_command_grant()`
+  (`llm_handoff/antigravity_permissions.py`) keeps literal single spaces.
+  As a result, a command such as `git  status -s` passes the work-claim
+  gate and `agy` refuses it. Pick one rule and apply it in both places:
+  either the gate matches literally (it rejects runs of whitespace and
+  tabs, and the current `tests/test_work_claim.py` token-split cases
+  change), or the generated grants accept ` +` between tokens (this needs
+  a live `agy` check, updates to `CONFIGURATION.md` and the `init`
+  output, and a re-applied settings file). From the GEM-0c review
+  (PR #119, Finding 1).
+- GEM-0g: Doctor decides regex allow-entry push safety without fixed
+  probes. `_regex_grant_allows_push()` (`llm_handoff/doctor.py`) tests
+  only the three `_GIT_PUSH_PROBES` lines, so a push-capable allow entry
+  such as `command(regex:^git push --force$)` passes when the deny
+  entries are missing. Doctor stops deciding regex safety from example
+  lines. One option is to pass only regex allow entries that equal a
+  generated `antigravity_command_grant()` value and fail any other regex
+  allow entry that names `git` with a "cannot verify" message. Add tests
+  for `--force`, a non-main branch, and `git -c x=y push`. From the
+  GEM-0c review (PR #119, Finding 2).
 - GEM-1: `antigravity` normalizer. Add `antigravity` to the normalizer
   providers. Each call runs `agy -p` from a private temp directory that holds
   only a dispatcher-written agent file
@@ -213,7 +243,11 @@ itself from 1.3.5 to 1.4.2 during the checks):
   `normalizer.provider: antigravity`) and is chosen automatically when `agy`
   is the only provider CLI on `PATH`; `init` provider detection looks for
   `agy` instead of `gemini`. Every role already has an `.agents/agents/` file
-  (AGY-3); confirm the all-agy mapping uses them.
+  (AGY-3); confirm the all-agy mapping uses them. Prerequisite: do not start
+  GEM-3 until a person has run the GEM-0 live check (an operator-run `agy`
+  planner turn that writes a valid `HANDOFF.md` and runs
+  `git log --oneline -5` and `python -m pytest --version` without a
+  soft-deny) and reported pass. Deferred by the user on 2026-10-18.
 - GEM-4: Remove the `gemini` provider from the runtime and reject the old
   names. Delete `llm_handoff/agent_providers/gemini.py`,
   `llm_handoff/normalizer_providers/gemini.py` (API and CLI paths), and the
