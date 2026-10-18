@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An `agy` deny-rule refusal line no longer includes the refused command line
+  or `agy`'s error message, which repeats the command; best-effort redaction
+  could not cover every secret shape, such as
+  `-c http.extraHeader="X-Api-Key: value"`. The stderr line and the `ERROR`
+  log line now read `Antigravity deny rule refused a command at step <N>`
+  followed by `(matched deny rule <entry>)` when the error message names one
+  of the required deny entries, or `(matched a user-configured deny rule)`
+  otherwise; `<N>` is `unknown` when the step has no integer index.
+  `redact_credentials()` is removed. The marker, the nonzero exit code, and
+  the no-fresh-rerun behavior on resume are unchanged.
 - `llm-handoff doctor` no longer decides whether a regex `agy` allow entry is
   push-safe only by testing three example `git push` lines. A regex allow
   entry that equals a generated required grant passes unless its command can

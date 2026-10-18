@@ -8,7 +8,7 @@ belong in commits, handoffs, and pull requests.
 
 - **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
-  in progress).
+  merged in PR #125; GEM-0h in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -235,7 +235,9 @@ itself from 1.3.5 to 1.4.2 during the checks):
   value, reaches stderr and the dispatch log. Recommendation: log a fixed
   refusal reason and step identifier instead, or add secret-header redaction
   with tests for escaped and concatenated quoted values. From the GEM-0d
-  security review (low).
+  security review (low). Decided by the planner on 2026-10-18: log a fixed
+  refusal reason, the step identifier, and the matched required deny entry
+  only; remove `redact_credentials()`.
 - GEM-1: `antigravity` normalizer. Add `antigravity` to the normalizer
   providers. Each call runs `agy -p` from a private temp directory that holds
   only a dispatcher-written agent file
