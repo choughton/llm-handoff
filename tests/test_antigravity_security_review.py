@@ -454,6 +454,28 @@ FAILURE_CASES: dict[str, dict[str, Any]] = {
         "stdout": _clean_stream(_step(None, text_delta=SECRET)),
         "prefix": "security_reviewer_failed:",
     },
+    "array step_type": {
+        "stdout": _clean_stream(_event("step_update", step_type=[], note=SECRET)),
+        "prefix": "security_reviewer_failed:",
+    },
+    "object step_type": {
+        "stdout": _clean_stream(
+            _event("step_update", step_type={"tool": SECRET}, note=SECRET)
+        ),
+        "prefix": "security_reviewer_failed:",
+    },
+    "array tool_name": {
+        "stdout": _clean_stream(_step("tool", tool_name=["view_file"], note=SECRET)),
+        "prefix": "security_reviewer_failed:",
+    },
+    "object tool_name": {
+        "stdout": _clean_stream(_step("tool", tool_name={}, note=SECRET)),
+        "prefix": "security_reviewer_failed:",
+    },
+    "numeric tool_name": {
+        "stdout": _clean_stream(_step("tool", tool_name=7, note=SECRET)),
+        "prefix": "security_reviewer_failed:",
+    },
     "unknown event": {
         "stdout": _clean_stream(_event("telemetry", note=SECRET)),
         "prefix": "security_verdict_malformed:",
@@ -563,6 +585,28 @@ def test_failures_close_without_quoting_agy_output(
     if "raises" not in spec:
         # The raw output still reaches the audit review log files.
         assert run.stderr == stderr
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "step_update", "step_type": []},
+        {"type": "step_update", "step_type": {}},
+        {"type": "step_update", "step_type": "tool", "tool_name": {}},
+        {"type": "step_update", "step_type": "tool", "tool_name": []},
+    ],
+)
+def test_parser_rejects_unhashable_step_fields_without_raising(
+    event: dict[str, object],
+) -> None:
+    structured_output, error, start_failure = review.parse_antigravity_security_output(
+        returncode=0, stdout=json.dumps(event), stderr=""
+    )
+
+    assert structured_output is None
+    assert error is not None
+    assert error.startswith("security_reviewer_failed:")
+    assert start_failure is None
 
 
 def test_raw_output_reaches_the_audit_review_logs(tmp_path: Path) -> None:

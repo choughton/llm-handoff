@@ -361,13 +361,21 @@ def parse_antigravity_security_output(
 
 
 def _step_error(payload: Mapping[str, object], line_number: int) -> str | None:
+    # The type checks come first: a list or object value is unhashable and
+    # would raise TypeError on frozenset membership instead of failing closed.
     step_type = payload.get("step_type")
-    if step_type not in ANTIGRAVITY_SECURITY_ALLOWED_STEP_TYPES:
+    if (
+        not isinstance(step_type, str)
+        or step_type not in ANTIGRAVITY_SECURITY_ALLOWED_STEP_TYPES
+    ):
         return (
             f"{_FAILED} failed: stdout line {line_number} is a step other than "
             "user_input, agent_response, finish, or an allowed tool."
         )
-    if step_type == "tool" and payload.get("tool_name") not in _ALLOWED_TOOLS:
+    tool_name = payload.get("tool_name")
+    if step_type == "tool" and (
+        not isinstance(tool_name, str) or tool_name not in _ALLOWED_TOOLS
+    ):
         return (
             f"{_FAILED} failed: stdout line {line_number} is a tool step whose "
             "tool is missing or outside the reviewer tool list."
