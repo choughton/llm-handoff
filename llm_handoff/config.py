@@ -943,6 +943,26 @@ class DispatchConfig(BaseModel):
                 "gate, because the auditor only moves an issue to its success "
                 "state after the gate passes."
             )
+        # agy agent files limit each role's tools and give it no Linear MCP
+        # access, so Linear mode fails closed on any antigravity launch.
+        antigravity_locations: list[str] = []
+        for role in DEFAULT_AGENT_PROVIDERS:
+            agent_config = self.agents.get(role)
+            if agent_config is None:
+                continue
+            if agent_config.provider == "antigravity":
+                antigravity_locations.append(f"agents.{role}")
+            fallback = agent_config.fallback
+            if fallback is not None and fallback.provider == "antigravity":
+                antigravity_locations.append(f"agents.{role}.fallback")
+        if antigravity_locations:
+            raise ValueError(
+                f"tracker.provider: {self.tracker.provider} does not support "
+                "provider: antigravity "
+                f"({', '.join(antigravity_locations)}): agy agent files limit "
+                "each role's tools and give it no Linear MCP access. Map these "
+                "roles to claude or codex, or set tracker.provider: none."
+            )
         mcp_config_path = self.tracker_claude_mcp_config_path
         if mcp_config_path is not None and not mcp_config_path.is_file():
             raise ValueError(

@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Linear mode (`tracker.provider: linear`) now rejects `provider:
+  antigravity` on any role or role fallback when the config loads, whether
+  or not the role sets `unsafe_bypass`. The error names each offending
+  `agents.<role>` or `agents.<role>.fallback` in role order: `agy` agent
+  files limit each role's tools and give it no Linear MCP access. Map those
+  roles to claude or codex, or set `tracker.provider: none`. Configs without
+  a Linear tracker still load antigravity roles unchanged. `llm-handoff
+  doctor` reports such a config as a config load failure and no longer
+  prints an antigravity `tracker connector` WARN line.
 - `llm-handoff doctor` no longer reports `FAIL handoff validation:
   EVIDENCE_MISSING` for the finalizer's epic-close handoff (`producer:
   finalizer`, `status: verified_pass`). The dispatch loop routes from that

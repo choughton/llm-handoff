@@ -923,6 +923,106 @@ def test_tracker_none_allows_work_claim_gate_off(tmp_path: Path) -> None:
     assert config.tracker.provider == "none"
 
 
+def test_tracker_linear_rejects_antigravity_role(tmp_path: Path) -> None:
+    with pytest.raises(ValueError) as error:
+        DispatchConfig(
+            repo_root=tmp_path,
+            agents={
+                **config_module._default_agent_configs(),
+                "planner": {"provider": "antigravity"},
+            },
+            tracker=_linear_tracker(),
+        )
+    message = str(error.value)
+    assert (
+        "tracker.provider: linear does not support provider: antigravity "
+        "(agents.planner):"
+    ) in message
+    assert "no Linear MCP access" in message
+    assert "Map these roles to claude or codex, or set tracker.provider: none." in (
+        message
+    )
+
+
+def test_tracker_linear_rejects_antigravity_fallback(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        _LINEAR_YAML
+        + """agents:
+  backend:
+    provider: claude
+    fallback:
+      provider: antigravity
+""",
+    )
+    with pytest.raises(ValueError) as error:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    message = str(error.value)
+    assert "(agents.backend.fallback)" in message
+    assert "agents.backend," not in message
+
+
+def test_tracker_linear_names_every_antigravity_location_in_role_order(
+    tmp_path: Path,
+) -> None:
+    # The YAML lists backend before planner; the message uses role order.
+    config_path = _write_config(
+        tmp_path,
+        _LINEAR_YAML
+        + """agents:
+  backend:
+    provider: claude
+    fallback:
+      provider: antigravity
+  planner:
+    provider: antigravity
+""",
+    )
+    with pytest.raises(ValueError) as error:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    assert "(agents.planner, agents.backend.fallback)" in str(error.value)
+
+
+def test_tracker_linear_rejects_antigravity_role_with_unsafe_bypass(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(
+        tmp_path,
+        _LINEAR_YAML
+        + """agents:
+  frontend:
+    provider: antigravity
+    unsafe_bypass: true
+""",
+    )
+    with pytest.raises(ValueError, match=r"\(agents\.frontend\)"):
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+
+@pytest.mark.parametrize("tracker_yaml", ["", "tracker:\n  provider: none\n"])
+def test_vanilla_mode_loads_antigravity_roles_and_fallbacks(
+    tmp_path: Path, tracker_yaml: str
+) -> None:
+    config_path = _write_config(
+        tmp_path,
+        tracker_yaml
+        + """agents:
+  planner:
+    provider: antigravity
+  backend:
+    provider: claude
+    fallback:
+      provider: antigravity
+""",
+    )
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    assert loaded.tracker.enabled is False
+    assert loaded.agents["planner"].provider == "antigravity"
+    fallback = loaded.agents["backend"].fallback
+    assert fallback is not None
+    assert fallback.provider == "antigravity"
+
+
 def test_tracker_rejects_unknown_keys(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="api_key"):
         DispatchConfig(repo_root=tmp_path, tracker=_linear_tracker(api_key="x"))

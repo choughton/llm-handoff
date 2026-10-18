@@ -2197,7 +2197,7 @@ def test_doctor_tracker_connector_gemini_warns_when_absent(
     assert line.endswith("(covers planner)")
 
 
-def test_doctor_tracker_connector_warns_that_antigravity_is_unchecked(
+def test_doctor_tracker_connector_fails_config_load_for_antigravity_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _linear_repo(
@@ -2206,12 +2206,11 @@ def test_doctor_tracker_connector_warns_that_antigravity_is_unchecked(
 
     exit_code, output = _run(repo, capsys)
 
-    assert exit_code == 0, output
-    line = _provider_line(output, "antigravity")
-    assert line.startswith(f"WARN {TRACKER_CHECK}: antigravity:")
-    assert "cannot check" in line
-    assert "`linear`" in line
-    assert line.endswith("(covers planner)")
+    assert exit_code == 1, output
+    assert "FAIL config: dispatch config could not be loaded" in output
+    assert "does not support provider: antigravity" in output
+    assert "agents.planner" in output
+    assert _tracker_lines(output) == []
 
 
 def test_doctor_tracker_connector_reports_one_line_per_provider_in_order(
@@ -2222,9 +2221,6 @@ def test_doctor_tracker_connector_reports_one_line_per_provider_in_order(
         monkeypatch,
         MIXED,
         role_extra={
-            "planner": (
-                "    fallback:\n      provider: antigravity\n      binary: fake-agy\n"
-            ),
             "backend": (
                 "    fallback:\n      provider: claude\n      binary: fake-claude\n"
             ),
@@ -2235,13 +2231,12 @@ def test_doctor_tracker_connector_reports_one_line_per_provider_in_order(
 
     assert exit_code == 0, output
     lines = _tracker_lines(output)
-    assert len(lines) == 4, output
+    assert len(lines) == 3, output
     providers = [line.split(":", 2)[1].strip() for line in lines]
-    assert providers == ["claude", "codex", "gemini", "antigravity"]
+    assert providers == ["claude", "codex", "gemini"]
     assert lines[0].endswith("(covers backend fallback, auditor, validator, finalizer)")
     assert lines[1].endswith("(covers backend)")
     assert lines[2].endswith("(covers planner, frontend)")
-    assert lines[3].endswith("(covers planner fallback)")
 
 
 def test_doctor_tracker_connector_never_prints_config_values(
@@ -2250,7 +2245,7 @@ def test_doctor_tracker_connector_never_prints_config_values(
     repo = _linear_repo(
         tmp_path,
         monkeypatch,
-        {**MIXED, "planner": "antigravity"},
+        MIXED,
         claude_mcp_config="config/linear-mcp.json",
         role_extra={"finalizer": "    unsafe_bypass: true\n"},
     )
@@ -2279,7 +2274,7 @@ def test_doctor_tracker_connector_never_prints_config_values(
     exit_code, output = _run(repo, capsys)
 
     assert exit_code == 0, output
-    assert len(_tracker_lines(output)) == 5, output
+    assert len(_tracker_lines(output)) == 4, output
     assert SECRET_SENTINEL not in output
     assert "sentinel" not in output.lower()
 
@@ -2287,16 +2282,7 @@ def test_doctor_tracker_connector_never_prints_config_values(
 def test_doctor_tracker_connector_runs_no_provider_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    repo = _linear_repo(
-        tmp_path,
-        monkeypatch,
-        MIXED,
-        role_extra={
-            "planner": (
-                "    fallback:\n      provider: antigravity\n      binary: fake-agy\n"
-            )
-        },
-    )
+    repo = _linear_repo(tmp_path, monkeypatch, MIXED)
     _write_json(repo / ".mcp.json", _servers())
     real_run = subprocess.run
     calls: list[str] = []
@@ -2312,7 +2298,7 @@ def test_doctor_tracker_connector_runs_no_provider_cli(
     exit_code, output = _run(repo, capsys)
 
     assert exit_code == 0, output
-    assert len(_tracker_lines(output)) == 4, output
+    assert len(_tracker_lines(output)) == 3, output
     assert "git" in calls
     provider_binaries = {"claude", "codex", "gemini", "agy", "antigravity"}
     for name in calls:
