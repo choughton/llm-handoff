@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The work-claim gate now reports on the console while it runs. In steady
+  state the console showed only `Running deterministic work-claim gate` and
+  the PASSED or FAILED line, with everything else in the log file, so a
+  long Verification command looked like a hang. The console now also shows
+  the gate's `work-claim:` lines: the pre-dispatch and current HEAD and
+  `scope_sha`, the changed files, each scanner and the Verification command
+  as it starts, each check's PASS, FAIL, or SKIP with its detail, each
+  scanner's outcome (a new line), and each Verification command's exit code
+  and elapsed time. Command output tails (`work-claim | ...`) stay in the
+  log file.
 - `audit.security_provider: antigravity` is now a read-only security
   reviewer that runs `agy`, and the automatic security reviewer order is
   `claude`, `codex`, `antigravity`. `gemini` left the automatic order; an

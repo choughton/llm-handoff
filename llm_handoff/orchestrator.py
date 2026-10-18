@@ -3420,6 +3420,12 @@ def _log_work_claim_result(result: WorkClaimResult, log: LogFn) -> None:
     for check in result.checks:
         _log(log, "INFO", f"work-claim: {check.outcome} {check.name}: {check.detail}")
     for scanner_run in result.scanner_runs:
+        _log(
+            log,
+            "INFO",
+            f"work-claim: {scanner_run.outcome} scanner {scanner_run.name}: "
+            f"{scanner_run.detail}",
+        )
         if scanner_run.missing and not scanner_run.required:
             _log(
                 log,

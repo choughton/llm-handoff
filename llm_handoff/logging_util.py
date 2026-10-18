@@ -21,6 +21,12 @@ STEADY_STATE_INFO_CONSOLE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"^[^:]+ exited with code \d+$"),
     re.compile(r"^[^:]+ updated .+HANDOFF\.md \(hash changed\)$"),
     re.compile(r"^New SHA\(s\) found in handoff file: "),
+    # Work-claim gate progress and per-check results. The command output
+    # tails (``work-claim | ...``) stay file-only.
+    re.compile(
+        r"^work-claim: (?:running |pre-dispatch HEAD |changed files since "
+        r"dispatch: |(?:PASS|FAIL|SKIP) |verification command `)"
+    ),
 )
 
 LEVEL_TO_COLOR: Final[dict[str, str]] = {

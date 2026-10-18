@@ -183,6 +183,56 @@ def test_dispatch_logger_routes_non_startup_messages_to_console_and_log_per_leve
         pytest.param(
             "Steady-state detail that should stay file-only", False, id="other-info"
         ),
+        pytest.param(
+            "work-claim: running scanner gitleaks: gitleaks git --no-banner .",
+            True,
+            id="work-claim-scanner-start",
+        ),
+        pytest.param(
+            "work-claim: running verification command: python -m pytest tests -q",
+            True,
+            id="work-claim-verification-start",
+        ),
+        pytest.param(
+            "work-claim: pre-dispatch HEAD 67e116c6; HEAD ead2ef23; scope_sha ead2ef23",
+            True,
+            id="work-claim-shas",
+        ),
+        pytest.param(
+            "work-claim: changed files since dispatch: CHANGELOG.md, llm_handoff/x.py",
+            True,
+            id="work-claim-changed-files",
+        ),
+        pytest.param(
+            "work-claim: PASS diff_scope: every changed file is in scope.",
+            True,
+            id="work-claim-check-pass",
+        ),
+        pytest.param(
+            "work-claim: FAIL verification: `python -m pytest` exited 1 after 3.0s.",
+            True,
+            id="work-claim-check-fail",
+        ),
+        pytest.param(
+            "work-claim: SKIP scanner bandit: not run; the scope checks did not pass.",
+            True,
+            id="work-claim-scanner-outcome",
+        ),
+        pytest.param(
+            "work-claim: verification command `python -m pytest tests -q` exited 0 after 190.2s",
+            True,
+            id="work-claim-verification-outcome",
+        ),
+        pytest.param(
+            "work-claim | 2674 passed, 20 skipped in 188.9s",
+            False,
+            id="work-claim-output-tail-stays-file-only",
+        ),
+        pytest.param(
+            "work-claim | gitleaks | no leaks found",
+            False,
+            id="work-claim-scanner-tail-stays-file-only",
+        ),
     ],
 )
 def test_dispatch_logger_routes_selected_progress_info_to_console(
