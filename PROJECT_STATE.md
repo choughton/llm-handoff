@@ -554,6 +554,200 @@ Before scoping INTAKE-1, route to `user` for a short design check.
 - INTAKE-3: In Linear mode, the planner creates the epics and stories as Linear
   issues instead (after LINEAR-WORKFLOW).
 
+### 15. TPM-ROLE - routine story picker split out of the planner
+
+The source project's dispatcher separates product and boundary judgment (its
+planner lane) from routine sequencing (a TPM lane that picks the next ready
+item inside an approved scope, writes the lease, and may route only to an
+implementer, the auditor, the planner, or the user). That lane was added
+eight days after this extraction was seeded, so it was never ported: here the
+planner does both jobs, every `verified_pass` and every finalizer close route
+back to the planner, and the validator cannot constrain a picker because no
+picker role exists. Add an optional `tpm` role. The name is generic on
+purpose: `AGENTS.md` forbids provider names in roles and
+`llm_handoff/roles.py` drops any label that contains one. The role is
+optional so that every existing `dispatch_config.yaml` keeps working: without
+`agents.tpm`, routing is unchanged.
+
+- TPM-1: Role enum and config. Add `tpm` to `DispatchRole`,
+  `CANONICAL_DISPATCH_ROLES`, and `ROLE_DISPLAY_NAMES` (`llm_handoff/roles.py`),
+  `AgentRole` and `LINEAR_ROLE_TOOLS` (`llm_handoff/config.py`), `NextAgent`
+  (`llm_handoff/router.py`), and the normalizer's canonical set.
+  `DEFAULT_AGENT_PROVIDERS` and `REQUIRED_AGENT_ROLES` stay at six roles; a
+  config without `agents.tpm` loads byte-for-byte as before, and `doctor`
+  prints `tpm: not configured (planner picks stories)`. With `agents.tpm`
+  present the role gets the same provider, launch-flag, timeout, fallback, and
+  resume handling as the other roles (`llm_handoff/agent_roles.py`,
+  `llm_handoff/agent_process.py`). `dispatch_config.example.yaml` maps `tpm`
+  to codex with `skill_name: llm-handoff-tpm`, commented out, with a note that
+  the planner picks stories when it is absent. Add `tpm:` patterns to
+  `llm_handoff/rationalization_patterns.yaml`. `AGENTS.md` and
+  `examples/reference-workflow/AGENTS.md` add `tpm` to the public role
+  vocabulary (~lines 61-71); both are protected paths, so list them in Files
+  in scope.
+- TPM-2: Validator rules for `producer: tpm` (`llm_handoff/validator.py`).
+  `next_agent` must be one of `backend`, `frontend`, `auditor`, `planner`, or
+  `user`; `finalizer` and `validator` are rejected as
+  `frontmatter_routing_rule`.
+  `status` may be omitted (an assignment) or one of `blocked_missing_context`,
+  `blocked_implementation_failure`, or `escalate_to_user`; `ready_for_review`,
+  `verified_pass`, and `verified_fail` are rejected as
+  `frontmatter_status_producer_rule`. `close_type: epic` is rejected: a tpm
+  that reaches the end of its `remaining_stories` routes to `planner` with the
+  reason, never to the auditor with an epic close. A tpm assignment to
+  `backend` or `frontend` must carry a `## Work Packet` exactly as a planner
+  assignment must (`scope_claim_mismatch`, `acceptance_coverage_unclear`).
+  `agent_self_loop` applies. When `next_agent: tpm` is read and `agents.tpm`
+  is not configured, the orchestrator treats the handoff as not dispatchable
+  and schedules the existing planner repair with the instruction `tpm is not
+  configured; route to planner or an implementer` instead of pausing.
+- TPM-3: Routing when the role is configured (`llm_handoff/orchestrator.py`;
+  `build_audit_handoff()` in `llm_handoff/audit_review.py` ~line 1147, which
+  hard-codes the non-epic pass route to `planner`, and its routing tests;
+  plus the prompts under `docs/handoff/`, which are protected paths and must
+  be in Files in scope). The auditor's story-level `verified_pass` routes to
+  `tpm`; the epic-level `verified_pass` with `close_type: epic` still routes
+  to `finalizer`; the finalizer routes to `tpm` after an epic close, or to
+  `planner` when `PROJECT_STATE.md` lists no next epic. The planner opens an
+  epic by writing `epic_id` and `remaining_stories`, then routes to `tpm`
+  instead of assigning the first story itself. Pause recovery
+  (`pause_recovery: planner`), the tracker lease rebuild, the planner
+  self-loop path, and operator-prompt planner dispatch stay on the planner;
+  the operator prompt accepts `@tpm <message>` like the other roles. New
+  `docs/handoff/TPM_HANDOFF_PROMPT.md`: read the handbook, `AGENTS.md`,
+  `PROJECT_STATE.md`, and the handoff; take the next entry of
+  `remaining_stories`; write the Work Packet from the code; escalate to
+  `planner` when the story list is empty or ambiguous, two stories compete
+  and order matters, a story conflicts with the project state, or the next
+  story needs a design decision; escalate to `user` when a human decision is
+  needed; never implement, audit, close an epic, edit `PROJECT_STATE.md`, or
+  push. Update `docs/handoff/README.md`, `HANDBOOK.md`,
+  `PLANNER_HANDOFF_PROMPT.md`, `PLANNER_INITIAL_PROMPT.md`,
+  `AUDITOR_HANDOFF_PROMPT.md`, and `FINALIZER_HANDOFF_PROMPT.md` so each
+  describes both configurations (tpm present, tpm absent).
+- TPM-4: Provider adapters and the reference workflow. Add
+  `.codex/skills/llm-handoff-tpm/SKILL.md` with `agents/openai.yaml`,
+  `.claude/agents/tpm.md`, and `.agents/agents/tpm.md` (agy) to the source
+  checkout and to `examples/reference-workflow/`; `init` copies them and
+  `init --tracker linear` renders the tpm section. No `.gemini/agents/`
+  file: GEM-5 deletes both of those trees, and nothing may recreate them.
+  Codex artifacts are keyed per role: today every Codex role shares
+  `logs/dispatch/codex/last-message.json` and `session.json`
+  (`llm_handoff/agent_providers/codex.py` ~line 410), so a Codex tpm and a
+  Codex backend, or a Codex auditor, would overwrite each other's saved
+  session; use `logs/dispatch/codex-<role>/` for every role other than
+  `backend`, which keeps its current path. Claude and agy already run
+  per-role agent files. `docs/INVENTORY.md` lists the new files.
+- TPM-5: Linear mode. Move selection rules 1 to 7 and the user-attention
+  steps from `llm_handoff/prompt_templates/linear/roles/planner.md` into a
+  new `roles/tpm.md`; the planner section keeps only epic-level duties and a
+  one-line pointer. `LINEAR_PROMPT_ROLES` gains `tpm`;
+  `LINEAR_EVIDENCE_EVENTS` allows `lease_opened`, `user_attention_requested`,
+  and `user_attention_cleared` from `tpm` as well as `planner`; `tpm` gets the
+  planner's Linear tool set. When `agents.tpm` is absent, `init --tracker
+  linear` renders the selection rules into the planner section as today, so
+  a six-role Linear repository is unchanged; a test renders both shapes. Add
+  two hygiene rules to the tpm section: a leased issue already in
+  `tracker.success_state` is stale, so post nothing, release the lease, and
+  route to `planner`; an eligible issue with no priority is reported in the
+  `lease_opened` comment as picked without one (rule 5 already covers the
+  wording). The handoff-validator's `LINEAR-EVIDENCE` check accepts `tpm` as
+  the lease producer. `expected_linear_outcome()` in
+  `llm_handoff/audit_linear_evidence.py` ~line 81 treats `verified_pass`
+  routed to `tpm` as `audit_passed`; today only `planner` and `finalizer`
+  count and every other route is recorded as `audit_failed`, so without this
+  a successful audit would post a failure comment. Add route tests for it.
+- TPM-6: Documentation and changelog. `README.md` role table and loop diagram,
+  `docs/ARCHITECTURE.md` (role list, "planner picks stories unless tpm is
+  configured"), `CONFIGURATION.md` (`agents.tpm` reference and the per-role
+  Codex artifact paths), `docs/TESTING.md` (a tpm scenario in the acceptance
+  run), `docs/SUPERVISED_DISPATCH.md` if the repair role list changes,
+  `CHANGELOG.md`. Each of TPM-1 to TPM-5 updates the docs its code touches;
+  this story is the sweep that checks the set reads as one.
+
+### 16. ESCALATION-RECONCILE - a stale user escalation gets one planner pass
+
+A `next_agent: user` handoff can be stale by the time a run starts: the
+operator may have answered the question in a commit, merged the blocking pull
+request, or edited `PROJECT_STATE.md` without touching the handoff. The source
+project gives such a handoff one planner reconciliation pass before pausing.
+Here the loop pauses at once (`llm_handoff/orchestrator.py` ~line 857) and
+`pause_recovery` is defined as covering every pause except `next_agent: user`.
+Add the pass as an explicit, bounded opt-in. It never loops: a planner that
+confirms the blocker rewrites the handoff to `user` and the run pauses
+normally with no second pass.
+
+- RECON-1: Config and first-cycle pass. New top-level
+  `reconcile_user_escalations: false` (the source project defaults to on;
+  this reference pauses by default, so the operator turns it on). When on,
+  the first cycle of a run that reads `next_agent: user` with
+  `status: escalate_to_user` or `blocked_missing_context` from a producer
+  other than `planner` dispatches the planner once with an instruction that
+  names the pause reason, says the handoff may be stale, asks it to check the
+  handoff against `PROJECT_STATE.md`, Git state, and open pull requests, and
+  tells it to rewrite to `user` with the same question when the blocker
+  still holds, or to the next role when it does not. The dispatch reuses the
+  bounded-recovery path (`_schedule_pause_recovery`), counts in telemetry as
+  `user_escalation_reconciliations`, and logs `Reconciling a user escalation
+  from <producer> before pausing`. `--dry-run` prints the decision and
+  dispatches nothing. A planner-produced user route on the first cycle pauses
+  as today.
+- RECON-2: Later cycles and the no-loop guard. On later cycles only a
+  non-planner producer's user route gets the pass, once per handoff SHA. A
+  user route the planner wrote during the pass, or any planner-produced user
+  route, pauses with no further pass in the same run; the pause reason says
+  `reconciled by planner`. In Linear mode the planner's instruction adds:
+  when advancing from a leased issue whose latest evidence comment is
+  `user_attention_requested`, post `user_attention_cleared` first; when
+  reconfirming, post nothing. `CONFIGURATION.md` documents the key,
+  `docs/handoff/PLANNER_HANDOFF_PROMPT.md` documents the pass, and the
+  handbook's escalation section says a user escalation may be reconciled once
+  when the key is on.
+
+### 17. TRANSITION-RULES - per-producer legality in the validator
+
+The validator checks that `status` implies `next_agent` and that `finalizer`
+is reached only from the auditor with `close_type: epic`
+(`llm_handoff/validator.py` ~lines 230-244). It does not check who may emit a
+status or who an implementer may route to, so a backend handback with
+`status: verified_pass` or a planner handoff to `finalizer` with a forged
+`producer: auditor` is only caught by prompts. The source project enforces
+a per-producer table. Make the table explicit here, enforce it, and keep the
+handbook and the code from drifting.
+
+- TRANS-1: Implementer producers. A handoff with `producer: backend` or
+  `producer: frontend` may route only to `auditor`, `planner`, or `user`
+  (`frontmatter_routing_rule`); `verified_pass`, `verified_fail`, and
+  `close_type: epic` from an implementer are rejected
+  (`frontmatter_status_producer_rule`). Check every fixture under
+  `tests/ported/fixtures/handoffs/` and the reference-workflow starter
+  handoff still validate; a legacy fixture that breaks the rule is updated,
+  not grandfathered.
+- TRANS-2: Auditor and finalizer producers. `verified_pass` and
+  `verified_fail` require `producer: auditor`; a `verified_pass` carried
+  forward by the finalizer keeps its existing exemption only when
+  `producer: finalizer` and the previous route was `finalizer`. `producer:
+  finalizer` may route only to `planner`, `user`, or `tpm` when configured,
+  and never with `close_type` set. `producer: validator` may route anywhere
+  except `finalizer` and may not emit a completion status, with one
+  exemption: the dispatcher's own publish handoffs,
+  `build_review_bounce_handoff()` and the deferred-decision pass in
+  `llm_handoff/publish.py` (~lines 1387 and 1469), write
+  `producer: validator` with `verified_fail` or `verified_pass`. Either the
+  orchestrator marks those writes as dispatcher-authored where it validates
+  them, or the builders move to a distinct producer value in the same story;
+  the review-bounce fixtures must keep validating. The post-dispatch
+  validation already knows the previous route; a `producer` that names a
+  role other than the one just dispatched is rejected as
+  `frontmatter_producer_mismatch` unless the handoff is a dispatcher-written
+  escalation.
+- TRANS-3: One table, two readers. Write the producer-to-route-and-status
+  table once in `docs/handoff/HANDBOOK.md` under `## Transition Table`, and
+  add a test that parses that table and asserts it matches the validator's
+  rule set, so a prompt edit and a validator edit cannot drift apart. The
+  `handoff-validator` helper prompts and `.codex/skills/llm-handoff-validator`
+  cite the table instead of restating it.
+
 ## Open Followups
 
 Promoted to HARDENING stories and removed below: AUDIT-COST (a),
@@ -615,6 +809,25 @@ The remaining letters are unchanged.
   - (c) `docs/TESTING.md` (~line 16) Current State full-suite counts are stale
     (1344 passed, 18 skipped; actual 2275 passed, 20 skipped); update them or
     drop the hard-coded numbers.
+
+- From the source-dispatcher comparison (2026-10-18, info; not filed as epics
+  because each is one Work Packet or a design choice to confirm first):
+  - (a) Linear mode: the finalizer posts nothing (`roles/finalizer.md`), so an
+    epic close leaves no evidence comment; add an `epic_closed` event to
+    `LINEAR_EVIDENCE_EVENTS` and `EVIDENCE_COMMENT.md`, posted on the last
+    story's issue, if the operator wants a Linear-side record of closes.
+  - (b) Linear mode: a validator or planner repair of a leased handoff posts
+    nothing; a `handoff_repaired` event would let the `LINEAR-EVIDENCE` check
+    accept a repaired lease whose producer changed.
+  - (c) Design choice, not a gap: the source project removed the Work Packet
+    from the handoff and keeps the issue body in Linear only. This repo keeps
+    the Work Packet in `HANDOFF.md` because the work-claim gate, scanners,
+    protected paths, and dispatcher commit mode parse it; revisit only if a
+    thin-lease mode is wanted for Linear repositories.
+  - (d) Design choice, not a gap: the source project routes on a three-level
+    hierarchy (initiative, project, issue) with project-open and project-close
+    gates. This repo has epic and story in `remaining_stories` plus this file;
+    the TPM-ROLE epic scopes the picker to one epic for that reason.
 
 ## Completed Scope Ledger
 
