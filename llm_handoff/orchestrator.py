@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, replace
+import errno
 from fnmatch import fnmatchcase
 from hashlib import sha256
 import inspect
@@ -10,8 +12,10 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Callable, Literal, TextIO, cast
+import unicodedata
 
 from llm_handoff.agent_providers import antigravity as antigravity_provider
 from llm_handoff.agent_providers import claude as claude_provider
@@ -575,7 +579,9 @@ def run_loop(
     implementer_base_story_key: str | None = None
     # (story key, HEAD before that story's first gated dispatch).
     gate_story_base: tuple[str | None, str] | None = None
-    implementer_leftovers = _restore_implementer_leftovers(config, log_fn)
+    implementer_leftovers = _restore_implementer_leftovers(
+        config, log_fn, operator_prompt
+    )
     # Set while a dispatch's rewrite has dropped planned stories and nobody
     # has changed the handoff it left behind since.
     story_baseline: StoryListBaseline | None = None
@@ -3645,26 +3651,382 @@ def _restore_bounce_counts(config: DispatchConfig, log: LogFn) -> None:
 
 
 def _carry_over_state_path(config: DispatchConfig) -> Path:
-    return (config.repo_root / CARRY_OVER_STATE_PATH).resolve()
+    """The carry-over record's path inside the repository, links not followed."""
+
+    return config.repo_root.resolve() / CARRY_OVER_STATE_PATH
+
+
+def _carry_over_path_traverses_link(state_path: Path) -> bool:
+    """Whether the record path or a directory above it is a symlink or junction.
+
+    Roles can write under ``logs/``, so a link there could point the record at
+    a file outside the repository. Resolving follows symlinks and junctions;
+    any difference from the literal path means one is in the way. A path that
+    cannot be resolved, such as a symlink loop (``RuntimeError`` on Python
+    3.11/3.12) or an unreadable link (``OSError``), counts as unsafe.
+    """
+
+    try:
+        resolved = state_path.resolve()
+    except (RuntimeError, OSError):
+        return True
+    return os.path.normcase(str(resolved)) != os.path.normcase(str(state_path))
+
+
+def _carry_over_link_warning(state_path: Path) -> str:
+    return (
+        f"The carry-over record path {state_path} passes through a symlink or "
+        "junction, so the dispatcher does not read, write, or delete it; "
+        "uncommitted files stay operator edits. Remove the link to restore "
+        "carry-over across restarts."
+    )
+
+
+class _CarryOverLinkError(OSError):
+    """A symlink or junction appeared on the carry-over record's path."""
+
+
+def _detect_carry_over_dir_fd_support() -> bool:
+    """Whether this platform can write and delete the record by directory fd.
+
+    CPython registers ``renameat`` support under ``os.rename`` only; it never
+    adds ``os.replace`` to ``os.supports_dir_fd`` even though ``os.replace``
+    accepts the same ``src_dir_fd``/``dst_dir_fd`` arguments. Checking
+    ``os.replace`` would therefore disable the descriptor writer everywhere.
+    """
+
+    return (
+        os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+
+
+# Directory file descriptors let the writer walk logs/dispatch without
+# following links and create, write, rename, and delete the record relative
+# to the directory it checked. Windows has no dir_fd support, so it falls back
+# to checking literal paths around each step.
+_CARRY_OVER_DIR_FD_SUPPORTED = _detect_carry_over_dir_fd_support()
+
+
+def _carry_over_record_payload(leftovers: ImplementerLeftovers) -> str:
+    """The record in the format ``load_implementer_leftovers`` reads."""
+
+    payload = {
+        "version": 1,
+        "story_key": leftovers.story_key,
+        "fingerprints": dict(sorted(leftovers.fingerprints)),
+    }
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def _write_carry_over_record(repo_root: Path, leftovers: ImplementerLeftovers) -> None:
+    """Write the carry-over record without following a planted link.
+
+    ``save_implementer_leftovers`` writes through a fixed ``carry-over.json.tmp``
+    name with ``Path.write_text``, which follows a symlink a role placed there.
+    This writer creates a fresh, randomly named temporary file exclusively,
+    writes through the handle it opened, and atomically replaces the record;
+    ``os.replace`` swaps the directory entry and never follows a link at the
+    destination. Raises ``_CarryOverLinkError`` when a link is found on the
+    way, and lets other ``OSError`` values propagate.
+    """
+
+    payload = _carry_over_record_payload(leftovers)
+    if _CARRY_OVER_DIR_FD_SUPPORTED:
+        _write_carry_over_record_with_dir_fd(repo_root, payload)
+    else:
+        _write_carry_over_record_checked(repo_root / CARRY_OVER_STATE_PATH, payload)
+
+
+def _open_carry_over_directory(repo_root: Path, *, create: bool) -> int | None:
+    """Open ``logs/dispatch`` under the repository root without following links.
+
+    Each directory is opened relative to its parent's descriptor with
+    ``O_NOFOLLOW``, so swapping ``logs`` or ``logs/dispatch`` for a link at any
+    moment cannot redirect later descriptor-relative operations outside the
+    repository. Creates missing directories when ``create`` is true; otherwise
+    returns None when one is missing. Raises ``_CarryOverLinkError`` on a link.
+    """
+
+    directory_fd = os.open(repo_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in CARRY_OVER_STATE_PATH.parent.parts:
+            if create:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(part, 0o777, dir_fd=directory_fd)
+            try:
+                child_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+            except FileNotFoundError:
+                if create:
+                    raise
+                os.close(directory_fd)
+                return None
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise _CarryOverLinkError(
+                        exc.errno, "carry-over directory is a link", part
+                    ) from exc
+                raise
+            os.close(directory_fd)
+            directory_fd = child_fd
+    except BaseException:
+        os.close(directory_fd)
+        raise
+    return directory_fd
+
+
+def _unlink_carry_over_record(repo_root: Path) -> None:
+    """Delete the record without following a planted directory link.
+
+    On platforms with directory descriptors the unlink is relative to the
+    ``logs/dispatch`` descriptor opened with ``O_NOFOLLOW``. Elsewhere it falls
+    back to the literal path, which the caller checks for links first. Raises
+    ``_CarryOverLinkError`` when a link is found, and lets other ``OSError``
+    values propagate. A missing record is not an error.
+    """
+
+    if not _CARRY_OVER_DIR_FD_SUPPORTED:
+        save_implementer_leftovers(repo_root / CARRY_OVER_STATE_PATH, None)
+        return
+    directory_fd = _open_carry_over_directory(repo_root, create=False)
+    if directory_fd is None:
+        return
+    try:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(CARRY_OVER_STATE_PATH.name, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _write_carry_over_record_with_dir_fd(repo_root: Path, payload: str) -> None:
+    """Write the record relative to directory descriptors opened without links.
+
+    Each directory under the repository root is opened with ``O_NOFOLLOW``, so
+    swapping ``logs`` or ``logs/dispatch`` for a link at any moment cannot
+    redirect the temporary file or the rename outside the repository.
+    """
+
+    directory_fd = _open_carry_over_directory(repo_root, create=True)
+    if directory_fd is None:  # create=True never returns None
+        raise FileNotFoundError(errno.ENOENT, "carry-over directory missing")
+    try:
+        name = CARRY_OVER_STATE_PATH.name
+        temporary_name = f".{name}.{os.urandom(8).hex()}.tmp"
+        file_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(
+                temporary_name,
+                name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            raise
+    finally:
+        os.close(directory_fd)
+
+
+def _carry_over_handle_is_at(path: Path, file_fd: int) -> bool:
+    """Whether the open handle is the file at ``path``, with no link on the way."""
+
+    if _carry_over_path_traverses_link(path):
+        return False
+    try:
+        return os.path.samestat(os.fstat(file_fd), os.lstat(path))
+    except OSError:
+        return False
+
+
+def _write_carry_over_record_checked(state_path: Path, payload: str) -> None:
+    """Write the record by literal path, checking for links around each step.
+
+    Used where directory descriptors are unavailable (Windows). The temporary
+    file is created exclusively under a random name, so a planted link cannot
+    be opened, and the paths are checked again right before the rename.
+    """
+
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    if _carry_over_path_traverses_link(state_path):
+        raise _CarryOverLinkError(
+            errno.ELOOP, "carry-over path passes through a link", str(state_path)
+        )
+    file_fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{state_path.name}.", suffix=".tmp", dir=state_path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
+            if not _carry_over_handle_is_at(temporary_path, handle.fileno()):
+                raise _CarryOverLinkError(
+                    errno.ELOOP,
+                    "carry-over temporary file passes through a link",
+                    str(temporary_path),
+                )
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if _carry_over_path_traverses_link(
+            temporary_path
+        ) or _carry_over_path_traverses_link(state_path):
+            raise _CarryOverLinkError(
+                errno.ELOOP, "carry-over path passes through a link", str(state_path)
+            )
+        os.replace(temporary_path, state_path)
+    except BaseException:
+        if not _carry_over_path_traverses_link(temporary_path):
+            with contextlib.suppress(OSError):
+                temporary_path.unlink()
+        raise
+
+
+def _escape_control_characters(text: str) -> str:
+    """Replace each control character with its ``\\xNN`` or ``\\uNNNN`` escape."""
+
+    return "".join(
+        (f"\\x{ord(char):02x}" if ord(char) <= 0xFF else f"\\u{ord(char):04x}")
+        if unicodedata.category(char) == "Cc"
+        else char
+        for char in text
+    )
+
+
+def _carry_over_display(leftovers: ImplementerLeftovers) -> tuple[str, str]:
+    """The record's story and file list, safe to show on a terminal.
+
+    A record read from disk may be forged, so control characters are escaped
+    and cannot inject terminal escape sequences or fake log lines.
+    """
+
+    story_key = leftovers.story_key or ""
+    if story_key.startswith("story:"):
+        story = story_key[len("story:"):]
+    elif story_key.startswith("work-packet:"):
+        story = "the Work Packet " + story_key[len("work-packet:"):][:12]
+    else:
+        story = story_key
+    files = ", ".join(
+        _escape_control_characters(path) for path, _ in leftovers.fingerprints
+    )
+    return _escape_control_characters(story), files
+
+
+CARRY_OVER_CONFIRM_READ_TIMEOUT_SECONDS = 1.0
+
+
+def _confirm_carry_over_at_terminal(
+    reader: OperatorInputReader, question: str, log: LogFn
+) -> bool:
+    _log(log, "INFO", question)
+    reader.drain()
+    while True:
+        line = reader.read_line(CARRY_OVER_CONFIRM_READ_TIMEOUT_SECONDS)
+        if line is not None:
+            return line.strip().lower() in {"y", "yes"}
+        if reader.eof_reached:
+            return False
 
 
 def _restore_implementer_leftovers(
-    config: DispatchConfig, log: LogFn
+    config: DispatchConfig,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
 ) -> ImplementerLeftovers | None:
-    """Load the carry-over record a previous run saved, if any."""
+    """Load the carry-over record a previous run saved, if the operator confirms it.
+
+    Roles can write under ``logs/``, so a record read from disk applies only
+    after the operator confirms it at a terminal. Otherwise it is discarded and
+    its files stay operator edits.
+    """
 
     state_path = _carry_over_state_path(config)
-    leftovers = load_implementer_leftovers(state_path)
-    if leftovers is None:
+    if _carry_over_path_traverses_link(state_path):
+        _log(log, "WARN", _carry_over_link_warning(state_path))
         return None
+    loaded = load_implementer_leftovers(state_path)
+    if loaded is None:
+        return None
+    leftovers = prune_implementer_leftovers(config.repo_root, loaded)
+    if leftovers is None:
+        if not config.dry_run:
+            _delete_carry_over_record(config, log)
+        return None
+    story, files = _carry_over_display(leftovers)
+    if config.dry_run:
+        _log(
+            log,
+            "INFO",
+            f"Found carry-over record {state_path} for {story}: {files}. "
+            "Not applied in dry run.",
+        )
+        return None
+    if (
+        config.interactive_pause
+        and _operator_stdin_is_interactive()
+        and not operator_prompt.reader().console_unavailable
+    ):
+        reader = operator_prompt.reader()
+        _log(
+            log,
+            "INFO",
+            f"Restored carry-over record from {state_path} for {story}: {files}.",
+        )
+        if _confirm_carry_over_at_terminal(
+            reader, f"Carry these over as {story}'s work? [y/N]", log
+        ):
+            _log(
+                log,
+                "INFO",
+                f"The operator confirmed the carry-over record for {story}; "
+                "files still unchanged carry over to that story's next dispatch.",
+            )
+            return leftovers
     _log(
         log,
-        "INFO",
-        f"Restored carry-over record from {state_path} for {leftovers.story_key}: "
-        + ", ".join(path for path, _ in leftovers.fingerprints)
-        + ". Files still unchanged carry over to that story's next dispatch.",
+        "WARN",
+        f"Discarded the carry-over record read from {state_path} for {story} "
+        f"({files}) because it was not confirmed at a terminal; these files "
+        "stay operator edits.",
     )
-    return leftovers
+    _delete_carry_over_record(config, log)
+    return None
+
+
+def _delete_carry_over_record(config: DispatchConfig, log: LogFn) -> None:
+    state_path = _carry_over_state_path(config)
+    if _carry_over_path_traverses_link(state_path):
+        # Checked again right before unlinking in case a link appeared after
+        # the record was read.
+        _log(log, "WARN", _carry_over_link_warning(state_path))
+        return
+    try:
+        _unlink_carry_over_record(config.repo_root.resolve())
+    except _CarryOverLinkError:
+        _log(log, "WARN", _carry_over_link_warning(state_path))
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not delete the carry-over record {state_path}: {exc}.",
+        )
 
 
 def _persist_implementer_leftovers(
@@ -3675,6 +4037,9 @@ def _persist_implementer_leftovers(
     if config.dry_run:
         return
     state_path = _carry_over_state_path(config)
+    if _carry_over_path_traverses_link(state_path):
+        _log(log, "WARN", _carry_over_link_warning(state_path))
+        return
     if (
         leftovers is not None
         and leftovers.story_key
@@ -3693,7 +4058,13 @@ def _persist_implementer_leftovers(
         )
         return
     try:
-        save_implementer_leftovers(state_path, leftovers)
+        if leftovers is None or not leftovers.story_key or not leftovers.fingerprints:
+            # Unlinking removes a link itself and never touches its target.
+            _unlink_carry_over_record(config.repo_root.resolve())
+        else:
+            _write_carry_over_record(config.repo_root.resolve(), leftovers)
+    except _CarryOverLinkError:
+        _log(log, "WARN", _carry_over_link_warning(state_path))
     except OSError as exc:
         _log(
             log,

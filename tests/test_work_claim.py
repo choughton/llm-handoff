@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import time
 from typing import Any
+import unicodedata
 
 import pytest
 
@@ -3856,6 +3858,11 @@ def test_run_loop_carries_over_leftovers_across_a_dispatcher_restart(
     assert saved["story_key"] == f"story:{STORY_ID}"
     assert list(saved["fingerprints"]) == ["src/app.py"]
 
+    # A record read from disk applies only after the operator confirms it.
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        orchestrator, "_operator_input_stream", lambda: io.StringIO("y\n")
+    )
     messages.clear()
     orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
 
@@ -3866,6 +3873,7 @@ def test_run_loop_carries_over_leftovers_across_a_dispatcher_restart(
         and "src/app.py" in message
         for level, message in messages
     )
+    assert ("INFO", f"Carry these over as {STORY_ID}'s work? [y/N]") in messages
     assert (
         "INFO",
         f"Carrying over uncommitted work from the previous {STORY_ID} "
@@ -3903,6 +3911,732 @@ def test_run_loop_keeps_carry_over_in_memory_when_git_does_not_ignore_logs(
         and "Git does not ignore logs/dispatch/carry-over.json" in message
         for level, message in messages
     )
+
+
+def _save_app_carry_over_record(repo_root: Path) -> Path:
+    """Leave src/app.py dirty and record it as the story's leftover on disk."""
+
+    _write(repo_root / ".gitignore", "logs/\n")
+    _commit_all(repo_root, "ignore runtime state")
+    _write(repo_root / "src" / "app.py", "VALUE = 2\n")
+    state_path = repo_root / "logs" / "dispatch" / "carry-over.json"
+    save_implementer_leftovers(
+        state_path,
+        ImplementerLeftovers(
+            story_key=f"story:{STORY_ID}",
+            fingerprints=(
+                ("src/app.py", working_tree_fingerprint(repo_root, "src/app.py")),
+            ),
+        ),
+    )
+    return state_path
+
+
+def _no_input_stream() -> io.StringIO:
+    raise AssertionError("the carry-over record must not read operator input")
+
+
+@pytest.mark.parametrize(
+    ("interactive", "operator_input"),
+    [
+        pytest.param(False, None, id="no_tty"),
+        pytest.param(True, "n\n", id="tty_declines"),
+        pytest.param(True, "", id="tty_eof"),
+    ],
+)
+def test_run_loop_discards_an_unconfirmed_carry_over_record_from_disk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    interactive: bool,
+    operator_input: str | None,
+) -> None:
+    # Roles can write under logs/, so a record read from disk could be forged
+    # to claim operator edits as implementer work.
+    _init_repo(tmp_path)
+    state_path = _save_app_carry_over_record(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    seen_states: list[Any] = []
+    real_capture = orchestrator.capture_pre_dispatch_state
+
+    def recording_capture(*args: Any, **kwargs: Any):
+        state = real_capture(*args, **kwargs)
+        seen_states.append(state)
+        return state
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    pass\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(
+        orchestrator, "_operator_stdin_is_interactive", lambda: interactive
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_operator_input_stream",
+        (lambda: io.StringIO(operator_input))
+        if operator_input is not None
+        else _no_input_stream,
+    )
+    monkeypatch.setattr(orchestrator, "capture_pre_dispatch_state", recording_capture)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    asked = ("INFO", f"Carry these over as {STORY_ID}'s work? [y/N]") in messages
+    assert asked == interactive
+    assert any(
+        level == "WARN"
+        and "carry-over record read from" in message
+        and STORY_ID in message
+        and "src/app.py" in message
+        and "not confirmed at a terminal" in message
+        and "stay operator edits" in message
+        for level, message in messages
+    )
+    assert not state_path.exists()
+    assert seen_states[0].carried_over == ()
+    assert "src/app.py" in seen_states[0].dirty_files
+    assert "src/app.py" not in _commit_files(tmp_path, "HEAD")
+    assert "src/app.py" in _git(tmp_path, "status", "--porcelain")
+
+
+def test_carry_over_record_is_discarded_without_input_when_interactive_pause_is_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = _save_app_carry_over_record(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path, commit_mode="dispatcher", interactive_pause=False
+    )
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert not state_path.exists()
+    assert not any("[y/N]" in message for _level, message in messages)
+    assert any(
+        level == "WARN" and "not confirmed at a terminal" in message
+        for level, message in messages
+    )
+
+
+def test_carry_over_record_is_kept_and_not_applied_in_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = _save_app_carry_over_record(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher", dry_run=True)
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert state_path.exists()
+    assert len(messages) == 1
+    level, message = messages[0]
+    assert level == "INFO"
+    assert str(state_path) in message
+    assert STORY_ID in message
+    assert "src/app.py" in message
+    assert "not applied in dry run" in message.lower()
+
+
+def test_stale_carry_over_record_is_deleted_without_asking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = _save_app_carry_over_record(tmp_path)
+    # The file changed after the record was written, so it no longer matches.
+    _write(tmp_path / "src" / "app.py", "VALUE = 'operator edit'\n")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert not state_path.exists()
+    assert messages == []
+
+
+def test_carry_over_prompt_escapes_control_characters_from_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = tmp_path / "logs" / "dispatch" / "carry-over.json"
+    # Filesystems reject such paths, so the forged record skips pruning.
+    forged = ImplementerLeftovers(
+        story_key="story:EVIL\x1b[2J\nWARN fake line",
+        fingerprints=(("src/evil\x1b]0;x\x07\n.py", "0" * 64),),
+    )
+    save_implementer_leftovers(state_path, forged)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        orchestrator, "prune_implementer_leftovers", lambda _root, record: record
+    )
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        orchestrator, "_operator_input_stream", lambda: io.StringIO("n\n")
+    )
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert len(messages) == 3
+    for _level, message in messages:
+        assert not any(unicodedata.category(char) == "Cc" for char in message)
+    assert (
+        "INFO",
+        "Carry these over as EVIL\\x1b[2J\\x0aWARN fake line's work? [y/N]",
+    ) in messages
+    assert "src/evil\\x1b]0;x\\x07\\x0a.py" in messages[0][1]
+    assert "src/evil\\x1b]0;x\\x07\\x0a.py" in messages[2][1]
+
+
+def test_carry_over_story_display_names_the_work_packet_or_the_raw_key() -> None:
+    orchestrator = _load_orchestrator()
+    packet = ImplementerLeftovers(
+        story_key="work-packet:" + "abcdef0123456789" * 4,
+        fingerprints=(("src/app.py", "x"),),
+    )
+    other = ImplementerLeftovers(story_key="custom-key", fingerprints=packet.fingerprints)
+
+    assert orchestrator._carry_over_display(packet) == (
+        "the Work Packet abcdef012345",
+        "src/app.py",
+    )
+    assert orchestrator._carry_over_display(other) == ("custom-key", "src/app.py")
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    """Point ``link`` at ``target`` with a symlink, or a junction on Windows."""
+
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if sys.platform != "win32":
+        pytest.skip("cannot create a directory symlink here")
+    import _winapi
+
+    _winapi.CreateJunction(str(target), str(link))
+
+
+def _external_carry_over_record(directory: Path, *, matching: bool, repo: Path) -> Path:
+    record_path = directory / "carry-over.json"
+    fingerprint = (
+        working_tree_fingerprint(repo, "src/app.py") if matching else "0" * 64
+    )
+    save_implementer_leftovers(
+        record_path,
+        ImplementerLeftovers(
+            story_key=f"story:{STORY_ID}", fingerprints=(("src/app.py", fingerprint),)
+        ),
+    )
+    return record_path
+
+
+@pytest.mark.parametrize(
+    "matching",
+    [pytest.param(False, id="stale_record"), pytest.param(True, id="live_record")],
+)
+def test_carry_over_record_behind_a_directory_link_is_not_read_or_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    matching: bool,
+) -> None:
+    # A role that can write under logs/ could link logs/dispatch at a file
+    # outside the repository; startup must not delete that target.
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _init_repo(repo)
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    external = _external_carry_over_record(outside, matching=matching, repo=repo)
+    _link_directory(repo / "logs" / "dispatch", outside)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert external.exists()
+    assert len(messages) == 1
+    level, message = messages[0]
+    assert level == "WARN"
+    assert "symlink or junction" in message
+    assert "stay operator edits" in message
+
+
+def test_carry_over_record_that_is_a_file_symlink_is_not_read_or_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _init_repo(repo)
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    external = _external_carry_over_record(outside, matching=False, repo=repo)
+    link = repo / "logs" / "dispatch" / "carry-over.json"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(external, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert external.exists()
+    assert link.is_symlink()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+@pytest.mark.parametrize("error", [RuntimeError, OSError])
+def test_carry_over_path_that_cannot_be_resolved_is_treated_as_a_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[Exception],
+) -> None:
+    # Python 3.11/3.12 raise RuntimeError on a symlink loop; startup must warn
+    # and carry on instead of crashing.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    record_path = repo / "logs" / "dispatch" / "carry-over.json"
+    save_implementer_leftovers(
+        record_path,
+        ImplementerLeftovers(
+            story_key=f"story:{STORY_ID}",
+            fingerprints=(("src/app.py", working_tree_fingerprint(repo, "src/app.py")),),
+        ),
+    )
+    original_resolve = Path.resolve
+
+    def failing_resolve(self: Path, strict: bool = False) -> Path:
+        if self.name == "carry-over.json":
+            raise error("cannot resolve")
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", failing_resolve)
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
+    messages: list[tuple[str, str]] = []
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+    orchestrator._persist_implementer_leftovers(config, None, _collecting_log(messages))
+
+    assert restored is None
+    assert record_path.exists()
+    assert [level for level, _message in messages] == ["WARN", "WARN"]
+    assert all("symlink or junction" in message for _level, message in messages)
+
+
+def test_carry_over_record_in_a_symlink_loop_does_not_crash_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    dispatch_dir = repo / "logs" / "dispatch"
+    dispatch_dir.mkdir(parents=True, exist_ok=True)
+    link = dispatch_dir / "carry-over.json"
+    try:
+        os.symlink(dispatch_dir / "loop.json", link)
+        os.symlink(link, dispatch_dir / "loop.json")
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert link.is_symlink()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+def test_persisting_carry_over_does_not_write_or_delete_through_a_link(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _init_repo(repo)
+    _write(repo / ".gitignore", "logs/\n")
+    _commit_all(repo, "ignore runtime state")
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    external = _external_carry_over_record(outside, matching=True, repo=repo)
+    original = external.read_text(encoding="utf-8")
+    _link_directory(repo / "logs" / "dispatch", outside)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    other = ImplementerLeftovers(
+        story_key="story:EPIC-1-S2",
+        fingerprints=(("src/app.py", working_tree_fingerprint(repo, "src/app.py")),),
+    )
+
+    orchestrator._persist_implementer_leftovers(config, other, _collecting_log(messages))
+    assert external.read_text(encoding="utf-8") == original
+    orchestrator._persist_implementer_leftovers(config, None, _collecting_log(messages))
+    assert external.read_text(encoding="utf-8") == original
+    assert not (outside / "carry-over.json.tmp").exists()
+    assert [level for level, _message in messages] == ["WARN", "WARN"]
+    assert all("symlink or junction" in message for _level, message in messages)
+
+
+_CARRY_OVER_WRITERS = [
+    pytest.param(False, id="checked_paths"),
+    pytest.param(
+        True,
+        id="directory_fds",
+        marks=pytest.mark.skipif(
+            sys.platform == "win32", reason="Windows has no dir_fd support"
+        ),
+    ),
+]
+
+
+def _ignored_logs_repo(repo: Path) -> None:
+    _init_repo(repo)
+    _write(repo / ".gitignore", "logs/\n")
+    _commit_all(repo, "ignore runtime state")
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+
+
+def _app_leftovers(repo: Path) -> ImplementerLeftovers:
+    return ImplementerLeftovers(
+        story_key=f"story:{STORY_ID}",
+        fingerprints=(("src/app.py", working_tree_fingerprint(repo, "src/app.py")),),
+    )
+
+
+@pytest.mark.parametrize("use_dir_fd", _CARRY_OVER_WRITERS)
+def test_persisting_carry_over_never_uses_the_fixed_temporary_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    use_dir_fd: bool,
+) -> None:
+    # A role could plant carry-over.json.tmp; the writer must not open it.
+    repo = tmp_path / "repo"
+    _ignored_logs_repo(repo)
+    planted = repo / "logs" / "dispatch" / "carry-over.json.tmp"
+    _write(planted, "planted\n")
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(orchestrator, "_CARRY_OVER_DIR_FD_SUPPORTED", use_dir_fd)
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    leftovers = _app_leftovers(repo)
+
+    orchestrator._persist_implementer_leftovers(
+        config, leftovers, _collecting_log(messages)
+    )
+
+    assert messages == []
+    assert planted.read_text(encoding="utf-8") == "planted\n"
+    assert load_implementer_leftovers(planted.parent / "carry-over.json") == leftovers
+    leftover_names = sorted(path.name for path in planted.parent.iterdir())
+    assert leftover_names == ["carry-over.json", "carry-over.json.tmp"]
+
+
+@pytest.mark.parametrize("use_dir_fd", _CARRY_OVER_WRITERS)
+def test_persisting_carry_over_does_not_write_through_a_temporary_file_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    use_dir_fd: bool,
+) -> None:
+    repo = tmp_path / "repo"
+    _ignored_logs_repo(repo)
+    external = tmp_path / "outside" / "victim.txt"
+    _write(external, "do not overwrite\n")
+    planted = repo / "logs" / "dispatch" / "carry-over.json.tmp"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(external, planted)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(orchestrator, "_CARRY_OVER_DIR_FD_SUPPORTED", use_dir_fd)
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    leftovers = _app_leftovers(repo)
+
+    orchestrator._persist_implementer_leftovers(
+        config, leftovers, _collecting_log(messages)
+    )
+
+    assert messages == []
+    assert external.read_text(encoding="utf-8") == "do not overwrite\n"
+    assert planted.is_symlink()
+    assert load_implementer_leftovers(planted.parent / "carry-over.json") == leftovers
+
+
+def test_checked_carry_over_writer_refuses_a_link_that_appears_mid_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The path is clean when _persist_implementer_leftovers checks it, then a
+    # link appears; the writer must not rename onto the record.
+    repo = tmp_path / "repo"
+    _ignored_logs_repo(repo)
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(orchestrator, "_CARRY_OVER_DIR_FD_SUPPORTED", False)
+    checks = {"count": 0}
+
+    def link_after_first_check(_path: Path) -> bool:
+        checks["count"] += 1
+        return checks["count"] > 1
+
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", link_after_first_check
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, _app_leftovers(repo), _collecting_log(messages)
+    )
+
+    dispatch_dir = repo / "logs" / "dispatch"
+    assert not (dispatch_dir / "carry-over.json").exists()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+def test_checked_carry_over_writer_removes_its_temporary_file_on_a_late_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A link reported only right before the rename leaves no temporary file.
+    repo = tmp_path / "repo"
+    _ignored_logs_repo(repo)
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(orchestrator, "_CARRY_OVER_DIR_FD_SUPPORTED", False)
+    original = orchestrator._carry_over_path_traverses_link
+    state = {"reported": False}
+
+    def link_before_rename(path: Path) -> bool:
+        if path.name == "carry-over.json" and (path.parent / "marker").exists():
+            state["reported"] = True
+            return True
+        return original(path)
+
+    original_handle_check = orchestrator._carry_over_handle_is_at
+
+    def handle_check_then_mark(path: Path, file_fd: int) -> bool:
+        result = original_handle_check(path, file_fd)
+        (path.parent / "marker").write_text("", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", link_before_rename
+    )
+    monkeypatch.setattr(orchestrator, "_carry_over_handle_is_at", handle_check_then_mark)
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, _app_leftovers(repo), _collecting_log(messages)
+    )
+
+    dispatch_dir = repo / "logs" / "dispatch"
+    assert state["reported"]
+    assert sorted(path.name for path in dispatch_dir.iterdir()) == ["marker"]
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no dir_fd support")
+def test_directory_fd_carry_over_writer_refuses_a_directory_link_that_appears_late(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Even when the path check misses a linked logs/dispatch, the writer opens
+    # each directory with O_NOFOLLOW and never writes outside the repository.
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _ignored_logs_repo(repo)
+    _link_directory(repo / "logs" / "dispatch", outside)
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(orchestrator, "_CARRY_OVER_DIR_FD_SUPPORTED", True)
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", lambda _path: False
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, _app_leftovers(repo), _collecting_log(messages)
+    )
+
+    assert list(outside.iterdir()) == []
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+def test_carry_over_dir_fd_detection_checks_rename_not_replace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # CPython lists renameat support under os.rename only; os.replace is never
+    # in os.supports_dir_fd even where it accepts src_dir_fd/dst_dir_fd.
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(os, "O_NOFOLLOW", getattr(os, "O_NOFOLLOW", 0x20000), raising=False)
+    monkeypatch.setattr(os, "O_DIRECTORY", getattr(os, "O_DIRECTORY", 0x10000), raising=False)
+    monkeypatch.setattr(
+        os, "supports_dir_fd", {os.open, os.mkdir, os.rename, os.unlink}
+    )
+
+    assert orchestrator._detect_carry_over_dir_fd_support() is True
+
+    monkeypatch.setattr(os, "supports_dir_fd", {os.open, os.mkdir, os.unlink})
+
+    assert orchestrator._detect_carry_over_dir_fd_support() is False
+
+
+def test_carry_over_dir_fd_detection_matches_the_platform() -> None:
+    # Without any monkeypatching, POSIX hosts must select the descriptor
+    # writer and Windows must fall back to checked paths.
+    orchestrator = _load_orchestrator()
+
+    expected = sys.platform != "win32"
+    assert orchestrator._detect_carry_over_dir_fd_support() is expected
+    assert orchestrator._CARRY_OVER_DIR_FD_SUPPORTED is expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no dir_fd support")
+def test_persisting_carry_over_selects_the_directory_fd_writer_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The capability flag is left as the module computed it.
+    repo = tmp_path / "repo"
+    _ignored_logs_repo(repo)
+    orchestrator = _load_orchestrator()
+    calls: list[str] = []
+    original_dir_fd_writer = orchestrator._write_carry_over_record_with_dir_fd
+
+    def spy_dir_fd_writer(repo_root: Path, payload: str) -> None:
+        calls.append("dir_fd")
+        original_dir_fd_writer(repo_root, payload)
+
+    def refuse_checked_writer(_state_path: Path, _payload: str) -> None:
+        raise AssertionError("checked-path writer selected on POSIX")
+
+    monkeypatch.setattr(
+        orchestrator, "_write_carry_over_record_with_dir_fd", spy_dir_fd_writer
+    )
+    monkeypatch.setattr(
+        orchestrator, "_write_carry_over_record_checked", refuse_checked_writer
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    leftovers = _app_leftovers(repo)
+
+    orchestrator._persist_implementer_leftovers(
+        config, leftovers, _collecting_log(messages)
+    )
+
+    assert messages == []
+    assert calls == ["dir_fd"]
+    state_path = repo / "logs" / "dispatch" / "carry-over.json"
+    assert load_implementer_leftovers(state_path) == leftovers
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no dir_fd support")
+def test_directory_fd_carry_over_delete_refuses_a_directory_link_that_appears_late(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Even when the path check misses a linked logs/dispatch, deletion opens
+    # each directory with O_NOFOLLOW and never removes a file outside the repo.
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _ignored_logs_repo(repo)
+    external_record = outside / "carry-over.json"
+    _write(external_record, "{}\n")
+    _link_directory(repo / "logs" / "dispatch", outside)
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", lambda _path: False
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, None, _collecting_log(messages)
+    )
+    orchestrator._delete_carry_over_record(config, _collecting_log(messages))
+
+    assert external_record.read_text(encoding="utf-8") == "{}\n"
+    assert [level for level, _message in messages] == ["WARN", "WARN"]
+    assert all("symlink or junction" in message for _level, message in messages)
+
+
+def test_carry_over_delete_without_a_dispatch_directory_is_quiet(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _ignored_logs_repo(repo)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, None, _collecting_log(messages)
+    )
+    orchestrator._delete_carry_over_record(config, _collecting_log(messages))
+
+    assert messages == []
+    assert not (repo / "logs").exists()
 
 
 def test_restored_leftovers_do_not_carry_over_edited_or_other_story_files(

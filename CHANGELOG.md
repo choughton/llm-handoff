@@ -6,6 +6,30 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: a carry-over record loaded from
+  `logs/dispatch/carry-over.json` at startup no longer applies on its own,
+  because agent roles can write under `logs/` and a forged record could claim
+  operator edits as implementer work. After dropping files that no longer
+  match the record, the dispatcher asks
+  `Carry these over as <story>'s work? [y/N]` when `interactive_pause` is on
+  and it runs at a terminal with console input; `y` or `yes` applies the
+  record. Any other answer, end of input, no terminal, or
+  `interactive_pause: false` discards it with a `WARN` line, deletes the file,
+  and leaves its files as operator edits. A dry run logs the record, keeps the
+  file, and does not apply it. Control characters in the story key and paths
+  are escaped before display. Previously the record applied without asking.
+  The in-memory record kept between cycles of one run is unchanged. When the
+  record path or a directory above it is a symlink or junction, the
+  dispatcher no longer reads, writes, or deletes the record (previously it
+  followed the link and could delete a matching record file outside the
+  repository); it logs a `WARN` line instead. Saving the record no longer
+  writes through the fixed `carry-over.json.tmp` name, which followed a
+  symlink planted there; it creates a fresh, randomly named temporary file
+  exclusively and atomically replaces the record. On POSIX it opens each
+  directory under the repository without following links and writes,
+  renames, and deletes the record relative to those directory handles; on
+  Windows it checks the paths again before the rename or delete, which
+  narrows but does not close a directory-swap race.
 - Behavior change: in the audit fan-out, a security reviewer `fail` verdict
   whose findings are all below `audit.block_severity` no longer blocks the
   audit. `block_severity` decides, as the Codex Security scanner path
