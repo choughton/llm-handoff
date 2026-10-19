@@ -17,6 +17,15 @@ This project follows a simple pre-release changelog until the first public tag.
   streamed agent stderr lines, the validator stderr warning, and the
   ledger-updater stderr lines are redacted. Raw stderr on result objects and
   in `logs/dispatch/audit/<name>.stderr.txt` is unchanged.
+- In publish modes `merge-commit` and `pr`, an operator `@backend` or
+  `@frontend` dispatch from a pause now continues the saved story when the
+  handoff has no `story_id` (for example a dispatcher-written
+  `protected_file_modified` escalation) and the checkout is still on that
+  story's branch. The dispatcher commit, the work-claim gate, and the
+  protected-file check then read the saved story's Work Packet from
+  `logs/dispatch/publish/story.json`, since the escalation only fences it.
+  When the story branch is still not ready, the dispatcher logs the error and
+  pauses at the operator prompt again instead of exiting 1.
 - `docs/` (`ARCHITECTURE.md`, `TESTING.md`, `SUPERVISED_DISPATCH.md`, and the
   `docs/handoff/` prompts and README), `examples/reference-workflow/README.md`,
   both `AGENTS.md` copies, the `dispatch_config` audit comments, and the

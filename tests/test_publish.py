@@ -28,6 +28,7 @@ from llm_handoff.publish import (
     recover_orphaned_story,
     resume_paused_publish,
     save_review_responses,
+    saved_story_assignment,
     saved_story_base,
     settle_deferred_findings,
     story_branch_name,
@@ -35,7 +36,11 @@ from llm_handoff.publish import (
 )
 from llm_handoff.router import route
 from llm_handoff.validator import ValidationResult
-from llm_handoff.work_claim import work_packet_errors
+from llm_handoff.work_claim import (
+    carry_over_key,
+    extract_work_packet_section,
+    work_packet_errors,
+)
 
 
 ASSIGNMENT = """---
@@ -347,6 +352,58 @@ def test_a_revised_work_packet_reaches_the_review_bounce(tmp_path: Path) -> None
         )
     state = json.loads((tmp_path / STATE_PATH).read_text(encoding="utf-8"))
     assert 'print(1)' in state["work_packet"]
+
+
+def test_saved_story_assignment_continues_only_the_checked_out_story(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    assert saved_story_assignment(tmp_path) is None
+    escalation = "---\nnext_agent: user\nstatus: escalate_to_user\n---\n"
+    assert ensure_story_branch(
+        repo_root=tmp_path,
+        prefix="llm-handoff/",
+        base_branch=None,
+        assignment_content=escalation,
+        continue_saved_story=True,
+    ) == (
+        "publish needs a story_id in the assignment's frontmatter to name the "
+        "story branch, and the checkout is not on a saved story's branch to "
+        "continue"
+    )
+    _start_story(tmp_path)
+
+    rebuilt = saved_story_assignment(tmp_path)
+
+    assert rebuilt is not None
+    assert carry_over_key(rebuilt) == "story:W9.9"
+    assert extract_work_packet_section(rebuilt) == extract_work_packet_section(
+        ASSIGNMENT
+    )
+    assert route(rebuilt).route == "backend"
+    assert (
+        ensure_story_branch(
+            repo_root=tmp_path,
+            prefix="llm-handoff/",
+            base_branch=None,
+            assignment_content=escalation,
+            continue_saved_story=True,
+        )
+        is None
+    )
+    # Without the operator's continuation, a handoff with no story_id stops.
+    assert ensure_story_branch(
+        repo_root=tmp_path,
+        prefix="llm-handoff/",
+        base_branch=None,
+        assignment_content=escalation,
+    ) == (
+        "publish needs a story_id in the assignment's frontmatter to name the "
+        "story branch"
+    )
+
+    _git(tmp_path, "switch", "-q", "main")
+    assert saved_story_assignment(tmp_path) is None
 
 
 def test_ensure_story_branch_refuses_to_start_from_another_story(
