@@ -2135,17 +2135,40 @@ def _extract_json_object(text: str, *, required_key: str, depth: int) -> dict | 
     if depth > 2 or not text:
         return None
     for candidate in _iter_json_candidates(text):
-        try:
-            # strict=False accepts raw newlines and tabs inside strings. A Codex
-            # quality reviewer prints its verdict with a multi-line `report`
-            # that way, and strict parsing rejected an otherwise valid verdict.
-            payload = json.loads(candidate, strict=False)
-        except json.JSONDecodeError:
+        payload = _loads_lenient(candidate)
+        if payload is None:
             continue
         found = _locate_object(payload, required_key=required_key, depth=depth)
         if found is not None:
             return found
     return None
+
+
+# A backslash pair, a valid JSON escape, or a lone backslash (group 1 unset).
+_JSON_BACKSLASH_RE = re.compile(r'\\(\\|["/bfnrt]|u[0-9a-fA-F]{4})?')
+
+
+def _loads_lenient(candidate: str) -> object | None:
+    try:
+        # strict=False accepts raw newlines and tabs inside strings. A Codex
+        # quality reviewer prints its verdict with a multi-line `report`
+        # that way, and strict parsing rejected an otherwise valid verdict.
+        return json.loads(candidate, strict=False)
+    except json.JSONDecodeError as exc:
+        # "Invalid \escape", or "Invalid \uXXXX escape" for `C:\users`.
+        if not exc.msg.startswith("Invalid \\"):
+            return None
+    # A Codex quality reviewer copies regex commands such as `rg -n 'f\('`
+    # into commands_run without doubling the backslash. `\(` is not a JSON
+    # escape, so the whole verdict was rejected. Keep each lone backslash as
+    # a literal one and parse again; valid escapes are left as they are.
+    repaired = _JSON_BACKSLASH_RE.sub(
+        lambda match: match.group(0) if match.group(1) else "\\\\", candidate
+    )
+    try:
+        return json.loads(repaired, strict=False)
+    except json.JSONDecodeError:
+        return None
 
 
 def _locate_object(payload: object, *, required_key: str, depth: int) -> dict | None:

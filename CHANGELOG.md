@@ -25,6 +25,10 @@ This project follows a simple pre-release changelog until the first public tag.
   link-refusing writer, and a handoff path that passes through a symlink or
   junction discards the record instead of writing outside the repository.
 
+- An audit verdict whose strings hold unescaped backslashes, such as a Codex
+  quality reviewer's `rg -n '12\.'` in `commands_run`, now parses instead of
+  failing `quality_verdict_malformed`. Each lone backslash is read as a
+  literal one; valid JSON escapes keep their meaning.
 - Behavior change: a console Ctrl+C during a role's dispatch cycle now asks
   for a graceful stop instead of killing the agent. Agent processes, the
   handoff normalizers, the work-claim verification command, and the
