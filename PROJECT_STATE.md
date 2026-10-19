@@ -6,7 +6,7 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 approved at `d981442`; HARD-5 in progress).
+- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 approved at `d981442`; HARD-5 approved at `1f60143` and merged in PR #154; HARD-6 in progress, the only remaining story).
 - **Epic Awaiting Close:** None. GEMINI-REMOVAL closed (see the Completed
   Scope Ledger). LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP,
   SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST,
@@ -511,8 +511,9 @@ itself from 1.3.5 to 1.4.2 during the checks):
 ### 10. HARDENING - security followups
 
 Fit: HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 is approved;
-HARD-5 is in progress. Independent and cheap; each story closes one confirmed followup, so it fills a wait
-well. CHAT-4's dependency on the HARD-3 marker is now satisfied.
+HARD-5 is approved and merged in PR #154. HARD-6 remains: it is the only
+open HARDENING story and it is Windows-specific. Independent and cheap; each story closes one confirmed
+followup, so it fills a wait well. CHAT-4's dependency on the HARD-3 marker is now satisfied.
 
 The security-relevant Open Followups, promoted to stories. Each story names
 the followup it closes; all five were confirmed in the code at `d67722e`.
@@ -589,7 +590,54 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   same rule. Decided by the planner on 2026-10-19: prune first; ask only with
   `interactive_pause` and a TTY console; `y`/`yes` accepts; decline, EOF, no
   TTY, and dry run never apply it; dry run keeps the file; control characters
-  are escaped in the prompt.
+  are escaped in the prompt. Approved at `1f601433becc09ffe6f729dfbdbcb27bd72c3cc2`
+  (merged in PR #154) with one operator-accepted medium security finding, now
+  HARD-6.
+- HARD-6: Race-safe Windows carry-over deletion and writing (follow-up from the
+  HARD-5 security review). On Windows, `llm_handoff/orchestrator.py` (about
+  line 3778) checks for links and then deletes `logs/dispatch/carry-over.json`
+  by pathname, and the writer separates path validation from `os.replace`. A
+  process that can write under `logs/` can swap `logs/dispatch` for a junction
+  after the check, so the dispatcher deletes or writes an external file with
+  its own permissions. HARD-5 accepted this race and documents it in
+  `CHANGELOG.md`; POSIX already uses no-follow directory descriptors. Use
+  Windows directory handles with reparse-point rejection and protection
+  against directory replacement for the whole delete and write; if that
+  guarantee is unavailable, disable disk persistence and deletion of the
+  carry-over record on Windows and keep it in memory only. Test with a
+  junction swap where the platform allows it, and update the `CHANGELOG.md`
+  limitation note. Decided by the planner on 2026-10-19: before writing or
+  deleting the record without directory-fd support, pin `logs` and
+  `logs/dispatch` with `CreateFileW` (through `ctypes`) without
+  `FILE_SHARE_DELETE` and with `FILE_FLAG_OPEN_REPARSE_POINT`, rejecting a
+  reparse point or non-directory, and hold both handles for the whole write or
+  delete; when pinning is unavailable, keep the record in memory only (no
+  read, write, or delete; one `WARN`); POSIX unchanged. Implementation note:
+  the pin handles request `FILE_LIST_DIRECTORY` in addition to
+  `FILE_READ_ATTRIBUTES`, because Windows does not enforce share modes on an
+  attributes-only handle (a test showed the rename succeeding without it).
+  Audit fix (2026-10-19, after the `5cbe641` audit): the pin does not stop an
+  empty `logs/dispatch` from being turned into a mount point in place;
+  `FSCTL_SET_REPARSE_POINT` needs only write-attributes access, which share
+  modes do not govern (a probe set one under a pin with share mode 0). The
+  Windows delete and writer now open the file as a handle, require its final
+  path to be inside a handle to `logs/dispatch`, and delete through that
+  handle or write through it and rename it relative to the directory handle
+  (`NtSetInformationFile` with `RootDirectory`). Windows-only regressions set
+  the mount point in place while the pin is held. Second audit fix
+  (2026-10-19, after the `c19452b` audit): the pins themselves were opened by
+  full path, so an empty `logs` turned into a mount point between the two
+  pins redirected the `logs/dispatch` pin outside the repository. Each pin is
+  now opened relative to its parent's open handle (`NtCreateFile` with
+  `RootDirectory`, starting from a handle to the repository root), the
+  parent handle is checked for a reparse point after the child opens, and
+  the child's final path must equal the parent's plus the child name. The
+  record file is opened and created relative to the pinned `logs/dispatch`
+  handle, which is checked for a reparse point before the delete and the
+  rename. A relative open that meets an in-place mount point fails with
+  Windows error 1921, which is treated as a link. A Windows-only regression
+  mounts an empty `logs` between the two pins for both the delete and the
+  write.
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 
@@ -1250,6 +1298,15 @@ The remaining letters are unchanged. AUDIT-COST (b) and (c) closed by GEM-4b.
   `55e2ca3c757d4c02cc13dad42060f374caef630e`; approved with no findings.
   Verification: dispatcher ran `python -m pytest tests -q -p no:cacheprovider`
   on that commit, exit 0 (operator run: 2692 passed, 16 skipped).
+- **HARDENING (HARD-1 through HARD-5)** - security followups closed: HARD-1
+  reviewer stderr redaction (PR #146); HARD-2 operator text delimiters
+  (PR #147); HARD-3 operator-influence audit marker (PR #151); HARD-4
+  `handoff_path` and `project_state_path` validation (approved at `d981442`);
+  HARD-5 carry-over record confirmation (PR #154, audited at
+  `1f601433becc09ffe6f729dfbdbcb27bd72c3cc2`). HARD-5 audit approved; quality
+  pass, security reviewer found one medium Windows junction-swap race,
+  operator-accepted and carried as HARD-6 (still open). Verification: dispatcher
+  ran the full suite at the audited SHA, exit 0 (2784 passed, 26 skipped).
 
 ## Notes
 
