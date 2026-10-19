@@ -694,7 +694,11 @@ bounces until the three-fix circuit breaker escalates.
   the dispatcher's own `git` calls stay in the console process group. The
   supervisor kills the child dispatcher's tree on any exception, and the
   work-claim verification run kills its tree on any exception, because
-  neither child receives the console Ctrl+C anymore.
+  neither child receives the console Ctrl+C anymore. Agent, verification,
+  and supervised-child launches go through
+  `agent_process._start_isolated_process`, which holds a Ctrl+C until
+  `Popen` returns so a stop-now press cannot strand a new child; the handoff
+  normalizers still call `Popen` directly (deferred PR #160 review finding).
 - RECOVERY-2: In-flight record and implementer recovery. Before each step
   that can leave partial state, write `logs/dispatch/in-flight.json` (cycle,
   role, story key, phase, HEAD, a copy of the pre-dispatch `HANDOFF.md`, and

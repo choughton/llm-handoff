@@ -24,7 +24,10 @@ This project follows a simple pre-release changelog until the first public tag.
   supervisor; use `llm-handoff stop` there. `git` commands the dispatcher
   runs itself still receive Ctrl+C. The supervisor now kills the child
   dispatcher's process tree, and the work-claim gate kills the verification
-  command's process tree, when either is interrupted.
+  command's process tree, when either is interrupted. A Ctrl+C that arrives
+  while one of these children is being created is held until the child
+  handle exists, so a stop-now press then kills the new child too; the
+  handoff normalizers do not use this guard yet.
 - Behavior change: a carry-over record loaded from
   `logs/dispatch/carry-over.json` at startup no longer applies on its own,
   because agent roles can write under `logs/` and a forged record could claim

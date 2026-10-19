@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import threading
@@ -10,6 +12,7 @@ from typing import Any
 import pytest
 
 from llm_handoff import agent_process
+from llm_handoff import console_interrupt
 from llm_handoff import supervisor
 
 
@@ -244,6 +247,160 @@ def test_process_group_popen_kwargs_follow_platform(
     }
     monkeypatch.setattr(agent_process, "_WINDOWS", False)
     assert agent_process._process_group_popen_kwargs() == {"start_new_session": True}
+
+
+@pytest.fixture
+def shared_controller() -> Any:
+    console_interrupt.CONTROLLER.reset()
+    try:
+        yield console_interrupt.CONTROLLER
+    finally:
+        console_interrupt.CONTROLLER.reset()
+
+
+def _popen_that_gets_ctrl_c(
+    process: Any,
+    presses: int,
+    seen_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    # Simulates Ctrl+C arriving while Popen is still creating the child.
+    def fake_popen(_command: Any, **kwargs: Any) -> Any:
+        if seen_kwargs is not None:
+            seen_kwargs.update(kwargs)
+        for _ in range(presses):
+            console_interrupt.CONTROLLER.handle_sigint(
+                signal.SIGINT, None, stream=io.StringIO()
+            )
+        return process
+
+    return fake_popen
+
+
+def test_start_isolated_process_kills_child_on_second_ctrl_c_during_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    shared_controller: Any,
+) -> None:
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+    seen_kwargs: dict[str, Any] = {}
+    shared_controller.set_active_role("backend")
+    monkeypatch.setattr(
+        agent_process.subprocess,
+        "Popen",
+        _popen_that_gets_ctrl_c(process, 2, seen_kwargs),
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent_process._start_isolated_process(["agent"], cwd="x")
+
+    assert tree_kills == [process]
+    assert shared_controller.interrupt_now_requested() is True
+    assert seen_kwargs["cwd"] == "x"
+    for key, value in agent_process._process_group_popen_kwargs().items():
+        assert seen_kwargs[key] == value
+
+
+def test_start_isolated_process_kills_child_on_ctrl_c_with_no_active_role(
+    monkeypatch: pytest.MonkeyPatch,
+    shared_controller: Any,
+) -> None:
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+    monkeypatch.setattr(
+        agent_process.subprocess, "Popen", _popen_that_gets_ctrl_c(process, 1)
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent_process._start_isolated_process(["agent"])
+
+    assert tree_kills == [process]
+
+
+def test_start_isolated_process_keeps_child_on_first_ctrl_c_during_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    shared_controller: Any,
+) -> None:
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+    shared_controller.set_active_role("backend")
+    monkeypatch.setattr(
+        agent_process.subprocess, "Popen", _popen_that_gets_ctrl_c(process, 1)
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+
+    assert agent_process._start_isolated_process(["agent"]) is process
+
+    assert tree_kills == []
+    assert shared_controller.stop_requested() is True
+
+
+def test_start_isolated_process_raises_deferred_ctrl_c_when_popen_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    shared_controller: Any,
+) -> None:
+    tree_kills: list[Any] = []
+
+    def failing_popen(_command: Any, **_kwargs: Any) -> Any:
+        console_interrupt.CONTROLLER.handle_sigint(
+            signal.SIGINT, None, stream=io.StringIO()
+        )
+        raise OSError("no such program")
+
+    monkeypatch.setattr(agent_process.subprocess, "Popen", failing_popen)
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent_process._start_isolated_process(["agent"])
+
+    assert tree_kills == []
+
+
+def test_run_command_streaming_kills_child_on_ctrl_c_during_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    shared_controller: Any,
+) -> None:
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+    monkeypatch.setattr(
+        agent_process.subprocess, "Popen", _popen_that_gets_ctrl_c(process, 1)
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent_process._run_command_streaming(
+            ["agent.cmd"],
+            cwd=Path.cwd(),
+            timeout_ms=60_000,
+        )
+
+    assert tree_kills == [process]
+
+
+def test_supervisor_kills_child_tree_when_interrupted_before_the_read_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The kill-on-exception block starts right after the child exists, so an
+    # interrupt during the run-state snapshot also takes the tree down.
+    child = _StalledChild(threading.Event())
+    tree_kills: list[Any] = []
+
+    def interrupted_snapshot(_repo_root: Any, **_kwargs: Any) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        supervisor.subprocess, "Popen", lambda _command, **_kwargs: child
+    )
+    monkeypatch.setattr(supervisor, "_kill_process_tree", tree_kills.append)
+    monkeypatch.setattr(supervisor, "_repo_snapshot", interrupted_snapshot)
+    config = supervisor.SupervisorConfig(repo_root=tmp_path)
+
+    with pytest.raises(KeyboardInterrupt):
+        supervisor._run_dispatch_child(config, lambda level, message: None)
+
+    assert tree_kills == [child]
 
 
 class _BlockingStdout:

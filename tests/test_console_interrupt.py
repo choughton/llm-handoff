@@ -67,6 +67,81 @@ def test_ctrl_c_after_the_role_is_cleared_raises_at_once() -> None:
     assert controller.stop_requested() is False
 
 
+class _ReentrantStream(io.StringIO):
+    """A stream whose write fails like a reentrant buffered-stream write."""
+
+    def write(self, text: str) -> int:
+        raise RuntimeError("reentrant call inside <_io.BufferedWriter name='<stderr>'>")
+
+
+def test_first_ctrl_c_survives_a_reentrant_stderr_write() -> None:
+    controller = ConsoleInterruptController()
+    controller.set_active_role("backend")
+
+    controller.handle_sigint(signal.SIGINT, None, stream=_ReentrantStream())
+
+    assert controller.stop_requested() is True
+    assert controller.interrupt_now_requested() is False
+
+
+def test_deferred_interrupts_hold_a_second_ctrl_c_until_the_block_exits() -> None:
+    controller = ConsoleInterruptController()
+    controller.set_active_role("backend")
+    controller.handle_sigint(signal.SIGINT, None, stream=io.StringIO())
+    reached_end_of_block = False
+
+    with pytest.raises(KeyboardInterrupt):
+        with controller.deferred_interrupts():
+            controller.handle_sigint(signal.SIGINT, None, stream=io.StringIO())
+            reached_end_of_block = True
+
+    assert reached_end_of_block is True
+    assert controller.interrupt_now_requested() is True
+    # The pending interrupt is consumed; a later block exits cleanly.
+    with controller.deferred_interrupts():
+        pass
+
+
+def test_deferred_interrupts_hold_ctrl_c_with_no_active_role() -> None:
+    controller = ConsoleInterruptController()
+
+    with pytest.raises(KeyboardInterrupt):
+        with controller.deferred_interrupts():
+            with controller.deferred_interrupts():
+                controller.handle_sigint(signal.SIGINT, None, stream=io.StringIO())
+            # Nested blocks raise only when the outermost one exits.
+
+
+def test_deferred_interrupts_do_not_defer_a_graceful_stop_request() -> None:
+    controller = ConsoleInterruptController()
+    controller.set_active_role("backend")
+
+    with controller.deferred_interrupts():
+        controller.handle_sigint(signal.SIGINT, None, stream=io.StringIO())
+        assert controller.stop_requested() is True
+
+    assert controller.interrupt_now_requested() is False
+
+
+def test_deferred_interrupts_are_a_no_op_off_the_main_thread() -> None:
+    controller = ConsoleInterruptController()
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            with controller.deferred_interrupts():
+                outcome["depth"] = controller._defer_depth
+        except BaseException as exc:  # noqa: BLE001 - report to the main thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join()
+
+    assert "error" not in outcome
+    assert outcome["depth"] == 0
+
+
 def test_installed_sets_and_restores_the_previous_handler() -> None:
     controller = ConsoleInterruptController()
     previous = signal.getsignal(signal.SIGINT)

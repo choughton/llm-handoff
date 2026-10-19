@@ -23,7 +23,7 @@ import yaml
 import llm_handoff
 from llm_handoff.agent_process import (
     _kill_process_tree,
-    _process_group_popen_kwargs,
+    _start_isolated_process,
 )
 from llm_handoff.agent_roles import invoke_support_role
 from llm_handoff.agent_types import SubagentResult
@@ -611,7 +611,7 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
     log("INFO", f"Starting supervised dispatch child: {_format_command(command)}")
     start_time = time.monotonic()
     output_tail: deque[str] = deque(maxlen=config.tail_lines)
-    process = subprocess.Popen(
+    process = _start_isolated_process(
         command,
         cwd=config.repo_root,
         env=_child_dispatch_env(),
@@ -620,31 +620,31 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
         text=True,
         encoding="utf-8",
         errors="replace",
-        **_process_group_popen_kwargs(),
-    )
-    assert process.stdout is not None
-    _write_run_state(
-        config,
-        status="child_running",
-        route=_current_route(config),
-        snapshot=_repo_snapshot(
-            config.repo_root,
-            handoff_path=_dispatch_handoff_path(config),
-        ),
-        repair_attempts=0,
-        last_event="child_started",
-        child_pid=process.pid,
-    )
-    output_queue: queue.Queue[str | None] = queue.Queue()
-    reader_thread = threading.Thread(
-        target=_enqueue_process_output,
-        args=(process.stdout, output_queue),
-        daemon=True,
     )
     # The child runs in its own process group, so it no longer gets the
     # console Ctrl+C; on any exception here the supervisor must take its
-    # tree down itself before re-raising.
+    # tree down itself before re-raising. The block starts right after the
+    # child exists, so the run-state write and reader setup are covered too.
     try:
+        assert process.stdout is not None
+        _write_run_state(
+            config,
+            status="child_running",
+            route=_current_route(config),
+            snapshot=_repo_snapshot(
+                config.repo_root,
+                handoff_path=_dispatch_handoff_path(config),
+            ),
+            repair_attempts=0,
+            last_event="child_started",
+            child_pid=process.pid,
+        )
+        output_queue: queue.Queue[str | None] = queue.Queue()
+        reader_thread = threading.Thread(
+            target=_enqueue_process_output,
+            args=(process.stdout, output_queue),
+            daemon=True,
+        )
         reader_thread.start()
         last_output_at = start_time
         last_heartbeat_at = start_time

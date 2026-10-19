@@ -51,7 +51,7 @@ from llm_handoff.agent_process import (
     PLATFORM_AGENT_ENV_NAMES,
     PROVIDER_AGENT_ENV_PREFIXES,
     _kill_process_tree,
-    _process_group_popen_kwargs,
+    _start_isolated_process,
 )
 from llm_handoff.config import (
     VENDOR_API_KEY_ENV_NAMES,
@@ -1230,10 +1230,9 @@ def run_shell_command(
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
-        **_process_group_popen_kwargs(),
     }
     try:
-        process = subprocess.Popen(command, **popen_kwargs)  # type: ignore[call-overload]
+        process = _start_isolated_process(command, **popen_kwargs)
     except OSError as exc:
         return CommandRun(
             command=command,

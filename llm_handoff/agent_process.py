@@ -17,7 +17,10 @@ from typing import Callable, Mapping, TextIO
 from llm_handoff.agent_streams import StderrMode, _LiveAgentOutputMonitor
 from llm_handoff.agent_types import LogFn, _ProcessResult
 from llm_handoff.config import VENDOR_API_KEY_ENV_NAMES, AgentConfig
-from llm_handoff.console_interrupt import interrupt_now_requested
+from llm_handoff.console_interrupt import (
+    deferred_interrupts,
+    interrupt_now_requested,
+)
 
 
 PROCESS_READER_JOIN_TIMEOUT_SECONDS = 0.2
@@ -169,6 +172,35 @@ def _process_group_popen_kwargs() -> dict[str, object]:
     return {"start_new_session": True}
 
 
+def _start_isolated_process(
+    command: list[str] | str,
+    **popen_kwargs: object,
+) -> subprocess.Popen[str]:
+    """Start ``command`` in its own process group and return the process.
+
+    A Ctrl+C that arrives while the child is being created is held back
+    until ``Popen`` returns. If it asked to stop at once, the new child's
+    tree is killed here and the KeyboardInterrupt re-raised, so a child that
+    no longer receives the console Ctrl+C cannot outlive the dispatcher.
+    Callers should enter their own kill-on-exception ``try`` block directly
+    after this call returns. ``OSError`` from ``Popen`` propagates unchanged.
+    """
+    process: subprocess.Popen[str] | None = None
+    try:
+        with deferred_interrupts():
+            process = subprocess.Popen(  # type: ignore[call-overload]
+                command,
+                **popen_kwargs,
+                **_process_group_popen_kwargs(),
+            )
+    except KeyboardInterrupt:
+        if process is not None:
+            _kill_process_tree(process)
+        raise
+    assert process is not None
+    return process
+
+
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
     """Terminate ``process`` and every descendant it spawned.
 
@@ -312,40 +344,41 @@ def _run_command_streaming(
         "encoding": "utf-8",
         "errors": "replace",
         "bufsize": 1,
-        **_process_group_popen_kwargs(),
     }
     if env is not None:
         popen_kwargs["env"] = env
 
     try:
-        process = subprocess.Popen(resolved_command, **popen_kwargs)
+        process = _start_isolated_process(resolved_command, **popen_kwargs)
     except OSError as exc:
         return _ProcessResult(stdout="", stderr=str(exc), exit_code=1)
 
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
     stream_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
-    readers = [
-        threading.Thread(
-            target=_read_process_stream,
-            args=(process.stdout, "stdout", stream_queue),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_read_process_stream,
-            args=(process.stderr, "stderr", stream_queue),
-            daemon=True,
-        ),
-    ]
-    for reader in readers:
-        reader.start()
-
-    last_output_at = time.monotonic()
-    deadline = last_output_at + (timeout_ms / 1000)
-    idle_limit = None if idle_timeout_ms is None else idle_timeout_ms / 1000
     timed_out = False
     idled_out = False
+    # The kill-on-exception block starts right after the child exists, so
+    # an interrupt during the reader setup also takes the tree down.
     try:
+        readers = [
+            threading.Thread(
+                target=_read_process_stream,
+                args=(process.stdout, "stdout", stream_queue),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_read_process_stream,
+                args=(process.stderr, "stderr", stream_queue),
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+
+        last_output_at = time.monotonic()
+        deadline = last_output_at + (timeout_ms / 1000)
+        idle_limit = None if idle_timeout_ms is None else idle_timeout_ms / 1000
         while process.poll() is None and time.monotonic() < deadline:
             if interrupt_now_requested():
                 # A second console Ctrl+C. It raises KeyboardInterrupt only
