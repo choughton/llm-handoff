@@ -325,8 +325,10 @@ prints `Stop requested; finishing the current <role> run. Press Ctrl+C again
 to stop now.`, finishes the cycle, and exits with code 0 before the next
 dispatch. It logs the same `PAUSE` lines as for a stop request and writes no
 file. A second Ctrl+C stops at once: the dispatcher kills the running agent's
-process tree, releases the lock, and exits with code 130. Edits an agent
-stopped this way left are not recorded for carry-over; review them with
+process tree, releases the lock, and exits with code 130. Edits an
+implementer stopped this way left are not recorded for carry-over, but the
+next start can recover them from the in-flight record after you confirm it
+(see [Dispatcher Commits](#dispatcher-commits)); review them with
 `git status` before restarting.
 
 Three limits apply:
@@ -356,7 +358,11 @@ What survives a restart, all under `logs/dispatch/`:
 - the carry-over record (`carry-over.json`), which applies only after the
   operator confirms it at a terminal; otherwise it is discarded with a `WARN`
   line and its files stay operator edits. See
-  [Dispatcher Commits](#dispatcher-commits).
+  [Dispatcher Commits](#dispatcher-commits);
+- the in-flight record (`in-flight.json`), which exists only while an
+  implementer dispatch runs. A record found at startup means that implementer
+  was interrupted mid-dispatch; it applies only after the operator confirms it
+  at a terminal. See [Dispatcher Commits](#dispatcher-commits).
 
 What does not survive: a scheduled planner recovery or operator-prompt
 dispatch that had not run yet (the dispatcher logs a `WARN` line naming it),
@@ -608,6 +614,70 @@ handles opened without following links). Where neither mechanism is
 available, the record stays in memory only:
 the dispatcher leaves any `carry-over.json` on disk untouched and logs a
 `WARN` line.
+
+An implementer interrupted mid-dispatch (a second Ctrl+C, a closed window, or
+a crash) never reaches the step that records its leftovers, so the dispatcher
+also writes `logs/dispatch/in-flight.json` right before each `backend` or
+`frontend` dispatch the work-claim gate applies to, and deletes it once the
+dispatch returns, whatever its exit code. The record names the role, the
+story, HEAD, the pre-dispatch `HANDOFF.md` text, and the operator's dirty files
+with their content hashes. Planner, auditor, finalizer, validator, and
+ungated dispatches write none. When the record cannot be deleted after the
+dispatch returns, the dispatcher logs an `ERROR` line and stops before the
+dispatcher commit and gates, so the record still describes an unfinished
+dispatch and the next start offers its work for recovery. An operator
+`@backend` or `@frontend` dispatch that continued the saved story from a
+handoff without a `story_id` also records the rebuilt assignment, and its
+recovery continues that saved story the same way. The record uses the same
+race-safe writer and link
+checks as `carry-over.json`, and it is read the same way: `logs` and
+`logs/dispatch` are opened (or, on Windows, pinned) without following links
+and the record is opened relative to `logs/dispatch` without following a link,
+so a link swapped in after the first check is refused rather than read. The
+opened file must be a single-link regular file of at most 8 MiB; a pipe, a
+directory, a hard link, or a larger file counts as an invalid record. When
+Git does not ignore the path or neither
+race-safe mechanism is available, the dispatcher writes nothing, leaves any
+file there untouched, and logs one `WARN` line per run. At startup, before the
+carry-over record, a record found on disk is compared with the working tree:
+the files that are dirty now but were not before (minus the handoff) are the
+agent's files, an operator file whose content changed or that is no longer
+dirty is a changed operator file, and the handoff counts as changed when its
+text differs from the pre-dispatch text. A record that does not parse, or with
+nothing changed, is deleted. A read that fails for another reason, such as a
+sharing violation or a permission error, logs a `WARN` line and keeps the
+record for a later start. A dry run logs what it found, says
+`Not applied in dry run.`, and leaves the record on disk. Otherwise the
+confirmation rule above applies: only with `interactive_pause` on and a
+terminal with console input does the dispatcher log the role, story, agent
+files, changed operator files, and whether the handoff will be restored, then
+ask `Recover <role>'s interrupted <story> work? [y/N]`. The record lives in a
+file a role can rewrite, so the dispatcher cannot verify that its handoff text
+is the real pre-dispatch assignment. Right before the question it therefore
+logs the assignment that confirming would hand the re-dispatched role, with
+its Files in scope, Files out of bounds, Verification commands, and a short
+SHA-256, each escaped, and says that confirming accepts that assignment as the
+next Work Packet. Decline when it is not the assignment you expect. Any answer other than
+`y` or `yes`, end of input, no terminal, or `interactive_pause: false`
+discards the record with a `WARN` line; nothing is restored or carried over.
+On `y`, a half-written handoff is replaced by the record's handoff text, the
+agent's files become that story's carry-over record (the carry-over prompt is
+skipped for this start), the record is deleted, and the same role
+is dispatched again with a note that its previous run was interrupted and
+lists its files. When an operator file changed, nothing is dispatched: the
+first cycle pauses with an `INTERRUPTED DISPATCH:` reason that names those
+files, which stay operator edits the dispatcher never stages or commits. The
+handoff is restored only inside the repository: before the prompt, a handoff
+path that passes through a symlink or junction discards the record with a
+`WARN` line and no prompt, and the restore itself walks the handoff's
+directories without following links and replaces the file by a rename inside
+its own directory, as the carry-over writer does. If a link appears in
+between, nothing is written or carried over, the record is deleted, and a
+`WARN` line says the files stay operator edits. The restored handoff is
+written as UTF-8 with LF line endings. So
+far only an implementer interrupted mid-dispatch is recovered; an interrupted
+handback (RECOVERY-2b), the other phases (RECOVERY-3), and starts with no
+record (RECOVERY-4) are pending.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the

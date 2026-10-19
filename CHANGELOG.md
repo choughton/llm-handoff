@@ -6,6 +6,37 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Interrupted implementer recovery: the dispatcher now writes
+  `logs/dispatch/in-flight.json` right before each gated `backend` or
+  `frontend` dispatch and deletes it once the dispatch returns. A record found
+  at the next start means that implementer was interrupted mid-dispatch (a
+  second Ctrl+C, a closed window, or a crash). After the operator confirms
+  `Recover <role>'s interrupted <story> work? [y/N]` at a terminal, the
+  agent's partial files carry over to the story, a half-written handoff is
+  restored, and the same role is dispatched again with a note that its run
+  was interrupted. Declining, no terminal, or `interactive_pause: false`
+  discards the record and the files stay operator edits. When an operator
+  file changed in the meantime, the first cycle pauses with an
+  `INTERRUPTED DISPATCH:` reason instead. A dry run only logs the record. The
+  record uses the carry-over record's race-safe writer and link checks, is
+  read through the same link-refusing directory walk (only a single-link
+  regular file of at most 8 MiB is accepted), and is not written when Git
+  does not ignore it. The half-written handoff is restored through the same
+  link-refusing writer, and a handoff path that passes through a symlink or
+  junction discards the record instead of writing outside the repository.
+  A record that cannot be deleted after the dispatch returns stops the
+  dispatcher before its commit and gates, a read that fails with a sharing,
+  permission, or I/O error keeps the record for a later start, and an
+  interrupted operator `@backend`/`@frontend` dispatch that continued the
+  saved story is recovered as a continuation of that story. Because a role
+  can rewrite the record, the dispatcher does not treat it as authenticated:
+  before the question it logs the assignment a confirmation would restore
+  (Files in scope, Files out of bounds, Verification commands, and a short
+  SHA-256, escaped), and confirming approves that assignment.
+- The interrupted-dispatch recovery and carry-over prompts now also escape
+  Unicode format controls (bidi overrides and isolates) and line or paragraph
+  separators, not only control characters.
+
 - An audit verdict whose strings hold unescaped backslashes, such as a Codex
   quality reviewer's `rg -n '12\.'` in `commands_run`, now parses instead of
   failing `quality_verdict_malformed`. Each lone backslash is read as a

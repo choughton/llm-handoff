@@ -6,10 +6,12 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-1 in progress). Picked over the other
+- **Active Epic:** RECOVERY (RECOVERY-2a in progress; RECOVERY-1 approved at
+  14f195b, merged in PR #160). RECOVERY-1 closed; RECOVERY stays active
+  (RECOVERY-2 unblocked by HARD-5/6). RECOVERY-2 split: 2a mid-dispatch
+  recovery now, 2b resume-at-commit next. Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
-  RECOVERY-1 is independent and removes the Windows Ctrl+C hazard; CHAT is
-  ordered after it. ACTIVE-PLANNER is meant to follow an implementer
+  CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
   environment-refusal pause, and no such pause happened in the last run.
   TPM-ROLE matters less here because the self-host planner runs on claude,
   not antigravity. ESCALATION-RECONCILE is meant to follow a stale user
@@ -661,8 +663,9 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 
 ### 12. RECOVERY - interrupted-run recovery
 
-Fit: RECOVERY-1 is independent and alone removes the Ctrl+C hazard.
-HARD-5 and HARD-6 are closed, so RECOVERY-2 is unblocked. Its in-flight
+Fit: RECOVERY-1 is merged (PR #160) and removed the Ctrl+C hazard;
+RECOVERY-2a is in progress. HARD-5 and HARD-6 are closed, so RECOVERY-2 is
+unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
 HARD-5's operator-confirmation rule before carrying anything over and
 HARD-6's race-safe record I/O to read, write, and delete
@@ -678,7 +681,7 @@ whose edits are whose. Today a Ctrl+C on Windows also reaches the agent
 partial edits as operator edits that are never committed, so the story
 bounces until the three-fix circuit breaker escalates.
 
-- RECOVERY-1: Graceful Ctrl+C. Start agent processes in their own process
+- RECOVERY-1 (merged in PR #160): Graceful Ctrl+C. Start agent processes in their own process
   group on Windows (`CREATE_NEW_PROCESS_GROUP`, like POSIX
   `start_new_session`) so a console Ctrl+C reaches only the dispatcher. The
   first Ctrl+C requests the same stop as `llm-handoff stop` and prints `Stop
@@ -701,23 +704,29 @@ bounces until the three-fix circuit breaker escalates.
   supervisor's `main` installs the console interrupt handler (with no active
   role) so that hold applies there too. The handoff normalizers still call
   `Popen` directly (deferred PR #160 review finding).
-- RECOVERY-2: In-flight record and implementer recovery. Before each step
-  that can leave partial state, write `logs/dispatch/in-flight.json` (cycle,
-  role, story key, phase, HEAD, a copy of the pre-dispatch `HANDOFF.md`, and
-  fingerprints of the files dirty before the dispatch); clear it when the
-  cycle completes. At startup, an implementer phase found in the record means
-  files that were clean when the record was written and are changed now are
-  that agent's partial work: carry them over, restore a half-written
-  `HANDOFF.md`, and re-dispatch the same role with a note that its previous
-  run was interrupted and its partial changes are in the tree. The record
-  is read from disk, where roles can write, so it is untrusted: apply
-  HARD-5's rule and ask the operator to confirm the story and files before
-  carrying anything over (TTY only; otherwise discard with a WARN). Files that
-  were already dirty in the record stay operator-owned even if they changed
-  (a fingerprint shows a change but cannot separate the operator's bytes from
-  the agent's): they are never carried over or staged, and the dispatcher
-  pauses for the operator, naming them. Interrupted after the handback but
-  before the dispatcher commit or the gates: resume at the commit.
+- RECOVERY-2: Split by the planner on 2026-10-19:
+  - RECOVERY-2a: In-flight record and interrupted implementer dispatch
+    recovery. `llm_handoff/in_flight.py` holds `InFlightRecord` (version 1,
+    cycle, role `backend`/`frontend`, story key, phase `dispatch`, HEAD, the
+    pre-dispatch `HANDOFF.md`, operator dirty-file fingerprints, carried-over
+    paths) and a loader that rejects bad JSON, versions, roles, phases, types,
+    and a story key that does not match the handoff. `run_loop` writes
+    `logs/dispatch/in-flight.json` right before a gated implementer dispatch
+    and deletes it once `_dispatch_route` returns, through HARD-6's race-safe
+    helpers (parameterized by file name); no write, one WARN per run, when Git
+    does not ignore it or no race-safe mechanism exists. At startup, before
+    the carry-over prompt, a record is compared with the tree (agent files,
+    changed operator files, changed handoff); nothing changed deletes it,
+    dry run only logs it, and HARD-5's rule applies: on `y` the agent files
+    carry over, a half-written handoff is restored, and the same role is
+    re-dispatched (`interrupted_dispatch_recovery`) with a note listing its
+    files; a changed operator file pauses the first cycle instead
+    (`INTERRUPTED DISPATCH:`), and those files are never staged.
+  - RECOVERY-2b: Resume at the commit after an interrupted handback. The
+    record advances to a handback phase once _dispatch_route returns and is
+    cleared at the loop top; at startup that phase skips the re-dispatch and
+    resumes at the dispatcher commit and gates, with the same confirmation
+    rule.
 - RECOVERY-3: The other phases. Planner and finalizer: restore an invalid
   `HANDOFF.md` and re-run. Audit fan-out: restore the handoff and re-run the
   read-only reviewers. Work-claim gate and scanners: re-run. Publish: make
@@ -1254,6 +1263,22 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   handoff posts nothing; add a `handoff_repaired` event so the
   `LINEAR-EVIDENCE` check accepts a repaired lease whose producer changed.
   Vanilla mode is unchanged. Closes source-dispatcher comparison (a) and (b).
+- TIDY-9: Merge-aware audit range. When a story branch has merged its base
+  branch after the saved story base, the audit fan-out range (base from
+  `_story_start_sha` / `publish.saved_story_base`) includes the merged
+  upstream files, and the quality reviewer fails phase 1 on scope
+  (RECOVERY-2a cycles 7 and 9). Use
+  `git merge-base HEAD <remote>/<base branch>` as the review base when it
+  descends from the saved base. Files: `llm_handoff/orchestrator.py`,
+  `llm_handoff/publish.py`, `tests/`, `CHANGELOG.md`.
+- TIDY-10: Dispatcher verification for planner-issued audits.
+  `audit_verification.pre_audit_trigger` fires only for an epic close or an
+  empty review range, so a story audit the planner re-issues reaches a
+  sandboxed reviewer with no `## Dispatcher Verification` PASS (RECOVERY-2a
+  cycle 12). Also trigger it when the handoff's producer is not an
+  implementer and has no PASS for the audit commit. Files:
+  `llm_handoff/audit_verification.py`, `llm_handoff/orchestrator.py`,
+  `tests/`, `CHANGELOG.md`.
 
 ## Open Followups
 
