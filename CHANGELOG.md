@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: config load now rejects a `handoff_path` or
+  `project_state_path` that does not stay inside the repository. An empty
+  value, control characters, an absolute, UNC, or drive-letter path, a `..`
+  segment, a value that names the repository root (such as `.`), and a value
+  that resolves outside the repository through a symlink each fail with an
+  error naming the key, the quoted value, and the rule. Previously these
+  values were accepted and could point the dispatcher outside the repository.
 - An audit fan-out dispatched with `@auditor <message>` at the operator
   prompt is now marked as operator-influenced in three places: an
   `operator_influence` key in the audit's `review.json` under

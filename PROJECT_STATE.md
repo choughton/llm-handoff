@@ -6,7 +6,7 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 in progress).
+- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 in progress).
 - **Epic Awaiting Close:** None. GEMINI-REMOVAL closed (see the Completed
   Scope Ledger). LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP,
   SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST,
@@ -510,9 +510,9 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 ### 10. HARDENING - security followups
 
-Fit: HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 is in progress. Independent and cheap; each story closes one
-confirmed followup, so it fills a wait well. CHAT-4 reuses the HARD-3 marker, so take HARD-3 before
-CHAT.
+Fit: HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 is in progress;
+HARD-5 remains. Independent and cheap; each story closes one confirmed followup, so it fills a wait
+well. CHAT-4's dependency on the HARD-3 marker is now satisfied.
 
 The security-relevant Open Followups, promoted to stories. Each story names
 the followup it closes; all five were confirmed in the code at `d67722e`.
@@ -556,7 +556,7 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   auditor writes its own handoff and stays unmarked); the marker is a
   `## Operator Influence` handoff section, an `operator_influence` key in
   `review.json`, and a `### Operator influence` pull request subsection, each
-  holding the UTC time and the SHA-256 of the raw message.
+  holding the UTC time and the SHA-256 of the raw message. Merged in PR #151.
 - HARD-4: Validate `handoff_path` and `project_state_path` (closes
   CONFIG-CLEANUP followup (b)). The validator in `llm_handoff/config.py`
   (`_normalize_relative_path`) accepts any value, and the dispatcher builds
@@ -564,7 +564,11 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   the repository. Reject absolute paths, drive-letter and UNC paths, `..`
   segments, and control characters at config load, and check that the
   resolved path stays under `repo_root`. Name the key and the rule in the
-  error.
+  error. Decided by the planner on 2026-10-18: a field validator rejects
+  empty values, control characters, absolute, UNC, and drive-letter paths,
+  and `..` segments; a model validator rejects a value whose resolved path is
+  not strictly inside the resolved `repo_root` (symlink escapes and `.`);
+  errors name the key, `repr()` of the value, and the rule.
 - HARD-5: Stop trusting a carry-over record from disk (closes
   LINEAR-FOUNDATIONS followup (d)). `_restore_implementer_leftovers` in
   `llm_handoff/orchestrator.py` loads `logs/dispatch/carry-over.json` at

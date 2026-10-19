@@ -56,6 +56,14 @@ The nested path is the recommended default because it leaves room for handoff
 examples, archive files, and prompt handoff helpers. The flat path is useful for
 small repos that prefer fewer directories.
 
+Both `handoff_path` and `project_state_path` must be relative paths that stay
+inside the repository. Config load rejects an empty value, a value with
+control characters, an absolute path (`/x` or `\x`), a UNC path
+(`\\server\share` or `//server/share`), a drive-letter path (`C:\x`, `C:/x`,
+or `C:x`), a value with a `..` segment, a value that names the repository root
+(such as `.`), and a value that resolves outside the repository through a
+symlink. Forward slashes, backslashes, and a leading `./` are accepted.
+
 ## Project State Path
 
 Recommended default:
