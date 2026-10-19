@@ -194,6 +194,38 @@ def test_run_logged_agent_command_streams_claude_stderr_as_warn(
     ]
 
 
+@pytest.mark.parametrize("stderr_mode", ["warn", "codex"])
+def test_run_logged_agent_command_redacts_secrets_in_stderr_warn_line(
+    monkeypatch: pytest.MonkeyPatch,
+    stderr_mode: str,
+) -> None:
+    log_mock = Mock()
+    planted = "AIza" + "Sy7Kq" * 7
+    raw_stderr = f"Error: request rejected for key {planted}\n"
+
+    def fake_run_command_streaming(command, **kwargs):
+        del command
+        kwargs["on_stderr"](raw_stderr)
+        return _process_result(stderr=raw_stderr, exit_code=1)
+
+    monkeypatch.setattr(agents, "_run_command_streaming", fake_run_command_streaming)
+
+    result = agents._run_logged_agent_command(
+        "Agent",
+        [config.CLAUDE_BINARY, "-p", "prompt"],
+        cwd=Path.cwd(),
+        timeout_ms=config.SUBAGENT_TIMEOUT_MS,
+        log=log_mock,
+        stderr_mode=stderr_mode,
+    )
+
+    # The stored stderr stays raw; only the log line is redacted.
+    assert result.stderr == raw_stderr
+    assert log_mock.call_args_list == [
+        call("WARN", "Agent stderr: Error: request rejected for key [REDACTED]")
+    ]
+
+
 def test_run_logged_agent_command_skips_live_monitor_when_logging_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

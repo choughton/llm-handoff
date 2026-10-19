@@ -2518,7 +2518,8 @@ def test_start_failure_message_truncates_stderr_and_marks_empty() -> None:
         start_failure="argument",
     )
     message = audit_review._start_failure_message(long_run)
-    assert message.endswith("stderr: " + ("x" * 2500 + "TAIL")[-2000:])
+    assert message.endswith("stderr: ..." + ("x" * 2500 + "TAIL")[-297:])
+    assert len(message.split("stderr: ", 1)[1]) == 300
 
     empty_run = ReviewerRun(
         name="quality",
@@ -2535,6 +2536,64 @@ def test_start_failure_message_truncates_stderr_and_marks_empty() -> None:
         "audit_reviewer_start_failed: the quality reviewer (codex) could not "
         "start (launch); exit code 1. stderr: (empty)"
     )
+
+
+def test_start_failure_message_redacts_planted_key() -> None:
+    planted = "sk-ant-" + "Rk4Lm" * 9
+    run = ReviewerRun(
+        name="security",
+        provider="claude",
+        command=(),
+        exit_code=2,
+        elapsed_seconds=0.0,
+        stdout="",
+        stderr=f"error: unknown option\nANTHROPIC_API_KEY={planted}\n",
+        error="security_reviewer_failed: claude exited with code 2.",
+        start_failure="argument",
+    )
+
+    message = audit_review._start_failure_message(run)
+
+    assert planted not in message
+    assert "Rk4Lm" not in message
+    assert message.endswith(
+        "stderr: error: unknown option ANTHROPIC_API_KEY=[REDACTED]"
+    )
+
+
+def test_security_reviewer_failed_error_redacts_planted_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    planted = "sk-proj-" + "Vb8Nc" * 8
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            "",
+            exit_code=1,
+            stderr=f"upstream said: Authorization: Bearer {planted}\n",
+        ),
+    )
+    config = DispatchConfig(
+        repo_root=repo,
+        audit={"reviewers": ["quality", "security"], "security_provider": "claude"},
+    )
+
+    result, log = _run_fan_out(
+        config,
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert "security_reviewer_failed:" in result.stderr
+    assert "Authorization: Bearer [REDACTED]" in result.stderr
+    assert planted not in result.stderr
+    assert "Vb8Nc" not in result.stderr
+    assert "Vb8Nc" not in log.text()
 
 
 def test_security_reviewer_timeout_does_not_stop_the_loop(

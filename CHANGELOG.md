@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Provider stderr is now redacted before it reaches the dispatcher log or a
+  reviewer error. A new `llm_handoff/redaction.py` masks `sk-` keys, Google
+  `AIza` keys, `Bearer` tokens, GitHub tokens, and `NAME=value` pairs whose
+  name ends in `_KEY`, `_TOKEN`, or `_SECRET` (including quoted names such as
+  `{"NAME": "value"}`, and quoted values with spaces, which are masked through
+  the closing quote). The `audit_reviewer_start_failed`
+  and `security_reviewer_failed` messages now carry a redacted one-line stderr
+  tail capped at 300 characters (was the raw last 2000 characters), and the
+  streamed agent stderr lines, the validator stderr warning, and the
+  ledger-updater stderr lines are redacted. Raw stderr on result objects and
+  in `logs/dispatch/audit/<name>.stderr.txt` is unchanged.
 - In publish modes `merge-commit` and `pr`, an operator `@backend` or
   `@frontend` dispatch from a pause now continues the saved story when the
   handoff has no `story_id` (for example a dispatcher-written

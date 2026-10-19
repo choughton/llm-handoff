@@ -16,6 +16,7 @@ from llm_handoff.agent_streams import (
     _filter_codex_json_stderr_line,
 )
 from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
+from llm_handoff.redaction import redact_secrets
 from llm_handoff.usage_log import format_usage_line, usage_fields_from_codex_turn
 
 
@@ -85,9 +86,9 @@ class _CodexJsonMonitor:
 
             level, message = filtered
             if level == "AGENT":
-                self.log("AGENT", f"{self.agent_name}: {message}")
+                self.log("AGENT", f"{self.agent_name}: {redact_secrets(message)}")
             else:
-                self.log("WARN", f"{self.agent_name} stderr: {message}")
+                self.log("WARN", f"{self.agent_name} stderr: {redact_secrets(message)}")
 
     def _handle_event(self, event: dict[str, object]) -> None:
         event_type = event.get("type")

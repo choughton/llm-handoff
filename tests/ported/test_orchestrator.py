@@ -4435,3 +4435,37 @@ producer: planner
         "INFO",
         f"router: rewrote next_agent to deterministic output '{expected}' in HANDOFF.md.",
     ) in log_messages
+
+
+def test_run_validator_redacts_secrets_in_stderr_warn_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _handoff_path = _write_repo(tmp_path, "# Handoff\n")
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    planted = "sk-proj-" + "Zq9Xw" * 8
+    raw_stderr = f"request failed with OPENAI_API_KEY={planted}\n"
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_support_role",
+        lambda _name, _prompt, **_kwargs: _subagent_result(
+            exit_code=1, stdout="", stderr=raw_stderr
+        ),
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    result = orchestrator._run_validator(
+        config,
+        "validator",
+        "prompt",
+        "Validator",
+        lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert result is None
+    warns = [message for level, message in log_messages if level == "WARN"]
+    assert warns == [
+        "Validator stderr: request failed with OPENAI_API_KEY=[REDACTED]"
+    ]
+    assert all(planted not in message for _level, message in log_messages)

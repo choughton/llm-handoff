@@ -374,6 +374,40 @@ def test_run_epic_close_returns_failed_result_when_subagent_fails(
     assert "ledger-updater failed" in caplog.text.lower()
 
 
+@pytest.mark.parametrize(
+    ("stdout", "exit_code", "prefix"),
+    [
+        ("", 17, "ledger-updater stderr: "),
+        ("prose instead of structured fields", 0, "ledger-updater stderr (first 500 chars): "),
+    ],
+)
+def test_run_epic_close_redacts_secrets_in_stderr_lines(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    exit_code: int,
+    prefix: str,
+) -> None:
+    planted = "ghp_" + "Ab3dE" * 7 + "F"
+    log_mock = Mock()
+    invoke_mock = Mock(
+        return_value=SubagentResult(
+            stdout=stdout,
+            stderr=f"push used token {planted} and failed\n",
+            exit_code=exit_code,
+            elapsed_seconds=1.5,
+        )
+    )
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
+
+    result = ledger.run_epic_close(log=log_mock)
+
+    logged = [call.args for call in log_mock.call_args_list]
+    assert ("WARN", f"{prefix}push used token [REDACTED] and failed") in logged
+    assert all(planted not in message for _level, message in logged)
+    # The raw stderr on the result is unchanged for downstream detectors.
+    assert planted in result.stderr
+
+
 def test_bounce_counts_persist_across_simulated_restart(tmp_path: Path) -> None:
     story_id = "story-persisted-bounce"
     state_path = tmp_path / "logs" / "dispatch" / "bounce-counts.json"
