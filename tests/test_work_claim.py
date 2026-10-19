@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import time
 from typing import Any
+import unicodedata
 
 import pytest
 
@@ -3856,6 +3858,11 @@ def test_run_loop_carries_over_leftovers_across_a_dispatcher_restart(
     assert saved["story_key"] == f"story:{STORY_ID}"
     assert list(saved["fingerprints"]) == ["src/app.py"]
 
+    # A record read from disk applies only after the operator confirms it.
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        orchestrator, "_operator_input_stream", lambda: io.StringIO("y\n")
+    )
     messages.clear()
     orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
 
@@ -3866,6 +3873,7 @@ def test_run_loop_carries_over_leftovers_across_a_dispatcher_restart(
         and "src/app.py" in message
         for level, message in messages
     )
+    assert ("INFO", f"Carry these over as {STORY_ID}'s work? [y/N]") in messages
     assert (
         "INFO",
         f"Carrying over uncommitted work from the previous {STORY_ID} "
@@ -3903,6 +3911,228 @@ def test_run_loop_keeps_carry_over_in_memory_when_git_does_not_ignore_logs(
         and "Git does not ignore logs/dispatch/carry-over.json" in message
         for level, message in messages
     )
+
+
+def _save_app_carry_over_record(repo_root: Path) -> Path:
+    """Leave src/app.py dirty and record it as the story's leftover on disk."""
+
+    _write(repo_root / ".gitignore", "logs/\n")
+    _commit_all(repo_root, "ignore runtime state")
+    _write(repo_root / "src" / "app.py", "VALUE = 2\n")
+    state_path = repo_root / "logs" / "dispatch" / "carry-over.json"
+    save_implementer_leftovers(
+        state_path,
+        ImplementerLeftovers(
+            story_key=f"story:{STORY_ID}",
+            fingerprints=(
+                ("src/app.py", working_tree_fingerprint(repo_root, "src/app.py")),
+            ),
+        ),
+    )
+    return state_path
+
+
+def _no_input_stream() -> io.StringIO:
+    raise AssertionError("the carry-over record must not read operator input")
+
+
+@pytest.mark.parametrize(
+    ("interactive", "operator_input"),
+    [
+        pytest.param(False, None, id="no_tty"),
+        pytest.param(True, "n\n", id="tty_declines"),
+        pytest.param(True, "", id="tty_eof"),
+    ],
+)
+def test_run_loop_discards_an_unconfirmed_carry_over_record_from_disk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+    interactive: bool,
+    operator_input: str | None,
+) -> None:
+    # Roles can write under logs/, so a record read from disk could be forged
+    # to claim operator edits as implementer work.
+    _init_repo(tmp_path)
+    state_path = _save_app_carry_over_record(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    seen_states: list[Any] = []
+    real_capture = orchestrator.capture_pre_dispatch_state
+
+    def recording_capture(*args: Any, **kwargs: Any):
+        state = real_capture(*args, **kwargs)
+        seen_states.append(state)
+        return state
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    pass\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(
+        orchestrator, "_operator_stdin_is_interactive", lambda: interactive
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_operator_input_stream",
+        (lambda: io.StringIO(operator_input))
+        if operator_input is not None
+        else _no_input_stream,
+    )
+    monkeypatch.setattr(orchestrator, "capture_pre_dispatch_state", recording_capture)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    asked = ("INFO", f"Carry these over as {STORY_ID}'s work? [y/N]") in messages
+    assert asked == interactive
+    assert any(
+        level == "WARN"
+        and "carry-over record read from" in message
+        and STORY_ID in message
+        and "src/app.py" in message
+        and "not confirmed at a terminal" in message
+        and "stay operator edits" in message
+        for level, message in messages
+    )
+    assert not state_path.exists()
+    assert seen_states[0].carried_over == ()
+    assert "src/app.py" in seen_states[0].dirty_files
+    assert "src/app.py" not in _commit_files(tmp_path, "HEAD")
+    assert "src/app.py" in _git(tmp_path, "status", "--porcelain")
+
+
+def test_carry_over_record_is_discarded_without_input_when_interactive_pause_is_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = _save_app_carry_over_record(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(
+        tmp_path, commit_mode="dispatcher", interactive_pause=False
+    )
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert not state_path.exists()
+    assert not any("[y/N]" in message for _level, message in messages)
+    assert any(
+        level == "WARN" and "not confirmed at a terminal" in message
+        for level, message in messages
+    )
+
+
+def test_carry_over_record_is_kept_and_not_applied_in_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = _save_app_carry_over_record(tmp_path)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher", dry_run=True)
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert state_path.exists()
+    assert len(messages) == 1
+    level, message = messages[0]
+    assert level == "INFO"
+    assert str(state_path) in message
+    assert STORY_ID in message
+    assert "src/app.py" in message
+    assert "not applied in dry run" in message.lower()
+
+
+def test_stale_carry_over_record_is_deleted_without_asking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = _save_app_carry_over_record(tmp_path)
+    # The file changed after the record was written, so it no longer matches.
+    _write(tmp_path / "src" / "app.py", "VALUE = 'operator edit'\n")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert not state_path.exists()
+    assert messages == []
+
+
+def test_carry_over_prompt_escapes_control_characters_from_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    state_path = tmp_path / "logs" / "dispatch" / "carry-over.json"
+    # Filesystems reject such paths, so the forged record skips pruning.
+    forged = ImplementerLeftovers(
+        story_key="story:EVIL\x1b[2J\nWARN fake line",
+        fingerprints=(("src/evil\x1b]0;x\x07\n.py", "0" * 64),),
+    )
+    save_implementer_leftovers(state_path, forged)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(tmp_path, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        orchestrator, "prune_implementer_leftovers", lambda _root, record: record
+    )
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        orchestrator, "_operator_input_stream", lambda: io.StringIO("n\n")
+    )
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert len(messages) == 3
+    for _level, message in messages:
+        assert not any(unicodedata.category(char) == "Cc" for char in message)
+    assert (
+        "INFO",
+        "Carry these over as EVIL\\x1b[2J\\x0aWARN fake line's work? [y/N]",
+    ) in messages
+    assert "src/evil\\x1b]0;x\\x07\\x0a.py" in messages[0][1]
+    assert "src/evil\\x1b]0;x\\x07\\x0a.py" in messages[2][1]
+
+
+def test_carry_over_story_display_names_the_work_packet_or_the_raw_key() -> None:
+    orchestrator = _load_orchestrator()
+    packet = ImplementerLeftovers(
+        story_key="work-packet:" + "abcdef0123456789" * 4,
+        fingerprints=(("src/app.py", "x"),),
+    )
+    other = ImplementerLeftovers(story_key="custom-key", fingerprints=packet.fingerprints)
+
+    assert orchestrator._carry_over_display(packet) == (
+        "the Work Packet abcdef012345",
+        "src/app.py",
+    )
+    assert orchestrator._carry_over_display(other) == ("custom-key", "src/app.py")
 
 
 def test_restored_leftovers_do_not_carry_over_edited_or_other_story_files(

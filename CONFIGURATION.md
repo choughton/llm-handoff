@@ -316,7 +316,9 @@ What survives a restart, all under `logs/dispatch/`:
 
 - per-story bounce counts (`bounce-counts.json`);
 - the publish story state (`publish/story.json`), so a paused publish resumes;
-- the carry-over record (`carry-over.json`); see
+- the carry-over record (`carry-over.json`), which applies only after the
+  operator confirms it at a terminal; otherwise it is discarded with a `WARN`
+  line and its files stay operator edits. See
   [Dispatcher Commits](#dispatcher-commits).
 
 What does not survive: a scheduled planner recovery or operator-prompt
@@ -534,11 +536,24 @@ uncommitted. A file edited in between or a different story puts a file back in
 the "already dirty before dispatch" group, which is never committed.
 
 The dispatcher saves this record to `logs/dispatch/carry-over.json` after each
-implementer dispatch and loads it at startup, so a restart keeps the same rule:
-only files whose content is unchanged, for the same story key. It drops files
-from the record once the dispatcher commits them, deletes the record when
-nothing is left or when an implementer dispatch starts for a different story,
-and logs an `INFO` line when it restores one. When Git does not ignore that
+implementer dispatch and loads it at startup. It drops files from the record
+once the dispatcher commits them, and deletes the record when nothing is left
+or when an implementer dispatch starts for a different story.
+
+Agent roles can write under `logs/`, so a record read from disk at startup is
+not trusted on its own. The dispatcher first drops files that are no longer
+dirty with the recorded content (and deletes the record if none are left).
+Then, only when `interactive_pause` is on and the dispatcher runs at a
+terminal with console input, it logs the story and files and asks
+`Carry these over as <story>'s work? [y/N]`. Answering `y` or `yes` applies
+the record with the same rule as within one run: only files whose content is
+unchanged, for the same story key. Any other answer, end of input, no
+terminal, or `interactive_pause: false` discards the record with a `WARN`
+line, deletes it, and its files stay operator edits that are never
+committed. A dry run logs the record and leaves it on disk without asking or
+applying it. Story keys and paths are shown with control characters
+escaped. The in-memory record kept between cycles of one run still applies
+without asking. When Git does not ignore that
 path, the record stays in memory only and the dispatcher logs a `WARN` line,
 because the untracked file would otherwise show up in the next work-claim
 gate.

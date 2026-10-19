@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: a carry-over record loaded from
+  `logs/dispatch/carry-over.json` at startup no longer applies on its own,
+  because agent roles can write under `logs/` and a forged record could claim
+  operator edits as implementer work. After dropping files that no longer
+  match the record, the dispatcher asks
+  `Carry these over as <story>'s work? [y/N]` when `interactive_pause` is on
+  and it runs at a terminal with console input; `y` or `yes` applies the
+  record. Any other answer, end of input, no terminal, or
+  `interactive_pause: false` discards it with a `WARN` line, deletes the file,
+  and leaves its files as operator edits. A dry run logs the record, keeps the
+  file, and does not apply it. Control characters in the story key and paths
+  are escaped before display. Previously the record applied without asking.
+  The in-memory record kept between cycles of one run is unchanged.
 - Behavior change: config load now rejects a `handoff_path` or
   `project_state_path` that does not stay inside the repository. An empty
   value, control characters, an absolute, UNC, or drive-letter path, a `..`

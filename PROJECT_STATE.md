@@ -6,7 +6,7 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 in progress).
+- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 approved at `d981442`; HARD-5 in progress).
 - **Epic Awaiting Close:** None. GEMINI-REMOVAL closed (see the Completed
   Scope Ledger). LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP,
   SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST,
@@ -510,8 +510,8 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 ### 10. HARDENING - security followups
 
-Fit: HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 is in progress;
-HARD-5 remains. Independent and cheap; each story closes one confirmed followup, so it fills a wait
+Fit: HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 is approved;
+HARD-5 is in progress. Independent and cheap; each story closes one confirmed followup, so it fills a wait
 well. CHAT-4's dependency on the HARD-3 marker is now satisfied.
 
 The security-relevant Open Followups, promoted to stories. Each story names
@@ -586,7 +586,10 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   location roles cannot write only if one exists for every provider; Claude
   roles' `Write` tool is not path-limited, so do not assume one.
   RECOVERY-2's in-flight record has the same exposure and should follow the
-  same rule.
+  same rule. Decided by the planner on 2026-10-19: prune first; ask only with
+  `interactive_pause` and a TTY console; `y`/`yes` accepts; decline, EOF, no
+  TTY, and dry run never apply it; dry run keeps the file; control characters
+  are escaped in the prompt.
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 

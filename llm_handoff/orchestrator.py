@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from typing import Callable, Literal, TextIO, cast
+import unicodedata
 
 from llm_handoff.agent_providers import antigravity as antigravity_provider
 from llm_handoff.agent_providers import claude as claude_provider
@@ -558,7 +559,9 @@ def run_loop(
     implementer_base_story_key: str | None = None
     # (story key, HEAD before that story's first gated dispatch).
     gate_story_base: tuple[str | None, str] | None = None
-    implementer_leftovers = _restore_implementer_leftovers(config, log_fn)
+    implementer_leftovers = _restore_implementer_leftovers(
+        config, log_fn, operator_prompt
+    )
     # Set while a dispatch's rewrite has dropped planned stories and nobody
     # has changed the handoff it left behind since.
     story_baseline: StoryListBaseline | None = None
@@ -3629,23 +3632,124 @@ def _carry_over_state_path(config: DispatchConfig) -> Path:
     return (config.repo_root / CARRY_OVER_STATE_PATH).resolve()
 
 
+def _escape_control_characters(text: str) -> str:
+    """Replace each control character with its ``\\xNN`` or ``\\uNNNN`` escape."""
+
+    return "".join(
+        (f"\\x{ord(char):02x}" if ord(char) <= 0xFF else f"\\u{ord(char):04x}")
+        if unicodedata.category(char) == "Cc"
+        else char
+        for char in text
+    )
+
+
+def _carry_over_display(leftovers: ImplementerLeftovers) -> tuple[str, str]:
+    """The record's story and file list, safe to show on a terminal.
+
+    A record read from disk may be forged, so control characters are escaped
+    and cannot inject terminal escape sequences or fake log lines.
+    """
+
+    story_key = leftovers.story_key or ""
+    if story_key.startswith("story:"):
+        story = story_key[len("story:"):]
+    elif story_key.startswith("work-packet:"):
+        story = "the Work Packet " + story_key[len("work-packet:"):][:12]
+    else:
+        story = story_key
+    files = ", ".join(
+        _escape_control_characters(path) for path, _ in leftovers.fingerprints
+    )
+    return _escape_control_characters(story), files
+
+
+CARRY_OVER_CONFIRM_READ_TIMEOUT_SECONDS = 1.0
+
+
+def _confirm_carry_over_at_terminal(
+    reader: OperatorInputReader, question: str, log: LogFn
+) -> bool:
+    _log(log, "INFO", question)
+    reader.drain()
+    while True:
+        line = reader.read_line(CARRY_OVER_CONFIRM_READ_TIMEOUT_SECONDS)
+        if line is not None:
+            return line.strip().lower() in {"y", "yes"}
+        if reader.eof_reached:
+            return False
+
+
 def _restore_implementer_leftovers(
-    config: DispatchConfig, log: LogFn
+    config: DispatchConfig,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
 ) -> ImplementerLeftovers | None:
-    """Load the carry-over record a previous run saved, if any."""
+    """Load the carry-over record a previous run saved, if the operator confirms it.
+
+    Roles can write under ``logs/``, so a record read from disk applies only
+    after the operator confirms it at a terminal. Otherwise it is discarded and
+    its files stay operator edits.
+    """
 
     state_path = _carry_over_state_path(config)
-    leftovers = load_implementer_leftovers(state_path)
-    if leftovers is None:
+    loaded = load_implementer_leftovers(state_path)
+    if loaded is None:
         return None
+    leftovers = prune_implementer_leftovers(config.repo_root, loaded)
+    if leftovers is None:
+        if not config.dry_run:
+            _delete_carry_over_record(state_path, log)
+        return None
+    story, files = _carry_over_display(leftovers)
+    if config.dry_run:
+        _log(
+            log,
+            "INFO",
+            f"Found carry-over record {state_path} for {story}: {files}. "
+            "Not applied in dry run.",
+        )
+        return None
+    if (
+        config.interactive_pause
+        and _operator_stdin_is_interactive()
+        and not operator_prompt.reader().console_unavailable
+    ):
+        reader = operator_prompt.reader()
+        _log(
+            log,
+            "INFO",
+            f"Restored carry-over record from {state_path} for {story}: {files}.",
+        )
+        if _confirm_carry_over_at_terminal(
+            reader, f"Carry these over as {story}'s work? [y/N]", log
+        ):
+            _log(
+                log,
+                "INFO",
+                f"The operator confirmed the carry-over record for {story}; "
+                "files still unchanged carry over to that story's next dispatch.",
+            )
+            return leftovers
     _log(
         log,
-        "INFO",
-        f"Restored carry-over record from {state_path} for {leftovers.story_key}: "
-        + ", ".join(path for path, _ in leftovers.fingerprints)
-        + ". Files still unchanged carry over to that story's next dispatch.",
+        "WARN",
+        f"Discarded the carry-over record read from {state_path} for {story} "
+        f"({files}) because it was not confirmed at a terminal; these files "
+        "stay operator edits.",
     )
-    return leftovers
+    _delete_carry_over_record(state_path, log)
+    return None
+
+
+def _delete_carry_over_record(state_path: Path, log: LogFn) -> None:
+    try:
+        save_implementer_leftovers(state_path, None)
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not delete the carry-over record {state_path}: {exc}.",
+        )
 
 
 def _persist_implementer_leftovers(
