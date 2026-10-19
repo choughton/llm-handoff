@@ -6,6 +6,9 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The `handoff-router` Claude agent file (root and
+  `examples/reference-workflow/` copies) now names Antigravity instead of
+  Gemini in its provider-name example, finishing the Gemini CLI removal.
 - The operator-prompt instructions (planner guidance, `@<role>`, and the
   `@auditor` audit fan-out) now pass the pause reason between
   `<<<PAUSE REASON>>>` / `<<<END PAUSE REASON>>>` markers and the operator's
