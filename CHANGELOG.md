@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Interrupted-run recovery no longer trusts the in-flight record's
+  protected-file baseline, which a role can rewrite (RECOVERY-2c). With
+  `protected_paths` set: a `dispatch` or `handback` record whose pre-dispatch
+  HEAD is missing, does not resolve to a commit, or is not HEAD or an
+  ancestor of HEAD is discarded before any prompt with one `WARN` line (kept
+  in a dry run); a `dispatch` record without protected-file digests is
+  discarded the same way. Right before the `Recover ...` or `Resume ...`
+  question, one `INFO` line lists the protected files uncommitted now, those
+  changed by commits since the record's HEAD, and those changed by commits
+  not on any remote-tracking ref (shown only), and says confirming accepts
+  them as they are. A confirmed recovery's cycle, including the re-dispatched
+  role of an interrupted `dispatch` record, now checks protected files
+  against the record's digests with every protected file uncommitted at
+  startup marked unverified, instead of a snapshot taken after the restart,
+  so each such file routes the cycle to `user` with `protected_file_modified:`
+  unless the Work Packet lists it. This includes an operator's own
+  uncommitted protected-file edit. With `protected_paths: []` nothing changes.
 - Interrupted handback recovery: once a gated implementer dispatch returns,
   the dispatcher rewrites `logs/dispatch/in-flight.json` as a `handback`
   record (the handoff the implementer left and HEAD at that moment) and

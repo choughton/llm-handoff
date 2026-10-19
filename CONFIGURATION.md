@@ -709,9 +709,9 @@ cycle without dispatching the role again: it treats the dispatch as exit code
 0, uses the record's pre-dispatch handoff (or, when the record holds one, its
 continued story's assignment) as the assignment for the dispatcher commit and
 the work-claim gate, rebuilds the pre-dispatch HEAD, operator files, and
-carry-over files from the record, checks protected files against the record's
-pre-dispatch digests and HEAD (not a snapshot taken after the restart, which
-would already hold the implementer's edits), and then runs the usual commit,
+carry-over files from the record, checks protected files against the
+protected-file baseline described below (not a snapshot taken after the
+restart, which would already hold the implementer's edits), and then runs the usual commit,
 validation, gate, and publish. That assignment is resolved once: the assignment summary
 shown before the question is of the same text the commit and gate use. The
 start does not repair or normalize the confirmed handback before that cycle,
@@ -720,6 +720,34 @@ post-dispatch repair and `next_agent` normalization run on it before
 validation. That cycle writes no in-flight record. Making publish, the gates, and
 scanners safe to repeat (RECOVERY-3) and starts with no record (RECOVERY-4)
 are pending.
+
+A role can rewrite the record's protected-file digests and pre-dispatch HEAD
+too, for example to match a protected file it changed, so with
+`protected_paths` set neither recovery kind trusts them. With
+`protected_paths: []` none of the following applies. A `dispatch` record
+without protected-file digests is discarded with one `WARN` line, as a
+`handback` record is. After those checks, a `dispatch` or `handback` record
+whose pre-dispatch HEAD is missing, is not a full commit name Git resolves to
+a commit, or is neither HEAD nor an ancestor of HEAD
+(`git merge-base --is-ancestor`) is discarded before any prompt with one
+`WARN` line naming the record, role, story, and reason; nothing is restored,
+carried over, or dispatched, and the record is deleted (a dry run keeps it).
+Right before either question the dispatcher logs one `INFO` line saying the
+record's protected-file baseline cannot be verified and listing, each path
+escaped and `none` when empty: the protected files uncommitted now (modified,
+staged, deleted, or untracked, the handoff aside); the protected files changed
+by commits in `<record HEAD>..<HEAD>`; and the protected files changed by
+commits on HEAD that no remote-tracking ref has (up to 200 commits), or
+`not checked: no remote-tracking refs` when there are none. That last list is
+shown only; it does not change the gate. Confirming accepts these protected
+files as they are. Once recovery is confirmed, the recovered cycle (the
+re-dispatched role for a `dispatch` record, the resumed handback for a
+`handback` record) checks protected files against the record's digests and
+HEAD with every protected file uncommitted at that moment marked unverified,
+so each counts as changed and, outside the Work Packet's Files in scope,
+routes the cycle to `user` with `protected_file_modified:`. That includes an
+operator's own uncommitted protected-file edit: commit or revert it before
+confirming a recovery you want to continue.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the
