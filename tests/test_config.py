@@ -28,8 +28,8 @@ agents:
     resume: true
     timeout_ms: 1200000
   planner:
-    provider: gemini
-    binary: gemini
+    provider: antigravity
+    binary: agy
     mention: "@planner"
     resume: true
     timeout_ms: 1200000
@@ -177,7 +177,7 @@ def test_load_dispatch_config_uses_provider_defaults_when_role_provider_changes(
   auditor:
     provider: codex
   backend:
-    provider: gemini
+    provider: antigravity
 """,
         encoding="utf-8",
     )
@@ -188,9 +188,9 @@ def test_load_dispatch_config_uses_provider_defaults_when_role_provider_changes(
     assert loaded.agents["auditor"].binary == config_module.CODEX_BINARY
     assert loaded.agents["auditor"].skill_name == config_module.CODEX_SKILL_NAME
     assert loaded.agents["auditor"].model is None
-    assert loaded.agents["backend"].provider == "gemini"
-    assert loaded.agents["backend"].binary == config_module.GEMINI_BINARY
-    assert loaded.agents["backend"].mention == "@backend"
+    assert loaded.agents["backend"].provider == "antigravity"
+    assert loaded.agents["backend"].binary == config_module.ANTIGRAVITY_BINARY
+    assert loaded.agents["backend"].resume is False
     assert loaded.agents["backend"].skill_name is None
 
 
@@ -487,6 +487,99 @@ def test_load_dispatch_config_rejects_removed_gemini_normalizer_provider(
     assert not hasattr(config_module, "GEMINI_NORMALIZER_MODEL")
 
 
+GEMINI_PROVIDER_REMOVED_TEXT = (
+    "The gemini provider was removed: Gemini CLI no longer serves personal "
+    "Google accounts. Use provider: antigravity (the agy CLI)."
+)
+PLANNER_API_KEY_ENV_REMOVED_TEXT = (
+    "planner_api_key_env was removed with the gemini provider: Gemini CLI no "
+    "longer serves personal Google accounts. Delete the planner_api_key_env "
+    "key; a Codex role uses use_api_key_env: true for OPENAI_API_KEY."
+)
+
+
+def test_load_dispatch_config_rejects_removed_gemini_role_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("agents:\n  backend:\n    provider: gemini\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as error:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    message = str(error.value)
+    assert config_module.GEMINI_PROVIDER_REMOVED_MESSAGE == GEMINI_PROVIDER_REMOVED_TEXT
+    assert GEMINI_PROVIDER_REMOVED_TEXT in message
+    assert "agents.backend.provider" in message
+    assert "Input should be" not in message
+
+
+def test_load_dispatch_config_rejects_removed_gemini_fallback_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "agents:\n  planner:\n    provider: codex\n    fallback:\n"
+        "      provider: gemini\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as error:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    message = str(error.value)
+    assert GEMINI_PROVIDER_REMOVED_TEXT in message
+    assert "agents.planner.fallback.provider" in message
+    assert "Input should be" not in message
+
+
+def test_gemini_is_no_longer_a_runtime_adapter() -> None:
+    import importlib.util
+
+    assert "gemini" not in config_module.RUNTIME_PROVIDER_ADAPTERS
+    assert importlib.util.find_spec("llm_handoff.agent_providers.gemini") is None
+    for name in (
+        "GEMINI_BINARY",
+        "GEMINI_PLANNER_MENTION",
+        "GEMINI_FRONTEND_MENTION",
+        "GEMINI_SANDBOX_ARGS",
+        "GEMINI_UNSAFE_BYPASS_ARGS",
+        "GEMINI_MAX_RETRIES",
+        "GEMINI_RETRY_BASE_SECONDS",
+        "GEMINI_RESUME_DEFAULT",
+    ):
+        assert not hasattr(config_module, name), name
+    assert config_module.PLANNER_RESUME_DEFAULT is True
+    # Every launch still strips the Google keys, and env_passthrough rejects them.
+    assert {"GEMINI_API_KEY", "GOOGLE_API_KEY"} <= config_module.VENDOR_API_KEY_ENV_NAMES
+
+
+def test_planner_api_key_env_false_still_loads_and_is_dropped(tmp_path: Path) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text("planner_api_key_env: false\n", encoding="utf-8")
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert not hasattr(loaded, "planner_api_key_env")
+    assert not hasattr(loaded, "planner_api_key_env_enabled")
+
+
+@pytest.mark.parametrize("value", ["true", "\"false\"", "0", "null"])
+def test_planner_api_key_env_other_values_fail_to_load(
+    tmp_path: Path, value: str
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(f"planner_api_key_env: {value}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as error:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert config_module.PLANNER_API_KEY_ENV_REMOVED_MESSAGE == (
+        PLANNER_API_KEY_ENV_REMOVED_TEXT
+    )
+    assert PLANNER_API_KEY_ENV_REMOVED_TEXT in str(error.value)
+
+
 def test_normalizer_adapters_and_default_models_cover_the_same_providers() -> None:
     assert config_module.NORMALIZER_PROVIDER_ADAPTERS == frozenset(
         config_module.NORMALIZER_PROVIDER_MODELS
@@ -548,7 +641,6 @@ normalizer:
     exit_code = main_module._run_dispatch(
         dry_run=True,
         use_manual_frontend=False,
-        planner_api_key_env=False,
         backend_resume=True,
         planner_resume=True,
         repo_root=tmp_path,

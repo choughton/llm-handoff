@@ -22,8 +22,6 @@ def _binary_name(base_name: str) -> str:
 
 
 DISPATCH_WINDOW_TITLE = "llm-handoff dispatcher"
-GEMINI_PLANNER_MENTION = "@planner"
-GEMINI_FRONTEND_MENTION = "@frontend"
 CODEX_SKILL_NAME = "llm-handoff"
 CODEX_WEB_SEARCH_MODE = "disabled"
 
@@ -82,8 +80,6 @@ CODEX_SANDBOX_ARGS: tuple[str, ...] = (
     "never",
 )
 CODEX_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo",)
-GEMINI_SANDBOX_ARGS: tuple[str, ...] = ("--yolo", "--sandbox")
-GEMINI_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--yolo", "--sandbox=false")
 CLAUDE_MODEL = "claude-opus-5-5"
 NORMALIZER_PROVIDER = "claude"
 NORMALIZER_MODEL = "claude-haiku-5-5"
@@ -137,11 +133,8 @@ SCANNER_PLACEHOLDERS = frozenset(
 )
 _SCANNER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-GEMINI_MAX_RETRIES = 3
-GEMINI_RETRY_BASE_SECONDS = 60
-GEMINI_RESUME_DEFAULT = True
+PLANNER_RESUME_DEFAULT = True
 
-GEMINI_BINARY = _binary_name("gemini")
 CODEX_BINARY = _binary_name("codex")
 CLAUDE_BINARY = _binary_name("claude")
 ANTIGRAVITY_BINARY = _binary_name("agy")
@@ -207,7 +200,7 @@ AgentRole = Literal[
     "validator",
     "finalizer",
 ]
-ProviderName = Literal["codex", "gemini", "claude", "antigravity", "openai"]
+ProviderName = Literal["codex", "claude", "antigravity", "openai"]
 EnvMode = Literal["allowlist", "inherit"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
 AuditReviewer = Literal["quality", "security"]
@@ -247,7 +240,7 @@ DEFAULT_AGENT_PROVIDERS: dict[AgentRole, ProviderName] = {
     "validator": "claude",
     "finalizer": "claude",
 }
-RUNTIME_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "gemini", "antigravity"})
+RUNTIME_PROVIDER_ADAPTERS = frozenset({"claude", "codex", "antigravity"})
 NORMALIZER_PROVIDER_ADAPTERS = frozenset({"antigravity", "claude", "codex", "openai"})
 NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
     "antigravity": ANTIGRAVITY_NORMALIZER_MODEL,
@@ -264,6 +257,19 @@ GEMINI_NORMALIZER_REMOVED_MESSAGE = (
 GEMINI_SECURITY_PROVIDER_REMOVED_MESSAGE = (
     "The gemini provider was removed: Gemini CLI no longer serves personal "
     "Google accounts. Use security_provider: antigravity (the agy CLI)."
+)
+# The gemini role provider was removed; naming it for a role or a fallback
+# fails with this.
+GEMINI_PROVIDER_REMOVED_MESSAGE = (
+    "The gemini provider was removed: Gemini CLI no longer serves personal "
+    "Google accounts. Use provider: antigravity (the agy CLI)."
+)
+# The top-level planner_api_key_env key only fed the gemini adapter. `false`
+# (the old default) is dropped; any other value fails with this.
+PLANNER_API_KEY_ENV_REMOVED_MESSAGE = (
+    "planner_api_key_env was removed with the gemini provider: Gemini CLI no "
+    "longer serves personal Google accounts. Delete the planner_api_key_env "
+    "key; a Codex role uses use_api_key_env: true for OPENAI_API_KEY."
 )
 REQUIRED_AGENT_ROLES = frozenset(DEFAULT_AGENT_PROVIDERS)
 
@@ -353,6 +359,14 @@ class AgentConfig(BaseModel):
         if self.allowed_tools is not None:
             return self.allowed_tools
         return claude_default_allowed_tools(self._interpreter_grants)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _reject_removed_provider(cls, value: object) -> object:
+        # Runs before the Literal check so the removal gets its own message.
+        if value == "gemini":
+            raise ValueError(GEMINI_PROVIDER_REMOVED_MESSAGE)
+        return value
 
     @field_validator("timeout_ms", mode="after")
     @classmethod
@@ -476,11 +490,17 @@ class NormalizerConfig(BaseModel):
             return value
         return {**value, "model": provider_default}
 
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _reject_removed_provider(cls, value: object) -> object:
+        # Runs before the Literal check so the removal gets its own message.
+        if value == "gemini":
+            raise ValueError(GEMINI_NORMALIZER_REMOVED_MESSAGE)
+        return value
+
     @field_validator("provider", mode="after")
     @classmethod
     def _validate_provider(cls, value: ProviderName) -> ProviderName:
-        if value == "gemini":
-            raise ValueError(GEMINI_NORMALIZER_REMOVED_MESSAGE)
         if value not in NORMALIZER_PROVIDER_ADAPTERS:
             raise ValueError(
                 "no next-agent normalizer adapter is registered for provider "
@@ -935,15 +955,6 @@ def _agent_defaults_for_provider(role: str, provider: object) -> dict[str, objec
             "resume": True,
             "timeout_ms": AGENT_TIMEOUT_MS,
         }
-    if provider == "gemini":
-        return {
-            "provider": provider,
-            "binary": GEMINI_BINARY,
-            "mention": _default_gemini_mention_for_role(role),
-            "resume": GEMINI_RESUME_DEFAULT if role == "planner" else False,
-            "timeout_ms": AGENT_TIMEOUT_MS,
-            "retries": GEMINI_MAX_RETRIES,
-        }
     if provider == "claude":
         return {
             "provider": provider,
@@ -962,14 +973,6 @@ def _agent_defaults_for_provider(role: str, provider: object) -> dict[str, objec
     return {"provider": provider}
 
 
-def _default_gemini_mention_for_role(role: str) -> str:
-    if role == "planner":
-        return GEMINI_PLANNER_MENTION
-    if role == "frontend":
-        return GEMINI_FRONTEND_MENTION
-    return f"@{role}"
-
-
 class DispatchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -981,9 +984,8 @@ class DispatchConfig(BaseModel):
     audit: AuditConfig = Field(default_factory=AuditConfig)
     dry_run: bool = False
     use_manual_frontend: bool = False
-    planner_api_key_env: bool = False
     backend_resume: bool = True
-    planner_resume: bool = GEMINI_RESUME_DEFAULT
+    planner_resume: bool = PLANNER_RESUME_DEFAULT
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
     pause_recovery: PauseRecoveryMode = "planner"
@@ -1026,6 +1028,22 @@ class DispatchConfig(BaseModel):
             "the auto_push key from the config; publish.mode controls whether "
             "the dispatcher pushes."
         )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_planner_api_key_env(cls, value: object) -> object:
+        # `planner_api_key_env` only fed the removed gemini adapter. Accept the
+        # old `false` default so existing configs keep loading; reject anything
+        # else.
+        if not isinstance(value, dict) or "planner_api_key_env" not in value:
+            return value
+        if value["planner_api_key_env"] is False:
+            return {
+                key: item
+                for key, item in value.items()
+                if key != "planner_api_key_env"
+            }
+        raise ValueError(PLANNER_API_KEY_ENV_REMOVED_MESSAGE)
 
     @model_validator(mode="after")
     def _validate_commit_mode(self) -> DispatchConfig:
@@ -1344,10 +1362,6 @@ class DispatchConfig(BaseModel):
     def planner_resume_enabled(self) -> bool:
         return self.planner_resume
 
-    @property
-    def planner_api_key_env_enabled(self) -> bool:
-        return self.planner_api_key_env
-
 
 def load_dispatch_config(
     *,
@@ -1355,7 +1369,6 @@ def load_dispatch_config(
     config_path: Path | None = None,
     dry_run: bool = False,
     use_manual_frontend: bool = False,
-    planner_api_key_env: bool = False,
     backend_resume: bool | None = None,
     planner_resume: bool | None = None,
     interactive_pause: bool | None = None,
@@ -1365,7 +1378,6 @@ def load_dispatch_config(
     data["repo_root"] = resolved_repo_root
     data["dry_run"] = dry_run
     data["use_manual_frontend"] = use_manual_frontend
-    data["planner_api_key_env"] = planner_api_key_env
     _merge_agent_defaults(data)
     if backend_resume is not None:
         data["backend_resume"] = backend_resume

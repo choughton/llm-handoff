@@ -96,50 +96,6 @@ def test_invoke_role_dispatches_planner_to_configured_codex(
     assert invoke_mock.call_args.kwargs["agent_config"].skill_name == "custom-skill"
 
 
-def test_invoke_support_role_dispatches_validator_to_configured_gemini(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    invoke_mock = Mock(return_value=_dispatch_result())
-    monkeypatch.setattr(agent_roles, "invoke_gemini", invoke_mock)
-
-    result = agent_roles.invoke_support_role(
-        "handoff-validator",
-        "Return ONLY the structured validation output.",
-        role="validator",
-        handoff_path=Path("docs/handoff/HANDOFF.md"),
-        agent_config=AgentConfig(
-            provider="gemini",
-            binary="gemini-custom",
-            mention="@validator",
-            retries=2,
-            timeout_ms=789,
-            use_api_key_env=True,
-            agent_name="validator-gemini",
-        ),
-    )
-
-    assert result.exit_code == 0
-    invoke_mock.assert_called_once_with(
-        "validator",
-        Path("docs/handoff/HANDOFF.md"),
-        mention="@validator",
-        agent_name="validator-gemini",
-        binary="gemini-custom",
-        timeout_ms=789,
-        max_retries=2,
-        use_api_key_env=True,
-        additional_instruction="Return ONLY the structured validation output.",
-        use_resume=False,
-        session_id=None,
-        previous_handoff_sha=None,
-        current_handoff_sha=None,
-        log=None,
-        repo_root=None,
-        agent_config=ANY,
-    )
-    assert invoke_mock.call_args.kwargs["agent_config"].mention == "@validator"
-
-
 @pytest.mark.parametrize("role", ["planner", "backend", "frontend", "finalizer"])
 def test_invoke_role_dispatches_to_configured_antigravity(
     monkeypatch: pytest.MonkeyPatch,
@@ -280,27 +236,27 @@ def test_codex_validator_output_is_unwrapped_for_the_parser(
     assert parsed.errors == ["routing: next_agent is missing."]
 
 
-def test_gemini_validator_output_is_parsed_as_written(
+def test_antigravity_validator_output_is_parsed_as_written(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The Gemini adapter already reduces stream-json to the assistant text,
-    # so the support path hands the report to the parser without unwrapping
-    # and without the Codex envelope instruction.
+    # The Antigravity adapter already reduces stream-json to the assistant
+    # text, so the support path hands the report to the parser without
+    # unwrapping and without the Codex envelope instruction.
     plain = DispatchResult(
         stdout=VALIDATION_REPORT, stderr="", exit_code=0, elapsed_seconds=0.01
     )
     invoke_mock = Mock(return_value=plain)
-    monkeypatch.setattr(agent_roles, "invoke_gemini", invoke_mock)
+    monkeypatch.setattr(agent_roles, "invoke_antigravity", invoke_mock)
 
     result = agent_roles.invoke_support_role(
         "handoff-validator",
         "Return ONLY the structured validation output.",
         role="validator",
         handoff_path=Path("docs/handoff/HANDOFF.md"),
-        agent_config=AgentConfig(provider="gemini", mention="@validator"),
+        agent_config=AgentConfig(provider="antigravity"),
     )
 
-    assert invoke_mock.call_args.kwargs["additional_instruction"] == (
+    assert invoke_mock.call_args.kwargs["support_prompt"] == (
         "Return ONLY the structured validation output."
     )
     assert result.stdout == VALIDATION_REPORT

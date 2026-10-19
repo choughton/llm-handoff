@@ -11,7 +11,7 @@ belong in commits, handoffs, and pull requests.
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
   GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
   GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a merged in PR
-  #138; GEM-4b in progress).
+  #138; GEM-4b merged in PR #139; GEM-4c in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -99,8 +99,8 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: GEM-4a is done; take GEM-4b, GEM-4c, then GEM-5, in order. GEM-5
-deletes the `.gemini/` trees, so no later epic may recreate them.
+Fit: GEM-4b is done; take GEM-4c, then GEM-5. GEM-5 deletes the .gemini/
+trees, so no later epic may recreate them.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
@@ -409,17 +409,17 @@ itself from 1.3.5 to 1.4.2 during the checks):
     --provider antigravity (the agy CLI)." Update the example configs, the
     normalizer and init docs, and `CHANGELOG.md`; delete the Gemini
     normalizer and all-Gemini `init` tests and add both rejection tests.
-  - GEM-4b (this story): delete the Gemini security reviewer and its extension check in
+  - GEM-4b (merged in PR #139): delete the Gemini security reviewer and its extension check in
     `audit_review.py` and the matching security-extension check in
     `doctor.py`, closing AUDIT-COST followups (b) and (c). Reject
     `audit.security_provider: gemini` with "The gemini provider was removed:
     Gemini CLI no longer serves personal Google accounts. Use
     security_provider: antigravity (the agy CLI)." Delete or rewrite the
     Gemini reviewer tests and add a rejection test.
-  - GEM-4c: delete `llm_handoff/agent_providers/gemini.py`, the Gemini
+  - GEM-4c (this story): delete `llm_handoff/agent_providers/gemini.py`, the Gemini
     sandbox checks in `orchestrator.py` and `doctor.py`, the Gemini
     environment allowlist and API key rule in `agent_process.py`, the Gemini
-    sign-in patterns in `provider_auth.py`, the `gemini` entry in `roles.py`,
+    sign-in patterns in `provider_auth.py`,
     the Gemini re-exports in `agents.py`, the Gemini constants in
     `config.py`, and `--use-planner-api-key-env`. Reject `provider: gemini`
     on any role with "The gemini provider was removed: Gemini CLI no longer
@@ -428,6 +428,23 @@ itself from 1.3.5 to 1.4.2 during the checks):
     was removed with the gemini provider: Gemini CLI no longer serves
     personal Google accounts. Use provider: antigravity (the agy CLI)."
     Delete or rewrite the Gemini role tests and add rejection tests.
+    Planner decisions (2026-10-18):
+    - `"gemini"` stays in `LEGACY_PROVIDER_LABELS` in `roles.py`. That entry
+      is rejection code: it keeps a `next_agent` label that names `gemini`
+      from routing. (This corrects the earlier plan to delete it.)
+    - `planner_api_key_env: false` still loads and the key is dropped, like
+      `auto_push`. Any other value fails at load with "planner_api_key_env
+      was removed with the gemini provider: Gemini CLI no longer serves
+      personal Google accounts. Delete the planner_api_key_env key; a Codex
+      role uses use_api_key_env: true for OPENAI_API_KEY."
+    - `--use-planner-api-key-env` stays only as a hidden option; passing it
+      prints the message above to stderr and exits with code 2 before any
+      config loads, matching the `init --provider gemini` rejection.
+    - `tenacity` is removed from `pyproject.toml` and
+      `requirements-dev.txt`; only the deleted adapter imported it.
+    - `GEMINI_API_KEY` and `GOOGLE_API_KEY` stay in
+      `VENDOR_API_KEY_ENV_NAMES`, so every launch still strips them and
+      `env_passthrough` still rejects them.
 - GEM-5: Remove the shipped Gemini files and docs. Delete `.gemini/agents/`,
   `.gemini/policies/`, and their copies under `examples/reference-workflow/`.
   Delete both `.geminiignore` files; `agy` does not read them (see the facts
@@ -444,7 +461,8 @@ itself from 1.3.5 to 1.4.2 during the checks):
   rejection code and tests, agy model ids, the agy settings path, and
   `GEMINI.md`. `.claude/agents/handoff-router.md` and its example copy name
   Gemini, and Claude roles cannot write `.claude/` paths, so route those
-  edits to `user` (as in LIN-9d).
+  edits to `user` (as in LIN-9d). Remove or document the AgentConfig fields
+  mention and retries, which no adapter reads after GEM-4c.
 
 ### 10. HARDENING - security followups
 

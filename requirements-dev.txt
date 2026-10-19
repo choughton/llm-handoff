@@ -4,7 +4,6 @@ instructor
 openai
 pydantic
 PyYAML
-tenacity
 typer
 pytest
 pytest-xdist

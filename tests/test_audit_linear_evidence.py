@@ -961,7 +961,6 @@ def test_evidence_config_keeps_only_a_same_provider_fallback(tmp_path: Path) -> 
     "auditor",
     [
         {"provider": "codex"},
-        {"provider": "gemini"},
         {"provider": "claude", "unsafe_bypass": True},
     ],
 )

@@ -1861,13 +1861,22 @@ def test_build_work_claim_env_keeps_only_allowlisted_and_passthrough_names() -> 
         TEST_SECRET_ENV: "shh",
         "OPENAI_API_KEY": "sk-test",
         "CLAUDE_CODE_OAUTH_TOKEN": "token",
-        "Gemini_Setting": "value",
+        "Codex_Setting": "value",
+        "GEMINI_API_KEY": "gemini-key",
+        "GOOGLE_API_KEY": "google-key",
         "Extra_Tool_Home": "/opt/tool",
         "UNLISTED_VALUE": "nope",
     }
 
     env = build_work_claim_env(
-        ("extra_tool_home", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "gemini_setting"),
+        (
+            "extra_tool_home",
+            "OPENAI_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "codex_setting",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+        ),
         environ=environ,
     )
 

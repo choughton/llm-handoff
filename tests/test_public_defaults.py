@@ -11,8 +11,6 @@ LEGACY_PROJECT = bytes.fromhex("63726f737366697265").decode("ascii")
 def test_public_defaults_do_not_reference_source_project() -> None:
     public_defaults = "\n".join(
         [
-            config.GEMINI_PLANNER_MENTION,
-            config.GEMINI_FRONTEND_MENTION,
             config.CODEX_SKILL_NAME,
             config.DISPATCH_WINDOW_TITLE,
         ]

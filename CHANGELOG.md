@@ -6,6 +6,30 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Removed the `gemini` role provider (`llm_handoff/agent_providers/gemini.py`,
+  its Gemini CLI sandbox and retry handling, its sign-in failure markers, and
+  its `GEMINI_*` and Google Cloud environment allowlist). `provider: gemini`
+  on any `agents.<role>` or `agents.<role>.fallback` now fails config load
+  with "The gemini provider was removed: Gemini CLI no longer serves personal
+  Google accounts. Use provider: antigravity (the agy CLI)." Dispatcher
+  startup and `llm-handoff doctor` no longer check for a container runtime,
+  and doctor's Linear-mode tracker connector check no longer has a `gemini`
+  line. `GEMINI_API_KEY` and `GOOGLE_API_KEY` are still stripped from every
+  launch and still rejected in `env_passthrough`. The `tenacity` dependency,
+  used only by the removed adapter, is dropped from `pyproject.toml` and
+  `requirements-dev.txt`.
+- Removed the top-level `planner_api_key_env` config key and the
+  `--use-planner-api-key-env` flag; only the gemini adapter read them.
+  `planner_api_key_env: false` is still accepted and ignored. Behavior
+  change: a config with `planner_api_key_env: true` (or any value other than
+  `false`) now fails to load with "planner_api_key_env was removed with the
+  gemini provider: Gemini CLI no longer serves personal Google accounts.
+  Delete the planner_api_key_env key; a Codex role uses use_api_key_env: true
+  for OPENAI_API_KEY." Passing `--use-planner-api-key-env` now prints
+  "--use-planner-api-key-env was removed with the gemini provider: Gemini CLI
+  no longer serves personal Google accounts. Use provider: antigravity (the
+  agy CLI)." to stderr and exits with code 2 before any config loads. The
+  startup banner no longer prints a `Planner API env:` line.
 - Removed the Gemini CLI security reviewer and its `gemini extensions list`
   checks, both at dispatcher startup and in `llm-handoff doctor` (the
   `security extension` line is gone). `audit: {security_provider: gemini}`

@@ -66,6 +66,12 @@ _INIT_GEMINI_REMOVED_MESSAGE = (
     "The gemini provider was removed: Gemini CLI no longer serves personal "
     "Google accounts. Use --provider antigravity (the agy CLI)."
 )
+# `--use-planner-api-key-env` only fed the removed gemini adapter.
+_PLANNER_API_KEY_ENV_FLAG_REMOVED_MESSAGE = (
+    "--use-planner-api-key-env was removed with the gemini provider: Gemini "
+    "CLI no longer serves personal Google accounts. Use provider: antigravity "
+    "(the agy CLI)."
+)
 app = typer.Typer(
     add_completion=False,
     help="File-based handoff dispatcher for multi-CLI AI coding workflows.",
@@ -127,7 +133,6 @@ def _run_dispatch(
     *,
     dry_run: bool,
     use_manual_frontend: bool,
-    planner_api_key_env: bool = False,
     backend_resume: bool = True,
     planner_resume: bool = True,
     repo_root: Path | None = None,
@@ -142,7 +147,6 @@ def _run_dispatch(
         config_path=config_path,
         dry_run=dry_run,
         use_manual_frontend=use_manual_frontend,
-        planner_api_key_env=planner_api_key_env,
         backend_resume=backend_resume,
         planner_resume=planner_resume,
         interactive_pause=False if no_interactive_pause else None,
@@ -555,12 +559,11 @@ def _dispatch_callback(
         "--manual-frontend",
         help="Pause for manual frontend work instead of launching the frontend CLI.",
     ),
-    planner_api_key_env: bool = typer.Option(
+    removed_planner_api_key_env: bool = typer.Option(
         False,
         "--use-planner-api-key-env",
-        help=(
-            "Preserve GEMINI_API_KEY for planner launches. GOOGLE_API_KEY is still stripped."
-        ),
+        hidden=True,
+        help="Removed with the gemini provider; passing it exits with code 2.",
     ),
     backend_resume: bool = typer.Option(
         True,
@@ -593,6 +596,10 @@ def _dispatch_callback(
         help="Path to dispatch_config.yaml. Relative paths resolve from the repo root.",
     ),
 ) -> None:
+    if removed_planner_api_key_env:
+        _configure_stdio_encoding()
+        typer.echo(_PLANNER_API_KEY_ENV_FLAG_REMOVED_MESSAGE, err=True)
+        raise typer.Exit(2)
     if ctx.invoked_subcommand is not None:
         return
     _configure_stdio_encoding()
@@ -600,7 +607,6 @@ def _dispatch_callback(
         _run_dispatch(
             dry_run=dry_run,
             use_manual_frontend=use_manual_frontend,
-            planner_api_key_env=planner_api_key_env,
             backend_resume=backend_resume,
             planner_resume=planner_resume,
             repo_root=repo_root,

@@ -13,7 +13,6 @@ import pytest
 from llm_handoff import agent_process
 from llm_handoff.agent_providers import claude as claude_provider
 from llm_handoff.agent_providers import codex as codex_provider
-from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_types import _ProcessResult
 from llm_handoff.config import AgentConfig
 
@@ -181,28 +180,6 @@ def test_codex_adapter_passes_idle_timeout(
     )
 
     assert [call["idle_timeout_ms"] for call in calls] == [5_000]
-
-
-def test_gemini_adapter_passes_idle_timeout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        gemini_provider, "_run_command_streaming", _capturing_runner(calls)
-    )
-
-    gemini_provider._run_gemini_with_retries(
-        ["gemini", "--output-format", "stream-json"],
-        repo_root=tmp_path,
-        use_api_key_env=False,
-        stop_on_resume_recoverable_failure=False,
-        agent_config=AgentConfig(provider="gemini", idle_timeout_ms=6_000),
-        max_retries=0,
-        log=None,
-    )
-
-    assert [call["idle_timeout_ms"] for call in calls] == [6_000]
 
 
 def test_adapters_leave_idle_timeout_off_by_default(

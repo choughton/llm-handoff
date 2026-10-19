@@ -26,7 +26,6 @@ def _dispatch_config(
     *,
     dry_run: bool = False,
     use_manual_frontend: bool = False,
-    planner_api_key_env: bool = False,
     backend_resume: bool = True,
     planner_resume: bool = True,
     poll_interval_seconds: int = 0,
@@ -42,7 +41,6 @@ def _dispatch_config(
         "pause_recovery": pause_recovery,
         "dry_run": dry_run,
         "use_manual_frontend": use_manual_frontend,
-        "planner_api_key_env": planner_api_key_env,
         "backend_resume": backend_resume,
         "planner_resume": planner_resume,
         "poll_interval_seconds": poll_interval_seconds,
@@ -692,7 +690,6 @@ producer: planner
         path: Path,
         *,
         use_manual_frontend=False,
-        use_api_key_env=False,
         additional_instruction=None,
         log=None,
     ) -> DispatchResult:
@@ -765,7 +762,6 @@ producer: planner
         path: Path,
         *,
         use_manual_frontend=False,
-        use_api_key_env=False,
         additional_instruction=None,
         log=None,
     ) -> DispatchResult:
@@ -1243,7 +1239,7 @@ There is no next step in this file.
     assert ("DISPATCH", "[DRY RUN] Would dispatch backend") in log_messages
 
 
-def test_run_loop_runs_handoff_validator_and_pauses_on_gemini_self_loop(
+def test_run_loop_runs_handoff_validator_and_pauses_on_planner_self_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1264,7 +1260,7 @@ def test_run_loop_runs_handoff_validator_and_pauses_on_gemini_self_loop(
     monkeypatch.setattr(
         orchestrator,
         "invoke_planner_role",
-        lambda path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
+        lambda path, additional_instruction=None, log=None, **kwargs: (
             (
                 handoff_path.write_text(
                     """---
@@ -2294,7 +2290,7 @@ Audit complete with verification.
     ) in log_messages
 
 
-def test_run_loop_schedules_gemini_recovery_for_non_dispatchable_audit_handoff(
+def test_run_loop_schedules_planner_recovery_for_non_dispatchable_audit_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2308,7 +2304,7 @@ def test_run_loop_schedules_gemini_recovery_for_non_dispatchable_audit_handoff(
     orchestrator = _load_orchestrator_module()
     config = _dispatch_config(repo_root)
     log_messages: list[tuple[str, str]] = []
-    planner_calls: list[tuple[Path, bool, str | None, Any]] = []
+    planner_calls: list[tuple[Path, str | None, Any]] = []
 
     def fake_subagent(subagent_name: str, prompt: str, *, log=None) -> SubagentResult:
         assert callable(log)
@@ -2354,13 +2350,12 @@ Next: finalizer — ledger-updater: append the ledger entry and push.
 
     def fake_planner(
         path: Path,
-        use_api_key_env: bool = False,
         additional_instruction: str | None = None,
         log=None,
         **kwargs,
     ) -> DispatchResult:
         assert callable(log)
-        planner_calls.append((path, use_api_key_env, additional_instruction, log))
+        planner_calls.append((path, additional_instruction, log))
         path.write_text(
             """Mode: Non-Implementing Principal Engineer (review/orchestration only)
 
@@ -2388,10 +2383,10 @@ The handoff routing is malformed. Human clarification required before dispatch.
 
     assert exit_code == 0
     assert len(planner_calls) == 1
-    assert planner_calls[0][:2] == (handoff_path, False)
-    assert planner_calls[0][2] is not None
-    assert "does not contain a dispatchable routing instruction" in planner_calls[0][2]
-    assert "canonical dispatchable route" in planner_calls[0][2]
+    assert planner_calls[0][0] == handoff_path
+    assert planner_calls[0][1] is not None
+    assert "does not contain a dispatchable routing instruction" in planner_calls[0][1]
+    assert "canonical dispatchable route" in planner_calls[0][1]
     assert (
         "AGENT",
         "Post-dispatch handoff for auditor (audit) is not dispatchable. Scheduling the planner to repair routing or escalate on the next cycle.",
@@ -2423,12 +2418,11 @@ def test_run_loop_validates_and_pauses_when_planner_handoff_lacks_route(
 
     def fake_planner(
         path: Path,
-        use_api_key_env: bool = False,
         additional_instruction: str | None = None,
         log=None,
         **kwargs,
     ) -> DispatchResult:
-        del use_api_key_env, additional_instruction, kwargs
+        del additional_instruction, kwargs
         assert callable(log)
         path.write_text(
             """# Planner Review
@@ -2557,12 +2551,11 @@ producer: auditor
 
     def fake_planner(
         path: Path,
-        use_api_key_env: bool = False,
         additional_instruction: str | None = None,
         log=None,
         **kwargs,
     ) -> DispatchResult:
-        del use_api_key_env, additional_instruction, kwargs
+        del additional_instruction, kwargs
         assert callable(log)
         path.write_text(
             """---
@@ -2681,7 +2674,7 @@ def test_run_loop_does_not_redirect_fresh_epic_close_when_project_state_is_stale
     config = _dispatch_config(repo_root)
     log_messages: list[tuple[str, str]] = []
     ledger_calls: list[Any] = []
-    planner_calls: list[tuple[Path, bool, str | None, Any]] = []
+    planner_calls: list[tuple[Path, str | None, Any]] = []
 
     monkeypatch.setattr(
         orchestrator,
@@ -2694,8 +2687,8 @@ def test_run_loop_does_not_redirect_fresh_epic_close_when_project_state_is_stale
     monkeypatch.setattr(
         orchestrator,
         "invoke_planner_role",
-        lambda path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
-            planner_calls.append((path, use_api_key_env, additional_instruction, log))
+        lambda path, additional_instruction=None, log=None, **kwargs: (
+            planner_calls.append((path, additional_instruction, log))
             or _dispatch_result()
         ),
     )
@@ -2742,7 +2735,7 @@ def test_run_loop_redirects_completed_stale_epic_close_to_planner_scoping(
     config = _dispatch_config(repo_root)
     log_messages: list[tuple[str, str]] = []
     ledger_calls: list[Any] = []
-    planner_calls: list[tuple[Path, bool, str | None, Any]] = []
+    planner_calls: list[tuple[Path, str | None, Any]] = []
     subagent_calls: list[tuple[str, str, Any]] = []
 
     def fake_epic_close(log=None) -> EpicCloseResult:
@@ -2763,8 +2756,8 @@ def test_run_loop_redirects_completed_stale_epic_close_to_planner_scoping(
     monkeypatch.setattr(
         orchestrator,
         "invoke_planner_role",
-        lambda path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
-            planner_calls.append((path, use_api_key_env, additional_instruction, log))
+        lambda path, additional_instruction=None, log=None, **kwargs: (
+            planner_calls.append((path, additional_instruction, log))
             or _dispatch_result()
         ),
     )
@@ -2792,10 +2785,10 @@ def test_run_loop_redirects_completed_stale_epic_close_to_planner_scoping(
     assert callable(ledger_calls[0])
     assert subagent_calls == []
     assert len(planner_calls) == 1
-    assert planner_calls[0][:2] == (handoff_path, False)
-    assert planner_calls[0][2] is not None
-    assert "prior finalizer cycle already completed" in planner_calls[0][2]
-    assert "PROJECT_STATE.md" in planner_calls[0][2]
+    assert planner_calls[0][0] == handoff_path
+    assert planner_calls[0][1] is not None
+    assert "prior finalizer cycle already completed" in planner_calls[0][1]
+    assert "PROJECT_STATE.md" in planner_calls[0][1]
     assert (
         "WARN",
         "STALE finalizer detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
@@ -2857,7 +2850,7 @@ producer: auditor
     config = _dispatch_config(repo_root)
     log_messages: list[tuple[str, str]] = []
     ledger_calls: list[Any] = []
-    planner_calls: list[tuple[Path, bool, str | None, Any]] = []
+    planner_calls: list[tuple[Path, str | None, Any]] = []
 
     def fake_epic_close(log=None) -> EpicCloseResult:
         ledger_calls.append(log)
@@ -2878,8 +2871,8 @@ producer: auditor
     monkeypatch.setattr(
         orchestrator,
         "invoke_planner_role",
-        lambda path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
-            planner_calls.append((path, use_api_key_env, additional_instruction, log))
+        lambda path, additional_instruction=None, log=None, **kwargs: (
+            planner_calls.append((path, additional_instruction, log))
             or _dispatch_result()
         ),
     )
@@ -2898,10 +2891,10 @@ producer: auditor
     assert exit_code == 0
     assert len(ledger_calls) == 1
     assert len(planner_calls) == 1
-    assert planner_calls[0][:2] == (handoff_path, False)
-    assert planner_calls[0][2] is not None
-    assert "prior finalizer cycle already completed" in planner_calls[0][2]
-    assert "repeating finalizer" in planner_calls[0][2]
+    assert planner_calls[0][0] == handoff_path
+    assert planner_calls[0][1] is not None
+    assert "prior finalizer cycle already completed" in planner_calls[0][1]
+    assert "repeating finalizer" in planner_calls[0][1]
     assert (
         "WARN",
         "STALE finalizer detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
@@ -2985,10 +2978,7 @@ def test_run_loop_dry_run_skips_dispatch_and_logs_startup_banner(
         "INFO",
         "Planner session:    MANAGED RESUME (in-memory session id)",
     ) in log_messages
-    assert (
-        "INFO",
-        "Planner API env:    STRIP configured provider API keys",
-    ) in log_messages
+    assert not any("Planner API env:" in message for _, message in log_messages)
     assert any("[DRY RUN]" in message for _, message in log_messages)
 
 
@@ -3011,7 +3001,7 @@ def test_run_loop_uses_manual_frontend_for_frontend_when_enabled(
     monkeypatch.setattr(
         orchestrator,
         "invoke_frontend_role",
-        lambda path, use_manual_frontend=False, use_api_key_env=False, additional_instruction=None, log=None: (
+        lambda path, use_manual_frontend=False, additional_instruction=None, log=None: (
             manual_frontend_calls.append((path, log)) or _dispatch_result()
         ),
     )
@@ -3032,42 +3022,6 @@ def test_run_loop_uses_manual_frontend_for_frontend_when_enabled(
         "DISPATCH",
         "Dispatching manual frontend (GUI, manual pause).",
     ) in log_messages
-
-
-def test_run_loop_passes_planner_api_key_opt_in_to_dispatch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repo_root, handoff_path = _write_repo(
-        tmp_path,
-        """## Next Step
-
-- **planner:** Review the backend slice.
-""",
-    )
-    orchestrator = _load_orchestrator_module()
-    config = _dispatch_config(repo_root, planner_api_key_env=True)
-    planner_calls: list[tuple[Path, bool, Any]] = []
-
-    monkeypatch.setattr(
-        orchestrator,
-        "invoke_planner_role",
-        lambda path, use_api_key_env=False, additional_instruction=None, log=None, **kwargs: (
-            planner_calls.append((path, use_api_key_env, log)) or _dispatch_result()
-        ),
-    )
-    monkeypatch.setattr(
-        orchestrator,
-        "validate_handoff",
-        lambda *args, **kwargs: _validation_result(),
-    )
-
-    exit_code = orchestrator.run_loop(config, max_cycles=1)
-
-    assert exit_code == 0
-    assert len(planner_calls) == 1
-    assert planner_calls[0][:2] == (handoff_path, True)
-    assert callable(planner_calls[0][2])
 
 
 def test_run_loop_tracks_planner_session_in_memory_across_cycles(
@@ -3093,7 +3047,6 @@ def test_run_loop_tracks_planner_session_in_memory_across_cycles(
 
     def fake_planner(
         path: Path,
-        use_api_key_env: bool = False,
         additional_instruction: str | None = None,
         log=None,
         use_resume: bool = False,
@@ -3104,7 +3057,6 @@ def test_run_loop_tracks_planner_session_in_memory_across_cycles(
         planner_calls.append(
             {
                 "path": path,
-                "use_api_key_env": use_api_key_env,
                 "additional_instruction": additional_instruction,
                 "log": log,
                 "use_resume": use_resume,
@@ -3120,7 +3072,7 @@ def test_run_loop_tracks_planner_session_in_memory_across_cycles(
                 stderr="",
                 exit_code=0,
                 elapsed_seconds=0.01,
-                session_id="gemini-session-1",
+                session_id="planner-session-1",
             )
         path.write_text("## user\n\nDone for test.\n", encoding="utf-8")
         return DispatchResult(
@@ -3155,7 +3107,7 @@ def test_run_loop_tracks_planner_session_in_memory_across_cycles(
         initial_handoff
     )
     assert planner_calls[1]["use_resume"] is True
-    assert planner_calls[1]["session_id"] == "gemini-session-1"
+    assert planner_calls[1]["session_id"] == "planner-session-1"
     assert planner_calls[1]["previous_handoff_sha"] == orchestrator._content_sha(
         initial_handoff
     )
@@ -3177,14 +3129,14 @@ def test_run_loop_passes_logger_to_frontend_dispatch(
     )
     orchestrator = _load_orchestrator_module()
     config = _dispatch_config(repo_root)
-    frontend_calls: list[tuple[Path, bool, bool, Any]] = []
+    frontend_calls: list[tuple[Path, bool, Any]] = []
     log_messages: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
         orchestrator,
         "invoke_frontend_role",
-        lambda path, use_manual_frontend=False, use_api_key_env=False, additional_instruction=None, log=None: (
-            frontend_calls.append((path, use_manual_frontend, use_api_key_env, log))
+        lambda path, use_manual_frontend=False, additional_instruction=None, log=None: (
+            frontend_calls.append((path, use_manual_frontend, log))
             or _dispatch_result()
         ),
     )
@@ -3200,7 +3152,7 @@ def test_run_loop_passes_logger_to_frontend_dispatch(
     exit_code = orchestrator.run_loop(config, max_cycles=1, log=fake_log)
 
     assert exit_code == 0
-    assert frontend_calls == [(handoff_path, False, False, fake_log)]
+    assert frontend_calls == [(handoff_path, False, fake_log)]
 
 
 def test_run_loop_passes_logger_to_codex_dispatch(
@@ -3393,12 +3345,10 @@ def test_run_loop_passes_configured_agent_provider_to_auditor_dispatch(
     config_module = importlib.import_module("llm_handoff.config")
     agents = config_module._default_agent_configs()
     agents["auditor"] = config_module.AgentConfig(
-        provider="gemini",
-        binary="gemini-custom",
-        mention="@auditor",
-        retries=2,
+        provider="antigravity",
+        binary="agy-custom",
         timeout_ms=456,
-        agent_name="auditor-gemini",
+        agent_name="auditor-agy",
     )
     orchestrator = _load_orchestrator_module()
     config = _dispatch_config(repo_root, agents=agents)
@@ -3442,8 +3392,8 @@ def test_run_loop_passes_configured_agent_provider_to_auditor_dispatch(
     )
     assert subagent_calls[0]["role"] == "auditor"
     assert subagent_calls[0]["handoff_path"] == handoff_path
-    assert subagent_calls[0]["agent_config"].provider == "gemini"
-    assert subagent_calls[0]["agent_config"].agent_name == "auditor-gemini"
+    assert subagent_calls[0]["agent_config"].provider == "antigravity"
+    assert subagent_calls[0]["agent_config"].agent_name == "auditor-agy"
     assert callable(subagent_calls[0]["log"])
 
 
@@ -3728,7 +3678,6 @@ def test_main_parses_cli_flags_and_dispatches_config(
         [
             "--dry-run",
             "--manual-frontend",
-            "--use-planner-api-key-env",
             "--repo-root",
             str(tmp_path),
         ]
@@ -3739,7 +3688,6 @@ def test_main_parses_cli_flags_and_dispatches_config(
     assert config.repo_root == tmp_path
     assert config.dry_run is True
     assert config.use_manual_frontend is True
-    assert config.planner_api_key_env is True
     assert config.backend_resume is True
     assert config.planner_resume is True
     assert captured["logger_repo_root"] == tmp_path
@@ -3863,7 +3811,6 @@ def test_run_dispatch_can_run_from_source_checkout_against_target_repo(
     exit_code = main_module._run_dispatch(
         dry_run=True,
         use_manual_frontend=False,
-        planner_api_key_env=False,
         backend_resume=True,
         planner_resume=True,
         repo_root=target_repo,

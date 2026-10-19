@@ -393,7 +393,7 @@ def test_audit_config_rejects_invalid_values(
 
 @pytest.mark.parametrize(
     ("backend_provider", "expected"),
-    [("codex", "claude"), ("claude", "codex"), ("gemini", "claude")],
+    [("codex", "claude"), ("claude", "codex"), ("antigravity", "claude")],
 )
 def test_security_provider_defaults_to_a_different_vendor(
     tmp_path: Path,

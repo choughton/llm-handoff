@@ -15,7 +15,6 @@ handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
 backend_resume: true
 planner_resume: true
-planner_api_key_env: false
 
 agents:
   planner:
@@ -102,22 +101,24 @@ does not configure it. See also [SECURITY.md](SECURITY.md#threat-model).
 
 ## Runtime Controls
 
-The dispatcher exposes role-based runtime toggles for session reuse and planner
-API-key environment handling:
+The dispatcher exposes role-based runtime toggles for session reuse:
 
 ```yaml
 backend_resume: true
 planner_resume: true
-planner_api_key_env: false
 ```
 
 Provider-named runtime keys from the source extraction are not supported in the
 public config. Use the role-based keys shown above.
 
-When `planner_api_key_env` is `false`, planner launches strip
-`GEMINI_API_KEY`. `GOOGLE_API_KEY` is always stripped for planner launches.
-When `planner_api_key_env` is `true`, `GEMINI_API_KEY` is preserved, but
-`GOOGLE_API_KEY` is still stripped.
+The `planner_api_key_env` key was removed with the gemini provider, the only
+adapter that read it. An existing `planner_api_key_env: false` line is still
+accepted and ignored, so older configs keep loading. Any other value fails at
+load with: "planner_api_key_env was removed with the gemini provider: Gemini
+CLI no longer serves personal Google accounts. Delete the planner_api_key_env
+key; a Codex role uses use_api_key_env: true for OPENAI_API_KEY." The
+`--use-planner-api-key-env` command-line flag was removed too; passing it
+exits with code 2 before any config loads.
 
 ## Pause Recovery
 
@@ -958,8 +959,10 @@ provider, and only when the role opts in:
 | --- | --- |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` | never; Claude Code uses its own login |
 | `OPENAI_API_KEY` | Codex roles with `use_api_key_env: true` |
-| `GEMINI_API_KEY` | Gemini roles with `use_api_key_env: true` (or the planner flag above) |
 | `GOOGLE_API_KEY` | never |
+
+No role receives `GEMINI_API_KEY`: every launch strips it, and
+`env_passthrough` rejects it.
 
 Antigravity roles receive no vendor API key, even with `use_api_key_env: true`.
 
@@ -1662,11 +1665,16 @@ Public docs and templates should use generic role names:
 
 Provider names are adapter details. The runtime dispatch layer selects the
 adapter from each role's `provider` field. The currently registered runtime
-adapters are `codex`, `gemini`, `claude`, and `antigravity` (binary `agy`);
+adapters are `codex`, `claude`, and `antigravity` (binary `agy`);
 `antigravity` can also be the next-agent normalizer (see
 [Next-Agent Normalizer](#next-agent-normalizer)) but cannot be the
 `audit.security_provider`. Providers without a registered
 adapter fail closed at config load.
+
+The `gemini` role provider was removed. `provider: gemini` on any
+`agents.<role>` or `agents.<role>.fallback` fails at load with: "The gemini
+provider was removed: Gemini CLI no longer serves personal Google accounts.
+Use provider: antigravity (the agy CLI)."
 
 When a config file defines only some `agents` entries, the loader merges those
 entries over the reference defaults. After merging, all reference roles must be
@@ -1961,7 +1969,7 @@ The audit security reviewer and the next-agent normalizer do not use it.
 
 Common fields:
 
-- `provider`: adapter family such as `codex`, `gemini`, or `claude`.
+- `provider`: adapter family such as `codex`, `claude`, or `antigravity`.
 - `binary`: command name or absolute executable path.
 - `agent_name`: optional display/subagent name for logs or provider-specific
   role selection.
@@ -1975,7 +1983,7 @@ Common fields:
   [Agent Environment](#agent-environment).
 - `env_passthrough`: extra environment variable names to pass to this role.
 - `use_api_key_env`: pass the provider's own API key (`OPENAI_API_KEY` for
-  Codex, `GEMINI_API_KEY` for Gemini). Ignored for Claude.
+  Codex). Ignored for Claude and Antigravity.
 - `unsafe_bypass`: restore the provider's previous approval and sandbox bypass
   flags for this role. Off by default and logged as a startup warning.
 - `fallback`: optional agent that reruns the dispatch after a fatal failure.
@@ -1996,8 +2004,6 @@ Claude-specific fields:
 Gemini-specific fields:
 
 - `mention`: optional agent mention used by Gemini agent files.
-- `use_api_key_env`: whether to preserve `GEMINI_API_KEY` for a Gemini-backed
-  role. `GOOGLE_API_KEY` is always stripped by the current adapter.
 
 ## Audit Fan-Out
 
