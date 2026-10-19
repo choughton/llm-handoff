@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The operator prompt at a pause is now one line: "Press Enter to have the
+  planner fix this, or type instructions for it and press Enter." The five
+  help lines are gone; `retry`, `quit`, and `@backend|@frontend|@auditor`
+  still work and are documented in
+  [Operator Prompt](CONFIGURATION.md#operator-prompt). Once the planner has
+  tried in the current pause streak, a second line offers the manual
+  HANDOFF.md edit. The reason line above the prompt drops the generic
+  "Update the handoff; dispatch will resume after the file changes." tail.
 - In `pr` mode, an epic-close audit that passes on a story branch with no
   commits beyond the remote base branch no longer stops at `gh pr create`
   ("No commits between ..."). The dispatcher now pushes nothing, fast-forwards

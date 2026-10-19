@@ -181,7 +181,27 @@ When the dispatcher pauses and waits for `HANDOFF.md` to change, it logs the
 `PAUSE` reason line and then, if a person is at a terminal, shows an operator
 prompt. The prompt appears at every `next_agent: user` pause, and at the other
 pauses once bounded planner recovery is used up or unavailable (for example
-with `pause_recovery: "off"`). It accepts five actions:
+with `pause_recovery: "off"`). It prints one line:
+
+```text
+Press Enter to have the planner fix this, or type instructions for it and press Enter.
+```
+
+When the planner has already tried in the current pause streak, through
+bounded recovery or an earlier operator dispatch, a second line follows:
+
+```text
+Or edit HANDOFF.md yourself; the loop resumes when it changes.
+```
+
+Above the prompt, the reason line drops a generic "Update the handoff;
+dispatch will resume after the file changes." tail, since the prompt covers
+it. Reasons that end with specific steps, such as a story branch or a publish
+merge to finish, keep them. The planner and role instructions always get the
+full reason.
+
+The prompt accepts five actions. Only the first two are printed; the rest
+are listed here:
 
 - Enter: dispatch the planner with an instruction to resolve the pause with
   its best judgment.

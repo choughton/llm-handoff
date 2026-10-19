@@ -773,6 +773,7 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -822,6 +823,7 @@ def run_loop(
                     reason=orphan.message,
                     log=log_fn,
                     operator_prompt=operator_prompt,
+                    recovery_used=pause_recovery_used,
                     stop_watch=stop_watch,
                 )
                 if pause.stop:
@@ -892,6 +894,7 @@ def run_loop(
                 ),
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -944,6 +947,7 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -1015,6 +1019,7 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -1041,6 +1046,7 @@ def run_loop(
                 reason=pre_dispatch_pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
+                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -1135,6 +1141,7 @@ def run_loop(
                     reason=pause_reason,
                     log=log_fn,
                     operator_prompt=operator_prompt,
+                    recovery_used=pause_recovery_used,
                     stop_watch=stop_watch,
                 )
                 if pause.stop:
@@ -1159,6 +1166,7 @@ def run_loop(
             consecutive_failures = 0
             if forced_additional_instruction is None:
                 pause_recovery_used = False
+                operator_prompt.planner_tried = False
         else:
             # The handoff the implementer works from. An operator dispatch that
             # continues the saved story swaps in its rebuilt assignment.
@@ -1194,6 +1202,7 @@ def run_loop(
                         ),
                         log=log_fn,
                         operator_prompt=operator_prompt,
+                        recovery_used=pause_recovery_used,
                         stop_watch=stop_watch,
                     )
                     if pause.stop:
@@ -1629,6 +1638,7 @@ def run_loop(
                     if validation_result.verdict != "NO":
                         if forced_additional_instruction is None:
                             pause_recovery_used = False
+                            operator_prompt.planner_tried = False
                         _run_work_claim_gate(
                             config=config,
                             route=current_cycle.route,
@@ -1748,6 +1758,7 @@ def run_loop(
                     reason=pause_reason,
                     log=log_fn,
                     operator_prompt=operator_prompt,
+                    recovery_used=pause_recovery_used,
                     stop_watch=stop_watch,
                 )
                 if pause.stop:
@@ -1765,6 +1776,7 @@ def run_loop(
                 and forced_additional_instruction is None
             ):
                 pause_recovery_used = False
+                operator_prompt.planner_tried = False
             if _run_work_claim_gate(
                 config=config,
                 route=current_cycle.route,
@@ -3899,6 +3911,9 @@ class _OperatorPromptState:
 
     def __init__(self) -> None:
         self._reader: OperatorInputReader | None = None
+        # True once an operator prompt dispatch ran in this pause streak;
+        # cleared wherever the streak resets.
+        self.planner_tried = False
 
     def reader(self) -> OperatorInputReader:
         if self._reader is None:
@@ -3932,6 +3947,20 @@ def _operator_prompt_enabled(config: DispatchConfig) -> bool:
     )
 
 
+# Generic "edit the file" tails that the operator prompt line already covers.
+# Tails that carry specific steps (story branch, publish merge) are kept.
+_PROMPT_REDUNDANT_TAIL = re.compile(
+    r"\s*(?:Update the handoff|Update HANDOFF\.md|Resolve it manually); "
+    r"dispatch will resume after the file changes\.\s*$"
+)
+
+
+def _prompt_display_reason(reason: str) -> str:
+    """The pause reason as shown above the operator prompt."""
+
+    return _PROMPT_REDUNDANT_TAIL.sub("", reason) or reason
+
+
 def _pause_at_dispatcher_pause(
     config: DispatchConfig,
     *,
@@ -3939,11 +3968,14 @@ def _pause_at_dispatcher_pause(
     reason: str,
     log: LogFn,
     operator_prompt: _OperatorPromptState,
+    recovery_used: bool = False,
     stop_watch: _StopRequestWatch | None = None,
 ) -> PauseOutcome:
     """Pause for a HANDOFF.md edit, or for the operator prompt at a TTY.
 
     A stop request seen before or during the pause ends the run instead.
+    ``recovery_used`` says the bounded planner recovery already ran in this
+    pause streak, so the prompt also offers the manual HANDOFF.md edit.
     """
 
     def stop_or(kind: PauseOutcomeKind) -> PauseOutcome:
@@ -3985,7 +4017,7 @@ def _pause_at_dispatcher_pause(
             return PauseOutcome(kind="resume")
         return stop_or("stop")
 
-    _log(log, "PAUSE", reason)
+    _log(log, "PAUSE", _prompt_display_reason(reason))
     result = wait_for_operator_or_handoff_change(
         reader,
         config.handoff_full_path,
@@ -3996,6 +4028,7 @@ def _pause_at_dispatcher_pause(
         stop_requested=(
             (lambda: stop_watch.requested(log)) if stop_watch is not None else None
         ),
+        planner_tried=recovery_used or operator_prompt.planner_tried,
     )
     if isinstance(result, StopRequested):
         return stop_or("stop")
@@ -4043,6 +4076,7 @@ def _pause_at_dispatcher_pause(
             "PAUSE",
             f"Operator prompt: scheduling a {role} dispatch with {summary}.",
         )
+        operator_prompt.planner_tried = True
         return PauseOutcome(kind="planner", pending_planner_recovery=role_pending)
 
     if result.text is None:
@@ -4068,6 +4102,7 @@ def _pause_at_dispatcher_pause(
         "PAUSE",
         f"Operator prompt: scheduling a planner dispatch with {summary}.",
     )
+    operator_prompt.planner_tried = True
     return PauseOutcome(kind="planner", pending_planner_recovery=pending)
 
 
