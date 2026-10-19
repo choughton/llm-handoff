@@ -4996,12 +4996,34 @@ def _write_carry_over_record_by_handle(
         os.close(file_fd)
 
 
+# Unicode categories that can move the cursor, reorder displayed text, or
+# break a line on a terminal: controls (Cc), format controls such as bidi
+# overrides and isolates (Cf), surrogates (Cs), and line and paragraph
+# separators (Zl, Zp). Same set as the terminal sanitizer in logging_util.
+_ESCAPED_DISPLAY_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def _escape_display_character(char: str) -> str:
+    code_point = ord(char)
+    if code_point <= 0xFF:
+        return f"\\x{code_point:02x}"
+    if code_point <= 0xFFFF:
+        return f"\\u{code_point:04x}"
+    return f"\\U{code_point:08x}"
+
+
 def _escape_control_characters(text: str) -> str:
-    """Replace each control character with its ``\\xNN`` or ``\\uNNNN`` escape."""
+    """Escape each character whose Unicode category is unsafe to display.
+
+    The categories are ``Cc`` (controls), ``Cf`` (format controls such as
+    bidi overrides and isolates), ``Cs`` (surrogates), ``Zl`` (line
+    separator), and ``Zp`` (paragraph separator). Each becomes ``\\xNN`` up
+    to U+00FF, ``\\uNNNN`` up to U+FFFF, and ``\\UNNNNNNNN`` above that.
+    """
 
     return "".join(
-        (f"\\x{ord(char):02x}" if ord(char) <= 0xFF else f"\\u{ord(char):04x}")
-        if unicodedata.category(char) == "Cc"
+        _escape_display_character(char)
+        if unicodedata.category(char) in _ESCAPED_DISPLAY_CATEGORIES
         else char
         for char in text
     )

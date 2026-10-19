@@ -33,6 +33,9 @@ This project follows a simple pre-release changelog until the first public tag.
   before the question it logs the assignment a confirmation would restore
   (Files in scope, Files out of bounds, Verification commands, and a short
   SHA-256, escaped), and confirming approves that assignment.
+- The interrupted-dispatch recovery and carry-over prompts now also escape
+  Unicode format controls (bidi overrides and isolates) and line or paragraph
+  separators, not only control characters.
 
 - An audit verdict whose strings hold unescaped backslashes, such as a Codex
   quality reviewer's `rg -n '12\.'` in `commands_run`, now parses instead of

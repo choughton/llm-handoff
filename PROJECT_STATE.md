@@ -1263,6 +1263,22 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   handoff posts nothing; add a `handoff_repaired` event so the
   `LINEAR-EVIDENCE` check accepts a repaired lease whose producer changed.
   Vanilla mode is unchanged. Closes source-dispatcher comparison (a) and (b).
+- TIDY-9: Merge-aware audit range. When a story branch has merged its base
+  branch after the saved story base, the audit fan-out range (base from
+  `_story_start_sha` / `publish.saved_story_base`) includes the merged
+  upstream files, and the quality reviewer fails phase 1 on scope
+  (RECOVERY-2a cycles 7 and 9). Use
+  `git merge-base HEAD <remote>/<base branch>` as the review base when it
+  descends from the saved base. Files: `llm_handoff/orchestrator.py`,
+  `llm_handoff/publish.py`, `tests/`, `CHANGELOG.md`.
+- TIDY-10: Dispatcher verification for planner-issued audits.
+  `audit_verification.pre_audit_trigger` fires only for an epic close or an
+  empty review range, so a story audit the planner re-issues reaches a
+  sandboxed reviewer with no `## Dispatcher Verification` PASS (RECOVERY-2a
+  cycle 12). Also trigger it when the handoff's producer is not an
+  implementer and has no PASS for the audit commit. Files:
+  `llm_handoff/audit_verification.py`, `llm_handoff/orchestrator.py`,
+  `tests/`, `CHANGELOG.md`.
 
 ## Open Followups
 

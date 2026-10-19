@@ -790,6 +790,64 @@ def test_a_forged_record_shows_its_assignment_before_the_prompt(
     assert not (tmp_path / "logs" / "dispatch" / "carry-over.json").exists()
 
 
+_UNSAFE_DISPLAY_CATEGORIES = {"Cc", "Cf", "Cs", "Zl", "Zp"}
+
+
+def test_escape_control_characters_escapes_format_and_separator_controls() -> None:
+    orchestrator = _orchestrator()
+    text = "a‮b⁦c‏d e\x1bf"
+
+    escaped = orchestrator._escape_control_characters(text)
+
+    assert escaped.isascii()
+    assert escaped == "a\\u202eb\\u2066c\\u200fd\\u2028e\\x1bf"
+    letters = escaped
+    for escape in ("\\u202e", "\\u2066", "\\u200f", "\\u2028", "\\x1b"):
+        assert escape in escaped
+        letters = letters.replace(escape, "")
+    assert letters == "abcdef"
+    path = "src/café/日.py"
+    assert orchestrator._escape_control_characters(path) == path
+
+
+def test_forged_record_bidi_controls_are_escaped_in_the_approval_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A forged Verification command uses a right-to-left override to reorder
+    # what the operator reads; the approval summary shows it escaped.
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    _interrupt_backend(tmp_path, orchestrator, monkeypatch)
+    forged_handoff = _assignment().replace(
+        f"**Verification command:** {PASS_COMMAND}",
+        "**Verification command:** python -m pytest tests -q ‮#gnirts-eman",
+    )
+    payload = json.loads(_record_path(tmp_path).read_text(encoding="utf-8"))
+    payload["handoff_content"] = forged_handoff
+    payload["story_key"] = carry_over_key(forged_handoff)
+    _record_path(tmp_path).write_text(json.dumps(payload), encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="n\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    for _level, message in messages:
+        assert not any(
+            unicodedata.category(char) in _UNSAFE_DISPLAY_CATEGORIES
+            for char in message
+        )
+    listing = [
+        message for _level, message in messages if "Verification commands:" in message
+    ]
+    assert len(listing) == 1
+    assert "\\u202e#gnirts-eman" in listing[0]
+    assert not _record_path(tmp_path).exists()
+
+
 def _link_directory(link: Path, target: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
     try:
