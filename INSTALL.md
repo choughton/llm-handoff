@@ -14,7 +14,8 @@ with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
 - Python 3.11 or newer.
 - Git.
 - At least one provider CLI signed in: Claude Code (`claude`), Codex CLI
-  (`codex`), Antigravity (`agy`), or Gemini CLI (`gemini`). The reference
+  (`codex`), or Antigravity (`agy`). Gemini CLI (`gemini`) is no longer
+  supported; see the [README quick start](README.md#quick-start). The reference
   mapping puts the `planner` and `frontend` on Antigravity (`agy`), the
   `backend` on Codex, and the `auditor`, `validator`, and `finalizer` on
   Claude Code, so it needs all three. With `init --tracker linear` the
@@ -25,9 +26,6 @@ with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
   writes `commit_mode: dispatcher` into `dispatch_config.yaml`; keep it, and
   keep the work-claim gate on (see
   [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits)).
-- Docker or Podman on `PATH` for any role mapped to Gemini CLI (macOS can use
-  `sandbox-exec`). Gemini roles run in its container sandbox and the
-  dispatcher refuses to start without one.
 - Optional: GitHub CLI (`gh`), signed in (`gh auth status`), for
   `publish.mode: pr` and repository checks.
 
@@ -57,8 +55,7 @@ python -m pip install git+https://github.com/choughton/llm-handoff.git
 Either install puts an `llm-handoff` console command on `PATH` for that
 environment. `llm-handoff ...` and `python -m llm_handoff ...` run the same
 CLI. The wheel bundles the `examples/reference-workflow/` template, including
-its hidden `.claude/`, `.codex/`, `.gemini/`, `.agents/`, `.geminiignore`, and
-`.gitignore` paths, so `llm-handoff init` works from any directory.
+its hidden `.claude/`, `.codex/`, `.agents/`, and `.gitignore` paths, so `llm-handoff init` works from any directory.
 
 ## Run From A Source Checkout
 
@@ -114,9 +111,8 @@ llm-handoff doctor --repo-root path/to/your-project
 
 From a source checkout, use `python -m llm_handoff doctor`. The command checks
 that `git` is on PATH and the root is inside a Git repository, that each
-configured role's provider CLI binary is on PATH, that Docker or Podman
-(`sandbox-exec` on macOS) is available when a Gemini CLI role runs sandboxed,
-and that the handoff file routes and validates. When a role runs on
+configured role's provider CLI binary is on PATH, and that the handoff file
+routes and validates. When a role runs on
 Antigravity without `unsafe_bypass`, it also checks
 `~/.gemini/antigravity-cli/settings.json` for the required `agy`
 `permissions.allow` and `permissions.deny` entries and for `deny` or `ask`
@@ -129,8 +125,8 @@ dispatch, use the network, or write files.
 
 ## Safety Defaults
 
-Agents launch with an allowlisted environment, permission checks and sandboxes
-on, and protected control files that stop the loop when a role edits them
+Agents launch with an allowlisted environment, permission checks on (Codex
+also keeps its sandbox), and protected control files that stop the loop when a role edits them
 outside its Work Packet. Codex users who authenticate with an API key instead
 of `codex login` must set `use_api_key_env: true` on the Codex roles.
 

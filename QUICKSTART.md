@@ -11,22 +11,20 @@ before using it against a repository with sensitive or production work.
 
 ## 0. Check Prerequisites
 
-Python 3.11 or newer, Git, and the provider CLIs your roles will use. Roles
-mapped to Gemini CLI also need Docker or Podman on `PATH` (macOS can use
-`sandbox-exec`). The same commands work in PowerShell and in a POSIX shell:
+Python 3.11 or newer, Git, and the provider CLIs your roles will use. The
+same commands work in PowerShell and in a POSIX shell; skip the line for any
+CLI no role is mapped to:
 
 ```bash
 python --version
 git --version
 codex --version
-gemini --version
 claude --version
-docker --version
+agy --version
 ```
 
 The dispatcher launches these CLIs. It does not install them or sign them in.
-Agents run with an allowlisted environment, permission checks, and sandboxes
-on; see [Agent Safety Defaults](README.md#agent-safety-defaults). On Windows,
+Agents run with an allowlisted environment and permission checks on; see [Agent Safety Defaults](README.md#agent-safety-defaults). On Windows,
 run the dispatcher inside WSL2 or a container with no push credential.
 
 ## 1. Install

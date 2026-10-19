@@ -89,7 +89,9 @@ What limits it:
   agent's own claims;
 - each CLI launches in its restricted mode by default (Claude Code
   `dontAsk` with a tool allowlist and web tools denied, Codex
-  `workspace-write`, Gemini CLI in its container sandbox);
+  `workspace-write`, and Antigravity (`agy`) with no permission flag, so its
+  shell commands need `permissions.allow` grants in the `agy` user
+  settings);
 - the reference workflow ships deny rules and a `PreToolUse` hook for
   `git push`, `curl`, `wget`, `rm -rf`, and `git reset --hard`.
 
@@ -97,6 +99,14 @@ What it does not stop: an agent that is allowed to run `python` or edit
 source can still run arbitrary code inside its sandbox. Command deny rules
 match prefixes and can be bypassed through aliases, scripts, or interpreters.
 They catch mistakes and simple injections, not a determined attacker.
+
+### Files `agy` roles can read
+
+`init` no longer ships a `.geminiignore` file, and `agy` never read one, so
+it never kept files out of an `agy` role's context. Until an operator's live
+check shows that `agy` honors `.gitignore`, assume `agy` roles can read
+`.env` files, `logs/`, and `.git`. `agy` launches without a sandbox, so keep
+secrets out of the repository tree an `agy` role works in.
 
 ### Credential inheritance
 
@@ -106,9 +116,12 @@ Vendor API keys only reach their own provider, and only when a role opts in.
 The work-claim gate's Verification command and configured `scanners` run in
 the dispatcher itself, also with an allowlisted environment: the base and
 platform process variables plus the names listed in
-`work_claim_env_passthrough`. Vendor API keys and provider-owned variables
-(`CLAUDE_`, `CODEX_`, `GEMINI_`) never reach them. The Verification command
-is still agent-written shell text that runs as your user account.
+`work_claim_env_passthrough`. Vendor API keys (including `GEMINI_API_KEY`
+and `GOOGLE_API_KEY`) and provider-owned variables (`CLAUDE_`, `CODEX_`)
+never reach them, even when listed. Other `GEMINI_` names are not blocked:
+one reaches them only when it is listed in `work_claim_env_passthrough`. The
+Verification command is still agent-written shell text that runs as your user
+account.
 
 This does not cover credentials that live outside environment variables. The
 agents run as your user account. A Git credential manager, an SSH agent, an
@@ -127,9 +140,10 @@ error when a role changes one without listing it in its Work Packet. See
 `protected_paths` in [CONFIGURATION.md](CONFIGURATION.md#protected-control-files).
 
 The check covers files inside the repository. Provider configuration in your
-home directory, such as user-level Gemini policies or Claude Code settings,
-is outside it. The provider sandboxes are what keep agents away from those
-files.
+home directory, such as the `agy` user settings
+(`~/.gemini/antigravity-cli/settings.json`), Codex rules, or Claude Code
+settings, is outside it. Only the provider's own permission checks or sandbox
+keep agents away from those files, and `agy` launches without a sandbox.
 
 ### Recommended isolation
 
@@ -141,8 +155,7 @@ in which a push prohibition does not depend on prompts, deny rules, or the
 agent's cooperation.
 
 On Windows, this also matches the provider sandboxes: Claude Code's Bash
-sandbox needs WSL2, the Codex native Windows sandbox is experimental, and
-Gemini CLI's sandbox needs Docker or Podman.
+sandbox needs WSL2, and the Codex native Windows sandbox is experimental.
 
 ## Reporting A Vulnerability
 
@@ -163,8 +176,9 @@ Please include:
 The dispatcher does not sandbox provider CLIs itself. By default it launches
 each CLI in that CLI's own restricted mode: Claude Code with
 `--permission-mode dontAsk` and a tool allowlist, Codex with its
-`workspace-write` sandbox, and Gemini CLI inside its Docker or Podman sandbox.
-Those boundaries are only as strong as the provider's implementation. A role
+`workspace-write` sandbox, and Antigravity (`agy`) with no permission flag
+and no sandbox, relying on the `permissions.allow` and `permissions.deny`
+entries in the `agy` user settings for shell commands. Those boundaries are only as strong as the provider's implementation. A role
 with `unsafe_bypass: true` runs with approvals and sandboxing disabled, which
 is the same as running that CLI directly with full access to the target
 repository and your user account.

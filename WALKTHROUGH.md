@@ -69,7 +69,6 @@ AGENTS.md
 PROJECT_STATE.md
 dispatch_config.yaml
 .gitignore
-.geminiignore
 docs/handoff/README.md
 docs/handoff/HANDOFF.md
 docs/handoff/HANDBOOK.md
@@ -97,13 +96,6 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .codex/skills/llm-handoff-validator/SKILL.md
 .codex/skills/llm-handoff-finalizer/SKILL.md
 .codex/rules/llm-handoff.rules
-.gemini/agents/planner.md
-.gemini/agents/backend.md
-.gemini/agents/frontend.md
-.gemini/agents/auditor.md
-.gemini/agents/validator.md
-.gemini/agents/finalizer.md
-.gemini/policies/planner_guardrails.toml
 .agents/agents/planner.md
 .agents/agents/backend.md
 .agents/agents/frontend.md
@@ -114,8 +106,8 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .agents/agents/supervisor-repair.md
 ```
 
-Four of these are merged rather than copied when the target already has them:
-`AGENTS.md`, `.gitignore`, and `.geminiignore` get a managed block between
+Three of these are merged rather than copied when the target already has them:
+`AGENTS.md` and `.gitignore` get a managed block between
 `llm-handoff:begin` and `llm-handoff:end` markers, and `.claude/settings.json`
 gets the template's deny rules and `PreToolUse` hook added to your existing
 settings. Every other existing identical file is skipped, and an existing
@@ -127,12 +119,6 @@ managed ones.
 `dispatch_config.yaml` (see [Roles And Providers](#roles-and-providers)) and,
 with `--tracker linear`, adds a `tracker` block and the Linear prompt sections
 (see [Files Or Linear](README.md#files-or-linear-where-work-is-tracked)).
-
-Gemini CLI ignores policy files in a project's `.gemini/policies/` directory
-today. To enforce the shipped Gemini guardrails, copy
-`.gemini/policies/planner_guardrails.toml` into `~/.gemini/policies/`
-(Windows: `%USERPROFILE%\.gemini\policies\`). See the Guardrails section of
-[examples/reference-workflow/README.md](examples/reference-workflow/README.md).
 
 You can also copy or fork the template files by hand if you want a custom
 protocol layout. The template README describes the role and handoff contracts
@@ -161,12 +147,12 @@ The contract is:
 - The other `docs/handoff/*.md` files are the startup and handoff prompts for
   each role, the shared `HANDBOOK.md` rules, and the format guide in
   `docs/handoff/README.md`.
-- `.claude/`, `.codex/`, `.gemini/`, and `.agents/` hold each provider CLI's
-  native agent files, skills, and guardrails for the same roles. The
-  dispatcher's prompt names the role; the provider file carries that role's
-  standing instructions.
-- The `.gitignore` and `.geminiignore` blocks keep `logs/dispatch/` and the
-  dispatch lock out of Git and out of Gemini CLI's context.
+- `.claude/` (Claude Code), `.codex/` (Codex), and `.agents/` (Antigravity,
+  `agy`) hold each provider CLI's native agent files, skills, and guardrails
+  for the same roles. The dispatcher's prompt names the role; the provider
+  file carries that role's standing instructions.
+- The `.gitignore` block keeps `logs/dispatch/` and the dispatch lock
+  (`.dispatch.lock`) out of Git.
 
 `AGENTS.md`, the handoff prompts, `dispatch_config.yaml`, and the provider
 directories are protected control files: a role that edits them without
