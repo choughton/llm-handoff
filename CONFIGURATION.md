@@ -717,9 +717,27 @@ shown before the question is of the same text the commit and gate use. The
 start does not repair or normalize the confirmed handback before that cycle,
 because a rewrite would no longer match the confirmed text; the cycle's usual
 post-dispatch repair and `next_agent` normalization run on it before
-validation. That cycle writes no in-flight record. Making publish, the gates, and
-scanners safe to repeat (RECOVERY-3) and starts with no record (RECOVERY-4)
-are pending.
+validation. That cycle writes no in-flight record. Re-running an interrupted
+planner or finalizer dispatch (RECOVERY-3b), audit fan-out (RECOVERY-3c), or
+work-claim gate and scanners (RECOVERY-3d), making publish steps safe to repeat
+(RECOVERY-3e), and starts with no record (RECOVERY-4) are pending.
+
+A Git process killed mid-write, for example by a second Ctrl+C during a
+dispatcher commit (the dispatcher's own `git` calls share the console's
+process group), can leave the Git index lock behind, and every later Git
+write in the repository fails while it exists. At startup of a real run,
+before the publish resume and interrupted-run recovery, the dispatcher asks
+Git for the lock path (`git rev-parse --git-path index.lock`, which follows
+worktrees and a custom `GIT_DIR`). When the file exists it logs a `PAUSE`
+line starting with `GIT INDEX LOCK:` that names the escaped path and asks the
+operator to check that no Git process is running in the repository and then
+delete the file. With `poll_interval_seconds` above 0 it polls until the file
+is gone, logs `Git index lock removed. Resuming startup.`, and continues; a
+stop request during the wait exits with code 0. With `poll_interval_seconds:
+0` it exits with code 0 after the `PAUSE` line. A dry run logs one `WARN`
+line instead and continues. The dispatcher never deletes, moves, or writes
+the lock, and checks it only at startup. When Git cannot report the path,
+the check is skipped.
 
 A role can rewrite the record's protected-file digests and pre-dispatch HEAD
 too, for example to match a protected file it changed, so with

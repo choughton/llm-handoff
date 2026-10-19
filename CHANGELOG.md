@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A leftover Git index lock now pauses a real run at startup (RECOVERY-3a).
+  Before the publish resume and interrupted-run recovery, the dispatcher
+  resolves the lock with `git rev-parse --git-path index.lock` and, when it
+  exists, logs a `GIT INDEX LOCK:` `PAUSE` line naming the escaped path, why
+  a killed Git process leaves it, and that the operator should check no Git
+  process is running and delete it. It polls every `poll_interval_seconds`
+  until the file is gone and then continues startup; a stop request during
+  the wait, or `poll_interval_seconds: 0`, exits with code 0 without
+  dispatching. A dry run logs one `WARN` line and continues. The dispatcher
+  never deletes the lock.
 - The protected-file check now lists each committed path literally
   (RECOVERY-2d). It reads `git log --name-only` with `-z`, so a protected
   file whose name holds non-ASCII or control characters (which Git otherwise
