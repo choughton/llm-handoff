@@ -2272,6 +2272,107 @@ def test_a_forged_handback_record_still_routes_a_changed_protected_file_to_user(
     assert "next_agent: user" in handoff
 
 
+def _ignore_and_commit(repo_root: Path, pattern: str) -> None:
+    gitignore = repo_root / ".gitignore"
+    _write(gitignore, gitignore.read_text(encoding="utf-8") + f"{pattern}\n")
+    _git(repo_root, "add", ".gitignore")
+    _git(repo_root, "commit", "-q", "-m", "ignore a local file")
+
+
+def test_a_forged_record_still_routes_an_ignored_protected_file_to_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding on RECOVERY-2c: git status omits ignored files, so an
+    # ignored protected file outside the Work Packet kept its forged digest
+    # and was neither disclosed nor marked unverified.
+    _init_repo(tmp_path)
+    _ignore_and_commit(tmp_path, ".codex/local.md")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    _interrupt_handback(tmp_path, orchestrator, monkeypatch)
+    _write(tmp_path / ".codex" / "local.md", "written by the backend\n")
+    assert _git(tmp_path, "status", "--porcelain", "--", ".codex") == ""
+    forged = orchestrator._protected_file_digests(_config(tmp_path))
+    assert (
+        ".codex/local.md",
+        orchestrator._file_digest(tmp_path / ".codex" / "local.md"),
+    ) in forged
+    _rewrite_record(
+        tmp_path,
+        head_sha=head,
+        protected_digests=[list(pair) for pair in forged],
+    )
+    _refuse_dispatch(orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=_collecting_log(messages))
+
+    line = _disclosure_before(messages, _resume_question())
+    assert "Protected files uncommitted now: .codex/local.md." in line
+    assert ("INFO", "Routing source: interrupted_handback_recovery") in messages
+    assert any(
+        level == "ERROR"
+        and message.startswith(orchestrator.PROTECTED_FILE_MODIFIED_PREFIX)
+        and ".codex/local.md" in message
+        for level, message in messages
+    )
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert _git(tmp_path, "diff", "--cached", "--name-only") == ""
+    handoff = (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8")
+    assert "next_agent: user" in handoff
+
+
+def test_uncommitted_protected_files_do_not_rely_on_git_status(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / ".githooks" / "pre-commit", "echo hook\n")
+    _write(tmp_path / ".claude" / "settings.json", "{}\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "add protected files")
+    _ignore_and_commit(tmp_path, ".codex/local.md")
+    orchestrator = _orchestrator()
+    config = _config(tmp_path)
+
+    assert orchestrator._uncommitted_protected_files(config) == ()
+
+    # Hidden from git status: an ignored file, a skip-worktree edit, and an
+    # assume-unchanged deletion.
+    _write(tmp_path / ".codex" / "local.md", "ignored\n")
+    _git(tmp_path, "update-index", "--skip-worktree", "AGENTS.md")
+    _write(tmp_path / "AGENTS.md", "hidden edit\n")
+    _git(tmp_path, "update-index", "--assume-unchanged", ".githooks/pre-commit")
+    (tmp_path / ".githooks" / "pre-commit").unlink()
+    assert _git(tmp_path, "status", "--porcelain") == ""
+    # The handoff and unprotected files never count.
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, "changed handoff\n")
+    _write(tmp_path / "src" / "app.py", "VALUE = 3\n")
+
+    assert orchestrator._uncommitted_protected_files(config) == (
+        ".codex/local.md",
+        ".githooks/pre-commit",
+        "AGENTS.md",
+    )
+
+
+def test_an_unchanged_protected_file_matches_head_with_autocrlf(
+    tmp_path: Path,
+) -> None:
+    # Hashing through Git applies line-ending conversion, so a CRLF checkout
+    # of an LF blob is not reported as changed.
+    _init_repo(tmp_path)
+    _git(tmp_path, "config", "core.autocrlf", "true")
+    (tmp_path / "AGENTS.md").write_bytes(b"dispatch test fixture\r\n")
+    # Refresh the index, as a CRLF checkout leaves it; the blob is unchanged.
+    _git(tmp_path, "add", "AGENTS.md")
+    assert _git(tmp_path, "status", "--porcelain") == ""
+    orchestrator = _orchestrator()
+
+    assert orchestrator._uncommitted_protected_files(_config(tmp_path)) == ()
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_a_handback_record_whose_head_is_not_a_commit_is_discarded(
     tmp_path: Path,

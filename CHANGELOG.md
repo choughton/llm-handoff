@@ -22,7 +22,10 @@ This project follows a simple pre-release changelog until the first public tag.
   startup marked unverified, instead of a snapshot taken after the restart,
   so each such file routes the cycle to `user` with `protected_file_modified:`
   unless the Work Packet lists it. This includes an operator's own
-  uncommitted protected-file edit. With `protected_paths: []` nothing changes.
+  uncommitted protected-file edit. "Uncommitted" does not rely on `git status`
+  alone: protected files on disk are compared with HEAD's tree, so an ignored
+  protected file (absent from HEAD) and a skip-worktree or assume-unchanged
+  edit count too. With `protected_paths: []` nothing changes.
 - Interrupted handback recovery: once a gated implementer dispatch returns,
   the dispatcher rewrites `logs/dispatch/in-flight.json` as a `handback`
   record (the handoff the implementer left and HEAD at that moment) and

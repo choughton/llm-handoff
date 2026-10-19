@@ -5765,22 +5765,115 @@ def _in_flight_baseline_rejection(
 def _uncommitted_protected_files(config: DispatchConfig) -> tuple[str, ...] | None:
     """The protected files (the handoff aside) that differ from HEAD now.
 
-    Modified, staged, deleted, and untracked files all count. None when Git
-    cannot list uncommitted files.
+    Modified, staged, deleted, and untracked files all count. Git status alone
+    is not enough: it omits ignored files and tracked files flagged
+    skip-worktree or assume-unchanged, while the protected-file gate hashes
+    every protected file on disk. So the protected files on disk (found as
+    ``_protected_file_digests`` finds them) are also compared with HEAD's
+    tree directly: one absent from HEAD, ignored or not, counts, as does one
+    whose content Git hashes to a different blob than HEAD's, and a protected
+    file in HEAD that is gone from disk. None when Git cannot list or hash
+    them.
     """
 
-    dirty_files = git_dirty_files(config.repo_root)
+    repo_root = config.repo_root
+    dirty_files = git_dirty_files(repo_root)
     if dirty_files is None:
         return None
+    head_blobs = _head_protected_blobs(config)
+    if head_blobs is None:
+        return None
     handoff_rel = _handoff_relative_path(config)
-    return tuple(
-        sorted(
-            path
-            for path in dirty_files
-            if not _same_repo_path(path, handoff_rel)
-            and _protected_path_matches(path, config.protected_paths)
-        )
+    differing = {
+        path
+        for path in dirty_files
+        if not _same_repo_path(path, handoff_rel)
+        and _protected_path_matches(path, config.protected_paths)
+    }
+    on_disk = {
+        _path_match_parts(path): path for path, _digest in _protected_file_digests(config)
+    }
+    tracked: list[tuple[str, str]] = []
+    for key, path in on_disk.items():
+        head_entry = head_blobs.get(key)
+        if head_entry is None:
+            differing.add(path)
+        else:
+            tracked.append((path, head_entry[1]))
+    differing.update(
+        path for key, (path, _oid) in head_blobs.items() if key not in on_disk
     )
+    worktree_oids = _worktree_blob_ids(repo_root, [path for path, _oid in tracked])
+    if worktree_oids is None:
+        return None
+    differing.update(
+        path
+        for (path, head_oid), worktree_oid in zip(tracked, worktree_oids)
+        if worktree_oid != head_oid
+    )
+    return tuple(sorted(differing))
+
+
+def _head_protected_blobs(
+    config: DispatchConfig,
+) -> dict[tuple[str, ...], tuple[str, str]] | None:
+    """HEAD's protected files (the handoff aside), keyed for path matching.
+
+    Each value is the path as Git stores it and its blob id. Submodule
+    entries are skipped, as ``_protected_candidates`` skips nested
+    repositories. None when Git cannot list HEAD's tree.
+    """
+
+    try:
+        completed = subprocess.run(
+            ["git", "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+            cwd=config.repo_root,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    handoff_rel = _handoff_relative_path(config)
+    blobs: dict[tuple[str, ...], tuple[str, str]] = {}
+    for entry in completed.stdout.decode("utf-8", errors="replace").split("\0"):
+        header, separator, path = entry.partition("\t")
+        if not separator:
+            continue
+        fields = header.split()
+        if len(fields) != 3 or fields[1] != "blob":
+            continue
+        if _same_repo_path(path, handoff_rel):
+            continue
+        if not _protected_path_matches(path, config.protected_paths):
+            continue
+        blobs[_path_match_parts(path)] = (path, fields[2])
+    return blobs
+
+
+_HASH_OBJECT_BATCH = 100
+
+
+def _worktree_blob_ids(repo_root: Path, paths: list[str]) -> list[str] | None:
+    """The blob id Git would store for each working-tree file, in order.
+
+    ``git hash-object`` applies the same clean filters and line-ending
+    conversion as ``git add``, so an unchanged file matches HEAD's blob even
+    with ``core.autocrlf``. None when Git cannot hash a file.
+    """
+
+    oids: list[str] = []
+    for start in range(0, len(paths), _HASH_OBJECT_BATCH):
+        batch = paths[start : start + _HASH_OBJECT_BATCH]
+        output = _run_git_stdout(repo_root, ["git", "hash-object", "--", *batch])
+        if output is None:
+            return None
+        lines = output.splitlines()
+        if len(lines) != len(batch):
+            return None
+        oids.extend(line.strip() for line in lines)
+    return oids
 
 
 def _unverified_protected_snapshot(

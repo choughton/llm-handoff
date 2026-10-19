@@ -776,7 +776,10 @@ bounces until the three-fix circuit breaker escalates.
     or an ancestor of HEAD is discarded before any prompt with one WARN
     (kept in dry run); (2) a confirmed recovery's `protected_before` is the
     record's digests with every protected file uncommitted at startup set
-    to `unverified`, carried in `PendingPlannerRecovery`, so each routes the
+    to `unverified` (found by `git status` plus a direct comparison of the
+    protected files on disk with HEAD's tree, so ignored, skip-worktree, and
+    assume-unchanged protected files count; RECOVERY-2c audit finding),
+    carried in `PendingPlannerRecovery`, so each routes the
     cycle to `user` with `protected_file_modified:`; (3) the
     `interrupted_dispatch_recovery` cycle uses that snapshot too, and a
     `dispatch` record without `protected_digests` is discarded with a WARN;

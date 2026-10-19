@@ -735,7 +735,10 @@ carried over, or dispatched, and the record is deleted (a dry run keeps it).
 Right before either question the dispatcher logs one `INFO` line saying the
 record's protected-file baseline cannot be verified and listing, each path
 escaped and `none` when empty: the protected files uncommitted now (modified,
-staged, deleted, or untracked, the handoff aside); the protected files changed
+staged, deleted, or untracked, the handoff aside; protected files on disk are
+also compared with HEAD's tree directly, so one Git ignores, or a tracked one
+flagged skip-worktree or assume-unchanged, counts when it differs from HEAD or
+is absent from it); the protected files changed
 by commits in `<record HEAD>..<HEAD>`; and the protected files changed by
 commits on HEAD that no remote-tracking ref has (up to 200 commits), or
 `not checked: no remote-tracking refs` when there are none. That last list is
@@ -746,8 +749,9 @@ re-dispatched role for a `dispatch` record, the resumed handback for a
 HEAD with every protected file uncommitted at that moment marked unverified,
 so each counts as changed and, outside the Work Packet's Files in scope,
 routes the cycle to `user` with `protected_file_modified:`. That includes an
-operator's own uncommitted protected-file edit: commit or revert it before
-confirming a recovery you want to continue.
+operator's own uncommitted protected-file edit, and an ignored local file under
+a protected pattern (for example `.claude/settings.local.json`): commit,
+revert, or move it before confirming a recovery you want to continue.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the
