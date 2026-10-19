@@ -202,7 +202,7 @@ and `CONFIGURATION.md`.
 - An audit reviewer that fails to start stops the run after one attempt with
   an `audit_reviewer_start_failed:` line. A missing verdict is never a pass.
 - A provider sign-in failure stops the run at once with that CLI's sign-in
-  steps instead of retrying.
+  steps instead of retrying, unless the role's `fallback` takes over.
 - The console shows the work-claim gate's `work-claim:` progress lines;
   command output tails stay in the log.
 - Token usage and cost moved from the console to `DEBUG` `usage:` log lines.
@@ -337,7 +337,7 @@ and `CONFIGURATION.md`.
   root itself, or a symlink escape). These were accepted before.
 - Behavior change: a carry-over record loaded at startup applies only after a
   `Carry these over as <story>'s work? [y/N]` prompt at a terminal. Any other
-  answer or case discards it with a `WARN`; a dry run never applies it.
+  answer discards and deletes it with a `WARN`; a dry run keeps the file.
 - Behavior change: the dispatcher no longer follows a symlink or junction at
   or above the carry-over record. It writes and deletes the record through
   pinned directory handles, or keeps it in memory where it cannot.
