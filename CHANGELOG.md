@@ -26,8 +26,10 @@ This project follows a simple pre-release changelog until the first public tag.
   writes through the fixed `carry-over.json.tmp` name, which followed a
   symlink planted there; it creates a fresh, randomly named temporary file
   exclusively and atomically replaces the record. On POSIX it opens each
-  directory under the repository without following links; on Windows it
-  checks the paths again before the rename.
+  directory under the repository without following links and writes,
+  renames, and deletes the record relative to those directory handles; on
+  Windows it checks the paths again before the rename or delete, which
+  narrows but does not close a directory-swap race.
 - Behavior change: config load now rejects a `handoff_path` or
   `project_state_path` that does not stay inside the repository. An empty
   value, control characters, an absolute, UNC, or drive-letter path, a `..`

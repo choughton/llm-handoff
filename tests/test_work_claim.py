@@ -4523,6 +4523,122 @@ def test_directory_fd_carry_over_writer_refuses_a_directory_link_that_appears_la
     assert "symlink or junction" in messages[0][1]
 
 
+def test_carry_over_dir_fd_detection_checks_rename_not_replace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # CPython lists renameat support under os.rename only; os.replace is never
+    # in os.supports_dir_fd even where it accepts src_dir_fd/dst_dir_fd.
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(os, "O_NOFOLLOW", getattr(os, "O_NOFOLLOW", 0x20000), raising=False)
+    monkeypatch.setattr(os, "O_DIRECTORY", getattr(os, "O_DIRECTORY", 0x10000), raising=False)
+    monkeypatch.setattr(
+        os, "supports_dir_fd", {os.open, os.mkdir, os.rename, os.unlink}
+    )
+
+    assert orchestrator._detect_carry_over_dir_fd_support() is True
+
+    monkeypatch.setattr(os, "supports_dir_fd", {os.open, os.mkdir, os.unlink})
+
+    assert orchestrator._detect_carry_over_dir_fd_support() is False
+
+
+def test_carry_over_dir_fd_detection_matches_the_platform() -> None:
+    # Without any monkeypatching, POSIX hosts must select the descriptor
+    # writer and Windows must fall back to checked paths.
+    orchestrator = _load_orchestrator()
+
+    expected = sys.platform != "win32"
+    assert orchestrator._detect_carry_over_dir_fd_support() is expected
+    assert orchestrator._CARRY_OVER_DIR_FD_SUPPORTED is expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no dir_fd support")
+def test_persisting_carry_over_selects_the_directory_fd_writer_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The capability flag is left as the module computed it.
+    repo = tmp_path / "repo"
+    _ignored_logs_repo(repo)
+    orchestrator = _load_orchestrator()
+    calls: list[str] = []
+    original_dir_fd_writer = orchestrator._write_carry_over_record_with_dir_fd
+
+    def spy_dir_fd_writer(repo_root: Path, payload: str) -> None:
+        calls.append("dir_fd")
+        original_dir_fd_writer(repo_root, payload)
+
+    def refuse_checked_writer(_state_path: Path, _payload: str) -> None:
+        raise AssertionError("checked-path writer selected on POSIX")
+
+    monkeypatch.setattr(
+        orchestrator, "_write_carry_over_record_with_dir_fd", spy_dir_fd_writer
+    )
+    monkeypatch.setattr(
+        orchestrator, "_write_carry_over_record_checked", refuse_checked_writer
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    leftovers = _app_leftovers(repo)
+
+    orchestrator._persist_implementer_leftovers(
+        config, leftovers, _collecting_log(messages)
+    )
+
+    assert messages == []
+    assert calls == ["dir_fd"]
+    state_path = repo / "logs" / "dispatch" / "carry-over.json"
+    assert load_implementer_leftovers(state_path) == leftovers
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no dir_fd support")
+def test_directory_fd_carry_over_delete_refuses_a_directory_link_that_appears_late(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Even when the path check misses a linked logs/dispatch, deletion opens
+    # each directory with O_NOFOLLOW and never removes a file outside the repo.
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _ignored_logs_repo(repo)
+    external_record = outside / "carry-over.json"
+    _write(external_record, "{}\n")
+    _link_directory(repo / "logs" / "dispatch", outside)
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", lambda _path: False
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, None, _collecting_log(messages)
+    )
+    orchestrator._delete_carry_over_record(config, _collecting_log(messages))
+
+    assert external_record.read_text(encoding="utf-8") == "{}\n"
+    assert [level for level, _message in messages] == ["WARN", "WARN"]
+    assert all("symlink or junction" in message for _level, message in messages)
+
+
+def test_carry_over_delete_without_a_dispatch_directory_is_quiet(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _ignored_logs_repo(repo)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, None, _collecting_log(messages)
+    )
+    orchestrator._delete_carry_over_record(config, _collecting_log(messages))
+
+    assert messages == []
+    assert not (repo / "logs").exists()
+
+
 def test_restored_leftovers_do_not_carry_over_edited_or_other_story_files(
     tmp_path: Path,
 ) -> None:
