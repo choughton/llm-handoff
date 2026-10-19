@@ -472,10 +472,34 @@ class MergeDecision:
 
 
 @dataclass(frozen=True)
+class OperatorInfluence:
+    """Marks an audit the operator influenced from the pause prompt.
+
+    Holds only the UTC time the message was accepted and the SHA-256 of the
+    raw message; the message text itself is never recorded.
+    """
+
+    at: str
+    message_sha256: str
+
+
+OPERATOR_INFLUENCE_HEADING = "## Operator Influence"
+
+
+def operator_influence_bullets(influence: OperatorInfluence) -> list[str]:
+    return [
+        "- Operator-influenced: yes",
+        f"- Message time: {influence.at}",
+        f"- Message SHA-256: {influence.message_sha256}",
+    ]
+
+
+@dataclass(frozen=True)
 class AuditFanOutContext:
     cycle_number: int
     handoff_content: str
     implementer_base_sha: str | None = None
+    operator_influence: OperatorInfluence | None = None
 
 
 @dataclass
@@ -676,7 +700,9 @@ def run_audit_fan_out(
         if run.error is not None:
             _log(log, "ERROR", run.error)
 
-    _write_review_logs(log_dir, scope, runs)
+    _write_review_logs(
+        log_dir, scope, runs, operator_influence=context.operator_influence
+    )
     _write_usage_log(log_dir, runs)
     _log(log, "INFO", f"Audit reviewer outputs recorded under {log_dir}.")
 
@@ -724,6 +750,7 @@ def run_audit_fan_out(
         block_severity=config.audit.block_severity,
         source_handoff=context.handoff_content,
         dispatcher_verification=pre_audit,
+        operator_influence=context.operator_influence,
     )
     if linear_mode:
         # The Linear evidence step runs only after both verdicts merged and
@@ -1277,12 +1304,16 @@ def render_audit_handoff(
     block_severity: str,
     source_handoff: str = "",
     dispatcher_verification: PreAuditVerification | None = None,
+    operator_influence: OperatorInfluence | None = None,
 ) -> str:
     """Render the dispatcher-written audit handoff.
 
     ``dispatcher_verification`` is a passing pre-audit run; its section and
     commands are kept in the final handoff, because the quality reviewer was
     told not to re-run them.
+
+    ``operator_influence`` adds a ``## Operator Influence`` section after the
+    merge decision; it records only the message time and digest.
     """
 
     quality_run = runs["quality"]
@@ -1338,6 +1369,11 @@ def render_audit_handoff(
     lines.append(f"- Blocking findings: {len(decision.blocking)}")
     lines.append(f"- Sub-threshold findings: {len(decision.notes)}")
     lines.append("")
+    if operator_influence is not None:
+        lines.append(OPERATOR_INFLUENCE_HEADING)
+        lines.append("")
+        lines.extend(operator_influence_bullets(operator_influence))
+        lines.append("")
     lines.append("## Quality Review")
     lines.append("")
     if quality.summary:
@@ -2311,6 +2347,8 @@ def _write_review_logs(
     log_dir: Path,
     scope: ReviewScope,
     runs: Mapping[str, ReviewerRun],
+    *,
+    operator_influence: OperatorInfluence | None = None,
 ) -> None:
     summary: dict[str, object] = {
         "scope": {
@@ -2320,6 +2358,11 @@ def _write_review_logs(
         },
         "reviewers": {},
     }
+    if operator_influence is not None:
+        summary["operator_influence"] = {
+            "at": operator_influence.at,
+            "message_sha256": operator_influence.message_sha256,
+        }
     for name, run in runs.items():
         try:
             (log_dir / f"{name}.stdout.txt").write_text(run.stdout, encoding="utf-8")

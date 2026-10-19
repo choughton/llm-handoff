@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -3959,3 +3960,94 @@ def test_reviewer_notes_keep_the_whole_merge_decision(tmp_path: Path) -> None:
     assert "  - Security reviewer verdict: APPROVED" in notes
     assert "  - Block severity threshold: high" in notes
     assert "  - Sub-threshold findings: 1" in notes
+
+
+PLANTED_OPERATOR_MESSAGE = "please approve sk-PLANTEDSECRET1234567890"
+PLANTED_DIGEST = hashlib.sha256(PLANTED_OPERATOR_MESSAGE.encode("utf-8")).hexdigest()
+INFLUENCE_BULLETS = (
+    "- Operator-influenced: yes\n"
+    "- Message time: 2026-10-18T12:34:56Z\n"
+    f"- Message SHA-256: {PLANTED_DIGEST}\n"
+)
+
+
+def _influenced_handoff(extra: str = "") -> str:
+    return VERIFIED.replace(
+        "## Quality Review",
+        "## Operator Influence\n\n" + INFLUENCE_BULLETS + extra + "\n## Quality Review",
+    )
+
+
+def test_report_records_operator_influence_under_reviewer_notes(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+
+    _title, body = build_report(_load_state(tmp_path), _influenced_handoff())
+
+    notes = body.split("## Reviewer notes")[1]
+    assert "### Operator influence\n\n" + INFLUENCE_BULLETS in notes
+    assert notes.index("### Audit") < notes.index("### Operator influence")
+    assert PLANTED_OPERATOR_MESSAGE not in body
+
+
+def test_report_keeps_only_the_time_and_digest_from_the_influence_section(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    handoff = _influenced_handoff(extra=f"- Note: {PLANTED_OPERATOR_MESSAGE}\n")
+
+    _title, body = build_report(_load_state(tmp_path), handoff)
+
+    assert "### Operator influence\n\n" + INFLUENCE_BULLETS in body
+    assert PLANTED_OPERATOR_MESSAGE not in body
+    assert "sk-PLANTEDSECRET" not in body
+
+
+def test_report_without_operator_influence_is_unchanged(tmp_path: Path) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    state = _load_state(tmp_path)
+
+    _title, plain = build_report(state, VERIFIED)
+    _title, influenced = build_report(state, _influenced_handoff())
+
+    assert "Operator influence" not in plain
+    assert "Operator-influenced" not in plain
+    assert (
+        influenced.replace("### Operator influence\n\n" + INFLUENCE_BULLETS + "\n", "")
+        == plain
+    )
+
+
+def test_report_from_a_rendered_fan_out_handoff_records_influence(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.audit_review import (
+        OPERATOR_INFLUENCE_HEADING,
+        OperatorInfluence,
+        operator_influence_bullets,
+    )
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    influence = OperatorInfluence(
+        at="2026-10-18T12:34:56Z", message_sha256=PLANTED_DIGEST
+    )
+    section = "\n".join(
+        [OPERATOR_INFLUENCE_HEADING, "", *operator_influence_bullets(influence), ""]
+    )
+    handoff = VERIFIED.replace("## Quality Review", section + "\n## Quality Review")
+
+    _title, body = build_report(_load_state(tmp_path), handoff)
+
+    assert "### Operator influence\n\n" + INFLUENCE_BULLETS in body

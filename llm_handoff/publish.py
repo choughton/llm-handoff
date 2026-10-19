@@ -2831,7 +2831,41 @@ def _reviewer_notes(handoff_content: str) -> list[str]:
     )
     if security:
         lines += _folded("Security review", _demote(security, levels=2))
-    return ["### Audit", "", *(lines or ["No audit sections were recorded.", ""])]
+    return [
+        "### Audit",
+        "",
+        *(lines or ["No audit sections were recorded.", ""]),
+        *_operator_influence_lines(handoff_content),
+    ]
+
+
+_INFLUENCE_TIME_RE = re.compile(
+    r"(?m)^- Message time: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)[ \t]*$"
+)
+_INFLUENCE_DIGEST_RE = re.compile(r"(?m)^- Message SHA-256: ([0-9a-f]{64})[ \t]*$")
+
+
+def _operator_influence_lines(handoff_content: str) -> list[str]:
+    """Return the operator-influence subsection, or nothing.
+
+    The bullets are rebuilt from the time and digest alone, so no other text
+    from the handoff section reaches the pull request body.
+    """
+
+    section = _section(handoff_content, "## Operator Influence")
+    if not section:
+        return []
+    time_match = _INFLUENCE_TIME_RE.search(section)
+    digest_match = _INFLUENCE_DIGEST_RE.search(section)
+    return [
+        "### Operator influence",
+        "",
+        "- Operator-influenced: yes",
+        f"- Message time: {time_match.group(1) if time_match else 'unknown'}",
+        "- Message SHA-256: "
+        f"{digest_match.group(1) if digest_match else 'unknown'}",
+        "",
+    ]
 
 
 def _folded(summary: str, content: str) -> list[str]:
