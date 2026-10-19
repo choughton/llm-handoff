@@ -1145,70 +1145,123 @@ before a dispatch, that the role can run the command it was given.
   does not cover this case, since planner to backend is a different role.
   Tests in `tests/ported/test_validator.py`.
 
+### 19. TIDY - small fixes from epic-close audits
+
+Fit: independent and cheap; each story is one Work Packet and fills a wait.
+Nothing here blocks another epic or waits on one. TIDY-7 routes to `user`
+(Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
+they want a Linear-side record before it starts; park it otherwise.
+
+The Open Followups that were still open on 2026-10-19, promoted to stories.
+Line numbers are from `105ea42`; re-check them when writing the Work Packet.
+
+- TIDY-1: Operator-prompt and doctor message fixes. (a) The operator-prompt
+  log line `scheduling a {role} dispatch` reads "a auditor" for the auditor
+  (`llm_handoff/orchestrator.py` ~line 5317); use a form that needs no
+  article and update the test that asserts it. (b) An `operator_role_dispatch`
+  cycle (~line 710) skips the stale-route check, so targeting the same role
+  again on an unchanged handoff SHA gives no signal; log one WARN naming the
+  role and the unchanged SHA (no new counter or route change). (c) A scanner
+  command that starts with a placeholder gets the generic "does not start
+  with a plain program name" WARN (`llm_handoff/doctor.py` ~line 1130); name
+  the placeholder case in that message. Files: `llm_handoff/orchestrator.py`,
+  `llm_handoff/doctor.py`, `tests/`, `CHANGELOG.md`. Closes PAUSE-RECOVERY
+  (a) and (b) and SCANNERS (b).
+- TIDY-2: Scanner lookups ignore the current directory on Windows. With no
+  `path`, `shutil.which` on Windows also searches the current directory, so
+  doctor (`llm_handoff/doctor.py` ~line 1136) and the work-claim gate
+  (`llm_handoff/work_claim.py` ~line 1394) can accept a scanner that is in the
+  repository but not on `PATH`. Pass `path=os.environ.get("PATH", "")` (or the
+  gate's allowlisted environment's `PATH`, when the gate builds one) in both,
+  through one shared helper so doctor and the gate cannot disagree. Tests
+  plant a fake executable in a temp working directory that is not on `PATH`
+  and expect both to report it missing. Files: `llm_handoff/doctor.py`,
+  `llm_handoff/work_claim.py`, `tests/`, `CHANGELOG.md`. Closes SCANNERS (c).
+- TIDY-3: Docs and text cleanup. (a) Rewrap `CHANGELOG.md` lines over 100
+  characters (one at ~line 445 on `105ea42`). (b) `CONFIGURATION.md` scanner
+  section: add one line recommending pinned scanner versions. (c)
+  `docs/TESTING.md` Preflight (~line 201) expects one `tracker connector` line
+  per CLI, but doctor groups Claude launches as `claude strict` and `claude`
+  (`llm_handoff/doctor.py` ~lines 1429-1448), so two Claude lines can print;
+  reword it to match `CONFIGURATION.md`. (d) `docs/TESTING.md` Scenario B
+  (~line 248): say not to force the audit failure with a failing Verification
+  command, since the work-claim gate stops it as `verification_failed` before
+  any reviewer runs. (e) `docs/TESTING.md` Current State (~line 16): drop the
+  hard-coded suite counts. (f) Replace the non-ASCII literals in
+  `tests/test_doctor.py` (~lines 3006, 3027, 3116, including an invisible
+  U+200E) with `\u` escapes. Files: `CHANGELOG.md`, `CONFIGURATION.md`,
+  `docs/TESTING.md`, `tests/test_doctor.py`. Closes SCANNERS (a) and (d),
+  LINEAR-WORKFLOW (a) to (c), and LINEAR-FOUNDATIONS (a).
+- TIDY-4: Tracker probe and stop-request hardening. (a) The
+  `doctor --probe-tracker` write denylist (`_TRACKER_PROBE_WRITE_TOOLS`,
+  `llm_handoff/doctor.py` ~line 1469) names only five tools; deny every
+  tracker-server tool except the two read tools in
+  `_TRACKER_PROBE_READ_TOOLS`, for example by allowing only those two by name
+  for the tracker server. If the CLI cannot express that, keep the denylist,
+  document the residual risk in `CONFIGURATION.md`, and recommend
+  `claude_mcp_config`. (b) `stop_requested` (`llm_handoff/stop_request.py`
+  ~line 136) honors a stop request with no `target_pid`; document that in
+  `CONFIGURATION.md` as intended (a manual stop file stops any running
+  dispatcher in the repository) or require the pid, and say which in the
+  handback. Files: `llm_handoff/doctor.py`, `llm_handoff/stop_request.py`,
+  `tests/`, `CONFIGURATION.md`, `CHANGELOG.md`. Closes LINEAR-FOUNDATIONS (c)
+  and (e).
+- TIDY-5: One refusal summary per dispatch. The Claude provider logs a WARN
+  per refused command (`refused by the permission rules`,
+  `llm_handoff/agent_providers/claude.py` ~line 208) and no total. Count
+  refusals per dispatch in `_ClaudeStreamJsonMonitor` and print one summary
+  line next to the `Claude result` line (~line 170), naming the count and the
+  distinct refused command prefixes (no raw arguments, per GEM-0h). Give the
+  agy provider (`llm_handoff/agent_providers/antigravity.py`, deny-rule
+  handling ~lines 290 and 539) the same summary line. Keep the per-command
+  WARN lines. Files: both provider modules, `tests/`, `CHANGELOG.md`. Closes
+  the 2026-10-18 pause review followup.
+- TIDY-6: Non-Claude helper files defer to the configured project state
+  path. The planner, backend, frontend, auditor, validator, router, and
+  ledger-updater helper files under `.agents/agents/` and the role skills
+  under `.codex/skills/` (root and `examples/reference-workflow/` copies)
+  name `PROJECT_STATE.md` literally. Give them the deferral wording CLEAN-4
+  gave the finalizer helpers (for example line 19 of
+  `.codex/skills/llm-handoff-finalizer/SKILL.md`: "The project state file
+  named in the dispatcher prompt (`PROJECT_STATE.md` by default)"). These are
+  protected paths, so list each file under Files in scope. Verification:
+  `tests/test_reference_workflow.py` and the full suite. Closes
+  CONFIG-CLEANUP (a) outside `.claude/`.
+- TIDY-7: Operator edit of the Claude helper files (routes to `user`).
+  Claude roles cannot write `.claude/`, so the planner writes the exact edits
+  into the handoff and routes to `user`, as GEM-5c and LIN-9d did: (a) the
+  same project state deferral wording as TIDY-6 in `.claude/agents/*.md` and
+  `examples/reference-workflow/.claude/agents/*.md`; (b) add the Linear MCP
+  tools to the example Claude backend, auditor, and ledger-updater subagent
+  templates under `examples/reference-workflow/.claude/agents/`, matching what
+  GEM-3b renders for the planner and frontend. Take it after TIDY-6 so both
+  trees use the same wording. Closes CONFIG-CLEANUP (a) inside `.claude/` and
+  the GEM-3b audit followup.
+- TIDY-8: Linear evidence events for epic closes and handoff repairs
+  (confirm with the operator first). (a) In Linear mode the finalizer posts
+  nothing, so an epic close leaves no evidence comment; add an `epic_closed`
+  event to `LINEAR_EVIDENCE_EVENTS` and the evidence comment template, posted
+  on the last story's issue. (b) A validator or planner repair of a leased
+  handoff posts nothing; add a `handoff_repaired` event so the
+  `LINEAR-EVIDENCE` check accepts a repaired lease whose producer changed.
+  Vanilla mode is unchanged. Closes source-dispatcher comparison (a) and (b).
+
 ## Open Followups
 
 Promoted to HARDENING stories and removed below: AUDIT-COST (a),
 PAUSE-RECOVERY (c) and (d), CONFIG-CLEANUP (b), and LINEAR-FOUNDATIONS (d).
-The remaining letters are unchanged. AUDIT-COST (b) and (c) closed by GEM-4b.
+AUDIT-COST (b) and (c) closed by GEM-4b. On 2026-10-19 every other open item
+was promoted to epic 19 (TIDY) except the operator check and the two design
+notes below; the remaining letters are unchanged.
 
-- From the PAUSE-RECOVERY close (low, `llm_handoff/orchestrator.py`):
-  - (a) the log line "scheduling a auditor dispatch" has an article error
-    (~line 3278); use a neutral form and update the test that asserts it.
-  - (b) no WARN or counter when the same role is targeted again on an unchanged
-    handoff SHA, since `operator_role` cycles skip the stale-route check
-    (~line 679).
-- From the SCANNERS close (low/info, SCAN-1):
-  - (a) `CHANGELOG.md` line 19 is over-long; rewrap it.
-  - (b) a scanner command that starts with a placeholder gets the generic
-    "does not start with a plain program name" WARN
-    (`llm_handoff/doctor.py` ~line 806); mention the placeholder case.
-  - (c) on Windows, `shutil.which` may find a program in the current directory
-    instead of on `PATH`, in both doctor (`llm_handoff/doctor.py` ~line 817)
-    and the gate (`llm_handoff/work_claim.py` ~line 1155); pass an explicit
-    `path=` in both or document it.
-  - (d) `CONFIGURATION.md` (~line 674) does not recommend pinning scanner
-    versions; add one line.
-
-- From the CONFIG-CLEANUP close (CLEAN-4, low/info):
-  - (a) the planner, backend, frontend, auditor, validator, and router helper
-    files still name `PROJECT_STATE.md` literally; give them the same deferral
-    wording if wanted.
-
-- From the LINEAR-FOUNDATIONS close (low/info, LIN-6b):
-  - (a) low: non-ASCII literals in `tests/test_doctor.py` (~lines 2561, 2582,
-    2671), including an invisible U+200E; replace with `\u` escapes.
-  - (b) low: the probe's isolation (`llm_handoff/doctor.py` ~line 1237) has
-    not been checked against a live Claude CLI; an operator should run
+- From the LINEAR-FOUNDATIONS close (low, LIN-6b), an operator action:
+  - (b) the probe's isolation (`llm_handoff/doctor.py`,
+    `_TRACKER_PROBE_SETTINGS` ~line 1490) has not been checked against a live
+    Claude CLI; an operator should run
     `llm-handoff doctor --probe-tracker <ISSUE>` once in a repo with a project
     hook and confirm the hook does not fire.
-  - (c) low: the probe write denylist names only five tools
-    (`llm_handoff/doctor.py` ~line 1217); deny every tracker-server tool except
-    the two read tools, or keep the documented risk and recommend
-    `claude_mcp_config`.
-  - (e) info: a stop request without `target_pid` is honored
-    (`llm_handoff/stop_request.py` ~line 146); document it or require the pid.
 
-- From the LINEAR-WORKFLOW close (info, LIN-10):
-  - (a) `docs/TESTING.md` (~line 104) Preflight expects one tracker connector
-    line per CLI, but `doctor` groups Claude launches as `claude strict` and
-    `claude` (`llm_handoff/doctor.py` ~lines 1206-1212), so two Claude lines
-    can print; reword it and match `CONFIGURATION.md` (~lines 1192-1194).
-  - (b) planner guidance: do not suggest a failing Verification command as the
-    forced audit failure; the work-claim gate stops it as `verification_failed`
-    before any reviewer runs (`docs/TESTING.md` Scenario B).
-  - (c) `docs/TESTING.md` (~line 16) Current State full-suite counts are stale
-    (1344 passed, 18 skipped; actual 2275 passed, 20 skipped); update them or
-    drop the hard-coded numbers.
-
-- From the source-dispatcher comparison (2026-10-18, info; not filed as epics
-  because each is one Work Packet or a design choice to confirm first):
-  - (a) Linear mode: the finalizer posts nothing (`roles/finalizer.md`), so an
-    epic close leaves no evidence comment; add an `epic_closed` event to
-    `LINEAR_EVIDENCE_EVENTS` and `EVIDENCE_COMMENT.md`, posted on the last
-    story's issue, if the operator wants a Linear-side record of closes.
-  - (b) Linear mode: a validator or planner repair of a leased handoff posts
-    nothing; a `handoff_repaired` event would let the `LINEAR-EVIDENCE` check
-    accept a repaired lease whose producer changed.
+- From the source-dispatcher comparison (2026-10-18, info), design notes:
   - (c) Design choice, not a gap: the source project removed the Work Packet
     from the handoff and keeps the issue body in Linear only. This repo keeps
     the Work Packet in `HANDOFF.md` because the work-claim gate, scanners,
@@ -1218,22 +1271,6 @@ The remaining letters are unchanged. AUDIT-COST (b) and (c) closed by GEM-4b.
     hierarchy (initiative, project, issue) with project-open and project-close
     gates. This repo has epic and story in `remaining_stories` plus this file;
     the TPM-ROLE epic scopes the picker to one epic for that reason.
-
-- From the GEM-3b audit (info):
-  - Claude backend, auditor, and ledger-updater subagent templates under
-    `examples/reference-workflow/.claude/agents/` do not list Linear MCP
-    tools; GEM-3b renders them for planner and frontend only. Claude roles
-    cannot write `.claude/` paths, so a fix routes to `user` (as in LIN-9d).
-
-- From the 2026-10-18 pause review (low,
-  `llm_handoff/agent_providers/claude.py`):
-  - (a) the dispatcher logs `refused by the permission rules` as a WARN per
-    refused command (~lines 203-208) and nothing else; count refusals per
-    dispatch in `_ClaudeStreamJsonMonitor` and print one summary line with
-    the `Claude result` line at the end of the dispatch (~line 165), so the
-    operator sees the pattern without reading every WARN. The agy provider
-    already collects one entry per deny-rule refusal (~line 244); give it
-    the same summary line.
 
 ## Completed Scope Ledger
 
