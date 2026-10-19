@@ -498,6 +498,9 @@ class PendingPlannerRecovery:
     # commit from the confirmed in-flight record's pre-dispatch values; the
     # record file is not read again.
     resumed_handback: InFlightRecord | None = None
+    # The assignment the operator was shown and confirmed for that resumed
+    # cycle, resolved once; its commit and work-claim gate use exactly it.
+    resumed_assignment: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -709,6 +712,17 @@ def _run_loop(
                 f"Handoff file not found at: {config.handoff_full_path}",
             )
             return 1
+        elif (
+            pending_planner_recovery is not None
+            and pending_planner_recovery.kind == "interrupted_handback"
+            and pending_planner_recovery.handoff_sha == _content_sha(handoff_content)
+        ):
+            # The operator confirmed resuming this exact handback. A repair
+            # or normalization rewrite here would change its hash and drop
+            # the recovery; the resumed cycle's post-dispatch path repairs
+            # and normalizes the handback before validation, as it does for
+            # every dispatch.
+            tracker_lease_rebuild_used = False
         else:
             tracker_lease_rebuild_used = False
             handoff_content = _repair_handoff_frontmatter_file(
@@ -760,8 +774,10 @@ def _run_loop(
         # dispatch; every other cycle audits without the marker.
         active_operator_influence: OperatorInfluence | None = None
         # Set on an interrupted-handback recovery: the confirmed in-flight
-        # record whose cycle resumes at the dispatcher commit.
+        # record whose cycle resumes at the dispatcher commit, and the
+        # assignment the operator confirmed for it.
         resumed_handback: InFlightRecord | None = None
+        resumed_assignment: str | None = None
         if tracker_lease_rebuild:
             decision = RoutingDecision(
                 route="planner",
@@ -816,6 +832,7 @@ def _run_loop(
                     warnings=[],
                 )
                 resumed_handback = pending_planner_recovery.resumed_handback
+                resumed_assignment = pending_planner_recovery.resumed_assignment
             else:
                 decision = RoutingDecision(
                     route=pending_planner_recovery.route,
@@ -1395,11 +1412,12 @@ def _run_loop(
                         saved_story_assignment(config.repo_root) or handoff_content
                     )
             if resumed_handback is not None:
-                # The assignment the interrupted dispatch worked from.
+                # Exactly the assignment the operator was shown and confirmed
+                # at startup, resolved once from the record.
                 assignment_content = (
-                    resumed_handback.assignment_content
-                    if resumed_handback.assignment_content is not None
-                    else resumed_handback.handoff_content
+                    resumed_assignment
+                    if resumed_assignment is not None
+                    else _interrupted_handback_assignment(resumed_handback)
                 )
             if (
                 config.publish.mode != "local"
@@ -5638,8 +5656,26 @@ def _interrupted_dispatch_assignment(
     return record.handoff_content
 
 
+def _interrupted_handback_assignment(record: InFlightRecord) -> str:
+    """The assignment an interrupted handback's resumed cycle commits and gates.
+
+    The dispatch worked from ``assignment_content`` when it is set (an
+    operator dispatch that continued the saved story) and from the
+    pre-dispatch handoff otherwise. It is resolved once, shown to the
+    operator, and that same text is the resumed cycle's assignment.
+    """
+
+    if record.assignment_content is not None:
+        return record.assignment_content
+    return record.handoff_content
+
+
 def _interrupted_dispatch_assignment_summary(
-    config: DispatchConfig, record: InFlightRecord, state_path: Path
+    config: DispatchConfig,
+    record: InFlightRecord,
+    state_path: Path,
+    *,
+    assignment: str | None = None,
 ) -> str:
     """The recovered assignment's scope and commands, safe to show on a terminal.
 
@@ -5648,10 +5684,18 @@ def _interrupted_dispatch_assignment_summary(
     recovery makes that text the next dispatch's assignment baseline, so the
     operator is shown what the work-claim gate will enforce and run before
     answering: Files in scope, Files out of bounds, and the Verification
-    commands, each escaped.
+    commands, each escaped. ``assignment`` is the exact text the confirmed
+    recovery uses; without it the interrupted dispatch's assignment is shown.
     """
 
-    assignment = _interrupted_dispatch_assignment(config, record)
+    if assignment is None:
+        assignment = _interrupted_dispatch_assignment(config, record)
+    record_field = (
+        "assignment_content"
+        if record.assignment_content is not None
+        and assignment == record.assignment_content
+        else "handoff_content"
+    )
 
     def listed(values: tuple[str, ...] | list[str]) -> str:
         return ", ".join(_escape_control_characters(value) for value in values) or "none"
@@ -5670,7 +5714,7 @@ def _interrupted_dispatch_assignment_summary(
         "The dispatcher cannot verify that the in-flight record is unchanged "
         "since it was written; a role can rewrite it. Confirming accepts its "
         f"assignment (sha256 {_content_sha(assignment)[:12]}) as {record.role}'s "
-        f"next Work Packet: {scope}. Review handoff_content in {state_path} "
+        f"next Work Packet: {scope}. Review {record_field} in {state_path} "
         "before answering; decline if this is not the assignment you expect."
     )
 
@@ -5785,6 +5829,9 @@ def _recover_interrupted_handback(
         _log(log, "INFO", f"{summary} Not applied in dry run.")
         return nothing
     handback_content = record.handback_content or ""
+    # Resolved once: the operator confirms this text, and the resumed cycle
+    # commits and gates against this same text.
+    assignment = _interrupted_handback_assignment(record)
     confirmed = False
     if (
         config.interactive_pause
@@ -5795,7 +5842,9 @@ def _recover_interrupted_handback(
         _log(
             log,
             "INFO",
-            _interrupted_dispatch_assignment_summary(config, record, state_path),
+            _interrupted_dispatch_assignment_summary(
+                config, record, state_path, assignment=assignment
+            ),
         )
         _log(
             log,
@@ -5860,6 +5909,7 @@ def _recover_interrupted_handback(
             route=record.role,
             continue_saved_story=record.continues_saved_story,
             resumed_handback=record,
+            resumed_assignment=assignment,
         ),
     )
 

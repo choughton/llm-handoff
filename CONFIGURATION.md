@@ -703,11 +703,16 @@ deleted. When an operator file changed, the first cycle pauses with an
 `INTERRUPTED HANDBACK:` reason that names those files, which the dispatcher
 never stages or commits. Otherwise the first cycle resumes the interrupted
 cycle without dispatching the role again: it treats the dispatch as exit code
-0, uses the record's pre-dispatch handoff (or the continued story's
-assignment) as the assignment for the dispatcher commit and the work-claim
-gate, rebuilds the pre-dispatch HEAD, operator files, and carry-over files
-from the record, and then runs the usual commit, validation, gate, and
-publish. That cycle writes no in-flight record. Making publish, the gates, and
+0, uses the record's pre-dispatch handoff (or, when the record holds one, its
+continued story's assignment) as the assignment for the dispatcher commit and
+the work-claim gate, rebuilds the pre-dispatch HEAD, operator files, and
+carry-over files from the record, and then runs the usual commit, validation,
+gate, and publish. That assignment is resolved once: the assignment summary
+shown before the question is of the same text the commit and gate use. The
+start does not repair or normalize the confirmed handback before that cycle,
+because a rewrite would no longer match the confirmed text; the cycle's usual
+post-dispatch repair and `next_agent` normalization run on it before
+validation. That cycle writes no in-flight record. Making publish, the gates, and
 scanners safe to repeat (RECOVERY-3) and starts with no record (RECOVERY-4)
 are pending.
 

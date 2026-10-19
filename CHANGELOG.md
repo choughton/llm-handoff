@@ -15,8 +15,11 @@ This project follows a simple pre-release changelog until the first public tag.
   finished. When HEAD and the handoff are unchanged and the operator confirms
   `Resume <role>'s interrupted <story> handback at the dispatcher commit? [y/N]`
   at a terminal, the first cycle resumes at the dispatcher commit and runs
-  validation and the work-claim gate without dispatching the role again. A
-  moved HEAD or a changed handoff discards the record with a `WARN` line and
+  validation and the work-claim gate without dispatching the role again. The
+  assignment shown before that question is the exact text the resumed commit
+  and gate use, and the start does not repair or normalize the confirmed
+  handback first (the resumed cycle's post-dispatch repair does), so a
+  handback such as `next_agent: AUDITOR` still resumes. A moved HEAD or a changed handoff discards the record with a `WARN` line and
   restores nothing; declining, no terminal, or `interactive_pause: false`
   discards it and the files stay operator edits; a changed operator file
   pauses with an `INTERRUPTED HANDBACK:` reason; a dry run only logs it. When

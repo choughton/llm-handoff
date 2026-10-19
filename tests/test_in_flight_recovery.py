@@ -1896,3 +1896,180 @@ def test_a_handback_record_that_cannot_be_cleared_stops_the_run(
     assert errors[0].startswith("Could not clear the in-flight handback record")
     record = load_in_flight_record(_record_path(tmp_path).read_text(encoding="utf-8"))
     assert record is not None and record.phase == "handback"
+
+
+def _write_handback_on_disk(
+    repo_root: Path,
+    *,
+    handback_content: str,
+    handoff_content: str | None = None,
+    assignment_content: str | None = None,
+) -> None:
+    """Leave the state of a cycle interrupted right after the dispatch returned.
+
+    The backend changed src/app.py and wrote ``handback_content``; HEAD and
+    the handoff are what the handback record says.
+    """
+
+    head = _git(repo_root, "rev-parse", "HEAD")
+    record = _handback_record(
+        head_sha=head,
+        handback_head_sha=head,
+        handoff_content=handoff_content or _assignment(),
+        assignment_content=assignment_content,
+        story_key=carry_over_key(assignment_content or handoff_content or _assignment()),
+        dirty_fingerprints=(),
+        carried_over=(),
+        handback_content=handback_content,
+    )
+    _write(repo_root / "src" / "app.py", "VALUE = 2\n")
+    _write(repo_root / HANDOFF_RELATIVE_PATH, handback_content)
+    _write(_record_path(repo_root), in_flight_record_payload(record))
+
+
+def test_a_confirmed_handback_needing_normalization_still_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Audit finding: startup normalization rewrote `next_agent: AUDITOR`
+    # before the pending-recovery hash check, so the confirmed resume was
+    # dropped and the handback routed normally, skipping commit and gates.
+    _init_repo(tmp_path)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    claim = _pending_claim().replace("next_agent: auditor", "next_agent: AUDITOR")
+    _write_handback_on_disk(tmp_path, handback_content=claim)
+    _refuse_dispatch(orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    assert ("INFO", _resume_question()) in messages
+    assert ("INFO", "Routing source: interrupted_handback_recovery") in messages
+    assert not any("Dropped the scheduled" in message for _level, message in messages)
+    assert any(
+        level == "AGENT" and message == "Work-claim gate PASSED for backend."
+        for level, message in messages
+    )
+    assert _git(tmp_path, "rev-parse", "HEAD") != head
+    assert _commit_files(tmp_path, "HEAD") == ["src/app.py"]
+    assert not _record_path(tmp_path).exists()
+    handoff = (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8")
+    # The resumed cycle's post-dispatch path normalized the handback.
+    assert "next_agent: auditor" in handoff
+    assert "AUDITOR" not in handoff
+    assert PENDING_COMMIT_SHA not in handoff
+
+
+def _hidden_assignment() -> str:
+    return _assignment().replace(
+        "**Files in scope:** src/app.py, tests/test_app.py",
+        "**Files in scope:** src/app.py, src/api.py, .github/",
+    ).replace(
+        f"**Verification command:** {PASS_COMMAND}",
+        f'**Verification command:** "{PYTHON}" -c "print(42)"',
+    )
+
+
+@pytest.mark.parametrize("mode", ["local", "continued_story"])
+def test_a_resumed_handback_uses_exactly_the_confirmed_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    # Security finding: the confirmation summary showed the handoff (or the
+    # saved story's assignment) while the resumed cycle committed and gated
+    # against the record's separate assignment_content. The operator must be
+    # shown the very text the commit and work-claim gate use.
+    handoff_content = _assignment() if mode == "local" else _escalation()
+    _init_repo(tmp_path, handoff=handoff_content)
+    orchestrator = _orchestrator()
+    hidden = _hidden_assignment()
+    _write_handback_on_disk(
+        tmp_path,
+        handback_content=_pending_claim(),
+        handoff_content=handoff_content,
+        assignment_content=hidden,
+    )
+    overrides: dict[str, Any] = {}
+    if mode == "continued_story":
+        overrides["publish"] = {"mode": "merge-commit"}
+        monkeypatch.setattr(
+            orchestrator, "ensure_story_branch", lambda **_kwargs: None
+        )
+        # The saved story's benign assignment is what the old summary showed.
+        monkeypatch.setattr(
+            orchestrator, "saved_story_assignment", lambda _root: _assignment()
+        )
+        monkeypatch.setattr(
+            orchestrator, "unfinished_story_pause_reason", lambda **_kwargs: None
+        )
+    used: list[str] = []
+
+    def recording_commit(**kwargs: Any) -> None:
+        used.append(kwargs["assignment_content"])
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(orchestrator, "_commit_for_implementer", recording_commit)
+    _refuse_dispatch(orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    with pytest.raises(KeyboardInterrupt):
+        orchestrator.run_loop(
+            _config(tmp_path, **overrides),
+            max_cycles=1,
+            log=_collecting_log(messages),
+        )
+
+    prompt_index = messages.index(("INFO", _resume_question()))
+    shown = [
+        message
+        for _level, message in messages[:prompt_index]
+        if "cannot verify" in message
+    ]
+    assert len(shown) == 1
+    assert "Files in scope: src/app.py, src/api.py, .github/" in shown[0]
+    assert "print(42)" in shown[0]
+    assert f"sha256 {orchestrator._content_sha(hidden)[:12]}" in shown[0]
+    assert "Review assignment_content" in shown[0]
+    assert used == [hidden]
+
+
+@pytest.mark.parametrize("mode", ["local", "continued_story"])
+def test_the_handback_recovery_carries_the_assignment_it_showed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    handoff_content = _assignment() if mode == "local" else _escalation()
+    _init_repo(tmp_path, handoff=handoff_content)
+    orchestrator = _orchestrator()
+    hidden = _hidden_assignment()
+    _write_handback_on_disk(
+        tmp_path,
+        handback_content=_pending_claim(),
+        handoff_content=handoff_content,
+        assignment_content=hidden,
+    )
+    monkeypatch.setattr(
+        orchestrator, "saved_story_assignment", lambda _root: _assignment()
+    )
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    config = (
+        _config(tmp_path)
+        if mode == "local"
+        else _config(tmp_path, publish={"mode": "merge-commit"})
+    )
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        config, lambda *_: None, orchestrator._OperatorPromptState()
+    )
+
+    assert outcome.pending is not None
+    assert outcome.pending.kind == "interrupted_handback"
+    assert outcome.pending.resumed_assignment == hidden
