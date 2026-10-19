@@ -727,10 +727,11 @@ dispatcher commit (the dispatcher's own `git` calls share the console's
 process group), can leave the Git index lock behind, and every later Git
 write in the repository fails while it exists. At startup of a real run,
 before the publish resume and interrupted-run recovery, the dispatcher asks
-Git for the lock path (`git rev-parse --git-path index.lock`, which follows
-worktrees and a custom `GIT_DIR`). When the file exists it logs a `PAUSE`
-line starting with `GIT INDEX LOCK:` that names the escaped path and asks the
-operator to check that no Git process is running in the repository and then
+Git for the index path (`git rev-parse --git-path index`, which follows
+worktrees, a custom `GIT_DIR`, and an inherited `GIT_INDEX_FILE`) and checks
+the `<index>.lock` file beside it, where Git creates the lock. When the file
+exists it logs a `PAUSE` line starting with `GIT INDEX LOCK:` that names the
+escaped path and asks the operator to check that no Git process is running in the repository and then
 delete the file. With `poll_interval_seconds` above 0 it polls until the file
 is gone, logs `Git index lock removed. Resuming startup.`, and continues; a
 stop request during the wait exits with code 0. With `poll_interval_seconds:

@@ -814,7 +814,8 @@ bounces until the three-fix circuit breaker escalates.
     left by a killed `git` (for example a second Ctrl+C during a dispatcher
     commit, since the dispatcher's own `git` calls stay in the console
     process group) pauses a real run at startup with its path (from
-    `git rev-parse --git-path index.lock`) and the check to run, before the
+    `git rev-parse --git-path index` plus `.lock`, so an inherited
+    `GIT_INDEX_FILE` is followed) and the check to run, before the
     publish resume and interrupted-run recovery; it is never deleted
     automatically. Polls until the file is gone; a dry run only warns.
   - RECOVERY-3b: Interrupted planner and finalizer dispatch: restore an

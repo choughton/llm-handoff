@@ -6950,19 +6950,22 @@ def _pause_until_handoff_changes(
 def _git_index_lock_path(config: DispatchConfig) -> Path | None:
     """Where Git keeps this repository's index lock; None when Git cannot say.
 
-    ``git rev-parse --git-path`` follows worktrees and a custom ``GIT_DIR``.
-    Git prints a path relative to its working directory, the repo root.
+    ``git rev-parse --git-path index`` follows worktrees, a custom
+    ``GIT_DIR``, and an inherited ``GIT_INDEX_FILE``; Git locks the index by
+    creating ``<index>.lock`` beside it, so the lock path is derived from the
+    resolved index rather than asking for a literal ``index.lock``. Git prints
+    a path relative to its working directory, the repo root.
     """
 
     resolved = _run_git_stdout(
-        config.repo_root, ["git", "rev-parse", "--git-path", "index.lock"]
+        config.repo_root, ["git", "rev-parse", "--git-path", "index"]
     )
     if not resolved:
         return None
-    lock_path = Path(resolved)
-    if not lock_path.is_absolute():
-        lock_path = config.repo_root / lock_path
-    return lock_path
+    index_path = Path(resolved)
+    if not index_path.is_absolute():
+        index_path = config.repo_root / index_path
+    return index_path.with_name(index_path.name + ".lock")
 
 
 def _wait_for_git_index_lock_removal(

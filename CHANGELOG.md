@@ -8,7 +8,8 @@ This project follows a simple pre-release changelog until the first public tag.
 
 - A leftover Git index lock now pauses a real run at startup (RECOVERY-3a).
   Before the publish resume and interrupted-run recovery, the dispatcher
-  resolves the lock with `git rev-parse --git-path index.lock` and, when it
+  resolves the index with `git rev-parse --git-path index` (which follows an
+  inherited `GIT_INDEX_FILE`), checks `<index>.lock` beside it, and, when it
   exists, logs a `GIT INDEX LOCK:` `PAUSE` line naming the escaped path, why
   a killed Git process leaves it, and that the operator should check no Git
   process is running and delete it. It polls every `poll_interval_seconds`

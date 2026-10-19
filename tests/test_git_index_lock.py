@@ -30,6 +30,7 @@ Which story should run next?
 """
 
 LOCK_PAUSE_PREFIX = "GIT INDEX LOCK:"
+GIT_PATH_INDEX = ["git", "rev-parse", "--git-path", "index"]
 STOPPED_LINE = (
     "Stopped at the operator's request before the next dispatch. "
     "Exiting with code 0."
@@ -106,25 +107,44 @@ def test_git_path_result_resolves_relative_to_the_repo_root(
 
     def fake_git(repo_root: Path, command: list[str]) -> str | None:
         calls.append((repo_root, command))
-        return ".git/index.lock"
+        return ".git/index"
 
     monkeypatch.setattr(orchestrator, "_run_git_stdout", fake_git)
 
     lock_path = orchestrator._git_index_lock_path(_config(tmp_path))
 
-    assert calls == [
-        (tmp_path, ["git", "rev-parse", "--git-path", "index.lock"])
-    ]
+    assert calls == [(tmp_path, GIT_PATH_INDEX)]
     assert lock_path == tmp_path / ".git" / "index.lock"
 
 
-def test_real_git_resolves_the_repository_lock_path(tmp_path: Path) -> None:
+def test_real_git_resolves_the_repository_lock_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GIT_INDEX_FILE", raising=False)
     repo = _git_repo(tmp_path)
 
     lock_path = orchestrator._git_index_lock_path(_config(repo))
 
     assert lock_path is not None
     assert lock_path.resolve() == (repo / ".git" / "index.lock").resolve()
+
+
+def test_inherited_git_index_file_moves_the_lock_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _git_repo(tmp_path)
+    # Git locks an alternate index by creating "<GIT_INDEX_FILE>.lock".
+    alternate_index = tmp_path / "alternate" / "custom-index"
+    alternate_index.parent.mkdir()
+    monkeypatch.setenv("GIT_INDEX_FILE", str(alternate_index))
+
+    lock_path = orchestrator._git_index_lock_path(_config(repo))
+
+    assert lock_path is not None
+    assert lock_path.resolve() == (
+        alternate_index.parent / "custom-index.lock"
+    ).resolve()
+    assert lock_path.resolve() != (repo / ".git" / "index.lock").resolve()
 
 
 def test_lock_pauses_startup_until_the_operator_removes_it(
@@ -353,8 +373,8 @@ def test_lock_path_outside_the_repo_root_is_the_path_checked(
     original_git = orchestrator._run_git_stdout
 
     def fake_git(repo_root: Path, command: list[str]) -> str | None:
-        if command == ["git", "rev-parse", "--git-path", "index.lock"]:
-            return str(outside)
+        if command == GIT_PATH_INDEX:
+            return str(outside.with_name("index"))
         return original_git(repo_root, command)
 
     monkeypatch.setattr(orchestrator, "_run_git_stdout", fake_git)
@@ -382,7 +402,7 @@ def test_git_failure_skips_the_check(
     original_git = orchestrator._run_git_stdout
 
     def fake_git(repo_root: Path, command: list[str]) -> str | None:
-        if command == ["git", "rev-parse", "--git-path", "index.lock"]:
+        if command == GIT_PATH_INDEX:
             return None
         return original_git(repo_root, command)
 
