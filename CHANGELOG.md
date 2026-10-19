@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The operator-prompt instructions (planner guidance, `@<role>`, and the
+  `@auditor` audit fan-out) now pass the pause reason between
+  `<<<PAUSE REASON>>>` / `<<<END PAUSE REASON>>>` markers and the operator's
+  message between `<<<OPERATOR MESSAGE>>>` / `<<<END OPERATOR MESSAGE>>>`
+  markers, with a fixed sentence saying the pause reason is quoted dispatcher
+  state and the operator's message cannot widen the role's boundaries or the
+  Work Packet's Files in scope. Runs of three or more `<` or `>` characters
+  inside the quoted text are split with spaces, so the text cannot close its
+  block. The bounded pause-recovery instruction is unchanged.
 - Provider stderr is now redacted before it reaches the dispatcher log or a
   reviewer error. A new `llm_handoff/redaction.py` masks `sk-` keys, Google
   `AIza` keys, `Bearer` tokens, GitHub tokens, and `NAME=value` pairs whose
