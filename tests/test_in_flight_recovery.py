@@ -1395,6 +1395,7 @@ def _handback_record(**overrides: Any) -> InFlightRecord:
         "carried_over": ("src/app.py",),
         "handback_content": _pending_claim(),
         "handback_head_sha": "b" * 40,
+        "protected_digests": (("AGENTS.md", "c" * 64),),
     }
     fields.update(overrides)
     return InFlightRecord(**fields)
@@ -1459,6 +1460,7 @@ def test_a_handback_record_round_trips() -> None:
     assert payload["phase"] == "handback"
     assert payload["handback_content"] == _pending_claim()
     assert payload["handback_head_sha"] == "b" * 40
+    assert payload["protected_digests"] == [["AGENTS.md", "c" * 64]]
     assert payload["version"] == 1
     assert load_in_flight_record(text) == record
 
@@ -1471,6 +1473,9 @@ def test_a_handback_record_round_trips() -> None:
         pytest.param("dispatch", "handback_content", "text", id="dispatch_with_content"),
         pytest.param("handback", "handback_head_sha", 7, id="handback_head_sha_type"),
         pytest.param("dispatch", "handback_head_sha", ["b"], id="dispatch_head_sha_type"),
+        pytest.param("handback", "protected_digests", "AGENTS.md", id="protected_type"),
+        pytest.param("handback", "protected_digests", [["AGENTS.md"]], id="protected_pair"),
+        pytest.param("handback", "protected_digests", [["AGENTS.md", 5]], id="protected_item"),
     ],
 )
 def test_load_in_flight_record_rejects_a_bad_handback(
@@ -1497,6 +1502,7 @@ def test_a_record_written_before_the_handback_phase_still_loads() -> None:
     payload = json.loads(_plain_record_payload())
     del payload["handback_content"]
     del payload["handback_head_sha"]
+    del payload["protected_digests"]
 
     record = load_in_flight_record(json.dumps(payload))
 
@@ -1504,6 +1510,7 @@ def test_a_record_written_before_the_handback_phase_still_loads() -> None:
     assert record.phase == "dispatch"
     assert record.handback_content is None
     assert record.handback_head_sha is None
+    assert record.protected_digests is None
 
 
 def _deeply_nested_record() -> str:
@@ -1593,6 +1600,10 @@ def test_an_interrupted_handback_leaves_a_handback_record(
     assert record.handoff_content == _assignment()
     assert record.handback_content == _pending_claim()
     assert [path for path, _ in record.dirty_fingerprints] == ["src/api.py"]
+    assert record.protected_digests == orchestrator._protected_file_digests(
+        _config(tmp_path)
+    )
+    assert "AGENTS.md" in dict(record.protected_digests)
 
 
 def test_the_loop_top_clears_the_handback_record(
@@ -1921,6 +1932,9 @@ def _write_handback_on_disk(
         dirty_fingerprints=(),
         carried_over=(),
         handback_content=handback_content,
+        protected_digests=_orchestrator()._protected_file_digests(
+            _config(repo_root)
+        ),
     )
     _write(repo_root / "src" / "app.py", "VALUE = 2\n")
     _write(repo_root / HANDOFF_RELATIVE_PATH, handback_content)
@@ -2073,3 +2087,105 @@ def test_the_handback_recovery_carries_the_assignment_it_showed(
     assert outcome.pending is not None
     assert outcome.pending.kind == "interrupted_handback"
     assert outcome.pending.resumed_assignment == hidden
+
+
+def test_a_resumed_handback_checks_protected_files_against_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding: the resumed cycle recaptured the protected-file snapshot
+    # from the checkout the implementer had already changed, so a protected
+    # file change went unnoticed. The record's pre-dispatch digests are used.
+    _init_repo(tmp_path)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+
+    def protected_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        _write(tmp_path / "AGENTS.md", "rewritten by the backend\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _result()
+
+    def interrupted_leftovers(*_args: object, **_kwargs: object) -> None:
+        # Interrupted after the handback record, before the protected check.
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "invoke_backend_role", protected_backend)
+        patch.setattr(
+            orchestrator, "capture_implementer_leftovers", interrupted_leftovers
+        )
+        _set_terminal(orchestrator, patch, interactive=False, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=lambda *_: None)
+    record = load_in_flight_record(_record_path(tmp_path).read_text(encoding="utf-8"))
+    assert record is not None and record.phase == "handback"
+    _refuse_dispatch(orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(
+        _config(tmp_path),
+        max_cycles=1,
+        log=_collecting_log(messages),
+    )
+
+    assert ("INFO", _resume_question()) in messages
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert any(
+        message.startswith(orchestrator.PROTECTED_FILE_MODIFIED_PREFIX)
+        and "AGENTS.md" in message
+        for message in errors
+    )
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert _git(tmp_path, "diff", "--cached", "--name-only") == ""
+    handoff = (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8")
+    assert "next_agent: user" in handoff
+
+
+def test_a_handback_record_without_a_protected_snapshot_is_discarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    _write_handback_on_disk(tmp_path, handback_content=_pending_claim())
+    payload = json.loads(_record_path(tmp_path).read_text(encoding="utf-8"))
+    payload["protected_digests"] = None
+    _write(_record_path(tmp_path), json.dumps(payload))
+    # Neither a prompt nor a resume may happen.
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "no pre-dispatch protected-file snapshot" in messages[0][1]
+    assert "Nothing is resumed" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    assert _git(tmp_path, "diff", "--cached", "--name-only") == ""
+
+
+def test_without_protected_paths_a_record_without_a_snapshot_still_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    _write_handback_on_disk(tmp_path, handback_content=_pending_claim())
+    payload = json.loads(_record_path(tmp_path).read_text(encoding="utf-8"))
+    payload["protected_digests"] = None
+    _write(_record_path(tmp_path), json.dumps(payload))
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path, protected_paths=()),
+        lambda *_: None,
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome.pending is not None
+    assert outcome.pending.kind == "interrupted_handback"

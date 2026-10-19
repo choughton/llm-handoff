@@ -48,6 +48,12 @@ class InFlightRecord:
     A ``handback`` record also holds ``handback_content``, the ``HANDOFF.md``
     text when the dispatch returned, and ``handback_head_sha``, HEAD at that
     moment. A ``dispatch`` record has neither.
+
+    ``protected_digests`` are the protected control files and their sha256
+    digests captured right before the dispatch, so a resumed handback checks
+    protected files against the pre-dispatch checkout instead of one the
+    implementer already changed. None when no protected paths were configured
+    or the record predates the field.
     """
 
     cycle: int
@@ -61,6 +67,7 @@ class InFlightRecord:
     assignment_content: str | None = None
     handback_content: str | None = None
     handback_head_sha: str | None = None
+    protected_digests: tuple[tuple[str, str], ...] | None = None
     version: int = IN_FLIGHT_RECORD_VERSION
 
     @property
@@ -86,6 +93,11 @@ def in_flight_record_payload(record: InFlightRecord) -> str:
         "carried_over": list(record.carried_over),
         "handback_content": record.handback_content,
         "handback_head_sha": record.handback_head_sha,
+        "protected_digests": (
+            None
+            if record.protected_digests is None
+            else [list(pair) for pair in record.protected_digests]
+        ),
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
@@ -101,7 +113,8 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     ``handback_content``; a ``dispatch`` record must not have one. A missing
     ``assignment_content``, ``handback_content``, or ``handback_head_sha``
     reads as None, so a record written before the ``handback`` phase existed
-    still loads as a ``dispatch`` record. JSON nested too deeply to parse
+    still loads as a ``dispatch`` record. ``protected_digests`` is None,
+    absent, or a list of ``[path, digest]`` string pairs. JSON nested too deeply to parse
     (``RecursionError``) is rejected like any other invalid JSON.
     """
 
@@ -141,6 +154,12 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     handback_head_sha = payload.get("handback_head_sha")
     if handback_head_sha is not None and not isinstance(handback_head_sha, str):
         return None
+    raw_protected = payload.get("protected_digests")
+    protected_digests = (
+        None if raw_protected is None else _string_pairs(raw_protected)
+    )
+    if raw_protected is not None and protected_digests is None:
+        return None
     story_key = payload.get("story_key")
     if not isinstance(story_key, str) or not story_key:
         return None
@@ -168,6 +187,7 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         assignment_content=assignment_content,
         handback_content=handback_content,
         handback_head_sha=handback_head_sha,
+        protected_digests=protected_digests,
     )
 
 

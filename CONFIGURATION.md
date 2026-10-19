@@ -619,8 +619,9 @@ An implementer interrupted mid-dispatch (a second Ctrl+C, a closed window, or
 a crash) never reaches the step that records its leftovers, so the dispatcher
 also writes `logs/dispatch/in-flight.json` right before each `backend` or
 `frontend` dispatch the work-claim gate applies to. The record names the role,
-the story, HEAD, the pre-dispatch `HANDOFF.md` text, and the operator's dirty
-files with their content hashes. Planner, auditor, finalizer, validator,
+the story, HEAD, the pre-dispatch `HANDOFF.md` text, the operator's dirty
+files with their content hashes, and the SHA-256 digests of the protected
+control files (`protected_paths`). Planner, auditor, finalizer, validator,
 ungated, and dry-run dispatches write none. Once the dispatch returns,
 whatever its exit code, the dispatcher rewrites the record as a `handback`
 record that also holds the `HANDOFF.md` text the implementer left and HEAD at
@@ -689,8 +690,10 @@ record holds, or `HANDOFF.md` differs from the handback text it holds, the
 cycle got past its commit or a gate rewrote the handoff: the dispatcher logs
 one `WARN` line naming the record, role, and story, resumes nothing, restores
 no handoff, and deletes the record (a dry run keeps it); any uncommitted files
-stay operator edits. Otherwise the agent's files and the changed operator files
-are found as for a `dispatch` record. A dry run logs them, says
+stay operator edits. When `protected_paths` is set but the record holds no
+protected-file digests, the dispatcher discards it the same way, because the
+resumed cycle could not check protected files. Otherwise the agent's files and
+the changed operator files are found as for a `dispatch` record. A dry run logs them, says
 `Not applied in dry run.`, and keeps the record. The same confirmation rule
 applies: the dispatcher logs the summary, the assignment summary described
 above, and a short SHA-256 of the handback, then asks
@@ -706,8 +709,10 @@ cycle without dispatching the role again: it treats the dispatch as exit code
 0, uses the record's pre-dispatch handoff (or, when the record holds one, its
 continued story's assignment) as the assignment for the dispatcher commit and
 the work-claim gate, rebuilds the pre-dispatch HEAD, operator files, and
-carry-over files from the record, and then runs the usual commit, validation,
-gate, and publish. That assignment is resolved once: the assignment summary
+carry-over files from the record, checks protected files against the record's
+pre-dispatch digests and HEAD (not a snapshot taken after the restart, which
+would already hold the implementer's edits), and then runs the usual commit,
+validation, gate, and publish. That assignment is resolved once: the assignment summary
 shown before the question is of the same text the commit and gate use. The
 start does not repair or normalize the confirmed handback before that cycle,
 because a rewrite would no longer match the confirmed text; the cycle's usual

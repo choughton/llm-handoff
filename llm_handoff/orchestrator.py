@@ -1532,7 +1532,14 @@ def _run_loop(
                 and config.commit_mode == "dispatcher"
                 else None
             )
-            protected_before = _capture_protected_snapshot(config)
+            # A resumed handback's checkout already holds the implementer's
+            # edits, so its protected files are checked against the record's
+            # pre-dispatch snapshot, not one captured now.
+            protected_before = (
+                _resumed_protected_snapshot(config, resumed_handback)
+                if resumed_handback is not None
+                else _capture_protected_snapshot(config)
+            )
             implementer_head_before = (
                 (
                     resumed_handback.head_sha
@@ -1560,6 +1567,7 @@ def _run_loop(
                     log=log_fn,
                     state=in_flight_state,
                     assignment_content=assignment_content,
+                    protected_snapshot=protected_before,
                 )
             )
             # A first Ctrl+C from here to the loop top lets this cycle finish:
@@ -1626,6 +1634,7 @@ def _run_loop(
                     log=log_fn,
                     state=in_flight_state,
                     assignment_content=assignment_content,
+                    protected_snapshot=protected_before,
                 )
             ):
                 # Neither a handback record nor a deleted record: the dispatch
@@ -5466,6 +5475,7 @@ def _write_in_flight_record(
     assignment_content: str | None = None,
     handback_content: str | None = None,
     handback_head_sha: str | None = None,
+    protected_snapshot: ProtectedFileSnapshot | None = None,
 ) -> bool:
     """Write the in-flight record before an implementer dispatch.
 
@@ -5477,6 +5487,9 @@ def _write_in_flight_record(
     a handoff without a ``story_id``; the record is then keyed to that story.
     With ``handback_content`` the record is a ``handback`` record holding the
     handoff the dispatch left and ``handback_head_sha``, HEAD at that moment.
+    ``protected_snapshot`` is the pre-dispatch protected-file snapshot; its
+    digests are kept so a resumed handback checks protected files against
+    the checkout from before the dispatch.
     """
 
     if assignment_content == handoff_content:
@@ -5515,6 +5528,9 @@ def _write_in_flight_record(
         assignment_content=assignment_content,
         handback_content=handback_content,
         handback_head_sha=handback_head_sha if handback_content is not None else None,
+        protected_digests=(
+            protected_snapshot.digests if protected_snapshot is not None else None
+        ),
     )
     try:
         _write_carry_over_payload(
@@ -5572,6 +5588,7 @@ def _record_in_flight_handback(
     log: LogFn,
     state: _InFlightRecordState,
     assignment_content: str | None,
+    protected_snapshot: ProtectedFileSnapshot | None,
 ) -> bool:
     """Rewrite the dispatch record as a handback record once the dispatch returned.
 
@@ -5594,6 +5611,7 @@ def _record_in_flight_handback(
         assignment_content=assignment_content,
         handback_content=handback_content,
         handback_head_sha=_git_head(config.repo_root),
+        protected_snapshot=protected_snapshot,
     ):
         state.handback_on_disk = True
         return True
@@ -5633,6 +5651,26 @@ def _resumed_pre_dispatch_state(record: InFlightRecord) -> PreDispatchState:
         dirty_files=tuple(path for path, _fingerprint in record.dirty_fingerprints),
         dirty_fingerprints=record.dirty_fingerprints,
         carried_over=record.carried_over,
+    )
+
+
+def _resumed_protected_snapshot(
+    config: DispatchConfig, record: InFlightRecord
+) -> ProtectedFileSnapshot | None:
+    """The protected-file snapshot an interrupted handback's dispatch started from.
+
+    Recapturing it on the resumed start would hash the checkout the
+    implementer already changed, so a protected-file change would go
+    unnoticed. The record's pre-dispatch digests are used instead; a record
+    without them (recovery discards those) fails closed with no digests, so
+    every protected file present counts as changed.
+    """
+
+    if not config.protected_paths:
+        return None
+    return ProtectedFileSnapshot(
+        head_sha=record.head_sha,
+        digests=record.protected_digests or (),
     )
 
 
@@ -5799,6 +5837,23 @@ def _recover_interrupted_handback(
             "handback, so its cycle got past the dispatcher commit or a gate "
             "rewrote the handoff. Nothing is resumed; any uncommitted files "
             "stay operator edits."
+            + (" Not deleted in dry run." if config.dry_run else ""),
+        )
+        if not config.dry_run:
+            _delete_in_flight_record(config, log)
+        return nothing
+    if config.protected_paths and record.protected_digests is None:
+        # The resumed cycle checks protected files against the record's
+        # pre-dispatch digests; without them it cannot tell whether the
+        # implementer changed a protected file, so nothing is resumed.
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight handback record {state_path} for "
+            f"{record.role}'s interrupted {story} handback: it holds no "
+            "pre-dispatch protected-file snapshot, so the protected-file check "
+            "cannot run on a resumed cycle. Nothing is resumed; any uncommitted "
+            "files stay operator edits."
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
         if not config.dry_run:

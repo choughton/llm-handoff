@@ -24,7 +24,12 @@ This project follows a simple pre-release changelog until the first public tag.
   discards it and the files stay operator edits; a changed operator file
   pauses with an `INTERRUPTED HANDBACK:` reason; a dry run only logs it. When
   the handback rewrite fails the record is deleted, and the run stops only
-  when that delete fails too.
+  when that delete fails too. The record also keeps the pre-dispatch
+  protected-file digests, and the resumed cycle checks protected files
+  against them and the pre-dispatch HEAD instead of a snapshot taken after
+  the restart, so a protected file the implementer changed before the
+  interrupt still routes the handoff to `user`. With `protected_paths` set, a
+  `handback` record without those digests is discarded with a `WARN` line.
 - A deeply nested `in-flight.json` that makes the JSON parser raise
   `RecursionError` is now treated as an invalid record (deleted with a `WARN`
   line, kept in a dry run) instead of crashing startup.
