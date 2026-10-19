@@ -21,6 +21,7 @@ from uuid import uuid4
 import yaml
 
 import llm_handoff
+from llm_handoff import console_interrupt
 from llm_handoff.agent_process import (
     _kill_process_tree,
     _start_isolated_process,
@@ -1751,7 +1752,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> SupervisorConfig:
 
 def main(argv: Sequence[str] | None = None) -> int:
     config = _parse_args(argv)
-    return run_supervised_dispatch(config)
+    # The supervisor never sets an active role, so Ctrl+C still raises
+    # KeyboardInterrupt at once. Installing the controller's handler is what
+    # lets _start_isolated_process hold that interrupt back until Popen
+    # returns a handle the supervisor can kill; under the default handler
+    # it would raise inside Popen and leave the new child running.
+    with console_interrupt.installed():
+        return run_supervised_dispatch(config)
 
 
 if __name__ == "__main__":

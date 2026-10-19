@@ -1231,6 +1231,8 @@ def run_shell_command(
         "encoding": "utf-8",
         "errors": "replace",
     }
+    timed_out = False
+    output = ""
     try:
         process = _start_isolated_process(command, **popen_kwargs)
     except OSError as exc:
@@ -1243,8 +1245,6 @@ def run_shell_command(
             failure_detail=f"could not start: {exc}",
         )
 
-    timed_out = False
-    output = ""
     try:
         output, _ = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:

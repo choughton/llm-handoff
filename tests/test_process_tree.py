@@ -378,6 +378,103 @@ def test_run_command_streaming_kills_child_on_ctrl_c_during_creation(
     assert tree_kills == [process]
 
 
+def test_run_command_streaming_builds_its_queue_before_the_child_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An interrupt while the output queue is built must not leave a child
+    # running: the queue exists before the launch, so no child is started.
+    launches: list[Any] = []
+    tree_kills: list[Any] = []
+
+    def interrupted_queue(*_args: Any, **_kwargs: Any) -> Any:
+        raise KeyboardInterrupt
+
+    def fake_popen(command: Any, **_kwargs: Any) -> Any:
+        launches.append(command)
+        return _FakeProcess()
+
+    monkeypatch.setattr(agent_process.queue, "Queue", interrupted_queue)
+    monkeypatch.setattr(agent_process.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent_process._run_command_streaming(
+            ["agent.cmd"],
+            cwd=Path.cwd(),
+            timeout_ms=60_000,
+        )
+
+    assert launches == []
+    assert tree_kills == []
+
+
+def test_run_command_streaming_kills_child_when_reader_setup_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+
+    def interrupted_thread(*_args: Any, **_kwargs: Any) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        agent_process.subprocess, "Popen", lambda _command, **_kwargs: process
+    )
+    monkeypatch.setattr(agent_process.threading, "Thread", interrupted_thread)
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent_process._run_command_streaming(
+            ["agent.cmd"],
+            cwd=Path.cwd(),
+            timeout_ms=60_000,
+        )
+
+    assert tree_kills == [process]
+
+
+@pytest.mark.skipif(
+    threading.current_thread() is not threading.main_thread(),
+    reason="signal handlers can only be installed on the main thread",
+)
+def test_supervisor_main_defers_ctrl_c_during_child_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    shared_controller: Any,
+) -> None:
+    # Uses the supervisor's real handler setup: main() must install the
+    # controller, or a Ctrl+C inside Popen raises before the supervisor
+    # has a handle and the new child dispatcher outlives it.
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+    seen_handlers: list[Any] = []
+    handler_before = signal.getsignal(signal.SIGINT)
+
+    def popen_that_gets_ctrl_c(_command: Any, **_kwargs: Any) -> Any:
+        handler = signal.getsignal(signal.SIGINT)
+        seen_handlers.append(handler)
+        assert callable(handler)
+        handler(signal.SIGINT, None)
+        return process
+
+    def fake_run_supervised_dispatch(_config: Any) -> int:
+        supervisor._start_isolated_process(["dispatch"])
+        return 0
+
+    monkeypatch.setattr(supervisor, "_parse_args", lambda _argv: object())
+    monkeypatch.setattr(
+        supervisor, "run_supervised_dispatch", fake_run_supervised_dispatch
+    )
+    monkeypatch.setattr(agent_process.subprocess, "Popen", popen_that_gets_ctrl_c)
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        supervisor.main([])
+
+    assert seen_handlers == [console_interrupt.CONTROLLER.handle_sigint]
+    assert tree_kills == [process]
+    assert signal.getsignal(signal.SIGINT) == handler_before
+
+
 def test_supervisor_kills_child_tree_when_interrupted_before_the_read_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

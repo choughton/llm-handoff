@@ -697,8 +697,10 @@ bounces until the three-fix circuit breaker escalates.
   neither child receives the console Ctrl+C anymore. Agent, verification,
   and supervised-child launches go through
   `agent_process._start_isolated_process`, which holds a Ctrl+C until
-  `Popen` returns so a stop-now press cannot strand a new child; the handoff
-  normalizers still call `Popen` directly (deferred PR #160 review finding).
+  `Popen` returns so a stop-now press cannot strand a new child; the
+  supervisor's `main` installs the console interrupt handler (with no active
+  role) so that hold applies there too. The handoff normalizers still call
+  `Popen` directly (deferred PR #160 review finding).
 - RECOVERY-2: In-flight record and implementer recovery. Before each step
   that can leave partial state, write `logs/dispatch/in-flight.json` (cycle,
   role, story key, phase, HEAD, a copy of the pre-dispatch `HANDOFF.md`, and

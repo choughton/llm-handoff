@@ -348,16 +348,19 @@ def _run_command_streaming(
     if env is not None:
         popen_kwargs["env"] = env
 
-    try:
-        process = _start_isolated_process(resolved_command, **popen_kwargs)
-    except OSError as exc:
-        return _ProcessResult(stdout="", stderr=str(exc), exit_code=1)
-
+    # Build the run state before the child exists, so no Python call sits
+    # between the launch and the kill-on-exception block below.
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
     stream_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
     timed_out = False
     idled_out = False
+
+    try:
+        process = _start_isolated_process(resolved_command, **popen_kwargs)
+    except OSError as exc:
+        return _ProcessResult(stdout="", stderr=str(exc), exit_code=1)
+
     # The kill-on-exception block starts right after the child exists, so
     # an interrupt during the reader setup also takes the tree down.
     try:
