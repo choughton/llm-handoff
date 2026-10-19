@@ -22,9 +22,11 @@ from llm_handoff.work_claim import (
     VERIFICATION_NOT_ALLOWED_PREFIX,
     WORK_PACKET_UNPARSEABLE_PREFIX,
     CommandRun,
-    git_head,
+    git_head_and_dirty_files,
     has_passing_dispatcher_verification,
+    normalize_repo_path,
     parse_work_packet_verification_commands,
+    recorded_verification_commands,
     run_shell_command,
     verification_command_allowed,
 )
@@ -60,6 +62,7 @@ def run_pre_audit_verification(
     *,
     repo_root: Path,
     handoff_content: str,
+    handoff_rel_path: str,
     frontmatter: HandoffRouting | None,
     head_sha: str,
     scope_files: tuple[str, ...],
@@ -72,10 +75,13 @@ def run_pre_audit_verification(
 
     Returns None when the step does not apply: the audit is neither an epic
     close nor an empty review range, the handoff already has a passing
-    ``## Dispatcher Verification`` section for ``head_sha``, there is no Work
-    Packet Verification command, or the working tree is not at ``head_sha``.
-    The commands run the way the work-claim gate runs them: allowlist checked
-    first, the allowlisted gate environment, and a bounded timeout.
+    ``## Dispatcher Verification`` section for ``head_sha`` that lists the
+    same commands, there is no Work Packet Verification command, or the
+    working tree is not a clean checkout of ``head_sha`` (the handoff itself
+    may be dirty). A pass is only credited to the commit when no other file
+    differs from it. The commands run the way the work-claim gate runs them:
+    allowlist checked first, the allowlisted gate environment, and a bounded
+    timeout.
     """
 
     def _emit(level: str, message: str) -> None:
@@ -84,13 +90,6 @@ def run_pre_audit_verification(
 
     trigger = pre_audit_trigger(frontmatter, scope_files)
     if trigger is None:
-        return None
-    if has_passing_dispatcher_verification(handoff_content, head_sha):
-        _emit(
-            "INFO",
-            f"Dispatcher verification: the handoff already records a PASS for "
-            f"{head_sha[:12]}; not running it again.",
-        )
         return None
     parsed = parse_work_packet_verification_commands(handoff_content)
     if parsed is None:
@@ -101,7 +100,22 @@ def run_pre_audit_verification(
             "runs its own checks.",
         )
         return None
-    current_head = git_head(repo_root)
+    commands, prose = parsed
+    if has_passing_dispatcher_verification(handoff_content, head_sha):
+        if commands and recorded_verification_commands(handoff_content) == commands:
+            _emit(
+                "INFO",
+                f"Dispatcher verification: the handoff already records a PASS "
+                f"for {head_sha[:12]} with the same commands; not running it "
+                "again.",
+            )
+            return None
+        _emit(
+            "INFO",
+            f"Dispatcher verification: the recorded PASS for {head_sha[:12]} "
+            "lists different commands than the Work Packet; running them again.",
+        )
+    current_head, dirty_files = git_head_and_dirty_files(repo_root)
     if current_head is None or current_head.lower() != head_sha.lower():
         _emit(
             "WARN",
@@ -110,8 +124,29 @@ def run_pre_audit_verification(
             f"commit {head_sha[:12]}.",
         )
         return None
+    handoff_entry = normalize_repo_path(handoff_rel_path)
+    other_dirty = (
+        None
+        if dirty_files is None
+        else [
+            path for path in dirty_files if normalize_repo_path(path) != handoff_entry
+        ]
+    )
+    if other_dirty is None or other_dirty:
+        shown = (
+            "git status failed"
+            if other_dirty is None
+            else "uncommitted changes in " + ", ".join(f"`{p}`" for p in other_dirty[:5])
+            + (f" (+{len(other_dirty) - 5} more)" if len(other_dirty) > 5 else "")
+        )
+        _emit(
+            "WARN",
+            f"Dispatcher verification skipped for this {trigger}: the working "
+            f"tree is not a clean checkout of {head_sha[:12]} ({shown}), so a "
+            "pass could not be credited to the commit.",
+        )
+        return None
 
-    commands, prose = parsed
     if prose or not commands:
         detail = (
             "the Work Packet Verification command has lines that are not "

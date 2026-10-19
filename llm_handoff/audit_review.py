@@ -498,6 +498,7 @@ def run_audit_fan_out(
 ) -> DispatchResult:
     start_time = time.monotonic()
     linear_mode = config.tracker.provider == "linear"
+    pre_audit: PreAuditVerification | None = None
     handoff_path = config.handoff_full_path
     handoff_display = config.handoff_path.as_posix()
     before_sha = _content_sha(context.handoff_content)
@@ -554,6 +555,7 @@ def run_audit_fan_out(
         pre_audit = run_pre_audit_verification(
             repo_root=config.repo_root,
             handoff_content=context.handoff_content,
+            handoff_rel_path=handoff_display,
             frontmatter=frontmatter,
             head_sha=scope.head_sha,
             scope_files=scope.files,
@@ -721,6 +723,7 @@ def run_audit_fan_out(
         implementer_role=implementer_role,
         block_severity=config.audit.block_severity,
         source_handoff=context.handoff_content,
+        dispatcher_verification=pre_audit,
     )
     if linear_mode:
         # The Linear evidence step runs only after both verdicts merged and
@@ -1273,7 +1276,15 @@ def render_audit_handoff(
     implementer_role: str,
     block_severity: str,
     source_handoff: str = "",
+    dispatcher_verification: PreAuditVerification | None = None,
 ) -> str:
+    """Render the dispatcher-written audit handoff.
+
+    ``dispatcher_verification`` is a passing pre-audit run; its section and
+    commands are kept in the final handoff, because the quality reviewer was
+    told not to re-run them.
+    """
+
     quality_run = runs["quality"]
     security_run = runs["security"]
     security_verdict = security_run.verdict
@@ -1373,9 +1384,15 @@ def render_audit_handoff(
         # round and the work-claim gate can still read it.
         lines.append(work_packet.rstrip())
         lines.append("")
+    if dispatcher_verification is not None:
+        lines.append(passed_pre_audit_section(dispatcher_verification).rstrip())
+        lines.append("")
     lines.append("## Verification Evidence")
     lines.append("")
-    lines.append(f"- **Commands run:** {_commands_run_text(quality, runs)}")
+    lines.append(
+        "- **Commands run:** "
+        f"{_commands_run_text(quality, runs, dispatcher_verification)}"
+    )
     lines.append(f"- **Output summary:** {_output_summary_text(quality, runs)}")
     lines.append(f"- **Commit SHA verified:** {scope.head_sha}")
     lines.append(f"- **Files changed or reviewed:** {_files_text(scope, quality)}")
@@ -2391,9 +2408,19 @@ def _finding_lines(findings: list[ReviewFinding]) -> list[str]:
 def _commands_run_text(
     quality: QualityReviewVerdict,
     runs: Mapping[str, ReviewerRun],
+    dispatcher_verification: PreAuditVerification | None = None,
 ) -> str:
-    parts = [_single_line(command) for command in quality.commands_run]
-    if not parts:
+    parts = (
+        [
+            f"dispatcher: `{_single_line(run.command)}` {run.describe_outcome()}"
+            for run in dispatcher_verification.runs
+        ]
+        if dispatcher_verification is not None
+        else []
+    )
+    reviewer_commands = [_single_line(command) for command in quality.commands_run]
+    parts.extend(reviewer_commands)
+    if not reviewer_commands:
         parts.append("no verification commands reported by the quality reviewer")
     parts.append(f"security reviewer: {runs['security'].command_summary}")
     return "; ".join(parts)

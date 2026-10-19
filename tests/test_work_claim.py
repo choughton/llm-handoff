@@ -5368,6 +5368,25 @@ def test_has_passing_dispatcher_verification(
     assert has_passing_dispatcher_verification(content, "a" * 40) is expected
 
 
+def test_recorded_verification_commands_reads_the_top_level_section() -> None:
+    from llm_handoff.work_claim import recorded_verification_commands
+
+    content = (
+        "# Handoff\n\n## Dispatcher Verification\n\n"
+        "- **Verdict:** PASS\n"
+        "- **Verification command:** `python -m pytest -q` (exited 0 after 2.0s)\n"
+        "- **Verification command:** `ruff check .` (exited 0 after 0.5s)\n\n"
+        "## Next\n\n"
+        "- **Verification command:** `other` (exited 0 after 1.0s)\n"
+    )
+
+    assert recorded_verification_commands(content) == (
+        "python -m pytest -q",
+        "ruff check .",
+    )
+    assert recorded_verification_commands("# No section\n") == ()
+
+
 def test_dispatcher_verification_only_counts_the_top_level_section() -> None:
     from llm_handoff.work_claim import has_passing_dispatcher_verification
 

@@ -16,8 +16,11 @@ This project follows a simple pre-release changelog until the first public tag.
   `verified_fail` to `planner` with the command output, and no reviewer runs.
   Previously a sandboxed Codex reviewer on Windows could not create pytest's
   per-user temp directory, failed the epic close, and the loop sent the empty
-  range to `backend`, which had nothing to change. The step is skipped in
-  Linear mode.
+  range to `backend`, which had nothing to change. A recorded pass is reused
+  only for the same commands, a pass is credited to the commit only when no
+  file other than `HANDOFF.md` has uncommitted changes, and the approved
+  audit handoff keeps the dispatcher's commands in its Verification Evidence.
+  The step is skipped in Linear mode.
 - A blocked audit fan-out on a range with no committed changes now routes
   `verified_fail` to `planner` instead of the implementer.
 - The planner prompts (root and `examples/reference-workflow/` copies) and

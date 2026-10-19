@@ -3154,6 +3154,11 @@ def test_epic_close_audit_records_dispatcher_verification_pass_for_reviewers(
     assert frontmatter is not None
     assert frontmatter.next_agent == "finalizer"
     assert frontmatter.status == "verified_pass"
+    # The reviewer was told not to re-run the command, so the final handoff
+    # keeps the dispatcher's run as durable evidence.
+    assert "## Dispatcher Verification" in written
+    assert f"- **Verification command:** `{PASSING_COMMAND}` (exited 0" in written
+    assert f"- **Commands run:** dispatcher: `{PASSING_COMMAND}` exited 0" in written
 
 
 def test_failed_dispatcher_verification_routes_epic_close_to_planner_without_reviewers(
@@ -3236,6 +3241,8 @@ def test_dispatcher_verification_is_not_rerun_over_a_recorded_pass(
         + NL
         + f"- **Verified commit:** `{head}`"
         + NL
+        + f"- **Verification command:** `{FAILING_COMMAND}` (exited 0 after 1.0s)"
+        + NL
     )
     _write_handoff(repo, handoff)
     calls: list[str] = []
@@ -3257,6 +3264,78 @@ def test_dispatcher_verification_is_not_rerun_over_a_recorded_pass(
     frontmatter = parse_handoff_frontmatter_text(written)
     assert frontmatter is not None
     assert frontmatter.status == "verified_pass"
+
+
+def test_dispatcher_verification_reruns_when_the_recorded_commands_differ(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, head, _handoff = _epic_close_repo(tmp_path, FAILING_COMMAND)
+    # The PASS was recorded for an earlier, narrower command; the Work Packet
+    # now names a different one, so the recorded pass does not cover it.
+    handoff = (
+        _epic_close_handoff(head, FAILING_COMMAND)
+        + NL
+        + "## Dispatcher Verification"
+        + NL
+        + NL
+        + "- **Verdict:** PASS"
+        + NL
+        + f"- **Verified commit:** `{head}`"
+        + NL
+        + f"- **Verification command:** `{PASSING_COMMAND}` (exited 0 after 1.0s)"
+        + NL
+    )
+    _write_handoff(repo, handoff)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=head,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == []
+    assert "lists different commands than the Work Packet" in log.text()
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+    assert frontmatter.status == "verified_fail"
+
+
+def test_dispatcher_verification_skips_a_dirty_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "ran.txt"
+    command = _python_command(f"open(r'{marker}', 'w').write('ran')")
+    repo, head, handoff = _epic_close_repo(tmp_path, command)
+    # A tracked file differs from the audit commit, so a pass would not show
+    # that the commit itself passes.
+    (repo / "src" / "app.py").write_text("x = 2\n", encoding="utf-8")
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(
+            _quality_payload(next_agent="finalizer", close_type="epic")
+        ),
+        base_sha=head,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert not marker.exists()
+    assert calls == ["security"]
+    assert "not a clean checkout" in log.text()
+    assert "`src/app.py`" in log.text()
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    assert "## Dispatcher Verification" not in written
 
 
 def test_implementer_audit_with_committed_changes_skips_dispatcher_verification(

@@ -2117,12 +2117,15 @@ With `security` enabled, the auditor route works differently:
   `verification_allowed_prefixes` check, environment, and
   `work_packet_verification_timeout_seconds` as the gate. A pass is recorded
   as a `## Dispatcher Verification` section, so the quality reviewer does not
-  re-run the command. A failure, or a command the allowlist rejects, routes
-  `status: verified_fail` to `planner` with the command output, and no
-  reviewer runs. The step is skipped when the handoff already records a pass
-  for the audit commit, has no Verification command, or the working tree is
-  not at `scope_sha`; with `enforce_work_packet: false`; and in Linear mode,
-  whose evidence step needs the reviewers' verdicts.
+  re-run the command, and the final audit handoff keeps that section and the
+  dispatcher's commands in its Verification Evidence. A failure, or a command
+  the allowlist rejects, routes `status: verified_fail` to `planner` with the
+  command output, and no reviewer runs. The step is skipped when the handoff
+  already records a pass for the audit commit with the same commands, has no
+  Verification command, or the working tree is not a clean checkout of
+  `scope_sha` (any uncommitted change other than `HANDOFF.md`); with
+  `enforce_work_packet: false`; and in Linear mode, whose evidence step needs
+  the reviewers' verdicts.
 - The quality reviewer (the configured `auditor` agent) and the security
   reviewer run concurrently on that range. Both are told not to write
   `HANDOFF.md` and must return a JSON verdict.

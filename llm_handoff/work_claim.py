@@ -2446,15 +2446,8 @@ def has_passing_dispatcher_verification(content: str, commit_sha: str) -> bool:
     """True when the top-level ``## Dispatcher Verification`` section says
     ``PASS`` for ``commit_sha`` (a short or full SHA on either side)."""
 
-    normalized = content.replace("\r\n", "\n")
-    start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
-    if start == -1:
-        return False
-    body = normalized[start + len(DISPATCHER_VERIFICATION_HEADING) + 2 :]
-    next_heading = re.search(r"(?m)^## ", body)
-    if next_heading is not None:
-        body = body[: next_heading.start()]
-    if _PASS_VERDICT_RE.search(body) is None:
+    body = _dispatcher_verification_body(content)
+    if body is None or _PASS_VERDICT_RE.search(body) is None:
         return False
     match = _VERIFIED_COMMIT_RE.search(body)
     if match is None:
@@ -2464,6 +2457,33 @@ def has_passing_dispatcher_verification(content: str, commit_sha: str) -> bool:
     return bool(expected) and (
         verified.startswith(expected) or expected.startswith(verified)
     )
+
+
+def recorded_verification_commands(content: str) -> tuple[str, ...]:
+    """The commands the top-level ``## Dispatcher Verification`` section lists
+    on its ``- **Verification command:**`` lines, in order."""
+
+    body = _dispatcher_verification_body(content)
+    if body is None:
+        return ()
+    return tuple(match.group(1) for match in _RECORDED_COMMAND_RE.finditer(body))
+
+
+_RECORDED_COMMAND_RE = re.compile(
+    r"(?m)^-[ \t]+\*\*Verification command:\*\*[ \t]*`(.*)`[ \t]+\([^()\n]*\)[ \t]*$"
+)
+
+
+def _dispatcher_verification_body(content: str) -> str | None:
+    normalized = content.replace("\r\n", "\n")
+    start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
+    if start == -1:
+        return None
+    body = normalized[start + len(DISPATCHER_VERIFICATION_HEADING) + 2 :]
+    next_heading = re.search(r"(?m)^## ", body)
+    if next_heading is not None:
+        body = body[: next_heading.start()]
+    return body
 
 
 def passed_verification_section(result: WorkClaimResult) -> str:
