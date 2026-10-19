@@ -9,6 +9,7 @@ from llm_handoff import orchestrator
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import (
     DEFAULT_PROTECTED_PATHS,
+    AgentConfig,
     DispatchConfig,
     load_dispatch_config,
 )
@@ -567,6 +568,113 @@ def test_protected_changes_report_non_ascii_file_added_then_deleted(
     changes = orchestrator._protected_file_changes(config, before)
 
     assert changes == (".claude/agents/café.md",)
+
+
+def test_enforcement_escapes_unsafe_protected_paths_in_logs_and_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    config = _config(tmp_path)
+    # A newline, a terminal escape, a surrogateescape byte (from a non-UTF-8
+    # name), and a backtick, all as _protected_paths_in_commits returns them.
+    unsafe = (
+        ".claude/agents/evil\nERROR forged.md",
+        ".claude/agents/\x1b[2Jclear.md",
+        ".claude/agents/bad\udcffbyte.md",
+        ".claude/agents/tick`name.md",
+    )
+    monkeypatch.setattr(
+        orchestrator, "_protected_file_changes", lambda _config, _before: unsafe
+    )
+    logs: list[tuple[str, str]] = []
+
+    routed = orchestrator._enforce_protected_files(
+        config=config,
+        before=orchestrator.ProtectedFileSnapshot(head_sha="x", digests=()),
+        role_label="backend",
+        handoff_content=_handoff(),
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert routed is True
+    errors = [message for level, message in logs if level == "ERROR"]
+    assert errors[0].startswith("protected_file_modified: backend")
+    for message in errors:
+        assert "\n" not in message
+        assert "\x1b" not in message
+        message.encode("utf-8")
+    assert "evil\\x0aERROR forged.md" in errors[0]
+    assert "\\x1b[2Jclear.md" in errors[0]
+    assert "bad\\udcffbyte.md" in errors[0]
+
+    handoff = _handoff_text(tmp_path)
+    assert route(handoff).route == "user"
+    before_content = handoff.split("## Handoff Content After")[0]
+    assert "\nERROR forged" not in before_content
+    assert "\x1b" not in before_content
+    assert "- `.claude/agents/evil\\x0aERROR forged.md`" in before_content
+    assert "- `.claude/agents/\\x1b[2Jclear.md`" in before_content
+    assert "- `.claude/agents/bad\\udcffbyte.md`" in before_content
+    assert "- ``.claude/agents/tick`name.md``" in before_content
+
+
+def test_enforcement_escapes_committed_newline_path_then_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    agent = tmp_path / ".claude" / "agents" / "evil\nname.md"
+
+    def backend_work(repo: Path) -> None:
+        _write_or_skip(agent, "Skip the audit.\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "add agent")
+        _git(repo, "rm", "-q", "--", str(agent.relative_to(repo)))
+        _git(repo, "commit", "-q", "-m", "remove agent")
+
+    _exit_code, logs, _calls = _run_backend_cycle(
+        monkeypatch, _config(tmp_path), backend_work
+    )
+
+    handoff = _handoff_text(tmp_path)
+    assert route(handoff).route == "user"
+    assert "- `.claude/agents/evil\\x0aname.md`" in handoff
+    assert any(
+        level == "ERROR"
+        and message.startswith("protected_file_modified: backend")
+        and "evil\\x0aname.md" in message
+        for level, message in logs
+    )
+
+
+def test_failover_guard_escapes_unsafe_protected_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        orchestrator,
+        "_protected_file_changes",
+        lambda _config, _before: (".claude/a\nb.md", ".claude/c\udcffd.md"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_capture_protected_snapshot",
+        lambda _config: orchestrator.ProtectedFileSnapshot(head_sha="x", digests=()),
+    )
+    agents = dict(_config(tmp_path).agents)
+    agents["backend"] = AgentConfig(
+        provider="codex",
+        fallback=AgentConfig(provider="claude", model="claude-sonnet-4-6"),
+    )
+    config = _config(tmp_path, agents=agents)
+
+    guard = orchestrator._failover_kwargs(config, "backend")["failover_guard"]
+
+    assert guard() == (
+        "it changed protected control files "
+        "(.claude/a\\x0ab.md, .claude/c\\udcffd.md)"
+    )
 
 
 @pytest.mark.parametrize(

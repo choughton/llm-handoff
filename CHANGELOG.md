@@ -15,6 +15,11 @@ This project follows a simple pre-release changelog until the first public tag.
   `protected_file_modified:`, and the interrupted-run recovery disclosure
   lists it among the files changed by commits since the record's HEAD and
   those not on any remote-tracking ref, with control characters escaped.
+  The `protected_file_modified:` log lines, the escalation handoff, and the
+  failover guard message escape each such path too (the handoff writes it as
+  a Markdown code span that the name cannot close), so a name cannot forge a
+  log or handoff line, and an undecodable byte no longer makes the UTF-8
+  write raise.
 - Interrupted-run recovery no longer trusts the in-flight record's
   protected-file baseline, which a role can rewrite (RECOVERY-2c). With
   `protected_paths` set: a `dispatch` or `handback` record whose pre-dispatch
