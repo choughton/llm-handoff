@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, replace
+import errno
 from fnmatch import fnmatchcase
 from hashlib import sha256
 import inspect
@@ -10,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Callable, Literal, TextIO, cast
 import unicodedata
@@ -3660,6 +3663,161 @@ def _carry_over_link_warning(state_path: Path) -> str:
     )
 
 
+class _CarryOverLinkError(OSError):
+    """A symlink or junction appeared on the carry-over record's path."""
+
+
+# Directory file descriptors let the writer walk logs/dispatch without
+# following links and create, write, and rename the record relative to the
+# directory it checked. Windows has no dir_fd support, so it falls back to
+# checking literal paths around each step.
+_CARRY_OVER_DIR_FD_SUPPORTED = (
+    os.open in os.supports_dir_fd
+    and os.mkdir in os.supports_dir_fd
+    and os.replace in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
+
+
+def _carry_over_record_payload(leftovers: ImplementerLeftovers) -> str:
+    """The record in the format ``load_implementer_leftovers`` reads."""
+
+    payload = {
+        "version": 1,
+        "story_key": leftovers.story_key,
+        "fingerprints": dict(sorted(leftovers.fingerprints)),
+    }
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def _write_carry_over_record(repo_root: Path, leftovers: ImplementerLeftovers) -> None:
+    """Write the carry-over record without following a planted link.
+
+    ``save_implementer_leftovers`` writes through a fixed ``carry-over.json.tmp``
+    name with ``Path.write_text``, which follows a symlink a role placed there.
+    This writer creates a fresh, randomly named temporary file exclusively,
+    writes through the handle it opened, and atomically replaces the record;
+    ``os.replace`` swaps the directory entry and never follows a link at the
+    destination. Raises ``_CarryOverLinkError`` when a link is found on the
+    way, and lets other ``OSError`` values propagate.
+    """
+
+    payload = _carry_over_record_payload(leftovers)
+    if _CARRY_OVER_DIR_FD_SUPPORTED:
+        _write_carry_over_record_with_dir_fd(repo_root, payload)
+    else:
+        _write_carry_over_record_checked(repo_root / CARRY_OVER_STATE_PATH, payload)
+
+
+def _write_carry_over_record_with_dir_fd(repo_root: Path, payload: str) -> None:
+    """Write the record relative to directory descriptors opened without links.
+
+    Each directory under the repository root is opened with ``O_NOFOLLOW``, so
+    swapping ``logs`` or ``logs/dispatch`` for a link at any moment cannot
+    redirect the temporary file or the rename outside the repository.
+    """
+
+    directory_fd = os.open(repo_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in CARRY_OVER_STATE_PATH.parent.parts:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, 0o777, dir_fd=directory_fd)
+            try:
+                child_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise _CarryOverLinkError(
+                        exc.errno, "carry-over directory is a link", part
+                    ) from exc
+                raise
+            os.close(directory_fd)
+            directory_fd = child_fd
+        name = CARRY_OVER_STATE_PATH.name
+        temporary_name = f".{name}.{os.urandom(8).hex()}.tmp"
+        file_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(
+                temporary_name,
+                name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            raise
+    finally:
+        os.close(directory_fd)
+
+
+def _carry_over_handle_is_at(path: Path, file_fd: int) -> bool:
+    """Whether the open handle is the file at ``path``, with no link on the way."""
+
+    if _carry_over_path_traverses_link(path):
+        return False
+    try:
+        return os.path.samestat(os.fstat(file_fd), os.lstat(path))
+    except OSError:
+        return False
+
+
+def _write_carry_over_record_checked(state_path: Path, payload: str) -> None:
+    """Write the record by literal path, checking for links around each step.
+
+    Used where directory descriptors are unavailable (Windows). The temporary
+    file is created exclusively under a random name, so a planted link cannot
+    be opened, and the paths are checked again right before the rename.
+    """
+
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    if _carry_over_path_traverses_link(state_path):
+        raise _CarryOverLinkError(
+            errno.ELOOP, "carry-over path passes through a link", str(state_path)
+        )
+    file_fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{state_path.name}.", suffix=".tmp", dir=state_path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
+            if not _carry_over_handle_is_at(temporary_path, handle.fileno()):
+                raise _CarryOverLinkError(
+                    errno.ELOOP,
+                    "carry-over temporary file passes through a link",
+                    str(temporary_path),
+                )
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if _carry_over_path_traverses_link(
+            temporary_path
+        ) or _carry_over_path_traverses_link(state_path):
+            raise _CarryOverLinkError(
+                errno.ELOOP, "carry-over path passes through a link", str(state_path)
+            )
+        os.replace(temporary_path, state_path)
+    except BaseException:
+        if not _carry_over_path_traverses_link(temporary_path):
+            with contextlib.suppress(OSError):
+                temporary_path.unlink()
+        raise
+
+
 def _escape_control_characters(text: str) -> str:
     """Replace each control character with its ``\\xNN`` or ``\\uNNNN`` escape."""
 
@@ -3817,7 +3975,13 @@ def _persist_implementer_leftovers(
         )
         return
     try:
-        save_implementer_leftovers(state_path, leftovers)
+        if leftovers is None or not leftovers.story_key or not leftovers.fingerprints:
+            # Unlinking removes a link itself and never touches its target.
+            save_implementer_leftovers(state_path, None)
+        else:
+            _write_carry_over_record(config.repo_root.resolve(), leftovers)
+    except _CarryOverLinkError:
+        _log(log, "WARN", _carry_over_link_warning(state_path))
     except OSError as exc:
         _log(
             log,

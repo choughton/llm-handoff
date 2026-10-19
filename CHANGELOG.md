@@ -22,7 +22,12 @@ This project follows a simple pre-release changelog until the first public tag.
   record path or a directory above it is a symlink or junction, the
   dispatcher no longer reads, writes, or deletes the record (previously it
   followed the link and could delete a matching record file outside the
-  repository); it logs a `WARN` line instead.
+  repository); it logs a `WARN` line instead. Saving the record no longer
+  writes through the fixed `carry-over.json.tmp` name, which followed a
+  symlink planted there; it creates a fresh, randomly named temporary file
+  exclusively and atomically replaces the record. On POSIX it opens each
+  directory under the repository without following links; on Windows it
+  checks the paths again before the rename.
 - Behavior change: config load now rejects a `handoff_path` or
   `project_state_path` that does not stay inside the repository. An empty
   value, control characters, an absolute, UNC, or drive-letter path, a `..`
