@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+import subprocess
 import threading
 import time
 from typing import Any, Callable
@@ -11,7 +12,7 @@ from typing import Any, Callable
 import pytest
 
 from llm_handoff import config as config_module
-from llm_handoff import operator_prompt, orchestrator
+from llm_handoff import operator_prompt, orchestrator, publish, work_claim
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
 from llm_handoff.operator_prompt import (
@@ -1072,6 +1073,155 @@ def test_backend_target_overrides_the_claude_protected_scope_pause(
     assert instruction is not None
     assert "CLAUDE PROTECTED PATHS IN SCOPE" in instruction
     assert "Operator instruction: edit only the .agents copy" in instruction
+
+
+STORY_BRANCH = "llm-handoff/w9.9-add-a-widget"
+STORY_ASSIGNMENT = """---
+next_agent: backend
+reason: "Build the widget."
+epic_id: E1
+story_id: W9.9
+story_title: Add a widget
+producer: planner
+---
+
+## Work Packet
+
+- **Objective:** Add the widget module.
+- **Files in scope:** `src/widget.py`
+- **Files out of bounds:** none
+- **Context:** none
+- **Verification command:** `python -c "print(1)"`
+- **Expected next route:** auditor
+"""
+STORY_HANDBACK = """---
+next_agent: auditor
+reason: "Widget built."
+epic_id: E1
+story_id: W9.9
+story_title: Add a widget
+producer: backend
+status: ready_for_review
+---
+
+## Summary
+
+Built the widget.
+"""
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+
+
+def _pr_config(repo_root: Path) -> DispatchConfig:
+    return _config(
+        repo_root,
+        commit_mode="dispatcher",
+        enforce_work_packet=True,
+        work_packet_opt_out_reason=None,
+        publish={"mode": "pr", "wait_for_reviewers": ["codex"]},
+    )
+
+
+def _git_repo(tmp_path: Path, handoff_content: str) -> Path:
+    handoff_path = _write_repo(tmp_path, handoff_content)
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "llm-handoff tests")
+    _git(tmp_path, "config", "user.email", "tests@example.invalid")
+    _git(tmp_path, "config", "core.autocrlf", "false")
+    (tmp_path / ".gitignore").write_text(
+        "logs/\ndocs/handoff/HANDOFF.md\n", encoding="utf-8"
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "initial")
+    return handoff_path
+
+
+def test_backend_target_after_a_protected_file_escalation_continues_the_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The backend started the story, then a protected file changed during its
+    # run: the dispatcher wrapped the handback in an escalation whose own
+    # frontmatter has no story_id.
+    handoff_path = _git_repo(tmp_path, STORY_ASSIGNMENT)
+    assert (
+        publish.ensure_story_branch(
+            repo_root=tmp_path,
+            prefix="llm-handoff/",
+            base_branch=None,
+            assignment_content=STORY_ASSIGNMENT,
+        )
+        is None
+    )
+    config = _pr_config(tmp_path)
+    handoff_path.write_text(STORY_HANDBACK, encoding="utf-8")
+    orchestrator._write_protected_file_escalation(
+        config,
+        role_label="backend",
+        violations=(".claude/agents/handoff-router.md",),
+        error="protected_file_modified: backend changed protected control files",
+    )
+    escalation = handoff_path.read_text(encoding="utf-8")
+    assert "story_id" not in escalation.split("---", 2)[1]
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@backend keep the router edit out of scope", "quit"],
+        backend_writes=[USER_HANDOFF],
+    )
+    commit_assignments: list[str] = []
+    commit_for_implementer = orchestrator._commit_for_implementer
+
+    def record_commit(**kwargs: Any) -> Any:
+        commit_assignments.append(kwargs["assignment_content"])
+        return commit_for_implementer(**kwargs)
+
+    monkeypatch.setattr(orchestrator, "_commit_for_implementer", record_commit)
+
+    assert harness.run(config) == 0
+
+    assert harness.backend_calls == 1
+    assert _git(tmp_path, "branch", "--show-current") == STORY_BRANCH
+    assert not any("Story branch not ready" in message for _, message in harness.logs)
+    # The commit and work-claim gate read the saved story's Work Packet, not
+    # the escalation, which only fences it.
+    assert len(commit_assignments) == 1
+    assert work_claim.extract_work_packet_section(
+        commit_assignments[0]
+    ) == work_claim.extract_work_packet_section(STORY_ASSIGNMENT)
+    assert work_claim.carry_over_key(commit_assignments[0]) == "story:W9.9"
+
+
+def test_backend_target_without_a_story_pauses_instead_of_exiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No saved story is checked out, so the operator's backend dispatch has no
+    # branch to run on. The dispatcher pauses again rather than exiting.
+    handoff_path = _git_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@backend fix the import", "quit"],
+    )
+
+    assert harness.run(_pr_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 0
+    assert _git(tmp_path, "branch", "--show-current") == "main"
+    pauses = harness.pause_messages()
+    assert any(
+        message.startswith("STORY BRANCH NOT READY:")
+        and "publish needs a story_id" in message
+        for message in pauses
+    )
+    assert harness.prompt_count() == 2
 
 
 def test_tty_without_console_adapter_keeps_the_old_poll(
