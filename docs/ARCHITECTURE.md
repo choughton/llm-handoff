@@ -380,17 +380,23 @@ that route into a read-only fan-out:
    so after a dispatcher restart the next implementer dispatch records a new
    one. Without a recorded base it falls back to `scope_sha~1`. Reviewers are
    never asked to scan the whole repository.
-2. The quality reviewer (the configured `auditor` agent) and a security
+2. For an epic close or a range with no committed changes, which never
+   passed the work-claim gate, the dispatcher first runs the Work Packet's
+   Verification commands on the audit commit outside any agent sandbox. A
+   pass is recorded as a `## Dispatcher Verification` section for the
+   quality reviewer; a failure routes `verified_fail` to the planner and no
+   reviewer runs.
+3. The quality reviewer (the configured `auditor` agent) and a security
    reviewer run concurrently in two threads through the existing streaming
    process runner.
-3. Each reviewer returns a JSON verdict validated by a Pydantic model:
+4. Each reviewer returns a JSON verdict validated by a Pydantic model:
    `verdict` (`pass` or `fail`) and `findings[]` with `severity`, `file`,
    `line`, `title`, `description`, and `recommendation`. The quality verdict
    also carries the forward route and the evidence fields.
-4. The dispatcher merges the verdicts and writes `HANDOFF.md` itself. A
+5. The dispatcher merges the verdicts and writes `HANDOFF.md` itself. A
    finding at or above `audit.block_severity`, or either reviewer returning
-   `fail`, routes back to the implementer with `status: verified_fail`.
-   Otherwise the handoff follows the quality reviewer's route.
+   `fail`, routes back to the implementer with `status: verified_fail`, or to
+   the planner when the range has no committed changes. Otherwise the handoff follows the quality reviewer's route.
 
 The single-writer rule from the provider-native helper boundary still holds:
 in fan-out mode the dispatcher is the only writer of `HANDOFF.md`. Reviewers

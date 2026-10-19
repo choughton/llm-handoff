@@ -439,6 +439,26 @@ def parse_work_packet_scope(handoff_content: str) -> WorkPacket | None:
     )
 
 
+def parse_work_packet_verification_commands(
+    handoff_content: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """Return the Work Packet's Verification commands and prose lines.
+
+    Unlike :func:`parse_work_packet`, this ignores the path lists, so a
+    verification-only packet (an epic close with no files in scope) still
+    yields its commands. None means there is no Work Packet or it has no
+    Verification command field.
+    """
+
+    section = extract_work_packet_section(handoff_content)
+    if section is None:
+        return None
+    fields = _parse_packet_fields(section)
+    if "verification_command" not in fields:
+        return None
+    return _split_commands(fields["verification_command"])
+
+
 def work_packet_errors(handoff_content: str) -> list[str]:
     """Return validator-style error strings for an unusable Work Packet."""
 
@@ -2397,8 +2417,16 @@ def record_passed_verification(claim_content: str, result: WorkClaimResult) -> s
     existing section (from an earlier bounce) is replaced.
     """
 
-    section = passed_verification_section(result)
-    normalized = claim_content.replace("\r\n", "\n")
+    return replace_dispatcher_verification_section(
+        claim_content, passed_verification_section(result)
+    )
+
+
+def replace_dispatcher_verification_section(content: str, section: str) -> str:
+    """Return ``content`` with its top-level ``## Dispatcher Verification``
+    section replaced by ``section``, or with ``section`` appended."""
+
+    normalized = content.replace("\r\n", "\n")
     start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
     if start == -1:
         return normalized.rstrip("\n") + "\n\n" + section
@@ -2406,6 +2434,56 @@ def record_passed_verification(claim_content: str, result: WorkClaimResult) -> s
     next_heading = re.search(r"(?m)^## ", normalized[start + 1 :])
     end = len(normalized) if next_heading is None else start + 1 + next_heading.start()
     return normalized[:start] + section + ("\n" if end < len(normalized) else "") + normalized[end:]
+
+
+_VERIFIED_COMMIT_RE = re.compile(
+    r"(?m)^-[ \t]+\*\*Verified commit:\*\*[ \t]*`?([0-9a-fA-F]{7,40})`?"
+)
+_PASS_VERDICT_RE = re.compile(r"(?m)^-[ \t]+\*\*Verdict:\*\*[ \t]*PASS\b")
+
+
+def has_passing_dispatcher_verification(content: str, commit_sha: str) -> bool:
+    """True when the top-level ``## Dispatcher Verification`` section says
+    ``PASS`` for ``commit_sha`` (a short or full SHA on either side)."""
+
+    body = _dispatcher_verification_body(content)
+    if body is None or _PASS_VERDICT_RE.search(body) is None:
+        return False
+    match = _VERIFIED_COMMIT_RE.search(body)
+    if match is None:
+        return False
+    verified = match.group(1).lower()
+    expected = commit_sha.strip().lower()
+    return bool(expected) and (
+        verified.startswith(expected) or expected.startswith(verified)
+    )
+
+
+def recorded_verification_commands(content: str) -> tuple[str, ...]:
+    """The commands the top-level ``## Dispatcher Verification`` section lists
+    on its ``- **Verification command:**`` lines, in order."""
+
+    body = _dispatcher_verification_body(content)
+    if body is None:
+        return ()
+    return tuple(match.group(1) for match in _RECORDED_COMMAND_RE.finditer(body))
+
+
+_RECORDED_COMMAND_RE = re.compile(
+    r"(?m)^-[ \t]+\*\*Verification command:\*\*[ \t]*`(.*)`[ \t]+\([^()\n]*\)[ \t]*$"
+)
+
+
+def _dispatcher_verification_body(content: str) -> str | None:
+    normalized = content.replace("\r\n", "\n")
+    start = normalized.find(f"\n{DISPATCHER_VERIFICATION_HEADING}\n")
+    if start == -1:
+        return None
+    body = normalized[start + len(DISPATCHER_VERIFICATION_HEADING) + 2 :]
+    next_heading = re.search(r"(?m)^## ", body)
+    if next_heading is not None:
+        body = body[: next_heading.start()]
+    return body
 
 
 def passed_verification_section(result: WorkClaimResult) -> str:

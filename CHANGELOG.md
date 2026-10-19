@@ -6,6 +6,28 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An epic-close audit, or any audit whose review range has no committed
+  changes, now gets the same out-of-sandbox verification as an implementer
+  claim. Before the audit fan-out starts its reviewers, the dispatcher runs
+  the handoff's Work Packet Verification commands on the audit commit, with
+  the work-claim gate's allowlist, environment, and timeout. A pass is
+  recorded as a `## Dispatcher Verification` section, so the quality reviewer
+  does not re-run the suite inside its sandbox. A failure routes
+  `verified_fail` to `planner` with the command output, and no reviewer runs.
+  Previously a sandboxed Codex reviewer on Windows could not create pytest's
+  per-user temp directory, failed the epic close, and the loop sent the empty
+  range to `backend`, which had nothing to change. A recorded pass is reused
+  only for the same commands, a pass is credited to the commit only when no
+  file other than `HANDOFF.md` has uncommitted changes, and the approved
+  audit handoff keeps the dispatcher's commands in its Verification Evidence.
+  The step is skipped in Linear mode.
+- A blocked audit fan-out on a range with no committed changes now routes
+  `verified_fail` to `planner` instead of the implementer.
+- The planner prompts (root and `examples/reference-workflow/` copies) and
+  `HANDBOOK.md` now say never to point `--basetemp`, `TMP`, `TEMP`, or
+  `TMPDIR` inside the repository in a Verification command: temp directories
+  inside a live checkout collide with the running dispatcher's
+  `.dispatch.lock`.
 - The `handoff-router` Claude agent file (root and
   `examples/reference-workflow/` copies) now names Antigravity instead of
   Gemini in its provider-name example, finishing the Gemini CLI removal.

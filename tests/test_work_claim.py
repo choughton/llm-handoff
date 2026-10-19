@@ -5314,3 +5314,86 @@ def test_run_loop_bounces_an_evidence_sha_mismatch_to_the_implementer(
         level == "ERROR" and message.startswith("evidence_sha_mismatch:")
         for level, message in messages
     )
+
+
+# ---------------------------------------------------------------------------
+# helpers for dispatcher verification before an audit
+# ---------------------------------------------------------------------------
+
+
+def test_parse_work_packet_verification_commands_ignores_empty_path_lists() -> None:
+    from llm_handoff.work_claim import parse_work_packet_verification_commands
+
+    content = (
+        "## Work Packet\n\n"
+        "- **Files in scope:** none (read-only audit)\n"
+        "- **Verification command:**\n"
+        "  - python -m pytest tests -q\n"
+    )
+
+    assert parse_work_packet_verification_commands(content) == (
+        ("python -m pytest tests -q",),
+        (),
+    )
+    assert parse_work_packet_verification_commands("# No packet\n") is None
+    assert (
+        parse_work_packet_verification_commands(
+            "## Work Packet\n\n- **Files in scope:** a.py\n"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("verdict", "commit", "expected"),
+    [
+        ("PASS", "a" * 40, True),
+        ("PASS", "a" * 12, True),
+        ("PASS", "b" * 40, False),
+        ("FAIL", "a" * 40, False),
+    ],
+)
+def test_has_passing_dispatcher_verification(
+    verdict: str, commit: str, expected: bool
+) -> None:
+    from llm_handoff.work_claim import has_passing_dispatcher_verification
+
+    content = (
+        "# Handoff\n\n## Dispatcher Verification\n\n"
+        f"- **Verdict:** {verdict}\n"
+        f"- **Verified commit:** `{commit}`\n\n"
+        "## Next\n\n- **Verdict:** PASS\n"
+    )
+
+    assert has_passing_dispatcher_verification(content, "a" * 40) is expected
+
+
+def test_recorded_verification_commands_reads_the_top_level_section() -> None:
+    from llm_handoff.work_claim import recorded_verification_commands
+
+    content = (
+        "# Handoff\n\n## Dispatcher Verification\n\n"
+        "- **Verdict:** PASS\n"
+        "- **Verification command:** `python -m pytest -q` (exited 0 after 2.0s)\n"
+        "- **Verification command:** `ruff check .` (exited 0 after 0.5s)\n\n"
+        "## Next\n\n"
+        "- **Verification command:** `other` (exited 0 after 1.0s)\n"
+    )
+
+    assert recorded_verification_commands(content) == (
+        "python -m pytest -q",
+        "ruff check .",
+    )
+    assert recorded_verification_commands("# No section\n") == ()
+
+
+def test_dispatcher_verification_only_counts_the_top_level_section() -> None:
+    from llm_handoff.work_claim import has_passing_dispatcher_verification
+
+    content = (
+        "# Handoff\n\n## Prior Handback\n\n### Dispatcher Verification\n\n"
+        "- **Verdict:** PASS\n"
+        f"- **Verified commit:** `{'a' * 40}`\n"
+    )
+
+    assert has_passing_dispatcher_verification(content, "a" * 40) is False
