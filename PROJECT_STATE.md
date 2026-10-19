@@ -6,12 +6,13 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-2c in progress; RECOVERY-2b merged in
-  PR #166; RECOVERY-2a approved at `9831e0b`, merged in PR #165; RECOVERY-1
-  approved at 14f195b, merged in PR #160). RECOVERY-3 and RECOVERY-4 follow.
-  RECOVERY-2c goes first because it fixes a security finding on the
-  just-shipped recovery code before RECOVERY-3 reuses the same in-flight
-  record for more phases. Picked over the other
+- **Active Epic:** RECOVERY (RECOVERY-2d in progress; RECOVERY-2c approved at
+  `10bdbee`, merged in PR #167; RECOVERY-2b merged in PR #166; RECOVERY-2a
+  approved at `9831e0b`, merged in PR #165; RECOVERY-1 approved at 14f195b,
+  merged in PR #160). RECOVERY-3 and RECOVERY-4 follow. RECOVERY-2d goes
+  first because it fixes a security finding (from the RECOVERY-2c security
+  review) in the protected-file commit listing that RECOVERY-3 reuses.
+  Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
   environment-refusal pause, and no such pause happened in the last run.
@@ -666,10 +667,10 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 ### 12. RECOVERY - interrupted-run recovery
 
 Fit: RECOVERY-1 is merged (PR #160) and removed the Ctrl+C hazard;
-RECOVERY-2a and RECOVERY-2b are merged (PRs #165 and #166); RECOVERY-2c is
-active, chosen first because it fixes a security finding on the just-shipped
-recovery code before RECOVERY-3 reuses that record; RECOVERY-3 and
-RECOVERY-4 follow. HARD-5 and HARD-6 are closed, so RECOVERY-2 is
+RECOVERY-2a, RECOVERY-2b, and RECOVERY-2c are merged (PRs #165, #166, and
+#167); RECOVERY-2d is active, chosen before RECOVERY-3 because it fixes a
+security finding in the protected-file commit listing that RECOVERY-3
+reuses; RECOVERY-3 and RECOVERY-4 follow. HARD-5 and HARD-6 are closed, so RECOVERY-2 is
 unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
 HARD-5's operator-confirmation rule before carrying anything over and
@@ -766,7 +767,8 @@ bounces until the three-fix circuit breaker escalates.
       `PreDispatchState` from the record, treats the dispatch as exit 0, and
       then runs the normal post-dispatch path. The restored values travel in
       the pending recovery, not by re-reading the record.
-  - RECOVERY-2c: Untrusted protected-file baseline in interrupted-run
+  - RECOVERY-2c (approved at `10bdbee`, merged in PR #167): Untrusted
+    protected-file baseline in interrupted-run
     recovery. Source: the RECOVERY-2b security review's medium finding (a
     role could forge the record's `protected_digests` and `head_sha` so a
     resumed cycle missed a protected-file change), plus the documented
@@ -791,6 +793,17 @@ bounces until the three-fix circuit breaker escalates.
     edit keeps a `dispatch` record from the "nothing to recover" exit; and a
     recovery that pauses on changed operator files hands its baseline to the
     first dispatch after the pause.
+  - RECOVERY-2d: NUL-delimited protected-path listing for commits. Source:
+    the RECOVERY-2c security review's medium finding (`git log --name-only`
+    without `-z` prints non-ASCII and control-character paths quoted, for
+    example `".claude/agents/caf\303\251.md"`, so such a committed protected
+    file never matched `.claude/**` and dropped out of the recovery disclosure and of
+    `_protected_file_changes`). `_protected_paths_in_commits` adds `-z`,
+    splits on NUL only (no stripping, no unquoting), and reads Git's stdout
+    through a new `_run_git_stdout_raw` that keeps whitespace and decodes
+    UTF-8 with `surrogateescape`; the handoff exclusion, pattern filter, and
+    None on Git failure are unchanged. Disclosure paths stay escaped with
+    `_escape_control_characters`. `_git_changed_files_since` is unchanged.
 - RECOVERY-3: The other phases. Planner and finalizer: restore an invalid
   `HANDOFF.md` and re-run. Audit fan-out: restore the handoff and re-run the
   read-only reviewers. Work-claim gate and scanners: re-run. Publish: make

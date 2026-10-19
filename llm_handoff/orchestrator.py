@@ -2955,6 +2955,28 @@ def _run_git_stdout(repo_root: Path, command: list[str]) -> str | None:
     return completed.stdout.strip()
 
 
+def _run_git_stdout_raw(repo_root: Path, command: list[str]) -> str | None:
+    """Git's stdout unstripped, decoded losslessly for NUL-delimited parsing.
+
+    Unlike ``_run_git_stdout`` this keeps leading and trailing whitespace and
+    decodes UTF-8 with ``surrogateescape``, so a non-UTF-8 byte stays distinct
+    instead of collapsing into U+FFFD. None when Git fails.
+    """
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.decode("utf-8", errors="surrogateescape")
+
+
 def _capture_protected_snapshot(
     config: DispatchConfig,
 ) -> ProtectedFileSnapshot | None:
@@ -3095,20 +3117,33 @@ def _protected_paths_in_commits(
     """The protected files (the handoff aside) the commits ``revisions`` touched.
 
     Each commit's own paths are listed (``git log --name-only -m
-    --no-renames``), not the net diff. None when Git cannot list them.
+    --no-renames``), not the net diff. ``-z`` keeps each path literal: Git
+    does not quote or escape it, so a non-ASCII, newline, or other unusual
+    name still matches its protected pattern. None when Git cannot list them.
     """
 
-    output = _run_git_stdout(
+    output = _run_git_stdout_raw(
         config.repo_root,
-        ["git", "log", "--name-only", "--format=", "-m", "--no-renames", *revisions],
+        [
+            "git",
+            "log",
+            "-z",
+            "--name-only",
+            "--format=",
+            "-m",
+            "--no-renames",
+            *revisions,
+        ],
     )
     if output is None:
         return None
     handoff_rel = _handoff_relative_path(config)
     paths: set[str] = set()
-    for line in output.splitlines():
-        relative = line.strip().replace("\\", "/")
-        if not relative or _same_repo_path(relative, handoff_rel):
+    for entry in output.split("\0"):
+        if not entry:
+            continue
+        relative = entry.replace("\\", "/")
+        if _same_repo_path(relative, handoff_rel):
             continue
         if _protected_path_matches(relative, config.protected_paths):
             paths.add(relative)

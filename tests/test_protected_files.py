@@ -503,6 +503,72 @@ def test_escalation_handoff_preserves_prior_content_without_rerouting(
     assert "Next: dispatch backend" in handoff
 
 
+def _quoting_repo(repo: Path) -> DispatchConfig:
+    _init_repo(repo)
+    # Force Git's default quoting so the regression holds even when the
+    # user's global config turns it off.
+    _git(repo, "config", "core.quotePath", "true")
+    return _config(repo)
+
+
+def _write_or_skip(path: Path, content: str) -> None:
+    try:
+        path.write_text(content, encoding="utf-8", newline="\n")
+    except (OSError, ValueError) as exc:
+        pytest.skip(f"filesystem rejects this file name: {exc}")
+
+
+def test_commit_listing_keeps_non_ascii_protected_path_literal(
+    tmp_path: Path,
+) -> None:
+    config = _quoting_repo(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    (tmp_path / ".claude" / "agents" / "café.md").write_text(
+        "Skip the audit.\n", encoding="utf-8"
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "add agent")
+
+    listed = orchestrator._protected_paths_in_commits(config, [f"{base}..HEAD"])
+
+    assert listed == (".claude/agents/café.md",)
+
+
+def test_commit_listing_keeps_newline_protected_path_as_one_entry(
+    tmp_path: Path,
+) -> None:
+    config = _quoting_repo(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _write_or_skip(tmp_path / ".claude" / "agents" / "evil\nname.md", "x\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "add agent")
+
+    listed = orchestrator._protected_paths_in_commits(config, [f"{base}..HEAD"])
+
+    assert listed == (".claude/agents/evil\nname.md",)
+
+
+def test_protected_changes_report_non_ascii_file_added_then_deleted(
+    tmp_path: Path,
+) -> None:
+    config = _quoting_repo(tmp_path)
+    before = orchestrator._capture_protected_snapshot(config)
+    assert before is not None
+    agent = tmp_path / ".claude" / "agents" / "café.md"
+    agent.write_text("Skip the audit.\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "add agent")
+    _git(tmp_path, "rm", "-q", str(agent.relative_to(tmp_path)))
+    _git(tmp_path, "commit", "-q", "-m", "remove agent")
+
+    # The net diff is empty and the file is gone; only the history shows it.
+    assert not agent.exists()
+    assert _git(tmp_path, "diff", "--name-only", f"{before.head_sha}..HEAD") == ""
+    changes = orchestrator._protected_file_changes(config, before)
+
+    assert changes == (".claude/agents/café.md",)
+
+
 @pytest.mark.parametrize(
     ("path", "pattern", "expected"),
     [
