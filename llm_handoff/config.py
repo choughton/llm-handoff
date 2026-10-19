@@ -176,6 +176,10 @@ BOUNCE_COUNT_STATE_PATH = Path("logs") / "dispatch" / "bounce-counts.json"
 # dispatcher restart can still carry them over instead of treating them as
 # operator edits.
 CARRY_OVER_STATE_PATH = Path("logs") / "dispatch" / "carry-over.json"
+# Written right before an implementer dispatch and deleted once it returns, so
+# a dispatcher start can tell an implementer interrupted mid-dispatch from
+# operator edits.
+IN_FLIGHT_STATE_PATH = Path("logs") / "dispatch" / "in-flight.json"
 
 
 def detect_repo_root(start: Path | None = None) -> Path:

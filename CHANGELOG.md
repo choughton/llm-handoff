@@ -6,6 +6,21 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Interrupted implementer recovery: the dispatcher now writes
+  `logs/dispatch/in-flight.json` right before each gated `backend` or
+  `frontend` dispatch and deletes it once the dispatch returns. A record found
+  at the next start means that implementer was interrupted mid-dispatch (a
+  second Ctrl+C, a closed window, or a crash). After the operator confirms
+  `Recover <role>'s interrupted <story> work? [y/N]` at a terminal, the
+  agent's partial files carry over to the story, a half-written handoff is
+  restored, and the same role is dispatched again with a note that its run
+  was interrupted. Declining, no terminal, or `interactive_pause: false`
+  discards the record and the files stay operator edits. When an operator
+  file changed in the meantime, the first cycle pauses with an
+  `INTERRUPTED DISPATCH:` reason instead. A dry run only logs the record. The
+  record uses the carry-over record's race-safe writer and link checks, and
+  is not written when Git does not ignore it.
+
 - Behavior change: a console Ctrl+C during a role's dispatch cycle now asks
   for a graceful stop instead of killing the agent. Agent processes, the
   handoff normalizers, the work-claim verification command, and the
