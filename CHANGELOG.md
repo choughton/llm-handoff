@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In `pr` mode, an epic-close audit that passes on a story branch with no
+  commits beyond the remote base branch no longer stops at `gh pr create`
+  ("No commits between ..."). The dispatcher now pushes nothing, fast-forwards
+  the base branch, switches to it, and drops the empty story branch and its
+  story state. Previously it pushed the empty branch first, leaving it on the
+  remote.
 - An epic-close audit, or any audit whose review range has no committed
   changes, now gets the same out-of-sandbox verification as an implementer
   claim. Before the audit fan-out starts its reviewers, the dispatcher runs
