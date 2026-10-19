@@ -6,6 +6,25 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Interrupted handback recovery: once a gated implementer dispatch returns,
+  the dispatcher rewrites `logs/dispatch/in-flight.json` as a `handback`
+  record (the handoff the implementer left and HEAD at that moment) and
+  deletes it when the cycle finishes, instead of deleting it right after the
+  dispatch. A `handback` record found at the next start means the cycle was
+  interrupted before its dispatcher commit, validation, gate, or publish
+  finished. When HEAD and the handoff are unchanged and the operator confirms
+  `Resume <role>'s interrupted <story> handback at the dispatcher commit? [y/N]`
+  at a terminal, the first cycle resumes at the dispatcher commit and runs
+  validation and the work-claim gate without dispatching the role again. A
+  moved HEAD or a changed handoff discards the record with a `WARN` line and
+  restores nothing; declining, no terminal, or `interactive_pause: false`
+  discards it and the files stay operator edits; a changed operator file
+  pauses with an `INTERRUPTED HANDBACK:` reason; a dry run only logs it. When
+  the handback rewrite fails the record is deleted, and the run stops only
+  when that delete fails too.
+- A deeply nested `in-flight.json` that makes the JSON parser raise
+  `RecursionError` is now treated as an invalid record (deleted with a `WARN`
+  line, kept in a dry run) instead of crashing startup.
 - Interrupted implementer recovery: the dispatcher now writes
   `logs/dispatch/in-flight.json` right before each gated `backend` or
   `frontend` dispatch and deletes it once the dispatch returns. A record found

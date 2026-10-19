@@ -618,14 +618,19 @@ the dispatcher leaves any `carry-over.json` on disk untouched and logs a
 An implementer interrupted mid-dispatch (a second Ctrl+C, a closed window, or
 a crash) never reaches the step that records its leftovers, so the dispatcher
 also writes `logs/dispatch/in-flight.json` right before each `backend` or
-`frontend` dispatch the work-claim gate applies to, and deletes it once the
-dispatch returns, whatever its exit code. The record names the role, the
-story, HEAD, the pre-dispatch `HANDOFF.md` text, and the operator's dirty files
-with their content hashes. Planner, auditor, finalizer, validator, and
-ungated dispatches write none. When the record cannot be deleted after the
-dispatch returns, the dispatcher logs an `ERROR` line and stops before the
-dispatcher commit and gates, so the record still describes an unfinished
-dispatch and the next start offers its work for recovery. An operator
+`frontend` dispatch the work-claim gate applies to. The record names the role,
+the story, HEAD, the pre-dispatch `HANDOFF.md` text, and the operator's dirty
+files with their content hashes. Planner, auditor, finalizer, validator,
+ungated, and dry-run dispatches write none. Once the dispatch returns,
+whatever its exit code, the dispatcher rewrites the record as a `handback`
+record that also holds the `HANDOFF.md` text the implementer left and HEAD at
+that moment, and deletes it when the cycle is finished: at the top of the next
+cycle, or when the run returns from that cycle. When the handback rewrite
+fails, the dispatcher deletes the record instead. When that delete fails too,
+the dispatcher logs an `ERROR` line and stops before the dispatcher commit and
+gates, so the record still describes an unfinished dispatch and the next start
+offers its work for recovery. When the finished cycle's handback record cannot
+be deleted, the dispatcher logs an `ERROR` line and stops. An operator
 `@backend` or `@frontend` dispatch that continued the saved story from a
 handoff without a `story_id` also records the rebuilt assignment, and its
 recovery continues that saved story the same way. The record uses the same
@@ -635,7 +640,8 @@ checks as `carry-over.json`, and it is read the same way: `logs` and
 and the record is opened relative to `logs/dispatch` without following a link,
 so a link swapped in after the first check is refused rather than read. The
 opened file must be a single-link regular file of at most 8 MiB; a pipe, a
-directory, a hard link, or a larger file counts as an invalid record. When
+directory, a hard link, a larger file, or JSON nested too deeply to parse
+counts as an invalid record. When
 Git does not ignore the path or neither
 race-safe mechanism is available, the dispatcher writes nothing, leaves any
 file there untouched, and logs one `WARN` line per run. At startup, before the
@@ -674,10 +680,36 @@ directories without following links and replaces the file by a rename inside
 its own directory, as the carry-over writer does. If a link appears in
 between, nothing is written or carried over, the record is deleted, and a
 `WARN` line says the files stay operator edits. The restored handoff is
-written as UTF-8 with LF line endings. So
-far only an implementer interrupted mid-dispatch is recovered; an interrupted
-handback (RECOVERY-2b), the other phases (RECOVERY-3), and starts with no
-record (RECOVERY-4) are pending.
+written as UTF-8 with LF line endings.
+
+A `handback` record found at startup means the implementer returned but its
+cycle was interrupted before the dispatcher commit, validation, the
+work-claim gate, or publish finished. When HEAD differs from the HEAD the
+record holds, or `HANDOFF.md` differs from the handback text it holds, the
+cycle got past its commit or a gate rewrote the handoff: the dispatcher logs
+one `WARN` line naming the record, role, and story, resumes nothing, restores
+no handoff, and deletes the record (a dry run keeps it); any uncommitted files
+stay operator edits. Otherwise the agent's files and the changed operator files
+are found as for a `dispatch` record. A dry run logs them, says
+`Not applied in dry run.`, and keeps the record. The same confirmation rule
+applies: the dispatcher logs the summary, the assignment summary described
+above, and a short SHA-256 of the handback, then asks
+`Resume <role>'s interrupted <story> handback at the dispatcher commit? [y/N]`.
+Every path and story shown is escaped. Any answer other than `y` or `yes`, end
+of input, no terminal, or `interactive_pause: false` discards the record with
+a `WARN` line; the files stay operator edits and nothing is staged. On `y`
+the agent's files become that story's carry-over record and the record is
+deleted. When an operator file changed, the first cycle pauses with an
+`INTERRUPTED HANDBACK:` reason that names those files, which the dispatcher
+never stages or commits. Otherwise the first cycle resumes the interrupted
+cycle without dispatching the role again: it treats the dispatch as exit code
+0, uses the record's pre-dispatch handoff (or the continued story's
+assignment) as the assignment for the dispatcher commit and the work-claim
+gate, rebuilds the pre-dispatch HEAD, operator files, and carry-over files
+from the record, and then runs the usual commit, validation, gate, and
+publish. That cycle writes no in-flight record. Making publish, the gates, and
+scanners safe to repeat (RECOVERY-3) and starts with no record (RECOVERY-4)
+are pending.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the

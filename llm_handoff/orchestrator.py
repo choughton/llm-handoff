@@ -494,6 +494,10 @@ class PendingPlannerRecovery:
     # An interrupted-dispatch recovery of an operator `@backend`/`@frontend`
     # dispatch that continued the saved story continues it again.
     continue_saved_story: bool = False
+    # An interrupted-handback recovery resumes the cycle at the dispatcher
+    # commit from the confirmed in-flight record's pre-dispatch values; the
+    # record file is not read again.
+    resumed_handback: InFlightRecord | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -546,7 +550,25 @@ def run_loop(
     log: LogFn | None = None,
 ) -> int:
     log_fn = log or _default_log
+    in_flight_state = _InFlightRecordState()
+    exit_code = _run_loop(
+        config, max_cycles=max_cycles, log_fn=log_fn, in_flight_state=in_flight_state
+    )
+    # A run that returns, rather than raising, has finished the cycle that
+    # wrote a handback record, so the record no longer names unfinished work.
+    # An interrupt or crash raises past this line and leaves it on disk.
+    if not _clear_handback_record(config, log_fn, in_flight_state):
+        return 1
+    return exit_code
 
+
+def _run_loop(
+    config: DispatchConfig,
+    *,
+    max_cycles: int | None,
+    log_fn: LogFn,
+    in_flight_state: _InFlightRecordState,
+) -> int:
     _log_startup_banner(config, log_fn)
     if not config.dry_run:
         # Stops the run before any agent launches when the security reviewer
@@ -617,7 +639,6 @@ def run_loop(
     # Set when the confirmed recovery found changed operator files: the first
     # cycle pauses before it routes.
     interrupted_pause_reason = interrupted.pause_reason
-    in_flight_state = _InFlightRecordState()
     # Set while a dispatch's rewrite has dropped planned stories and nobody
     # has changed the handoff it left behind since.
     story_baseline: StoryListBaseline | None = None
@@ -628,6 +649,11 @@ def run_loop(
     while True:
         # Every path back to the top of the loop has finished its cycle: the
         # dispatch, the dispatcher commit, validation, and the work-claim gate.
+        # The cycle that wrote a handback record is finished, so the record
+        # no longer names an interrupted handback. Cleared while a first
+        # Ctrl+C still lets the cycle finish.
+        if not _clear_handback_record(config, log_fn, in_flight_state):
+            return 1
         # No role's cycle runs here, so a console Ctrl+C stops at once.
         console_interrupt.set_active_role(None)
         if stop_watch.requested(log_fn):
@@ -733,6 +759,9 @@ def run_loop(
         # Set only on the cycle that runs an operator `@auditor <message>`
         # dispatch; every other cycle audits without the marker.
         active_operator_influence: OperatorInfluence | None = None
+        # Set on an interrupted-handback recovery: the confirmed in-flight
+        # record whose cycle resumes at the dispatcher commit.
+        resumed_handback: InFlightRecord | None = None
         if tracker_lease_rebuild:
             decision = RoutingDecision(
                 route="planner",
@@ -773,6 +802,20 @@ def run_loop(
                     ),
                     warnings=[],
                 )
+            elif pending_planner_recovery.kind == "interrupted_handback":
+                decision = RoutingDecision(
+                    route=pending_planner_recovery.route,
+                    confidence="HIGH",
+                    source="interrupted_handback_recovery",
+                    reasoning=(
+                        "The operator confirmed resuming the "
+                        f"{pending_planner_recovery.route} handback a previous "
+                        "run left interrupted, so its cycle resumes at the "
+                        "dispatcher commit without dispatching the role again."
+                    ),
+                    warnings=[],
+                )
+                resumed_handback = pending_planner_recovery.resumed_handback
             else:
                 decision = RoutingDecision(
                     route=pending_planner_recovery.route,
@@ -790,7 +833,8 @@ def run_loop(
             )
             active_planner_recovery_kind = pending_planner_recovery.kind
             active_continue_saved_story = (
-                pending_planner_recovery.kind == "interrupted_dispatch"
+                pending_planner_recovery.kind
+                in {"interrupted_dispatch", "interrupted_handback"}
                 and pending_planner_recovery.continue_saved_story
             )
             operator_prompt.planner_tried = True
@@ -1024,6 +1068,15 @@ def run_loop(
                 pending_planner_recovery = pause.pending_planner_recovery
             continue
 
+        if resumed_handback is not None:
+            if decision.source == "interrupted_handback_recovery":
+                # The resumed cycle works from the handoff the interrupted
+                # dispatch started from; the file on disk holds its handback.
+                handoff_content = resumed_handback.handoff_content
+            else:
+                # Another rule (the circuit breaker) took this cycle over.
+                resumed_handback = None
+
         current_cycle = Cycle(
             number=cycle_number,
             route=decision.route,
@@ -1083,7 +1136,8 @@ def run_loop(
         # An operator `@<role>` dispatch already saw the protected-scope pause
         # reason and chose to run the role anyway, for example on the other
         # files. An unfinished story still blocks it: its branch cannot start.
-        pre_dispatch_pause_reason = (
+        # A resumed handback skips both: the dispatch they guard already ran.
+        pre_dispatch_pause_reason = None if resumed_handback is not None else (
             unfinished_story_pause_reason(
                 repo_root=config.repo_root,
                 prefix=config.publish.branch_prefix,
@@ -1340,6 +1394,13 @@ def run_loop(
                     assignment_content = (
                         saved_story_assignment(config.repo_root) or handoff_content
                     )
+            if resumed_handback is not None:
+                # The assignment the interrupted dispatch worked from.
+                assignment_content = (
+                    resumed_handback.assignment_content
+                    if resumed_handback.assignment_content is not None
+                    else resumed_handback.handoff_content
+                )
             if (
                 config.publish.mode != "local"
                 and current_cycle.route == "auditor"
@@ -1357,7 +1418,9 @@ def run_loop(
             pre_dispatch_state: PreDispatchState | None = None
             story_base_sha: str | None = None
             story_key = carry_over_key(assignment_content)
-            if _work_claim_gate_applies(config, current_cycle.route):
+            if resumed_handback is not None or _work_claim_gate_applies(
+                config, current_cycle.route
+            ):
                 if (
                     implementer_leftovers is not None
                     and implementer_leftovers.story_key != story_key
@@ -1365,10 +1428,14 @@ def run_loop(
                     # Another story's leftovers never carry over to this one.
                     implementer_leftovers = None
                     _persist_implementer_leftovers(config, None, log_fn)
-                pre_dispatch_state = capture_pre_dispatch_state(
-                    config.repo_root,
-                    leftovers=implementer_leftovers,
-                    story_key=story_key,
+                pre_dispatch_state = (
+                    _resumed_pre_dispatch_state(resumed_handback)
+                    if resumed_handback is not None
+                    else capture_pre_dispatch_state(
+                        config.repo_root,
+                        leftovers=implementer_leftovers,
+                        story_key=story_key,
+                    )
                 )
                 if pre_dispatch_state.head_sha is not None and (
                     story_key is None
@@ -1449,15 +1516,21 @@ def run_loop(
             )
             protected_before = _capture_protected_snapshot(config)
             implementer_head_before = (
-                _git_head(config.repo_root)
+                (
+                    resumed_handback.head_sha
+                    if resumed_handback is not None
+                    else _git_head(config.repo_root)
+                )
                 if config.publish.mode == "pr"
                 and current_cycle.route in {"backend", "frontend"}
                 else None
             )
-            # The in-flight record exists only while this implementer runs, so
-            # a later start can tell its partial edits from operator edits.
+            # The in-flight record exists from this implementer's dispatch to
+            # the end of its cycle, so a later start can tell its partial
+            # edits from operator edits. A resumed handback writes none.
             in_flight_written = (
                 pre_dispatch_state is not None
+                and resumed_handback is None
                 and not config.dry_run
                 and current_cycle.route in {"backend", "frontend"}
                 and _write_in_flight_record(
@@ -1474,42 +1547,73 @@ def run_loop(
             # A first Ctrl+C from here to the loop top lets this cycle finish:
             # the dispatch (or audit fan-out), commit, gates, and publish.
             console_interrupt.set_active_role(current_cycle.route)
-            dispatch_result, previous_agent = _dispatch_route(
-                current_cycle.route,
-                config,
-                log_fn,
-                planner_session_id=planner_session_id,
-                planner_previous_handoff_sha=planner_previous_handoff_sha,
-                current_handoff_sha=current_cycle.handoff_sha,
-                additional_instruction=(
-                    forced_additional_instruction
-                    if forced_additional_instruction is not None
-                    else (
-                        stale_finalizer_recovery_instruction(
-                            config.project_state_path
+            if resumed_handback is not None:
+                # The interrupted dispatch already returned; its cycle resumes
+                # at the dispatcher commit as if the role had exited 0.
+                _log(
+                    log_fn,
+                    "DISPATCH",
+                    f"Resuming {current_cycle.route}'s interrupted handback at "
+                    "the dispatcher commit; the role is not dispatched again.",
+                )
+                dispatch_result = DispatchResult(
+                    stdout="", stderr="", exit_code=0, elapsed_seconds=0.0
+                )
+                previous_agent = current_cycle.route
+            else:
+                dispatch_result, previous_agent = _dispatch_route(
+                    current_cycle.route,
+                    config,
+                    log_fn,
+                    planner_session_id=planner_session_id,
+                    planner_previous_handoff_sha=planner_previous_handoff_sha,
+                    current_handoff_sha=current_cycle.handoff_sha,
+                    additional_instruction=(
+                        forced_additional_instruction
+                        if forced_additional_instruction is not None
+                        else (
+                            stale_finalizer_recovery_instruction(
+                                config.project_state_path
+                            )
+                            if decision.source == "stale_epic_close_recovery"
+                            else None
                         )
-                        if decision.source == "stale_epic_close_recovery"
-                        else None
-                    )
-                ),
-                audit_context=AuditFanOutContext(
-                    cycle_number=cycle_number,
-                    handoff_content=handoff_content,
-                    implementer_base_sha=implementer_base_sha,
-                    operator_influence=(
-                        active_operator_influence
-                        if current_cycle.route == "auditor"
-                        and active_planner_recovery_kind == "operator_role"
-                        else None
                     ),
-                ),
-            )
-            if in_flight_written and not _delete_in_flight_record(config, log_fn):
-                # The dispatch returned, whatever its exit code; an interrupt
-                # or crash never reaches this line and leaves the record.
-                # A record that could not be cleared would make the next
-                # start treat this finished dispatch as interrupted, so stop
-                # before the commit and gates: the record then stays true.
+                    audit_context=AuditFanOutContext(
+                        cycle_number=cycle_number,
+                        handoff_content=handoff_content,
+                        implementer_base_sha=implementer_base_sha,
+                        operator_influence=(
+                            active_operator_influence
+                            if current_cycle.route == "auditor"
+                            and active_planner_recovery_kind == "operator_role"
+                            else None
+                        ),
+                    ),
+                )
+            # The dispatch returned, whatever its exit code; an interrupt or
+            # crash never reaches this line and leaves the dispatch record.
+            # It becomes a handback record until the cycle reaches the loop
+            # top, so a start after an interrupt from here on resumes at the
+            # dispatcher commit instead of dispatching the role again.
+            if (
+                in_flight_written
+                and pre_dispatch_state is not None
+                and not _record_in_flight_handback(
+                    config,
+                    cycle=cycle_number,
+                    role=current_cycle.route,
+                    handoff_content=handoff_content,
+                    pre_dispatch_state=pre_dispatch_state,
+                    log=log_fn,
+                    state=in_flight_state,
+                    assignment_content=assignment_content,
+                )
+            ):
+                # Neither a handback record nor a deleted record: the dispatch
+                # record left would make the next start treat this finished
+                # dispatch as interrupted, so stop before the commit and
+                # gates: the record then stays true.
                 _log(
                     log_fn,
                     "ERROR",
@@ -1520,6 +1624,13 @@ def run_loop(
                     "this dispatch's work for interrupted-dispatch recovery.",
                 )
                 return 1
+            # The handoff the dispatch started from: on a resumed handback the
+            # file already holds the handback, so it is the record's text.
+            prior_handoff_sha = (
+                _content_sha(handoff_content)
+                if resumed_handback is not None
+                else current_cycle.handoff_sha
+            )
             # Only logs that a stop request was seen; the loop honors it at
             # the top, after this cycle's commit, validation, and gate.
             stop_watch.requested(log_fn)
@@ -1589,7 +1700,7 @@ def run_loop(
                 previous_agent=previous_agent,
                 dispatch_result=dispatch_result,
                 prior_handoff_content=handoff_content,
-                prior_handoff_sha=current_cycle.handoff_sha,
+                prior_handoff_sha=prior_handoff_sha,
                 log=log_fn,
             )
             if current_cycle.route == "planner" and config.planner_resume_enabled:
@@ -1701,7 +1812,7 @@ def run_loop(
             validation_result = validate_handoff(
                 config.handoff_full_path,
                 previous_agent,
-                prior_handoff_sha=current_cycle.handoff_sha,
+                prior_handoff_sha=prior_handoff_sha,
                 require_work_packet=config.enforce_work_packet,
                 dispatcher_commit_mode=config.commit_mode == "dispatcher",
                 tracker_provider=config.tracker.provider,
@@ -1943,7 +2054,11 @@ def run_loop(
                 config=config,
                 route=current_cycle.route,
                 previous_agent=previous_agent,
-                assignment_content=handoff_content,
+                assignment_content=(
+                    assignment_content
+                    if resumed_handback is not None
+                    else handoff_content
+                ),
                 pre_dispatch_state=pre_dispatch_state,
                 log=log_fn,
                 story_base_sha=story_base_sha,
@@ -5222,10 +5337,15 @@ def _persist_implementer_leftovers(
 
 
 class _InFlightRecordState:
-    """Per-run state for the in-flight record: whether its WARN was logged."""
+    """Per-run state for the in-flight record.
+
+    ``unavailable_warned`` is whether its WARN was logged; ``handback_on_disk``
+    whether this run left a handback record that the loop top deletes.
+    """
 
     def __init__(self) -> None:
         self.unavailable_warned = False
+        self.handback_on_disk = False
 
 
 @dataclass(frozen=True)
@@ -5326,15 +5446,19 @@ def _write_in_flight_record(
     log: LogFn,
     state: _InFlightRecordState,
     assignment_content: str | None = None,
+    handback_content: str | None = None,
+    handback_head_sha: str | None = None,
 ) -> bool:
     """Write the in-flight record before an implementer dispatch.
 
-    Returns True when the record was written, so the caller deletes it once
-    the dispatch returns. Writes nothing, and leaves any file on disk
-    untouched, when the record cannot be kept race-safe or Git does not
-    ignore it; that logs one WARN per run. ``assignment_content`` is the
-    saved story's rebuilt assignment when the dispatch continues it from a
-    handoff without a ``story_id``; the record is then keyed to that story.
+    Returns True when the record was written, so the caller rewrites it as a
+    handback record once the dispatch returns. Writes nothing, and leaves any
+    file on disk untouched, when the record cannot be kept race-safe or Git
+    does not ignore it; that logs one WARN per run. ``assignment_content`` is
+    the saved story's rebuilt assignment when the dispatch continues it from
+    a handoff without a ``story_id``; the record is then keyed to that story.
+    With ``handback_content`` the record is a ``handback`` record holding the
+    handoff the dispatch left and ``handback_head_sha``, HEAD at that moment.
     """
 
     if assignment_content == handoff_content:
@@ -5365,12 +5489,14 @@ def _write_in_flight_record(
         cycle=cycle,
         role=cast(Literal["backend", "frontend"], role),
         story_key=story_key,
-        phase="dispatch",
+        phase="dispatch" if handback_content is None else "handback",
         head_sha=pre_dispatch_state.head_sha,
         handoff_content=handoff_content,
         dirty_fingerprints=pre_dispatch_state.dirty_fingerprints,
         carried_over=pre_dispatch_state.carried_over,
         assignment_content=assignment_content,
+        handback_content=handback_content,
+        handback_head_sha=handback_head_sha if handback_content is not None else None,
     )
     try:
         _write_carry_over_payload(
@@ -5416,6 +5542,80 @@ def _delete_in_flight_record(config: DispatchConfig, log: LogFn) -> bool:
         )
         return False
     return True
+
+
+def _record_in_flight_handback(
+    config: DispatchConfig,
+    *,
+    cycle: int,
+    role: str,
+    handoff_content: str,
+    pre_dispatch_state: PreDispatchState,
+    log: LogFn,
+    state: _InFlightRecordState,
+    assignment_content: str | None,
+) -> bool:
+    """Rewrite the dispatch record as a handback record once the dispatch returned.
+
+    The handback record holds the handoff the implementer left and HEAD at
+    that moment, and stays until the cycle reaches the loop top. When it
+    cannot be written (or the implementer left no handoff), the record is
+    deleted instead. Returns False only when neither worked, so the dispatch
+    record may still be on disk.
+    """
+
+    handback_content = _read_required_text(config.handoff_full_path)
+    if handback_content is not None and _write_in_flight_record(
+        config,
+        cycle=cycle,
+        role=role,
+        handoff_content=handoff_content,
+        pre_dispatch_state=pre_dispatch_state,
+        log=log,
+        state=state,
+        assignment_content=assignment_content,
+        handback_content=handback_content,
+        handback_head_sha=_git_head(config.repo_root),
+    ):
+        state.handback_on_disk = True
+        return True
+    return _delete_in_flight_record(config, log)
+
+
+def _clear_handback_record(
+    config: DispatchConfig, log: LogFn, state: _InFlightRecordState
+) -> bool:
+    """Delete this run's handback record once its cycle finished.
+
+    Returns False, after an ERROR, when the record may still be on disk.
+    """
+
+    if not state.handback_on_disk:
+        return True
+    # Tried once: a failure stops the run, which does not try again.
+    state.handback_on_disk = False
+    if not _delete_in_flight_record(config, log):
+        _log(
+            log,
+            "ERROR",
+            "Could not clear the in-flight handback record "
+            f"{_in_flight_state_path(config)} after its cycle finished, so the "
+            "dispatcher stops. The next start compares it with HEAD and the "
+            "handoff and discards it when the cycle got past its commit.",
+        )
+        return False
+    return True
+
+
+def _resumed_pre_dispatch_state(record: InFlightRecord) -> PreDispatchState:
+    """The ``PreDispatchState`` an interrupted handback's dispatch started from."""
+
+    return PreDispatchState(
+        head_sha=record.head_sha,
+        dirty_files=tuple(path for path, _fingerprint in record.dirty_fingerprints),
+        dirty_fingerprints=record.dirty_fingerprints,
+        carried_over=record.carried_over,
+    )
 
 
 def _interrupted_dispatch_assignment(
@@ -5475,6 +5675,195 @@ def _interrupted_dispatch_assignment_summary(
     )
 
 
+def _interrupted_dispatch_files(
+    config: DispatchConfig, record: InFlightRecord, state_path: Path, log: LogFn
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """The interrupted implementer's files and the changed operator files.
+
+    Agent files are uncommitted files the record does not list as operator
+    edits, the handoff aside. Changed operator files are the record's
+    operator edits whose content changed or that are no longer uncommitted.
+    None, after a WARN, when Git cannot list uncommitted files; the record is
+    then left for the next start.
+    """
+
+    repo_root = config.repo_root
+    dirty_files = git_dirty_files(repo_root)
+    if dirty_files is None:
+        _log(
+            log,
+            "WARN",
+            f"Git could not list uncommitted files, so the in-flight record "
+            f"{state_path} is left for the next start; its files stay operator "
+            "edits for now.",
+        )
+        return None
+    handoff_rel_path = normalize_repo_path(config.handoff_path.as_posix())
+    operator_paths = {path for path, _fingerprint in record.dirty_fingerprints}
+    agent_files = tuple(
+        sorted(
+            path
+            for path in dirty_files
+            if path not in operator_paths and path != handoff_rel_path
+        )
+    )
+    dirty = set(dirty_files)
+    # The handoff is compared as a whole by the caller, not as an operator file.
+    changed_operator_files = tuple(
+        path
+        for path, fingerprint in record.dirty_fingerprints
+        if path != handoff_rel_path
+        and (
+            path not in dirty
+            or working_tree_fingerprint(repo_root, path) != fingerprint
+        )
+    )
+    return agent_files, changed_operator_files
+
+
+def _recover_interrupted_handback(
+    config: DispatchConfig,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
+    record: InFlightRecord,
+    state_path: Path,
+) -> InterruptedDispatchRecovery:
+    """Resume an implementer whose handback was interrupted before its gates.
+
+    The implementer returned, but its cycle stopped before it reached the
+    loop top. When HEAD and the handoff are still what they were when the
+    dispatch returned, the confirmed cycle resumes at the dispatcher commit
+    without dispatching the role again. Otherwise the cycle got past its
+    commit, or a gate rewrote the handoff, and the record is discarded.
+    """
+
+    nothing = InterruptedDispatchRecovery()
+    story, _no_files = _carry_over_display(
+        ImplementerLeftovers(story_key=record.story_key, fingerprints=())
+    )
+    head_moved = _git_head(config.repo_root) != record.handback_head_sha
+    if (
+        head_moved
+        or _read_required_text(config.handoff_full_path) != record.handback_content
+    ):
+        changed = "HEAD moved" if head_moved else "the handoff changed"
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight handback record {state_path} for "
+            f"{record.role}'s interrupted {story} handback: {changed} since the "
+            "handback, so its cycle got past the dispatcher commit or a gate "
+            "rewrote the handoff. Nothing is resumed; any uncommitted files "
+            "stay operator edits."
+            + (" Not deleted in dry run." if config.dry_run else ""),
+        )
+        if not config.dry_run:
+            _delete_in_flight_record(config, log)
+        return nothing
+    interrupted_files = _interrupted_dispatch_files(config, record, state_path, log)
+    if interrupted_files is None:
+        return nothing
+    agent_files, changed_operator_files = interrupted_files
+    _story, files = _carry_over_display(
+        ImplementerLeftovers(
+            story_key=record.story_key,
+            fingerprints=tuple((path, "") for path in agent_files),
+        )
+    )
+    files = files or "none"
+    operator_files = (
+        ", ".join(_escape_control_characters(path) for path in changed_operator_files)
+        or "none"
+    )
+    summary = (
+        f"Found in-flight record {state_path}: {record.role} handed back on "
+        f"{story}, but its cycle was interrupted before the dispatcher commit "
+        f"and gates finished. Agent files: {files}. Changed operator files: "
+        f"{operator_files}."
+    )
+    if config.dry_run:
+        _log(log, "INFO", f"{summary} Not applied in dry run.")
+        return nothing
+    handback_content = record.handback_content or ""
+    confirmed = False
+    if (
+        config.interactive_pause
+        and _operator_stdin_is_interactive()
+        and not operator_prompt.reader().console_unavailable
+    ):
+        _log(log, "INFO", summary)
+        _log(
+            log,
+            "INFO",
+            _interrupted_dispatch_assignment_summary(config, record, state_path),
+        )
+        _log(
+            log,
+            "INFO",
+            "The handback to resume is the current handoff (sha256 "
+            f"{_content_sha(handback_content)[:12]}); resuming commits the "
+            "agent files and runs validation and the work-claim gate on it.",
+        )
+        confirmed = _confirm_carry_over_at_terminal(
+            operator_prompt.reader(),
+            f"Resume {record.role}'s interrupted {story} handback at the "
+            "dispatcher commit? [y/N]",
+            log,
+        )
+    if not confirmed:
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight handback record read from {state_path} "
+            f"for {record.role}'s interrupted {story} handback (agent files: "
+            f"{files}) because it was not confirmed at a terminal; these files "
+            "stay operator edits.",
+        )
+        _delete_in_flight_record(config, log)
+        return nothing
+    repo_root = config.repo_root
+    leftovers = ImplementerLeftovers(
+        story_key=record.story_key,
+        fingerprints=tuple(
+            (path, working_tree_fingerprint(repo_root, path)) for path in agent_files
+        ),
+    )
+    _persist_implementer_leftovers(config, leftovers, log)
+    _delete_in_flight_record(config, log)
+    if changed_operator_files:
+        return InterruptedDispatchRecovery(
+            recovered=True,
+            leftovers=leftovers,
+            pause_reason=(
+                f"INTERRUPTED HANDBACK: operator files changed while "
+                f"{record.role}'s {story} handback was interrupted: "
+                f"{operator_files}. They stay operator edits that the "
+                "dispatcher never stages or commits. The interrupted work "
+                f"({files}) carries over to {story}'s next {record.role} "
+                "dispatch. Update HANDOFF.md; dispatch will resume after the "
+                "file changes."
+            ),
+        )
+    _log(
+        log,
+        "INFO",
+        f"The operator confirmed resuming {record.role}'s interrupted {story} "
+        "handback; its cycle resumes at the dispatcher commit.",
+    )
+    return InterruptedDispatchRecovery(
+        recovered=True,
+        leftovers=leftovers,
+        pending=PendingPlannerRecovery(
+            handoff_sha=_content_sha(handback_content),
+            additional_instruction="",
+            kind="interrupted_handback",
+            route=record.role,
+            continue_saved_story=record.continues_saved_story,
+            resumed_handback=record,
+        ),
+    )
+
+
 def _recover_interrupted_dispatch(
     config: DispatchConfig,
     log: LogFn,
@@ -5487,7 +5876,8 @@ def _recover_interrupted_dispatch(
     cannot be authenticated, so before the question the operator is shown the
     assignment it would restore (scope and Verification commands); confirming
     approves that assignment. Otherwise it is discarded and the files stay
-    operator edits.
+    operator edits. A ``handback`` record is handled by
+    ``_recover_interrupted_handback``.
     """
 
     nothing = InterruptedDispatchRecovery()
@@ -5548,37 +5938,16 @@ def _recover_interrupted_dispatch(
         if not config.dry_run:
             _delete_in_flight_record(config, log)
         return nothing
+    if record.phase == "handback":
+        return _recover_interrupted_handback(
+            config, log, operator_prompt, record, state_path
+        )
     repo_root = config.repo_root
-    dirty_files = git_dirty_files(repo_root)
-    if dirty_files is None:
-        _log(
-            log,
-            "WARN",
-            f"Git could not list uncommitted files, so the in-flight record "
-            f"{state_path} is left for the next start; its files stay operator "
-            "edits for now.",
-        )
+    interrupted_files = _interrupted_dispatch_files(config, record, state_path, log)
+    if interrupted_files is None:
         return nothing
+    agent_files, changed_operator_files = interrupted_files
     handoff_rel_path = normalize_repo_path(config.handoff_path.as_posix())
-    operator_paths = {path for path, _fingerprint in record.dirty_fingerprints}
-    agent_files = tuple(
-        sorted(
-            path
-            for path in dirty_files
-            if path not in operator_paths and path != handoff_rel_path
-        )
-    )
-    dirty = set(dirty_files)
-    # The handoff is compared as a whole below, not as an operator file.
-    changed_operator_files = tuple(
-        path
-        for path, fingerprint in record.dirty_fingerprints
-        if path != handoff_rel_path
-        and (
-            path not in dirty
-            or working_tree_fingerprint(repo_root, path) != fingerprint
-        )
-    )
     handoff_changed = (
         _read_required_text(config.handoff_full_path) != record.handoff_content
     )

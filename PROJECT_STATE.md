@@ -6,10 +6,9 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-2a in progress; RECOVERY-1 approved at
-  14f195b, merged in PR #160). RECOVERY-1 closed; RECOVERY stays active
-  (RECOVERY-2 unblocked by HARD-5/6). RECOVERY-2 split: 2a mid-dispatch
-  recovery now, 2b resume-at-commit next. Picked over the other
+- **Active Epic:** RECOVERY (RECOVERY-2b in progress; RECOVERY-2a approved at
+  `9831e0b`, merged in PR #165; RECOVERY-1 approved at 14f195b, merged in
+  PR #160). RECOVERY-3 and RECOVERY-4 are next. Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
   environment-refusal pause, and no such pause happened in the last run.
@@ -664,7 +663,8 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 ### 12. RECOVERY - interrupted-run recovery
 
 Fit: RECOVERY-1 is merged (PR #160) and removed the Ctrl+C hazard;
-RECOVERY-2a is in progress. HARD-5 and HARD-6 are closed, so RECOVERY-2 is
+RECOVERY-2a is merged (PR #165); RECOVERY-2b is in progress, with RECOVERY-3
+and RECOVERY-4 next. HARD-5 and HARD-6 are closed, so RECOVERY-2 is
 unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
 HARD-5's operator-confirmation rule before carrying anything over and
@@ -705,8 +705,8 @@ bounces until the three-fix circuit breaker escalates.
   role) so that hold applies there too. The handoff normalizers still call
   `Popen` directly (deferred PR #160 review finding).
 - RECOVERY-2: Split by the planner on 2026-10-19:
-  - RECOVERY-2a: In-flight record and interrupted implementer dispatch
-    recovery. `llm_handoff/in_flight.py` holds `InFlightRecord` (version 1,
+  - RECOVERY-2a (merged in PR #165): In-flight record and interrupted
+    implementer dispatch recovery. `llm_handoff/in_flight.py` holds `InFlightRecord` (version 1,
     cycle, role `backend`/`frontend`, story key, phase `dispatch`, HEAD, the
     pre-dispatch `HANDOFF.md`, operator dirty-file fingerprints, carried-over
     paths) and a loader that rejects bad JSON, versions, roles, phases, types,
@@ -726,7 +726,40 @@ bounces until the three-fix circuit breaker escalates.
     record advances to a handback phase once _dispatch_route returns and is
     cleared at the loop top; at startup that phase skips the re-dispatch and
     resumes at the dispatcher commit and gates, with the same confirmation
-    rule.
+    rule. Decided by the planner on 2026-10-19:
+    - Record: phase becomes `dispatch` or `handback`; `handback_content`
+      (the handoff when `_dispatch_route` returned) and `handback_head_sha`
+      (HEAD then) are added and serialized. The loader requires a string
+      `handback_content` for `handback` and none for `dispatch`, and a string
+      or None `handback_head_sha`. Version stays 1, so a 2a record still
+      loads as a `dispatch` record.
+    - Folded in from the 2a security review: the loader also returns None on
+      `RecursionError` from `json.loads`, so a deeply nested record under the
+      8 MiB limit takes the invalid-record path instead of crashing startup.
+    - `run_loop` rewrites the record as a `handback` record after
+      `_dispatch_route` returns, through the same race-safe writer; a failed
+      rewrite deletes it, and a failed delete keeps the 2a ERROR and exit 1.
+      The per-run state tracks the handback record, which is deleted at the
+      loop top (and when the run returns from that cycle); a failed delete
+      logs an ERROR and returns 1. Non-implementer, ungated, and dry-run
+      dispatches write nothing.
+    - Startup: a moved HEAD or changed handoff discards the record with one
+      WARN and no restore (kept in dry run). Otherwise agent and changed
+      operator files are found as for `dispatch`; dry run logs and keeps it.
+      HARD-5 confirmation shows the summary, the assignment summary, and the
+      handback's 12-hex sha256 prefix, then asks
+      `Resume <role>'s interrupted <story> handback at the dispatcher commit? [y/N]`,
+      with every path and story escaped. Decline, EOF, or no TTY discards it.
+      Yes with changed operator files pauses with `INTERRUPTED HANDBACK:`;
+      otherwise the agent files carry over, the record is deleted, and a
+      `PendingPlannerRecovery(kind="interrupted_handback")` is scheduled.
+    - The resumed cycle (source `interrupted_handback_recovery`) does not
+      call `_dispatch_route` and writes no record; it uses the record's
+      pre-dispatch handoff (or `assignment_content`) as the assignment for
+      the commit and gate, its sha as `prior_handoff_sha`, rebuilds
+      `PreDispatchState` from the record, treats the dispatch as exit 0, and
+      then runs the normal post-dispatch path. The restored values travel in
+      the pending recovery, not by re-reading the record.
 - RECOVERY-3: The other phases. Planner and finalizer: restore an invalid
   `HANDOFF.md` and re-run. Audit fan-out: restore the handoff and re-run the
   read-only reviewers. Work-claim gate and scanners: re-run. Publish: make
