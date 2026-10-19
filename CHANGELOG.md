@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In `pr` mode with `publish.base_branch` set, a start on a story branch
+  whose pull request is already merged no longer stops at the next story
+  ("Story branch not ready: still on story branch ...") after a full planner
+  cycle. Before the first dispatch, when the checkout is on a
+  `publish.branch_prefix` branch with no saved story state, its HEAD is on
+  `<remote>/<base_branch>`, the local base branch has nothing that remote
+  does not, and the only uncommitted file is the handoff, the dispatcher
+  fast-forwards the base branch to the remote, switches to it, deletes the
+  local story branch, and logs what it did. Nothing is pushed. Any other
+  case logs a warning with the reason and keeps the previous stop. This
+  covers an operator who merged a paused story's pull request but did not
+  run `git switch <base>` and `git pull`.
 - Behavior change: config load now rejects a `handoff_path` or
   `project_state_path` that does not stay inside the repository. An empty
   value, control characters, an absolute, UNC, or drive-letter path, a `..`
