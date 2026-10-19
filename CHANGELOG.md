@@ -18,8 +18,12 @@ This project follows a simple pre-release changelog until the first public tag.
   discards the record and the files stay operator edits. When an operator
   file changed in the meantime, the first cycle pauses with an
   `INTERRUPTED DISPATCH:` reason instead. A dry run only logs the record. The
-  record uses the carry-over record's race-safe writer and link checks, and
-  is not written when Git does not ignore it.
+  record uses the carry-over record's race-safe writer and link checks, is
+  read through the same link-refusing directory walk (only a single-link
+  regular file of at most 8 MiB is accepted), and is not written when Git
+  does not ignore it. The half-written handoff is restored through the same
+  link-refusing writer, and a handoff path that passes through a symlink or
+  junction discards the record instead of writing outside the repository.
 
 - Behavior change: a console Ctrl+C during a role's dispatch cycle now asks
   for a graceful stop instead of killing the agent. Agent processes, the

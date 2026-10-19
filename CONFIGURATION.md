@@ -623,7 +623,13 @@ dispatch returns, whatever its exit code. The record names the role, the
 story, HEAD, the pre-dispatch `HANDOFF.md` text, and the operator's dirty files
 with their content hashes. Planner, auditor, finalizer, validator, and
 ungated dispatches write none. It uses the same race-safe writer and link
-checks as `carry-over.json`; when Git does not ignore the path or neither
+checks as `carry-over.json`, and it is read the same way: `logs` and
+`logs/dispatch` are opened (or, on Windows, pinned) without following links
+and the record is opened relative to `logs/dispatch` without following a link,
+so a link swapped in after the first check is refused rather than read. The
+opened file must be a single-link regular file of at most 8 MiB; a pipe, a
+directory, a hard link, or a larger file counts as an invalid record. When
+Git does not ignore the path or neither
 race-safe mechanism is available, the dispatcher writes nothing, leaves any
 file there untouched, and logs one `WARN` line per run. At startup, before the
 carry-over record, a record found on disk is compared with the working tree:
@@ -639,13 +645,21 @@ files, changed operator files, and whether the handoff will be restored, then
 ask `Recover <role>'s interrupted <story> work? [y/N]`. Any answer other than
 `y` or `yes`, end of input, no terminal, or `interactive_pause: false`
 discards the record with a `WARN` line; nothing is restored or carried over.
-On `y`, the agent's files become that story's carry-over record (the
-carry-over prompt is skipped for this start), a half-written handoff is
-restored to its pre-dispatch text, the record is deleted, and the same role
+On `y`, a half-written handoff is restored to its pre-dispatch text, the
+agent's files become that story's carry-over record (the carry-over prompt is
+skipped for this start), the record is deleted, and the same role
 is dispatched again with a note that its previous run was interrupted and
 lists its files. When an operator file changed, nothing is dispatched: the
 first cycle pauses with an `INTERRUPTED DISPATCH:` reason that names those
-files, which stay operator edits the dispatcher never stages or commits. So
+files, which stay operator edits the dispatcher never stages or commits. The
+handoff is restored only inside the repository: before the prompt, a handoff
+path that passes through a symlink or junction discards the record with a
+`WARN` line and no prompt, and the restore itself walks the handoff's
+directories without following links and replaces the file by a rename inside
+its own directory, as the carry-over writer does. If a link appears in
+between, nothing is written or carried over, the record is deleted, and a
+`WARN` line says the files stay operator edits. The restored handoff is
+written as UTF-8 with LF line endings. So
 far only an implementer interrupted mid-dispatch is recovered; an interrupted
 handback (RECOVERY-2b), the other phases (RECOVERY-3), and starts with no
 record (RECOVERY-4) are pending.

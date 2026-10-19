@@ -774,3 +774,268 @@ def test_a_record_behind_a_link_is_not_read_or_deleted(
     assert external.read_text(encoding="utf-8") == original
     assert [level for level, _message in messages] == ["WARN", "WARN"]
     assert all("symlink or junction" in message for _level, message in messages)
+
+
+def _plain_record_payload() -> str:
+    return in_flight_record_payload(
+        InFlightRecord(
+            cycle=1,
+            role="backend",
+            story_key=f"story:{STORY_ID}",
+            phase="dispatch",
+            head_sha=None,
+            handoff_content=_assignment(),
+            dirty_fingerprints=(),
+            carried_over=(),
+        )
+    )
+
+
+def _can_symlink_files(tmp_path: Path) -> bool:
+    target = tmp_path / "symlink-probe-target"
+    link = tmp_path / "symlink-probe-link"
+    target.write_text("", encoding="utf-8")
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError):
+        return False
+    link.unlink()
+    target.unlink()
+    return True
+
+
+@pytest.mark.parametrize("swapped", ["directory", "file"])
+def test_a_link_swapped_in_after_the_link_check_is_not_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    swapped: str,
+) -> None:
+    # The path is clean when the preliminary link check runs; right after it,
+    # logs/dispatch (or the record itself) is swapped for a link to a valid
+    # record outside the repository. The reader walks the path again without
+    # following links, so the outside record is neither read nor deleted.
+    if swapped == "file" and not _can_symlink_files(tmp_path):
+        pytest.skip("cannot create a file symlink here")
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _init_repo(repo)
+    _write(_record_path(repo), _plain_record_payload())
+    external = outside / IN_FLIGHT_STATE_PATH.name
+    _write(external, _plain_record_payload())
+    original = external.read_text(encoding="utf-8")
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    orchestrator = _orchestrator()
+    real_check = orchestrator._carry_over_path_traverses_link
+    swaps: list[str] = []
+
+    def check_then_swap(path: Path) -> bool:
+        result = real_check(path)
+        if not swaps and path.name == IN_FLIGHT_STATE_PATH.name:
+            swaps.append(swapped)
+            if swapped == "directory":
+                dispatch_dir = repo / "logs" / "dispatch"
+                os.rename(dispatch_dir, repo / "logs" / "moved")
+                _link_directory(dispatch_dir, outside)
+            else:
+                _record_path(repo).unlink()
+                os.symlink(external, _record_path(repo))
+        return result
+
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", check_then_swap
+    )
+    # A prompt would mean the outside record was read and accepted.
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(repo), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert swaps == [swapped]
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert external.read_text(encoding="utf-8") == original
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+    assert not (repo / "logs" / "dispatch" / "carry-over.json").exists()
+
+
+def test_an_oversized_record_is_refused_unread_and_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write(_record_path(tmp_path), _plain_record_payload())
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    orchestrator = _orchestrator()
+    monkeypatch.setattr(orchestrator, "IN_FLIGHT_RECORD_MAX_BYTES", 64)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "not valid" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
+def test_a_pipe_at_the_record_path_does_not_block_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _record_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(_record_path(tmp_path))
+    orchestrator = _orchestrator()
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "not valid" in messages[0][1]
+    assert not os.path.lexists(_record_path(tmp_path))
+
+
+def test_a_hard_linked_record_is_refused_and_its_target_kept(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    external = tmp_path / "outside" / "victim.json"
+    _write(external, _plain_record_payload())
+    original = external.read_text(encoding="utf-8")
+    _record_path(repo).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(external, _record_path(repo))
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a hard link here")
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    orchestrator = _orchestrator()
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(repo), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "not valid" in messages[0][1]
+    assert not _record_path(repo).exists()
+    assert external.read_text(encoding="utf-8") == original
+
+
+def _link_handoff_directory_outside(repo: Path, outside: Path) -> Path:
+    """Swap docs/handoff for a link to ``outside``; return the external handoff."""
+
+    external = outside / HANDOFF_RELATIVE_PATH.name
+    _write(external, "external file\n")
+    handoff_dir = repo / HANDOFF_RELATIVE_PATH.parent
+    os.rename(handoff_dir, handoff_dir.parent / "moved")
+    _link_directory(handoff_dir, outside)
+    return external
+
+
+def test_a_linked_handoff_path_is_refused_before_the_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    orchestrator = _orchestrator()
+    _interrupt_backend(repo, orchestrator, monkeypatch)
+    # Built before the link appears, as a running dispatcher's config is.
+    config = _config(repo)
+    external = _link_handoff_directory_outside(repo, tmp_path / "outside")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert external.read_text(encoding="utf-8") == "external file\n"
+    assert not any("[y/N]" in message for _level, message in messages)
+    warnings = [message for level, message in messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert "docs/handoff/HANDOFF.md passes through a symlink or junction" in warnings[0]
+    assert not _record_path(repo).exists()
+    assert not (repo / "logs" / "dispatch" / "carry-over.json").exists()
+
+
+def test_a_handoff_link_swapped_in_after_confirmation_is_not_written(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The handoff path is clean when it is checked before the prompt; a link
+    # appears before the restore. The writer walks the path again without
+    # following links, so the external file is untouched and nothing is
+    # carried over.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    orchestrator = _orchestrator()
+    _interrupt_backend(repo, orchestrator, monkeypatch)
+    config = _config(repo)
+    outside = tmp_path / "outside"
+    destination = repo.resolve() / HANDOFF_RELATIVE_PATH
+    real_check = orchestrator._carry_over_path_traverses_link
+    external_box: list[Path] = []
+
+    def check_then_swap(path: Path) -> bool:
+        result = real_check(path)
+        if not external_box and path == destination:
+            external_box.append(_link_handoff_directory_outside(repo, outside))
+        return result
+
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", check_then_swap
+    )
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert len(external_box) == 1
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert external_box[0].read_text(encoding="utf-8") == "external file\n"
+    assert sorted(path.name for path in outside.iterdir()) == ["HANDOFF.md"]
+    assert any(
+        level == "WARN"
+        and message.startswith("Could not restore the half-written handoff")
+        and "stay operator edits" in message
+        for level, message in messages
+    )
+    assert not any(
+        message.startswith("Restored the half-written handoff")
+        for _level, message in messages
+    )
+    assert not _record_path(repo).exists()
+    assert not (repo / "logs" / "dispatch" / "carry-over.json").exists()
+
+
+def test_restoring_a_flat_handoff_writes_inside_the_repository_root(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "HANDOFF.md", HALF_WRITTEN_HANDOFF)
+    orchestrator = _orchestrator()
+    config = _config(tmp_path, handoff_path=Path("HANDOFF.md"))
+
+    orchestrator._restore_handoff_text(config, _assignment())
+
+    assert (tmp_path / "HANDOFF.md").read_bytes() == _assignment().encode("utf-8")
+    assert sorted(
+        path.name for path in tmp_path.iterdir() if path.name.startswith(".HANDOFF")
+    ) == []

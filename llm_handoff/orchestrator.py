@@ -8,8 +8,9 @@ from hashlib import sha256
 import inspect
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -4288,8 +4289,17 @@ class _PinnedCarryOverDirectory:
 
 
 @contextlib.contextmanager
-def _pinned_carry_over_directories(repo_root: Path, *, create: bool):
+def _pinned_carry_over_directories(
+    repo_root: Path,
+    *,
+    create: bool,
+    parts: tuple[str, ...] | None = None,
+):
     """Hold ``logs`` and ``logs/dispatch`` open so they cannot be swapped.
+
+    ``parts`` names another directory under the repository root to pin the
+    same way, one component at a time (``()`` pins the root itself); the
+    default is ``logs/dispatch``.
 
     Used where directory descriptors are unavailable (Windows). Each
     directory is pinned relative to its parent's already-open handle (the
@@ -4314,7 +4324,7 @@ def _pinned_carry_over_directories(repo_root: Path, *, create: bool):
         expected = _carry_over_final_path(root_handle, repo_root)
         parent_handle = root_handle
         parent_path = repo_root
-        for part in CARRY_OVER_STATE_PATH.parent.parts:
+        for part in CARRY_OVER_STATE_PATH.parent.parts if parts is None else parts:
             directory = parent_path / part
             handle = _pin_carry_over_child_directory(
                 parent_handle, part, directory, create=create
@@ -4387,18 +4397,33 @@ def _write_carry_over_record(repo_root: Path, leftovers: ImplementerLeftovers) -
 
 
 def _write_carry_over_payload(
-    repo_root: Path, payload: str, name: str = CARRY_OVER_STATE_PATH.name
+    repo_root: Path,
+    payload: str,
+    name: str = CARRY_OVER_STATE_PATH.name,
+    *,
+    parts: tuple[str, ...] | None = None,
+    mode: int = 0o600,
 ) -> None:
     """Write ``payload`` to ``logs/dispatch/<name>`` the way the carry-over
-    record is written (see ``_write_carry_over_record``)."""
+    record is written (see ``_write_carry_over_record``).
 
+    ``parts`` writes into another directory under the repository root
+    instead, walked the same way; ``mode`` is the new file's permission bits
+    where directory descriptors are used.
+    """
+
+    pin_options: dict[str, object] = {} if parts is None else {"parts": parts}
     if _CARRY_OVER_DIR_FD_SUPPORTED:
-        if name == CARRY_OVER_STATE_PATH.name:
+        if name == CARRY_OVER_STATE_PATH.name and not pin_options and mode == 0o600:
             _write_carry_over_record_with_dir_fd(repo_root, payload)
         else:
-            _write_carry_over_record_with_dir_fd(repo_root, payload, name=name)
+            _write_carry_over_record_with_dir_fd(
+                repo_root, payload, name=name, parts=parts, mode=mode
+            )
     elif _CARRY_OVER_WINDOWS_PIN_SUPPORTED:
-        with _pinned_carry_over_directories(repo_root, create=True) as directory:
+        with _pinned_carry_over_directories(
+            repo_root, create=True, **pin_options  # type: ignore[arg-type]
+        ) as directory:
             if directory is None:  # create=True never yields None
                 raise FileNotFoundError(errno.ENOENT, "carry-over directory missing")
             _write_carry_over_record_checked(
@@ -4408,7 +4433,12 @@ def _write_carry_over_payload(
             )
 
 
-def _open_carry_over_directory(repo_root: Path, *, create: bool) -> int | None:
+def _open_carry_over_directory(
+    repo_root: Path,
+    *,
+    create: bool,
+    parts: tuple[str, ...] | None = None,
+) -> int | None:
     """Open ``logs/dispatch`` under the repository root without following links.
 
     Each directory is opened relative to its parent's descriptor with
@@ -4416,11 +4446,12 @@ def _open_carry_over_directory(repo_root: Path, *, create: bool) -> int | None:
     moment cannot redirect later descriptor-relative operations outside the
     repository. Creates missing directories when ``create`` is true; otherwise
     returns None when one is missing. Raises ``_CarryOverLinkError`` on a link.
+    ``parts`` names another directory under the root to open the same way.
     """
 
     directory_fd = os.open(repo_root, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        for part in CARRY_OVER_STATE_PATH.parent.parts:
+        for part in CARRY_OVER_STATE_PATH.parent.parts if parts is None else parts:
             if create:
                 with contextlib.suppress(FileExistsError):
                     os.mkdir(part, 0o777, dir_fd=directory_fd)
@@ -4544,18 +4575,218 @@ def _unlink_carry_over_file_checked(
         kernel32.CloseHandle(file_handle)  # type: ignore[attr-defined]
 
 
+_WIN_FILE_READ_DATA = 0x0001
+
+
+class _CarryOverRecordRejected(OSError):
+    """The record is not a plain, single-link regular file of bounded size."""
+
+
+def _read_bounded_record(file_fd: int, path: Path, max_bytes: int) -> bytes:
+    """Read the open record after checking it is a bounded regular file.
+
+    A pipe, device, or directory planted at the record name could block the
+    read or exhaust memory, and a hard link would let the record name read
+    a file that lives outside the repository.
+    """
+
+    info = os.fstat(file_fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise _CarryOverRecordRejected(
+            errno.EINVAL, "record is not a regular file", str(path)
+        )
+    if info.st_nlink > 1:
+        raise _CarryOverRecordRejected(
+            errno.EINVAL, "record has more than one hard link", str(path)
+        )
+    if info.st_size > max_bytes:
+        raise _CarryOverRecordRejected(
+            errno.EFBIG, f"record is larger than {max_bytes} bytes", str(path)
+        )
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(file_fd, min(65536, max_bytes + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise _CarryOverRecordRejected(
+                errno.EFBIG, f"record is larger than {max_bytes} bytes", str(path)
+            )
+    return b"".join(chunks)
+
+
+def _read_carry_over_record(
+    repo_root: Path,
+    name: str,
+    *,
+    max_bytes: int,
+) -> bytes | None:
+    """Read ``logs/dispatch/<name>`` without following a link at any step.
+
+    With directory descriptors, ``logs`` and ``logs/dispatch`` are opened
+    with ``O_NOFOLLOW`` relative to their parent, and the record relative to
+    ``logs/dispatch`` with ``O_NOFOLLOW`` (and ``O_NONBLOCK``, so a planted
+    pipe cannot block the open). On Windows both directories are pinned (see
+    ``_pinned_carry_over_directories``) and the record is opened relative to
+    the pinned ``logs/dispatch`` handle with ``FILE_OPEN_REPARSE_POINT`` and
+    without delete sharing; the directory handle is checked for a reparse
+    point set in place, the file handle's location is compared with it, and
+    a file that is itself a reparse point is refused before any byte is read.
+    The open file must be a single-link regular file of at most
+    ``max_bytes``. Returns None when the record or a directory is missing.
+    Raises ``_CarryOverLinkError`` on a link, ``_CarryOverRecordRejected``
+    for a file that is not a plain bounded record, and lets other
+    ``OSError`` values propagate. Without either mechanism nothing is read.
+    """
+
+    state_path = repo_root / CARRY_OVER_STATE_PATH.parent / name
+    if _CARRY_OVER_DIR_FD_SUPPORTED:
+        directory_fd = _open_carry_over_directory(repo_root, create=False)
+        if directory_fd is None:
+            return None
+        try:
+            try:
+                file_fd = os.open(
+                    name,
+                    os.O_RDONLY
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_NONBLOCK", 0)
+                    | getattr(os, "O_NOCTTY", 0),
+                    dir_fd=directory_fd,
+                )
+            except FileNotFoundError:
+                return None
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.EMLINK}:
+                    raise _CarryOverLinkError(
+                        exc.errno, "carry-over record is a link", str(state_path)
+                    ) from exc
+                raise
+            try:
+                return _read_bounded_record(file_fd, state_path, max_bytes)
+            finally:
+                os.close(file_fd)
+        finally:
+            os.close(directory_fd)
+    if not _CARRY_OVER_WINDOWS_PIN_SUPPORTED:
+        return None
+    with _pinned_carry_over_directories(repo_root, create=False) as directory:
+        if directory is None:
+            return None
+        return _read_carry_over_file_checked(
+            directory.path / name, directory.handle, max_bytes
+        )
+
+
+def _read_carry_over_file_checked(
+    state_path: Path, directory_handle: int | None, max_bytes: int
+) -> bytes | None:
+    """Read ``state_path`` inside the pinned carry-over directory.
+
+    On Windows ``directory_handle`` is the pinned ``logs/dispatch`` handle
+    and the read goes through a handle opened relative to it (see
+    ``_read_carry_over_record``). Elsewhere (only reached with a stubbed pin)
+    the literal path is opened with ``O_NOFOLLOW`` where available and the
+    open file is compared with the path, links not followed.
+    """
+
+    if not _CARRY_OVER_USE_WINDOWS_HANDLES:
+        if _carry_over_path_traverses_link(state_path):
+            raise _CarryOverLinkError(
+                errno.ELOOP, "carry-over path passes through a link", str(state_path)
+            )
+        try:
+            file_fd = os.open(
+                state_path,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_BINARY", 0),
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.EMLINK}:
+                raise _CarryOverLinkError(
+                    exc.errno, "carry-over record is a link", str(state_path)
+                ) from exc
+            raise
+        try:
+            if not _carry_over_handle_is_at(state_path, file_fd):
+                raise _CarryOverLinkError(
+                    errno.ELOOP, "carry-over record is a link", str(state_path)
+                )
+            return _read_bounded_record(file_fd, state_path, max_bytes)
+        finally:
+            os.close(file_fd)
+    if directory_handle is None:
+        raise ValueError("the pinned carry-over directory handle is required")
+    import msvcrt
+
+    kernel32 = _carry_over_kernel32()
+    file_handle = _carry_over_open_relative(
+        directory_handle,
+        state_path.name,
+        state_path,
+        access=_WIN_FILE_READ_DATA | _WIN_FILE_READ_ATTRIBUTES,
+        share=_WIN_FILE_SHARE_READ | _WIN_FILE_SHARE_WRITE,
+        disposition=_NT_FILE_OPEN,
+        options=_NT_FILE_OPEN_REPARSE_POINT,
+    )
+    # Checked whether or not the record was found, as the delete does.
+    try:
+        _carry_over_require_directory_handle(directory_handle, state_path.parent)
+    except BaseException:
+        if file_handle is not None:
+            kernel32.CloseHandle(file_handle)  # type: ignore[attr-defined]
+        raise
+    if file_handle is None:
+        return None
+    try:
+        _carry_over_require_handle_in_directory(
+            file_handle, directory_handle, state_path
+        )
+        attributes = _carry_over_handle_attributes(file_handle, state_path)
+        if attributes & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            raise _CarryOverLinkError(
+                errno.ELOOP, "carry-over record is a link", str(state_path)
+            )
+        if attributes & _WIN_FILE_ATTRIBUTE_DIRECTORY:
+            raise _CarryOverRecordRejected(
+                errno.EISDIR, "record is a directory", str(state_path)
+            )
+        file_fd = msvcrt.open_osfhandle(file_handle, os.O_RDONLY)
+    except BaseException:
+        kernel32.CloseHandle(file_handle)  # type: ignore[attr-defined]
+        raise
+    try:
+        return _read_bounded_record(file_fd, state_path, max_bytes)
+    finally:
+        os.close(file_fd)
+
+
 def _write_carry_over_record_with_dir_fd(
-    repo_root: Path, payload: str, name: str = CARRY_OVER_STATE_PATH.name
+    repo_root: Path,
+    payload: str,
+    name: str = CARRY_OVER_STATE_PATH.name,
+    *,
+    parts: tuple[str, ...] | None = None,
+    mode: int = 0o600,
 ) -> None:
     """Write the record relative to directory descriptors opened without links.
 
     Each directory under the repository root is opened with ``O_NOFOLLOW``, so
     swapping ``logs`` or ``logs/dispatch`` for a link at any moment cannot
     redirect the temporary file or the rename outside the repository.
-    ``name`` selects another record file in ``logs/dispatch``.
+    ``name`` selects another record file in ``logs/dispatch``; ``parts``
+    another directory under the root; ``mode`` the new file's permission
+    bits (before the umask).
     """
 
-    directory_fd = _open_carry_over_directory(repo_root, create=True)
+    directory_fd = _open_carry_over_directory(repo_root, create=True, parts=parts)
     if directory_fd is None:  # create=True never returns None
         raise FileNotFoundError(errno.ENOENT, "carry-over directory missing")
     try:
@@ -4563,7 +4794,7 @@ def _write_carry_over_record_with_dir_fd(
         file_fd = os.open(
             temporary_name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
+            mode,
             dir_fd=directory_fd,
         )
         try:
@@ -4966,6 +5197,47 @@ def _in_flight_state_path(config: DispatchConfig) -> Path:
     return config.repo_root.resolve() / IN_FLIGHT_STATE_PATH
 
 
+# The record holds the pre-dispatch handoff text plus a few path lists; a
+# larger file at the record name is refused before it is read in full.
+IN_FLIGHT_RECORD_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _handoff_restore_parts(config: DispatchConfig) -> tuple[tuple[str, ...], str]:
+    """The handoff's directory components under the repository root, and its name."""
+
+    relative = PurePosixPath(normalize_repo_path(config.handoff_path.as_posix()))
+    return relative.parent.parts, relative.name
+
+
+def _handoff_restore_destination(config: DispatchConfig) -> Path:
+    """The handoff's literal path under the resolved root, links not followed.
+
+    ``config.handoff_full_path`` resolves symlinks and junctions, so it would
+    name a file outside the repository once a link is in the way.
+    """
+
+    parts, name = _handoff_restore_parts(config)
+    return config.repo_root.resolve().joinpath(*parts, name)
+
+
+def _restore_handoff_text(config: DispatchConfig, content: str) -> None:
+    """Write ``content`` to the handoff without following a link at any step.
+
+    Uses the carry-over writer walked over the handoff's own directories:
+    each directory below the repository root is opened (or pinned on
+    Windows) relative to its parent without following links, a fresh
+    temporary file is created exclusively in the handoff's directory, and it
+    replaces the handoff by a rename relative to that directory. A link
+    anywhere on the path raises ``_CarryOverLinkError`` and nothing outside
+    the repository is written. Text is written as UTF-8 with LF line endings.
+    """
+
+    parts, name = _handoff_restore_parts(config)
+    _write_carry_over_payload(
+        config.repo_root.resolve(), content, name, parts=parts, mode=0o666
+    )
+
+
 def _in_flight_link_warning(state_path: Path) -> str:
     return (
         f"The in-flight record path {state_path} passes through a symlink or "
@@ -5109,10 +5381,22 @@ def _recover_interrupted_dispatch(
         )
         return nothing
     try:
-        text = state_path.read_bytes().decode("utf-8")
-    except FileNotFoundError:
+        data = _read_carry_over_record(
+            config.repo_root.resolve(),
+            IN_FLIGHT_STATE_PATH.name,
+            max_bytes=IN_FLIGHT_RECORD_MAX_BYTES,
+        )
+    except _CarryOverLinkError:
+        # A link appeared after the check above; nothing was read.
+        _log(log, "WARN", _in_flight_link_warning(state_path))
         return nothing
-    except (OSError, UnicodeDecodeError):
+    except OSError:
+        data = b""
+    if data is None:
+        return nothing
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
         text = ""
     record = load_in_flight_record(text)
     if record is None:
@@ -5190,6 +5474,23 @@ def _recover_interrupted_dispatch(
     if config.dry_run:
         _log(log, "INFO", f"{summary} Not applied in dry run.")
         return nothing
+    handoff_display = _escape_control_characters(handoff_rel_path)
+    handoff_destination = _handoff_restore_destination(config)
+    if handoff_changed and _carry_over_path_traverses_link(handoff_destination):
+        # Checked before the prompt, so the operator is never asked to
+        # confirm a restore that would write outside the repository; the
+        # write itself walks the path again without following links.
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record read from {state_path} for "
+            f"{record.role}'s interrupted {story} work (agent files: {files}): "
+            f"the handoff path {handoff_display} passes through a symlink or "
+            "junction, so the dispatcher does not restore it. These files stay "
+            "operator edits.",
+        )
+        _delete_in_flight_record(config, log)
+        return nothing
     confirmed = False
     if (
         config.interactive_pause
@@ -5197,7 +5498,8 @@ def _recover_interrupted_dispatch(
         and not operator_prompt.reader().console_unavailable
     ):
         handoff_note = (
-            " The half-written handoff will be restored to its pre-dispatch text."
+            f" The half-written handoff {handoff_display} will be restored to "
+            "its pre-dispatch text."
             if handoff_changed
             else " The handoff is unchanged."
         )
@@ -5219,6 +5521,33 @@ def _recover_interrupted_dispatch(
         _delete_in_flight_record(config, log)
         return nothing
 
+    if handoff_changed:
+        # Restored before the carry-over record is saved, so a refused write
+        # recovers nothing at all.
+        failure: str | None = None
+        try:
+            _restore_handoff_text(config, record.handoff_content)
+        except _CarryOverLinkError:
+            failure = "a symlink or junction appeared on its path"
+        except OSError as exc:
+            failure = _escape_control_characters(str(exc))
+        if failure is not None:
+            _log(
+                log,
+                "WARN",
+                f"Could not restore the half-written handoff {handoff_display} "
+                f"({failure}), so nothing is recovered from the in-flight record "
+                f"{state_path}; {record.role}'s files ({files}) stay operator "
+                "edits.",
+            )
+            _delete_in_flight_record(config, log)
+            return nothing
+        _log(
+            log,
+            "INFO",
+            f"Restored the half-written handoff {handoff_display} to "
+            f"the text it had before the interrupted {record.role} dispatch.",
+        )
     leftovers = ImplementerLeftovers(
         story_key=record.story_key,
         fingerprints=tuple(
@@ -5226,14 +5555,6 @@ def _recover_interrupted_dispatch(
         ),
     )
     _persist_implementer_leftovers(config, leftovers, log)
-    if handoff_changed:
-        config.handoff_full_path.write_text(record.handoff_content, encoding="utf-8")
-        _log(
-            log,
-            "INFO",
-            f"Restored the half-written handoff {config.handoff_full_path} to "
-            f"the text it had before the interrupted {record.role} dispatch.",
-        )
     _delete_in_flight_record(config, log)
     if changed_operator_files:
         return InterruptedDispatchRecovery(
