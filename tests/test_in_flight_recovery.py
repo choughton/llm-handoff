@@ -2911,6 +2911,7 @@ def test_load_in_flight_record_accepts_a_planner_record_with_a_matching_key() ->
             {"handoff_content": _assignment()}, id="planner_null_key_with_a_story"
         ),
         pytest.param({"story_key": ""}, id="planner_empty_key"),
+        pytest.param({"head_branch": 7}, id="planner_head_branch_type"),
     ],
 )
 def test_load_in_flight_record_rejects_a_bad_planner_record(
@@ -2941,6 +2942,7 @@ def test_an_interrupted_planner_leaves_the_record(
     assert record is not None
     assert record.role == "planner"
     assert record.head_sha == head
+    assert record.head_branch == _git(tmp_path, "symbolic-ref", "--short", "HEAD")
     assert record.handoff_content == _planner_assignment()
     assert record.protected_digests is not None
 
@@ -3285,3 +3287,170 @@ def test_a_backend_record_still_recovers_after_planner_records(
     assert ("INFO", _recover_question()) in messages
     assert ("INFO", PLANNER_QUESTION) not in messages
     assert (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8") == _assignment()
+
+
+def _interrupt_committing_planner(
+    repo_root: Path,
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    other_file: bool = False,
+    new_branch: str | None = None,
+) -> None:
+    """Run one planner dispatch that commits and is then interrupted.
+
+    The planner half-writes the handoff and commits it (with src/api.py when
+    ``other_file``), optionally on ``new_branch``.
+    """
+
+    def committing_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        if new_branch is not None:
+            _git(repo_root, "checkout", "-q", "-b", new_branch)
+        path.write_text(HALF_WRITTEN_HANDOFF, encoding="utf-8")
+        _git(repo_root, "add", "--", HANDOFF_RELATIVE_PATH.as_posix())
+        if other_file:
+            _write(repo_root / "src" / "api.py", "API = 'planner'\n")
+            _git(repo_root, "add", "--", "src/api.py")
+        _git(repo_root, "commit", "-q", "-m", "planner commit")
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "invoke_planner_role", committing_planner)
+        _set_terminal(orchestrator, patch, interactive=False, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(_config(repo_root), max_cycles=1, log=lambda *_: None)
+    assert _record_path(repo_root).exists()
+
+
+def test_an_interrupted_planner_handoff_commit_is_undone_at_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    _interrupt_committing_planner(tmp_path, orchestrator, monkeypatch)
+    assert _git(tmp_path, "rev-parse", "HEAD") != head
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert any(
+        level == "WARN" and message.startswith("The interrupted planner committed")
+        for level, message in messages
+    )
+    assert outcome.stop is False
+    assert outcome.pending is not None
+    assert outcome.pending.kind == "interrupted_planner"
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _planner_assignment()
+
+
+@pytest.mark.parametrize(
+    ("other_file", "new_branch", "expected"),
+    [
+        pytest.param(True, None, "files other than the handoff", id="other_file"),
+        pytest.param(False, "planner-branch", "moved the checkout", id="branch"),
+    ],
+)
+def test_an_interrupted_planner_commit_that_cannot_be_undone_stops_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    other_file: bool,
+    new_branch: str | None,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_committing_planner(
+        tmp_path,
+        orchestrator,
+        monkeypatch,
+        other_file=other_file,
+        new_branch=new_branch,
+    )
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+
+    def refusing_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        raise AssertionError("an unreconciled checkout must not dispatch")
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", refusing_planner)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert expected in errors[0]
+    assert "keeps the record" in errors[0]
+    assert ("INFO", PLANNER_QUESTION) not in messages
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+
+
+def test_dry_run_reports_an_interrupted_planner_commit_without_undoing_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_committing_planner(tmp_path, orchestrator, monkeypatch)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path, dry_run=True),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert any(
+        level == "INFO" and message.endswith("Not reconciled in dry run.")
+        for level, message in messages
+    )
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+
+
+def test_a_confirmed_planner_record_that_cannot_be_deleted_stops_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch)
+
+    def refusing_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        raise AssertionError("a record that cannot be cleared must not dispatch")
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", refusing_planner)
+    monkeypatch.setattr(
+        orchestrator, "_delete_in_flight_record", lambda _config, _log: False
+    )
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "before dispatching planner again" in errors[0]
+    assert _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _planner_assignment()

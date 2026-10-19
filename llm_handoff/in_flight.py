@@ -14,7 +14,8 @@ tell the implementer's partial edits from operator edits.
 The dispatcher also writes a ``planner`` record right before a planner
 dispatch and deletes it as soon as the dispatch returns. A planner record is
 only ever a ``dispatch`` record: it keeps the handoff the planner started
-from, so the next start can restore a half-written handoff. It has no
+from, HEAD, and the checked-out branch, so the next start can reconcile Git
+and restore a half-written handoff. It has no
 operator dirty-file fingerprints, no carried-over files, and no
 ``assignment_content``, and its ``story_key`` is None when that handoff
 names no story.
@@ -68,6 +69,10 @@ class InFlightRecord:
     ``dirty_fingerprints`` and ``carried_over`` and no
     ``assignment_content``. Its ``story_key`` is the ``carry_over_key`` of
     ``handoff_content``, which is None when that handoff names no story.
+    ``head_branch`` is the branch checked out right before a planner
+    dispatch (None on a detached HEAD), so the next start can tell whether
+    the interrupted planner moved the checkout. An implementer record leaves
+    it None.
     """
 
     cycle: int
@@ -82,6 +87,7 @@ class InFlightRecord:
     handback_content: str | None = None
     handback_head_sha: str | None = None
     protected_digests: tuple[tuple[str, str], ...] | None = None
+    head_branch: str | None = None
     version: int = IN_FLIGHT_RECORD_VERSION
 
     @property
@@ -101,6 +107,7 @@ def in_flight_record_payload(record: InFlightRecord) -> str:
         "story_key": record.story_key,
         "phase": record.phase,
         "head_sha": record.head_sha,
+        "head_branch": record.head_branch,
         "handoff_content": record.handoff_content,
         "assignment_content": record.assignment_content,
         "dirty_fingerprints": [list(pair) for pair in record.dirty_fingerprints],
@@ -130,9 +137,10 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     ``carry_over_key``. An implementer record always needs a non-empty string
     ``story_key``. A ``handback`` record needs a string
     ``handback_content``; a ``dispatch`` record must not have one. A missing
-    ``assignment_content``, ``handback_content``, or ``handback_head_sha``
-    reads as None, so a record written before the ``handback`` phase existed
-    still loads as a ``dispatch`` record. ``protected_digests`` is None,
+    ``assignment_content``, ``handback_content``, ``handback_head_sha``, or
+    ``head_branch`` reads as None, so a record written before the
+    ``handback`` phase existed still loads as a ``dispatch`` record.
+    ``head_branch`` is None or a string. ``protected_digests`` is None,
     absent, or a list of ``[path, digest]`` string pairs. JSON nested too deeply to parse
     (``RecursionError``) is rejected like any other invalid JSON.
     """
@@ -157,6 +165,9 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         return None
     head_sha = payload.get("head_sha")
     if head_sha is not None and not isinstance(head_sha, str):
+        return None
+    head_branch = payload.get("head_branch")
+    if head_branch is not None and not isinstance(head_branch, str):
         return None
     handoff_content = payload.get("handoff_content")
     if not isinstance(handoff_content, str):
@@ -213,6 +224,7 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         story_key=story_key,
         phase=phase,  # type: ignore[arg-type]
         head_sha=head_sha,
+        head_branch=head_branch,
         handoff_content=handoff_content,
         dirty_fingerprints=dirty_fingerprints,
         carried_over=carried_over,

@@ -9,21 +9,28 @@ This project follows a simple pre-release changelog until the first public tag.
 - An interrupted planner dispatch is now recoverable (RECOVERY-3b1). The
   dispatcher writes a `planner` record to `logs/dispatch/in-flight.json` right
   before each planner dispatch (not in a dry run or the Linear lease-rebuild
-  cycle) holding the cycle, HEAD, the handoff the planner starts from, and the
-  protected-file digests, and deletes it as soon as the planner returns,
+  cycle) holding the cycle, HEAD, the checked-out branch, the handoff the
+  planner starts from, and the protected-file digests, and deletes it as soon
+  as the planner returns,
   whatever its exit code; a failed delete logs an `ERROR` line and stops. A
   planner record is a `dispatch` record only, with no operator files, carried
   files, or assignment, and its story key is `null` when the handoff names no
   story; the record version stays 1, so implementer records load unchanged.
-  At startup, after the usual link, read, validity, and (with
-  `protected_paths` set) protected-baseline checks: an unchanged handoff logs
+  At startup, after the usual link, read, and validity checks, dispatcher
+  commit mode first reconciles the checkout with the record's HEAD and branch
+  as a returned planner dispatch would: handoff-only commits are undone with
+  `git reset --soft`, and a branch switch, rewritten history, or a commit with
+  other files logs an `ERROR` line and stops before any dispatch, keeping the
+  record. After the (with `protected_paths` set) protected-baseline checks: an
+  unchanged handoff logs
   one `INFO` line and deletes the record; a changed handoff that passes the
   planner's post-dispatch validation is kept, with one `INFO` line, and the
   record deleted; a missing, empty, or invalid handoff is shown with its
   escaped validation error codes, the assignment summary, and the
   protected-file disclosure, and the dispatcher asks
   `Restore the handoff from before planner's interrupted dispatch and run planner again? [y/N]`.
-  Yes restores the handoff with the link-safe writer and dispatches the
+  Yes restores the handoff with the link-safe writer, deletes the record (a
+  failed delete logs an `ERROR` line and stops), and dispatches the
   planner (routing source `interrupted_planner_recovery`) with a note that its
   previous run was interrupted, against the recovery's protected-file
   baseline. Decline, end of input, or no terminal discards the record with a
