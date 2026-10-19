@@ -4774,14 +4774,15 @@ def test_carry_over_delete_survives_a_junction_swap_inside_the_pin(
     save_implementer_leftovers(record, _app_leftovers(repo))
     orchestrator = _load_orchestrator()
     outcomes: list[str] = []
-    real_unlink = os.unlink
+    real_unlink = orchestrator._unlink_carry_over_file_checked
 
-    def swap_then_unlink(path: Any, *args: Any, **kwargs: Any) -> None:
-        if Path(path).name == "carry-over.json":
-            _try_junction_swap(repo, outside, outcomes)
-        real_unlink(path, *args, **kwargs)
+    def swap_then_unlink(state_path: Path) -> None:
+        _try_junction_swap(repo, outside, outcomes)
+        real_unlink(state_path)
 
-    monkeypatch.setattr(os, "unlink", swap_then_unlink)
+    monkeypatch.setattr(
+        orchestrator, "_unlink_carry_over_file_checked", swap_then_unlink
+    )
     config = _dispatch_config(repo, commit_mode="dispatcher")
     messages: list[tuple[str, str]] = []
 
@@ -4832,6 +4833,231 @@ def test_carry_over_write_survives_a_junction_swap_inside_the_pin(
     assert sorted(path.name for path in outside.iterdir()) == ["carry-over.json"]
     record = repo / "logs" / "dispatch" / "carry-over.json"
     assert load_implementer_leftovers(record) == leftovers
+
+
+def _mount_directory_in_place(directory: Path, target: Path) -> None:
+    """Turn the existing empty ``directory`` into a mount point to ``target``.
+
+    Unlike ``_link_directory`` this does not rename or recreate the directory:
+    it sets the reparse point on the directory itself with
+    ``FSCTL_SET_REPARSE_POINT``, which needs only write-attributes access and
+    so is not blocked by the carry-over directory pin.
+    """
+
+    import ctypes
+    import struct
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.DeviceIoControl.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    kernel32.DeviceIoControl.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    file_write_attributes = 0x0100
+    share_all = 0x7
+    open_existing = 3
+    flags = 0x02000000 | 0x00200000  # backup semantics | open reparse point
+    handle = kernel32.CreateFileW(
+        str(directory), file_write_attributes, share_all, None, open_existing, flags, None
+    )
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        substitute = ("\\??\\" + str(target)).encode("utf-16-le")
+        printed = str(target).encode("utf-16-le")
+        data = (
+            struct.pack("<HHHH", 0, len(substitute), len(substitute) + 2, len(printed))
+            + substitute
+            + b"\0\0"
+            + printed
+            + b"\0\0"
+        )
+        mount_point_tag = 0xA0000003
+        raw = struct.pack("<IHH", mount_point_tag, len(data), 0) + data
+        buffer = ctypes.create_string_buffer(raw)
+        returned = wintypes.DWORD()
+        fsctl_set_reparse_point = 0x000900A4
+        if not kernel32.DeviceIoControl(
+            handle,
+            fsctl_set_reparse_point,
+            buffer,
+            len(raw),
+            None,
+            0,
+            ctypes.byref(returned),
+            None,
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@_WINDOWS_ONLY
+def test_carry_over_delete_refuses_a_mount_point_set_in_place_inside_the_pin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The in-repo record is absent, so logs/dispatch is empty and can be made a
+    # mount point without renaming it; the pin cannot stop that. The delete
+    # must still not remove the external record the mount point exposes.
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _ignored_logs_repo(repo)
+    dispatch_dir = repo / "logs" / "dispatch"
+    dispatch_dir.mkdir(parents=True)
+    external_record = outside / "carry-over.json"
+    _write(external_record, "{}\n")
+    orchestrator = _load_orchestrator()
+    outcomes: list[str] = []
+    real_unlink = orchestrator._unlink_carry_over_file_checked
+
+    def mount_then_unlink(state_path: Path) -> None:
+        _mount_directory_in_place(dispatch_dir, outside)
+        outcomes.append("mounted")
+        assert state_path.exists()  # the literal path now reaches outside
+        real_unlink(state_path)
+
+    monkeypatch.setattr(
+        orchestrator, "_unlink_carry_over_file_checked", mount_then_unlink
+    )
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", lambda _path: False
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, None, _collecting_log(messages)
+    )
+
+    assert outcomes == ["mounted"]
+    assert external_record.read_text(encoding="utf-8") == "{}\n"
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+@_WINDOWS_ONLY
+def test_carry_over_write_refuses_a_mount_point_set_in_place_inside_the_pin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _ignored_logs_repo(repo)
+    dispatch_dir = repo / "logs" / "dispatch"
+    dispatch_dir.mkdir(parents=True)
+    external_record = outside / "carry-over.json"
+    _write(external_record, "{}\n")
+    orchestrator = _load_orchestrator()
+    outcomes: list[str] = []
+    real_checked_writer = orchestrator._write_carry_over_record_checked
+
+    def mount_then_write(state_path: Path, payload: str) -> None:
+        _mount_directory_in_place(dispatch_dir, outside)
+        outcomes.append("mounted")
+        real_checked_writer(state_path, payload)
+
+    monkeypatch.setattr(
+        orchestrator, "_write_carry_over_record_checked", mount_then_write
+    )
+    # Simulate the mount point appearing after every path-based check, so only
+    # the handle checks stand between the writer and the external directory.
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", lambda _path: False
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, _app_leftovers(repo), _collecting_log(messages)
+    )
+
+    assert outcomes == ["mounted"]
+    assert external_record.read_text(encoding="utf-8") == "{}\n"
+    assert sorted(path.name for path in outside.iterdir()) == ["carry-over.json"]
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+@_WINDOWS_ONLY
+def test_carry_over_handle_check_rejects_a_file_outside_the_directory(
+    tmp_path: Path,
+) -> None:
+    # The location check compares the handles' final paths, so a file reached
+    # through a mount point is caught even when the directory handle itself
+    # was opened before the mount point appeared.
+    import ctypes
+
+    inside = tmp_path / "inside"
+    outside = tmp_path / "outside"
+    _write(inside / "carry-over.json", "{}\n")
+    _write(outside / "carry-over.json", "{}\n")
+    orchestrator = _load_orchestrator()
+    kernel32 = orchestrator._carry_over_kernel32()
+
+    def open_file(path: Path) -> int:
+        handle = kernel32.CreateFileW(
+            str(path), 0x0080, 0x7, None, 3, 0x02000000 | 0x00200000, None
+        )
+        assert handle not in (None, ctypes.c_void_p(-1).value)
+        return handle
+
+    directory_handle = orchestrator._pin_carry_over_directory(inside)
+    assert directory_handle is not None
+    inside_handle = open_file(inside / "carry-over.json")
+    outside_handle = open_file(outside / "carry-over.json")
+    try:
+        orchestrator._carry_over_require_handle_in_directory(
+            inside_handle, directory_handle, inside / "carry-over.json"
+        )
+        with pytest.raises(orchestrator._CarryOverLinkError):
+            orchestrator._carry_over_require_handle_in_directory(
+                outside_handle, directory_handle, inside / "carry-over.json"
+            )
+    finally:
+        kernel32.CloseHandle(inside_handle)
+        kernel32.CloseHandle(outside_handle)
+        orchestrator._close_carry_over_pin(directory_handle)
+
+
+@_WINDOWS_ONLY
+def test_carry_over_handle_delete_removes_a_file_symlink_not_its_target(
+    tmp_path: Path,
+) -> None:
+    dispatch_dir = tmp_path / "logs" / "dispatch"
+    dispatch_dir.mkdir(parents=True)
+    target = tmp_path / "outside" / "victim.txt"
+    _write(target, "keep\n")
+    link = dispatch_dir / "carry-over.json"
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    orchestrator = _load_orchestrator()
+
+    orchestrator._unlink_carry_over_file_checked(link)
+    orchestrator._unlink_carry_over_file_checked(link)  # missing is not an error
+
+    assert not os.path.lexists(link)
+    assert target.read_text(encoding="utf-8") == "keep\n"
 
 
 def test_carry_over_record_stays_in_memory_without_a_race_safe_mechanism(

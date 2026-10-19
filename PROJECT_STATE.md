@@ -616,6 +616,15 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   the pin handles request `FILE_LIST_DIRECTORY` in addition to
   `FILE_READ_ATTRIBUTES`, because Windows does not enforce share modes on an
   attributes-only handle (a test showed the rename succeeding without it).
+  Audit fix (2026-10-19, after the `5cbe641` audit): the pin does not stop an
+  empty `logs/dispatch` from being turned into a mount point in place;
+  `FSCTL_SET_REPARSE_POINT` needs only write-attributes access, which share
+  modes do not govern (a probe set one under a pin with share mode 0). The
+  Windows delete and writer now open the file as a handle, require its final
+  path to be inside a handle to `logs/dispatch`, and delete through that
+  handle or write through it and rename it relative to the directory handle
+  (`NtSetInformationFile` with `RootDirectory`). Windows-only regressions set
+  the mount point in place while the pin is held.
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 

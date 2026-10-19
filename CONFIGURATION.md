@@ -562,8 +562,11 @@ delete the record, so a link cannot point it at a file outside the
 repository; it logs a `WARN` line and the files stay operator edits. On
 Windows the dispatcher holds `logs` and `logs/dispatch` open without delete
 sharing while it writes or deletes the record, so neither can be swapped for a
-junction mid-operation (POSIX uses directory handles opened without following
-links). Where neither mechanism is available, the record stays in memory only:
+junction mid-operation, and it writes, renames, and deletes the record through
+file handles it has checked are inside `logs/dispatch`, so an empty directory
+turned into a mount point in place is refused too (POSIX uses directory
+handles opened without following links). Where neither mechanism is
+available, the record stays in memory only:
 the dispatcher leaves any `carry-over.json` on disk untouched and logs a
 `WARN` line.
 

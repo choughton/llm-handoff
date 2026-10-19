@@ -31,7 +31,12 @@ This project follows a simple pre-release changelog until the first public tag.
   Windows it holds `logs` and `logs/dispatch` open without delete sharing,
   rejecting either one if it is a junction or symlink, for the whole write or
   delete, so neither directory can be renamed, deleted, or replaced by a
-  junction until the record is written or deleted. Where neither mechanism is
+  junction until the record is written or deleted. Because that pin cannot
+  stop an empty `logs/dispatch` from being turned into a mount point in place,
+  the Windows writer and delete also open each file as a handle, refuse it
+  unless the handle is inside the pinned `logs/dispatch`, and then write,
+  rename (relative to the directory handle), or delete through that handle
+  instead of looking the path up again. Where neither mechanism is
   available, the record stays in memory only: the dispatcher does not read,
   write, or delete `carry-over.json` and logs a `WARN` line instead.
 - Behavior change: in the audit fan-out, a security reviewer `fail` verdict
