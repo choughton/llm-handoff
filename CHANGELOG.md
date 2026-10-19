@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The top-level docs (`README.md`, `CONFIGURATION.md`, `INSTALL.md`,
+  `QUICKSTART.md`, `WALKTHROUGH.md`, `SECURITY.md`) no longer describe Gemini
+  CLI, and `CONFIGURATION.md` now documents the `mention` and `retries` role
+  fields as accepted and ignored.
 - Removed the shipped Gemini CLI instruction files: `.gemini/agents/`,
   `.gemini/policies/planner_guardrails.toml`, and `.geminiignore`, both at
   the repository root and in `examples/reference-workflow/`. `llm-handoff

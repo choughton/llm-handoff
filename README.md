@@ -9,8 +9,8 @@ only advances when that file parses, routes, and validates.
 
 > Prompts are advisory. Validators are authoritative.
 
-Built for solo developers coordinating Codex, Gemini CLI, Claude Code, or
-Antigravity on one repo without git worktrees, pull-request choreography, or a
+Built for solo developers coordinating Codex, Claude Code, or Antigravity
+(`agy`) on one repo without git worktrees, pull-request choreography, or a
 service orchestrator.
 
 ![llm-handoff dispatch loop](docs/assets/llm-handoff-hero.png)
@@ -41,10 +41,14 @@ production-certified tool for arbitrary repositories. See
 ## Quick Start
 
 You need Python 3.11 or newer, Git, and at least one provider CLI signed in:
-Claude Code (`claude`), Codex (`codex`), or Gemini CLI (`gemini`). Any role
-mapped to Gemini needs Docker or Podman on `PATH` (macOS can use
-`sandbox-exec`). The dispatcher launches these CLIs; it does not install
-them or manage their logins.
+Claude Code (`claude`), Codex (`codex`), or Antigravity (`agy`). The
+dispatcher launches these CLIs; it does not install them or manage their
+logins.
+
+Gemini CLI (`gemini`) is no longer supported. Gemini CLI stopped serving
+personal Google accounts on 2026-06-18, so its provider was removed; use
+Antigravity (`agy`) for Google models. A config that still names
+`provider: gemini` fails at load with a message saying so.
 
 Two directories are involved: the `llm-handoff` install, and the target
 repository where agents do the work. Commands below run from anywhere once the
@@ -73,7 +77,7 @@ llm-handoff init path/to/your-project
 This writes the reference workflow into the target repo: `AGENTS.md`,
 `PROJECT_STATE.md`, `dispatch_config.yaml`, `docs/handoff/HANDOFF.md`, the
 role prompts under `docs/handoff/`, and provider agent files under `.claude/`,
-`.codex/`, `.gemini/`, and `.agents/`. Existing identical files are skipped;
+`.codex/`, and `.agents/`. Existing identical files are skipped;
 changed files stop the run unless you pass `--force`.
 
 `init` picks a role-to-provider mapping for you. When only one of Claude
@@ -102,9 +106,11 @@ choice is hard to change later.
 llm-handoff doctor --repo-root path/to/your-project
 ```
 
-`doctor` checks Git, each configured role's CLI binary, the Gemini sandbox
-runtime, the gate and reviewer settings, configured
-scanners, interpreter grants, and whether the handoff file routes. It exits `1` on any error. Fix every `FAIL` before
+`doctor` checks the config, Git and the commit count, each configured role's
+CLI binary, the `agy` permission settings when a role runs on Antigravity,
+interpreter grants, the next-agent normalizer, the gate and reviewer settings,
+configured scanners, the Linear connectors in Linear mode, and whether the
+handoff file routes. It exits `1` on any error. Fix every `FAIL` before
 continuing; read the `WARN` lines too.
 
 ### 4. Tell the planner what to build
@@ -230,9 +236,6 @@ are in [Tracker (Optional Linear Mode)](CONFIGURATION.md#tracker-optional-linear
 
 Things that stop a first run or quietly change what the loop does.
 
-- **Gemini roles need a container runtime.** Gemini CLI runs in its sandbox,
-  so any role on `gemini` needs Docker or Podman on `PATH` (macOS:
-  `sandbox-exec`). Without one the dispatcher refuses to start.
 - **All-Codex setups need dispatcher commits.** Codex's `workspace-write`
   sandbox cannot write to `.git`, so `init --provider codex` writes
   `commit_mode: dispatcher` for you. Keep it, and keep the work-claim gate
@@ -262,9 +265,6 @@ Things that stop a first run or quietly change what the loop does.
   the handoff prompts, `dispatch_config.yaml`, or anything under `.claude/`,
   `.codex/`, `.gemini/`, or `.agents/` without listing the path in its Work
   Packet routes the handoff to `user`.
-- **Gemini guardrails do not apply until you copy them.** Gemini CLI ignores
-  a project's `.gemini/policies/`. Copy `planner_guardrails.toml` to
-  `~/.gemini/policies/` to enforce its deny rules.
 - **Nothing pushes by default.** `publish.mode: local` commits locally.
   `merge-commit` and `pr` modes are explicit opt-ins; `pr` needs
   `commit_mode: dispatcher` and the `gh` CLI. See
@@ -389,17 +389,18 @@ Provider CLIs launch with these protections on by default:
   provider's variables, not a copy of the dispatcher's shell. `GITHUB_TOKEN`,
   cloud credentials, and other vendors' API keys stay out. See
   [Agent Environment](CONFIGURATION.md#agent-environment).
-- **Permission checks and sandboxes on.** Claude Code runs in `dontAsk` mode
-  with a tool allowlist, Codex in its `workspace-write` sandbox, and Gemini
-  CLI in its container sandbox. See
+- **Permission checks on.** Claude Code runs in `dontAsk` mode with a tool
+  allowlist, and Codex in its `workspace-write` sandbox. Antigravity (`agy`)
+  launches with no permission flag and no sandbox: it can read and write
+  workspace files, and runs a shell command only when a `permissions.allow`
+  grant in the `agy` user settings covers it. See
   [Launch Permissions And Sandboxing](CONFIGURATION.md#launch-permissions-and-sandboxing).
 - **Protected control files fail closed.** See the gotcha above and
   [Protected Control Files](CONFIGURATION.md#protected-control-files).
 - **Shipped guardrails deny pushes and destructive commands.** The template's
   `.claude/settings.json` and its `PreToolUse` hook block `git push`, `curl`,
   `wget`, `rm -rf`, and `git reset --hard` in every permission mode. The
-  Codex rules file forbids `git push`. The Gemini policy file does the same
-  once copied to your user policies.
+  Codex rules file forbids `git push`.
 
 Each protection has a per-role or repo-wide opt-out:
 
@@ -442,7 +443,8 @@ It is not:
 - A general multi-agent framework.
 - Parallel execution across branches or worktrees.
 - A hosted service or background daemon.
-- A replacement for Codex, Gemini, Claude, or any other agent CLI.
+- A replacement for Codex, Claude Code, Antigravity (`agy`), or any other
+  agent CLI.
 - Self-healing. It detects, validates, and pauses. Humans or configured
   agents perform recovery.
 - Production-certified for arbitrary repositories.
@@ -462,8 +464,8 @@ loop only advances when the handoff state parses, routes, and validates.
   permission and sandbox flags follow each CLI's documentation but have not
   been run against every CLI version and platform.
 - Validator calls optimize for correctness over token cost.
-- Registered runtime adapters are `codex`, `gemini`, `claude`, and
-  `antigravity`. Provider-specific prompt files and local auth are the
+- Registered runtime adapters are `claude`, `codex`, and `antigravity`.
+  Provider-specific prompt files and local auth are the
   user's responsibility.
 - Switching an initialized repository between file mode and Linear mode is
   a manual edit; `init` does not do it.

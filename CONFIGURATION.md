@@ -324,7 +324,7 @@ work_packet_verification_timeout_seconds: 600
 | `enforce_work_packet` | `true` | Runs the work-claim gate. Setting it to `false` needs `work_packet_opt_out_reason`. |
 | `work_packet_opt_out_reason` | unset | Required, non-empty text when `enforce_work_packet` is `false`; rejected while the gate is on. |
 | `work_packet_verification_timeout_seconds` | `600` | Timeout in seconds for the Verification command. |
-| `work_claim_env_passthrough` | `[]` | Extra environment variable names the Verification command and scanners receive. They always get only `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`, `USERNAME`, `USER`, `LOGNAME`, `COMSPEC`, `PATHEXT`, `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, and `SHELL`, plus these names. Names match case-insensitively. Vendor API keys are rejected at config load; `CLAUDE_*`, `CODEX_*`, and `GEMINI_*` names are never passed. |
+| `work_claim_env_passthrough` | `[]` | Extra environment variable names the Verification command and scanners receive. They always get only `PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `SystemDrive`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `TERM`, `USERNAME`, `USER`, `LOGNAME`, `COMSPEC`, `PATHEXT`, `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, and `SHELL`, plus these names. Names match case-insensitively. Vendor API keys (including `GEMINI_API_KEY` and `GOOGLE_API_KEY`) are rejected at config load and never passed; `CLAUDE_*` and `CODEX_*` names are never passed, even when listed. Other `GEMINI_*` names are not blocked: one reaches the command only when listed here. |
 | `verification_allowed_prefixes` | `[]` | Command prefixes a Work Packet Verification command must start with, matched literally with single spaces between words. A command that matches none, or that contains a shell control character, fails `verification_not_allowed` and routes to `planner`. Empty runs any command, with a startup and `doctor` `WARN`. See [Verification Command Allowlist](#verification-command-allowlist). |
 
 To turn the gate off, set `enforce_work_packet: false` and say why:
@@ -940,12 +940,9 @@ In the default `env_mode: allowlist`, a launch receives only:
   `USER`, `LOGNAME`), which tools such as pytest use for per-user directories;
 - non-secret process plumbing the CLIs need to start: `COMSPEC`, `PATHEXT`,
   `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `TMPDIR`, `SHELL`;
-- the provider's own configuration variables: `CLAUDE_*` for Claude Code,
-  `CODEX_*` for Codex, and `GEMINI_*`, `GOOGLE_CLOUD_PROJECT`,
-  `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, plus container sandbox
-  variables (`DOCKER_HOST`, `DOCKER_CONTEXT`, `CONTAINER_HOST`,
-  `SANDBOX_FLAGS`, `SEATBELT_PROFILE`) for Gemini CLI. The Antigravity CLI
-  (`agy`) gets no provider variables: it reuses the sign-in stored under the
+- the provider's own configuration variables: `CLAUDE_*` for Claude Code and
+  `CODEX_*` for Codex. The Antigravity CLI (`agy`) gets no provider
+  variables: it reuses the sign-in stored under the
   user profile, which `HOME`, `USERPROFILE`, `APPDATA`, and `LOCALAPPDATA`
   already reach;
 - any extra names listed under the role's `env_passthrough`.
@@ -996,7 +993,6 @@ The startup banner prints one `Launch <role>:` line per role and a
 | --- | --- | --- |
 | Claude Code | `--permission-mode dontAsk --tools <tool names> --strict-mcp-config --allowedTools <allowed_tools> --disallowedTools WebFetch,WebSearch` | `--dangerously-skip-permissions` |
 | Codex | `--sandbox workspace-write --ask-for-approval never` | `--yolo` |
-| Gemini CLI | `--yolo --sandbox` | `--yolo --sandbox=false` |
 | Antigravity (`agy`) | none | `--dangerously-skip-permissions` |
 
 Claude Code in `dontAsk` mode denies any tool call that `allowed_tools` does
@@ -1111,14 +1107,6 @@ temp directory is not usable from the sandbox; the work-claim gate re-runs the
 Verification command outside the sandbox. If Codex still cannot start or
 commit in your setup, check its sandbox settings before reaching for
 `unsafe_bypass`.
-
-Gemini CLI keeps `--yolo` so tool calls do not prompt, but runs inside its
-container sandbox. That needs Docker or Podman on `PATH` (macOS can use
-`sandbox-exec`; `GEMINI_SANDBOX` selects a runtime). When no runtime is found
-the dispatcher refuses to start and names the key to set, for example
-`agents.planner.unsafe_bypass: true`. The adapter repeats the same check
-before every Gemini launch. Inside the container, the role sees the mounted
-project directory; host tools and credentials outside it may be missing.
 
 The Antigravity adapter launches `agy -p <prompt> --agent <name>
 --output-format stream-json --print-timeout <seconds>s`, adding `--model` when
@@ -1385,7 +1373,9 @@ protected_paths:
 ```
 
 Patterns are relative to the repository root. `*` matches within one path
-segment and `**` matches any depth. Missing paths are ignored.
+segment and `**` matches any depth. Missing paths are ignored. `.gemini/**`
+stays protected because a target repository may still hold `.gemini/`
+instruction files that `init` leaves in place.
 
 Before each dispatch the dispatcher hashes the matching files. After the
 dispatch, a protected file that changed on disk or in the new commits, and
@@ -1434,8 +1424,8 @@ settings can run; the startup banner logs one WARN naming those roles and
 asking you to set `tracker.claude_mcp_config`.
 
 Claude roles with `unsafe_bypass: true`, the audit fan-out security reviewer,
-and the next-agent normalizer get no Linear tools. Codex and Gemini roles
-have no per-role tool list and are unchanged. Linear mode rejects
+and the next-agent normalizer get no Linear tools. Codex roles have no
+per-role tool list and are unchanged. Linear mode rejects
 `provider: antigravity` on any role or fallback at config load, naming each
 offending `agents.<role>` or `agents.<role>.fallback`: `agy` agent files
 limit each role's tools and give it no Linear MCP access. Map those roles to
@@ -1454,7 +1444,7 @@ checked.
 
 In Linear mode, `llm-handoff doctor` prints `tracker connector` lines, one
 per provider CLI the configured roles and fallbacks launch (in the order
-claude, codex, gemini), each ending with `(covers <labels>)`.
+claude, codex), each ending with `(covers <labels>)`.
 Each line says whether that CLI's MCP config defines a server named
 `tracker.mcp_server`:
 
@@ -1474,9 +1464,6 @@ Each line says whether that CLI's MCP config defines a server named
 - Codex: `$CODEX_HOME/config.toml` (or `~/.codex/config.toml` when
   `CODEX_HOME` is unset or empty), then `<repo>/.codex/config.toml`. PASS when
   either has an `[mcp_servers.<server>]` table; otherwise WARN.
-- Gemini: `<repo>/.gemini/settings.json`, then `~/.gemini/settings.json`
-  (or `$GEMINI_CLI_HOME/.gemini/settings.json` when `GEMINI_CLI_HOME` is set
-  and non-empty). PASS when either has `mcpServers.<server>`; otherwise WARN.
 
 A missing file is skipped. A file that cannot be read or parsed adds its
 reason to the line instead of stopping the doctor. Only the
@@ -1910,29 +1897,26 @@ Rules and limits:
 - The fallback block takes the same fields as a role. Omitted fields come from
   the fallback provider's defaults, not from the primary.
 - The fallback must launch a different provider, a different `binary`, or,
-  for `claude` or `antigravity`, a different `model`. The Codex and Gemini
-  adapters do not pass
-  a model flag, so a second model on those providers needs a different binary
-  or account.
+  for `claude` or `antigravity`, a different `model`. The Codex adapter does
+  not pass a model flag, so a second Codex model needs a different binary or
+  account.
 - One level only: a fallback cannot have its own fallback.
 - The fallback starts a fresh session. When it runs, the dispatcher also drops
   the planner's saved session, so the next planner dispatch starts fresh.
 - The fallback provider needs the same role files the primary needs, such as
-  the Claude subagent, Codex skill, or Gemini agent for that role.
+  the Claude subagent, Codex skill, or `agy` agent file for that role.
 - If the fallback also fails, its result is the dispatch result and the
   normal failure count applies. A sign-in failure on the fallback still stops
   the loop.
 - By default a hung agent is only detected when `timeout_ms` expires. Set
   `idle_timeout_ms` (see [Idle Output Timeout](#idle-output-timeout)) or lower
-  `timeout_ms` on a role to fail over sooner. Gemini retries its own 429s first (`retries`, with
-  backoff); set `retries: 0` on a Gemini role to fail over at the first 429.
+  `timeout_ms` on a role to fail over sooner.
 - Fallbacks cover role dispatches. In audit fan-out the quality reviewer's
   prompt and verdict parsing depend on its provider, so it fails over only to
   an `auditor` fallback on the same provider, with `audit.review_timeout_ms`.
   The security reviewer and the next-agent normalizer do not use fallbacks.
 
-Startup logs a `Launch <role> fallback:` line for each fallback, and a Gemini
-fallback needs a sandbox runtime like any Gemini role.
+Startup logs a `Launch <role> fallback:` line for each fallback.
 
 ### Idle Output Timeout
 
@@ -1958,8 +1942,7 @@ next. Without a fallback it is an ordinary timed-out dispatch.
 
 It is off by default (unset), and it should stay off unless you know the CLI
 streams steadily. Some CLIs write nothing for long stretches while they work:
-Gemini in plain-text mode (the fallback when `stream-json` is not supported)
-and Claude in buffered text mode print only when they finish, and any CLI can
+Claude in buffered text mode prints only when it finishes, and any CLI can
 go quiet during a long model call or a slow tool. Set the limit well above the
 longest quiet stretch you have seen in that role's dispatch logs. A fallback
 block takes its own `idle_timeout_ms`; it does not inherit the primary's.
@@ -1978,7 +1961,6 @@ Common fields:
 - `idle_timeout_ms`: optional limit on how long the process may write no
   output before it is killed. Off by default. See
   [Idle Output Timeout](#idle-output-timeout).
-- `retries`: provider retry count where supported.
 - `env_mode`: `allowlist` (default) or `inherit`. See
   [Agent Environment](#agent-environment).
 - `env_passthrough`: extra environment variable names to pass to this role.
@@ -2001,9 +1983,13 @@ Claude-specific fields:
   `dontAsk` launch. See [Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
 - `permissions_flag`: bypass flag used only with `unsafe_bypass: true`.
 
-Gemini-specific fields:
+Accepted but ignored fields:
 
-- `mention`: optional agent mention used by Gemini agent files.
+- `mention` and `retries`: still accepted on `agents.<role>` and its
+  `fallback` so older configs keep loading, because the role block rejects
+  unknown keys. No code reads either field, so setting one changes nothing.
+  `retries` must still be a non-negative integer when set; a negative value
+  fails at load with "retries must be non-negative when set."
 
 ## Audit Fan-Out
 
@@ -2168,8 +2154,8 @@ behaves as described above. The dispatcher still never calls Linear itself.
 - A Claude auditor without `unsafe_bypass` launches with `allowed_tools` set
   to exactly the auditor's five Linear tools and no built-in tools, so the
   launch passes `--tools ""`; with `tracker.claude_mcp_config` set it also
-  passes `--mcp-config <path> --strict-mcp-config`. Codex, Gemini,
-  Antigravity, and `unsafe_bypass` auditors cannot be limited at launch: for
+  passes `--mcp-config <path> --strict-mcp-config`. Codex, Antigravity,
+  and `unsafe_bypass` auditors cannot be limited at launch: for
   them the prompt forbids file edits and shell commands, and only the
   post-checks below detect a repository file change after the fact. The
   post-checks do not prevent an edit, and they do not cover paths the

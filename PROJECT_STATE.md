@@ -11,8 +11,8 @@ belong in commits, handoffs, and pull requests.
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
   GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
   GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a merged in PR
-  #138; GEM-4b merged in PR #139; GEM-4c merged in PR #141; GEM-5a in
-  progress).
+  #138; GEM-4b merged in PR #139; GEM-4c merged in PR #141; GEM-5a merged in
+  PR #142; GEM-5b1 in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -100,7 +100,7 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: GEM-4c is done; take GEM-5a, then GEM-5b; GEM-5c waits on the user
+Fit: GEM-5a is done; take GEM-5b1, then GEM-5b2; GEM-5c waits on the user
 (Claude roles cannot write `.claude/`) and does not block the epic's other
 stories.
 
@@ -449,7 +449,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
       `env_passthrough` still rejects them.
 - GEM-5: Remove the shipped Gemini files and docs. Split by the planner on
   2026-10-18 into GEM-5a, GEM-5b, and GEM-5c.
-  - GEM-5a (this story): Delete the shipped `.gemini/` trees and
+  - GEM-5a (merged in PR #142): Delete the shipped `.gemini/` trees and
     `.geminiignore` files and stop `init` from writing them. Delete
     `.gemini/agents/`, `.gemini/policies/planner_guardrails.toml`, and
     `.geminiignore`, at the repository root and under
@@ -481,23 +481,32 @@ itself from 1.3.5 to 1.4.2 during the checks):
       the operator. It is not part of GEM-5a. GEM-5b writes the conservative
       `SECURITY.md` text (treat `.env`, `logs/`, and `.git` as readable by
       `agy` roles until a live check shows otherwise).
-  - GEM-5b: Rewrite `README.md`, `CONFIGURATION.md`, `INSTALL.md`,
-    `QUICKSTART.md`, `WALKTHROUGH.md`, `SECURITY.md`, `docs/` (including
-    `docs/handoff/` prompts and README, root and
-    `examples/reference-workflow/` copies),
-    `examples/reference-workflow/README.md`, and the provider-name prose in
-    `.agents/agents/handoff-router.md` and
+  - GEM-5b: Split by the planner on 2026-10-18 because GEM-5b covered about
+    130 mentions across 20 files.
+  - GEM-5b1 (this story): Rewrite the six top-level docs (`README.md`,
+    `CONFIGURATION.md`, `INSTALL.md`, `QUICKSTART.md`, `WALKTHROUGH.md`,
+    `SECURITY.md`) to use `antigravity`, with one short note in `README.md`
+    that Gemini CLI support was removed and why. Document
+    `AgentConfig.mention` and `retries` in `CONFIGURATION.md` as accepted and
+    ignored. In `SECURITY.md`, say `.geminiignore` is no longer shipped,
+    `agy` never read it, and `agy` roles should be assumed able to read
+    `.env`, `logs/`, and `.git` until an operator live check shows `agy`
+    honors `.gitignore`.
+  - GEM-5b2: Rewrite `docs/` (`ARCHITECTURE.md`, `TESTING.md`,
+    `SUPERVISED_DISPATCH.md`, and the `docs/handoff/` prompts and README, in
+    both the root and `examples/reference-workflow/` copies),
+    `examples/reference-workflow/README.md`, the
+    `examples/reference-workflow/dispatch_config.yaml` comments, `AGENTS.md`
+    and `examples/reference-workflow/AGENTS.md`, and the provider-name
+    sentence in `.agents/agents/handoff-router.md` and
     `.codex/skills/llm-handoff-validator/SKILL.md` (root and example copies)
-    to use `antigravity`, keeping one short note that Gemini CLI support was
-    removed and why. Document `AgentConfig.mention` and `retries` in
-    `CONFIGURATION.md` as accepted and ignored. In `SECURITY.md`, say
-    `.geminiignore` is gone, `agy` never read it, and `agy` roles should be
-    assumed able to read `.env`, `logs/`, and `.git` until an operator live
-    check shows `agy` honors `.gitignore`. Finish with a grep of
+    to use `antigravity`. Update the `tests/ported/test_handoff_docs.py:255`
+    assertion that quotes the old ARCHITECTURE wording. Finish with a grep of
     `llm_handoff/`, `tests/`, `examples/`, and the config files for
-    `gemini`: it may find only rejection code and tests, agy model ids, the
-    agy settings path, `GEMINI.md`, the `GEMINI_API_KEY` vendor-key entry,
-    the `.gemini/**` protected path, and `CHANGELOG.md`.
+    `gemini`, excluding `.claude/worktrees/`: it may find only rejection code
+    and tests, agy model ids, the agy settings path, `GEMINI.md`, the
+    `GEMINI_API_KEY` vendor-key entry, the `.gemini/**` protected path, and
+    `CHANGELOG.md`.
   - GEM-5c: Replace "Gemini" in the provider-name sentence of
     `.claude/agents/handoff-router.md` and
     `examples/reference-workflow/.claude/agents/handoff-router.md` with
