@@ -490,6 +490,19 @@ This project follows a simple pre-release changelog until the first public tag.
     planner to restore;
   - anything else, including a `gh` failure, pauses naming the pull request
     and the recovery steps.
+- Behavior change: in `pr` mode, saved `## Review Responses` now last for the
+  whole correction round. A later claim in the round merges its responses
+  into the saved ones by finding number, and a claim without responses keeps
+  them. Previously a claim without responses, such as the implementer's
+  handback after an audit bounce, deleted the saved ones, so the fix's
+  answer was never posted and the merge stopped. Saved responses are dropped
+  when a new correction round starts. A saved Codex finding left without a
+  response now goes to the planner's one deferred-findings pass, with its
+  thread still open and the story state kept, when it and deferred findings
+  are the only unresolved threads. Previously the dispatcher paused and
+  cleared the story state, so a restart could not recover the open pull
+  request. A person's comment or any other unresolved thread still pauses.
+
 ## Pre-release snapshot - 2026-10-19
 
 Condensed history from the start of the extraction (2026-04-20) through
