@@ -7,16 +7,15 @@ belong in commits, handoffs, and pull requests.
 ## Current Status
 
 - **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 in progress).
-- **Parked Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
-  in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
-  merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
+- **Epic Awaiting Close:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged,
+  GEM-0d in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124;
+  GEM-0g merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
   GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
   GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a merged in PR
   #138; GEM-4b merged in PR #139; GEM-4c merged in PR #141; GEM-5a merged in
-  PR #142; GEM-5b1 merged in PR #143; GEM-5b2 merged in PR #144). Remaining
-  story: GEM-5c, which waits on the operator to replace "Gemini" with
-  "Antigravity" in line 57 of `.claude/agents/handoff-router.md` and
-  `examples/reference-workflow/.claude/agents/handoff-router.md`.
+  PR #142; GEM-5b1 merged in PR #143; GEM-5b2 merged in PR #144; GEM-5c, the
+  operator's edit of the two `handoff-router.md` copies, merged in PR #148).
+  No story remains; the planner routes the epic close.
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -104,9 +103,9 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: parked on GEM-5c (operator edit). GEM-0b through GEM-5b2 are merged;
-GEM-5c waits on the operator to edit `.claude/` by hand (Claude roles cannot
-write `.claude/`), then the planner routes the epic close.
+Fit: ready to close. GEM-0b through GEM-5c are merged (GEM-5c in PR #148,
+edited by the operator because Claude roles cannot write `.claude/`). No
+story remains; the planner routes the epic close.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
@@ -511,8 +510,8 @@ itself from 1.3.5 to 1.4.2 during the checks):
     and tests, agy model ids, the agy settings path, `GEMINI.md`, the
     `GEMINI_API_KEY` vendor-key entry, the `.gemini/**` protected path, and
     `CHANGELOG.md`.
-  - GEM-5c: Replace "Gemini" in the provider-name sentence of
-    `.claude/agents/handoff-router.md` and
+  - GEM-5c (merged in PR #148): Replace "Gemini" in the provider-name
+    sentence of `.claude/agents/handoff-router.md` and
     `examples/reference-workflow/.claude/agents/handoff-router.md` with
     "Antigravity". Claude roles cannot write `.claude/` paths, so this story
     routes to `user` (as LIN-9d did).
