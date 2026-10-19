@@ -1,4 +1,4 @@
-"""RECOVERY-2a/2b/2c: the in-flight record and interrupted implementer recovery."""
+"""RECOVERY-2a/2b/2c/3b1: the in-flight record and interrupted-dispatch recovery."""
 
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ def test_in_flight_record_round_trips_with_sorted_keys() -> None:
     [
         pytest.param("version", 2, id="wrong_version"),
         pytest.param("version", "1", id="version_type"),
-        pytest.param("role", "planner", id="wrong_role"),
+        pytest.param("role", "auditor", id="wrong_role"),
         pytest.param("phase", "commit", id="wrong_phase"),
         pytest.param("cycle", "3", id="cycle_type"),
         pytest.param("cycle", True, id="cycle_bool"),
@@ -353,25 +353,46 @@ def test_record_exists_only_while_the_implementer_runs(
     assert not any("in-flight" in message for _level, message in messages)
 
 
-def test_no_record_for_a_planner_dispatch(
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_a_planner_record_exists_only_while_the_planner_runs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
 ) -> None:
     _init_repo(tmp_path, handoff=_planner_assignment())
+    head = _git(tmp_path, "rev-parse", "HEAD")
     orchestrator = _orchestrator()
-    seen: list[bool] = []
+    seen: list[dict[str, Any]] = []
 
     def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
-        seen.append(_record_path(tmp_path).exists())
+        seen.append(json.loads(_record_path(tmp_path).read_text(encoding="utf-8")))
         path.write_text(_assignment(), encoding="utf-8")
-        return _result()
+        return _result(exit_code)
 
     monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    messages: list[tuple[str, str]] = []
 
-    orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=lambda *_: None)
+    orchestrator.run_loop(
+        _config(tmp_path, max_consecutive_failures=1),
+        max_cycles=1,
+        log=_collecting_log(messages),
+    )
 
-    assert seen == [False]
+    assert len(seen) == 1
+    assert seen[0]["role"] == "planner"
+    assert seen[0]["phase"] == "dispatch"
+    assert seen[0]["cycle"] == 1
+    assert seen[0]["story_key"] is None
+    assert seen[0]["handoff_content"] == _planner_assignment()
+    assert seen[0]["head_sha"] == head
+    assert seen[0]["dirty_fingerprints"] == []
+    assert seen[0]["carried_over"] == []
+    assert seen[0]["assignment_content"] is None
+    assert seen[0]["handback_content"] is None
+    assert isinstance(seen[0]["protected_digests"], list)
+    assert load_in_flight_record(json.dumps(seen[0])) is not None
     assert not _record_path(tmp_path).exists()
+    assert not any("in-flight" in message for _level, message in messages)
 
 
 def test_an_interrupted_dispatch_leaves_the_record(
@@ -2792,3 +2813,475 @@ def test_the_protected_baseline_survives_an_operator_file_pause(
     assert _git(tmp_path, "rev-parse", "HEAD") == head
     handoff = (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8")
     assert "next_agent: user" in handoff
+
+
+# ---------------------------------------------------------------------------
+# RECOVERY-3b1: interrupted planner dispatch
+# ---------------------------------------------------------------------------
+
+
+PLANNER_QUESTION = (
+    "Restore the handoff from before planner's interrupted dispatch and run "
+    "planner again? [y/N]"
+)
+
+
+def _planner_payload(**changes: Any) -> dict[str, Any]:
+    record = InFlightRecord(
+        cycle=2,
+        role="planner",
+        story_key=None,
+        phase="dispatch",
+        head_sha="a" * 40,
+        handoff_content=_planner_assignment(),
+        dirty_fingerprints=(),
+        carried_over=(),
+    )
+    payload = json.loads(in_flight_record_payload(record))
+    payload.update(changes)
+    return payload
+
+
+def _interrupt_planner(
+    repo_root: Path,
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    leave: str | None = HALF_WRITTEN_HANDOFF,
+    keep: bool = False,
+) -> None:
+    """Run one planner dispatch that is interrupted mid-dispatch.
+
+    The planner writes ``leave`` to the handoff (deletes it when None, leaves
+    it alone with ``keep``) and is then interrupted; the record stays on disk.
+    """
+
+    def interrupted_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        if not keep:
+            if leave is None:
+                path.unlink()
+            else:
+                path.write_text(leave, encoding="utf-8")
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "invoke_planner_role", interrupted_planner)
+        _set_terminal(orchestrator, patch, interactive=False, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(_config(repo_root), max_cycles=1, log=lambda *_: None)
+    assert _record_path(repo_root).exists()
+
+
+def test_load_in_flight_record_accepts_a_planner_record_without_a_story() -> None:
+    record = load_in_flight_record(json.dumps(_planner_payload()))
+
+    assert record is not None
+    assert record.role == "planner"
+    assert record.story_key is None
+
+
+def test_load_in_flight_record_accepts_a_planner_record_with_a_matching_key() -> None:
+    payload = _planner_payload(
+        handoff_content=_assignment(), story_key=f"story:{STORY_ID}"
+    )
+
+    record = load_in_flight_record(json.dumps(payload))
+
+    assert record is not None
+    assert record.story_key == f"story:{STORY_ID}"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param(
+            {"phase": "handback", "handback_content": _assignment()},
+            id="planner_handback",
+        ),
+        pytest.param(
+            {"dirty_fingerprints": [["notes.txt", "f" * 64]]},
+            id="planner_dirty_fingerprints",
+        ),
+        pytest.param({"carried_over": ["src/app.py"]}, id="planner_carried_over"),
+        pytest.param(
+            {"assignment_content": _planner_assignment()},
+            id="planner_assignment_content",
+        ),
+        pytest.param(
+            {"handoff_content": _assignment()}, id="planner_null_key_with_a_story"
+        ),
+        pytest.param({"story_key": ""}, id="planner_empty_key"),
+    ],
+)
+def test_load_in_flight_record_rejects_a_bad_planner_record(
+    changes: dict[str, Any],
+) -> None:
+    assert load_in_flight_record(json.dumps(_planner_payload(**changes))) is None
+
+
+def test_load_in_flight_record_rejects_a_null_story_key_for_an_implementer() -> None:
+    payload = _valid_payload()
+    payload["story_key"] = None
+    payload["handoff_content"] = _planner_assignment()
+
+    assert load_in_flight_record(json.dumps(payload)) is None
+
+
+def test_an_interrupted_planner_leaves_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch)
+
+    record = load_in_flight_record(_record_path(tmp_path).read_text(encoding="utf-8"))
+    assert record is not None
+    assert record.role == "planner"
+    assert record.head_sha == head
+    assert record.handoff_content == _planner_assignment()
+    assert record.protected_digests is not None
+
+
+def test_dry_run_writes_no_planner_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+
+    def refusing_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        raise AssertionError("dry run must not dispatch")
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", refusing_planner)
+
+    orchestrator.run_loop(
+        _config(tmp_path, dry_run=True), max_cycles=1, log=lambda *_: None
+    )
+
+    assert not _record_path(tmp_path).exists()
+
+
+def test_a_planner_record_that_cannot_be_cleared_stops_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        path.write_text(_assignment(), encoding="utf-8")
+        return _result()
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(
+        orchestrator, "_delete_in_flight_record", lambda _config, _log: False
+    )
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "after the planner dispatch returned" in errors[0]
+    assert _record_path(tmp_path).exists()
+
+
+def test_an_unchanged_handoff_deletes_the_planner_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch, keep=True)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "interrupted planner dispatch that left nothing to recover" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _planner_assignment()
+
+
+def test_a_valid_changed_handoff_is_kept_and_the_planner_record_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch, leave=_assignment())
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "finished writing a valid handoff" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _assignment()
+
+
+@pytest.mark.parametrize(
+    "leave",
+    [
+        pytest.param(HALF_WRITTEN_HANDOFF, id="half_written"),
+        pytest.param("", id="empty"),
+        pytest.param(None, id="missing"),
+    ],
+)
+def test_a_confirmed_planner_recovery_restores_the_handoff_and_runs_the_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    leave: str | None,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch, leave=leave)
+    calls: list[dict[str, Any]] = []
+
+    def finishing_planner(path: Path, **kwargs: object) -> DispatchResult:
+        calls.append({"handoff": path.read_text(encoding="utf-8"), **kwargs})
+        path.write_text(_assignment(), encoding="utf-8")
+        return _result()
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", finishing_planner)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=_collecting_log(messages))
+
+    prompt_index = messages.index(("INFO", PLANNER_QUESTION))
+    _disclosure_before(messages, PLANNER_QUESTION)
+    assignment_level, assignment_line = messages[prompt_index - 2]
+    assert assignment_level == "INFO"
+    assert "cannot verify" in assignment_line
+    assert "no ## Work Packet section" in assignment_line
+    summary_level, summary_line = messages[prompt_index - 3]
+    assert summary_level == "INFO"
+    assert summary_line.startswith(f"Found in-flight record {_record_path(tmp_path)}")
+    assert "planner" in summary_line
+    assert "will be replaced" in summary_line
+    if leave is None:
+        assert "(handoff_missing)" in summary_line
+    elif leave == "":
+        assert "(handoff_empty)" in summary_line
+    assert any(
+        level == "INFO" and message.startswith("Restored the half-written handoff")
+        for level, message in messages
+    )
+    assert ("INFO", "Routing source: interrupted_planner_recovery") in messages
+    assert len(calls) == 1
+    assert calls[0]["handoff"] == _planner_assignment()
+    instruction = str(calls[0]["additional_instruction"])
+    assert orchestrator.INTERRUPTED_PLANNER_INSTRUCTION in instruction
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _assignment()
+
+
+def test_the_planner_recovery_schedules_the_planner_with_its_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome.recovered is False
+    assert outcome.leftovers is None
+    pending = outcome.pending
+    assert pending is not None
+    assert pending.kind == "interrupted_planner"
+    assert pending.route == "planner"
+    assert pending.handoff_sha == orchestrator._content_sha(_planner_assignment())
+    assert pending.additional_instruction == orchestrator.INTERRUPTED_PLANNER_INSTRUCTION
+    assert "interrupted before it finished rewriting" in pending.additional_instruction
+    assert "restored the handoff" in pending.additional_instruction
+    assert pending.resumed_protected_snapshot is not None
+    assert not _record_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    ("interactive", "operator_input", "interactive_pause"),
+    [
+        pytest.param(False, None, True, id="no_tty"),
+        pytest.param(True, "n\n", True, id="tty_declines"),
+        pytest.param(True, "", True, id="tty_eof"),
+        pytest.param(True, None, False, id="interactive_pause_off"),
+    ],
+)
+def test_an_unconfirmed_planner_recovery_keeps_the_invalid_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interactive: bool,
+    operator_input: str | None,
+    interactive_pause: bool,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch)
+    _set_terminal(
+        orchestrator,
+        monkeypatch,
+        interactive=interactive,
+        operator_input=operator_input,
+    )
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path, interactive_pause=interactive_pause),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    asked = ("INFO", PLANNER_QUESTION) in messages
+    assert asked == (interactive and interactive_pause)
+    warnings = [message for level, message in messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Discarded the in-flight record")
+    assert "planner" in warnings[0]
+    assert "not confirmed at a terminal" in warnings[0]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_dry_run_keeps_the_planner_record_and_the_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+
+    def refusing_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        raise AssertionError("dry run must not dispatch")
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", refusing_planner)
+    # The half-written handoff does not route; its validator is not under test.
+    monkeypatch.setattr(
+        orchestrator, "_run_unknown_route_validator", lambda _config, _log: None
+    )
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(
+        _config(tmp_path, dry_run=True), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    found = [
+        message
+        for level, message in messages
+        if level == "INFO" and message.startswith("Found in-flight record")
+    ]
+    assert len(found) == 1
+    assert "planner" in found[0]
+    assert found[0].endswith("Not applied in dry run.")
+    assert ("INFO", PLANNER_QUESTION) not in messages
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_an_unanchored_planner_record_is_discarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch)
+    _rewrite_record(tmp_path, head_sha="b" * 40)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path, dry_run=dry_run),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    warning = messages[0][1]
+    assert warning.startswith("Discarded the in-flight record")
+    assert "planner's interrupted" in warning
+    assert "does not resolve to a commit" in warning
+    if dry_run:
+        assert warning.endswith("Not deleted in dry run.")
+        assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    else:
+        assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_a_planner_record_without_a_protected_snapshot_is_discarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch)
+    _rewrite_record(tmp_path, protected_digests=None)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "no pre-dispatch protected-file snapshot" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_a_backend_record_still_recovers_after_planner_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    _interrupt_backend(tmp_path, orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome.recovered is True
+    assert outcome.pending is not None
+    assert outcome.pending.kind == "interrupted_dispatch"
+    assert outcome.pending.route == "backend"
+    assert ("INFO", _recover_question()) in messages
+    assert ("INFO", PLANNER_QUESTION) not in messages
+    assert (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8") == _assignment()

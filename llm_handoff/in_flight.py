@@ -1,4 +1,4 @@
-"""The in-flight record for an implementer dispatch.
+"""The in-flight record for an implementer or planner dispatch.
 
 The dispatcher writes this record right before it launches an implementer
 (``backend`` or ``frontend``) under the work-claim gate. Once the dispatch
@@ -10,6 +10,14 @@ window, or a crash. A ``handback`` record means the implementer returned but
 the cycle was interrupted before it finished its commit, validation, and gates.
 The record keeps what the dispatcher knew before the dispatch, so the start can
 tell the implementer's partial edits from operator edits.
+
+The dispatcher also writes a ``planner`` record right before a planner
+dispatch and deletes it as soon as the dispatch returns. A planner record is
+only ever a ``dispatch`` record: it keeps the handoff the planner started
+from, so the next start can restore a half-written handoff. It has no
+operator dirty-file fingerprints, no carried-over files, and no
+``assignment_content``, and its ``story_key`` is None when that handoff
+names no story.
 
 This module only builds and parses the record. It does no file I/O; the
 orchestrator reads, writes, and deletes the file through its race-safe
@@ -25,15 +33,16 @@ from typing import Literal
 from llm_handoff.work_claim import carry_over_key
 
 IN_FLIGHT_RECORD_VERSION = 1
-InFlightRole = Literal["backend", "frontend"]
+InFlightRole = Literal["backend", "frontend", "planner"]
 InFlightPhase = Literal["dispatch", "handback"]
-_ROLES = frozenset({"backend", "frontend"})
+_ROLES = frozenset({"backend", "frontend", "planner"})
+_IMPLEMENTER_ROLES = frozenset({"backend", "frontend"})
 _PHASES = frozenset({"dispatch", "handback"})
 
 
 @dataclass(frozen=True)
 class InFlightRecord:
-    """What the dispatcher knew right before an implementer dispatch.
+    """What the dispatcher knew right before an implementer or planner dispatch.
 
     ``handoff_content`` is the pre-dispatch ``HANDOFF.md`` text.
     ``assignment_content`` is set only when the dispatch worked from another
@@ -54,11 +63,16 @@ class InFlightRecord:
     protected files against the pre-dispatch checkout instead of one the
     implementer already changed. None when no protected paths were configured
     or the record predates the field.
+
+    A ``planner`` record is a ``dispatch`` record with empty
+    ``dirty_fingerprints`` and ``carried_over`` and no
+    ``assignment_content``. Its ``story_key`` is the ``carry_over_key`` of
+    ``handoff_content``, which is None when that handoff names no story.
     """
 
     cycle: int
     role: InFlightRole
-    story_key: str
+    story_key: str | None
     phase: InFlightPhase
     head_sha: str | None
     handoff_content: str
@@ -106,10 +120,15 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     """Parse a record; None when it is malformed or does not hold together.
 
     Rejects invalid JSON, another ``version``, a ``role`` other than
-    ``backend`` or ``frontend``, a ``phase`` other than ``dispatch`` or
-    ``handback``, a field of the wrong type, and a ``story_key`` that is not
-    the ``carry_over_key`` of ``assignment_content`` (when set) or
-    ``handoff_content``. A ``handback`` record needs a string
+    ``backend``, ``frontend``, or ``planner``, a ``phase`` other than
+    ``dispatch`` or ``handback``, a field of the wrong type, and a
+    ``story_key`` that is not the ``carry_over_key`` of
+    ``assignment_content`` (when set) or ``handoff_content``. A ``planner``
+    record must be a ``dispatch`` record with empty ``dirty_fingerprints``
+    and ``carried_over`` and a null ``assignment_content``; its ``story_key``
+    may be JSON null, but only when ``handoff_content`` has no
+    ``carry_over_key``. An implementer record always needs a non-empty string
+    ``story_key``. A ``handback`` record needs a string
     ``handback_content``; a ``dispatch`` record must not have one. A missing
     ``assignment_content``, ``handback_content``, or ``handback_head_sha``
     reads as None, so a record written before the ``handback`` phase existed
@@ -161,13 +180,26 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     if raw_protected is not None and protected_digests is None:
         return None
     story_key = payload.get("story_key")
-    if not isinstance(story_key, str) or not story_key:
+    if story_key is None:
+        # Only a planner may have started from a handoff without a story.
+        if role in _IMPLEMENTER_ROLES:
+            return None
+    elif not isinstance(story_key, str) or not story_key:
         return None
     dirty_fingerprints = _string_pairs(payload.get("dirty_fingerprints"))
     if dirty_fingerprints is None:
         return None
     carried_over = _strings(payload.get("carried_over"))
     if carried_over is None:
+        return None
+    if role not in _IMPLEMENTER_ROLES and (
+        phase != "dispatch"
+        or dirty_fingerprints
+        or carried_over
+        or assignment_content is not None
+    ):
+        # A planner record is deleted when its dispatch returns and holds
+        # nothing but the handoff it started from.
         return None
     keyed_content = (
         assignment_content if assignment_content is not None else handoff_content
