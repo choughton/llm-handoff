@@ -506,7 +506,12 @@ def test_wait_discards_type_ahead_and_says_how_many(tmp_path: Path) -> None:
 
 
 class _PromptStream:
-    """Gives the reader one scripted line each time the prompt is shown."""
+    """Gives the reader one scripted line each time the prompt is shown.
+
+    ``readline`` waits for the next prompt or for ``close`` with no timeout.
+    A timeout here would read as EOF whenever the work between two pauses
+    runs slowly, and the next pause would then never get its line.
+    """
 
     def __init__(self, lines: list[str]) -> None:
         self._lines = list(lines)
@@ -518,11 +523,13 @@ class _PromptStream:
             self._release.release()
 
     def readline(self) -> str:
-        if not self._release.acquire(timeout=5):
-            return ""
+        self._release.acquire()
         if self._closed or not self._lines:
             return ""
         return self._lines.pop(0) + "\n"
+
+    def remaining_lines(self) -> list[str]:
+        return list(self._lines)
 
     def close(self) -> None:
         self._closed = True
@@ -536,6 +543,11 @@ class _TtyPromptStream(_PromptStream):
 
 class _StopPolling(Exception):
     pass
+
+
+# A pause in these tests resumes within seconds. One still waiting after
+# this long will never resume, so the harness fails the test instead.
+PAUSE_DEADLINE_SECONDS = 60.0
 
 
 def _config(repo_root: Path, **overrides: Any) -> DispatchConfig:
@@ -629,6 +641,23 @@ class _Harness:
             self.stream_requests += 1
             return self.stream
 
+        real_wait = orchestrator.wait_for_operator_or_handoff_change
+
+        def bounded_wait(*args: Any, stop_requested: Any = None, **kwargs: Any) -> Any:
+            # The wait checks for a stop request once per poll, so that check
+            # is where a pause that never resumes turns into a test failure.
+            deadline = time.monotonic() + PAUSE_DEADLINE_SECONDS
+
+            def stop_requested_or_fail() -> bool:
+                if time.monotonic() > deadline:
+                    pytest.fail(
+                        f"Pause still waiting after {PAUSE_DEADLINE_SECONDS:.0f}s; "
+                        f"unread operator lines: {self.stream.remaining_lines()}"
+                    )
+                return stop_requested is not None and stop_requested()
+
+            return real_wait(*args, stop_requested=stop_requested_or_fail, **kwargs)
+
         monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
         monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
         monkeypatch.setattr(orchestrator, "invoke_frontend_role", fake_frontend)
@@ -640,6 +669,9 @@ class _Harness:
         )
         monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: tty)
         monkeypatch.setattr(orchestrator, "_operator_input_stream", fake_stream)
+        monkeypatch.setattr(
+            orchestrator, "wait_for_operator_or_handoff_change", bounded_wait
+        )
 
     def log(self, level: str, message: str) -> None:
         self.logs.append((level, message))
