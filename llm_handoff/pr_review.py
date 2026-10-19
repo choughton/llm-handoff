@@ -122,7 +122,8 @@ def read_codex_review(
 ) -> CodexReviewState:
     """Interpret the Codex signals on a pull request for ``head_sha``.
 
-    With ``stale_before``, a summary comment last updated before it is
+    With ``stale_before``, a summary comment last updated before it, or in
+    the same second (GitHub timestamps have one-second resolution), is
     ignored.
     """
 
@@ -166,7 +167,7 @@ def read_codex_review(
             continue
         if stale_before is not None and _parse_time(
             comment.get("updated_at") or comment.get("created_at")
-        ) < stale_before:
+        ) <= stale_before:
             continue
         summary_status, unresolved = _summary_status(body, head)
 

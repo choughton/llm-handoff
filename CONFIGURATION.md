@@ -812,8 +812,12 @@ The outcomes:
   dispatcher posts one pull request comment, `@codex review`, and waits for
   the same head commit again with the same `review_timeout_seconds`. It
   records the retry as `review_retry_head` and `review_retry_at` in
-  `logs/dispatch/publish/story.json`, so a restart waits for that review
-  instead of asking again. The comment never goes in the pull request body.
+  `logs/dispatch/publish/story.json` and never asks again for the same head.
+  If the dispatcher stops during that wait, the next start resumes it when
+  the checkout is still on the story branch at that commit and `HANDOFF.md`
+  is still the story's `verified_pass`. A summary comment Codex has not
+  updated since the request (or updated in the same second) does not count.
+  The comment never goes in the pull request body.
   A failure Codex attributes to its usage limit for code reviews is not
   retried automatically.
 - When the retried review fails too, the account hit its usage limit, or no
@@ -821,9 +825,9 @@ The outcomes:
   a short operator prompt if `interactive_pause` is on and stdin is a
   terminal:
   - `merge` merges the pull request without the Codex review. The
-    dispatcher logs a `WARN` and posts a pull request comment saying the
-    merge had no Codex review and why. Every review thread must still be
-    resolved.
+    dispatcher logs a `WARN` and, before merging, posts a pull request
+    comment recording the operator's decision to merge without a Codex review
+    and why. Every review thread must still be resolved.
   - `retry` posts one more `@codex review` comment and waits again.
   - `quit` stops and leaves the pull request open, as below.
 

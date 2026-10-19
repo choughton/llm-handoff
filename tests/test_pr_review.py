@@ -202,7 +202,16 @@ def test_a_summary_untouched_since_a_review_request_is_ignored() -> None:
         reviews=[], review_comments=[], reactions=[],
     )
 
+    # GitHub timestamps have one-second resolution, so a summary updated in
+    # the second of the request may still be the old one.
+    same_second = read_codex_review(
+        head_sha=HEAD, bot_login=BOT, requested_at=asked, stale_before=asked,
+        issue_comments=[{**failed, "updated_at": "2026-10-15T07:00:00Z"}],
+        reviews=[], review_comments=[], reactions=[],
+    )
+
     assert stale.failed is False and stale.completed is False
+    assert same_second.failed is False and same_second.completed is False
     assert fresh.completed is True and fresh.failed is False
 
 

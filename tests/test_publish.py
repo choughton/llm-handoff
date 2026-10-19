@@ -1882,7 +1882,10 @@ def test_merge_at_the_review_prompt_merges_without_a_review_and_says_so(
     assert outcome == PublishOutcome()
     request, note = _posted(tmp_path)
     assert request == REVIEW_REQUEST
-    assert f"Merged without a Codex review of `{head[:12]}`" in note
+    # Posted before the merge, so it states the decision, not a done merge.
+    assert "Merged" not in note
+    assert f"without a Codex review of `{head[:12]}`" in note
+    assert "operator chose `merge`" in note
     assert "@" not in note.replace("⁠", "")
     assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
     assert _git(repo, "branch", "--show-current") == "main"
@@ -1984,6 +1987,64 @@ def test_a_restart_after_a_review_retry_does_not_request_another(
     assert len(prompt.reasons) == 1
     assert _posted(tmp_path) == []
     assert outcome.stop is True
+
+
+def _record_review_retry(repo: Path, head: str) -> None:
+    (repo / STATE_PATH).write_text(
+        json.dumps(
+            {
+                **_saved_state(repo),
+                "review_retry_head": head,
+                "review_retry_at": "2026-10-19T00:10:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_startup_resumes_the_wait_for_a_retried_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The dispatcher stopped while it waited for the review it asked for; the
+    # handoff is still the audit's verified_pass.
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _git(repo, "push", "-q", "-u", "origin", BRANCH)
+    _record_review_retry(repo, head)
+    clean = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _set_api(tmp_path, comments=[clean])
+    state = _gh_state(tmp_path)
+    (tmp_path / "gh_state.json").write_text(
+        json.dumps({**state, "pr": "OPEN"}), encoding="utf-8"
+    )
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, review=GATE, sleep=lambda seconds: None)
+
+    assert outcome == PublishOutcome()
+    assert _posted(tmp_path) == []
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert any("Resuming the wait" in message for _level, message in entries)
+
+
+@pytest.mark.parametrize("moved", ["handoff", "head"])
+def test_startup_does_not_resume_a_retry_the_story_moved_past(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moved: str
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _record_review_retry(repo, head)
+    handoff = VERIFIED
+    if moved == "handoff":
+        handoff = VERIFIED.replace("status: verified_pass", "status: verified_fail")
+    else:
+        (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+        _git(repo, "commit", "-q", "-am", "W9.9 Another change")
+    _entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, review=GATE, handoff_content=handoff)
+
+    assert outcome == PublishOutcome()
+    assert _gh_calls(tmp_path) == []
 
 
 def test_a_restart_waits_for_the_retried_review_not_the_old_failure(

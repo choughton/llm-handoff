@@ -1154,10 +1154,33 @@ def resume_paused_publish(
     """Publish again a ``pr`` story that paused on a base-branch merge.
 
     Runs once when the dispatcher starts. Does nothing unless the saved story
-    state says publishing paused and its story branch is checked out.
+    state says publishing paused and its story branch is checked out, or the
+    dispatcher stopped while it waited for a Codex review it had asked for
+    again: the story branch is checked out at that head commit and
+    ``HANDOFF.md`` is still the story's ``verified_pass``. That wait resumes
+    without asking Codex again.
     """
 
     state = _load_state(repo_root)
+    if state is not None and _review_retry_pending(repo_root, state, handoff_content):
+        log(
+            "INFO",
+            "Resuming the wait for the Codex review of "
+            f"{state.review_retry_head[:12]} on `{state.branch}`.",
+        )
+        return publish_story(
+            repo_root=repo_root,
+            mode="pr",
+            remote=remote,
+            auto_merge=auto_merge,
+            wait_for_checks=wait_for_checks,
+            handoff_content=handoff_content,
+            log=log,
+            gh_command=gh_command,
+            review=review,
+            sleep=sleep,
+            review_prompt=review_prompt,
+        )
     if state is None or not state.paused_publish:
         return PublishOutcome()
     if _current_branch(repo_root) != state.branch:
@@ -1184,6 +1207,24 @@ def resume_paused_publish(
         review=review,
         sleep=sleep,
         review_prompt=review_prompt,
+    )
+
+
+def _review_retry_pending(
+    repo_root: Path, state: StoryState, handoff_content: str
+) -> bool:
+    if state.paused_publish or not state.review_retry_head:
+        return False
+    try:
+        frontmatter = parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        return False
+    return (
+        frontmatter is not None
+        and (frontmatter.status or "") == "verified_pass"
+        and (frontmatter.story_id or "").strip() == state.story_id
+        and _current_branch(repo_root) == state.branch
+        and git_head(repo_root) == state.review_retry_head
     )
 
 
@@ -2654,9 +2695,13 @@ def _note_unreviewed_merge(
     detail: str,
     log: LogFn,
 ) -> None:
+    # Posted before the merge, so it records the decision, not a merge that
+    # an unresolved thread or a `gh pr merge` failure can still stop.
     body = _without_mentions(
-        f"Merged without a Codex review of `{head_sha[:12]}`: {detail}. The "
-        "operator chose `merge` at the llm-handoff prompt.\n\n" + _FOOTER
+        "The operator chose `merge` at the llm-handoff prompt: merge this pull "
+        f"request without a Codex review of `{head_sha[:12]}` ({detail}). "
+        "The dispatcher merges it once every review thread is resolved.\n\n"
+        + _FOOTER
     )
     posted, error = _post_issue_comment(gh_command, repo_root, pr_number, body)
     if posted is None:
