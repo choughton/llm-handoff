@@ -795,7 +795,7 @@ _UNSAFE_DISPLAY_CATEGORIES = {"Cc", "Cf", "Cs", "Zl", "Zp"}
 
 def test_escape_control_characters_escapes_format_and_separator_controls() -> None:
     orchestrator = _orchestrator()
-    text = "a‮b⁦c‏d e\x1bf"
+    text = "a\u202eb\u2066c\u200fd\u2028e\x1bf"
 
     escaped = orchestrator._escape_control_characters(text)
 
@@ -806,7 +806,7 @@ def test_escape_control_characters_escapes_format_and_separator_controls() -> No
         assert escape in escaped
         letters = letters.replace(escape, "")
     assert letters == "abcdef"
-    path = "src/café/日.py"
+    path = "src/caf\u00e9/\u65e5.py"
     assert orchestrator._escape_control_characters(path) == path
 
 
@@ -821,7 +821,7 @@ def test_forged_record_bidi_controls_are_escaped_in_the_approval_summary(
     _interrupt_backend(tmp_path, orchestrator, monkeypatch)
     forged_handoff = _assignment().replace(
         f"**Verification command:** {PASS_COMMAND}",
-        "**Verification command:** python -m pytest tests -q ‮#gnirts-eman",
+        "**Verification command:** python -m pytest tests -q \u202e#gnirts-eman",
     )
     payload = json.loads(_record_path(tmp_path).read_text(encoding="utf-8"))
     payload["handoff_content"] = forged_handoff
