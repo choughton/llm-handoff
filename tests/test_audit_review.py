@@ -1375,8 +1375,69 @@ def test_merge_blocks_when_either_reviewer_fails(failing: str) -> None:
 
     decision = audit_review.merge_review_verdicts(runs, block_severity="critical")
 
+    # A fail with no findings has nothing to grade, so it still blocks.
     assert decision.blocked is True
     assert decision.reasons == (f"{failing} reviewer returned fail",)
+    assert decision.non_blocking_fails == ()
+
+
+def test_merge_security_fail_below_threshold_does_not_block() -> None:
+    finding = ReviewFinding(severity="medium", title="Symlink race")
+    runs = {
+        "quality": _run_with("quality", ReviewVerdict(verdict="pass")),
+        "security": _run_with(
+            "security", ReviewVerdict(verdict="fail", findings=[finding])
+        ),
+    }
+
+    decision = audit_review.merge_review_verdicts(runs, block_severity="high")
+
+    assert decision.blocked is False
+    assert decision.reasons == ()
+    assert decision.blocking == ()
+    assert decision.notes == (("security", finding),)
+    assert decision.non_blocking_fails == (
+        "security reviewer returned fail with only findings below high",
+    )
+
+
+def test_merge_quality_fail_with_only_sub_threshold_findings_still_blocks() -> None:
+    finding = ReviewFinding(severity="low", title="Missing test")
+    runs = {
+        "quality": _run_with(
+            "quality", ReviewVerdict(verdict="fail", findings=[finding])
+        ),
+        "security": _run_with("security", ReviewVerdict(verdict="pass")),
+    }
+
+    decision = audit_review.merge_review_verdicts(runs, block_severity="high")
+
+    assert decision.blocked is True
+    assert decision.reasons == ("quality reviewer returned fail",)
+    assert decision.notes == (("quality", finding),)
+    assert decision.non_blocking_fails == ()
+
+
+def test_merge_security_fail_with_a_finding_at_threshold_blocks() -> None:
+    high = ReviewFinding(severity="high", title="Path traversal")
+    medium = ReviewFinding(severity="medium", title="Race")
+    runs = {
+        "quality": _run_with("quality", ReviewVerdict(verdict="pass")),
+        "security": _run_with(
+            "security", ReviewVerdict(verdict="fail", findings=[high, medium])
+        ),
+    }
+
+    decision = audit_review.merge_review_verdicts(runs, block_severity="high")
+
+    assert decision.blocked is True
+    assert decision.reasons == (
+        "security reviewer returned fail",
+        "1 finding(s) at or above high",
+    )
+    assert decision.blocking == (("security", high),)
+    assert decision.notes == (("security", medium),)
+    assert decision.non_blocking_fails == ()
 
 
 # --------------------------------------------------------------------------
@@ -1504,6 +1565,60 @@ def test_fan_out_passes_and_attaches_sub_threshold_notes(
     assert "## Security Notes" in written
     assert "[low] src/app.py:3 - Verbose error" in written
     assert "## Security Findings" not in written
+
+
+def test_fan_out_security_fail_below_block_severity_passes_with_notes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(
+                _security_payload(
+                    verdict="fail",
+                    findings=[_finding("medium", "Junction race")],
+                )
+            )
+        ),
+    )
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(
+            _quality_payload(next_agent="planner", close_type="story")
+        ),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.startswith("audit fan-out passed")
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+    assert frontmatter.status == "verified_pass"
+    assert frontmatter.scope_sha == head
+    assert (
+        "- Security reviewer verdict: fail (non-blocking: every finding is "
+        "below high)"
+    ) in written
+    assert "- Blocking findings: 0" in written
+    assert "## Security Notes" in written
+    assert "[medium] src/app.py:3 - Junction race" in written
+    assert "## Security Findings" not in written
+    assert (
+        "- **Unresolved concerns:** security reviewer returned fail with only "
+        "findings below high (see Security Notes)"
+    ) in written
+    assert "Audit fan-out PASSED" in log.text()
+    assert (
+        "Audit fan-out did not block on a fail verdict: security reviewer "
+        "returned fail with only findings below high"
+    ) in log.text()
 
 
 @pytest.mark.parametrize(

@@ -2064,7 +2064,7 @@ audit:
 | `audit.security_opt_out_reason` | unset | Required, non-empty text when `audit.reviewers` leaves out `security`; rejected while `security` is listed. |
 | `audit.security_provider` | auto | CLI used for the security reviewer. When unset, see the automatic choice below. |
 | `audit.security_model` | unset (borrowed from the first `claude` role, else the built-in Claude default) | Model the claude security reviewer passes as `--model`. Applies only to the claude reviewer; see below. |
-| `audit.block_severity` | `high` | A finding at or above this severity routes the story back to the implementer. |
+| `audit.block_severity` | `high` | A finding at or above this severity routes the story back to the implementer. A security `fail` verdict whose findings are all below it does not block; see below. |
 | `audit.review_timeout_ms` | `900000` | Process timeout for each reviewer in fan-out mode. |
 
 To opt out of the security reviewer:
@@ -2173,9 +2173,15 @@ With `security` enabled, the auditor route works differently:
   reviewer run concurrently on that range. Both are told not to write
   `HANDOFF.md` and must return a JSON verdict.
 - The dispatcher, not a reviewer, rewrites `HANDOFF.md`. Any finding at or
-  above `block_severity`, or a `fail` verdict from either reviewer, produces
-  `status: verified_fail` routed back to the implementer with a
-  `## Security Findings` section. A block on a range with no committed
+  above `block_severity`, a quality `fail` verdict, or a security `fail`
+  verdict with no findings or with a finding at or above `block_severity`
+  produces `status: verified_fail` routed back to the implementer with a
+  `## Security Findings` section. A security `fail` whose findings are all
+  below `block_severity` does not block: `block_severity` decides. The
+  `## Merge Decision` section records that verdict as non-blocking, its
+  findings go under `## Security Notes` (which the pull request body
+  repeats), the evidence's unresolved concerns name it, and the log has a
+  `WARN`. A block on a range with no committed
   changes routes to `planner` instead, since no implementer has work to fix.
   Otherwise the handoff routes where the
   quality reviewer directed, with sub-threshold findings under

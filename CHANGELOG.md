@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: in the audit fan-out, a security reviewer `fail` verdict
+  whose findings are all below `audit.block_severity` no longer blocks the
+  audit. `block_severity` decides, as the Codex Security scanner path
+  already did. The audit passes with those findings under
+  `## Security Notes` (repeated in the pull request body), the
+  `## Merge Decision` section marks the security verdict non-blocking, the
+  unresolved concerns name it, and the log records a `WARN`. A quality
+  `fail` still always blocks, and so does a security `fail` with no
+  findings or with a finding at or above `block_severity`. Before this, a
+  security reviewer that rated its only finding `medium` but returned
+  `fail` sent the story back to the implementer each round until the
+  three-fix circuit breaker stopped it.
 - Behavior change: with `wait_for_reviewers: [codex]`, a Codex review that
   Codex reports as failed no longer stops the loop at once. The dispatcher
   posts one `@codex review` pull request comment and waits for the same head
