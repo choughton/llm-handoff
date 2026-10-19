@@ -28,7 +28,11 @@ This project follows a simple pre-release changelog until the first public tag.
   dispatcher before its commit and gates, a read that fails with a sharing,
   permission, or I/O error keeps the record for a later start, and an
   interrupted operator `@backend`/`@frontend` dispatch that continued the
-  saved story is recovered as a continuation of that story.
+  saved story is recovered as a continuation of that story. Because a role
+  can rewrite the record, the dispatcher does not treat it as authenticated:
+  before the question it logs the assignment a confirmation would restore
+  (Files in scope, Files out of bounds, Verification commands, and a short
+  SHA-256, escaped), and confirming approves that assignment.
 
 - An audit verdict whose strings hold unescaped backslashes, such as a Codex
   quality reviewer's `rg -n '12\.'` in `commands_run`, now parses instead of

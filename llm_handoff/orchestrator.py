@@ -137,6 +137,7 @@ from llm_handoff.work_claim import (
     load_implementer_leftovers,
     normalize_repo_path,
     parse_work_packet_scope,
+    parse_work_packet_verification_commands,
     prune_implementer_leftovers,
     path_is_in_scope,
     record_passed_verification,
@@ -5395,6 +5396,63 @@ def _delete_in_flight_record(config: DispatchConfig, log: LogFn) -> bool:
     return True
 
 
+def _interrupted_dispatch_assignment(
+    config: DispatchConfig, record: InFlightRecord
+) -> str:
+    """The assignment a confirmed recovery hands the re-dispatched role.
+
+    The restored handoff is the assignment, except for an operator dispatch
+    that continued the saved story from a handoff without a ``story_id``:
+    that re-dispatch works from the saved story's rebuilt assignment, as the
+    cycle body does.
+    """
+
+    if (
+        record.continues_saved_story
+        and config.publish.mode != "local"
+        and not _handoff_story_id(record.handoff_content)
+    ):
+        return saved_story_assignment(config.repo_root) or record.handoff_content
+    return record.handoff_content
+
+
+def _interrupted_dispatch_assignment_summary(
+    config: DispatchConfig, record: InFlightRecord, state_path: Path
+) -> str:
+    """The recovered assignment's scope and commands, safe to show on a terminal.
+
+    The in-flight record lives in a file a role can rewrite, so its handoff
+    text cannot be authenticated as the pre-dispatch assignment. Confirming
+    recovery makes that text the next dispatch's assignment baseline, so the
+    operator is shown what the work-claim gate will enforce and run before
+    answering: Files in scope, Files out of bounds, and the Verification
+    commands, each escaped.
+    """
+
+    assignment = _interrupted_dispatch_assignment(config, record)
+
+    def listed(values: tuple[str, ...] | list[str]) -> str:
+        return ", ".join(_escape_control_characters(value) for value in values) or "none"
+
+    packet = parse_work_packet_scope(assignment)
+    commands = parse_work_packet_verification_commands(assignment)
+    if packet is None:
+        scope = "no ## Work Packet section"
+    else:
+        scope = (
+            f"Files in scope: {listed(packet.files_in_scope)}; Files out of "
+            f"bounds: {listed(packet.files_out_of_bounds)}; Verification "
+            f"commands: {listed(commands[0] if commands is not None else ())}"
+        )
+    return (
+        "The dispatcher cannot verify that the in-flight record is unchanged "
+        "since it was written; a role can rewrite it. Confirming accepts its "
+        f"assignment (sha256 {_content_sha(assignment)[:12]}) as {record.role}'s "
+        f"next Work Packet: {scope}. Review handoff_content in {state_path} "
+        "before answering; decline if this is not the assignment you expect."
+    )
+
+
 def _recover_interrupted_dispatch(
     config: DispatchConfig,
     log: LogFn,
@@ -5403,8 +5461,11 @@ def _recover_interrupted_dispatch(
     """Recover an implementer a previous run left interrupted mid-dispatch.
 
     A record read from disk could be forged by a role, so it applies only
-    after the operator confirms it at a terminal (HARD-5). Otherwise it is
-    discarded and the files stay operator edits.
+    after the operator confirms it at a terminal (HARD-5). Its handoff text
+    cannot be authenticated, so before the question the operator is shown the
+    assignment it would restore (scope and Verification commands); confirming
+    approves that assignment. Otherwise it is discarded and the files stay
+    operator edits.
     """
 
     nothing = InterruptedDispatchRecovery()
@@ -5553,12 +5614,17 @@ def _recover_interrupted_dispatch(
         and not operator_prompt.reader().console_unavailable
     ):
         handoff_note = (
-            f" The half-written handoff {handoff_display} will be restored to "
-            "its pre-dispatch text."
+            f" The half-written handoff {handoff_display} will be replaced by "
+            "the handoff text the in-flight record holds."
             if handoff_changed
             else " The handoff is unchanged."
         )
         _log(log, "INFO", summary + handoff_note)
+        _log(
+            log,
+            "INFO",
+            _interrupted_dispatch_assignment_summary(config, record, state_path),
+        )
         confirmed = _confirm_carry_over_at_terminal(
             operator_prompt.reader(),
             f"Recover {record.role}'s interrupted {story} work? [y/N]",
@@ -5600,8 +5666,9 @@ def _recover_interrupted_dispatch(
         _log(
             log,
             "INFO",
-            f"Restored the half-written handoff {handoff_display} to "
-            f"the text it had before the interrupted {record.role} dispatch.",
+            f"Restored the half-written handoff {handoff_display} to the "
+            f"operator-approved text from the in-flight record of the "
+            f"interrupted {record.role} dispatch.",
         )
     leftovers = ImplementerLeftovers(
         story_key=record.story_key,

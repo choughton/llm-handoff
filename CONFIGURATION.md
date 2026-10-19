@@ -651,10 +651,16 @@ record for a later start. A dry run logs what it found, says
 confirmation rule above applies: only with `interactive_pause` on and a
 terminal with console input does the dispatcher log the role, story, agent
 files, changed operator files, and whether the handoff will be restored, then
-ask `Recover <role>'s interrupted <story> work? [y/N]`. Any answer other than
+ask `Recover <role>'s interrupted <story> work? [y/N]`. The record lives in a
+file a role can rewrite, so the dispatcher cannot verify that its handoff text
+is the real pre-dispatch assignment. Right before the question it therefore
+logs the assignment that confirming would hand the re-dispatched role, with
+its Files in scope, Files out of bounds, Verification commands, and a short
+SHA-256, each escaped, and says that confirming accepts that assignment as the
+next Work Packet. Decline when it is not the assignment you expect. Any answer other than
 `y` or `yes`, end of input, no terminal, or `interactive_pause: false`
 discards the record with a `WARN` line; nothing is restored or carried over.
-On `y`, a half-written handoff is restored to its pre-dispatch text, the
+On `y`, a half-written handoff is replaced by the record's handoff text, the
 agent's files become that story's carry-over record (the carry-over prompt is
 skipped for this start), the record is deleted, and the same role
 is dispatched again with a note that its previous run was interrupted and
