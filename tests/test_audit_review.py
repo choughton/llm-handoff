@@ -1285,6 +1285,71 @@ def test_parse_quality_verdict_accepts_unescaped_backslash_before_u() -> None:
     assert verdict.commands_run == commands
 
 
+# The shape of a real Codex quality verdict: the reviewer copied an `rg`
+# pattern into commands_run with single backslashes, and Codex returned the
+# verdict text inside its `{status, summary}` output-schema envelope.
+_CODEX_VERDICT_WITH_BAD_ESCAPES = (
+    '{"verdict":"pass","summary":"No blocking findings.",'
+    '"next_agent":"planner","reason":"Story approved.","close_type":"story",'
+    '"commands_run":["rg -n \'validate_handoff\\(|def _read_required_text\' '
+    'llm_handoff/orchestrator.py","rg -n \'cycle\\d+\' logs","echo \\u12"],'
+    '"output_summary":"rg exit 0","files_reviewed":["llm_handoff/orchestrator.py"],'
+    '"unresolved_concerns":"none","report":"## Findings\\nNone.","findings":[]}'
+)
+
+
+@pytest.mark.parametrize("via_unwrap", [True, False])
+def test_parse_quality_verdict_repairs_bad_escapes_in_codex_envelope(
+    via_unwrap: bool,
+) -> None:
+    from llm_handoff.agent_providers.codex import unwrap_codex_final_message
+
+    with pytest.raises(json.JSONDecodeError, match="Invalid \\\\escape"):
+        json.loads(_CODEX_VERDICT_WITH_BAD_ESCAPES)
+    envelope = json.dumps(
+        {"status": "pass", "summary": _CODEX_VERDICT_WITH_BAD_ESCAPES}
+    )
+    stdout = unwrap_codex_final_message(envelope) if via_unwrap else envelope
+
+    verdict = audit_review.parse_quality_verdict(stdout)
+
+    assert verdict.verdict == "pass"
+    assert verdict.next_agent == "planner"
+    assert verdict.commands_run == [
+        "rg -n 'validate_handoff\\(|def _read_required_text' "
+        "llm_handoff/orchestrator.py",
+        "rg -n 'cycle\\d+' logs",
+        "echo \\u12",
+    ]
+    assert verdict.report == "## Findings\nNone."
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        json.dumps(_quality_payload()),
+        '{"verdict":"pass","summary":"a\\\\(b \\"q\\" \\/ \\b\\f\\n\\r\\t '
+        'caf\\u00e9 \\\\u12 C:\\\\new"}',
+    ],
+)
+def test_extract_json_object_leaves_valid_json_unchanged(text: str) -> None:
+    assert audit_review.extract_json_object(text) == json.loads(text)
+
+
+def test_parse_security_verdict_repairs_bad_escapes() -> None:
+    text = (
+        '{"verdict":"fail","summary":"Pattern \\d+ is unanchored.",'
+        '"findings":[{"severity":"medium","file":"src/app.py","line":4,'
+        '"title":"Regex","description":"`re.match(\'\\w+\\(\')` matches too much.",'
+        '"recommendation":"Anchor it."}]}'
+    )
+
+    verdict = audit_review.parse_security_verdict(text)
+
+    assert verdict.summary == "Pattern \\d+ is unanchored."
+    assert verdict.findings[0].description == "`re.match('\\w+\\(')` matches too much."
+
+
 def test_parse_security_verdict_accepts_raw_newlines_in_strings() -> None:
     payload = _security_payload(
         findings=[
