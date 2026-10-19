@@ -2433,7 +2433,10 @@ def _failover_kwargs(config: DispatchConfig, role: AgentRole) -> dict[str, objec
         changed = _protected_file_changes(config, before)
         if not changed:
             return None
-        return f"it changed protected control files ({', '.join(changed)})"
+        return (
+            "it changed protected control files "
+            f"({_protected_paths_display(changed)})"
+        )
 
     return {"failover_guard": guard}
 
@@ -2955,6 +2958,28 @@ def _run_git_stdout(repo_root: Path, command: list[str]) -> str | None:
     return completed.stdout.strip()
 
 
+def _run_git_stdout_raw(repo_root: Path, command: list[str]) -> str | None:
+    """Git's stdout unstripped, decoded losslessly for NUL-delimited parsing.
+
+    Unlike ``_run_git_stdout`` this keeps leading and trailing whitespace and
+    decodes UTF-8 with ``surrogateescape``, so a non-UTF-8 byte stays distinct
+    instead of collapsing into U+FFFD. None when Git fails.
+    """
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.decode("utf-8", errors="surrogateescape")
+
+
 def _capture_protected_snapshot(
     config: DispatchConfig,
 ) -> ProtectedFileSnapshot | None:
@@ -3095,20 +3120,33 @@ def _protected_paths_in_commits(
     """The protected files (the handoff aside) the commits ``revisions`` touched.
 
     Each commit's own paths are listed (``git log --name-only -m
-    --no-renames``), not the net diff. None when Git cannot list them.
+    --no-renames``), not the net diff. ``-z`` keeps each path literal: Git
+    does not quote or escape it, so a non-ASCII, newline, or other unusual
+    name still matches its protected pattern. None when Git cannot list them.
     """
 
-    output = _run_git_stdout(
+    output = _run_git_stdout_raw(
         config.repo_root,
-        ["git", "log", "--name-only", "--format=", "-m", "--no-renames", *revisions],
+        [
+            "git",
+            "log",
+            "-z",
+            "--name-only",
+            "--format=",
+            "-m",
+            "--no-renames",
+            *revisions,
+        ],
     )
     if output is None:
         return None
     handoff_rel = _handoff_relative_path(config)
     paths: set[str] = set()
-    for line in output.splitlines():
-        relative = line.strip().replace("\\", "/")
-        if not relative or _same_repo_path(relative, handoff_rel):
+    for entry in output.split("\0"):
+        if not entry:
+            continue
+        relative = entry.replace("\\", "/")
+        if _same_repo_path(relative, handoff_rel):
             continue
         if _protected_path_matches(relative, config.protected_paths):
             paths.add(relative)
@@ -3148,14 +3186,14 @@ def _enforce_protected_files(
             log,
             "INFO",
             "Protected file changes listed in the Work Packet Files in scope: "
-            f"{', '.join(allowed)}",
+            f"{_protected_paths_display(allowed)}",
         )
     if not violations:
         return False
 
     error = (
         f"{PROTECTED_FILE_MODIFIED_PREFIX} {role_label} changed protected control "
-        f"files outside its Work Packet scope: {', '.join(violations)}"
+        f"files outside its Work Packet scope: {_protected_paths_display(violations)}"
     )
     _log(log, "ERROR", error)
     _write_protected_file_escalation(
@@ -3171,6 +3209,34 @@ def _enforce_protected_files(
         "file changes before resuming dispatch.",
     )
     return True
+
+
+def _protected_paths_display(paths: tuple[str, ...]) -> str:
+    """Protected paths joined for one log or message line, each escaped.
+
+    Paths are matched literally, so a name may hold a newline, a terminal
+    control, or a ``surrogateescape`` surrogate from a non-UTF-8 byte. Escaping
+    keeps the line single and printable and keeps a strict UTF-8 write from
+    raising.
+    """
+
+    return ", ".join(_escape_control_characters(path) for path in paths)
+
+
+def _protected_path_code_span(path: str) -> str:
+    """One escaped protected path as a Markdown code span.
+
+    The delimiter is one backtick longer than the longest backtick run in the
+    path, and a space pads a path that starts or ends with a backtick, so the
+    name cannot close the span early.
+    """
+
+    display = _escape_control_characters(path)
+    longest = max((len(run) for run in re.findall(r"`+", display)), default=0)
+    fence = "`" * (longest + 1)
+    if display.startswith("`") or display.endswith("`"):
+        display = f" {display} "
+    return f"{fence}{display}{fence}"
 
 
 def _write_protected_file_escalation(
@@ -3201,7 +3267,7 @@ def _write_protected_file_escalation(
         "",
         "Changed protected paths:",
         "",
-        *[f"- `{path}`" for path in violations],
+        *[f"- {_protected_path_code_span(path)}" for path in violations],
         "",
         "The dispatcher stopped routing work. Review these changes before "
         "resuming. Revert them if they were not intended. If the role should "
