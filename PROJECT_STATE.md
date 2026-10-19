@@ -6,7 +6,7 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** HARDENING (HARD-1 in progress).
+- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 in progress).
 - **Parked Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
@@ -519,7 +519,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 ### 10. HARDENING - security followups
 
-Fit: HARD-1 is in progress. Independent and cheap; each story closes one
+Fit: HARD-1 merged in PR #146; HARD-2 is in progress. Independent and cheap; each story closes one
 confirmed followup, so it fills a wait well. CHAT-4 reuses the HARD-3 marker, so take HARD-3 before
 CHAT.
 
@@ -537,7 +537,7 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   the stderr through it and `_single_line`, and cap it near the 300
   characters other reviewer errors use. Apply the helper wherever else
   provider stderr reaches a log line or a pause reason. Test with a planted
-  key.
+  key. Merged in PR #146.
 - HARD-2: Delimit operator text in operator-role prompts (closes
   PAUSE-RECOVERY followup (c)). `OPERATOR_ROLE_INSTRUCTION_TEMPLATE` and
   `OPERATOR_ROLE_AUDIT_FAN_OUT_INSTRUCTION_TEMPLATE` in
@@ -545,7 +545,11 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   message (`Operator guidance: <text>`) inline in the instruction. Wrap each
   in labelled delimiters and neutralize a closing delimiter that appears
   inside the text, so neither can pass as dispatcher instructions. Test with
-  text that contains the delimiter.
+  text that contains the delimiter. Decided by the planner on 2026-10-18:
+  labelled markers `<<<PAUSE REASON>>>` / `<<<END PAUSE REASON>>>` and
+  `<<<OPERATOR MESSAGE>>>` / `<<<END OPERATOR MESSAGE>>>`; runs of three or
+  more `<` or `>` inside quoted text are split with spaces; the planner
+  operator template (`OPERATOR_PAUSE_INSTRUCTION_TEMPLATE`) is covered too.
 - HARD-3: Record operator influence on audits (closes PAUSE-RECOVERY
   followup (d)). An `@auditor` dispatch with an operator message tells the
   reviewers to apply that message within the review, and nothing records it:

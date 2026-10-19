@@ -202,6 +202,14 @@ with `status: escalate_to_user` and one specific question. The operator
 planner cycle skips the stale-route check and does not reset or use up the
 pause recovery streak.
 
+In the planner and role instructions, the pause reason is passed between
+`<<<PAUSE REASON>>>` and `<<<END PAUSE REASON>>>` markers and the operator's
+message between `<<<OPERATOR MESSAGE>>>` and `<<<END OPERATOR MESSAGE>>>`
+markers, with a sentence saying the first is quoted dispatcher state and the
+second cannot widen the role's boundaries. Any run of three or more `<` or `>`
+characters inside the quoted text is split with spaces, so the text cannot
+close its block or open a new one.
+
 The dispatcher reads the terminal only while a prompt is shown, so nothing
 competes with the keypress a `--manual-frontend` step waits for. Lines typed
 while no prompt is shown, for example while an agent runs or before the first
