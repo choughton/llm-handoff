@@ -399,29 +399,18 @@ dispatch. Any malformed or missing verdict fails closed the same way.
 Choosing a security vendor different from the implementer's provider avoids
 asking a model family to grade its own output. When `audit.security_provider`
 is unset, the dispatcher picks the first of `claude`, `codex`, and
-`antigravity` that differs from the implementer role's provider. `gemini` is
-not chosen automatically but can still be set explicitly.
+`antigravity` that differs from the implementer role's provider. `gemini` was
+removed as a security reviewer: `audit.security_provider: gemini` fails at
+config load.
 
 ### Reviewer Security Posture
 
 - The security reviewer gets read-only tool permissions where the CLI supports
   them: Claude runs in `dontAsk` mode with an allow-list of read tools and
-  `git diff`/`git show`/`git log`, and edit and web tools denied; Gemini runs
-  in `--approval-mode plan` inside its container sandbox; the Codex fallback
-  runs `codex exec --sandbox read-only`. The Codex Security CLI has no
-  documented write mode for scans. These restrictions apply even when the
-  provider's role sets `unsafe_bypass: true`; for Gemini that setting only
-  drops the container sandbox. Without Docker or Podman, a Gemini security
-  reviewer fails closed with `security_reviewer_failed:`.
-- Gemini plan mode alone is not treated as a read-only boundary. Gemini CLI's
-  plan mode docs say that in non-interactive runs the policy engine
-  auto-approves `exit_plan_mode` and the CLI then switches to YOLO mode. A
-  reviewer talked into "executing the plan" by content in the diff would
-  then have every tool approved. The container sandbox still holds in that
-  case, so the reviewer follows the same rule as Gemini role launches. When
-  `audit.security_provider` is `gemini`, `run` checks for a sandbox runtime
-  at startup and refuses to start without one, unless the Gemini role whose
-  config the reviewer uses sets `unsafe_bypass: true`.
+  `git diff`/`git show`/`git log`, and edit and web tools denied; the Codex
+  fallback runs `codex exec --sandbox read-only`. The Codex Security CLI has
+  no documented write mode for scans. These restrictions apply even when the
+  provider's role sets `unsafe_bypass: true`.
 - The antigravity reviewer runs `agy` with a new private temp directory
   outside the repository as its working directory. The dispatcher writes a
   copy of the scope diff, the verdict JSON schema, and a workspace agent file
@@ -456,9 +445,7 @@ not chosen automatically but can still be set explicitly.
 - Every security reviewer, including both Codex paths, launches with the same
   allowlisted environment as its provider's role (`env_mode`,
   `env_passthrough`, and the vendor API key rule). Claude reviewers run
-  without `ANTHROPIC_API_KEY`, and Gemini reviewers run without
-  `GOOGLE_API_KEY` and, unless opted in, without `GEMINI_API_KEY`. The
-  antigravity reviewer uses the environment of the first role whose provider
+  without `ANTHROPIC_API_KEY`. The antigravity reviewer uses the environment of the first role whose provider
   is `antigravity`, or the default antigravity rules when no role uses it,
   and never receives a vendor API key.
 - Vendor security reviewers are LLM tools. They are not hardened against

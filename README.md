@@ -103,7 +103,7 @@ llm-handoff doctor --repo-root path/to/your-project
 ```
 
 `doctor` checks Git, each configured role's CLI binary, the Gemini sandbox
-runtime and security extension, the gate and reviewer settings, configured
+runtime, the gate and reviewer settings, configured
 scanners, interpreter grants, and whether the handoff file routes. It exits `1` on any error. Fix every `FAIL` before
 continuing; read the `WARN` lines too.
 
@@ -243,8 +243,7 @@ Things that stop a first run or quietly change what the loop does.
 - **Two reviewers run on every audit by default.** A read-only security
   reviewer runs beside the quality auditor. It uses the first installed CLI
   that differs from the implementer's vendor. With a single vendor it still
-  runs, with a warning that the review is not independent. A Gemini reviewer
-  additionally needs the Gemini CLI security extension. Opting out takes
+  runs, with a warning that the review is not independent. Opting out takes
   `audit.reviewers: [quality]` plus a written `audit.security_opt_out_reason`.
 - **The planner must write a Work Packet.** With the work-claim gate on (the
   default), a handoff that routes work to `backend` or `frontend` without a

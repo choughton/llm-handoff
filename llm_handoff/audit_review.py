@@ -49,14 +49,12 @@ from llm_handoff.usage_log import (
     usage_fields_from_claude_result,
 )
 from llm_handoff.agent_process import _run_logged_agent_command
-from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_providers.claude import (
     _build_claude_env,
     claude_shell_guidance,
     claude_tool_restriction_args,
 )
 from llm_handoff.agent_providers.codex import _build_codex_env, _run_codex_json_command
-from llm_handoff.agent_providers.gemini import _build_gemini_env
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
 from llm_handoff.config import AgentConfig, AgentRole, DispatchConfig
 from llm_handoff.failover import classify_fatal_failure
@@ -69,7 +67,7 @@ from llm_handoff.work_claim import extract_work_packet_section
 Severity = Literal["critical", "high", "medium", "low", "info"]
 ReviewerName = Literal["quality", "security"]
 SecurityReviewerKind = Literal[
-    "claude", "gemini", "codex-security", "codex-exec", "antigravity"
+    "claude", "codex-security", "codex-exec", "antigravity"
 ]
 
 SEVERITY_RANK: dict[str, int] = {
@@ -91,10 +89,6 @@ _SEVERITY_SYNONYMS: dict[str, str] = {
     "notice": "info",
 }
 AUDIT_LOG_DIRECTORY = Path("logs") / "dispatch" / "audit"
-EXTENSION_CHECK_TIMEOUT_MS = 60_000
-GEMINI_SECURITY_EXTENSION_URL = "https://github.com/gemini-cli-extensions/security"
-GEMINI_SECURITY_ANALYZE_COMMAND = "/security:analyze"
-GEMINI_SECURITY_EXTENSION_NAME = "gemini-cli-security"
 CODEX_SECURITY_BINARY = config_module._binary_name("codex-security")
 CLAUDE_SECURITY_ALLOWED_TOOLS: tuple[str, ...] = (
     "Read",
@@ -206,11 +200,6 @@ CLAUDE_SECURITY_REVIEW_PREFIX = (
     "Use Claude Code's built-in security review (the /security-review skill) as "
     "the review method, restricted to the Git range named below instead of the "
     "pending changes on the current branch. "
-)
-GEMINI_SECURITY_REVIEW_SUFFIX = (
-    " When you call the audit scope tool, pass the base ref {base_sha} and the "
-    "head ref {head_sha} instead of comparing against origin/HEAD. Put the final "
-    "JSON object in your response text; do not rely on a report file."
 )
 QUALITY_FAN_OUT_PROMPT_TEMPLATE = (
     "Use the auditor agent to audit the work described in {handoff_path}. Read "
@@ -454,10 +443,6 @@ class SecurityReviewerPlan:
     command: tuple[str, ...]
     env: dict[str, str] | None = None
     last_message_path: Path | None = None
-    precheck_command: tuple[str, ...] | None = None
-    # Set when the reviewer must not launch (for example, no sandbox runtime
-    # for Gemini CLI); the run fails closed with this error instead.
-    preflight_error: str | None = None
     # Antigravity only: the model flag (None for agy's own model), the diff
     # copied into the review's temp directory, the repository root, and the
     # builder for the agent file body, which receives the temp diff path.
@@ -724,7 +709,6 @@ class SecurityReviewerUnavailable(ValueError):
 _SECURITY_PROVIDER_DEFAULT_BINARIES: dict[str, str] = {
     "claude": config_module.CLAUDE_BINARY,
     "codex": config_module.CODEX_BINARY,
-    "gemini": config_module.GEMINI_BINARY,
     "antigravity": config_module.ANTIGRAVITY_BINARY,
 }
 _SECURITY_REVIEWER_REMEDY = (
@@ -905,14 +889,6 @@ def build_security_review_prompt(
     )
     if provider == "claude":
         return CLAUDE_SECURITY_REVIEW_PREFIX + core
-    if provider == "gemini":
-        return (
-            f"{GEMINI_SECURITY_ANALYZE_COMMAND} {core}"
-            + GEMINI_SECURITY_REVIEW_SUFFIX.format(
-                base_sha=scope.base_sha,
-                head_sha=scope.head_sha,
-            )
-        )
     return core
 
 
@@ -932,8 +908,7 @@ def build_security_reviewer_plan(
     provider_config = _provider_agent_config(config, provider)
     # Reviewers launch with the same environment allowlist as the provider's
     # role. Their read-only restrictions apply even when that role sets
-    # unsafe_bypass; for Gemini, unsafe_bypass only lifts the container
-    # sandbox requirement, and for Antigravity it is ignored.
+    # unsafe_bypass; for Antigravity it is ignored.
 
     if provider == "claude":
         binary = (provider_config.binary if provider_config else None) or (
@@ -965,36 +940,6 @@ def build_security_reviewer_plan(
             kind="claude",
             command=tuple(command),
             env=_build_claude_env(provider_config),
-        )
-
-    if provider == "gemini":
-        binary = (provider_config.binary if provider_config else None) or (
-            config_module.GEMINI_BINARY
-        )
-        unsafe_bypass = bool(
-            provider_config is not None and provider_config.unsafe_bypass
-        )
-        command = [
-            binary,
-            "--approval-mode",
-            "plan",
-            "--sandbox=false" if unsafe_bypass else "--sandbox",
-            "-p",
-            prompt,
-        ]
-        preflight_error = None
-        if (
-            not unsafe_bypass
-            and gemini_provider.detect_gemini_sandbox_runtime() is None
-        ):
-            preflight_error = _gemini_reviewer_sandbox_error(config)
-        return SecurityReviewerPlan(
-            provider=provider,
-            kind="gemini",
-            command=tuple(command),
-            env=_gemini_reviewer_env(config, provider_config),
-            precheck_command=(binary, "extensions", "list"),
-            preflight_error=preflight_error,
         )
 
     if provider == "codex":
@@ -1743,22 +1688,6 @@ def _run_security_reviewer(
     agent_name = f"Security reviewer ({plan.provider})"
     start = time.monotonic()
 
-    if plan.preflight_error is not None:
-        return _ReviewerOutcome(
-            run=ReviewerRun(
-                name="security",
-                provider=plan.provider,
-                command=plan.command,
-                exit_code=1,
-                elapsed_seconds=0.0,
-                stdout="",
-                stderr=plan.preflight_error,
-                error=plan.preflight_error,
-                start_failure="preflight",
-            ),
-            handoff_sha_after=_handoff_sha(handoff_path),
-        )
-
     if plan.kind == "antigravity":
         return _run_antigravity_security_reviewer(
             plan,
@@ -1766,58 +1695,6 @@ def _run_security_reviewer(
             repo_root=repo_root,
             handoff_path=handoff_path,
         )
-
-    if plan.precheck_command is not None:
-        precheck = _run_logged_agent_command(
-            agent_name,
-            list(plan.precheck_command),
-            cwd=repo_root,
-            timeout_ms=EXTENSION_CHECK_TIMEOUT_MS,
-            env=plan.env,
-            log=None,
-        )
-        extension_state = (
-            gemini_extension_state(precheck.stdout)
-            if precheck.exit_code == 0
-            else "missing"
-        )
-        if extension_state != "active":
-            if extension_state == "inactive":
-                precheck_error = (
-                    "security_extension_missing: " + _gemini_extension_inactive_detail()
-                )
-            else:
-                precheck_error = (
-                    "security_extension_missing: the Gemini CLI security "
-                    "extension is not installed in this repository's Gemini "
-                    "CLI; install it with `gemini extensions install "
-                    f"{GEMINI_SECURITY_EXTENSION_URL}` or set "
-                    "audit.security_provider to another vendor."
-                )
-            # Only a check that ran and proved the extension absent or
-            # disabled is a start failure. A check that itself failed for a
-            # transient reason (timeout, rate limit) keeps the failure-count
-            # path; a launch, auth, or argument failure still stops the loop.
-            if precheck.exit_code == 0:
-                precheck_start_failure: str | None = "preflight"
-            else:
-                precheck_start_failure = _reviewer_start_failure(
-                    precheck.exit_code, precheck.stdout, precheck.stderr
-                )
-            return _ReviewerOutcome(
-                run=ReviewerRun(
-                    name="security",
-                    provider=plan.provider,
-                    command=plan.precheck_command,
-                    exit_code=precheck.exit_code,
-                    elapsed_seconds=time.monotonic() - start,
-                    stdout=precheck.stdout,
-                    stderr=precheck.stderr,
-                    error=precheck_error,
-                    start_failure=precheck_start_failure,
-                ),
-                handoff_sha_after=_handoff_sha(handoff_path),
-            )
 
     usage: dict[str, object] | None = None
     if plan.kind == "codex-exec":
@@ -2105,7 +1982,7 @@ def describe_security_reviewer_model(config: DispatchConfig) -> str:
     """Describe which model the security reviewer uses, for the startup log.
 
     Does no PATH lookup. The claude reviewer always passes a model flag. The
-    gemini and codex reviewers run with their CLI's own default model. The
+    codex reviewer runs with its CLI's own default model. The
     antigravity reviewer runs with agy's own default model unless the first
     antigravity role sets ``model``, which it then borrows.
     """
@@ -2116,8 +1993,8 @@ def describe_security_reviewer_model(config: DispatchConfig) -> str:
         if borrowed:
             return f"{borrowed} (borrowed from the {role} role)"
         return "antigravity CLI default model (no model flag is passed)"
-    if provider in ("gemini", "codex"):
-        return f"{provider} CLI default model (no model flag is passed)"
+    if provider == "codex":
+        return "codex CLI default model (no model flag is passed)"
     model, origin = _claude_security_reviewer_model(config)
     text = f"{model} ({origin})"
     if provider is None:
@@ -2142,136 +2019,6 @@ def _provider_agent_role(config: DispatchConfig, provider: str) -> AgentRole | N
     return None
 
 
-def _gemini_reviewer_sandbox_error(config: DispatchConfig) -> str:
-    role = _provider_agent_role(config, "gemini")
-    if role is not None:
-        detail = gemini_provider.gemini_sandbox_unavailable_message(role)
-    else:
-        detail = (
-            "Gemini CLI sandbox unavailable for the security reviewer: no Docker "
-            "or Podman executable was found on PATH (macOS can use sandbox-exec)."
-        )
-    return (
-        f"security_reviewer_failed: {detail} Alternatively set "
-        "audit.security_provider to another vendor."
-    )
-
-
-def _gemini_reviewer_env(
-    config: DispatchConfig,
-    provider_config: AgentConfig | None,
-) -> dict[str, str]:
-    use_api_key_env = (
-        provider_config.use_api_key_env
-        if provider_config is not None and provider_config.use_api_key_env is not None
-        else config.planner_api_key_env_enabled
-    )
-    return _build_gemini_env(
-        use_api_key_env=use_api_key_env,
-        agent_config=provider_config,
-    )
-
-
-GeminiExtensionState = Literal["active", "inactive", "missing"]
-
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-# Status markers that `gemini extensions list` prints before an extension name.
-_GEMINI_EXTENSION_ACTIVE_MARKERS = frozenset({"✓", "✔"})
-_GEMINI_EXTENSION_INACTIVE_MARKERS = frozenset({"✗", "✘"})
-_GEMINI_EXTENSION_ENABLED_RE = re.compile(
-    r"^enabled(?:\s*\((?P<scope>[^)]*)\))?\s*:\s*(?P<value>\S+)",
-    re.IGNORECASE,
-)
-
-
-def gemini_extension_state(
-    stdout: str,
-    name: str = GEMINI_SECURITY_EXTENSION_NAME,
-) -> GeminiExtensionState:
-    """Classify one extension in `gemini extensions list` output.
-
-    The CLI lists every installed extension, disabled ones included, so a name
-    match alone does not prove the extension is usable. The entry for ``name``
-    is its header line (optional status marker, the exact name, an optional
-    ``(version)``) plus the indented detail lines that follow it. The entry is
-    inactive when the marker is a cross, when ``Enabled (Workspace)`` is false,
-    or, without a workspace line, when any ``Enabled`` line is false. An entry
-    that carries no status information at all is treated as active.
-    """
-    target = name.lower()
-    lines = _ANSI_ESCAPE_RE.sub("", stdout).splitlines()
-    for index, raw_line in enumerate(lines):
-        tokens = raw_line.strip().split()
-        if not tokens:
-            continue
-        marker = ""
-        if tokens[0] in _GEMINI_EXTENSION_ACTIVE_MARKERS | _GEMINI_EXTENSION_INACTIVE_MARKERS:
-            marker = tokens[0]
-            tokens = tokens[1:]
-        if not tokens or tokens[0].lower() != target:
-            continue
-        if marker in _GEMINI_EXTENSION_INACTIVE_MARKERS:
-            return "inactive"
-        enabled_values: dict[str, str] = {}
-        for detail in lines[index + 1 :]:
-            if not detail.strip() or not detail[:1].isspace():
-                break
-            match = _GEMINI_EXTENSION_ENABLED_RE.match(detail.strip())
-            if match is not None:
-                scope = (match.group("scope") or "").strip().lower()
-                enabled_values[scope] = match.group("value").lower()
-        if "workspace" in enabled_values:
-            return "active" if enabled_values["workspace"] == "true" else "inactive"
-        if any(value == "false" for value in enabled_values.values()):
-            return "inactive"
-        return "active"
-    return "missing"
-
-
-def _gemini_extension_inactive_detail() -> str:
-    return (
-        f"the Gemini CLI security extension ({GEMINI_SECURITY_EXTENSION_NAME}) is "
-        "installed but disabled for this repository; enable it with `gemini "
-        f"extensions enable {GEMINI_SECURITY_EXTENSION_NAME}` or set "
-        "audit.security_provider to another vendor."
-    )
-
-
-def _gemini_extension_missing_error(config: DispatchConfig) -> str | None:
-    """Return an error when the Gemini CLI security extension is not installed."""
-    provider_config = _provider_agent_config(config, "gemini")
-    binary = security_reviewer_binary(config, "gemini")
-    try:
-        result = _run_logged_agent_command(
-            "Security reviewer (gemini) extension check",
-            [binary, "extensions", "list"],
-            cwd=config.repo_root,
-            timeout_ms=EXTENSION_CHECK_TIMEOUT_MS,
-            env=_gemini_reviewer_env(config, provider_config),
-            log=None,
-        )
-    except OSError as exc:
-        return (
-            f"security_reviewer_failed: could not run `{binary} extensions "
-            f"list` to check the Gemini CLI security extension: {exc}"
-        )
-    state = gemini_extension_state(result.stdout) if result.exit_code == 0 else "missing"
-    if state == "active":
-        return None
-    if state == "inactive":
-        return (
-            "security_reviewer_failed: security_extension_missing: "
-            + _gemini_extension_inactive_detail()
-        )
-    return (
-        "security_reviewer_failed: security_extension_missing: the Gemini CLI "
-        f"security extension ({GEMINI_SECURITY_EXTENSION_NAME}) is not installed "
-        "in this repository's Gemini CLI; install it with `gemini extensions "
-        f"install {GEMINI_SECURITY_EXTENSION_URL}` or set "
-        "audit.security_provider to another vendor."
-    )
-
-
 def _security_provider_launch_error(
     config: DispatchConfig,
     provider: str,
@@ -2282,15 +2029,7 @@ def _security_provider_launch_error(
             f"security_reviewer_failed: the {provider} security reviewer CLI "
             f"`{binary}` was not found on PATH; {_SECURITY_REVIEWER_REMEDY}"
         )
-    if provider != "gemini":
-        return None
-    provider_config = _provider_agent_config(config, "gemini")
-    # unsafe_bypass launches Gemini CLI with --sandbox=false, so no container
-    # runtime is needed; the extension is still required.
-    unsafe_bypass = provider_config is not None and provider_config.unsafe_bypass
-    if not unsafe_bypass and gemini_provider.detect_gemini_sandbox_runtime() is None:
-        return _gemini_reviewer_sandbox_error(config)
-    return _gemini_extension_missing_error(config)
+    return None
 
 
 def security_reviewer_startup_error(
@@ -2303,9 +2042,7 @@ def security_reviewer_startup_error(
     Checked once at startup so a reviewer that cannot launch stops the loop
     before an implementer cycle runs. Every provider is covered, configured
     or chosen automatically, for each implementer role: the binary must be
-    on PATH, and a Gemini reviewer also needs its sandbox runtime (unless
-    the Gemini role sets ``unsafe_bypass``) and the security extension.
-    The returned message starts with ``security_reviewer_failed:``.
+    on PATH. The returned message starts with ``security_reviewer_failed:``.
     """
     if not config.audit.security_enabled:
         return None

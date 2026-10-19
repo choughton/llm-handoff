@@ -5,9 +5,7 @@ commit count (audits need a parent commit for the default review base), the
 provider CLI binaries the configured roles launch, the container runtime
 Gemini CLI roles need for their sandbox, whether the configured next-agent
 normalizer has an API key or CLI to run with, whether the audit runs the
-security reviewer (with the opt-out reason when it does not; when that
-reviewer resolves to Gemini CLI, `gemini extensions list` is run to confirm
-the security extension is active), whether the
+security reviewer (with the opt-out reason when it does not), whether the
 work-claim gate is on (with the opt-out reason when it is not), each configured
 scanner and whether the gate will run it (its leading executable is looked up
 on PATH the way the gate does; scanner commands are never run), and the
@@ -1051,11 +1049,7 @@ def _check_security_review(
     """Report whether the audit runs the security reviewer.
 
     The dispatcher checks that the reviewer CLI can launch at startup; the
-    doctor reports the setting, and the opt-out reason when it is off. When
-    the reviewer for an implementer role resolves to Gemini CLI, the doctor
-    also runs `gemini extensions list`, because that reviewer cannot start
-    without the Gemini CLI security extension and the user has to install
-    it; no model is called.
+    doctor reports the setting, and the opt-out reason when it is off.
     """
     audit = dispatch_config.audit
     if not audit.security_enabled:
@@ -1074,56 +1068,6 @@ def _check_security_review(
             "security review",
             "the security reviewer is on (security provider: "
             f"{audit.security_provider or 'auto'})",
-        )
-    )
-    if _security_reviewer_uses_gemini(dispatch_config):
-        _check_gemini_security_extension(dispatch_config, checks)
-
-
-def _security_reviewer_uses_gemini(dispatch_config: DispatchConfig) -> bool:
-    """Whether any implementer's security review would run on Gemini CLI."""
-    # audit_review imports this module for the binary lookup, so import it
-    # here rather than at module level.
-    from llm_handoff import audit_review
-
-    for implementer_role in audit_review._IMPLEMENTER_ROLES:
-        try:
-            provider, _origin = audit_review.resolve_security_provider(
-                dispatch_config, implementer_role=implementer_role, log=None
-            )
-        except audit_review.SecurityReviewerUnavailable:
-            # Startup reports the missing reviewer CLI; the role binary
-            # checks above already cover it here.
-            continue
-        if provider == "gemini":
-            return True
-    return False
-
-
-def _check_gemini_security_extension(
-    dispatch_config: DispatchConfig,
-    checks: list[DoctorCheck],
-) -> None:
-    from llm_handoff import audit_review
-
-    error = audit_review._gemini_extension_missing_error(dispatch_config)
-    if error is None:
-        checks.append(
-            DoctorCheck(
-                "PASS",
-                "security extension",
-                "the Gemini CLI security extension "
-                f"({audit_review.GEMINI_SECURITY_EXTENSION_NAME}) is active",
-            )
-        )
-        return
-    checks.append(
-        DoctorCheck(
-            "FAIL",
-            "security extension",
-            error.removeprefix("security_reviewer_failed: ").removeprefix(
-                "security_extension_missing: "
-            ),
         )
     )
 

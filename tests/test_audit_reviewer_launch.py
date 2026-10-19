@@ -7,7 +7,6 @@ import pytest
 
 from llm_handoff import audit_review, config as config_module
 from llm_handoff.agent_providers import codex as codex_provider
-from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_types import _ProcessResult
 from llm_handoff.audit_review import ReviewScope
 from llm_handoff.config import AgentConfig, DispatchConfig
@@ -39,11 +38,10 @@ def _config(
     agents = config_module._default_agent_configs()
     role = {
         "claude": "auditor",
-        "gemini": "planner",
         "codex": "backend",
         "antigravity": "planner",
     }[provider]
-    if provider in ("gemini", "antigravity"):
+    if provider == "antigravity":
         base = {"provider": provider}
     else:
         base = agents[role].model_dump(exclude_none=True)
@@ -90,7 +88,7 @@ def _assert_allowlisted(env: dict[str, str] | None) -> None:
     assert "PATH" in upper
 
 
-@pytest.mark.parametrize("provider", ["claude", "gemini", "codex", "antigravity"])
+@pytest.mark.parametrize("provider", ["claude", "codex", "antigravity"])
 def test_security_reviewer_env_uses_the_role_allowlist(
     provider: str,
     tmp_path: Path,
@@ -168,54 +166,6 @@ def test_codex_reviewer_stays_read_only_even_with_unsafe_bypass(
     assert "--yolo" not in command
 
 
-def test_gemini_reviewer_uses_container_sandbox(tmp_path: Path) -> None:
-    plan = _plan(_config(tmp_path, "gemini"), "gemini", tmp_path)
-
-    command = list(plan.command)
-    assert command[command.index("--approval-mode") + 1] == "plan"
-    assert "--sandbox" in command
-    assert "--sandbox=false" not in command
-    assert plan.preflight_error is None
-
-
-def test_gemini_reviewer_unsafe_bypass_only_lifts_the_sandbox(tmp_path: Path) -> None:
-    plan = _plan(_config(tmp_path, "gemini", unsafe_bypass=True), "gemini", tmp_path)
-
-    command = list(plan.command)
-    assert "--sandbox=false" in command
-    assert command[command.index("--approval-mode") + 1] == "plan"
-    assert "--yolo" not in command
-
-
-def test_gemini_reviewer_fails_closed_without_sandbox_runtime(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(gemini_provider, "detect_gemini_sandbox_runtime", lambda: None)
-    launched: list[list[str]] = []
-
-    def fake_runner(agent_name, command, **_kwargs):
-        launched.append(list(command))
-        return _ProcessResult(stdout="", stderr="", exit_code=0)
-
-    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_runner)
-    plan = _plan(_config(tmp_path, "gemini"), "gemini", tmp_path)
-
-    outcome = audit_review._run_security_reviewer(
-        plan,
-        timeout_ms=1000,
-        repo_root=tmp_path,
-        handoff_path=tmp_path / "HANDOFF.md",
-        log=None,
-    )
-
-    assert launched == []
-    assert outcome.run.error is not None
-    assert outcome.run.error.startswith("security_reviewer_failed:")
-    assert "agents.planner.unsafe_bypass: true" in outcome.run.error
-    assert "audit.security_provider" in outcome.run.error
-
-
 def test_antigravity_reviewer_ignores_unsafe_bypass(tmp_path: Path) -> None:
     plan = _plan(
         _config(tmp_path, "antigravity", unsafe_bypass=True),
@@ -225,7 +175,6 @@ def test_antigravity_reviewer_ignores_unsafe_bypass(tmp_path: Path) -> None:
 
     assert plan.kind == "antigravity"
     assert "--dangerously-skip-permissions" not in plan.command
-    assert plan.preflight_error is None
 
 
 def test_antigravity_reviewer_run_passes_its_env(

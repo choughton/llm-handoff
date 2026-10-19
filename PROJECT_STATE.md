@@ -10,7 +10,8 @@ belong in commits, handoffs, and pull requests.
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
   GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
-  GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a in progress).
+  GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a merged in PR
+  #138; GEM-4b in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -98,15 +99,15 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: GEM-3 is done; take GEM-4a, GEM-4b, GEM-4c, then GEM-5, in order. GEM-5
+Fit: GEM-4a is done; take GEM-4b, GEM-4c, then GEM-5, in order. GEM-5
 deletes the `.gemini/` trees, so no later epic may recreate them.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
 `antigravity` role adapter already ships (ANTIGRAVITY-ADAPTER). Gemini CLI
-still backs the `gemini` security reviewer and the `gemini` role provider;
-GEM-4a removes the `gemini` normalizer and the `init --provider gemini`
-mapping. GEM-0 first makes `agy` roles work (the first
+still backs only the `gemini` role provider; GEM-4a and GEM-4b removed the
+`gemini` normalizer, the `init --provider gemini` mapping, and the `gemini`
+security reviewer. GEM-0 first makes `agy` roles work (the first
 live `agy` planner run could not write files); then replace each Gemini path
 with `agy`, then remove the `gemini` provider. After removal, a config value or
 flag that names `gemini` fails at load with a message that points to
@@ -395,7 +396,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
 - GEM-4: Remove the `gemini` provider from the runtime and reject the old
   names, so each fails at load or parse with a message naming `antigravity`.
   Split by the planner on 2026-10-18 into one Work Packet per story:
-  - GEM-4a (this story): delete `llm_handoff/normalizer_providers/gemini.py`
+  - GEM-4a (merged in PR #138): delete `llm_handoff/normalizer_providers/gemini.py`
     (API and CLI paths), its registration in `handoff_normalizer.py` and
     `normalizer_providers/__init__.py`, `GEMINI_NORMALIZER_MODEL` and the
     `gemini` normalizer entries in `config.py`, the `gemini` normalizer
@@ -408,7 +409,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
     --provider antigravity (the agy CLI)." Update the example configs, the
     normalizer and init docs, and `CHANGELOG.md`; delete the Gemini
     normalizer and all-Gemini `init` tests and add both rejection tests.
-  - GEM-4b: delete the Gemini security reviewer and its extension check in
+  - GEM-4b (this story): delete the Gemini security reviewer and its extension check in
     `audit_review.py` and the matching security-extension check in
     `doctor.py`, closing AUDIT-COST followups (b) and (c). Reject
     `audit.security_provider: gemini` with "The gemini provider was removed:
@@ -984,15 +985,8 @@ before a dispatch, that the role can run the command it was given.
 
 Promoted to HARDENING stories and removed below: AUDIT-COST (a),
 PAUSE-RECOVERY (c) and (d), CONFIG-CLEANUP (b), and LINEAR-FOUNDATIONS (d).
-The remaining letters are unchanged.
+The remaining letters are unchanged. AUDIT-COST (b) and (c) closed by GEM-4b.
 
-- From the AUDIT-COST close (low, `llm_handoff/audit_review.py`):
-  - (b) when `gemini extensions list` itself fails, the error still says the
-    extension is not installed (~line 1444); give the check failure its own
-    message.
-  - (c) when the extension check exits 0 but the extension is missing, the
-    start-failure line shows exit code 0 and empty stderr (~line 1275); show
-    `run.error` for preflight failures.
 - From the PAUSE-RECOVERY close (low, `llm_handoff/orchestrator.py`):
   - (a) the log line "scheduling a auditor dispatch" has an article error
     (~line 3278); use a neutral form and update the test that asserts it.

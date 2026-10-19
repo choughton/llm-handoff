@@ -211,7 +211,7 @@ ProviderName = Literal["codex", "gemini", "claude", "antigravity", "openai"]
 EnvMode = Literal["allowlist", "inherit"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
 AuditReviewer = Literal["quality", "security"]
-SecurityReviewProvider = Literal["claude", "gemini", "codex", "antigravity"]
+SecurityReviewProvider = Literal["claude", "codex", "antigravity"]
 BlockSeverity = Literal["critical", "high", "medium", "low"]
 # Who commits an implementer's work: the agent itself, or the dispatcher after
 # checking every changed file against the Work Packet's scope.
@@ -231,8 +231,8 @@ DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 DEFAULT_AUDIT_REVIEWERS: tuple[AuditReviewer, ...] = ("quality", "security")
 # Order used to pick a security reviewer vendor when `audit.security_provider`
 # is not set: the first vendor whose CLI is on PATH and that differs from the
-# implementer's provider, else the implementer's own vendor. `gemini` is not
-# in the automatic order; it can still be set explicitly.
+# implementer's provider, else the implementer's own vendor. The `gemini`
+# security reviewer was removed; naming it fails at config load.
 SECURITY_REVIEW_PROVIDER_PREFERENCE: tuple[SecurityReviewProvider, ...] = (
     "claude",
     "codex",
@@ -259,6 +259,11 @@ NORMALIZER_PROVIDER_MODELS: dict[ProviderName, str] = {
 GEMINI_NORMALIZER_REMOVED_MESSAGE = (
     "The gemini provider was removed: Gemini CLI no longer serves personal "
     "Google accounts. Use provider: antigravity (the agy CLI)."
+)
+# The gemini security reviewer was removed; naming it fails with this.
+GEMINI_SECURITY_PROVIDER_REMOVED_MESSAGE = (
+    "The gemini provider was removed: Gemini CLI no longer serves personal "
+    "Google accounts. Use security_provider: antigravity (the agy CLI)."
 )
 REQUIRED_AGENT_ROLES = frozenset(DEFAULT_AGENT_PROVIDERS)
 
@@ -560,6 +565,14 @@ class AuditConfig(BaseModel):
     security_model: str | None = None
     block_severity: BlockSeverity = "high"
     review_timeout_ms: int = AUDIT_REVIEW_TIMEOUT_MS
+
+    @field_validator("security_provider", mode="before")
+    @classmethod
+    def _reject_removed_security_provider(cls, value: object) -> object:
+        # Runs before the Literal check so the removal gets its own message.
+        if value == "gemini":
+            raise ValueError(GEMINI_SECURITY_PROVIDER_REMOVED_MESSAGE)
+        return value
 
     @field_validator("security_opt_out_reason", mode="after")
     @classmethod
