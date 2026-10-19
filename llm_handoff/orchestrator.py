@@ -716,6 +716,7 @@ def run_loop(
                 pending_planner_recovery.additional_instruction
             )
             active_planner_recovery_kind = pending_planner_recovery.kind
+            operator_prompt.planner_tried = True
             if (
                 pending_planner_recovery.kind == "operator_role"
                 and pending_planner_recovery.route == "auditor"
@@ -816,7 +817,6 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
-                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -866,7 +866,6 @@ def run_loop(
                     reason=orphan.message,
                     log=log_fn,
                     operator_prompt=operator_prompt,
-                    recovery_used=pause_recovery_used,
                     stop_watch=stop_watch,
                 )
                 if pause.stop:
@@ -937,7 +936,6 @@ def run_loop(
                 ),
                 log=log_fn,
                 operator_prompt=operator_prompt,
-                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -990,7 +988,6 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
-                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -1062,7 +1059,6 @@ def run_loop(
                 reason=pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
-                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -1089,7 +1085,6 @@ def run_loop(
                 reason=pre_dispatch_pause_reason,
                 log=log_fn,
                 operator_prompt=operator_prompt,
-                recovery_used=pause_recovery_used,
                 stop_watch=stop_watch,
             )
             if pause.stop:
@@ -1184,7 +1179,6 @@ def run_loop(
                     reason=pause_reason,
                     log=log_fn,
                     operator_prompt=operator_prompt,
-                    recovery_used=pause_recovery_used,
                     stop_watch=stop_watch,
                 )
                 if pause.stop:
@@ -1245,7 +1239,6 @@ def run_loop(
                         ),
                         log=log_fn,
                         operator_prompt=operator_prompt,
-                        recovery_used=pause_recovery_used,
                         stop_watch=stop_watch,
                     )
                     if pause.stop:
@@ -1807,7 +1800,6 @@ def run_loop(
                     reason=pause_reason,
                     log=log_fn,
                     operator_prompt=operator_prompt,
-                    recovery_used=pause_recovery_used,
                     stop_watch=stop_watch,
                 )
                 if pause.stop:
@@ -5085,8 +5077,9 @@ class _OperatorPromptState:
 
     def __init__(self) -> None:
         self._reader: OperatorInputReader | None = None
-        # True once an operator prompt dispatch ran in this pause streak;
-        # cleared wherever the streak resets.
+        # True once a scheduled planner recovery or operator dispatch was
+        # selected to run in this pause streak (not when it was scheduled,
+        # since a HANDOFF.md change drops it); cleared where the streak resets.
         self.planner_tried = False
 
     def reader(self) -> OperatorInputReader:
@@ -5184,14 +5177,13 @@ def _pause_at_dispatcher_pause(
     reason: str,
     log: LogFn,
     operator_prompt: _OperatorPromptState,
-    recovery_used: bool = False,
     stop_watch: _StopRequestWatch | None = None,
 ) -> PauseOutcome:
     """Pause for a HANDOFF.md edit, or for the operator prompt at a TTY.
 
     A stop request seen before or during the pause ends the run instead.
-    ``recovery_used`` says the bounded planner recovery already ran in this
-    pause streak, so the prompt also offers the manual HANDOFF.md edit.
+    Once a scheduled planner or role dispatch has run in this pause streak,
+    the prompt also offers the manual HANDOFF.md edit.
     """
 
     def stop_or(kind: PauseOutcomeKind) -> PauseOutcome:
@@ -5244,7 +5236,7 @@ def _pause_at_dispatcher_pause(
         stop_requested=(
             (lambda: stop_watch.requested(log)) if stop_watch is not None else None
         ),
-        planner_tried=recovery_used or operator_prompt.planner_tried,
+        planner_tried=operator_prompt.planner_tried,
     )
     if isinstance(result, StopRequested):
         return stop_or("stop")
@@ -5298,7 +5290,6 @@ def _pause_at_dispatcher_pause(
             "PAUSE",
             f"Operator prompt: scheduling a {role} dispatch with {summary}.",
         )
-        operator_prompt.planner_tried = True
         return PauseOutcome(kind="planner", pending_planner_recovery=role_pending)
 
     if result.text is None:
@@ -5324,7 +5315,6 @@ def _pause_at_dispatcher_pause(
         "PAUSE",
         f"Operator prompt: scheduling a planner dispatch with {summary}.",
     )
-    operator_prompt.planner_tried = True
     return PauseOutcome(kind="planner", pending_planner_recovery=pending)
 
 

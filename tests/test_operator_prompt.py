@@ -939,6 +939,10 @@ def test_discarded_operator_recovery_logs_a_warning(
         "Dropped the scheduled operator planner recovery because HANDOFF.md "
         "changed before it ran; routing the current handoff normally."
     ]
+    # The dropped dispatch never ran, so the next prompt does not claim the
+    # planner already tried.
+    assert harness.prompt_count() == 2
+    assert PROMPT_PLANNER_TRIED_LINE not in harness.pause_messages()
 
 
 # --- @<role> targeting ----------------------------------------------------
@@ -1452,6 +1456,10 @@ def test_discarded_role_dispatch_names_the_route(
         "Dropped the scheduled operator_role dispatch to backend because "
         "HANDOFF.md changed before it ran; routing the current handoff normally."
     ]
+    # The dropped dispatch never ran, so the next prompt does not claim the
+    # planner already tried.
+    assert harness.prompt_count() == 2
+    assert PROMPT_PLANNER_TRIED_LINE not in harness.pause_messages()
 
 
 CLAUDE_SCOPE_HANDOFF = """---
