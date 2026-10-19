@@ -13,8 +13,11 @@
   With ``wait_for_reviewers: [codex]`` it first waits for the Codex review
   that GitHub runs on the pushed commit: no findings merges, findings go back
   to the implementer on the same branch and pull request for one correction
-  round (``max_review_rounds``), and a review that never finishes leaves the
-  pull request open and stops the loop. The implementer's response to each
+  round (``max_review_rounds``). A review Codex reports as failed is
+  requested once more with an ``@codex review`` comment; when that one fails
+  too, or no review arrives in time, the operator prompt offers ``merge``,
+  ``retry``, or ``quit``, and without a terminal the loop stops with the pull
+  request left open. The implementer's response to each
   finding is posted as a reply on its review thread, which is then resolved,
   and the fix merges without another review. A response that starts with
   ``Deferred:`` gets the reply, but its thread stays unresolved. When only
@@ -23,7 +26,8 @@
   implementer, accept them with a ``Follow-up:`` decision that names a
   follow-up story (the dispatcher posts it, resolves the thread, and
   merges), or route to the user. Anything else pauses for a person. The
-  dispatcher never asks Codex for a review.
+  dispatcher asks Codex for a review only to retry a failed one, never after
+  findings.
 
 In ``pr`` mode the dispatcher only auto-merges a pull request whose review
 threads are all resolved. Before each push it merges the remote base branch
@@ -59,6 +63,7 @@ import yaml
 from llm_handoff.pr_review import (
     ReviewFinding,
     ReviewGate,
+    ReviewResult,
     is_deferred_response,
     is_follow_up_response,
     parse_gh_json_pages,
@@ -84,6 +89,9 @@ from llm_handoff.work_claim import (
 
 
 LogFn = Callable[[str, str], None]
+# Shows the operator why the review gate stopped and returns ``merge``,
+# ``retry``, or ``quit``.
+ReviewPromptFn = Callable[[str], str]
 STATE_PATH = Path("logs") / "dispatch" / "publish" / "story.json"
 MESSAGE_PATH = Path("logs") / "dispatch" / "publish" / "message.md"
 RESPONSES_PATH = Path("logs") / "dispatch" / "publish" / "responses.md"
@@ -111,6 +119,9 @@ _REPORT_BODY_LIMIT = 60000
 # review. A word joiner after `@` keeps the text readable without a mention.
 _MENTION_RE = re.compile(r"(?<![\w.])@(?=[A-Za-z0-9])")
 _WORD_JOINER = "\u2060"
+# The comment that asks Codex to review the pull request head. It goes in a
+# pull request comment, never in the body.
+_REVIEW_REQUEST = "@codex review"
 _FOOTER = "\U0001f916 Generated with [llm-handoff](https://github.com/choughton/llm-handoff)"
 # The pull request Summary: at most three sentences, as the template asks.
 _SUMMARY_SENTENCES = 3
@@ -159,6 +170,11 @@ class StoryState:
     # The commit the Codex review last finished reviewing. Only it, or it
     # plus clean base-branch merges, may merge outside the normal publish.
     reviewed_head: str = ""
+    # The head commit a failed Codex review was last requested again for, and
+    # when (UTC, ISO 8601). A restart waits for that review instead of
+    # requesting another one automatically.
+    review_retry_head: str = ""
+    review_retry_at: str = ""
 
 
 _TRACKER_FIELDS = ("tracker_issue", "tracker_url", "selection_basis")
@@ -596,12 +612,14 @@ def publish_story(
     sleep: Callable[[float], None] | None = None,
     base_branch: str | None = None,
     branch_prefix: str | None = None,
+    review_prompt: ReviewPromptFn | None = None,
 ) -> PublishOutcome:
     """Merge or open a pull request for an audited story.
 
     ``base_branch`` and ``branch_prefix`` (``publish.base_branch`` and
     ``publish.branch_prefix``) identify the base branch for an epic close
-    that has no story state.
+    that has no story state. ``review_prompt`` asks the operator what to do
+    when the Codex review fails or times out; without it the loop stops.
     """
 
     try:
@@ -677,7 +695,8 @@ def publish_story(
     message_path.write_text(body, encoding="utf-8")
     # A publish that paused at the merge resumes with the operator's merge on
     # an open pull request. Codex reviews new pull requests, not later pushes,
-    # and the dispatcher never asks for a review, so that merge stays unreviewed.
+    # and the dispatcher asks for a review only to retry a failed one, so that
+    # merge stays unreviewed.
     resumed_at_merge = state.paused_publish == "merge"
     if state.paused_publish:
         state = replace(state, paused_publish="", paused_head="")
@@ -752,8 +771,8 @@ def publish_story(
             log,
             f"Pushed the merge of {remote}/{state.base_branch} into "
             f"`{state.branch}` to {url or 'its pull request'}. No one has "
-            "reviewed that merge and the dispatcher never asks for a review, "
-            "so the pull request was left open. Review it and merge it "
+            "reviewed that merge and the dispatcher does not ask for a review "
+            "of it, so the pull request was left open. Review it and merge it "
             f"yourself, run `git switch {state.base_branch}` and `git pull`, "
             "then start the dispatcher again.",
         )
@@ -780,6 +799,7 @@ def publish_story(
             url=url,
             log=log,
             sleep=sleep,
+            review_prompt=review_prompt,
         )
         if verdict is not None:
             return verdict
@@ -1129,14 +1149,38 @@ def resume_paused_publish(
     gh_command: Sequence[str] = ("gh",),
     review: ReviewGate | None = None,
     sleep: Callable[[float], None] | None = None,
+    review_prompt: ReviewPromptFn | None = None,
 ) -> PublishOutcome:
     """Publish again a ``pr`` story that paused on a base-branch merge.
 
     Runs once when the dispatcher starts. Does nothing unless the saved story
-    state says publishing paused and its story branch is checked out.
+    state says publishing paused and its story branch is checked out, or the
+    dispatcher stopped while it waited for a Codex review it had asked for
+    again: the story branch is checked out at that head commit and
+    ``HANDOFF.md`` is still the story's ``verified_pass``. That wait resumes
+    without asking Codex again.
     """
 
     state = _load_state(repo_root)
+    if state is not None and _review_retry_pending(repo_root, state, handoff_content):
+        log(
+            "INFO",
+            "Resuming the wait for the Codex review of "
+            f"{state.review_retry_head[:12]} on `{state.branch}`.",
+        )
+        return publish_story(
+            repo_root=repo_root,
+            mode="pr",
+            remote=remote,
+            auto_merge=auto_merge,
+            wait_for_checks=wait_for_checks,
+            handoff_content=handoff_content,
+            log=log,
+            gh_command=gh_command,
+            review=review,
+            sleep=sleep,
+            review_prompt=review_prompt,
+        )
     if state is None or not state.paused_publish:
         return PublishOutcome()
     if _current_branch(repo_root) != state.branch:
@@ -1162,6 +1206,25 @@ def resume_paused_publish(
         gh_command=gh_command,
         review=review,
         sleep=sleep,
+        review_prompt=review_prompt,
+    )
+
+
+def _review_retry_pending(
+    repo_root: Path, state: StoryState, handoff_content: str
+) -> bool:
+    if state.paused_publish or not state.review_retry_head:
+        return False
+    try:
+        frontmatter = parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        return False
+    return (
+        frontmatter is not None
+        and (frontmatter.status or "") == "verified_pass"
+        and (frontmatter.story_id or "").strip() == state.story_id
+        and _current_branch(repo_root) == state.branch
+        and git_head(repo_root) == state.review_retry_head
     )
 
 
@@ -2437,8 +2500,14 @@ def _wait_for_reviewers(
     url: str,
     log: LogFn,
     sleep: Callable[[float], None] | None,
+    review_prompt: ReviewPromptFn | None = None,
 ) -> PublishOutcome | None:
-    """Return ``None`` to merge, or the outcome that replaces the merge."""
+    """Return ``None`` to merge, or the outcome that replaces the merge.
+
+    A review Codex reports as failed is requested again once per head commit.
+    When that one fails too, or no review finishes in time, ``review_prompt``
+    lets the operator merge without the review, retry, or quit.
+    """
 
     head_sha = git_head(repo_root)
     view = _open_pull_request(gh_command, repo_root, state.branch)
@@ -2474,22 +2543,86 @@ def _wait_for_reviewers(
             "review thread is resolved.",
         )
         return None
-    log(
-        "INFO",
-        f"Waiting up to {review.timeout_seconds}s for the Codex review of "
-        f"{head_sha[:12]} on {url}.",
+    def wait(since: datetime | None) -> ReviewResult:
+        log(
+            "INFO",
+            f"Waiting up to {review.timeout_seconds}s for the Codex review of "
+            f"{head_sha[:12]} on {url}.",
+        )
+        return wait_for_codex_review(
+            fetch=lambda endpoint: _fetch_json(gh_command, repo_root, endpoint),
+            pr_number=number,
+            head_sha=head_sha,
+            bot_login=review.codex_bot_login,
+            requested_at=since or requested_at,
+            timeout_seconds=review.timeout_seconds,
+            poll_seconds=review.poll_seconds,
+            log=log,
+            stale_before=since,
+            **({"sleep": sleep} if sleep is not None else {}),
+        )
+
+    def request_again() -> tuple[datetime | None, str]:
+        nonlocal state
+        posted, error = _request_codex_review(gh_command, repo_root, number)
+        if posted is None:
+            return None, error
+        state = replace(
+            state, review_retry_head=head_sha, review_retry_at=posted.isoformat()
+        )
+        _save_state(repo_root, state)
+        return posted, ""
+
+    # A restart after a retry request waits for that review, not a new one.
+    retry_at = (
+        _parse_timestamp(state.review_retry_at)
+        if state.review_retry_head == head_sha
+        else None
     )
-    result = wait_for_codex_review(
-        fetch=lambda endpoint: _fetch_json(gh_command, repo_root, endpoint),
-        pr_number=number,
-        head_sha=head_sha,
-        bot_login=review.codex_bot_login,
-        requested_at=requested_at,
-        timeout_seconds=review.timeout_seconds,
-        poll_seconds=review.poll_seconds,
-        log=log,
-        **({"sleep": sleep} if sleep is not None else {}),
-    )
+    result = wait(retry_at)
+    problem = ""
+    if result.outcome == "failed" and not result.usage_limited and retry_at is None:
+        retry_at, problem = request_again()
+        if retry_at is not None:
+            log(
+                "AGENT",
+                f"Codex reported the review of {head_sha[:12]} as failed; asked "
+                f"Codex to review {url} again with a pull request comment.",
+            )
+            result = wait(retry_at)
+
+    def left_open() -> str:
+        reason = f"The pull request {url} was left open because {result.detail}."
+        if problem:
+            reason += f" Asking Codex to review it again failed: {problem}."
+        return reason
+
+    while review_prompt is not None and result.outcome in ("failed", "timeout"):
+        choice = review_prompt(
+            f"{left_open()} Type `merge` to merge it without a Codex review, "
+            "`retry` to ask Codex to review it again, or `quit` to leave it "
+            "open and stop."
+        )
+        if choice == "merge":
+            _note_unreviewed_merge(
+                gh_command, repo_root, number, head_sha, result.detail, log
+            )
+            log(
+                "WARN",
+                f"Merging {url} WITHOUT a Codex review of {head_sha[:12]} at "
+                f"the operator's request ({result.detail}).",
+            )
+            return None
+        if choice != "retry":
+            break
+        retry_at, problem = request_again()
+        if retry_at is not None:
+            log(
+                "AGENT",
+                f"The operator asked to retry; asked Codex to review {url} "
+                "again with a pull request comment.",
+            )
+            result = wait(retry_at)
     if result.outcome == "clean":
         _save_state(repo_root, replace(state, reviewed_head=head_sha))
         log("AGENT", f"Codex review of {head_sha[:12]} finished with no findings.")
@@ -2534,11 +2667,84 @@ def _wait_for_reviewers(
                 max_rounds=review.max_rounds,
             ),
         )
-    return _pause(
-        repo_root,
-        log,
-        f"The pull request {url} was left open because {result.detail}. {resume}",
+    return _pause(repo_root, log, f"{left_open()} {resume}")
+
+
+def _request_codex_review(
+    gh_command: Sequence[str], repo_root: Path, pr_number: int
+) -> tuple[datetime | None, str]:
+    """Post the review request comment; return when GitHub created it.
+
+    Uses GitHub's own timestamp, so the next wait ignores Codex activity from
+    before the request even when the local clock is off.
+    """
+
+    posted, error = _post_issue_comment(
+        gh_command, repo_root, pr_number, _REVIEW_REQUEST
     )
+    if posted is None:
+        return None, error
+    return _parse_timestamp(str(posted.get("created_at") or "")) or utc_now(), ""
+
+
+def _note_unreviewed_merge(
+    gh_command: Sequence[str],
+    repo_root: Path,
+    pr_number: int,
+    head_sha: str,
+    detail: str,
+    log: LogFn,
+) -> None:
+    # Posted before the merge, so it records the decision, not a merge that
+    # an unresolved thread or a `gh pr merge` failure can still stop.
+    body = _without_mentions(
+        "The operator chose `merge` at the llm-handoff prompt: merge this pull "
+        f"request without a Codex review of `{head_sha[:12]}` ({detail}). "
+        "The dispatcher merges it once every review thread is resolved.\n\n"
+        + _FOOTER
+    )
+    posted, error = _post_issue_comment(gh_command, repo_root, pr_number, body)
+    if posted is None:
+        log(
+            "WARN",
+            "Could not note the merge without a Codex review on pull request "
+            f"#{pr_number}: {error}.",
+        )
+
+
+def _post_issue_comment(
+    gh_command: Sequence[str], repo_root: Path, pr_number: int, body: str
+) -> tuple[dict[str, object] | None, str]:
+    """Post a pull request comment; return GitHub's response or the error."""
+
+    posted = _run(
+        [
+            *gh_command,
+            "api",
+            "--method",
+            "POST",
+            f"repos/{{owner}}/{{repo}}/issues/{pr_number}/comments",
+            "-f",
+            f"body={body}",
+        ],
+        repo_root,
+        _GH_TIMEOUT_SECONDS,
+    )
+    if posted.returncode != 0:
+        return None, _first_line(posted)
+    try:
+        data = json.loads(posted.stdout or "")
+    except ValueError:
+        data = {}
+    return (data if isinstance(data, dict) else {}), ""
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _answer_findings(

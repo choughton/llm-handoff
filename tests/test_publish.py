@@ -156,6 +156,16 @@ elif args[:2] == ["pr", "checks"]:
             check=True,
         )
         save()
+elif args[:3] == ["api", "--method", "POST"]:
+    if state.get("fail_comment"):
+        sys.exit("HTTP 403: Resource not accessible by integration")
+    body = args[args.index("-f") + 1].partition("=")[2]
+    state.setdefault("posted", []).append({"endpoint": args[3], "body": body})
+    # Lets a test answer each review request with new Codex activity.
+    if body == "@codex review" and state.get("after_review_request"):
+        state["api"] = state["after_review_request"].pop(0)
+    save()
+    print(json.dumps({"id": 99, "created_at": "2026-10-19T00:10:00Z"}))
 elif args[0] == "api":
     fields = {}
     for flag, value in zip(args, args[1:]):
@@ -1563,15 +1573,19 @@ def _codex_finding(sha: str) -> dict:
     }
 
 
-def _set_api(tmp_path: Path, **pages: list) -> None:
-    path = tmp_path / "gh_state.json"
-    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    state["api"] = {
+def _api(**pages: list) -> dict:
+    return {
         "issues/7/comments": pages.get("comments", []),
         "pulls/7/reviews": pages.get("reviews", []),
         "pulls/7/comments": pages.get("review_comments", []),
         "issues/7/reactions": pages.get("reactions", []),
     }
+
+
+def _set_api(tmp_path: Path, **pages: list) -> None:
+    path = tmp_path / "gh_state.json"
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    state["api"] = _api(**pages)
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -1586,7 +1600,9 @@ def _set_threads(tmp_path: Path, *threads: dict) -> None:
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
-def _publish_with_review(repo: Path, gh: list[str], log, gate: ReviewGate = GATE):
+def _publish_with_review(
+    repo: Path, gh: list[str], log, gate: ReviewGate = GATE, review_prompt=None
+):
     return publish_story(
         repo_root=repo,
         mode="pr",
@@ -1598,6 +1614,7 @@ def _publish_with_review(repo: Path, gh: list[str], log, gate: ReviewGate = GATE
         gh_command=gh,
         review=gate,
         sleep=lambda seconds: None,
+        review_prompt=review_prompt,
     )
 
 
@@ -1728,6 +1745,378 @@ def test_codex_gate_pauses_without_merging_when_no_review_arrives(
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
     assert any(level == "PAUSE" for level, _message in entries)
     assert not (repo / STATE_PATH).exists()
+
+
+# The fake `gh` stamps each posted comment 2026-10-19T00:10:00Z.
+BEFORE_REQUEST = "2026-10-19T00:05:00Z"
+AFTER_REQUEST = "2026-10-19T00:20:00Z"
+REVIEW_REQUEST = "@codex review"
+
+
+def _codex_failed_summary(sha: str, updated_at: str = BEFORE_REQUEST) -> dict:
+    return {
+        "user": {"login": BOT},
+        "updated_at": updated_at,
+        "body": "<!-- codex-pull-request-review-summary -->\n\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        f"| **Code Review** | **Failed** | `{sha[:7]}` | PR opened |\n",
+    }
+
+
+def _after_review_requests(tmp_path: Path, *apis: dict) -> None:
+    path = tmp_path / "gh_state.json"
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    state["after_review_request"] = list(apis)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _posted(tmp_path: Path) -> list[str]:
+    path = tmp_path / "gh_state.json"
+    if not path.exists():
+        return []
+    posted = json.loads(path.read_text(encoding="utf-8")).get("posted", [])
+    assert all(item["endpoint"] == "repos/{owner}/{repo}/issues/7/comments" for item in posted)
+    return [item["body"] for item in posted]
+
+
+class _Prompt:
+    """Stands in for the operator prompt: answers in order, records reasons."""
+
+    def __init__(self, repo: Path, *answers: str) -> None:
+        self.repo = repo
+        self.answers = list(answers)
+        self.reasons: list[str] = []
+        self.states: list[dict] = []
+
+    def __call__(self, reason: str) -> str:
+        self.reasons.append(reason)
+        self.states.append(_saved_state(self.repo))
+        return self.answers.pop(0)
+
+
+def _failed_review_story(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    _set_api(tmp_path, comments=[_codex_failed_summary(head)])
+    return repo, gh, head
+
+
+def test_a_failed_codex_review_is_requested_once_more_and_merges_when_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    clean = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _after_review_requests(tmp_path, _api(comments=[clean]))
+    entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    kinds = [call[:2] for call in _gh_calls(tmp_path)]
+    assert ["pr", "comment"] not in kinds
+    assert kinds[-1] == ["pr", "merge"]
+    assert REVIEW_REQUEST not in (repo / "logs/dispatch/publish/message.md").read_text(
+        encoding="utf-8"
+    )
+    assert any("asked Codex to review" in message for _level, message in entries)
+
+
+def test_a_retried_review_that_fails_without_a_terminal_pauses_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    )
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "failed" in outcome.message
+    assert "Review it and merge it yourself" in outcome.message
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert not (repo / STATE_PATH).exists()
+
+
+def test_a_retried_review_that_fails_asks_the_operator_and_quit_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    )
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    [reason] = prompt.reasons
+    assert "failed" in reason and "`merge`" in reason and "`retry`" in reason
+    # The retry is on record before the prompt, so a restart does not repeat it.
+    assert prompt.states[0]["review_retry_head"] == head
+    assert prompt.states[0]["review_retry_at"] == "2026-10-19T00:10:00+00:00"
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "Review it and merge it yourself" in outcome.message
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_merge_at_the_review_prompt_merges_without_a_review_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    )
+    prompt = _Prompt(repo, "merge")
+    entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert outcome == PublishOutcome()
+    request, note = _posted(tmp_path)
+    assert request == REVIEW_REQUEST
+    # Posted before the merge, so it states the decision, not a done merge.
+    assert "Merged" not in note
+    assert f"without a Codex review of `{head[:12]}`" in note
+    assert "operator chose `merge`" in note
+    assert "@" not in note.replace("⁠", "")
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert any(
+        level == "WARN" and "WITHOUT a Codex review" in message
+        for level, message in entries
+    )
+
+
+def test_retry_at_the_review_prompt_asks_codex_again_and_merges_when_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    clean = {**_codex_summary(head), "updated_at": "2026-10-19T00:30:00Z"}
+    _after_review_requests(
+        tmp_path,
+        _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)]),
+        _api(comments=[clean]),
+    )
+    prompt = _Prompt(repo, "retry")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert outcome == PublishOutcome()
+    assert len(prompt.reasons) == 1
+    assert _posted(tmp_path) == [REVIEW_REQUEST, REVIEW_REQUEST]
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+
+
+def test_a_review_timeout_asks_the_operator_without_an_automatic_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _set_api(tmp_path)
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(
+        repo,
+        gh,
+        log,
+        gate=ReviewGate(reviewers=("codex",), timeout_seconds=0),
+        review_prompt=prompt,
+    )
+
+    [reason] = prompt.reasons
+    assert "no completed Codex review" in reason
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True and "left open" in outcome.message
+
+
+def test_a_usage_limit_failure_goes_straight_to_the_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    usage_limit = {
+        "user": {"login": BOT},
+        "created_at": "2099-01-01T00:00:00Z",
+        "body": "You have reached your Codex usage limits for code reviews.",
+    }
+    _set_api(tmp_path, comments=[_codex_failed_summary(head), usage_limit])
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    [reason] = prompt.reasons
+    assert "usage limit" in reason
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True
+
+
+def test_a_restart_after_a_review_retry_does_not_request_another(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    state = _saved_state(repo)
+    (repo / STATE_PATH).write_text(
+        json.dumps(
+            {
+                **state,
+                "review_retry_head": head,
+                "review_retry_at": "2026-10-19T00:10:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    # The retried review failed while the dispatcher was not running.
+    _set_api(tmp_path, comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert len(prompt.reasons) == 1
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True
+
+
+def _record_review_retry(repo: Path, head: str) -> None:
+    (repo / STATE_PATH).write_text(
+        json.dumps(
+            {
+                **_saved_state(repo),
+                "review_retry_head": head,
+                "review_retry_at": "2026-10-19T00:10:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_startup_resumes_the_wait_for_a_retried_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The dispatcher stopped while it waited for the review it asked for; the
+    # handoff is still the audit's verified_pass.
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _git(repo, "push", "-q", "-u", "origin", BRANCH)
+    _record_review_retry(repo, head)
+    clean = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _set_api(tmp_path, comments=[clean])
+    state = _gh_state(tmp_path)
+    (tmp_path / "gh_state.json").write_text(
+        json.dumps({**state, "pr": "OPEN"}), encoding="utf-8"
+    )
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, review=GATE, sleep=lambda seconds: None)
+
+    assert outcome == PublishOutcome()
+    assert _posted(tmp_path) == []
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert any("Resuming the wait" in message for _level, message in entries)
+
+
+@pytest.mark.parametrize("moved", ["handoff", "head"])
+def test_startup_does_not_resume_a_retry_the_story_moved_past(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moved: str
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _record_review_retry(repo, head)
+    handoff = VERIFIED
+    if moved == "handoff":
+        handoff = VERIFIED.replace("status: verified_pass", "status: verified_fail")
+    else:
+        (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+        _git(repo, "commit", "-q", "-am", "W9.9 Another change")
+    _entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, review=GATE, handoff_content=handoff)
+
+    assert outcome == PublishOutcome()
+    assert _gh_calls(tmp_path) == []
+
+
+def test_a_restart_waits_for_the_retried_review_not_the_old_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    state = _saved_state(repo)
+    (repo / STATE_PATH).write_text(
+        json.dumps(
+            {
+                **state,
+                "review_retry_head": head,
+                "review_retry_at": "2026-10-19T00:10:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Codex has not touched the summary since the retry request yet.
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(
+        repo,
+        gh,
+        log,
+        gate=ReviewGate(reviewers=("codex",), timeout_seconds=0),
+        review_prompt=prompt,
+    )
+
+    [reason] = prompt.reasons
+    assert "no completed Codex review" in reason
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True
+
+
+def test_findings_from_a_retried_review_bounce_without_another_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    completed = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _after_review_requests(
+        tmp_path,
+        _api(comments=[completed], review_comments=[_codex_finding(head)]),
+    )
+    prompt = _Prompt(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert outcome.stop is False and outcome.handoff is not None
+    assert "status: verified_fail" in outcome.handoff
+    assert prompt.reasons == []
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert _saved_state(repo)["review_rounds"] == 1
+
+
+def test_a_review_request_that_cannot_be_posted_asks_the_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, _head = _failed_review_story(tmp_path, monkeypatch)
+    state = _gh_state(tmp_path)
+    (tmp_path / "gh_state.json").write_text(
+        json.dumps({**state, "fail_comment": True}), encoding="utf-8"
+    )
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    [reason] = prompt.reasons
+    assert "Asking Codex to review it again failed" in reason
+    assert outcome.stop is True
 
 
 def test_a_higher_round_limit_waits_for_codexs_own_review_of_the_fix(

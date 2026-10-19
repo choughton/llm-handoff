@@ -19,10 +19,13 @@ from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
 from llm_handoff.operator_prompt import (
     PROMPT_HELP_LINES,
+    REVIEW_CHOICES,
+    REVIEW_PROMPT_HELP_LINES,
     ROLE_TARGET_INVALID,
     HandoffChanged,
     OperatorAction,
     OperatorInputReader,
+    ask_operator_choice,
     content_sha,
     parse_operator_input,
     wait_for_operator_or_handoff_change,
@@ -119,6 +122,53 @@ def test_free_text_is_planner_guidance() -> None:
 
 
 # --- OperatorInputReader --------------------------------------------------
+
+
+def test_review_choice_ignores_other_lines_until_a_choice() -> None:
+    entries: list[tuple[str, str]] = []
+    reader = OperatorInputReader(io.StringIO("\nplease merge\n  MERGE \n"))
+
+    choice = ask_operator_choice(
+        reader,
+        REVIEW_CHOICES,
+        REVIEW_PROMPT_HELP_LINES,
+        0.01,
+        lambda level, message: entries.append((level, message)),
+    )
+
+    assert choice == "merge"
+    assert [message for _level, message in entries].count(
+        "Type one of: merge, retry, quit."
+    ) == 2
+    assert all(line in [m for _l, m in entries] for line in REVIEW_PROMPT_HELP_LINES)
+
+
+def test_review_choice_is_none_when_input_closes_or_a_stop_arrives() -> None:
+    def log(_level: str, _message: str) -> None:
+        return None
+
+    closed = ask_operator_choice(
+        OperatorInputReader(io.StringIO("")), REVIEW_CHOICES, (), 0.01, log
+    )
+    stopped = ask_operator_choice(
+        OperatorInputReader(_TtyStream(""), console=_IdleConsole()),
+        REVIEW_CHOICES,
+        (),
+        0.01,
+        log,
+        stop_requested=lambda: True,
+    )
+
+    assert closed is None
+    assert stopped is None
+
+
+class _IdleConsole:
+    def read_chars(self, timeout: float, *, echo: bool = True) -> str:
+        return ""
+
+    def discard_unread(self) -> None:
+        return None
 
 
 def _wait_for_eof(reader: OperatorInputReader) -> None:
@@ -1644,3 +1694,32 @@ def test_startup_banner_shows_interactive_pause(
     assert len(banner) == 1
     assert banner[0].startswith(expected)
     assert ("only when stdin is a TTY" in banner[0]) is enabled
+
+
+def test_review_prompt_needs_the_operator_prompt_at_a_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entries: list[tuple[str, str]] = []
+
+    def log(level: str, message: str) -> None:
+        entries.append((level, message))
+
+    def prompt_for(tty: bool, typed: str, **overrides: Any):
+        monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: tty)
+        monkeypatch.setattr(
+            orchestrator, "_operator_input_stream", lambda: io.StringIO(typed)
+        )
+        return orchestrator._review_prompt(
+            _config(tmp_path, **overrides),
+            orchestrator._OperatorPromptState(),
+            orchestrator._StopRequestWatch(tmp_path),
+            log,
+        )
+
+    assert prompt_for(False, "merge\n") is None
+    assert prompt_for(True, "merge\n", interactive_pause=False) is None
+    retry = prompt_for(True, "retry\n")
+    assert retry is not None and retry("The review failed.") == "retry"
+    assert ("PAUSE", "The review failed.") in entries
+    closed = prompt_for(True, "")
+    assert closed is not None and closed("The review failed.") == "quit"

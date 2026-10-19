@@ -6,6 +6,20 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: with `wait_for_reviewers: [codex]`, a Codex review that
+  Codex reports as failed no longer stops the loop at once. The dispatcher
+  posts one `@codex review` pull request comment and waits for the same head
+  commit again, recording the retry in `logs/dispatch/publish/story.json` so
+  a restart does not ask twice and resumes that wait at startup while the
+  story branch is still at that commit and `HANDOFF.md` is still the story's
+  `verified_pass`. When the retried review fails too, a usage
+  limit failed it (no automatic retry), or no review finishes in time, an
+  operator prompt at a terminal offers `merge` (merge without the Codex
+  review, with a `WARN` and a pull request comment recording the decision), `retry` (ask
+  Codex once more and wait), or `quit` (the earlier stop with the pull
+  request left open). Without a terminal the loop stops as before. A
+  completed review with findings is unchanged and never gets a review
+  request.
 - In `pr` mode with `publish.base_branch` set, a start on a story branch
   whose pull request is already merged no longer stops at the next story
   ("Story branch not ready: still on story branch ...") after a full planner
