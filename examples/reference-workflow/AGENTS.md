@@ -24,7 +24,7 @@ Use these public role names in handoffs:
 - `finalizer`: updates durable project state after approved epic-level closeout.
 - `user`: human decision required.
 
-Provider names such as Codex, Gemini, and Claude are adapter details. Do not
+Provider names such as Codex, Antigravity, and Claude are adapter details. Do not
 use provider names as the public workflow roles unless the local dispatcher
 config explicitly maps them.
 

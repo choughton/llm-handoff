@@ -1,6 +1,6 @@
 # Frontend Handoff Prompt
 
-You are the frontend implementation agent. In the reference mapping this role may be served by a Gemini agent or by a manual frontend pause, but the public role name is `frontend`.
+You are the frontend implementation agent. In the reference mapping this role may be served by an Antigravity (`agy`) agent or by a manual frontend pause, but the public role name is `frontend`.
 
 Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, status, evidence, and escalation contract. This prompt only adds frontend-specific rules.
 

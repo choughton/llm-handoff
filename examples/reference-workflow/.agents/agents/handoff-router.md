@@ -48,7 +48,7 @@ Use these rules:
 - Broken, malformed, or internally inconsistent handoff state goes to `validator`.
 - Missing human decision, missing credentials, or unsafe ambiguity goes to `user`.
 
-If the handoff mentions a provider-specific name such as Codex, Gemini, or Claude, translate it to the public role it is serving in this repository.
+If the handoff mentions a provider-specific name such as Codex, Antigravity, or Claude, translate it to the public role it is serving in this repository.
 
 ## Required Write
 

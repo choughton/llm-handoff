@@ -62,10 +62,11 @@ Continue, pause, or escalate
 The current source checkout has the core config loader, router, validator,
 normalizer, provider invocation layer, target-repo initializer, and prompt
 templates. Runtime role dispatch is provider-config driven: each generic role
-uses its `agents.<role>.provider` adapter, currently one of `codex`, `gemini`,
-or `claude`. The shipped reference workflow still maps planner/frontend to
-Gemini, backend to Codex, and auditor/validator/finalizer to Claude, but that
-is a template default rather than an execution-layer constraint.
+uses its `agents.<role>.provider` adapter, currently one of `codex`, `claude`,
+or `antigravity`. The shipped reference workflow maps planner/frontend to
+Antigravity (`agy`), backend to Codex, and auditor/validator/finalizer to
+Claude, but that is a template default rather than an execution-layer
+constraint.
 
 ## Handoff File
 
@@ -94,17 +95,17 @@ roles are `planner`, `backend`, `frontend`, `auditor`, `validator`,
 
 If `next_agent` is not an exact enum match, the dispatcher can invoke an
 internal next-agent normalizer backed by a configured small model. The current
-scaffold supports Claude, Gemini, and OpenAI normalizer adapters. Claude is the
-reference default. This is not a workflow role and not a general reasoning
-step. It is a constrained resolver for obvious freeform values.
+scaffold supports Claude, Codex, Antigravity, and OpenAI normalizer adapters.
+Claude is the reference default. This is not a workflow role and not a general
+reasoning step. It is a constrained resolver for obvious freeform values.
 
 The normalizer has two execution paths. If a provider API key is available, it
 uses a structured API call with the Pydantic `NormalizedNextAgent` schema. If
-no API key is available, the Claude and Gemini adapters fall back to the local
-Claude Code or Gemini CLI sign-in, and the Codex adapter always uses the Codex
-CLI login. The OpenAI normalizer adapter is API-only. Once the
-API path is selected, API errors fail closed instead of silently switching to
-local OAuth state.
+no API key is available, the Claude adapter falls back to the local Claude Code
+sign-in. The Codex adapter always uses the Codex CLI login and the Antigravity
+adapter always uses the `agy` sign-in; neither takes an API key. The OpenAI
+normalizer adapter is API-only. Once the API path is selected, API errors fail
+closed instead of silently switching to local OAuth state.
 
 All normalizer provider adapters keep the same schema and failure contract.
 
@@ -334,7 +335,7 @@ repair of dispatcher or handoff-protocol failures.
 
 Provider CLIs are adapters, not workflow roles. A public config should map
 generic roles such as `planner`, `backend`, or `frontend` to concrete providers
-such as Gemini, Codex, or Claude.
+such as Antigravity, Codex, or Claude.
 
 `llm_handoff.agent_roles.invoke_role` is the adapter registry boundary. The
 orchestrator passes the target role's `AgentConfig`; provider modules translate
@@ -344,7 +345,9 @@ subagent names, session-resume behavior, and timeouts.
 The dispatcher does not sandbox these tools itself and does not manage their
 auth. It chooses the launch flags: by default each CLI runs under its own
 permission or sandbox mode (Claude Code `dontAsk` with an allowlist, Codex
-`workspace-write`, Gemini CLI container sandbox), and a role must set
+`workspace-write`, and `agy` with no permission flag, which allows workspace
+file reads and writes but runs a shell command only when a `permissions.allow`
+grant in the `agy` user settings covers it), and a role must set
 `unsafe_bypass: true` to launch with approvals and sandboxing disabled. It
 also builds each launch environment from an allowlist. See
 [CONFIGURATION.md](../CONFIGURATION.md#launch-permissions-and-sandboxing).
@@ -352,7 +355,7 @@ also builds each launch environment from an allowlist. See
 ## Provider-Native Subagents
 
 Provider-native subagents are allowed only inside a single active role
-invocation. Claude subagents, Codex skills, and Gemini agents can help the
+invocation. Claude subagents, Codex skills, and Antigravity agents can help the
 active role read, reason, review, or execute provider-specific workflows, but
 they are not dispatcher roles.
 
@@ -482,7 +485,8 @@ The written protocol is part of the runtime surface. The source checkout ships:
 - `docs/handoff/*.md` for shared handoff prompts and the live handoff template;
 - `.codex/skills/llm-handoff/SKILL.md` for the backend role when served by
   Codex;
-- `.gemini/agents/*.md` for planner and frontend role templates;
+- `.agents/agents/*.md` for the `agy` agent file of every role when served by
+  Antigravity;
 - `.claude/agents/*.md` for auditor, router, validator, and finalizer support.
 
 These files are templates, not hidden state. A consuming repository can copy
