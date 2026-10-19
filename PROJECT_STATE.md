@@ -1167,16 +1167,25 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   the placeholder case in that message. Files: `llm_handoff/orchestrator.py`,
   `llm_handoff/doctor.py`, `tests/`, `CHANGELOG.md`. Closes PAUSE-RECOVERY
   (a) and (b) and SCANNERS (b).
-- TIDY-2: Scanner lookups ignore the current directory on Windows. With no
-  `path`, `shutil.which` on Windows also searches the current directory, so
-  doctor (`llm_handoff/doctor.py` ~line 1136) and the work-claim gate
+- TIDY-2: Scanner lookups ignore the current directory on Windows. On
+  Windows, `shutil.which` can also search the current directory, so doctor
+  (`llm_handoff/doctor.py` ~line 1136) and the work-claim gate
   (`llm_handoff/work_claim.py` ~line 1394) can accept a scanner that is in the
-  repository but not on `PATH`. Pass `path=os.environ.get("PATH", "")` (or the
-  gate's allowlisted environment's `PATH`, when the gate builds one) in both,
-  through one shared helper so doctor and the gate cannot disagree. Tests
-  plant a fake executable in a temp working directory that is not on `PATH`
-  and expect both to report it missing. Files: `llm_handoff/doctor.py`,
-  `llm_handoff/work_claim.py`, `tests/`, `CHANGELOG.md`. Closes SCANNERS (c).
+  repository but not on `PATH`. Passing `path=` does not fix it: on Python
+  3.11 (the `requires-python` floor) `shutil.which` prepends the current
+  directory on Windows even with an explicit `path`, and later versions
+  decide it per process. Add one shared helper that both call instead of
+  `shutil.which` for scanner executables. It walks the `PATH` entries itself
+  (`os.environ["PATH"]`, or the gate's allowlisted environment's `PATH` when
+  the gate builds one), skips empty and relative entries such as `.`, tries
+  each `PATHEXT` extension on Windows, and accepts a regular file that
+  `os.access(..., os.X_OK)` allows. An absolute executable path is checked
+  directly. Doctor and the gate then cannot disagree. Tests plant a fake
+  executable (a `.bat` on Windows) in a temp working directory that is not on
+  `PATH`, run from that directory, and expect both to report it missing; a
+  second test puts the directory on `PATH` and expects both to find it.
+  Files: `llm_handoff/doctor.py`, `llm_handoff/work_claim.py`, `tests/`,
+  `CHANGELOG.md`. Closes SCANNERS (c).
 - TIDY-3: Docs and text cleanup. (a) Rewrap `CHANGELOG.md` lines over 100
   characters (one at ~line 445 on `105ea42`). (b) `CONFIGURATION.md` scanner
   section: add one line recommending pinned scanner versions. (c)
