@@ -390,6 +390,85 @@ def unfinished_story_pause_reason(
     )
 
 
+def leave_merged_story_branch(
+    *,
+    repo_root: Path,
+    prefix: str,
+    base_branch: str | None,
+    remote: str,
+    handoff_path: Path,
+    log: LogFn,
+) -> None:
+    """Return to the base branch from a story branch that is already merged.
+
+    A publish pause asks the operator to merge the pull request, run ``git
+    switch <base>`` and ``git pull``, then start again; the pause already
+    cleared the story state. When the operator merges but stays on the story
+    branch, the next story would stop at :func:`ensure_story_branch` after a
+    full planner cycle. Runs at startup instead: when the checkout is on a
+    ``prefix`` branch with no saved story state, its HEAD is on
+    ``remote/base_branch``, the local base branch has nothing that remote does
+    not, and nothing but ``handoff_path`` is uncommitted, the base branch is
+    fast-forwarded to ``remote/base_branch``, checked out, and the story
+    branch is deleted. Nothing is pushed.
+
+    Anything else leaves the checkout as it is, with a warning, so the story
+    branch check stops the dispatcher as before.
+    """
+
+    current = _current_branch(repo_root)
+    if not base_branch or current is None or not current.startswith(prefix):
+        return
+    if _load_state(repo_root) is not None:
+        return
+
+    def stay(problem: str) -> None:
+        log("WARN", f"Stayed on story branch `{current}`: {problem}.")
+
+    dirty = git_dirty_files(repo_root)
+    if dirty is None:
+        return stay("git status failed")
+    handoff = normalize_repo_path(handoff_path.as_posix())
+    others = [path for path in dirty if path != handoff]
+    if others:
+        return stay(f"uncommitted files other than {handoff}: {_path_list(others)}")
+    fetched = _fetch_base(repo_root, remote, base_branch)
+    if fetched.returncode != 0:
+        return stay(
+            f"git fetch {remote} {base_branch} failed ({_first_line(fetched)})"
+        )
+    upstream = f"refs/remotes/{remote}/{base_branch}"
+    if _git(repo_root, ["merge-base", "--is-ancestor", "HEAD", upstream]).returncode:
+        return stay(f"it has commits that are not on {remote}/{base_branch}")
+    if _branch_exists(repo_root, base_branch) and _git(
+        repo_root,
+        ["merge-base", "--is-ancestor", f"refs/heads/{base_branch}", upstream],
+    ).returncode:
+        return stay(
+            f"`{base_branch}` has commits that are not on {remote}/{base_branch}"
+        )
+    # The base branch is not checked out, so moving it is the fast-forward a
+    # `git pull` would make. A switch that would overwrite the uncommitted
+    # handoff fails without changing it, and the checkout stays put.
+    for args in (["branch", "-f", base_branch, upstream], ["switch", base_branch]):
+        result = _git(repo_root, args)
+        if result.returncode != 0:
+            return stay(f"`git {' '.join(args[:2])}` failed ({_first_line(result)})")
+    deleted = _git(repo_root, ["branch", "-d", current])
+    kept = (
+        ""
+        if deleted.returncode == 0
+        else f" Kept the local branch (`git branch -d` failed: {_first_line(deleted)})."
+    )
+    log(
+        "INFO",
+        f"Story branch `{current}` has no saved story state and is already on "
+        f"{remote}/{base_branch}, so its pull request is merged. Switched to "
+        f"`{base_branch}` and fast-forwarded it to {remote}/{base_branch} "
+        f"({_describe_commit(repo_root, 'HEAD')}); nothing was pushed.{kept}",
+    )
+
+
 def _unpushed_handoff_commits(
     repo_root: Path, remote: str, base: str, handoff_path: Path
 ) -> tuple[str, ...]:

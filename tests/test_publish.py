@@ -25,6 +25,7 @@ from llm_handoff.publish import (
     defer_blocked_handback,
     ensure_story_branch,
     keep_review_responses,
+    leave_merged_story_branch,
     publish_story,
     recover_orphaned_story,
     resume_paused_publish,
@@ -4074,3 +4075,184 @@ def test_report_from_a_rendered_fan_out_handoff_records_influence(
     _title, body = build_report(_load_state(tmp_path), handoff)
 
     assert "### Operator influence\n\n" + INFLUENCE_BULLETS in body
+
+
+HANDOFF = Path("docs/handoff/HANDOFF.md")
+
+
+def _merged_story_branch(
+    tmp_path: Path, story_files: dict[str, str] | None = None
+) -> tuple[Path, Path, str]:
+    """A story whose pull request was merged on the remote while the checkout
+    stayed on the story branch, after a publish pause cleared its state."""
+
+    repo, remote, _gh, _env = _with_remote(tmp_path)
+    _start_story(repo)
+    if story_files:
+        _commit_all(repo, story_files, "More story work")
+    _git(repo, "push", "-q", "origin", BRANCH)
+    git_dir = [
+        "git", "-c", "user.name=llm-handoff tests",
+        "-c", "user.email=tests@example.invalid", "--git-dir", str(remote),
+    ]
+    merge = subprocess.run(
+        [*git_dir, "commit-tree", f"refs/heads/{BRANCH}^{{tree}}",
+         "-p", "refs/heads/main", "-p", f"refs/heads/{BRANCH}",
+         "-m", "Merge pull request #7"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run([*git_dir, "update-ref", "refs/heads/main", merge], check=True)
+    (repo / STATE_PATH).unlink()
+    (repo / HANDOFF).parent.mkdir(parents=True, exist_ok=True)
+    (repo / HANDOFF).write_text("live handoff\n", encoding="utf-8")
+    return repo, remote, merge
+
+
+def _leave(repo: Path, log, **kwargs: object) -> None:
+    options: dict[str, object] = {
+        "repo_root": repo,
+        "prefix": "llm-handoff/",
+        "base_branch": "main",
+        "remote": "origin",
+        "handoff_path": HANDOFF,
+        "log": log,
+    }
+    options.update(kwargs)
+    leave_merged_story_branch(**options)
+
+
+def test_a_merged_story_branch_without_state_returns_to_the_base_branch(
+    tmp_path: Path,
+) -> None:
+    repo, _remote, merge = _merged_story_branch(tmp_path)
+    entries, log = _logs()
+
+    _leave(repo, log)
+
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "HEAD") == merge
+    assert BRANCH not in _git(repo, "branch", "--list")
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == "live handoff\n"
+    [(level, message)] = entries
+    assert level == "INFO"
+    assert BRANCH in message and "origin/main" in message
+    assert "Merge pull request #7" in message and "nothing was pushed" in message
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("unmerged", "commits that are not on origin/main"),
+        ("dirty", "uncommitted files other than docs/handoff/HANDOFF.md: `notes.txt`"),
+        ("local_base_ahead", "`main` has commits that are not on origin/main"),
+        ("fetch_fails", "git fetch origin main failed"),
+    ],
+)
+def test_a_story_branch_that_is_not_safely_merged_stays_checked_out(
+    tmp_path: Path, case: str, reason: str
+) -> None:
+    repo, _remote, _merge = _merged_story_branch(tmp_path)
+    if case == "unmerged":
+        _commit_all(repo, {"src/extra.py": "EXTRA = 1\n"}, "Unmerged work")
+    elif case == "dirty":
+        (repo / "notes.txt").write_text("scratch\n", encoding="utf-8")
+    elif case == "local_base_ahead":
+        _git(repo, "switch", "-q", "main")
+        _commit_all(repo, {"LOCAL.md": "local only\n"}, "Local-only commit")
+        _git(repo, "switch", "-q", BRANCH)
+    else:
+        _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    head = _git(repo, "rev-parse", "HEAD")
+    entries, log = _logs()
+
+    _leave(repo, log)
+
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert _git(repo, "rev-parse", "HEAD") == head
+    [(level, message)] = entries
+    assert level == "WARN" and BRANCH in message and reason in message
+
+
+def test_leaving_a_story_branch_does_not_overwrite_the_live_handoff(
+    tmp_path: Path,
+) -> None:
+    """The base branch changed the tracked handoff after the merge, so the
+    switch would overwrite the uncommitted live handoff; git refuses it."""
+
+    repo, remote, _merge = _merged_story_branch(
+        tmp_path, {HANDOFF.as_posix(): "template\n"}
+    )
+    _commit_on_remote(
+        tmp_path, remote, "main", {HANDOFF.as_posix(): "template v2\n"}, "Template"
+    )
+    entries, log = _logs()
+
+    _leave(repo, log)
+
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == "live handoff\n"
+    [(level, message)] = entries
+    assert level == "WARN" and "`git switch main` failed" in message
+
+
+@pytest.mark.parametrize("case", ["saved_state", "base_branch_unset", "not_a_story"])
+def test_leaving_a_story_branch_needs_a_stateless_story_branch_and_a_base(
+    tmp_path: Path, case: str
+) -> None:
+    repo, _remote, _merge = _merged_story_branch(tmp_path)
+    kwargs: dict[str, object] = {}
+    if case == "saved_state":
+        from llm_handoff.publish import _save_state
+
+        _save_state(repo, StoryState(
+            branch=BRANCH, base_branch="main", base_sha="0" * 40, story_id="W9.9",
+            story_title="Add a widget", epic_id="E1", work_packet="",
+        ))
+    elif case == "base_branch_unset":
+        kwargs["base_branch"] = None
+    else:
+        kwargs["prefix"] = "story/"
+    entries, log = _logs()
+
+    _leave(repo, log, **kwargs)
+
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert entries == []
+
+
+def test_run_loop_leaves_a_merged_story_branch_before_the_planner_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator merged the paused story's pull request but stayed on its
+    branch; the planner's next assignment must not stop on that branch."""
+
+    repo, _remote, _merge = _merged_story_branch(tmp_path)
+    config = _pr_loop_config(
+        repo,
+        publish={"mode": "pr", "base_branch": "main", "wait_for_reviewers": ["codex"]},
+    )
+    config.handoff_full_path.write_text(VERIFIED, encoding="utf-8")
+    dispatches: list[str] = []
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append(_git(repo, "branch", "--show-current"))
+        path.write_text(NEXT_STORY, encoding="utf-8")
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def validate(path: Path, previous_agent: str, **_kwargs: object):
+        return ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="backend"
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+    entries, log = _logs()
+
+    orchestrator.run_loop(config, max_cycles=1, log=log)
+
+    assert dispatches == ["main"]
+    assert any(
+        level == "INFO" and f"Story branch `{BRANCH}`" in message
+        for level, message in entries
+    )
+    assert not any("Story branch not ready" in message for _level, message in entries)

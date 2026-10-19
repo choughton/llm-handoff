@@ -72,6 +72,7 @@ from llm_handoff.publish import (
     defer_blocked_handback,
     ensure_story_branch,
     keep_review_responses,
+    leave_merged_story_branch,
     publish_story,
     recover_orphaned_story,
     resume_paused_publish,
@@ -526,6 +527,16 @@ def run_loop(
     if callable(mark_startup_complete):
         mark_startup_complete()
     if config.publish.mode == "pr" and not config.dry_run:
+        # An operator who merged a paused story's pull request but stayed on
+        # its branch: return to the base branch before the planner runs.
+        leave_merged_story_branch(
+            repo_root=config.repo_root,
+            prefix=config.publish.branch_prefix,
+            base_branch=config.publish.base_branch,
+            remote=config.publish.remote,
+            handoff_path=config.handoff_path,
+            log=log_fn,
+        )
         # A publish that paused on a base-branch merge resumes once the
         # operator has merged the base branch into the story branch.
         outcome = resume_paused_publish(
