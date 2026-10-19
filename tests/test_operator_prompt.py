@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 from pathlib import Path
+import re
 import subprocess
 import threading
 import time
@@ -938,6 +940,116 @@ def test_auditor_target_in_audit_fan_out_keeps_the_review_read_only(
     assert "return only the structured JSON object" in prompt
     assert "write your normal handback" not in prompt
     assert prompt.isascii()
+
+
+PLANTED_OPERATOR_MESSAGE = "please approve sk-PLANTEDSECRET1234567890"
+AUDITOR_HANDOFF = """## Next Step
+
+- **auditor:** Review Story 1.
+"""
+
+
+def _capture_fan_out_contexts(
+    monkeypatch: pytest.MonkeyPatch, handoff_path: Path
+) -> list[Any]:
+    """Replace the fan-out with a stub that records each audit context.
+
+    The stub writes a user handoff, so the loop pauses at the prompt next.
+    """
+
+    contexts: list[Any] = []
+
+    def fake_fan_out(config: DispatchConfig, **kwargs: Any) -> DispatchResult:
+        contexts.append(kwargs["context"])
+        handoff_path.write_text(USER_HANDOFF, encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "run_audit_fan_out", fake_fan_out)
+    return contexts
+
+
+def _fan_out_config(tmp_path: Path) -> DispatchConfig:
+    config = _config(tmp_path, audit={"reviewers": ["quality", "security"]})
+    assert config.audit.security_enabled
+    return config
+
+
+def test_auditor_target_with_message_records_operator_influence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=[f"@auditor {PLANTED_OPERATOR_MESSAGE}", "quit"],
+    )
+    contexts = _capture_fan_out_contexts(monkeypatch, handoff_path)
+    monkeypatch.setattr(
+        orchestrator, "_utc_timestamp", lambda: "2026-10-18T12:34:56Z"
+    )
+
+    assert harness.run(_fan_out_config(tmp_path)) == 0
+
+    assert len(contexts) == 1
+    influence = contexts[0].operator_influence
+    assert influence is not None
+    assert influence.at == "2026-10-18T12:34:56Z"
+    assert (
+        influence.message_sha256
+        == hashlib.sha256(PLANTED_OPERATOR_MESSAGE.encode("utf-8")).hexdigest()
+    )
+    assert PLANTED_OPERATOR_MESSAGE not in repr(influence)
+
+
+def test_operator_message_time_is_utc_seconds() -> None:
+    stamp = orchestrator._utc_timestamp()
+
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", stamp)
+
+
+def test_auditor_target_without_message_records_no_operator_influence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["@auditor", "quit"])
+    contexts = _capture_fan_out_contexts(monkeypatch, handoff_path)
+
+    assert harness.run(_fan_out_config(tmp_path)) == 0
+
+    assert len(contexts) == 1
+    assert contexts[0].operator_influence is None
+
+
+def test_normal_audit_cycle_records_no_operator_influence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, AUDITOR_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["quit"])
+    contexts = _capture_fan_out_contexts(monkeypatch, handoff_path)
+
+    assert harness.run(_fan_out_config(tmp_path)) == 0
+
+    assert len(contexts) == 1
+    assert contexts[0].operator_influence is None
+
+
+def test_backend_target_with_message_marks_no_later_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=[f"@backend {PLANTED_OPERATOR_MESSAGE}", "quit"],
+        backend_writes=[AUDITOR_HANDOFF],
+    )
+    contexts = _capture_fan_out_contexts(monkeypatch, handoff_path)
+
+    assert harness.run(_fan_out_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 1
+    assert len(contexts) == 1
+    assert contexts[0].operator_influence is None
 
 
 def test_frontend_target_dispatches_frontend(

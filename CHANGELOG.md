@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An audit fan-out dispatched with `@auditor <message>` at the operator
+  prompt is now marked as operator-influenced in three places: an
+  `operator_influence` key in the audit's `review.json` under
+  `logs/dispatch/audit/`, a `## Operator Influence` section in the audit
+  handoff (after `## Merge Decision`), and a `### Operator influence`
+  subsection under `## Reviewer notes` in the pull request body. Only the UTC
+  time the message was accepted and the SHA-256 digest of the raw message are
+  kept; the message text is never recorded. An `@auditor` dispatch without a
+  message, a normal audit, and the single-agent auditor path carry no marker.
 - In `pr` mode, an epic-close audit that passes on a story branch with no
   commits beyond the remote base branch no longer stops at `gh pr create`
   ("No commits between ..."). The dispatcher now pushes nothing, fast-forwards

@@ -26,6 +26,7 @@ from llm_handoff.agent_roles import (
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.audit_review import (
     AuditFanOutContext,
+    OperatorInfluence,
     describe_security_reviewer_model,
     run_audit_fan_out,
     security_reviewer_startup_error,
@@ -414,6 +415,10 @@ PROTECTED_FILE_MODIFIED_PREFIX = "protected_file_modified:"
 _GLOB_CHARS = frozenset("*?[")
 
 
+def _utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def _render_prompt(template: str, handoff_path: Path, **fields: object) -> str:
     return template.format(handoff_path=Path(handoff_path).as_posix(), **fields)
 
@@ -451,6 +456,10 @@ class PendingPlannerRecovery:
     # Every recovery dispatches the planner except an operator `@<role>`
     # dispatch, which names its own route.
     route: RouteName = "planner"
+    # An operator `@<role> <message>` dispatch records when the message was
+    # accepted (UTC) and the SHA-256 of the raw message, never its text.
+    operator_message_at: str | None = None
+    operator_message_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -640,6 +649,9 @@ def run_loop(
         )
         forced_additional_instruction: str | None = None
         active_planner_recovery_kind: str | None = None
+        # Set only on the cycle that runs an operator `@auditor <message>`
+        # dispatch; every other cycle audits without the marker.
+        active_operator_influence: OperatorInfluence | None = None
         if tracker_lease_rebuild:
             decision = RoutingDecision(
                 route="planner",
@@ -683,6 +695,16 @@ def run_loop(
                 pending_planner_recovery.additional_instruction
             )
             active_planner_recovery_kind = pending_planner_recovery.kind
+            if (
+                pending_planner_recovery.kind == "operator_role"
+                and pending_planner_recovery.route == "auditor"
+                and pending_planner_recovery.operator_message_at is not None
+                and pending_planner_recovery.operator_message_sha256 is not None
+            ):
+                active_operator_influence = OperatorInfluence(
+                    at=pending_planner_recovery.operator_message_at,
+                    message_sha256=pending_planner_recovery.operator_message_sha256,
+                )
             pending_planner_recovery = None
         else:
             if pending_planner_recovery is not None:
@@ -1346,6 +1368,12 @@ def run_loop(
                     cycle_number=cycle_number,
                     handoff_content=handoff_content,
                     implementer_base_sha=implementer_base_sha,
+                    operator_influence=(
+                        active_operator_influence
+                        if current_cycle.route == "auditor"
+                        and active_planner_recovery_kind == "operator_role"
+                        else None
+                    ),
                 ),
             )
             # Only logs that a stop request was seen; the loop honors it at
@@ -4012,12 +4040,16 @@ def _pause_at_dispatcher_pause(
     current_handoff_content = _read_required_text(config.handoff_full_path) or ""
     if result.kind == "role" and result.role is not None:
         role = cast(RouteName, result.role)
+        message_at: str | None = None
+        message_sha256: str | None = None
         if result.text is None:
             operator_request = OPERATOR_ROLE_NO_MESSAGE_REQUEST
             summary = "no message"
         else:
             operator_request = OPERATOR_ROLE_INSTRUCTION_PREFIX + result.text
             summary = "the operator's message"
+            message_at = _utc_timestamp()
+            message_sha256 = sha256(result.text.encode("utf-8")).hexdigest()
         # The audit fan-out reviewer is read-only and answers in JSON, so it
         # must not be told to write a normal handback.
         template = (
@@ -4037,6 +4069,8 @@ def _pause_at_dispatcher_pause(
             ),
             kind="operator_role",
             route=role,
+            operator_message_at=message_at,
+            operator_message_sha256=message_sha256,
         )
         _log(
             log,

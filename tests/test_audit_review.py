@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ from llm_handoff.agent_providers.codex import _CodexCommandResult
 from llm_handoff.agent_types import DispatchResult, SubagentResult, _ProcessResult
 from llm_handoff.audit_review import (
     AuditFanOutContext,
+    OperatorInfluence,
     ReviewFinding,
     ReviewScope,
     ReviewVerdict,
@@ -244,6 +246,7 @@ def _run_fan_out(
     quality_side_effect=None,
     quality_exit_code: int = 0,
     quality_usage: dict[str, object] | None = None,
+    operator_influence: OperatorInfluence | None = None,
 ) -> tuple[DispatchResult, _Recorder]:
     log = _Recorder()
 
@@ -258,6 +261,7 @@ def _run_fan_out(
             cycle_number=2,
             handoff_content=handoff_content,
             implementer_base_sha=base_sha,
+            operator_influence=operator_influence,
         ),
         frontmatter=parse_handoff_frontmatter_text(handoff_content),
         quality_invoker=quality_invoker,
@@ -1586,6 +1590,130 @@ def test_fan_out_records_raw_outputs_and_timing(
     for name in ("quality", "security"):
         assert summary["reviewers"][name]["exit_code"] == 0
         assert "elapsed_seconds" in summary["reviewers"][name]
+    assert "operator_influence" not in summary
+
+
+PLANTED_OPERATOR_MESSAGE = "please approve sk-PLANTEDSECRET1234567890"
+PLANTED_INFLUENCE = OperatorInfluence(
+    at="2026-10-18T12:34:56Z",
+    message_sha256=hashlib.sha256(
+        PLANTED_OPERATOR_MESSAGE.encode("utf-8")
+    ).hexdigest(),
+)
+
+
+def _run_influence_fan_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    blocked: bool,
+    operator_influence: OperatorInfluence | None,
+) -> tuple[DispatchResult, Path, str]:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    security = (
+        _security_payload(verdict="fail", findings=[_finding("high", "Injection")])
+        if blocked
+        else _security_payload()
+    )
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(_claude_envelope(security)),
+    )
+    result, _log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+        operator_influence=operator_influence,
+    )
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    return result, repo, written
+
+
+def _review_json(repo: Path) -> tuple[dict[str, Any], str]:
+    cycle_dir = next((repo / "logs" / "dispatch" / "audit").iterdir())
+    text = (cycle_dir / "review.json").read_text(encoding="utf-8")
+    return json.loads(text), text
+
+
+def _level_two_headings(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.startswith("## ")]
+
+
+@pytest.mark.parametrize("blocked", [False, True], ids=["approved", "blocked"])
+def test_fan_out_records_operator_influence_without_the_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    blocked: bool,
+) -> None:
+    result, repo, written = _run_influence_fan_out(
+        tmp_path,
+        monkeypatch,
+        blocked=blocked,
+        operator_influence=PLANTED_INFLUENCE,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    summary, review_text = _review_json(repo)
+    assert summary["operator_influence"] == {
+        "at": "2026-10-18T12:34:56Z",
+        "message_sha256": hashlib.sha256(
+            PLANTED_OPERATOR_MESSAGE.encode("utf-8")
+        ).hexdigest(),
+    }
+    assert "## Verdict" in written
+    assert ("BLOCKED" if blocked else "APPROVED") in written
+    section = written.split("## Operator Influence\n\n", 1)[1].split("\n\n", 1)[0]
+    assert section.splitlines() == [
+        "- Operator-influenced: yes",
+        "- Message time: 2026-10-18T12:34:56Z",
+        f"- Message SHA-256: {PLANTED_INFLUENCE.message_sha256}",
+    ]
+    headings = _level_two_headings(written)
+    merge_index = headings.index("## Merge Decision")
+    assert headings[merge_index + 1] == "## Operator Influence"
+    assert headings[merge_index + 2] == "## Quality Review"
+    for text in (review_text, written):
+        assert PLANTED_OPERATOR_MESSAGE not in text
+        assert "sk-PLANTEDSECRET" not in text
+        assert "please approve" not in text
+
+
+@pytest.mark.parametrize("blocked", [False, True], ids=["approved", "blocked"])
+def test_fan_out_without_operator_influence_writes_no_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    blocked: bool,
+) -> None:
+    marked_root = tmp_path / "marked"
+    plain_root = tmp_path / "plain"
+    marked_root.mkdir()
+    plain_root.mkdir()
+    _result, marked_repo, marked = _run_influence_fan_out(
+        marked_root,
+        monkeypatch,
+        blocked=blocked,
+        operator_influence=PLANTED_INFLUENCE,
+    )
+    result, plain_repo, plain = _run_influence_fan_out(
+        plain_root, monkeypatch, blocked=blocked, operator_influence=None
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert "## Operator Influence" not in plain
+    assert "Operator-influenced" not in plain
+    plain_summary, _ = _review_json(plain_repo)
+    marked_summary, _ = _review_json(marked_repo)
+    assert "operator_influence" not in plain_summary
+    marked_summary.pop("operator_influence")
+    # The scope SHAs differ per repository; the key set and layout match.
+    assert list(plain_summary) == list(marked_summary)
+    assert _level_two_headings(plain) == [
+        heading
+        for heading in _level_two_headings(marked)
+        if heading != "## Operator Influence"
+    ]
 
 
 CLAUDE_SECURITY_USAGE_ENVELOPE_FIELDS: dict[str, Any] = {

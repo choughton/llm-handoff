@@ -6,19 +6,11 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 in progress).
-- **Epic Awaiting Close:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged,
-  GEM-0d in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124;
-  GEM-0g merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
-  GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
-  GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a merged in PR
-  #138; GEM-4b merged in PR #139; GEM-4c merged in PR #141; GEM-5a merged in
-  PR #142; GEM-5b1 merged in PR #143; GEM-5b2 merged in PR #144; GEM-5c, the
-  operator's edit of the two `handoff-router.md` copies, merged in PR #148).
-  No story remains; the planner routes the epic close.
-  LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
-  PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
-  closed.
+- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 in progress).
+- **Epic Awaiting Close:** None. GEMINI-REMOVAL closed (see the Completed
+  Scope Ledger). LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP,
+  SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST,
+  ANTIGRAVITY-ADAPTER, and GEMINI-REMOVAL closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -103,9 +95,9 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: ready to close. GEM-0b through GEM-5c are merged (GEM-5c in PR #148,
-edited by the operator because Claude roles cannot write `.claude/`). No
-story remains; the planner routes the epic close.
+Fit: closed. GEM-0b through GEM-5c are merged (GEM-5c in PR #148, edited by
+the operator because Claude roles cannot write `.claude/`); the epic close was
+approved at `55e2ca3c757d4c02cc13dad42060f374caef630e`. Nothing remains.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
@@ -518,7 +510,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 ### 10. HARDENING - security followups
 
-Fit: HARD-1 merged in PR #146; HARD-2 is in progress. Independent and cheap; each story closes one
+Fit: HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 is in progress. Independent and cheap; each story closes one
 confirmed followup, so it fills a wait well. CHAT-4 reuses the HARD-3 marker, so take HARD-3 before
 CHAT.
 
@@ -549,6 +541,7 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   `<<<OPERATOR MESSAGE>>>` / `<<<END OPERATOR MESSAGE>>>`; runs of three or
   more `<` or `>` inside quoted text are split with spaces; the planner
   operator template (`OPERATOR_PAUSE_INSTRUCTION_TEMPLATE`) is covered too.
+  Merged in PR #147.
 - HARD-3: Record operator influence on audits (closes PAUSE-RECOVERY
   followup (d)). An `@auditor` dispatch with an operator message tells the
   reviewers to apply that message within the review, and nothing records it:
@@ -559,6 +552,11 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   the message, never its text: an operator may type private context or a
   credential at the console, and `SECURITY.md` keeps secrets out of
   `HANDOFF.md`, logs, and anything published. CHAT-4 reuses this marker.
+  Decided by the planner on 2026-10-18: fan-out path only (the single-agent
+  auditor writes its own handoff and stays unmarked); the marker is a
+  `## Operator Influence` handoff section, an `operator_influence` key in
+  `review.json`, and a `### Operator influence` pull request subsection, each
+  holding the UTC time and the SHA-256 of the raw message.
 - HARD-4: Validate `handoff_path` and `project_state_path` (closes
   CONFIG-CLEANUP followup (b)). The validator in `llm_handoff/config.py`
   (`_normalize_relative_path`) accepts any value, and the dispatcher builds
@@ -1240,6 +1238,11 @@ The remaining letters are unchanged. AUDIT-COST (b) and (c) closed by GEM-4b.
   `f4dc618e2bd52b417460ba6135708c1ff0ebaa84`, audited at that SHA). Audit
   approved with info findings only (see Open Followups). Verification: full
   test suite, 2275 passed, 20 skipped.
+- **GEMINI-REMOVAL** - Google-vendor paths moved to `agy`, Gemini CLI provider
+  removed (GEM-0b through GEM-5c; last story GEM-5c in PR #148). Epic close was a verification-only audit of an empty range at
+  `55e2ca3c757d4c02cc13dad42060f374caef630e`; approved with no findings.
+  Verification: dispatcher ran `python -m pytest tests -q -p no:cacheprovider`
+  on that commit, exit 0 (operator run: 2692 passed, 16 skipped).
 
 ## Notes
 
