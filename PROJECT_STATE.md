@@ -6,12 +6,14 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-2d in progress; RECOVERY-2c approved at
-  `10bdbee`, merged in PR #167; RECOVERY-2b merged in PR #166; RECOVERY-2a
-  approved at `9831e0b`, merged in PR #165; RECOVERY-1 approved at 14f195b,
-  merged in PR #160). RECOVERY-3 and RECOVERY-4 follow. RECOVERY-2d goes
-  first because it fixes a security finding (from the RECOVERY-2c security
-  review) in the protected-file commit listing that RECOVERY-3 reuses.
+- **Active Epic:** RECOVERY (RECOVERY-3a in progress; RECOVERY-2d approved at
+  `ee76517`, merged in PR #168; RECOVERY-2c approved at `10bdbee`, merged in
+  PR #167; RECOVERY-2b merged in PR #166; RECOVERY-2a approved at `9831e0b`,
+  merged in PR #165; RECOVERY-1 approved at 14f195b, merged in PR #160).
+  RECOVERY-3 is split into RECOVERY-3a..3e; RECOVERY-3b..3e and RECOVERY-4
+  follow. RECOVERY-3a (stale Git index lock pause at startup) goes first
+  because it is small and standalone, and every later recovery phase and the
+  startup publish resume run Git writes that a leftover lock breaks.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -667,11 +669,13 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 ### 12. RECOVERY - interrupted-run recovery
 
 Fit: RECOVERY-1 is merged (PR #160) and removed the Ctrl+C hazard;
-RECOVERY-2a, RECOVERY-2b, and RECOVERY-2c are merged (PRs #165, #166, and
-#167); RECOVERY-2d is active, chosen before RECOVERY-3 because it fixes a
-security finding in the protected-file commit listing that RECOVERY-3
-reuses; RECOVERY-3 and RECOVERY-4 follow. HARD-5 and HARD-6 are closed, so RECOVERY-2 is
-unblocked. Its in-flight
+RECOVERY-2a, RECOVERY-2b, RECOVERY-2c, and RECOVERY-2d are merged (PRs #165,
+#166, #167, and #168). RECOVERY-3 is split into RECOVERY-3a..3e; RECOVERY-3a
+(stale Git index lock pause at startup) is active and goes first because it
+is small and standalone, and every later phase (3b-3e, RECOVERY-4) and the
+startup publish resume run Git writes that a lock left by a killed `git`
+breaks. RECOVERY-3b..3e and RECOVERY-4 follow. HARD-5 and HARD-6 are closed,
+so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
 HARD-5's operator-confirmation rule before carrying anything over and
 HARD-6's race-safe record I/O to read, write, and delete
@@ -793,7 +797,8 @@ bounces until the three-fix circuit breaker escalates.
     edit keeps a `dispatch` record from the "nothing to recover" exit; and a
     recovery that pauses on changed operator files hands its baseline to the
     first dispatch after the pause.
-  - RECOVERY-2d: NUL-delimited protected-path listing for commits. Source:
+  - RECOVERY-2d (approved at `ee76517`, merged in PR #168): NUL-delimited
+    protected-path listing for commits. Source:
     the RECOVERY-2c security review's medium finding (`git log --name-only`
     without `-z` prints non-ASCII and control-character paths quoted, for
     example `".claude/agents/caf\303\251.md"`, so such a committed protected
@@ -804,13 +809,22 @@ bounces until the three-fix circuit breaker escalates.
     UTF-8 with `surrogateescape`; the handoff exclusion, pattern filter, and
     None on Git failure are unchanged. Disclosure paths stay escaped with
     `_escape_control_characters`. `_git_changed_files_since` is unchanged.
-- RECOVERY-3: The other phases. Planner and finalizer: restore an invalid
-  `HANDOFF.md` and re-run. Audit fan-out: restore the handoff and re-run the
-  read-only reviewers. Work-claim gate and scanners: re-run. Publish: make
-  each step safe to repeat (push again, reuse the open pull request, skip a
-  merge that already happened), using `story.json`. A `.git/index.lock` left
-  by a killed `git` pauses with its path and the check to run; it is never
-  deleted automatically.
+- RECOVERY-3: Split by the planner on 2026-10-19 (the other phases):
+  - RECOVERY-3a: Stale Git index lock pauses at startup. A `.git/index.lock`
+    left by a killed `git` (for example a second Ctrl+C during a dispatcher
+    commit, since the dispatcher's own `git` calls stay in the console
+    process group) pauses a real run at startup with its path (from
+    `git rev-parse --git-path index` plus `.lock`, so an inherited
+    `GIT_INDEX_FILE` is followed) and the check to run, before the
+    publish resume and interrupted-run recovery; it is never deleted
+    automatically. Polls until the file is gone; a dry run only warns.
+  - RECOVERY-3b: Interrupted planner and finalizer dispatch: restore an
+    invalid `HANDOFF.md` and re-run that role.
+  - RECOVERY-3c: Interrupted audit fan-out: restore the handoff and re-run
+    the read-only reviewers.
+  - RECOVERY-3d: Interrupted work-claim gate and scanners: re-run them.
+  - RECOVERY-3e: Publish steps safe to repeat (push again, reuse the open
+    pull request, skip a merge that already happened), using `story.json`.
 - RECOVERY-4: No-record fallback. When there is no in-flight record (a run
   from before RECOVERY-2, or a lost record) and files are dirty, in scope for
   the story's Work Packet, and clean at the story's last commit, ask `Treat

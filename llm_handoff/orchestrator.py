@@ -592,6 +592,11 @@ def _run_loop(
     # At most one operator input reader per run_loop call.
     operator_prompt = _OperatorPromptState()
     stop_watch = _StopRequestWatch(config.repo_root)
+    # A leftover Git index lock breaks every Git write below (the publish
+    # resume, interrupted-run recovery, dispatcher commits): pause until the
+    # operator removes it.
+    if not _wait_for_git_index_lock_removal(config, log_fn, stop_watch):
+        return 0
     if config.publish.mode == "pr" and not config.dry_run:
         # An operator who merged a paused story's pull request but stayed on
         # its branch: return to the base branch before the planner runs.
@@ -6940,6 +6945,82 @@ def _pause_until_handoff_changes(
 
         _log(log, "PAUSE", "Detected HANDOFF.md change. Resuming dispatch loop.")
         return True
+
+
+def _git_index_lock_path(config: DispatchConfig) -> Path | None:
+    """Where Git keeps this repository's index lock; None when Git cannot say.
+
+    ``git rev-parse --git-path index`` follows worktrees, a custom
+    ``GIT_DIR``, and an inherited ``GIT_INDEX_FILE``; Git locks the index by
+    creating ``<index>.lock`` beside it, so the lock path is derived from the
+    resolved index rather than asking for a literal ``index.lock``. Git prints
+    a path relative to its working directory, the repo root.
+    """
+
+    resolved = _run_git_stdout(
+        config.repo_root, ["git", "rev-parse", "--git-path", "index"]
+    )
+    if not resolved:
+        return None
+    index_path = Path(resolved)
+    if not index_path.is_absolute():
+        index_path = config.repo_root / index_path
+    return index_path.with_name(index_path.name + ".lock")
+
+
+def _wait_for_git_index_lock_removal(
+    config: DispatchConfig,
+    log: LogFn,
+    stop_watch: _StopRequestWatch,
+) -> bool:
+    """Pause at startup while a Git index lock exists; False when the run stops.
+
+    The dispatcher only reports the lock: it never deletes, moves, or writes
+    it, since a running Git process may still own it.
+    """
+
+    lock_path = _git_index_lock_path(config)
+    if lock_path is None or not os.path.lexists(lock_path):
+        return True
+    shown = _escape_control_characters(str(lock_path))
+    if config.dry_run:
+        _log(
+            log,
+            "WARN",
+            f"GIT INDEX LOCK: {shown} exists. A real run would pause here "
+            "until the file is removed.",
+        )
+        return True
+
+    # A pause wait is not a role's cycle: a console Ctrl+C stops at once.
+    console_interrupt.set_active_role(None)
+    _log(
+        log,
+        "PAUSE",
+        f"GIT INDEX LOCK: {shown} exists. A Git process that was killed (for "
+        "example by a second Ctrl+C during a dispatcher commit) leaves this "
+        "file behind, and Git writes in this repository fail while it exists. "
+        "Check that no Git process is running in this repository, then delete "
+        "the file. The dispatcher resumes when the file is gone; it never "
+        "deletes the file itself.",
+    )
+    if config.poll_interval_seconds <= 0:
+        return False
+
+    _log(
+        log,
+        "PAUSE",
+        f"Waiting for {shown} to be removed; polling every "
+        f"{config.poll_interval_seconds}s.",
+    )
+    while True:
+        time.sleep(config.poll_interval_seconds)
+        if stop_watch.requested(log):
+            stop_watch.finish(log)
+            return False
+        if not os.path.lexists(lock_path):
+            _log(log, "PAUSE", "Git index lock removed. Resuming startup.")
+            return True
 
 
 def _operator_stdin_is_interactive() -> bool:
