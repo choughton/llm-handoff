@@ -119,7 +119,11 @@ This project follows a simple pre-release changelog until the first public tag.
 - An audit verdict whose strings hold unescaped backslashes, such as a Codex
   quality reviewer's `rg -n '12\.'` in `commands_run`, now parses instead of
   failing `quality_verdict_malformed`. Each lone backslash is read as a
-  literal one; valid JSON escapes keep their meaning.
+  literal one; valid JSON escapes keep their meaning. The same repair covers
+  a short `\u` escape such as `\u12`, a verdict inside Codex's
+  `{status, summary}` envelope, and the security reviewer's verdict.
+  Regression tests now use the shape of real Codex verdicts with
+  `rg -n 'validate_handoff\(|...'` in `commands_run`.
 - Behavior change: a console Ctrl+C during a role's dispatch cycle now asks
   for a graceful stop instead of killing the agent. Agent processes, the
   handoff normalizers, the work-claim verification command, and the
