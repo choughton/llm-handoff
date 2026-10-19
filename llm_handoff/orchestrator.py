@@ -3639,10 +3639,15 @@ def _carry_over_path_traverses_link(state_path: Path) -> bool:
 
     Roles can write under ``logs/``, so a link there could point the record at
     a file outside the repository. Resolving follows symlinks and junctions;
-    any difference from the literal path means one is in the way.
+    any difference from the literal path means one is in the way. A path that
+    cannot be resolved, such as a symlink loop (``RuntimeError`` on Python
+    3.11/3.12) or an unreadable link (``OSError``), counts as unsafe.
     """
 
-    resolved = state_path.resolve()
+    try:
+        resolved = state_path.resolve()
+    except (RuntimeError, OSError):
+        return True
     return os.path.normcase(str(resolved)) != os.path.normcase(str(state_path))
 
 

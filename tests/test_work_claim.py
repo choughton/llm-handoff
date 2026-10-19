@@ -4232,6 +4232,78 @@ def test_carry_over_record_that_is_a_file_symlink_is_not_read_or_deleted(
     assert "symlink or junction" in messages[0][1]
 
 
+@pytest.mark.parametrize("error", [RuntimeError, OSError])
+def test_carry_over_path_that_cannot_be_resolved_is_treated_as_a_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[Exception],
+) -> None:
+    # Python 3.11/3.12 raise RuntimeError on a symlink loop; startup must warn
+    # and carry on instead of crashing.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    record_path = repo / "logs" / "dispatch" / "carry-over.json"
+    save_implementer_leftovers(
+        record_path,
+        ImplementerLeftovers(
+            story_key=f"story:{STORY_ID}",
+            fingerprints=(("src/app.py", working_tree_fingerprint(repo, "src/app.py")),),
+        ),
+    )
+    original_resolve = Path.resolve
+
+    def failing_resolve(self: Path, strict: bool = False) -> Path:
+        if self.name == "carry-over.json":
+            raise error("cannot resolve")
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", failing_resolve)
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
+    messages: list[tuple[str, str]] = []
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+    orchestrator._persist_implementer_leftovers(config, None, _collecting_log(messages))
+
+    assert restored is None
+    assert record_path.exists()
+    assert [level for level, _message in messages] == ["WARN", "WARN"]
+    assert all("symlink or junction" in message for _level, message in messages)
+
+
+def test_carry_over_record_in_a_symlink_loop_does_not_crash_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    dispatch_dir = repo / "logs" / "dispatch"
+    dispatch_dir.mkdir(parents=True, exist_ok=True)
+    link = dispatch_dir / "carry-over.json"
+    try:
+        os.symlink(dispatch_dir / "loop.json", link)
+        os.symlink(link, dispatch_dir / "loop.json")
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert link.is_symlink()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
 def test_persisting_carry_over_does_not_write_or_delete_through_a_link(
     tmp_path: Path,
 ) -> None:
