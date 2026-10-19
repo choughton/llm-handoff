@@ -146,7 +146,9 @@ class StoryState:
     # "body"}, plus "replied" / "resolved" progress while their threads are
     # answered.
     open_findings: tuple[dict[str, object], ...] = ()
-    # Findings the implementer answered with ``Deferred:``, plus its "response".
+    # Findings the implementer answered with ``Deferred:``, plus its "response",
+    # and findings it left without a response, marked "unanswered". Their
+    # threads stay open for the planner's pass.
     deferred_findings: tuple[dict[str, object], ...] = ()
     # Whether the planner already had its one pass at deferred findings.
     deferral_planner_pass: bool = False
@@ -572,12 +574,13 @@ def save_review_responses(repo_root: Path, claim_content: str) -> None:
     """Keep the claim's ``## Review Responses`` for the pull request threads.
 
     The auditor rewrites ``HANDOFF.md``, so the implementer's responses are
-    saved when the work-claim gate passes. A claim without responses drops
-    any saved ones.
+    saved when the work-claim gate passes. A claim without responses keeps
+    the saved ones: after an audit bounce, the implementer's next claim in
+    the same correction round often answers nothing new. A new correction
+    round starts with no saved responses.
     """
 
-    if not keep_review_responses(repo_root, claim_content):
-        (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
+    keep_review_responses(repo_root, claim_content)
 
 
 def keep_review_responses(repo_root: Path, handoff_content: str) -> bool:
@@ -586,15 +589,26 @@ def keep_review_responses(repo_root: Path, handoff_content: str) -> bool:
     Called with the handoff the auditor is about to read, so responses the
     work-claim gate never saw (a restart, or a handoff fixed by hand after a
     validation pause) still reach the review threads. They are posted only
-    after the audit passes. A handoff without responses keeps any saved ones.
+    after the audit passes. The handoff's responses are merged into the saved
+    ones by finding number, and a handoff's response replaces the saved one
+    for the same finding. A handoff without responses keeps any saved ones.
     Returns whether responses were saved.
     """
 
-    if not parse_review_responses(handoff_content):
+    responses = parse_review_responses(handoff_content)
+    if not responses:
         return False
     path = repo_root / RESPONSES_PATH
+    try:
+        saved = parse_review_responses(path.read_text(encoding="utf-8"))
+    except OSError:
+        saved = {}
+    merged = saved | responses
+    lines = ["## Review Responses", ""]
+    for number in sorted(merged):
+        lines += [f"### Finding {number}", merged[number], ""]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(handoff_content, encoding="utf-8")
+    path.write_text("\n".join(lines), encoding="utf-8")
     return True
 
 
@@ -1507,8 +1521,9 @@ def _deferred_only(
 ) -> list[dict[str, object]]:
     """Return the deferred findings when they are all that blocks the merge.
 
-    Returns an empty list when any unresolved thread is not a deferred
-    finding, such as a finding without a response or a person's comment.
+    Deferred findings include the saved findings the implementer left without
+    a response. Returns an empty list when any unresolved thread is not one of
+    them, such as a person's comment.
     """
 
     by_comment = {
@@ -1744,6 +1759,13 @@ def build_deferred_findings_handoff(
                 f"Response from `{implementer}`:",
                 "",
                 *(f"> {line}".rstrip() for line in response.splitlines()),
+                "",
+            ]
+        elif finding.get("unanswered"):
+            lines += [
+                f"No response from `{implementer}` was saved for this finding, "
+                "so its thread got no reply. Check the story branch: a commit "
+                "may already fix it, or it may never have been addressed.",
                 "",
             ]
     if state.work_packet:
@@ -2633,6 +2655,9 @@ def _wait_for_reviewers(
     )
     if result.outcome == "findings":
         review_round = state.review_rounds + 1
+        # A new correction round: responses saved for earlier findings must
+        # not answer these ones, whose numbers start again at 1.
+        (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
         _save_state(
             repo_root,
             replace(
@@ -2761,7 +2786,8 @@ def _answer_findings(
     Returns an error message when a ``gh`` call fails, else ``None``. A finding
     without an implementer response keeps its thread unresolved, and so does a
     deferred one (a response that starts with ``Deferred:``), after its reply
-    is posted. Progress is
+    is posted. Both are kept in ``deferred_findings`` (an unanswered one marked
+    ``"unanswered"``) so the planner's pass can decide them. Progress is
     saved after every reply and resolution, so a retry after a failure never
     posts the same reply twice, and a thread that is already resolved gets
     no reply.
@@ -2808,7 +2834,16 @@ def _answer_findings(
                 log(
                     "WARN",
                     f"No review response for finding {number} ({location}); its "
-                    "review thread stays unresolved.",
+                    "review thread stays unresolved until the planner or a "
+                    "person decides.",
+                )
+                deferred_findings.append(
+                    {
+                        key: finding[key]
+                        for key in ("number", "comment_id", "location", "body")
+                        if key in finding
+                    }
+                    | {"unanswered": True}
                 )
                 continue
             error = _post_reply(

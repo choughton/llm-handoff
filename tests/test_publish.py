@@ -2462,37 +2462,85 @@ def test_publish_stops_when_the_checkout_is_not_the_story_branch(
     assert _git(tmp_path, "log", "-1", "--format=%s") == "initial"
 
 
-def test_a_finding_without_a_response_keeps_its_thread_and_blocks_the_merge(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo, _remote, gh, env = _with_remote(tmp_path)
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    _start_story(repo)
+def _fix_without_a_response(
+    tmp_path: Path, repo: Path, gh: list[str], log, *threads: dict
+) -> PublishOutcome:
+    """Bounce one Codex finding, then publish a fix with no saved response."""
+
     first = _git(repo, "rev-parse", "HEAD")
     _set_api(
         tmp_path,
         comments=[_codex_summary(first)],
         review_comments=[_codex_finding(first)],
     )
-    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
-    entries, log = _logs()
+    _set_threads(
+        tmp_path,
+        {"id": "T1", "isResolved": False, "comment_id": 4279958834},
+        *threads,
+    )
     assert _publish_with_review(repo, gh, log).handoff is not None
 
     (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
     _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
-    second = _git(repo, "rev-parse", "HEAD")
-    _set_api(tmp_path, comments=[_codex_summary(second)])
+    _set_api(tmp_path, comments=[_codex_summary(_git(repo, "rev-parse", "HEAD"))])
     assert not (repo / RESPONSES_PATH).exists()
+    return _publish_with_review(repo, gh, log)
 
-    outcome = _publish_with_review(repo, gh, log)
 
-    assert outcome.stop is True and outcome.exit_code == 0
-    assert "1 review thread(s)" in outcome.message
+def test_a_finding_without_a_response_goes_to_the_planner_with_its_thread_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    entries, log = _logs()
+
+    outcome = _fix_without_a_response(tmp_path, repo, gh, log)
+
+    assert outcome.stop is False and outcome.handoff is not None
     assert _gh_state(tmp_path)["threads"][0]["isResolved"] is False
     assert "replies" not in _gh_state(tmp_path)
+    assert _resolve_calls(tmp_path) == []
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert _git(repo, "branch", "--show-current") == BRANCH
     assert any("No review response for finding 1" in m for _l, m in entries)
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["deferral_planner_pass"] is True
+    assert state["deferred_findings"] == []
+    assert [finding["number"] for finding in state["open_findings"]] == [1]
+
+    handoff = outcome.handoff
+    decision = route(handoff)
+    assert decision.route == "planner" and decision.warnings == []
+    assert "story_id: W9.9" in handoff
+    assert "### Finding 1: `src/widget.py:1`" in handoff
+    assert "WIDGET can be unset." in handoff
+    assert "No response from `backend` was saved for this finding" in handoff
+    assert "Response from `backend`:" not in handoff
+    assert "## Deferred Finding Decisions" in handoff
+
+
+def test_a_finding_without_a_response_next_to_a_persons_comment_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    entries, log = _logs()
+
+    # T2 is a person's comment, not a Codex finding.
+    outcome = _fix_without_a_response(
+        tmp_path, repo, gh, log, {"id": "T2", "isResolved": False, "comment_id": 555}
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert outcome.handoff is None
+    assert "2 review thread(s)" in outcome.message
+    assert "replies" not in _gh_state(tmp_path)
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any(level == "PAUSE" for level, _ in entries)
 
 
 DEFERRED_RESPONSE = "**Deferred:** out of scope for this story; needs its own packet."
@@ -2957,14 +3005,94 @@ def test_auto_merge_waits_for_every_review_thread_to_be_resolved(
     assert any(level == "PAUSE" for level, _ in entries)
 
 
-def test_save_review_responses_keeps_only_claims_with_responses(
+def test_save_review_responses_merges_claims_by_finding_number(
     tmp_path: Path,
 ) -> None:
-    save_review_responses(tmp_path, "## Review Responses\n\n### Finding 1\nFixed.\n")
+    save_review_responses(
+        tmp_path,
+        "## Review Responses\n\n### Finding 1: `a.py:1`\nFixed.\n\n"
+        "### Finding 2\nNot a bug.\n",
+    )
     assert (tmp_path / RESPONSES_PATH).is_file()
 
+    # A re-claim after an audit bounce answers nothing new.
     save_review_responses(tmp_path, "# Handback\n\nNo responses here.\n")
-    assert not (tmp_path / RESPONSES_PATH).exists()
+    saved = (tmp_path / RESPONSES_PATH).read_text(encoding="utf-8")
+    assert parse_review_responses(saved) == {1: "Fixed.", 2: "Not a bug."}
+
+    # A claim's response replaces the saved one for the same finding.
+    save_review_responses(
+        tmp_path, "## Review Responses\n\n### Finding 2\nFixed in the retry.\n"
+    )
+    saved = (tmp_path / RESPONSES_PATH).read_text(encoding="utf-8")
+    assert parse_review_responses(saved) == {1: "Fixed.", 2: "Fixed in the retry."}
+
+
+def test_an_audit_bounce_keeps_the_correction_rounds_responses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    entries, log = _logs()
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    # The implementer fixes the finding and answers it; the gate saves that.
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    save_review_responses(
+        repo,
+        "## Review Responses\n\n### Finding 1: `src/widget.py:1`\n"
+        "Defaulted WIDGET when it is unset.\n",
+    )
+    # The audit bounces; the next claim in the round carries no responses.
+    (repo / "src" / "widget.py").write_text("WIDGET = 3\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Address the audit")
+    save_review_responses(repo, "# Handback\n\nFixed the audit finding.\n")
+    _set_api(tmp_path, comments=[_codex_summary(_git(repo, "rev-parse", "HEAD"))])
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    gh_state = _gh_state(tmp_path)
+    [reply] = gh_state["replies"]
+    assert reply["body"].startswith("Defaulted WIDGET when it is unset.")
+    assert gh_state["threads"][0]["isResolved"] is True
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert not any("No review response" in m for _l, m in entries)
+
+
+def test_a_new_correction_round_drops_the_saved_responses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    _set_api(
+        tmp_path,
+        comments=[_codex_summary(first)],
+        review_comments=[_codex_finding(first)],
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 4279958834})
+    # Responses saved with no open findings answer nothing yet.
+    save_review_responses(
+        repo, "## Review Responses\n\n### Finding 1\nAn answer to nothing.\n"
+    )
+    _entries, log = _logs()
+
+    assert _publish_with_review(repo, gh, log).handoff is not None
+
+    assert not (repo / RESPONSES_PATH).exists()
 
 
 def test_keep_review_responses_never_drops_saved_responses(tmp_path: Path) -> None:
