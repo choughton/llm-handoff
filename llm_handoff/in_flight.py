@@ -1,11 +1,15 @@
 """The in-flight record for an implementer dispatch.
 
 The dispatcher writes this record right before it launches an implementer
-(``backend`` or ``frontend``) under the work-claim gate and deletes it once the
-dispatch returns. A record found at the next start therefore means that
-implementer was interrupted mid-dispatch: a second Ctrl+C, a closed window, or
-a crash. The record keeps what the dispatcher knew before the dispatch, so the
-start can tell the implementer's partial edits from operator edits.
+(``backend`` or ``frontend``) under the work-claim gate. Once the dispatch
+returns, it rewrites the record as a ``handback`` record holding the handoff
+the implementer left and HEAD at that moment, and deletes it when the cycle
+reaches the loop top. A ``dispatch`` record found at the next start therefore
+means that implementer was interrupted mid-dispatch: a second Ctrl+C, a closed
+window, or a crash. A ``handback`` record means the implementer returned but
+the cycle was interrupted before it finished its commit, validation, and gates.
+The record keeps what the dispatcher knew before the dispatch, so the start can
+tell the implementer's partial edits from operator edits.
 
 This module only builds and parses the record. It does no file I/O; the
 orchestrator reads, writes, and deletes the file through its race-safe
@@ -22,9 +26,9 @@ from llm_handoff.work_claim import carry_over_key
 
 IN_FLIGHT_RECORD_VERSION = 1
 InFlightRole = Literal["backend", "frontend"]
-InFlightPhase = Literal["dispatch"]
+InFlightPhase = Literal["dispatch", "handback"]
 _ROLES = frozenset({"backend", "frontend"})
-_PHASES = frozenset({"dispatch"})
+_PHASES = frozenset({"dispatch", "handback"})
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,16 @@ class InFlightRecord:
     operator-owned dirty files and their content fingerprints, and
     ``carried_over`` the files carried over from an earlier dispatch of the
     same story, both as ``PreDispatchState`` recorded them.
+
+    A ``handback`` record also holds ``handback_content``, the ``HANDOFF.md``
+    text when the dispatch returned, and ``handback_head_sha``, HEAD at that
+    moment. A ``dispatch`` record has neither.
+
+    ``protected_digests`` are the protected control files and their sha256
+    digests captured right before the dispatch, so a resumed handback checks
+    protected files against the pre-dispatch checkout instead of one the
+    implementer already changed. None when no protected paths were configured
+    or the record predates the field.
     """
 
     cycle: int
@@ -51,6 +65,9 @@ class InFlightRecord:
     dirty_fingerprints: tuple[tuple[str, str], ...]
     carried_over: tuple[str, ...]
     assignment_content: str | None = None
+    handback_content: str | None = None
+    handback_head_sha: str | None = None
+    protected_digests: tuple[tuple[str, str], ...] | None = None
     version: int = IN_FLIGHT_RECORD_VERSION
 
     @property
@@ -74,6 +91,13 @@ def in_flight_record_payload(record: InFlightRecord) -> str:
         "assignment_content": record.assignment_content,
         "dirty_fingerprints": [list(pair) for pair in record.dirty_fingerprints],
         "carried_over": list(record.carried_over),
+        "handback_content": record.handback_content,
+        "handback_head_sha": record.handback_head_sha,
+        "protected_digests": (
+            None
+            if record.protected_digests is None
+            else [list(pair) for pair in record.protected_digests]
+        ),
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
@@ -82,15 +106,21 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     """Parse a record; None when it is malformed or does not hold together.
 
     Rejects invalid JSON, another ``version``, a ``role`` other than
-    ``backend`` or ``frontend``, a ``phase`` other than ``dispatch``, a field
-    of the wrong type, and a ``story_key`` that is not the ``carry_over_key``
-    of ``assignment_content`` (when set) or ``handoff_content``. A missing
-    ``assignment_content`` reads as None.
+    ``backend`` or ``frontend``, a ``phase`` other than ``dispatch`` or
+    ``handback``, a field of the wrong type, and a ``story_key`` that is not
+    the ``carry_over_key`` of ``assignment_content`` (when set) or
+    ``handoff_content``. A ``handback`` record needs a string
+    ``handback_content``; a ``dispatch`` record must not have one. A missing
+    ``assignment_content``, ``handback_content``, or ``handback_head_sha``
+    reads as None, so a record written before the ``handback`` phase existed
+    still loads as a ``dispatch`` record. ``protected_digests`` is None,
+    absent, or a list of ``[path, digest]`` string pairs. JSON nested too deeply to parse
+    (``RecursionError``) is rejected like any other invalid JSON.
     """
 
     try:
         payload = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -114,6 +144,21 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         return None
     assignment_content = payload.get("assignment_content")
     if assignment_content is not None and not isinstance(assignment_content, str):
+        return None
+    handback_content = payload.get("handback_content")
+    if phase == "handback":
+        if not isinstance(handback_content, str):
+            return None
+    elif handback_content is not None:
+        return None
+    handback_head_sha = payload.get("handback_head_sha")
+    if handback_head_sha is not None and not isinstance(handback_head_sha, str):
+        return None
+    raw_protected = payload.get("protected_digests")
+    protected_digests = (
+        None if raw_protected is None else _string_pairs(raw_protected)
+    )
+    if raw_protected is not None and protected_digests is None:
         return None
     story_key = payload.get("story_key")
     if not isinstance(story_key, str) or not story_key:
@@ -140,6 +185,9 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         dirty_fingerprints=dirty_fingerprints,
         carried_over=carried_over,
         assignment_content=assignment_content,
+        handback_content=handback_content,
+        handback_head_sha=handback_head_sha,
+        protected_digests=protected_digests,
     )
 
 
