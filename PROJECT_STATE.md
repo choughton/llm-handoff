@@ -6,11 +6,12 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 approved at `d981442`; HARD-5 approved at `1f60143` and merged in PR #154; HARD-6 open, the only remaining story).
-- **Epic Awaiting Close:** None. GEMINI-REMOVAL closed (see the Completed
-  Scope Ledger). LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP,
-  SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST,
-  ANTIGRAVITY-ADAPTER, and GEMINI-REMOVAL closed.
+- **Active Epic:** None. The planner picks the next epic by fit from the Backlog.
+- **Epic Awaiting Close:** None. HARDENING closed (HARD-6 merged in PR #157,
+  audited at `3949ed2`; see the Completed Scope Ledger). LINEAR-WORKFLOW,
+  LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY,
+  PUBLISH-RESUME-NITS, AUDIT-COST, ANTIGRAVITY-ADAPTER, GEMINI-REMOVAL, and
+  HARDENING closed.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
   story).
@@ -510,10 +511,9 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 ### 10. HARDENING - security followups
 
-Fit: HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 is approved;
-HARD-5 is approved and merged in PR #154. HARD-6 remains: it is the only
-open HARDENING story and it is Windows-specific. Independent and cheap; each story closes one confirmed
-followup, so it fills a wait well. CHAT-4's dependency on the HARD-3 marker is now satisfied.
+Fit: closed. HARD-1 through HARD-6 are merged (HARD-6 in PR #157); the epic
+close was approved at `3949ed2388e6a726012cfbf0c8d3511fba5ea179`. Nothing
+remains. CHAT-4's dependency on the HARD-3 marker is satisfied.
 
 The security-relevant Open Followups, promoted to stories. Each story names
 the followup it closes; all five were confirmed in the code at `d67722e`.
@@ -606,7 +606,38 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   guarantee is unavailable, disable disk persistence and deletion of the
   carry-over record on Windows and keep it in memory only. Test with a
   junction swap where the platform allows it, and update the `CHANGELOG.md`
-  limitation note.
+  limitation note. Decided by the planner on 2026-10-19: before writing or
+  deleting the record without directory-fd support, pin `logs` and
+  `logs/dispatch` with `CreateFileW` (through `ctypes`) without
+  `FILE_SHARE_DELETE` and with `FILE_FLAG_OPEN_REPARSE_POINT`, rejecting a
+  reparse point or non-directory, and hold both handles for the whole write or
+  delete; when pinning is unavailable, keep the record in memory only (no
+  read, write, or delete; one `WARN`); POSIX unchanged. Implementation note:
+  the pin handles request `FILE_LIST_DIRECTORY` in addition to
+  `FILE_READ_ATTRIBUTES`, because Windows does not enforce share modes on an
+  attributes-only handle (a test showed the rename succeeding without it).
+  Audit fix (2026-10-19, after the `5cbe641` audit): the pin does not stop an
+  empty `logs/dispatch` from being turned into a mount point in place;
+  `FSCTL_SET_REPARSE_POINT` needs only write-attributes access, which share
+  modes do not govern (a probe set one under a pin with share mode 0). The
+  Windows delete and writer now open the file as a handle, require its final
+  path to be inside a handle to `logs/dispatch`, and delete through that
+  handle or write through it and rename it relative to the directory handle
+  (`NtSetInformationFile` with `RootDirectory`). Windows-only regressions set
+  the mount point in place while the pin is held. Second audit fix
+  (2026-10-19, after the `c19452b` audit): the pins themselves were opened by
+  full path, so an empty `logs` turned into a mount point between the two
+  pins redirected the `logs/dispatch` pin outside the repository. Each pin is
+  now opened relative to its parent's open handle (`NtCreateFile` with
+  `RootDirectory`, starting from a handle to the repository root), the
+  parent handle is checked for a reparse point after the child opens, and
+  the child's final path must equal the parent's plus the child name. The
+  record file is opened and created relative to the pinned `logs/dispatch`
+  handle, which is checked for a reparse point before the delete and the
+  rename. A relative open that meets an in-place mount point fails with
+  Windows error 1921, which is treated as a link. A Windows-only regression
+  mounts an empty `logs` between the two pins for both the delete and the
+  write.
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 
@@ -1267,15 +1298,20 @@ The remaining letters are unchanged. AUDIT-COST (b) and (c) closed by GEM-4b.
   `55e2ca3c757d4c02cc13dad42060f374caef630e`; approved with no findings.
   Verification: dispatcher ran `python -m pytest tests -q -p no:cacheprovider`
   on that commit, exit 0 (operator run: 2692 passed, 16 skipped).
-- **HARDENING (HARD-1 through HARD-5)** - security followups closed: HARD-1
+- **HARDENING (HARD-1 through HARD-6)** - security followups closed: HARD-1
   reviewer stderr redaction (PR #146); HARD-2 operator text delimiters
   (PR #147); HARD-3 operator-influence audit marker (PR #151); HARD-4
   `handoff_path` and `project_state_path` validation (approved at `d981442`);
   HARD-5 carry-over record confirmation (PR #154, audited at
   `1f601433becc09ffe6f729dfbdbcb27bd72c3cc2`). HARD-5 audit approved; quality
   pass, security reviewer found one medium Windows junction-swap race,
-  operator-accepted and carried as HARD-6 (still open). Verification: dispatcher
+  operator-accepted and carried as HARD-6. Verification: dispatcher
   ran the full suite at the audited SHA, exit 0 (2784 passed, 26 skipped).
+  HARD-6 race-safe Windows carry-over deletion and writing (PR #157 merge
+  `0fb740c`, audited at `3949ed2388e6a726012cfbf0c8d3511fba5ea179`); quality
+  and security reviews passed with no findings; epic close approved with
+  `remaining_stories: []`. Verification: dispatcher ran focused tests and the
+  full suite at the audited SHA, exit 0.
 
 ## Notes
 
