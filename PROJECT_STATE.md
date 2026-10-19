@@ -624,7 +624,20 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   path to be inside a handle to `logs/dispatch`, and delete through that
   handle or write through it and rename it relative to the directory handle
   (`NtSetInformationFile` with `RootDirectory`). Windows-only regressions set
-  the mount point in place while the pin is held.
+  the mount point in place while the pin is held. Second audit fix
+  (2026-10-19, after the `c19452b` audit): the pins themselves were opened by
+  full path, so an empty `logs` turned into a mount point between the two
+  pins redirected the `logs/dispatch` pin outside the repository. Each pin is
+  now opened relative to its parent's open handle (`NtCreateFile` with
+  `RootDirectory`, starting from a handle to the repository root), the
+  parent handle is checked for a reparse point after the child opens, and
+  the child's final path must equal the parent's plus the child name. The
+  record file is opened and created relative to the pinned `logs/dispatch`
+  handle, which is checked for a reparse point before the delete and the
+  rename. A relative open that meets an in-place mount point fails with
+  Windows error 1921, which is treated as a link. A Windows-only regression
+  mounts an empty `logs` between the two pins for both the delete and the
+  write.
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 

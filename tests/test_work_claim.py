@@ -4382,7 +4382,7 @@ def _select_carry_over_writer(
         elif not directory.is_dir():
             yield None
             return
-        yield directory
+        yield orchestrator._PinnedCarryOverDirectory(directory, None)
 
     monkeypatch.setattr(orchestrator, "_CARRY_OVER_WINDOWS_PIN_SUPPORTED", True)
     monkeypatch.setattr(orchestrator, "_pinned_carry_over_directories", stub_pin)
@@ -4693,7 +4693,8 @@ def test_carry_over_pin_blocks_renaming_the_carry_over_directories(
     with orchestrator._pinned_carry_over_directories(
         repo, create=True
     ) as directory:
-        assert directory == dispatch_dir
+        assert directory.path == dispatch_dir
+        assert directory.handle is not None
         assert dispatch_dir.is_dir()
         with pytest.raises(OSError):
             os.rename(dispatch_dir, repo / "logs" / "moved")
@@ -4776,9 +4777,9 @@ def test_carry_over_delete_survives_a_junction_swap_inside_the_pin(
     outcomes: list[str] = []
     real_unlink = orchestrator._unlink_carry_over_file_checked
 
-    def swap_then_unlink(state_path: Path) -> None:
+    def swap_then_unlink(state_path: Path, directory_handle: int | None) -> None:
         _try_junction_swap(repo, outside, outcomes)
-        real_unlink(state_path)
+        real_unlink(state_path, directory_handle)
 
     monkeypatch.setattr(
         orchestrator, "_unlink_carry_over_file_checked", swap_then_unlink
@@ -4812,9 +4813,11 @@ def test_carry_over_write_survives_a_junction_swap_inside_the_pin(
     outcomes: list[str] = []
     real_checked_writer = orchestrator._write_carry_over_record_checked
 
-    def swap_then_write(state_path: Path, payload: str) -> None:
+    def swap_then_write(
+        state_path: Path, payload: str, directory_handle: int | None
+    ) -> None:
         _try_junction_swap(repo, outside, outcomes)
-        real_checked_writer(state_path, payload)
+        real_checked_writer(state_path, payload, directory_handle)
 
     monkeypatch.setattr(
         orchestrator, "_write_carry_over_record_checked", swap_then_write
@@ -4929,11 +4932,11 @@ def test_carry_over_delete_refuses_a_mount_point_set_in_place_inside_the_pin(
     outcomes: list[str] = []
     real_unlink = orchestrator._unlink_carry_over_file_checked
 
-    def mount_then_unlink(state_path: Path) -> None:
+    def mount_then_unlink(state_path: Path, directory_handle: int | None) -> None:
         _mount_directory_in_place(dispatch_dir, outside)
         outcomes.append("mounted")
         assert state_path.exists()  # the literal path now reaches outside
-        real_unlink(state_path)
+        real_unlink(state_path, directory_handle)
 
     monkeypatch.setattr(
         orchestrator, "_unlink_carry_over_file_checked", mount_then_unlink
@@ -4970,10 +4973,12 @@ def test_carry_over_write_refuses_a_mount_point_set_in_place_inside_the_pin(
     outcomes: list[str] = []
     real_checked_writer = orchestrator._write_carry_over_record_checked
 
-    def mount_then_write(state_path: Path, payload: str) -> None:
+    def mount_then_write(
+        state_path: Path, payload: str, directory_handle: int | None
+    ) -> None:
         _mount_directory_in_place(dispatch_dir, outside)
         outcomes.append("mounted")
-        real_checked_writer(state_path, payload)
+        real_checked_writer(state_path, payload, directory_handle)
 
     monkeypatch.setattr(
         orchestrator, "_write_carry_over_record_checked", mount_then_write
@@ -5006,7 +5011,8 @@ def test_carry_over_handle_check_rejects_a_file_outside_the_directory(
     # was opened before the mount point appeared.
     import ctypes
 
-    inside = tmp_path / "inside"
+    repo = tmp_path / "repo"
+    inside = repo / "logs" / "dispatch"
     outside = tmp_path / "outside"
     _write(inside / "carry-over.json", "{}\n")
     _write(outside / "carry-over.json", "{}\n")
@@ -5020,29 +5026,29 @@ def test_carry_over_handle_check_rejects_a_file_outside_the_directory(
         assert handle not in (None, ctypes.c_void_p(-1).value)
         return handle
 
-    directory_handle = orchestrator._pin_carry_over_directory(inside)
-    assert directory_handle is not None
-    inside_handle = open_file(inside / "carry-over.json")
-    outside_handle = open_file(outside / "carry-over.json")
-    try:
-        orchestrator._carry_over_require_handle_in_directory(
-            inside_handle, directory_handle, inside / "carry-over.json"
-        )
-        with pytest.raises(orchestrator._CarryOverLinkError):
+    with orchestrator._pinned_carry_over_directories(repo, create=False) as pinned:
+        assert pinned is not None
+        inside_handle = open_file(inside / "carry-over.json")
+        outside_handle = open_file(outside / "carry-over.json")
+        try:
             orchestrator._carry_over_require_handle_in_directory(
-                outside_handle, directory_handle, inside / "carry-over.json"
+                inside_handle, pinned.handle, inside / "carry-over.json"
             )
-    finally:
-        kernel32.CloseHandle(inside_handle)
-        kernel32.CloseHandle(outside_handle)
-        orchestrator._close_carry_over_pin(directory_handle)
+            with pytest.raises(orchestrator._CarryOverLinkError):
+                orchestrator._carry_over_require_handle_in_directory(
+                    outside_handle, pinned.handle, inside / "carry-over.json"
+                )
+        finally:
+            kernel32.CloseHandle(inside_handle)
+            kernel32.CloseHandle(outside_handle)
 
 
 @_WINDOWS_ONLY
 def test_carry_over_handle_delete_removes_a_file_symlink_not_its_target(
     tmp_path: Path,
 ) -> None:
-    dispatch_dir = tmp_path / "logs" / "dispatch"
+    repo = tmp_path / "repo"
+    dispatch_dir = repo / "logs" / "dispatch"
     dispatch_dir.mkdir(parents=True)
     target = tmp_path / "outside" / "victim.txt"
     _write(target, "keep\n")
@@ -5053,11 +5059,128 @@ def test_carry_over_handle_delete_removes_a_file_symlink_not_its_target(
         pytest.skip("cannot create a file symlink here")
     orchestrator = _load_orchestrator()
 
-    orchestrator._unlink_carry_over_file_checked(link)
-    orchestrator._unlink_carry_over_file_checked(link)  # missing is not an error
+    with orchestrator._pinned_carry_over_directories(repo, create=False) as pinned:
+        assert pinned is not None
+        orchestrator._unlink_carry_over_file_checked(link, pinned.handle)
+        # A missing file is not an error.
+        orchestrator._unlink_carry_over_file_checked(link, pinned.handle)
 
     assert not os.path.lexists(link)
     assert target.read_text(encoding="utf-8") == "keep\n"
+
+
+@_WINDOWS_ONLY
+def test_carry_over_handle_helpers_require_the_pinned_directory_handle(
+    tmp_path: Path,
+) -> None:
+    # The Windows helpers never fall back to looking up the directory by path.
+    record = tmp_path / "logs" / "dispatch" / "carry-over.json"
+    _write(record, "{}\n")
+    orchestrator = _load_orchestrator()
+
+    with pytest.raises(ValueError):
+        orchestrator._unlink_carry_over_file_checked(record)
+    with pytest.raises(ValueError):
+        orchestrator._write_carry_over_record_checked(record, "{}\n")
+    assert record.read_text(encoding="utf-8") == "{}\n"
+
+
+def _mount_logs_before_opening_dispatch(
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    logs_dir: Path,
+    target: Path,
+    outcomes: list[str],
+) -> None:
+    """Turn the pinned, empty ``logs`` into a mount point before its child opens.
+
+    This is the window between pinning ``logs`` and pinning ``logs/dispatch``:
+    the pin on ``logs`` cannot stop an in-place mount point, so the
+    ``dispatch`` open must not follow it to ``target``.
+    """
+
+    real_pin_child = orchestrator._pin_carry_over_child_directory
+
+    def mount_then_pin(
+        parent_handle: int, name: str, path: Path, *, create: bool
+    ) -> int | None:
+        if name == "dispatch":
+            _mount_directory_in_place(logs_dir, target)
+            outcomes.append("mounted")
+            assert (path / "carry-over.json").exists()  # the path reaches outside
+        return real_pin_child(parent_handle, name, path, create=create)
+
+    monkeypatch.setattr(
+        orchestrator, "_pin_carry_over_child_directory", mount_then_pin
+    )
+    # Simulate the mount point appearing after every path-based check, so only
+    # the handle checks stand between the pin and the external directory.
+    monkeypatch.setattr(
+        orchestrator, "_carry_over_path_traverses_link", lambda _path: False
+    )
+
+
+@_WINDOWS_ONLY
+def test_carry_over_delete_refuses_a_mount_point_set_on_logs_while_pinning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _ignored_logs_repo(repo)
+    logs_dir = repo / "logs"
+    logs_dir.mkdir()
+    external_record = outside / "dispatch" / "carry-over.json"
+    _write(external_record, "{}\n")
+    orchestrator = _load_orchestrator()
+    outcomes: list[str] = []
+    _mount_logs_before_opening_dispatch(
+        orchestrator, monkeypatch, logs_dir, outside, outcomes
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, None, _collecting_log(messages)
+    )
+
+    assert outcomes == ["mounted"]
+    assert external_record.read_text(encoding="utf-8") == "{}\n"
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+@_WINDOWS_ONLY
+def test_carry_over_write_refuses_a_mount_point_set_on_logs_while_pinning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _ignored_logs_repo(repo)
+    logs_dir = repo / "logs"
+    logs_dir.mkdir()
+    external_record = outside / "dispatch" / "carry-over.json"
+    _write(external_record, "{}\n")
+    orchestrator = _load_orchestrator()
+    outcomes: list[str] = []
+    _mount_logs_before_opening_dispatch(
+        orchestrator, monkeypatch, logs_dir, outside, outcomes
+    )
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator._persist_implementer_leftovers(
+        config, _app_leftovers(repo), _collecting_log(messages)
+    )
+
+    assert outcomes == ["mounted"]
+    assert external_record.read_text(encoding="utf-8") == "{}\n"
+    assert sorted(path.name for path in (outside / "dispatch").iterdir()) == [
+        "carry-over.json"
+    ]
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
 
 
 def test_carry_over_record_stays_in_memory_without_a_race_safe_mechanism(
