@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import tomllib
 
 import pytest
 
@@ -13,10 +12,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_WORKFLOW = REPO_ROOT / "examples" / "reference-workflow"
 HOOK_SCRIPT = REFERENCE_WORKFLOW / ".claude" / "hooks" / "block_dangerous_commands.py"
 CLAUDE_SETTINGS = REFERENCE_WORKFLOW / ".claude" / "settings.json"
-GEMINI_POLICY_PATHS = (
-    REFERENCE_WORKFLOW / ".gemini" / "policies" / "planner_guardrails.toml",
-    REPO_ROOT / ".gemini" / "policies" / "planner_guardrails.toml",
-)
 BLOCKED_PREFIXES = {"git push", "curl", "wget", "rm -rf", "git reset --hard"}
 
 
@@ -169,28 +164,3 @@ def test_claude_settings_deny_rules_and_hook_wiring() -> None:
     hook = pre_tool_use[0]["hooks"][0]
     assert hook["type"] == "command"
     assert ".claude/hooks/block_dangerous_commands.py" in hook["command"]
-
-
-@pytest.mark.parametrize("policy_path", GEMINI_POLICY_PATHS)
-def test_gemini_policy_uses_the_policy_engine_schema(policy_path: Path) -> None:
-    policy = tomllib.loads(policy_path.read_text(encoding="utf-8"))
-
-    assert set(policy) == {"rule"}
-    prefixes: set[str] = set()
-    for rule in policy["rule"]:
-        assert set(rule) == {"toolName", "commandPrefix", "decision", "priority"}
-        assert rule["toolName"] == "run_shell_command"
-        assert rule["decision"] == "deny"
-        assert isinstance(rule["priority"], int)
-        assert 0 <= rule["priority"] <= 999
-        value = rule["commandPrefix"]
-        prefixes.update([value] if isinstance(value, str) else value)
-    assert BLOCKED_PREFIXES <= prefixes
-
-
-def test_gemini_policy_documents_the_user_tier_install() -> None:
-    content = GEMINI_POLICY_PATHS[0].read_text(encoding="utf-8")
-
-    assert "workspace (project) policy tier is currently" in content
-    assert "~/.gemini/policies" in content
-    assert "$env:USERPROFILE\\.gemini\\policies" in content

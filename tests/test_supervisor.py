@@ -344,8 +344,9 @@ def test_supervisor_repair_prompt_lists_generic_default_paths(
 
     assert (
         "Allowed paths: docs/, .claude/agents/, .codex/skills/llm-handoff/, "
-        ".agents/agents/, .gemini/agents/." in prompt
+        ".agents/agents/." in prompt
     )
+    assert ".gemini/agents/" not in prompt
     assert "llm_handoff/" not in prompt
 
 

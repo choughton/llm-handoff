@@ -28,20 +28,16 @@ AGENT_INSTRUCTION_DOCS = [
     ".codex/skills/llm-handoff-frontend/SKILL.md",
     ".codex/skills/llm-handoff-planner/SKILL.md",
     ".codex/skills/llm-handoff-validator/SKILL.md",
-    ".gemini/agents/frontend.md",
-    ".gemini/agents/planner.md",
 ]
 PLANNER_INSTRUCTION_DOCS = [
     ".claude/agents/planner.md",
     ".codex/skills/llm-handoff-planner/SKILL.md",
-    ".gemini/agents/planner.md",
     "docs/handoff/PLANNER_INITIAL_PROMPT.md",
     "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
 ]
 FRONTEND_INSTRUCTION_DOCS = [
     ".claude/agents/frontend.md",
     ".codex/skills/llm-handoff-frontend/SKILL.md",
-    ".gemini/agents/frontend.md",
     "docs/handoff/FRONTEND_HANDOFF_PROMPT.md",
 ]
 ROLE_PROMPTS = [

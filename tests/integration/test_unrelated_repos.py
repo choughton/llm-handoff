@@ -26,9 +26,7 @@ PROVIDER_NAMES = ("claude", "codex", "gemini")
 ROLES = ("planner", "backend", "frontend", "auditor", "validator", "finalizer")
 # Files `init` merges into rather than copies over; every other file that
 # existed before `init` must come out byte-identical.
-MERGED_PATHS = frozenset(
-    {"AGENTS.md", ".claude/settings.json", ".gitignore", ".geminiignore"}
-)
+MERGED_PATHS = frozenset({"AGENTS.md", ".claude/settings.json", ".gitignore"})
 AGENTS_BEGIN = b"<!-- llm-handoff:begin -->"
 AGENTS_END = b"<!-- llm-handoff:end -->"
 CUSTOM_AGENTS_TEXT = (

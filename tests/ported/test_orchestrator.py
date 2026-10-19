@@ -4222,7 +4222,7 @@ producer: user
 
     def fake_planner(path: Path, **kwargs: object) -> DispatchResult:
         del kwargs
-        # Exactly the body shape shipped in .gemini/agents/planner.md.
+        # Exactly the body shape shipped in .agents/agents/planner.md.
         path.write_text(
             """---
 next_agent: backend

@@ -22,7 +22,6 @@ REQUIRED_TEMPLATE_FILES = (
     "AGENTS.md",
     "PROJECT_STATE.md",
     "dispatch_config.yaml",
-    ".geminiignore",
     "docs/handoff/HANDOFF.md",
     "docs/handoff/HANDBOOK.md",
     "docs/handoff/README.md",
@@ -41,13 +40,6 @@ REQUIRED_TEMPLATE_FILES = (
     ".codex/skills/llm-handoff-validator/SKILL.md",
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".codex/rules/llm-handoff.rules",
-    ".gemini/agents/planner.md",
-    ".gemini/agents/backend.md",
-    ".gemini/agents/frontend.md",
-    ".gemini/agents/auditor.md",
-    ".gemini/agents/validator.md",
-    ".gemini/agents/finalizer.md",
-    ".gemini/policies/planner_guardrails.toml",
     ".claude/agents/auditor.md",
     ".claude/agents/handoff-router.md",
     ".claude/agents/handoff-validator.md",
@@ -85,13 +77,6 @@ COPIED_TEMPLATE_FILES = (
     ".codex/skills/llm-handoff-validator/SKILL.md",
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".codex/rules/llm-handoff.rules",
-    ".gemini/agents/planner.md",
-    ".gemini/agents/backend.md",
-    ".gemini/agents/frontend.md",
-    ".gemini/agents/auditor.md",
-    ".gemini/agents/validator.md",
-    ".gemini/agents/finalizer.md",
-    ".gemini/policies/planner_guardrails.toml",
     ".claude/agents/auditor.md",
     ".claude/agents/handoff-router.md",
     ".claude/agents/handoff-validator.md",
@@ -107,8 +92,11 @@ COPIED_TEMPLATE_FILES = (
     ".agents/agents/handoff-router.md",
     ".agents/agents/ledger-updater.md",
     ".agents/agents/supervisor-repair.md",
-    ".geminiignore",
 )
+
+# Gemini CLI instruction files that neither the repository nor the template
+# ships any more; `init` must not write them.
+REMOVED_GEMINI_PATHS = (".gemini", ".geminiignore")
 
 # The Antigravity agent files, named for the `--agent` value the adapter
 # passes: the role, the support subagent name for validator and finalizer,
@@ -123,24 +111,6 @@ ANTIGRAVITY_AGENT_FILES = (
     ".agents/agents/ledger-updater.md",
     ".agents/agents/supervisor-repair.md",
 )
-
-# The Gemini agent file each role's default `mention` selects when it is
-# mapped to `gemini` (`@<role>` names `.gemini/agents/<role>.md`).
-GEMINI_ROLE_AGENT_FILES = {
-    "planner": ".gemini/agents/planner.md",
-    "backend": ".gemini/agents/backend.md",
-    "frontend": ".gemini/agents/frontend.md",
-    "auditor": ".gemini/agents/auditor.md",
-    "validator": ".gemini/agents/validator.md",
-    "finalizer": ".gemini/agents/finalizer.md",
-}
-GEMINI_ROLE_PROMPT_FILES = {
-    "planner": "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
-    "backend": "docs/handoff/BACKEND_HANDOFF_PROMPT.md",
-    "frontend": "docs/handoff/FRONTEND_HANDOFF_PROMPT.md",
-    "auditor": "docs/handoff/AUDITOR_HANDOFF_PROMPT.md",
-    "finalizer": "docs/handoff/FINALIZER_HANDOFF_PROMPT.md",
-}
 
 # The Claude subagent each role launches when it is mapped to `claude`.
 CLAUDE_ROLE_AGENT_FILES = {
@@ -187,10 +157,19 @@ def test_reference_workflow_copied_templates_match_source() -> None:
     assert mismatched == []
 
 
+def test_gemini_instruction_files_are_not_shipped() -> None:
+    for root in (REPO_ROOT, REFERENCE_WORKFLOW):
+        for relative_path in REMOVED_GEMINI_PATHS:
+            assert not (root / relative_path).exists(), root / relative_path
+    shipped = template_files(REFERENCE_WORKFLOW)
+    assert not [
+        path for path in shipped if path.parts[0] in REMOVED_GEMINI_PATHS
+    ]
+
+
 FINALIZER_HELPER_FILES = (
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".claude/agents/ledger-updater.md",
-    ".gemini/agents/finalizer.md",
     ".agents/agents/ledger-updater.md",
 )
 
@@ -393,7 +372,6 @@ def test_shipped_template_files_do_not_point_at_dispatcher_docs() -> None:
     "relative_path",
     [
         ".codex/skills/llm-handoff-validator/SKILL.md",
-        ".gemini/agents/validator.md",
     ],
 )
 def test_single_file_validator_helpers_cover_validation_and_routing(
@@ -406,23 +384,6 @@ def test_single_file_validator_helpers_cover_validation_and_routing(
     assert "The dispatcher's prompt names which task applies" in content
     assert "VALID: YES | NO | WARNINGS-ONLY" in content
     assert "ROUTING UPDATED: YES" in content
-
-
-def test_gemini_agent_files_cover_every_role() -> None:
-    # The Gemini adapter mentions `@<role>` unless `mention` overrides it, and
-    # Gemini CLI resolves a mention by the `name` in the agent file's
-    # frontmatter, so each role needs a file whose name is the role.
-    for role, relative_path in GEMINI_ROLE_AGENT_FILES.items():
-        content = (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8")
-        frontmatter = content.split("---", 2)[1]
-
-        assert f"\nname: {role}\n" in frontmatter, relative_path
-        assert "`docs/handoff/HANDBOOK.md`" in content, relative_path
-        assert "`docs/handoff/SHARED_REPO_INIT_PROMPT.md`" in content, relative_path
-        prompt_file = GEMINI_ROLE_PROMPT_FILES.get(role)
-        if prompt_file is not None:
-            assert f"`{prompt_file}`" in content, relative_path
-        assert "git push" in content, relative_path
 
 
 LINEAR_EVIDENCE_HELPER_FILES = (
@@ -447,7 +408,6 @@ def test_validator_helpers_report_a_linear_evidence_row() -> None:
 PLANNER_PROMPT_FILES = (
     ".claude/agents/planner.md",
     ".codex/skills/llm-handoff-planner/SKILL.md",
-    ".gemini/agents/planner.md",
     "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
     "docs/handoff/PLANNER_INITIAL_PROMPT.md",
     ".agents/agents/planner.md",
@@ -462,7 +422,6 @@ PLANNER_EPIC_CLOSE_PROMPT_FILES = tuple(
 AUDITOR_PROMPT_FILES = (
     ".claude/agents/auditor.md",
     ".codex/skills/llm-handoff-auditor/SKILL.md",
-    ".gemini/agents/auditor.md",
     "docs/handoff/AUDITOR_HANDOFF_PROMPT.md",
     ".agents/agents/auditor.md",
 )
@@ -481,7 +440,7 @@ def test_planner_prompts_do_not_offer_a_finalizer_route() -> None:
 
 
 def test_planner_prompts_send_an_epic_close_to_the_auditor() -> None:
-    assert len(PLANNER_EPIC_CLOSE_PROMPT_FILES) == 5
+    assert len(PLANNER_EPIC_CLOSE_PROMPT_FILES) == 4
     for relative_path in PLANNER_EPIC_CLOSE_PROMPT_FILES:
         content = (REFERENCE_WORKFLOW / relative_path).read_text(encoding="utf-8")
         assert "`close_type: epic` and a concrete `scope_sha`" in content, relative_path
@@ -521,8 +480,6 @@ IMPLEMENTER_PROMPT_FILES = (
     Path(".claude") / "agents" / "frontend.md",
     Path(".codex") / "skills" / "llm-handoff" / "SKILL.md",
     Path(".codex") / "skills" / "llm-handoff-frontend" / "SKILL.md",
-    Path(".gemini") / "agents" / "backend.md",
-    Path(".gemini") / "agents" / "frontend.md",
     Path("docs") / "handoff" / "BACKEND_HANDOFF_PROMPT.md",
     Path("docs") / "handoff" / "FRONTEND_HANDOFF_PROMPT.md",
     Path(".agents") / "agents" / "backend.md",

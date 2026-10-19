@@ -551,8 +551,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
         ".codex/skills/llm-handoff-auditor/SKILL.md",
         ".agents/agents/planner.md",
         ".agents/agents/auditor.md",
-        ".gemini/agents/planner.md",
-        ".gemini/agents/auditor.md",
     ],
 )
 def test_shipped_prompts_explain_dropped_stories(relative_path: str) -> None:

@@ -17,10 +17,11 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 TEMPLATE_PREFIX = "llm_handoff/templates/reference-workflow/"
 HIDDEN_TEMPLATE_FILES = (
     ".claude/settings.json",
-    ".geminiignore",
     ".gitignore",
 )
-HIDDEN_TEMPLATE_DIRS = (".codex/", ".gemini/")
+HIDDEN_TEMPLATE_DIRS = (".codex/",)
+# Gemini CLI instruction files the template no longer ships.
+REMOVED_TEMPLATE_PATHS = (".gemini", ".geminiignore")
 TEST_AND_LINT_TOOLS = {"pytest", "pytest-xdist", "pre-commit", "ruff"}
 BUILD_TOOLS = {"hatchling"}
 
@@ -182,6 +183,12 @@ def test_installed_wheel_bundles_template_and_init_writes_hidden_files(
         assert TEMPLATE_PREFIX + relative in names
     for prefix in HIDDEN_TEMPLATE_DIRS:
         assert any(name.startswith(TEMPLATE_PREFIX + prefix) for name in names)
+    for removed in REMOVED_TEMPLATE_PATHS:
+        assert not any(
+            name == TEMPLATE_PREFIX + removed
+            or name.startswith(TEMPLATE_PREFIX + removed + "/")
+            for name in names
+        ), removed
     assert "llm_handoff/schemas/codex_final_response.schema.json" in names
     assert "llm-handoff = llm_handoff.__main__:main" in entry_points
 
@@ -237,6 +244,8 @@ def test_installed_wheel_bundles_template_and_init_writes_hidden_files(
     for prefix in HIDDEN_TEMPLATE_DIRS:
         directory = target / prefix.rstrip("/")
         assert any(path.is_file() for path in directory.rglob("*")), prefix
+    for removed in REMOVED_TEMPLATE_PATHS:
+        assert not (target / removed).exists(), removed
     assert (target / "dispatch_config.yaml").is_file()
     assert not (target / "README.md").exists()
 
