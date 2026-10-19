@@ -831,6 +831,13 @@ publish. The exception needs the checkout to be `base_branch` (or, when
 needs every commit on that branch to be on `<remote>` already. Otherwise the
 loop still stops.
 
+An epic close can also pass on a story branch with no work of its own, for
+example one cut when a failed close audit was routed to an implementer that
+had nothing to change. In `pr` mode, when the branch has no commits beyond
+`<remote>/<base_branch>` after the base branch merge, the dispatcher pushes
+nothing and opens no pull request. It fast-forwards the base branch to that
+commit, switches to it, and deletes the story branch and its story state.
+
 ### Scanners
 
 The gate can also run operator-configured scanners before the verification

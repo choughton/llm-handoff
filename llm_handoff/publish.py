@@ -610,6 +610,10 @@ def publish_story(
     )
     if synced is not None:
         return synced
+    if frontmatter.close_type == "epic":
+        emptied = _drop_empty_story_branch(repo_root, remote, state, log)
+        if emptied is not None:
+            return emptied
     requested_at = utc_now()
     pushed = _git(repo_root, ["push", "-u", remote, state.branch])
     if pushed.returncode != 0:
@@ -2974,6 +2978,58 @@ def _is_merged_epic_close(
         _git(repo_root, ["merge-base", "--is-ancestor", "HEAD", tracking]).returncode
         == 0
     )
+
+
+def _drop_empty_story_branch(
+    repo_root: Path, remote: str, state: StoryState, log: LogFn
+) -> PublishOutcome | None:
+    """Close an epic on a story branch that has nothing of its own to publish.
+
+    An earlier dispatch can cut a story branch with no implementer work, such
+    as a failed epic-close audit routed to an implementer. Once the branch is
+    synced with the base, it holds only commits already on ``remote``, so
+    there is no pull request to open. The base branch is fast-forwarded to the
+    branch, checked out, and the story branch and its state are dropped.
+    Nothing is pushed.
+
+    Returns ``None`` when the branch has commits of its own.
+    """
+
+    upstream = f"refs/remotes/{remote}/{state.base_branch}"
+    if _git(repo_root, ["merge-base", "--is-ancestor", "HEAD", upstream]).returncode:
+        return None
+    if _git(
+        repo_root, ["merge-base", "--is-ancestor", state.base_branch, "HEAD"]
+    ).returncode:
+        return _stop(
+            log,
+            f"the epic-close audit passed on `{state.branch}`, which has nothing "
+            f"beyond {remote}/{state.base_branch} to publish, but "
+            f"`{state.base_branch}` has commits that are not on "
+            f"{remote}/{state.base_branch}. Publish or drop them, check out "
+            f"`{state.base_branch}`, remove {STATE_PATH.as_posix()}, then start "
+            "the dispatcher again",
+        )
+    # Moving the base branch to this commit first is a fast-forward (checked
+    # above), and makes the switch change no files, so an uncommitted handoff
+    # stays as it is.
+    for args in (
+        ["branch", "-f", state.base_branch, "HEAD"],
+        ["switch", state.base_branch],
+        ["branch", "-d", state.branch],
+    ):
+        result = _git(repo_root, args)
+        if result.returncode != 0:
+            return _stop(log, f"git {' '.join(args[:2])} failed: {_first_line(result)}")
+    _clear_state(repo_root)
+    log(
+        "INFO",
+        f"Epic-close audit passed on `{state.branch}`, which has no commits "
+        f"beyond {remote}/{state.base_branch}, so there is nothing to publish. "
+        f"Deleted the branch and its story state and switched to "
+        f"`{state.base_branch}`; nothing was pushed.",
+    )
+    return PublishOutcome()
 
 
 def _stop(log: LogFn, message: str) -> PublishOutcome:

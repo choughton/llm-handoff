@@ -1924,6 +1924,99 @@ def test_pr_epic_close_on_a_pushed_story_branch_without_state_stops(
     assert _gh_calls(tmp_path) == []
 
 
+def _start_empty_story(repo: Path) -> None:
+    """Cut the story branch and its state with no implementer commit."""
+
+    error = ensure_story_branch(
+        repo_root=repo,
+        prefix="llm-handoff/",
+        base_branch=None,
+        assignment_content=ASSIGNMENT,
+    )
+    assert error is None
+
+
+def test_pr_epic_close_on_an_empty_story_branch_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed epic-close audit sent the close to backend, which cut the story
+    # branch and had nothing to change; main then moved on the remote.
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    _start_empty_story(repo)
+    _commit_on_remote(tmp_path, remote, "main", {"NEWS.md": "news\n"}, "moved")
+    (repo / "README.md").write_text("uncommitted edit\n", encoding="utf-8")
+    entries, log = _logs()
+
+    outcome = _publish_pr(
+        repo, gh, log, handoff_content=EPIC_CLOSE, branch_prefix="llm-handoff/"
+    )
+
+    assert outcome == PublishOutcome()
+    assert _gh_calls(tmp_path) == []
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "main") == _git(repo, "rev-parse", "origin/main")
+    assert _git(repo, "branch", "--list", BRANCH) == ""
+    assert _git(remote, "branch", "--list", BRANCH) == ""
+    assert not (repo / STATE_PATH).exists()
+    assert (repo / "README.md").read_text(encoding="utf-8") == "uncommitted edit\n"
+    assert any(
+        level == "INFO" and "nothing to publish" in message
+        for level, message in entries
+    )
+
+
+def test_pr_epic_close_with_story_commits_still_opens_a_pull_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    _start_story(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(
+        repo,
+        gh,
+        log,
+        handoff_content=EPIC_CLOSE,
+        auto_merge=False,
+        branch_prefix="llm-handoff/",
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert [call[:2] for call in _gh_calls(tmp_path)] == [
+        ["pr", "view"],
+        ["pr", "create"],
+    ]
+
+
+def test_pr_epic_close_on_an_empty_story_branch_stops_for_unpushed_base_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    _start_empty_story(repo)
+    _git(repo, "switch", "-q", "main")
+    _commit_all(repo, {"local.md": "local\n"}, "unpushed on main")
+    local_main = _git(repo, "rev-parse", "main")
+    _git(repo, "switch", "-q", BRANCH)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(
+        repo, gh, log, handoff_content=EPIC_CLOSE, branch_prefix="llm-handoff/"
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert "has commits that are not on origin/main" in outcome.message
+    assert _gh_calls(tmp_path) == []
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert _git(repo, "rev-parse", "main") == local_main
+    assert (repo / STATE_PATH).exists()
+
+
 @pytest.mark.parametrize(
     ("checkout", "options"),
     [
