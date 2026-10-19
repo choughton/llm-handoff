@@ -556,7 +556,10 @@ escaped. The in-memory record kept between cycles of one run still applies
 without asking. When Git does not ignore that
 path, the record stays in memory only and the dispatcher logs a `WARN` line,
 because the untracked file would otherwise show up in the next work-claim
-gate.
+gate. When `logs/dispatch/carry-over.json` or a directory above it inside the
+repository is a symlink or junction, the dispatcher does not read, write, or
+delete the record, so a link cannot point it at a file outside the
+repository; it logs a `WARN` line and the files stay operator edits.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the

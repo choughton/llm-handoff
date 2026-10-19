@@ -3629,7 +3629,30 @@ def _restore_bounce_counts(config: DispatchConfig, log: LogFn) -> None:
 
 
 def _carry_over_state_path(config: DispatchConfig) -> Path:
-    return (config.repo_root / CARRY_OVER_STATE_PATH).resolve()
+    """The carry-over record's path inside the repository, links not followed."""
+
+    return config.repo_root.resolve() / CARRY_OVER_STATE_PATH
+
+
+def _carry_over_path_traverses_link(state_path: Path) -> bool:
+    """Whether the record path or a directory above it is a symlink or junction.
+
+    Roles can write under ``logs/``, so a link there could point the record at
+    a file outside the repository. Resolving follows symlinks and junctions;
+    any difference from the literal path means one is in the way.
+    """
+
+    resolved = state_path.resolve()
+    return os.path.normcase(str(resolved)) != os.path.normcase(str(state_path))
+
+
+def _carry_over_link_warning(state_path: Path) -> str:
+    return (
+        f"The carry-over record path {state_path} passes through a symlink or "
+        "junction, so the dispatcher does not read, write, or delete it; "
+        "uncommitted files stay operator edits. Remove the link to restore "
+        "carry-over across restarts."
+    )
 
 
 def _escape_control_characters(text: str) -> str:
@@ -3692,6 +3715,9 @@ def _restore_implementer_leftovers(
     """
 
     state_path = _carry_over_state_path(config)
+    if _carry_over_path_traverses_link(state_path):
+        _log(log, "WARN", _carry_over_link_warning(state_path))
+        return None
     loaded = load_implementer_leftovers(state_path)
     if loaded is None:
         return None
@@ -3742,6 +3768,11 @@ def _restore_implementer_leftovers(
 
 
 def _delete_carry_over_record(state_path: Path, log: LogFn) -> None:
+    if _carry_over_path_traverses_link(state_path):
+        # Checked again right before unlinking in case a link appeared after
+        # the record was read.
+        _log(log, "WARN", _carry_over_link_warning(state_path))
+        return
     try:
         save_implementer_leftovers(state_path, None)
     except OSError as exc:
@@ -3760,6 +3791,9 @@ def _persist_implementer_leftovers(
     if config.dry_run:
         return
     state_path = _carry_over_state_path(config)
+    if _carry_over_path_traverses_link(state_path):
+        _log(log, "WARN", _carry_over_link_warning(state_path))
+        return
     if (
         leftovers is not None
         and leftovers.story_key

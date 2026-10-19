@@ -4135,6 +4135,132 @@ def test_carry_over_story_display_names_the_work_packet_or_the_raw_key() -> None
     assert orchestrator._carry_over_display(other) == ("custom-key", "src/app.py")
 
 
+def _link_directory(link: Path, target: Path) -> None:
+    """Point ``link`` at ``target`` with a symlink, or a junction on Windows."""
+
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if sys.platform != "win32":
+        pytest.skip("cannot create a directory symlink here")
+    import _winapi
+
+    _winapi.CreateJunction(str(target), str(link))
+
+
+def _external_carry_over_record(directory: Path, *, matching: bool, repo: Path) -> Path:
+    record_path = directory / "carry-over.json"
+    fingerprint = (
+        working_tree_fingerprint(repo, "src/app.py") if matching else "0" * 64
+    )
+    save_implementer_leftovers(
+        record_path,
+        ImplementerLeftovers(
+            story_key=f"story:{STORY_ID}", fingerprints=(("src/app.py", fingerprint),)
+        ),
+    )
+    return record_path
+
+
+@pytest.mark.parametrize(
+    "matching",
+    [pytest.param(False, id="stale_record"), pytest.param(True, id="live_record")],
+)
+def test_carry_over_record_behind_a_directory_link_is_not_read_or_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    matching: bool,
+) -> None:
+    # A role that can write under logs/ could link logs/dispatch at a file
+    # outside the repository; startup must not delete that target.
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _init_repo(repo)
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    external = _external_carry_over_record(outside, matching=matching, repo=repo)
+    _link_directory(repo / "logs" / "dispatch", outside)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert external.exists()
+    assert len(messages) == 1
+    level, message = messages[0]
+    assert level == "WARN"
+    assert "symlink or junction" in message
+    assert "stay operator edits" in message
+
+
+def test_carry_over_record_that_is_a_file_symlink_is_not_read_or_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _init_repo(repo)
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    external = _external_carry_over_record(outside, matching=False, repo=repo)
+    link = repo / "logs" / "dispatch" / "carry-over.json"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(external, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
+
+    restored = orchestrator._restore_implementer_leftovers(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert restored is None
+    assert external.exists()
+    assert link.is_symlink()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "symlink or junction" in messages[0][1]
+
+
+def test_persisting_carry_over_does_not_write_or_delete_through_a_link(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _init_repo(repo)
+    _write(repo / ".gitignore", "logs/\n")
+    _commit_all(repo, "ignore runtime state")
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    external = _external_carry_over_record(outside, matching=True, repo=repo)
+    original = external.read_text(encoding="utf-8")
+    _link_directory(repo / "logs" / "dispatch", outside)
+    orchestrator = _load_orchestrator()
+    config = _dispatch_config(repo, commit_mode="dispatcher")
+    messages: list[tuple[str, str]] = []
+    other = ImplementerLeftovers(
+        story_key="story:EPIC-1-S2",
+        fingerprints=(("src/app.py", working_tree_fingerprint(repo, "src/app.py")),),
+    )
+
+    orchestrator._persist_implementer_leftovers(config, other, _collecting_log(messages))
+    assert external.read_text(encoding="utf-8") == original
+    orchestrator._persist_implementer_leftovers(config, None, _collecting_log(messages))
+    assert external.read_text(encoding="utf-8") == original
+    assert not (outside / "carry-over.json.tmp").exists()
+    assert [level for level, _message in messages] == ["WARN", "WARN"]
+    assert all("symlink or junction" in message for _level, message in messages)
+
+
 def test_restored_leftovers_do_not_carry_over_edited_or_other_story_files(
     tmp_path: Path,
 ) -> None:

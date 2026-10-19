@@ -18,7 +18,11 @@ This project follows a simple pre-release changelog until the first public tag.
   and leaves its files as operator edits. A dry run logs the record, keeps the
   file, and does not apply it. Control characters in the story key and paths
   are escaped before display. Previously the record applied without asking.
-  The in-memory record kept between cycles of one run is unchanged.
+  The in-memory record kept between cycles of one run is unchanged. When the
+  record path or a directory above it is a symlink or junction, the
+  dispatcher no longer reads, writes, or deletes the record (previously it
+  followed the link and could delete a matching record file outside the
+  repository); it logs a `WARN` line instead.
 - Behavior change: config load now rejects a `handoff_path` or
   `project_state_path` that does not stay inside the repository. An empty
   value, control characters, an absolute, UNC, or drive-letter path, a `..`
