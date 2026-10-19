@@ -1244,6 +1244,33 @@ def test_parse_quality_verdict_accepts_raw_newlines_in_strings(prefix: str) -> N
     assert verdict.report == report
 
 
+@pytest.mark.parametrize("prefix", ["", "Review complete.\n\n"])
+def test_parse_quality_verdict_accepts_unescaped_regex_backslashes(
+    prefix: str,
+) -> None:
+    # A Codex quality reviewer copies regex commands into commands_run with
+    # single backslashes, so `\.` and `\(` are invalid JSON escapes. Valid
+    # escapes in the same object must keep their meaning.
+    commands = [
+        "rg -n -A 75 -B 6 '### 12\\.|RECOVERY-1' PROJECT_STATE.md",
+        "rg -n 'active_role|_review_prompt\\(' llm_handoff",
+    ]
+    payload = {
+        **_quality_payload(),
+        "commands_run": commands,
+        "summary": 'Quoted "ok", path C:\\repo, caf\u00e9, tab\there.',
+    }
+    text = json.dumps(payload).replace("\\\\.", "\\.").replace("\\\\(", "\\(")
+    with pytest.raises(json.JSONDecodeError, match="Invalid \\\\escape"):
+        json.loads(text)
+
+    verdict = audit_review.parse_quality_verdict(prefix + text)
+
+    assert verdict.verdict == "pass"
+    assert verdict.commands_run == commands
+    assert verdict.summary == payload["summary"]
+
+
 def test_parse_security_verdict_accepts_raw_newlines_in_strings() -> None:
     payload = _security_payload(
         findings=[

@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An audit verdict whose strings hold unescaped backslashes, such as a Codex
+  quality reviewer's `rg -n '12\.'` in `commands_run`, now parses instead of
+  failing `quality_verdict_malformed`. Each lone backslash is read as a
+  literal one; valid JSON escapes keep their meaning.
 - Behavior change: in `pr` mode, saved `## Review Responses` now last for the
   whole correction round. A later claim in the round merges its responses
   into the saved ones by finding number, and a claim without responses keeps
