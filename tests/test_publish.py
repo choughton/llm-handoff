@@ -3990,7 +3990,30 @@ def test_report_records_operator_influence_under_reviewer_notes(
 
     notes = body.split("## Reviewer notes")[1]
     assert "### Operator influence\n\n" + INFLUENCE_BULLETS in notes
-    assert notes.index("### Audit") < notes.index("### Operator influence")
+    # The disclosure precedes the unbounded review text that truncation cuts.
+    assert notes.index("### Story") < notes.index("### Operator influence")
+    assert notes.index("### Operator influence") < notes.index("### Audit")
+    assert PLANTED_OPERATOR_MESSAGE not in body
+
+
+def test_truncated_report_keeps_operator_influence_after_long_review_text() -> None:
+    from llm_handoff.publish import _REPORT_BODY_LIMIT, build_report
+
+    state = _plain_state(
+        work_packet=(
+            "## Work Packet\n\n- **Objective:** Add the widget module. "
+            "Acceptance checks:\n  1. " + "check " * 6000
+        )
+    )
+    handoff = _influenced_handoff().replace(
+        "## Quality Review\n", "## Quality Review\n\n" + "finding " * 12000 + "\n"
+    )
+
+    _title, body = build_report(state, handoff)
+
+    assert body.endswith("(report truncated)\n")
+    assert len(body) <= _REPORT_BODY_LIMIT + len("\n\n(report truncated)\n")
+    assert "### Operator influence\n\n" + INFLUENCE_BULLETS in body
     assert PLANTED_OPERATOR_MESSAGE not in body
 
 

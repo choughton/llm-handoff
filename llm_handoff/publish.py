@@ -2762,6 +2762,10 @@ def build_report(state: StoryState, handoff_content: str) -> tuple[str, str]:
     details = re.sub(
         r"(?im)(?:^| )acceptance (?:checks|criteria):[ \t]*$", "", details
     ).strip()
+    # The operator-influence disclosure sits before the unbounded acceptance
+    # checks and review text, so truncation cuts those first. Everything
+    # ahead of it is short: the summary is capped at _SUMMARY_CHARS.
+    influence = _operator_influence_lines(handoff_content)
     lines = [
         "## Summary",
         "",
@@ -2770,6 +2774,7 @@ def build_report(state: StoryState, handoff_content: str) -> tuple[str, str]:
         "## Reviewer notes",
         "",
         *_story_lines(state),
+        *influence,
         *(["### Acceptance checks", "", details, ""] if details else []),
         *_reviewer_notes(handoff_content),
         _FOOTER,
@@ -2835,7 +2840,6 @@ def _reviewer_notes(handoff_content: str) -> list[str]:
         "### Audit",
         "",
         *(lines or ["No audit sections were recorded.", ""]),
-        *_operator_influence_lines(handoff_content),
     ]
 
 
