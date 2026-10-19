@@ -927,6 +927,148 @@ def test_run_dispatch_child_kills_tree_and_reraises_on_interrupt(
     assert killed == [child]
 
 
+def test_run_dispatch_child_kills_tree_when_final_wait_is_interrupted(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        supervisor,
+        "run_supervised_dispatch",
+        lambda config: captured.update(config=config) or 0,
+    )
+    assert supervisor.main(["--repo-root", str(repo_root), "--", "--dry-run"]) == 0
+    config = captured["config"]
+
+    class _StillRunningChild(_ExitedChild):
+        # Output has ended, but the process has not exited; Ctrl+C lands
+        # while the supervisor blocks in the final wait.
+        def __init__(self) -> None:
+            super().__init__()
+            self.returncode = None
+            self.wait_calls = 0
+
+        def poll(self) -> None:
+            return None
+
+        def wait(self) -> int:
+            self.wait_calls += 1
+            raise KeyboardInterrupt
+
+    child = _StillRunningChild()
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *_a, **_k: child)
+    monkeypatch.setattr(
+        supervisor,
+        "_repo_snapshot",
+        lambda _repo_root, **_kwargs: supervisor.RepoSnapshot(
+            head_sha=None, dirty_files=(), handoff_sha=None
+        ),
+    )
+
+    class _EndedOutputQueue:
+        def put(self, _item: object) -> None:
+            return None
+
+        def get(self, timeout: float | None = None) -> str | None:
+            return None
+
+    monkeypatch.setattr(supervisor.queue, "Queue", _EndedOutputQueue)
+    killed: list[object] = []
+    monkeypatch.setattr(supervisor, "_kill_process_tree", killed.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        supervisor._run_dispatch_child(config, lambda level, message: None)
+
+    assert child.wait_calls == 1
+    assert killed == [child]
+
+
+def test_run_dispatch_child_does_not_kill_tree_on_normal_exit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        supervisor,
+        "run_supervised_dispatch",
+        lambda config: captured.update(config=config) or 0,
+    )
+    assert supervisor.main(["--repo-root", str(repo_root), "--", "--dry-run"]) == 0
+    config = captured["config"]
+
+    child = _ExitedChild()
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *_a, **_k: child)
+    monkeypatch.setattr(
+        supervisor,
+        "_repo_snapshot",
+        lambda _repo_root, **_kwargs: supervisor.RepoSnapshot(
+            head_sha=None, dirty_files=(), handoff_sha=None
+        ),
+    )
+    killed: list[object] = []
+    monkeypatch.setattr(supervisor, "_kill_process_tree", killed.append)
+
+    result = supervisor._run_dispatch_child(config, lambda level, message: None)
+
+    assert result.exit_code == 0
+    assert killed == []
+
+
+def test_run_dispatch_child_stalled_timeout_kills_tree_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        supervisor,
+        "run_supervised_dispatch",
+        lambda config: captured.update(config=config) or 0,
+    )
+    assert supervisor.main(["--repo-root", str(repo_root), "--", "--dry-run"]) == 0
+    config = dataclasses.replace(
+        captured["config"], stalled_output_timeout_seconds=1
+    )
+
+    child = _ExitedChild()
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *_a, **_k: child)
+    monkeypatch.setattr(
+        supervisor,
+        "_repo_snapshot",
+        lambda _repo_root, **_kwargs: supervisor.RepoSnapshot(
+            head_sha=None, dirty_files=(), handoff_sha=None
+        ),
+    )
+
+    class _SilentQueue:
+        def put(self, _item: object) -> None:
+            return None
+
+        def get(self, timeout: float | None = None) -> str | None:
+            raise supervisor.queue.Empty
+
+    monkeypatch.setattr(supervisor.queue, "Queue", _SilentQueue)
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 10.0
+        return clock["now"]
+
+    monkeypatch.setattr(supervisor.time, "monotonic", fake_monotonic)
+    killed: list[object] = []
+    monkeypatch.setattr(supervisor, "_kill_process_tree", killed.append)
+
+    result = supervisor._run_dispatch_child(config, lambda level, message: None)
+
+    assert result.exit_code == 124
+    assert killed == [child]
+
+
 def test_supervisor_shares_repo_root_and_config_with_child_and_repair(
     tmp_path: Path,
     monkeypatch,

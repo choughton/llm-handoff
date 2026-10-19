@@ -707,10 +707,13 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
                     ),
                 )
                 last_heartbeat_at = now
+        # Output EOF does not mean the child has exited, so the final wait
+        # stays inside the cleanup block. The stalled path already killed
+        # the tree once; a normal return here does not kill it again.
+        exit_code = process.wait()
     except BaseException:
         _kill_process_tree(process)
         raise
-    exit_code = process.wait()
     elapsed_seconds = time.monotonic() - start_time
     log("INFO", f"Dispatch child exited with code {exit_code}.")
     return DispatchProcessResult(
