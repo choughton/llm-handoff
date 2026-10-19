@@ -4469,3 +4469,101 @@ def test_run_validator_redacts_secrets_in_stderr_warn_line(
         "Validator stderr: request failed with OPENAI_API_KEY=[REDACTED]"
     ]
     assert all(planted not in message for _level, message in log_messages)
+
+
+@pytest.fixture
+def console_controller():
+    console_interrupt = importlib.import_module("llm_handoff.console_interrupt")
+    console_interrupt.CONTROLLER.reset()
+    yield console_interrupt.CONTROLLER
+    console_interrupt.CONTROLLER.reset()
+
+
+@pytest.mark.parametrize("with_stop_file", [False, True])
+def test_run_loop_console_ctrl_c_during_dispatch_stops_before_next_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    console_controller: Any,
+    with_stop_file: bool,
+) -> None:
+    import io
+    import signal
+
+    from llm_handoff.stop_request import request_stop, stop_request_path
+
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **backend:** Implement Story 1.
+""",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    dispatches: list[str] = []
+    seen_roles: list[str | None] = []
+    stderr = io.StringIO()
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append("backend")
+        seen_roles.append(console_controller.active_role)
+        # The operator presses Ctrl+C once while the backend runs.
+        console_controller.handle_sigint(signal.SIGINT, None, stream=stderr)
+        if with_stop_file:
+            # `llm-handoff stop` during the same dispatch.
+            request_stop(repo_root)
+        path.write_text(
+            """## Next Step
+
+- **auditor:** Audit Story 1.
+""",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_support_role",
+        lambda *_a, **_k: pytest.fail("no dispatch may start after the stop"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: _validation_result(),
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=3,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert dispatches == ["backend"]
+    assert seen_roles == ["backend"]
+    assert stderr.getvalue() == (
+        "Stop requested; finishing the current backend run. "
+        "Press Ctrl+C again to stop now.\n"
+    )
+    stop_lines = [
+        message
+        for level, message in log_messages
+        if level == "PAUSE" and message.startswith("Stop requested (")
+    ]
+    assert len(stop_lines) == 1
+    if with_stop_file:
+        assert str(stop_request_path(repo_root)) in stop_lines[0]
+    else:
+        assert stop_lines[0].startswith("Stop requested (Ctrl+C).")
+    assert (
+        "PAUSE",
+        "Stopped at the operator's request before the next dispatch. "
+        "Exiting with code 0.",
+    ) in log_messages
+    assert not stop_request_path(repo_root).exists()
+    # The loop top cleared the active role, so a later Ctrl+C stops at once.
+    assert console_controller.active_role is None
+    assert sum(1 for _l, m in log_messages if m.startswith("--- Cycle")) == 1
+    assert "- **auditor:** Audit Story 1." in handoff_path.read_text(encoding="utf-8")

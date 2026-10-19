@@ -22,6 +22,7 @@ from llm_handoff.antigravity_permissions import (
     antigravity_allow_entries,
     format_antigravity_permissions,
 )
+from llm_handoff import console_interrupt
 from llm_handoff.config import (
     DISPATCH_WINDOW_TITLE,
     detect_repo_root,
@@ -182,7 +183,10 @@ def _run_dispatch(
             )
         previous_title, changed_title = _set_dispatch_console_title()
         try:
-            return run_loop(config, log=logger)
+            # The first Ctrl+C during a role's cycle asks for a graceful stop;
+            # a second one, or one outside a cycle, raises KeyboardInterrupt.
+            with console_interrupt.installed():
+                return run_loop(config, log=logger)
         except KeyboardInterrupt:
             logger("WARN", "Dispatch interrupted by user. Exiting.")
             return 130

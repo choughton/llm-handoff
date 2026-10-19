@@ -1923,6 +1923,36 @@ def test_run_shell_command_passes_listed_passthrough_variables(
     assert run.exit_code == 0, run.output_tail
 
 
+def test_run_shell_command_kills_tree_and_reraises_on_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import llm_handoff.work_claim as work_claim_module
+
+    class _InterruptedProcess:
+        pid = 1
+        returncode = None
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            raise KeyboardInterrupt
+
+    process = _InterruptedProcess()
+    killed: list[object] = []
+    monkeypatch.setattr(
+        work_claim_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    monkeypatch.setattr(work_claim_module, "_kill_process_tree", killed.append)
+
+    # The command runs in its own process group, so a second Ctrl+C during
+    # the gate must not leave the verification command running.
+    with pytest.raises(KeyboardInterrupt):
+        run_shell_command("echo hi", cwd=tmp_path, timeout_seconds=60)
+
+    assert killed == [process]
+
+
 def test_run_scanner_hands_env_passthrough_to_the_runner(
     tmp_path: Path,
     fake_bin: Path,

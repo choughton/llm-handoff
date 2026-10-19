@@ -35,6 +35,7 @@ from llm_handoff.audit_review import (
     run_audit_fan_out,
     security_reviewer_startup_error,
 )
+from llm_handoff import console_interrupt
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
     CARRY_OVER_STATE_PATH,
@@ -591,6 +592,8 @@ def run_loop(
     while True:
         # Every path back to the top of the loop has finished its cycle: the
         # dispatch, the dispatcher commit, validation, and the work-claim gate.
+        # No role's cycle runs here, so a console Ctrl+C stops at once.
+        console_interrupt.set_active_role(None)
         if stop_watch.requested(log_fn):
             stop_watch.finish(
                 log_fn, dropped_recovery=pending_planner_recovery
@@ -716,6 +719,7 @@ def run_loop(
                 pending_planner_recovery.additional_instruction
             )
             active_planner_recovery_kind = pending_planner_recovery.kind
+            operator_prompt.planner_tried = True
             if (
                 pending_planner_recovery.kind == "operator_role"
                 and pending_planner_recovery.route == "auditor"
@@ -1106,6 +1110,8 @@ def run_loop(
                 if config.commit_mode == "dispatcher"
                 else None
             )
+            # A first Ctrl+C from here to the loop top lets this cycle finish.
+            console_interrupt.set_active_role("finalizer")
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
             stop_watch.requested(log_fn)
             if finalizer_git_before is not None:
@@ -1202,6 +1208,7 @@ def run_loop(
             consecutive_failures = 0
             if forced_additional_instruction is None:
                 pause_recovery_used = False
+                operator_prompt.planner_tried = False
         else:
             # The handoff the implementer works from. An operator dispatch that
             # continues the saved story swaps in its rebuilt assignment.
@@ -1367,6 +1374,9 @@ def run_loop(
                 and current_cycle.route in {"backend", "frontend"}
                 else None
             )
+            # A first Ctrl+C from here to the loop top lets this cycle finish:
+            # the dispatch (or audit fan-out), commit, gates, and publish.
+            console_interrupt.set_active_role(current_cycle.route)
             dispatch_result, previous_agent = _dispatch_route(
                 current_cycle.route,
                 config,
@@ -1678,6 +1688,7 @@ def run_loop(
                     if validation_result.verdict != "NO":
                         if forced_additional_instruction is None:
                             pause_recovery_used = False
+                            operator_prompt.planner_tried = False
                         _run_work_claim_gate(
                             config=config,
                             route=current_cycle.route,
@@ -1814,6 +1825,7 @@ def run_loop(
                 and forced_additional_instruction is None
             ):
                 pause_recovery_used = False
+                operator_prompt.planner_tried = False
             if _run_work_claim_gate(
                 config=config,
                 route=current_cycle.route,
@@ -4831,21 +4843,33 @@ def _persist_implementer_leftovers(
 
 
 class _StopRequestWatch:
-    """Notices a stop request from ``llm-handoff stop`` and logs it once."""
+    """Notices a stop request and logs it once.
+
+    A request comes from ``llm-handoff stop`` (a stop-request file for this
+    pid) or from a first console Ctrl+C during a role's cycle (an in-process
+    flag). Either one, or both, logs a single PAUSE line.
+    """
 
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
         self._seen = False
 
     def requested(self, log: LogFn) -> bool:
-        if not stop_requested(self._repo_root, pid=os.getpid()):
+        console_requested = console_interrupt.stop_requested()
+        file_requested = stop_requested(self._repo_root, pid=os.getpid())
+        if not (console_requested or file_requested):
             return False
         if not self._seen:
             self._seen = True
+            source = (
+                str(stop_request_path(self._repo_root))
+                if file_requested
+                else "Ctrl+C"
+            )
             _log(
                 log,
                 "PAUSE",
-                f"Stop requested ({stop_request_path(self._repo_root)}). The "
+                f"Stop requested ({source}). The "
                 "dispatcher finishes the current cycle and exits before the "
                 "next dispatch.",
             )
@@ -5031,6 +5055,8 @@ def _pause_until_handoff_changes(
 ) -> bool:
     """Wait for a HANDOFF.md change; False when the run should stop instead."""
 
+    # A pause wait is not a role's cycle: a console Ctrl+C stops at once.
+    console_interrupt.set_active_role(None)
     _log(log, "PAUSE", reason)
     if config.poll_interval_seconds <= 0:
         return False
@@ -5073,6 +5099,10 @@ class _OperatorPromptState:
 
     def __init__(self) -> None:
         self._reader: OperatorInputReader | None = None
+        # True once a scheduled planner recovery or operator dispatch was
+        # selected to run in this pause streak (not when it was scheduled,
+        # since a HANDOFF.md change drops it); cleared where the streak resets.
+        self.planner_tried = False
 
     def reader(self) -> OperatorInputReader:
         if self._reader is None:
@@ -5106,6 +5136,19 @@ def _operator_prompt_enabled(config: DispatchConfig) -> bool:
     )
 
 
+# Generic "edit the file" tails that the operator prompt line already covers.
+# Tails that carry specific steps (story branch, publish merge) are kept.
+_PROMPT_REDUNDANT_TAIL = re.compile(
+    r"\s*(?:Update the handoff|Update HANDOFF\.md|Resolve it manually); "
+    r"dispatch will resume after the file changes\.\s*$"
+)
+
+
+def _prompt_display_reason(reason: str) -> str:
+    """The pause reason as shown above the operator prompt."""
+
+    return _PROMPT_REDUNDANT_TAIL.sub("", reason) or reason
+
 def _review_prompt(
     config: DispatchConfig,
     operator_prompt: _OperatorPromptState,
@@ -5122,6 +5165,8 @@ def _review_prompt(
         return None
 
     def ask(reason: str) -> str:
+        # The operator prompt is not a role's cycle: Ctrl+C stops at once.
+        console_interrupt.set_active_role(None)
         _log(log, "PAUSE", reason)
         reader = operator_prompt.reader()
         if reader.console_unavailable:
@@ -5161,6 +5206,8 @@ def _pause_at_dispatcher_pause(
     """Pause for a HANDOFF.md edit, or for the operator prompt at a TTY.
 
     A stop request seen before or during the pause ends the run instead.
+    Once a scheduled planner or role dispatch has run in this pause streak,
+    the prompt also offers the manual HANDOFF.md edit.
     """
 
     def stop_or(kind: PauseOutcomeKind) -> PauseOutcome:
@@ -5169,6 +5216,8 @@ def _pause_at_dispatcher_pause(
             return PauseOutcome(kind="stop_request")
         return PauseOutcome(kind=kind)
 
+    # A pause is not a role's cycle: a console Ctrl+C stops at once.
+    console_interrupt.set_active_role(None)
     if stop_watch is not None and stop_watch.requested(log):
         _log(log, "PAUSE", reason)
         return stop_or("stop")
@@ -5202,7 +5251,7 @@ def _pause_at_dispatcher_pause(
             return PauseOutcome(kind="resume")
         return stop_or("stop")
 
-    _log(log, "PAUSE", reason)
+    _log(log, "PAUSE", _prompt_display_reason(reason))
     result = wait_for_operator_or_handoff_change(
         reader,
         config.handoff_full_path,
@@ -5213,6 +5262,7 @@ def _pause_at_dispatcher_pause(
         stop_requested=(
             (lambda: stop_watch.requested(log)) if stop_watch is not None else None
         ),
+        planner_tried=operator_prompt.planner_tried,
     )
     if isinstance(result, StopRequested):
         return stop_or("stop")
