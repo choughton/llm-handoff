@@ -15,6 +15,7 @@ from llm_handoff.agent_process import (
     _run_logged_agent_command,
 )
 from llm_handoff.agent_types import LogFn, SubagentResult, _ProcessResult
+from llm_handoff.redaction import redact_secrets
 from llm_handoff.usage_log import format_usage_line, usage_fields_from_claude_result
 
 
@@ -63,7 +64,7 @@ class _ClaudeStreamJsonMonitor:
         for raw_line in chunk.splitlines():
             line = raw_line.strip()
             if line:
-                self.log("INFO", f"{self.agent_name} stderr: {line}")
+                self.log("INFO", f"{self.agent_name} stderr: {redact_secrets(line)}")
 
     def finalize(self, result: _ProcessResult) -> _ProcessResult:
         self._flush_assistant_lines(flush_partial=True)

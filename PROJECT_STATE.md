@@ -6,13 +6,17 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
+- **Active Epic:** HARDENING (HARD-1 in progress).
+- **Parked Epic:** GEMINI-REMOVAL (GEM-0b, GEM-0c, and GEM-0d merged, GEM-0d
   in PR #122; GEM-0e1 merged in PR #123; GEM-0f merged in PR #124; GEM-0g
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
   GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
   GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a merged in PR
   #138; GEM-4b merged in PR #139; GEM-4c merged in PR #141; GEM-5a merged in
-  PR #142; GEM-5b1 merged in PR #143; GEM-5b2 in progress).
+  PR #142; GEM-5b1 merged in PR #143; GEM-5b2 merged in PR #144). Remaining
+  story: GEM-5c, which waits on the operator to replace "Gemini" with
+  "Antigravity" in line 57 of `.claude/agents/handoff-router.md` and
+  `examples/reference-workflow/.claude/agents/handoff-router.md`.
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -100,9 +104,9 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: GEM-5a and GEM-5b1 are done; take GEM-5b2; GEM-5c waits on the user
-(Claude roles cannot write `.claude/`) and does not block the epic's other
-stories.
+Fit: parked on GEM-5c (operator edit). GEM-0b through GEM-5b2 are merged;
+GEM-5c waits on the operator to edit `.claude/` by hand (Claude roles cannot
+write `.claude/`), then the planner routes the epic close.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
@@ -492,7 +496,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
     `agy` never read it, and `agy` roles should be assumed able to read
     `.env`, `logs/`, and `.git` until an operator live check shows `agy`
     honors `.gitignore`.
-  - GEM-5b2 (this story): Rewrite `docs/` (`ARCHITECTURE.md`, `TESTING.md`,
+  - GEM-5b2 (merged in PR #144): Rewrite `docs/` (`ARCHITECTURE.md`, `TESTING.md`,
     `SUPERVISED_DISPATCH.md`, and the `docs/handoff/` prompts and README, in
     both the root and `examples/reference-workflow/` copies),
     `examples/reference-workflow/README.md`, the
@@ -515,8 +519,8 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 ### 10. HARDENING - security followups
 
-Fit: independent and cheap; each story closes one confirmed followup, so
-it fills a wait well. CHAT-4 reuses the HARD-3 marker, so take HARD-3 before
+Fit: HARD-1 is in progress. Independent and cheap; each story closes one
+confirmed followup, so it fills a wait well. CHAT-4 reuses the HARD-3 marker, so take HARD-3 before
 CHAT.
 
 The security-relevant Open Followups, promoted to stories. Each story names

@@ -58,6 +58,7 @@ from llm_handoff.agent_providers.codex import _build_codex_env, _run_codex_json_
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
 from llm_handoff.config import AgentConfig, AgentRole, DispatchConfig
 from llm_handoff.failover import classify_fatal_failure
+from llm_handoff.redaction import redact_stderr_summary
 from llm_handoff.roles import normalize_agent_label
 from llm_handoff.router import HandoffRouting, parse_handoff_frontmatter_text
 from llm_handoff.text_io import read_dispatch_text
@@ -1306,11 +1307,8 @@ def _reviewer_start_failure(exit_code: int, stdout: str, stderr: str) -> str | N
     return None
 
 
-_START_FAILURE_STDERR_CHARS = 2000
-
-
 def _start_failure_message(run: ReviewerRun) -> str:
-    stderr_text = run.stderr.strip()[-_START_FAILURE_STDERR_CHARS:]
+    stderr_text = redact_stderr_summary(run.stderr)
     return (
         f"audit_reviewer_start_failed: the {run.name} reviewer ({run.provider}) "
         f"could not start ({run.start_failure}); exit code {run.exit_code}. "
@@ -1737,7 +1735,7 @@ def _run_security_reviewer(
     if exit_code != 0:
         error = (
             f"security_reviewer_failed: {plan.kind} exited with code {exit_code}"
-            + (f": {_single_line(stderr)[:300]}" if stderr.strip() else ".")
+            + (f": {redact_stderr_summary(stderr)}" if stderr.strip() else ".")
         )
         start_failure = _reviewer_start_failure(exit_code, stdout, stderr)
     else:

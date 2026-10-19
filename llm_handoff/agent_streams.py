@@ -5,6 +5,7 @@ import re
 from typing import Literal
 
 from llm_handoff.agent_types import LogFn
+from llm_handoff.redaction import redact_secrets
 
 
 StderrMode = Literal["warn", "codex"]
@@ -94,12 +95,15 @@ class _LiveAgentOutputMonitor:
 
                 level, message = filtered
                 if level == "AGENT":
-                    self.log("AGENT", f"{self.agent_name}: {message}")
+                    self.log("AGENT", f"{self.agent_name}: {redact_secrets(message)}")
                 else:
-                    self.log("WARN", f"{self.agent_name} stderr: {message}")
+                    self.log(
+                        "WARN",
+                        f"{self.agent_name} stderr: {redact_secrets(message)}",
+                    )
                 return
 
-            self.log("WARN", f"{self.agent_name} stderr: {stripped}")
+            self.log("WARN", f"{self.agent_name} stderr: {redact_secrets(stripped)}")
             return
 
         filtered_line = _filter_live_agent_stdout_line(

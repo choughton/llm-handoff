@@ -9,6 +9,7 @@ from typing import Callable, Literal
 
 from llm_handoff.agent_types import HandoffStatus
 from llm_handoff.agent_roles import FailoverGuard, invoke_support_role
+from llm_handoff.redaction import redact_secrets
 from llm_handoff.config import (
     DEFAULT_HANDOFF_PATH,
     DEFAULT_PROJECT_STATE_PATH,
@@ -295,7 +296,8 @@ def run_epic_close(
             _emit(
                 log,
                 "WARN",
-                f"ledger-updater stderr: {subagent_result.stderr.strip()}",
+                "ledger-updater stderr: "
+                f"{redact_secrets(subagent_result.stderr.strip())}",
             )
         return EpicCloseResult(
             subagent_exit_code=subagent_result.exit_code,
@@ -324,7 +326,7 @@ def run_epic_close(
                 log,
                 "WARN",
                 "ledger-updater stderr (first 500 chars): "
-                f"{subagent_result.stderr.strip()[:500]}",
+                f"{redact_secrets(subagent_result.stderr.strip())[:500]}",
             )
         return EpicCloseResult(
             subagent_exit_code=1,

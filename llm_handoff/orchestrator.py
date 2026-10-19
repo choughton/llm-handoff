@@ -79,6 +79,7 @@ from llm_handoff.publish import (
     settle_deferred_findings,
     unfinished_story_pause_reason,
 )
+from llm_handoff.redaction import redact_secrets
 from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.story_list import STORIES_DROPPED_ERROR
 from llm_handoff.stop_request import (
@@ -2870,7 +2871,11 @@ def _run_validator(
 
     if result.exit_code != 0:
         if result.stderr.strip():
-            _log(log, "WARN", f"{label} stderr: {result.stderr.strip()}")
+            _log(
+                log,
+                "WARN",
+                f"{label} stderr: {redact_secrets(result.stderr.strip())}",
+            )
         return None
 
     if not result.stdout.strip():
