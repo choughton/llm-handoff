@@ -6,9 +6,12 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-2b in progress; RECOVERY-2a approved at
-  `9831e0b`, merged in PR #165; RECOVERY-1 approved at 14f195b, merged in
-  PR #160). RECOVERY-3 and RECOVERY-4 are next. Picked over the other
+- **Active Epic:** RECOVERY (RECOVERY-2c in progress; RECOVERY-2b merged in
+  PR #166; RECOVERY-2a approved at `9831e0b`, merged in PR #165; RECOVERY-1
+  approved at 14f195b, merged in PR #160). RECOVERY-3 and RECOVERY-4 follow.
+  RECOVERY-2c goes first because it fixes a security finding on the
+  just-shipped recovery code before RECOVERY-3 reuses the same in-flight
+  record for more phases. Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
   environment-refusal pause, and no such pause happened in the last run.
@@ -663,8 +666,10 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 ### 12. RECOVERY - interrupted-run recovery
 
 Fit: RECOVERY-1 is merged (PR #160) and removed the Ctrl+C hazard;
-RECOVERY-2a is merged (PR #165); RECOVERY-2b is in progress, with RECOVERY-3
-and RECOVERY-4 next. HARD-5 and HARD-6 are closed, so RECOVERY-2 is
+RECOVERY-2a and RECOVERY-2b are merged (PRs #165 and #166); RECOVERY-2c is
+active, chosen first because it fixes a security finding on the just-shipped
+recovery code before RECOVERY-3 reuses that record; RECOVERY-3 and
+RECOVERY-4 follow. HARD-5 and HARD-6 are closed, so RECOVERY-2 is
 unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
 HARD-5's operator-confirmation rule before carrying anything over and
@@ -722,7 +727,8 @@ bounces until the three-fix circuit breaker escalates.
     re-dispatched (`interrupted_dispatch_recovery`) with a note listing its
     files; a changed operator file pauses the first cycle instead
     (`INTERRUPTED DISPATCH:`), and those files are never staged.
-  - RECOVERY-2b: Resume at the commit after an interrupted handback. The
+  - RECOVERY-2b (merged in PR #166): Resume at the commit after an
+    interrupted handback. The
     record advances to a handback phase once _dispatch_route returns and is
     cleared at the loop top; at startup that phase skips the re-dispatch and
     resumes at the dispatcher commit and gates, with the same confirmation
@@ -760,6 +766,31 @@ bounces until the three-fix circuit breaker escalates.
       `PreDispatchState` from the record, treats the dispatch as exit 0, and
       then runs the normal post-dispatch path. The restored values travel in
       the pending recovery, not by re-reading the record.
+  - RECOVERY-2c: Untrusted protected-file baseline in interrupted-run
+    recovery. Source: the RECOVERY-2b security review's medium finding (a
+    role could forge the record's `protected_digests` and `head_sha` so a
+    resumed cycle missed a protected-file change), plus the documented
+    dispatch-phase gap (the re-dispatched cycle captured its baseline after
+    the restart). Applies only with `protected_paths` set: (1) a `dispatch`
+    or `handback` record whose `head_sha` is None, not a commit, or not HEAD
+    or an ancestor of HEAD is discarded before any prompt with one WARN
+    (kept in dry run); (2) a confirmed recovery's `protected_before` is the
+    record's digests with every protected file uncommitted at startup set
+    to `unverified` (found by `git status` plus a direct comparison of the
+    protected files on disk with HEAD's tree, so ignored, skip-worktree, and
+    assume-unchanged protected files count; RECOVERY-2c audit finding),
+    carried in `PendingPlannerRecovery`, so each routes the
+    cycle to `user` with `protected_file_modified:`; (3) the
+    `interrupted_dispatch_recovery` cycle uses that snapshot too, and a
+    `dispatch` record without `protected_digests` is discarded with a WARN;
+    (4) one INFO line before each question lists the uncommitted protected
+    files, those changed in `<head_sha>..HEAD`, and those changed by commits
+    not on any remote-tracking ref (disclosure only). PR #167 review round 1:
+    the HEAD comparison hashes raw bytes (CRLF to LF only), not `git
+    hash-object`, so clean filters cannot hide an edit; a hidden protected
+    edit keeps a `dispatch` record from the "nothing to recover" exit; and a
+    recovery that pauses on changed operator files hands its baseline to the
+    first dispatch after the pause.
 - RECOVERY-3: The other phases. Planner and finalizer: restore an invalid
   `HANDOFF.md` and re-run. Audit fan-out: restore the handoff and re-run the
   read-only reviewers. Work-claim gate and scanners: re-run. Publish: make

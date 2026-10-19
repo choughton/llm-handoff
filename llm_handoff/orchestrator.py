@@ -4,7 +4,7 @@ import contextlib
 from dataclasses import dataclass, replace
 import errno
 from fnmatch import fnmatchcase
-from hashlib import sha256
+from hashlib import sha1, sha256
 import inspect
 import json
 import os
@@ -501,6 +501,11 @@ class PendingPlannerRecovery:
     # The assignment the operator was shown and confirmed for that resumed
     # cycle, resolved once; its commit and work-claim gate use exactly it.
     resumed_assignment: str | None = None
+    # A confirmed interrupted-dispatch or interrupted-handback recovery's
+    # protected-file baseline: the record's digests with every protected file
+    # uncommitted at startup marked unverified, so the recovered cycle's
+    # protected-file check never trusts the record for those files.
+    resumed_protected_snapshot: ProtectedFileSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -642,6 +647,10 @@ def _run_loop(
     # Set when the confirmed recovery found changed operator files: the first
     # cycle pauses before it routes.
     interrupted_pause_reason = interrupted.pause_reason
+    # That paused recovery's protected-file baseline: the first dispatch after
+    # the pause checks protected files against it, so a protected file the
+    # interrupted role changed is not taken into a fresh snapshot.
+    paused_protected_snapshot = interrupted.protected_snapshot
     # Set while a dispatch's rewrite has dropped planned stories and nobody
     # has changed the handoff it left behind since.
     story_baseline: StoryListBaseline | None = None
@@ -778,6 +787,9 @@ def _run_loop(
         # assignment the operator confirmed for it.
         resumed_handback: InFlightRecord | None = None
         resumed_assignment: str | None = None
+        # Set on either interrupted recovery: the protected-file baseline the
+        # confirmed recovery built from the record and the checkout at startup.
+        recovered_protected_snapshot: ProtectedFileSnapshot | None = None
         if tracker_lease_rebuild:
             decision = RoutingDecision(
                 route="planner",
@@ -854,6 +866,13 @@ def _run_loop(
                 in {"interrupted_dispatch", "interrupted_handback"}
                 and pending_planner_recovery.continue_saved_story
             )
+            if pending_planner_recovery.kind in {
+                "interrupted_dispatch",
+                "interrupted_handback",
+            }:
+                recovered_protected_snapshot = (
+                    pending_planner_recovery.resumed_protected_snapshot
+                )
             operator_prompt.planner_tried = True
             if (
                 pending_planner_recovery.kind == "operator_role"
@@ -1093,6 +1112,13 @@ def _run_loop(
             else:
                 # Another rule (the circuit breaker) took this cycle over.
                 resumed_handback = None
+        if recovered_protected_snapshot is not None and decision.source not in {
+            "interrupted_dispatch_recovery",
+            "interrupted_handback_recovery",
+        }:
+            # Another rule took the recovered cycle over; its dispatch starts
+            # from the checkout as it is now.
+            recovered_protected_snapshot = None
 
         current_cycle = Cycle(
             number=cycle_number,
@@ -1250,7 +1276,13 @@ def _run_loop(
                 "DISPATCH",
                 "Dispatching auditor ledger-updater for epic close.",
             )
-            protected_before = _capture_protected_snapshot(config)
+            if paused_protected_snapshot is not None:
+                # The first dispatch after a confirmed recovery paused on
+                # changed operator files.
+                protected_before = paused_protected_snapshot
+                paused_protected_snapshot = None
+            else:
+                protected_before = _capture_protected_snapshot(config)
             finalizer_git_before = (
                 git_position(config.repo_root)
                 if config.commit_mode == "dispatcher"
@@ -1532,14 +1564,24 @@ def _run_loop(
                 and config.commit_mode == "dispatcher"
                 else None
             )
-            # A resumed handback's checkout already holds the implementer's
-            # edits, so its protected files are checked against the record's
-            # pre-dispatch snapshot, not one captured now.
-            protected_before = (
-                _resumed_protected_snapshot(config, resumed_handback)
-                if resumed_handback is not None
-                else _capture_protected_snapshot(config)
-            )
+            # A recovered cycle's checkout may already hold the interrupted
+            # implementer's edits, so its protected files are checked against
+            # the baseline the confirmed recovery built (the record's digests,
+            # with each protected file uncommitted at startup unverified), not
+            # one captured now.
+            if recovered_protected_snapshot is not None:
+                protected_before = recovered_protected_snapshot
+            elif paused_protected_snapshot is not None:
+                # The first dispatch after a confirmed recovery paused on
+                # changed operator files.
+                protected_before = paused_protected_snapshot
+                paused_protected_snapshot = None
+            elif resumed_handback is not None:
+                protected_before = _resumed_protected_snapshot(
+                    config, resumed_handback
+                )
+            else:
+                protected_before = _capture_protected_snapshot(config)
             implementer_head_before = (
                 (
                     resumed_handback.head_sha
@@ -3038,26 +3080,39 @@ def _protected_file_changes(
         # List the paths every new commit touched, not the net diff, so a
         # change that a later commit (or the working tree) reverts still
         # counts. -m includes merge commits, diffed against each parent.
-        output = _run_git_stdout(
-            config.repo_root,
-            [
-                "git",
-                "log",
-                "--name-only",
-                "--format=",
-                "-m",
-                "--no-renames",
-                f"{before.head_sha}..{after.head_sha}",
-            ],
+        changed.update(
+            _protected_paths_in_commits(
+                config, [f"{before.head_sha}..{after.head_sha}"]
+            )
+            or ()
         )
-        handoff_rel = _handoff_relative_path(config)
-        for line in (output or "").splitlines():
-            relative = line.strip().replace("\\", "/")
-            if not relative or _same_repo_path(relative, handoff_rel):
-                continue
-            if _protected_path_matches(relative, config.protected_paths):
-                changed.add(relative)
     return tuple(sorted(changed))
+
+
+def _protected_paths_in_commits(
+    config: DispatchConfig, revisions: list[str]
+) -> tuple[str, ...] | None:
+    """The protected files (the handoff aside) the commits ``revisions`` touched.
+
+    Each commit's own paths are listed (``git log --name-only -m
+    --no-renames``), not the net diff. None when Git cannot list them.
+    """
+
+    output = _run_git_stdout(
+        config.repo_root,
+        ["git", "log", "--name-only", "--format=", "-m", "--no-renames", *revisions],
+    )
+    if output is None:
+        return None
+    handoff_rel = _handoff_relative_path(config)
+    paths: set[str] = set()
+    for line in output.splitlines():
+        relative = line.strip().replace("\\", "/")
+        if not relative or _same_repo_path(relative, handoff_rel):
+            continue
+        if _protected_path_matches(relative, config.protected_paths):
+            paths.add(relative)
+    return tuple(sorted(paths))
 
 
 def _enforce_protected_files(
@@ -5381,13 +5436,17 @@ class InterruptedDispatchRecovery:
 
     ``recovered`` is True once the operator confirmed it; ``leftovers`` then
     replace the carry-over record for this start. Either ``pending`` schedules
-    the same role again, or ``pause_reason`` pauses the first cycle.
+    the same role again, or ``pause_reason`` pauses the first cycle. With a
+    pause, ``protected_snapshot`` is the confirmed recovery's protected-file
+    baseline, which the first dispatch after the pause checks against
+    instead of a snapshot of the checkout the interrupted role changed.
     """
 
     recovered: bool = False
     leftovers: ImplementerLeftovers | None = None
     pending: PendingPlannerRecovery | None = None
     pause_reason: str | None = None
+    protected_snapshot: ProtectedFileSnapshot | None = None
 
 
 def _in_flight_state_path(config: DispatchConfig) -> Path:
@@ -5674,6 +5733,287 @@ def _resumed_protected_snapshot(
     )
 
 
+# The digest a recovered cycle's protected-file baseline holds for a file it
+# cannot verify. No file hashes to it, so the file always counts as changed.
+UNVERIFIED_PROTECTED_DIGEST = "unverified"
+# A full SHA-1 or SHA-256 object name, as `git rev-parse HEAD` writes it.
+_FULL_COMMIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?")
+
+
+def _in_flight_baseline_rejection(
+    config: DispatchConfig, record: InFlightRecord
+) -> str | None:
+    """Why the record's pre-dispatch HEAD cannot anchor its protected baseline.
+
+    The record lives in a file a role can rewrite. Its ``head_sha`` bounds
+    the commit range the recovered cycle's protected-file check lists, so it
+    must be a commit that is HEAD or an ancestor of HEAD. None when it is.
+    """
+
+    head_sha = record.head_sha
+    if head_sha is None:
+        return "it names no pre-dispatch HEAD"
+    repo_root = config.repo_root
+    # Checked as a full object name first, so the value never reaches Git as
+    # an option or a revision expression.
+    if (
+        _FULL_COMMIT_SHA_RE.fullmatch(head_sha) is None
+        or _run_git_stdout(
+            repo_root, ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"]
+        )
+        is None
+    ):
+        return (
+            "its pre-dispatch HEAD "
+            f"{_escape_control_characters(head_sha[:64])} does not resolve to a "
+            "commit"
+        )
+    if (
+        _run_git_stdout(
+            repo_root, ["git", "merge-base", "--is-ancestor", head_sha, "HEAD"]
+        )
+        is None
+    ):
+        return (
+            f"its pre-dispatch HEAD {head_sha[:12]} is not HEAD or an ancestor "
+            "of HEAD"
+        )
+    return None
+
+
+def _uncommitted_protected_files(config: DispatchConfig) -> tuple[str, ...] | None:
+    """The protected files (the handoff aside) that differ from HEAD now.
+
+    Modified, staged, deleted, and untracked files all count. Git status alone
+    is not enough: it omits ignored files and tracked files flagged
+    skip-worktree or assume-unchanged, while the protected-file gate hashes
+    every protected file on disk. So the protected files on disk (found as
+    ``_protected_file_digests`` finds them) are also compared with HEAD's
+    tree directly: one absent from HEAD, ignored or not, counts, as does one
+    whose raw bytes (CRLF line endings aside) are not HEAD's blob, and a
+    protected file in HEAD that is gone from disk. Clean filters are never
+    applied (``_worktree_matches_blob``). None when Git cannot list them.
+    """
+
+    repo_root = config.repo_root
+    dirty_files = git_dirty_files(repo_root)
+    if dirty_files is None:
+        return None
+    head_blobs = _head_protected_blobs(config)
+    if head_blobs is None:
+        return None
+    handoff_rel = _handoff_relative_path(config)
+    differing = {
+        path
+        for path in dirty_files
+        if not _same_repo_path(path, handoff_rel)
+        and _protected_path_matches(path, config.protected_paths)
+    }
+    on_disk = {
+        _path_match_parts(path): path for path, _digest in _protected_file_digests(config)
+    }
+    tracked: list[tuple[str, str]] = []
+    for key, path in on_disk.items():
+        head_entry = head_blobs.get(key)
+        if head_entry is None:
+            differing.add(path)
+        else:
+            tracked.append((path, head_entry[1]))
+    differing.update(
+        path for key, (path, _oid) in head_blobs.items() if key not in on_disk
+    )
+    differing.update(
+        path
+        for path, head_oid in tracked
+        if not _worktree_matches_blob(repo_root, path, head_oid)
+    )
+    return tuple(sorted(differing))
+
+
+def _head_protected_blobs(
+    config: DispatchConfig,
+) -> dict[tuple[str, ...], tuple[str, str]] | None:
+    """HEAD's protected files (the handoff aside), keyed for path matching.
+
+    Each value is the path as Git stores it and its blob id. Submodule
+    entries are skipped, as ``_protected_candidates`` skips nested
+    repositories. None when Git cannot list HEAD's tree.
+    """
+
+    try:
+        completed = subprocess.run(
+            ["git", "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+            cwd=config.repo_root,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    handoff_rel = _handoff_relative_path(config)
+    blobs: dict[tuple[str, ...], tuple[str, str]] = {}
+    for entry in completed.stdout.decode("utf-8", errors="replace").split("\0"):
+        header, separator, path = entry.partition("\t")
+        if not separator:
+            continue
+        fields = header.split()
+        if len(fields) != 3 or fields[1] != "blob":
+            continue
+        if _same_repo_path(path, handoff_rel):
+            continue
+        if not _protected_path_matches(path, config.protected_paths):
+            continue
+        blobs[_path_match_parts(path)] = (path, fields[2])
+    return blobs
+
+
+def _worktree_matches_blob(repo_root: Path, path: str, head_oid: str) -> bool:
+    """Whether a working-tree file's raw bytes are HEAD's blob ``head_oid``.
+
+    The bytes are hashed as a Git blob here, never through ``git
+    hash-object``: that applies the repository's clean filters (``ident``,
+    custom ``filter.*.clean`` drivers), which repository content controls and
+    which could map altered bytes back to HEAD's blob. The only conversion
+    allowed is CRLF to LF, so a CRLF checkout of an LF blob (``core.autocrlf``)
+    still matches. Any other filtered or converted file counts as changed. A
+    file that cannot be read, or an object id of an unknown length, does not
+    match.
+    """
+
+    try:
+        data = (repo_root / path).read_bytes()
+    except OSError:
+        return False
+    if len(head_oid) == 40:
+        object_hash = sha1
+    elif len(head_oid) == 64:
+        object_hash = sha256
+    else:
+        return False
+    expected = head_oid.lower()
+    candidates = [data]
+    if b"\r\n" in data:
+        candidates.append(data.replace(b"\r\n", b"\n"))
+    return any(
+        object_hash(b"blob %d\0" % len(candidate) + candidate).hexdigest() == expected
+        for candidate in candidates
+    )
+
+
+def _unverified_protected_snapshot(
+    config: DispatchConfig,
+    record: InFlightRecord,
+    disclosed: tuple[str, ...] | None,
+) -> ProtectedFileSnapshot:
+    """The protected-file baseline a confirmed recovery's cycle checks against.
+
+    The record's digests could be forged to match a protected file a role
+    changed, so every protected file uncommitted now, and every one the
+    operator was shown as uncommitted (``disclosed``), gets the unverified
+    digest and counts as changed. When Git cannot list uncommitted files,
+    every protected file fails closed the same way.
+    """
+
+    digests = dict(record.protected_digests or ())
+    uncommitted = _uncommitted_protected_files(config)
+    if uncommitted is None:
+        unverified = set(digests) | {
+            path for path, _digest in _protected_file_digests(config)
+        }
+    else:
+        unverified = set(uncommitted)
+    unverified.update(disclosed or ())
+    for path in unverified:
+        digests[path] = UNVERIFIED_PROTECTED_DIGEST
+    return ProtectedFileSnapshot(
+        head_sha=record.head_sha,
+        digests=tuple(sorted(digests.items())),
+    )
+
+
+def _protected_baseline_disclosure(
+    config: DispatchConfig,
+    record: InFlightRecord,
+    uncommitted: tuple[str, ...] | None,
+) -> str:
+    """The protected-file state the operator accepts by confirming recovery.
+
+    Lists the protected files uncommitted now, those changed by commits since
+    the record's pre-dispatch HEAD, and those changed by commits on HEAD that
+    no remote-tracking ref has (shown only; they do not change the gate).
+    """
+
+    def listed(paths: tuple[str, ...] | None, unknown: str) -> str:
+        if paths is None:
+            return unknown
+        return ", ".join(_escape_control_characters(path) for path in paths) or "none"
+
+    repo_root = config.repo_root
+    base = record.head_sha or ""
+    head = _git_head(repo_root) or ""
+    in_range: tuple[str, ...] | None = ()
+    if base and head and base != head:
+        in_range = _protected_paths_in_commits(config, [f"{base}..{head}"])
+    remote_refs = _run_git_stdout(repo_root, ["git", "for-each-ref", "refs/remotes"])
+    if remote_refs is None:
+        unpushed = "not checked: Git could not list remote-tracking refs"
+    elif not remote_refs:
+        unpushed = "not checked: no remote-tracking refs"
+    else:
+        unpushed = listed(
+            _protected_paths_in_commits(
+                config, ["-n", "200", "HEAD", "--not", "--remotes"]
+            ),
+            "unknown: Git could not list them",
+        )
+    return (
+        "The in-flight record's protected-file baseline (pre-dispatch HEAD "
+        f"{base[:12]}) cannot be verified; a role can rewrite it. "
+        "Protected files uncommitted now: "
+        f"{listed(uncommitted, 'unknown: Git could not list uncommitted files')}. "
+        f"Protected files changed by commits in {base[:12]}..{head[:12]}: "
+        f"{listed(in_range, 'unknown: Git could not list them')}. Protected "
+        "files changed by commits on HEAD not on any remote-tracking ref: "
+        f"{unpushed}. Confirming accepts these protected files as they are; any "
+        "uncommitted protected file routes the resumed cycle to user."
+    )
+
+
+def _discard_unanchored_in_flight_record(
+    config: DispatchConfig,
+    log: LogFn,
+    record: InFlightRecord,
+    state_path: Path,
+    story: str,
+) -> bool:
+    """Discard a record whose pre-dispatch HEAD Git does not vouch for.
+
+    Returns True, after one WARN, when the record was discarded (kept in a
+    dry run). Only runs when protected paths are configured.
+    """
+
+    if not config.protected_paths:
+        return False
+    rejection = _in_flight_baseline_rejection(config, record)
+    if rejection is None:
+        return False
+    work = "handback" if record.phase == "handback" else "work"
+    record_kind = "handback record" if record.phase == "handback" else "record"
+    _log(
+        log,
+        "WARN",
+        f"Discarded the in-flight {record_kind} {state_path} for {record.role}'s "
+        f"interrupted {story} {work}: {rejection}, so its protected-file "
+        "baseline cannot be checked against Git. Nothing is recovered; any "
+        "uncommitted files stay operator edits."
+        + (" Not deleted in dry run." if config.dry_run else ""),
+    )
+    if not config.dry_run:
+        _delete_in_flight_record(config, log)
+    return True
+
+
 def _interrupted_dispatch_assignment(
     config: DispatchConfig, record: InFlightRecord
 ) -> str:
@@ -5859,6 +6199,8 @@ def _recover_interrupted_handback(
         if not config.dry_run:
             _delete_in_flight_record(config, log)
         return nothing
+    if _discard_unanchored_in_flight_record(config, log, record, state_path, story):
+        return nothing
     interrupted_files = _interrupted_dispatch_files(config, record, state_path, log)
     if interrupted_files is None:
         return nothing
@@ -5888,6 +6230,7 @@ def _recover_interrupted_handback(
     # commits and gates against this same text.
     assignment = _interrupted_handback_assignment(record)
     confirmed = False
+    disclosed: tuple[str, ...] | None = None
     if (
         config.interactive_pause
         and _operator_stdin_is_interactive()
@@ -5908,6 +6251,13 @@ def _recover_interrupted_handback(
             f"{_content_sha(handback_content)[:12]}); resuming commits the "
             "agent files and runs validation and the work-claim gate on it.",
         )
+        if config.protected_paths:
+            disclosed = _uncommitted_protected_files(config)
+            _log(
+                log,
+                "INFO",
+                _protected_baseline_disclosure(config, record, disclosed),
+            )
         confirmed = _confirm_carry_over_at_terminal(
             operator_prompt.reader(),
             f"Resume {record.role}'s interrupted {story} handback at the "
@@ -5926,6 +6276,12 @@ def _recover_interrupted_handback(
         _delete_in_flight_record(config, log)
         return nothing
     repo_root = config.repo_root
+    # Built once recovery is confirmed, from the checkout as it is now.
+    protected_snapshot = (
+        _unverified_protected_snapshot(config, record, disclosed)
+        if config.protected_paths
+        else None
+    )
     leftovers = ImplementerLeftovers(
         story_key=record.story_key,
         fingerprints=tuple(
@@ -5947,6 +6303,7 @@ def _recover_interrupted_handback(
                 "dispatch. Update HANDOFF.md; dispatch will resume after the "
                 "file changes."
             ),
+            protected_snapshot=protected_snapshot,
         )
     _log(
         log,
@@ -5965,6 +6322,7 @@ def _recover_interrupted_handback(
             continue_saved_story=record.continues_saved_story,
             resumed_handback=record,
             resumed_assignment=assignment,
+            resumed_protected_snapshot=protected_snapshot,
         ),
     )
 
@@ -6047,6 +6405,36 @@ def _recover_interrupted_dispatch(
         return _recover_interrupted_handback(
             config, log, operator_prompt, record, state_path
         )
+    if config.protected_paths and record.protected_digests is None:
+        # The recovered cycle checks protected files against the record's
+        # pre-dispatch digests; without them it cannot tell whether the
+        # implementer changed a protected file, so nothing is recovered.
+        record_story, _no_files = _carry_over_display(
+            ImplementerLeftovers(story_key=record.story_key, fingerprints=())
+        )
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record {state_path} for {record.role}'s "
+            f"interrupted {record_story} work: it holds no pre-dispatch "
+            "protected-file snapshot, so the protected-file check cannot run on "
+            "a recovered cycle. Nothing is recovered; any uncommitted files stay "
+            "operator edits."
+            + (" Not deleted in dry run." if config.dry_run else ""),
+        )
+        if not config.dry_run:
+            _delete_in_flight_record(config, log)
+        return nothing
+    if _discard_unanchored_in_flight_record(
+        config,
+        log,
+        record,
+        state_path,
+        _carry_over_display(
+            ImplementerLeftovers(story_key=record.story_key, fingerprints=())
+        )[0],
+    ):
+        return nothing
     repo_root = config.repo_root
     interrupted_files = _interrupted_dispatch_files(config, record, state_path, log)
     if interrupted_files is None:
@@ -6056,7 +6444,20 @@ def _recover_interrupted_dispatch(
     handoff_changed = (
         _read_required_text(config.handoff_full_path) != record.handoff_content
     )
-    if not agent_files and not changed_operator_files and not handoff_changed:
+    # Computed before deciding there is nothing to recover: git status omits
+    # ignored, skip-worktree, and assume-unchanged files, so an interrupted
+    # role's protected edit can leave no agent file at all. Any protected
+    # file that differs from HEAD (or Git failing to tell) keeps the record,
+    # so the operator is shown it and a confirmed cycle routes to user.
+    uncommitted_protected: tuple[str, ...] | None = ()
+    if config.protected_paths:
+        uncommitted_protected = _uncommitted_protected_files(config)
+    if (
+        not agent_files
+        and not changed_operator_files
+        and not handoff_changed
+        and uncommitted_protected == ()
+    ):
         _log(
             log,
             "INFO",
@@ -6104,6 +6505,7 @@ def _recover_interrupted_dispatch(
         _delete_in_flight_record(config, log)
         return nothing
     confirmed = False
+    disclosed: tuple[str, ...] | None = None
     if (
         config.interactive_pause
         and _operator_stdin_is_interactive()
@@ -6121,6 +6523,13 @@ def _recover_interrupted_dispatch(
             "INFO",
             _interrupted_dispatch_assignment_summary(config, record, state_path),
         )
+        if config.protected_paths:
+            disclosed = uncommitted_protected
+            _log(
+                log,
+                "INFO",
+                _protected_baseline_disclosure(config, record, disclosed),
+            )
         confirmed = _confirm_carry_over_at_terminal(
             operator_prompt.reader(),
             f"Recover {record.role}'s interrupted {story} work? [y/N]",
@@ -6166,6 +6575,14 @@ def _recover_interrupted_dispatch(
             f"operator-approved text from the in-flight record of the "
             f"interrupted {record.role} dispatch.",
         )
+    # Built once recovery is confirmed, from the checkout as it is now: the
+    # re-dispatched cycle checks protected files against it, not against a
+    # snapshot of a checkout the interrupted implementer already changed.
+    protected_snapshot = (
+        _unverified_protected_snapshot(config, record, disclosed)
+        if config.protected_paths
+        else None
+    )
     leftovers = ImplementerLeftovers(
         story_key=record.story_key,
         fingerprints=tuple(
@@ -6186,6 +6603,7 @@ def _recover_interrupted_dispatch(
                 f"{record.role} dispatch. Update HANDOFF.md; dispatch will "
                 "resume after the file changes."
             ),
+            protected_snapshot=protected_snapshot,
         )
     _log(
         log,
@@ -6209,6 +6627,7 @@ def _recover_interrupted_dispatch(
             kind="interrupted_dispatch",
             route=record.role,
             continue_saved_story=record.continues_saved_story,
+            resumed_protected_snapshot=protected_snapshot,
         ),
     )
 
