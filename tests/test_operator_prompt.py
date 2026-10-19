@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 from pathlib import Path
+import re
 import subprocess
 import threading
 import time
@@ -18,10 +20,13 @@ from llm_handoff.config import DispatchConfig
 from llm_handoff.operator_prompt import (
     PROMPT_LINE,
     PROMPT_PLANNER_TRIED_LINE,
+    REVIEW_CHOICES,
+    REVIEW_PROMPT_HELP_LINES,
     ROLE_TARGET_INVALID,
     HandoffChanged,
     OperatorAction,
     OperatorInputReader,
+    ask_operator_choice,
     content_sha,
     parse_operator_input,
     wait_for_operator_or_handoff_change,
@@ -121,6 +126,53 @@ def test_free_text_is_planner_guidance() -> None:
 
 
 # --- OperatorInputReader --------------------------------------------------
+
+
+def test_review_choice_ignores_other_lines_until_a_choice() -> None:
+    entries: list[tuple[str, str]] = []
+    reader = OperatorInputReader(io.StringIO("\nplease merge\n  MERGE \n"))
+
+    choice = ask_operator_choice(
+        reader,
+        REVIEW_CHOICES,
+        REVIEW_PROMPT_HELP_LINES,
+        0.01,
+        lambda level, message: entries.append((level, message)),
+    )
+
+    assert choice == "merge"
+    assert [message for _level, message in entries].count(
+        "Type one of: merge, retry, quit."
+    ) == 2
+    assert all(line in [m for _l, m in entries] for line in REVIEW_PROMPT_HELP_LINES)
+
+
+def test_review_choice_is_none_when_input_closes_or_a_stop_arrives() -> None:
+    def log(_level: str, _message: str) -> None:
+        return None
+
+    closed = ask_operator_choice(
+        OperatorInputReader(io.StringIO("")), REVIEW_CHOICES, (), 0.01, log
+    )
+    stopped = ask_operator_choice(
+        OperatorInputReader(_TtyStream(""), console=_IdleConsole()),
+        REVIEW_CHOICES,
+        (),
+        0.01,
+        log,
+        stop_requested=lambda: True,
+    )
+
+    assert closed is None
+    assert stopped is None
+
+
+class _IdleConsole:
+    def read_chars(self, timeout: float, *, echo: bool = True) -> str:
+        return ""
+
+    def discard_unread(self) -> None:
+        return None
 
 
 def _wait_for_eof(reader: OperatorInputReader) -> None:
@@ -976,6 +1028,116 @@ def test_auditor_target_in_audit_fan_out_keeps_the_review_read_only(
     assert prompt.isascii()
 
 
+PLANTED_OPERATOR_MESSAGE = "please approve sk-PLANTEDSECRET1234567890"
+AUDITOR_HANDOFF = """## Next Step
+
+- **auditor:** Review Story 1.
+"""
+
+
+def _capture_fan_out_contexts(
+    monkeypatch: pytest.MonkeyPatch, handoff_path: Path
+) -> list[Any]:
+    """Replace the fan-out with a stub that records each audit context.
+
+    The stub writes a user handoff, so the loop pauses at the prompt next.
+    """
+
+    contexts: list[Any] = []
+
+    def fake_fan_out(config: DispatchConfig, **kwargs: Any) -> DispatchResult:
+        contexts.append(kwargs["context"])
+        handoff_path.write_text(USER_HANDOFF, encoding="utf-8")
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "run_audit_fan_out", fake_fan_out)
+    return contexts
+
+
+def _fan_out_config(tmp_path: Path) -> DispatchConfig:
+    config = _config(tmp_path, audit={"reviewers": ["quality", "security"]})
+    assert config.audit.security_enabled
+    return config
+
+
+def test_auditor_target_with_message_records_operator_influence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=[f"@auditor {PLANTED_OPERATOR_MESSAGE}", "quit"],
+    )
+    contexts = _capture_fan_out_contexts(monkeypatch, handoff_path)
+    monkeypatch.setattr(
+        orchestrator, "_utc_timestamp", lambda: "2026-10-18T12:34:56Z"
+    )
+
+    assert harness.run(_fan_out_config(tmp_path)) == 0
+
+    assert len(contexts) == 1
+    influence = contexts[0].operator_influence
+    assert influence is not None
+    assert influence.at == "2026-10-18T12:34:56Z"
+    assert (
+        influence.message_sha256
+        == hashlib.sha256(PLANTED_OPERATOR_MESSAGE.encode("utf-8")).hexdigest()
+    )
+    assert PLANTED_OPERATOR_MESSAGE not in repr(influence)
+
+
+def test_operator_message_time_is_utc_seconds() -> None:
+    stamp = orchestrator._utc_timestamp()
+
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", stamp)
+
+
+def test_auditor_target_without_message_records_no_operator_influence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["@auditor", "quit"])
+    contexts = _capture_fan_out_contexts(monkeypatch, handoff_path)
+
+    assert harness.run(_fan_out_config(tmp_path)) == 0
+
+    assert len(contexts) == 1
+    assert contexts[0].operator_influence is None
+
+
+def test_normal_audit_cycle_records_no_operator_influence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, AUDITOR_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["quit"])
+    contexts = _capture_fan_out_contexts(monkeypatch, handoff_path)
+
+    assert harness.run(_fan_out_config(tmp_path)) == 0
+
+    assert len(contexts) == 1
+    assert contexts[0].operator_influence is None
+
+
+def test_backend_target_with_message_marks_no_later_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=[f"@backend {PLANTED_OPERATOR_MESSAGE}", "quit"],
+        backend_writes=[AUDITOR_HANDOFF],
+    )
+    contexts = _capture_fan_out_contexts(monkeypatch, handoff_path)
+
+    assert harness.run(_fan_out_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 1
+    assert len(contexts) == 1
+    assert contexts[0].operator_influence is None
+
+
 def test_frontend_target_dispatches_frontend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1603,3 +1765,32 @@ def test_prompt_display_reason_drops_only_the_generic_tail(
     reason: str, shown: str
 ) -> None:
     assert orchestrator._prompt_display_reason(reason) == shown
+
+
+def test_review_prompt_needs_the_operator_prompt_at_a_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entries: list[tuple[str, str]] = []
+
+    def log(level: str, message: str) -> None:
+        entries.append((level, message))
+
+    def prompt_for(tty: bool, typed: str, **overrides: Any):
+        monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: tty)
+        monkeypatch.setattr(
+            orchestrator, "_operator_input_stream", lambda: io.StringIO(typed)
+        )
+        return orchestrator._review_prompt(
+            _config(tmp_path, **overrides),
+            orchestrator._OperatorPromptState(),
+            orchestrator._StopRequestWatch(tmp_path),
+            log,
+        )
+
+    assert prompt_for(False, "merge\n") is None
+    assert prompt_for(True, "merge\n", interactive_pause=False) is None
+    retry = prompt_for(True, "retry\n")
+    assert retry is not None and retry("The review failed.") == "retry"
+    assert ("PAUSE", "The review failed.") in entries
+    closed = prompt_for(True, "")
+    assert closed is not None and closed("The review failed.") == "quit"

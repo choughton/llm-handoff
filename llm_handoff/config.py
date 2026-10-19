@@ -11,6 +11,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -532,7 +533,8 @@ class PublishConfig(BaseModel):
     review_poll_seconds: int = 30
     # Correction rounds for review findings. Above 1, the dispatcher waits for
     # the reviewer's own review of each pushed fix, so the reviewer must be
-    # set to review every push; the dispatcher never requests a review.
+    # set to review every push; the dispatcher requests a review only to
+    # retry one the reviewer reports as failed.
     max_review_rounds: int = 1
     codex_bot_login: str = DEFAULT_CODEX_BOT_LOGIN
 
@@ -973,6 +975,33 @@ def _agent_defaults_for_provider(role: str, provider: object) -> dict[str, objec
     return {"provider": provider}
 
 
+def _repo_relative_path_error(key: str, value: str, rule: str) -> str:
+    return (
+        f"{key} {value!r} must be a relative path inside the repository: "
+        f"{rule}."
+    )
+
+
+def _check_repo_relative_path(key: str, value: str) -> None:
+    """Reject a handoff_path or project_state_path value that is not a plain
+    repo-relative path. Raises ``ValueError`` naming the key and the rule."""
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        rule = "control characters are not allowed"
+    elif not value.strip():
+        rule = "the value is empty"
+    elif value[:2] in {"//", "\\\\", "/\\", "\\/"}:
+        rule = "UNC paths are not allowed"
+    elif value.startswith(("/", "\\")):
+        rule = "absolute paths are not allowed"
+    elif re.match(r"^[A-Za-z]:", value):
+        rule = "drive-letter paths are not allowed"
+    elif ".." in re.split(r"[\\/]", value):
+        rule = "'..' segments are not allowed"
+    else:
+        return
+    raise ValueError(_repo_relative_path_error(key, value, rule))
+
+
 class DispatchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -1044,6 +1073,25 @@ class DispatchConfig(BaseModel):
                 if key != "planner_api_key_env"
             }
         raise ValueError(PLANNER_API_KEY_ENV_REMOVED_MESSAGE)
+
+    @model_validator(mode="after")
+    def _validate_paths_inside_repo(self) -> DispatchConfig:
+        # The field validator rejects unsafe spellings; this catches a value
+        # that resolves outside the repository (a symlink escape) or onto the
+        # repository root itself (such as `.`).
+        root = self.repo_root.resolve()
+        for key in ("handoff_path", "project_state_path"):
+            path = getattr(self, key)
+            resolved = (self.repo_root / path).resolve()
+            if resolved == root:
+                raise ValueError(_repo_relative_path_error(
+                    key, str(path), "it names the repository root"
+                ))
+            if not resolved.is_relative_to(root):
+                raise ValueError(_repo_relative_path_error(
+                    key, str(path), "it resolves outside the repository"
+                ))
+        return self
 
     @model_validator(mode="after")
     def _validate_commit_mode(self) -> DispatchConfig:
@@ -1199,9 +1247,13 @@ class DispatchConfig(BaseModel):
     def _resolve_repo_root(cls, value: Path) -> Path:
         return Path(value).resolve()
 
-    @field_validator("handoff_path", "project_state_path", mode="after")
+    @field_validator("handoff_path", "project_state_path", mode="before")
     @classmethod
-    def _normalize_relative_path(cls, value: Path) -> Path:
+    def _normalize_relative_path(cls, value: object, info: ValidationInfo) -> object:
+        # Runs before Path conversion: Path("") would read as ".".
+        if not isinstance(value, (str, Path)):
+            return value
+        _check_repo_relative_path(info.field_name or "path", str(value))
         return Path(value)
 
     @field_validator("agents", mode="after")

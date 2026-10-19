@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -24,6 +25,7 @@ from llm_handoff.publish import (
     defer_blocked_handback,
     ensure_story_branch,
     keep_review_responses,
+    leave_merged_story_branch,
     publish_story,
     recover_orphaned_story,
     resume_paused_publish,
@@ -154,6 +156,16 @@ elif args[:2] == ["pr", "checks"]:
             check=True,
         )
         save()
+elif args[:3] == ["api", "--method", "POST"]:
+    if state.get("fail_comment"):
+        sys.exit("HTTP 403: Resource not accessible by integration")
+    body = args[args.index("-f") + 1].partition("=")[2]
+    state.setdefault("posted", []).append({"endpoint": args[3], "body": body})
+    # Lets a test answer each review request with new Codex activity.
+    if body == "@codex review" and state.get("after_review_request"):
+        state["api"] = state["after_review_request"].pop(0)
+    save()
+    print(json.dumps({"id": 99, "created_at": "2026-10-19T00:10:00Z"}))
 elif args[0] == "api":
     fields = {}
     for flag, value in zip(args, args[1:]):
@@ -1561,15 +1573,19 @@ def _codex_finding(sha: str) -> dict:
     }
 
 
-def _set_api(tmp_path: Path, **pages: list) -> None:
-    path = tmp_path / "gh_state.json"
-    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    state["api"] = {
+def _api(**pages: list) -> dict:
+    return {
         "issues/7/comments": pages.get("comments", []),
         "pulls/7/reviews": pages.get("reviews", []),
         "pulls/7/comments": pages.get("review_comments", []),
         "issues/7/reactions": pages.get("reactions", []),
     }
+
+
+def _set_api(tmp_path: Path, **pages: list) -> None:
+    path = tmp_path / "gh_state.json"
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    state["api"] = _api(**pages)
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -1584,7 +1600,9 @@ def _set_threads(tmp_path: Path, *threads: dict) -> None:
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
-def _publish_with_review(repo: Path, gh: list[str], log, gate: ReviewGate = GATE):
+def _publish_with_review(
+    repo: Path, gh: list[str], log, gate: ReviewGate = GATE, review_prompt=None
+):
     return publish_story(
         repo_root=repo,
         mode="pr",
@@ -1596,6 +1614,7 @@ def _publish_with_review(repo: Path, gh: list[str], log, gate: ReviewGate = GATE
         gh_command=gh,
         review=gate,
         sleep=lambda seconds: None,
+        review_prompt=review_prompt,
     )
 
 
@@ -1726,6 +1745,378 @@ def test_codex_gate_pauses_without_merging_when_no_review_arrives(
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
     assert any(level == "PAUSE" for level, _message in entries)
     assert not (repo / STATE_PATH).exists()
+
+
+# The fake `gh` stamps each posted comment 2026-10-19T00:10:00Z.
+BEFORE_REQUEST = "2026-10-19T00:05:00Z"
+AFTER_REQUEST = "2026-10-19T00:20:00Z"
+REVIEW_REQUEST = "@codex review"
+
+
+def _codex_failed_summary(sha: str, updated_at: str = BEFORE_REQUEST) -> dict:
+    return {
+        "user": {"login": BOT},
+        "updated_at": updated_at,
+        "body": "<!-- codex-pull-request-review-summary -->\n\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        f"| **Code Review** | **Failed** | `{sha[:7]}` | PR opened |\n",
+    }
+
+
+def _after_review_requests(tmp_path: Path, *apis: dict) -> None:
+    path = tmp_path / "gh_state.json"
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    state["after_review_request"] = list(apis)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _posted(tmp_path: Path) -> list[str]:
+    path = tmp_path / "gh_state.json"
+    if not path.exists():
+        return []
+    posted = json.loads(path.read_text(encoding="utf-8")).get("posted", [])
+    assert all(item["endpoint"] == "repos/{owner}/{repo}/issues/7/comments" for item in posted)
+    return [item["body"] for item in posted]
+
+
+class _Prompt:
+    """Stands in for the operator prompt: answers in order, records reasons."""
+
+    def __init__(self, repo: Path, *answers: str) -> None:
+        self.repo = repo
+        self.answers = list(answers)
+        self.reasons: list[str] = []
+        self.states: list[dict] = []
+
+    def __call__(self, reason: str) -> str:
+        self.reasons.append(reason)
+        self.states.append(_saved_state(self.repo))
+        return self.answers.pop(0)
+
+
+def _failed_review_story(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    _set_api(tmp_path, comments=[_codex_failed_summary(head)])
+    return repo, gh, head
+
+
+def test_a_failed_codex_review_is_requested_once_more_and_merges_when_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    clean = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _after_review_requests(tmp_path, _api(comments=[clean]))
+    entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome == PublishOutcome()
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    kinds = [call[:2] for call in _gh_calls(tmp_path)]
+    assert ["pr", "comment"] not in kinds
+    assert kinds[-1] == ["pr", "merge"]
+    assert REVIEW_REQUEST not in (repo / "logs/dispatch/publish/message.md").read_text(
+        encoding="utf-8"
+    )
+    assert any("asked Codex to review" in message for _level, message in entries)
+
+
+def test_a_retried_review_that_fails_without_a_terminal_pauses_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    )
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "failed" in outcome.message
+    assert "Review it and merge it yourself" in outcome.message
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert not (repo / STATE_PATH).exists()
+
+
+def test_a_retried_review_that_fails_asks_the_operator_and_quit_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    )
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    [reason] = prompt.reasons
+    assert "failed" in reason and "`merge`" in reason and "`retry`" in reason
+    # The retry is on record before the prompt, so a restart does not repeat it.
+    assert prompt.states[0]["review_retry_head"] == head
+    assert prompt.states[0]["review_retry_at"] == "2026-10-19T00:10:00+00:00"
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "Review it and merge it yourself" in outcome.message
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_merge_at_the_review_prompt_merges_without_a_review_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    )
+    prompt = _Prompt(repo, "merge")
+    entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert outcome == PublishOutcome()
+    request, note = _posted(tmp_path)
+    assert request == REVIEW_REQUEST
+    # Posted before the merge, so it states the decision, not a done merge.
+    assert "Merged" not in note
+    assert f"without a Codex review of `{head[:12]}`" in note
+    assert "operator chose `merge`" in note
+    assert "@" not in note.replace("⁠", "")
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert any(
+        level == "WARN" and "WITHOUT a Codex review" in message
+        for level, message in entries
+    )
+
+
+def test_retry_at_the_review_prompt_asks_codex_again_and_merges_when_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    clean = {**_codex_summary(head), "updated_at": "2026-10-19T00:30:00Z"}
+    _after_review_requests(
+        tmp_path,
+        _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)]),
+        _api(comments=[clean]),
+    )
+    prompt = _Prompt(repo, "retry")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert outcome == PublishOutcome()
+    assert len(prompt.reasons) == 1
+    assert _posted(tmp_path) == [REVIEW_REQUEST, REVIEW_REQUEST]
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+
+
+def test_a_review_timeout_asks_the_operator_without_an_automatic_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    _set_api(tmp_path)
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(
+        repo,
+        gh,
+        log,
+        gate=ReviewGate(reviewers=("codex",), timeout_seconds=0),
+        review_prompt=prompt,
+    )
+
+    [reason] = prompt.reasons
+    assert "no completed Codex review" in reason
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True and "left open" in outcome.message
+
+
+def test_a_usage_limit_failure_goes_straight_to_the_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    usage_limit = {
+        "user": {"login": BOT},
+        "created_at": "2099-01-01T00:00:00Z",
+        "body": "You have reached your Codex usage limits for code reviews.",
+    }
+    _set_api(tmp_path, comments=[_codex_failed_summary(head), usage_limit])
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    [reason] = prompt.reasons
+    assert "usage limit" in reason
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True
+
+
+def test_a_restart_after_a_review_retry_does_not_request_another(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    state = _saved_state(repo)
+    (repo / STATE_PATH).write_text(
+        json.dumps(
+            {
+                **state,
+                "review_retry_head": head,
+                "review_retry_at": "2026-10-19T00:10:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    # The retried review failed while the dispatcher was not running.
+    _set_api(tmp_path, comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert len(prompt.reasons) == 1
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True
+
+
+def _record_review_retry(repo: Path, head: str) -> None:
+    (repo / STATE_PATH).write_text(
+        json.dumps(
+            {
+                **_saved_state(repo),
+                "review_retry_head": head,
+                "review_retry_at": "2026-10-19T00:10:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_startup_resumes_the_wait_for_a_retried_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The dispatcher stopped while it waited for the review it asked for; the
+    # handoff is still the audit's verified_pass.
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _git(repo, "push", "-q", "-u", "origin", BRANCH)
+    _record_review_retry(repo, head)
+    clean = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _set_api(tmp_path, comments=[clean])
+    state = _gh_state(tmp_path)
+    (tmp_path / "gh_state.json").write_text(
+        json.dumps({**state, "pr": "OPEN"}), encoding="utf-8"
+    )
+    entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, review=GATE, sleep=lambda seconds: None)
+
+    assert outcome == PublishOutcome()
+    assert _posted(tmp_path) == []
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert any("Resuming the wait" in message for _level, message in entries)
+
+
+@pytest.mark.parametrize("moved", ["handoff", "head"])
+def test_startup_does_not_resume_a_retry_the_story_moved_past(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moved: str
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _record_review_retry(repo, head)
+    handoff = VERIFIED
+    if moved == "handoff":
+        handoff = VERIFIED.replace("status: verified_pass", "status: verified_fail")
+    else:
+        (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+        _git(repo, "commit", "-q", "-am", "W9.9 Another change")
+    _entries, log = _logs()
+
+    outcome = _resume(repo, gh, log, review=GATE, handoff_content=handoff)
+
+    assert outcome == PublishOutcome()
+    assert _gh_calls(tmp_path) == []
+
+
+def test_a_restart_waits_for_the_retried_review_not_the_old_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    state = _saved_state(repo)
+    (repo / STATE_PATH).write_text(
+        json.dumps(
+            {
+                **state,
+                "review_retry_head": head,
+                "review_retry_at": "2026-10-19T00:10:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Codex has not touched the summary since the retry request yet.
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(
+        repo,
+        gh,
+        log,
+        gate=ReviewGate(reviewers=("codex",), timeout_seconds=0),
+        review_prompt=prompt,
+    )
+
+    [reason] = prompt.reasons
+    assert "no completed Codex review" in reason
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True
+
+
+def test_findings_from_a_retried_review_bounce_without_another_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    completed = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _after_review_requests(
+        tmp_path,
+        _api(comments=[completed], review_comments=[_codex_finding(head)]),
+    )
+    prompt = _Prompt(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert outcome.stop is False and outcome.handoff is not None
+    assert "status: verified_fail" in outcome.handoff
+    assert prompt.reasons == []
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert _saved_state(repo)["review_rounds"] == 1
+
+
+def test_a_review_request_that_cannot_be_posted_asks_the_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, _head = _failed_review_story(tmp_path, monkeypatch)
+    state = _gh_state(tmp_path)
+    (tmp_path / "gh_state.json").write_text(
+        json.dumps({**state, "fail_comment": True}), encoding="utf-8"
+    )
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    [reason] = prompt.reasons
+    assert "Asking Codex to review it again failed" in reason
+    assert outcome.stop is True
 
 
 def test_a_higher_round_limit_waits_for_codexs_own_review_of_the_fix(
@@ -3959,3 +4350,298 @@ def test_reviewer_notes_keep_the_whole_merge_decision(tmp_path: Path) -> None:
     assert "  - Security reviewer verdict: APPROVED" in notes
     assert "  - Block severity threshold: high" in notes
     assert "  - Sub-threshold findings: 1" in notes
+
+
+PLANTED_OPERATOR_MESSAGE = "please approve sk-PLANTEDSECRET1234567890"
+PLANTED_DIGEST = hashlib.sha256(PLANTED_OPERATOR_MESSAGE.encode("utf-8")).hexdigest()
+INFLUENCE_BULLETS = (
+    "- Operator-influenced: yes\n"
+    "- Message time: 2026-10-18T12:34:56Z\n"
+    f"- Message SHA-256: {PLANTED_DIGEST}\n"
+)
+
+
+def _influenced_handoff(extra: str = "") -> str:
+    return VERIFIED.replace(
+        "## Quality Review",
+        "## Operator Influence\n\n" + INFLUENCE_BULLETS + extra + "\n## Quality Review",
+    )
+
+
+def test_report_records_operator_influence_under_reviewer_notes(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+
+    _title, body = build_report(_load_state(tmp_path), _influenced_handoff())
+
+    notes = body.split("## Reviewer notes")[1]
+    assert "### Operator influence\n\n" + INFLUENCE_BULLETS in notes
+    # The disclosure precedes the unbounded review text that truncation cuts.
+    assert notes.index("### Story") < notes.index("### Operator influence")
+    assert notes.index("### Operator influence") < notes.index("### Audit")
+    assert PLANTED_OPERATOR_MESSAGE not in body
+
+
+def test_truncated_report_keeps_operator_influence_after_long_review_text() -> None:
+    from llm_handoff.publish import _REPORT_BODY_LIMIT, build_report
+
+    state = _plain_state(
+        work_packet=(
+            "## Work Packet\n\n- **Objective:** Add the widget module. "
+            "Acceptance checks:\n  1. " + "check " * 6000
+        )
+    )
+    handoff = _influenced_handoff().replace(
+        "## Quality Review\n", "## Quality Review\n\n" + "finding " * 12000 + "\n"
+    )
+
+    _title, body = build_report(state, handoff)
+
+    assert body.endswith("(report truncated)\n")
+    assert len(body) <= _REPORT_BODY_LIMIT + len("\n\n(report truncated)\n")
+    assert "### Operator influence\n\n" + INFLUENCE_BULLETS in body
+    assert PLANTED_OPERATOR_MESSAGE not in body
+
+
+def test_report_keeps_only_the_time_and_digest_from_the_influence_section(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    handoff = _influenced_handoff(extra=f"- Note: {PLANTED_OPERATOR_MESSAGE}\n")
+
+    _title, body = build_report(_load_state(tmp_path), handoff)
+
+    assert "### Operator influence\n\n" + INFLUENCE_BULLETS in body
+    assert PLANTED_OPERATOR_MESSAGE not in body
+    assert "sk-PLANTEDSECRET" not in body
+
+
+def test_report_without_operator_influence_is_unchanged(tmp_path: Path) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    state = _load_state(tmp_path)
+
+    _title, plain = build_report(state, VERIFIED)
+    _title, influenced = build_report(state, _influenced_handoff())
+
+    assert "Operator influence" not in plain
+    assert "Operator-influenced" not in plain
+    assert (
+        influenced.replace("### Operator influence\n\n" + INFLUENCE_BULLETS + "\n", "")
+        == plain
+    )
+
+
+def test_report_from_a_rendered_fan_out_handoff_records_influence(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.audit_review import (
+        OPERATOR_INFLUENCE_HEADING,
+        OperatorInfluence,
+        operator_influence_bullets,
+    )
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    influence = OperatorInfluence(
+        at="2026-10-18T12:34:56Z", message_sha256=PLANTED_DIGEST
+    )
+    section = "\n".join(
+        [OPERATOR_INFLUENCE_HEADING, "", *operator_influence_bullets(influence), ""]
+    )
+    handoff = VERIFIED.replace("## Quality Review", section + "\n## Quality Review")
+
+    _title, body = build_report(_load_state(tmp_path), handoff)
+
+    assert "### Operator influence\n\n" + INFLUENCE_BULLETS in body
+
+
+HANDOFF = Path("docs/handoff/HANDOFF.md")
+
+
+def _merged_story_branch(
+    tmp_path: Path, story_files: dict[str, str] | None = None
+) -> tuple[Path, Path, str]:
+    """A story whose pull request was merged on the remote while the checkout
+    stayed on the story branch, after a publish pause cleared its state."""
+
+    repo, remote, _gh, _env = _with_remote(tmp_path)
+    _start_story(repo)
+    if story_files:
+        _commit_all(repo, story_files, "More story work")
+    _git(repo, "push", "-q", "origin", BRANCH)
+    git_dir = [
+        "git", "-c", "user.name=llm-handoff tests",
+        "-c", "user.email=tests@example.invalid", "--git-dir", str(remote),
+    ]
+    merge = subprocess.run(
+        [*git_dir, "commit-tree", f"refs/heads/{BRANCH}^{{tree}}",
+         "-p", "refs/heads/main", "-p", f"refs/heads/{BRANCH}",
+         "-m", "Merge pull request #7"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run([*git_dir, "update-ref", "refs/heads/main", merge], check=True)
+    (repo / STATE_PATH).unlink()
+    (repo / HANDOFF).parent.mkdir(parents=True, exist_ok=True)
+    (repo / HANDOFF).write_text("live handoff\n", encoding="utf-8")
+    return repo, remote, merge
+
+
+def _leave(repo: Path, log, **kwargs: object) -> None:
+    options: dict[str, object] = {
+        "repo_root": repo,
+        "prefix": "llm-handoff/",
+        "base_branch": "main",
+        "remote": "origin",
+        "handoff_path": HANDOFF,
+        "log": log,
+    }
+    options.update(kwargs)
+    leave_merged_story_branch(**options)
+
+
+def test_a_merged_story_branch_without_state_returns_to_the_base_branch(
+    tmp_path: Path,
+) -> None:
+    repo, _remote, merge = _merged_story_branch(tmp_path)
+    entries, log = _logs()
+
+    _leave(repo, log)
+
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "HEAD") == merge
+    assert BRANCH not in _git(repo, "branch", "--list")
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == "live handoff\n"
+    [(level, message)] = entries
+    assert level == "INFO"
+    assert BRANCH in message and "origin/main" in message
+    assert "Merge pull request #7" in message and "nothing was pushed" in message
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("unmerged", "commits that are not on origin/main"),
+        ("dirty", "uncommitted files other than docs/handoff/HANDOFF.md: `notes.txt`"),
+        ("local_base_ahead", "`main` has commits that are not on origin/main"),
+        ("fetch_fails", "git fetch origin main failed"),
+    ],
+)
+def test_a_story_branch_that_is_not_safely_merged_stays_checked_out(
+    tmp_path: Path, case: str, reason: str
+) -> None:
+    repo, _remote, _merge = _merged_story_branch(tmp_path)
+    if case == "unmerged":
+        _commit_all(repo, {"src/extra.py": "EXTRA = 1\n"}, "Unmerged work")
+    elif case == "dirty":
+        (repo / "notes.txt").write_text("scratch\n", encoding="utf-8")
+    elif case == "local_base_ahead":
+        _git(repo, "switch", "-q", "main")
+        _commit_all(repo, {"LOCAL.md": "local only\n"}, "Local-only commit")
+        _git(repo, "switch", "-q", BRANCH)
+    else:
+        _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    head = _git(repo, "rev-parse", "HEAD")
+    entries, log = _logs()
+
+    _leave(repo, log)
+
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert _git(repo, "rev-parse", "HEAD") == head
+    [(level, message)] = entries
+    assert level == "WARN" and BRANCH in message and reason in message
+
+
+def test_leaving_a_story_branch_does_not_overwrite_the_live_handoff(
+    tmp_path: Path,
+) -> None:
+    """The base branch changed the tracked handoff after the merge, so the
+    switch would overwrite the uncommitted live handoff; git refuses it."""
+
+    repo, remote, _merge = _merged_story_branch(
+        tmp_path, {HANDOFF.as_posix(): "template\n"}
+    )
+    _commit_on_remote(
+        tmp_path, remote, "main", {HANDOFF.as_posix(): "template v2\n"}, "Template"
+    )
+    entries, log = _logs()
+
+    _leave(repo, log)
+
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == "live handoff\n"
+    [(level, message)] = entries
+    assert level == "WARN" and "`git switch main` failed" in message
+
+
+@pytest.mark.parametrize("case", ["saved_state", "base_branch_unset", "not_a_story"])
+def test_leaving_a_story_branch_needs_a_stateless_story_branch_and_a_base(
+    tmp_path: Path, case: str
+) -> None:
+    repo, _remote, _merge = _merged_story_branch(tmp_path)
+    kwargs: dict[str, object] = {}
+    if case == "saved_state":
+        from llm_handoff.publish import _save_state
+
+        _save_state(repo, StoryState(
+            branch=BRANCH, base_branch="main", base_sha="0" * 40, story_id="W9.9",
+            story_title="Add a widget", epic_id="E1", work_packet="",
+        ))
+    elif case == "base_branch_unset":
+        kwargs["base_branch"] = None
+    else:
+        kwargs["prefix"] = "story/"
+    entries, log = _logs()
+
+    _leave(repo, log, **kwargs)
+
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert entries == []
+
+
+def test_run_loop_leaves_a_merged_story_branch_before_the_planner_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator merged the paused story's pull request but stayed on its
+    branch; the planner's next assignment must not stop on that branch."""
+
+    repo, _remote, _merge = _merged_story_branch(tmp_path)
+    config = _pr_loop_config(
+        repo,
+        publish={"mode": "pr", "base_branch": "main", "wait_for_reviewers": ["codex"]},
+    )
+    config.handoff_full_path.write_text(VERIFIED, encoding="utf-8")
+    dispatches: list[str] = []
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        dispatches.append(_git(repo, "branch", "--show-current"))
+        path.write_text(NEXT_STORY, encoding="utf-8")
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def validate(path: Path, previous_agent: str, **_kwargs: object):
+        return ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="backend"
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+    entries, log = _logs()
+
+    orchestrator.run_loop(config, max_cycles=1, log=log)
+
+    assert dispatches == ["main"]
+    assert any(
+        level == "INFO" and f"Story branch `{BRANCH}`" in message
+        for level, message in entries
+    )
+    assert not any("Story branch not ready" in message for _level, message in entries)

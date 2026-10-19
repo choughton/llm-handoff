@@ -56,6 +56,14 @@ The nested path is the recommended default because it leaves room for handoff
 examples, archive files, and prompt handoff helpers. The flat path is useful for
 small repos that prefer fewer directories.
 
+Both `handoff_path` and `project_state_path` must be relative paths that stay
+inside the repository. Config load rejects an empty value, a value with
+control characters, an absolute path (`/x` or `\x`), a UNC path
+(`\\server\share` or `//server/share`), a drive-letter path (`C:\x`, `C:/x`,
+or `C:x`), a value with a `..` segment, a value that names the repository root
+(such as `.`), and a value that resolves outside the repository through a
+symlink. Forward slashes, backslashes, and a leading `./` are accepted.
+
 ## Project State Path
 
 Recommended default:
@@ -328,7 +336,9 @@ What survives a restart, all under `logs/dispatch/`:
 
 - per-story bounce counts (`bounce-counts.json`);
 - the publish story state (`publish/story.json`), so a paused publish resumes;
-- the carry-over record (`carry-over.json`); see
+- the carry-over record (`carry-over.json`), which applies only after the
+  operator confirms it at a terminal; otherwise it is discarded with a `WARN`
+  line and its files stay operator edits. See
   [Dispatcher Commits](#dispatcher-commits).
 
 What does not survive: a scheduled planner recovery or operator-prompt
@@ -546,14 +556,41 @@ uncommitted. A file edited in between or a different story puts a file back in
 the "already dirty before dispatch" group, which is never committed.
 
 The dispatcher saves this record to `logs/dispatch/carry-over.json` after each
-implementer dispatch and loads it at startup, so a restart keeps the same rule:
-only files whose content is unchanged, for the same story key. It drops files
-from the record once the dispatcher commits them, deletes the record when
-nothing is left or when an implementer dispatch starts for a different story,
-and logs an `INFO` line when it restores one. When Git does not ignore that
+implementer dispatch and loads it at startup. It drops files from the record
+once the dispatcher commits them, and deletes the record when nothing is left
+or when an implementer dispatch starts for a different story.
+
+Agent roles can write under `logs/`, so a record read from disk at startup is
+not trusted on its own. The dispatcher first drops files that are no longer
+dirty with the recorded content (and deletes the record if none are left).
+Then, only when `interactive_pause` is on and the dispatcher runs at a
+terminal with console input, it logs the story and files and asks
+`Carry these over as <story>'s work? [y/N]`. Answering `y` or `yes` applies
+the record with the same rule as within one run: only files whose content is
+unchanged, for the same story key. Any other answer, end of input, no
+terminal, or `interactive_pause: false` discards the record with a `WARN`
+line, deletes it, and its files stay operator edits that are never
+committed. A dry run logs the record and leaves it on disk without asking or
+applying it. Story keys and paths are shown with control characters
+escaped. The in-memory record kept between cycles of one run still applies
+without asking. When Git does not ignore that
 path, the record stays in memory only and the dispatcher logs a `WARN` line,
 because the untracked file would otherwise show up in the next work-claim
-gate.
+gate. When `logs/dispatch/carry-over.json` or a directory above it inside the
+repository is a symlink or junction, the dispatcher does not read, write, or
+delete the record, so a link cannot point it at a file outside the
+repository; it logs a `WARN` line and the files stay operator edits. On
+Windows the dispatcher holds `logs` and `logs/dispatch` open without delete
+sharing while it writes or deletes the record, so neither can be swapped for a
+junction mid-operation. It opens each directory relative to its parent's open
+handle rather than by path, and writes, renames, and deletes the record
+relative to the open `logs/dispatch` handle through file handles it has
+checked are inside that directory, so an empty `logs` or `logs/dispatch`
+turned into a mount point in place is refused too (POSIX uses directory
+handles opened without following links). Where neither mechanism is
+available, the record stays in memory only:
+the dispatcher leaves any `carry-over.json` on disk untouched and logs a
+`WARN` line.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the
@@ -631,7 +668,8 @@ When that merge conflicts, the dispatcher runs `git merge --abort` and pauses
 merge, then start the dispatcher again. At startup it pushes the story
 branch and publishes it as usual. If it paused at the merge, your merge
 commit lands on the open pull request. Codex reviews new pull requests, not
-later pushes, and the dispatcher never asks for a review. So with
+later pushes, and the dispatcher asks for a review only to retry a failed
+one. So with
 `wait_for_reviewers: [codex]` the dispatcher pushes that commit and pauses,
 leaving the pull request open for you to review and merge; without it, the
 dispatcher merges the pull request. If the retried
@@ -709,8 +747,8 @@ not add it: the reference workflow does not ship a changelog, and
 With `wait_for_reviewers: [codex]`, `pr` mode with `auto_merge: true` waits
 for the Codex code review (the ChatGPT Codex connector for GitHub) of the
 exact commit it pushed before merging. Set this only when Codex reviews pull
-requests in the repository on its own: the dispatcher never asks for a
-review. The dispatcher polls the pull request with
+requests in the repository on its own: the dispatcher asks for a review only
+to retry one that Codex reports as failed. The dispatcher polls the pull request with
 `gh api` every `review_poll_seconds`. It counts only activity from
 `codex_bot_login`, and only for the pushed commit's SHA:
 
@@ -817,12 +855,39 @@ The outcomes:
   is resolved. With a higher `max_review_rounds`, it waits for the review
   Codex runs on the pushed fix and can bounce again, up to that many rounds.
   That only works when Codex is set to review every push to a pull request,
-  not just newly opened ones: the dispatcher never requests a review, so
-  without per-push reviews the wait times out and the loop stops with the
-  pull request left open.
-- No finished review within `review_timeout_seconds`, a failed review, or a
-  `gh` error: the loop stops and leaves the pull request open. It never
-  merges without a finished review.
+  not just newly opened ones: the dispatcher does not request a review of a
+  pushed fix, so without per-push reviews the wait times out (see below).
+- A failed review (the summary's `Code Review` row shows `Failed`): the
+  dispatcher posts one pull request comment, `@codex review`, and waits for
+  the same head commit again with the same `review_timeout_seconds`. It
+  records the retry as `review_retry_head` and `review_retry_at` in
+  `logs/dispatch/publish/story.json` and never asks again for the same head.
+  If the dispatcher stops during that wait, the next start resumes it when
+  the checkout is still on the story branch at that commit and `HANDOFF.md`
+  is still the story's `verified_pass`. A summary comment Codex has not
+  updated since the request (or updated in the same second) does not count.
+  The comment never goes in the pull request body.
+  A failure Codex attributes to its usage limit for code reviews is not
+  retried automatically.
+- When the retried review fails too, the account hit its usage limit, or no
+  review finishes within `review_timeout_seconds`, the dispatcher pauses at
+  a short operator prompt if `interactive_pause` is on and stdin is a
+  terminal:
+  - `merge` merges the pull request without the Codex review. The
+    dispatcher logs a `WARN` and, before merging, posts a pull request
+    comment recording the operator's decision to merge without a Codex review
+    and why. Every review thread must still be resolved.
+  - `retry` posts one more `@codex review` comment and waits again.
+  - `quit` stops and leaves the pull request open, as below.
+
+  Any other input repeats the choices; closed input or `llm-handoff stop`
+  counts as `quit`. Without a terminal (or with `--no-interactive-pause`),
+  the loop stops and leaves the pull request open, and so does a `gh`
+  error. Review it and merge it yourself, run `git switch <base_branch>` and
+  `git pull`, then start the dispatcher again. The dispatcher only merges
+  without a finished review when the operator types `merge`.
+- A completed review with findings never gets a review request: findings
+  always take the correction round above.
 
 The pull request report has every `@name` mention neutralized (a word
 joiner after `@`), because GitHub treats a mention of `@codex` anywhere in
@@ -2048,7 +2113,7 @@ audit:
 | `audit.security_opt_out_reason` | unset | Required, non-empty text when `audit.reviewers` leaves out `security`; rejected while `security` is listed. |
 | `audit.security_provider` | auto | CLI used for the security reviewer. When unset, see the automatic choice below. |
 | `audit.security_model` | unset (borrowed from the first `claude` role, else the built-in Claude default) | Model the claude security reviewer passes as `--model`. Applies only to the claude reviewer; see below. |
-| `audit.block_severity` | `high` | A finding at or above this severity routes the story back to the implementer. |
+| `audit.block_severity` | `high` | A finding at or above this severity routes the story back to the implementer. A security `fail` verdict whose findings are all below it does not block; see below. |
 | `audit.review_timeout_ms` | `900000` | Process timeout for each reviewer in fan-out mode. |
 
 To opt out of the security reviewer:
@@ -2157,9 +2222,15 @@ With `security` enabled, the auditor route works differently:
   reviewer run concurrently on that range. Both are told not to write
   `HANDOFF.md` and must return a JSON verdict.
 - The dispatcher, not a reviewer, rewrites `HANDOFF.md`. Any finding at or
-  above `block_severity`, or a `fail` verdict from either reviewer, produces
-  `status: verified_fail` routed back to the implementer with a
-  `## Security Findings` section. A block on a range with no committed
+  above `block_severity`, a quality `fail` verdict, or a security `fail`
+  verdict with no findings or with a finding at or above `block_severity`
+  produces `status: verified_fail` routed back to the implementer with a
+  `## Security Findings` section. A security `fail` whose findings are all
+  below `block_severity` does not block: `block_severity` decides. The
+  `## Merge Decision` section records that verdict as non-blocking, its
+  findings go under `## Security Notes` (which the pull request body
+  repeats), the evidence's unresolved concerns name it, and the log has a
+  `WARN`. A block on a range with no committed
   changes routes to `planner` instead, since no implementer has work to fix.
   Otherwise the handoff routes where the
   quality reviewer directed, with sub-threshold findings under

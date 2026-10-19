@@ -469,6 +469,32 @@ class MergeDecision:
     blocking: tuple[tuple[str, ReviewFinding], ...]
     notes: tuple[tuple[str, ReviewFinding], ...]
     reasons: tuple[str, ...]
+    # A security `fail` whose findings are all below the block severity;
+    # recorded, but it does not block.
+    non_blocking_fails: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class OperatorInfluence:
+    """Marks an audit the operator influenced from the pause prompt.
+
+    Holds only the UTC time the message was accepted and the SHA-256 of the
+    raw message; the message text itself is never recorded.
+    """
+
+    at: str
+    message_sha256: str
+
+
+OPERATOR_INFLUENCE_HEADING = "## Operator Influence"
+
+
+def operator_influence_bullets(influence: OperatorInfluence) -> list[str]:
+    return [
+        "- Operator-influenced: yes",
+        f"- Message time: {influence.at}",
+        f"- Message SHA-256: {influence.message_sha256}",
+    ]
 
 
 @dataclass(frozen=True)
@@ -476,6 +502,7 @@ class AuditFanOutContext:
     cycle_number: int
     handoff_content: str
     implementer_base_sha: str | None = None
+    operator_influence: OperatorInfluence | None = None
 
 
 @dataclass
@@ -676,7 +703,9 @@ def run_audit_fan_out(
         if run.error is not None:
             _log(log, "ERROR", run.error)
 
-    _write_review_logs(log_dir, scope, runs)
+    _write_review_logs(
+        log_dir, scope, runs, operator_influence=context.operator_influence
+    )
     _write_usage_log(log_dir, runs)
     _log(log, "INFO", f"Audit reviewer outputs recorded under {log_dir}.")
 
@@ -724,6 +753,7 @@ def run_audit_fan_out(
         block_severity=config.audit.block_severity,
         source_handoff=context.handoff_content,
         dispatcher_verification=pre_audit,
+        operator_influence=context.operator_influence,
     )
     if linear_mode:
         # The Linear evidence step runs only after both verdicts merged and
@@ -759,6 +789,13 @@ def run_audit_fan_out(
             f"{quality_verdict.next_agent} as the quality reviewer directed "
             f"({len(decision.notes)} sub-threshold finding(s) attached).",
         )
+        for non_blocking_fail in decision.non_blocking_fails:
+            _log(
+                log,
+                "WARN",
+                "Audit fan-out did not block on a fail verdict: "
+                f"{non_blocking_fail} (audit.block_severity).",
+            )
     return DispatchResult(
         stdout=(
             f"audit fan-out {'blocked' if decision.blocked else 'passed'}: "
@@ -1106,17 +1143,37 @@ def merge_review_verdicts(
     *,
     block_severity: str,
 ) -> MergeDecision:
+    """Merge the reviewer verdicts under ``block_severity``.
+
+    A finding at or above ``block_severity`` blocks. A quality ``fail``
+    always blocks. A security ``fail`` blocks only when it reports no
+    findings or a finding at or above ``block_severity``; a security fail
+    whose findings are all below it is recorded in ``non_blocking_fails``
+    and its findings stay notes.
+    """
+
     threshold = SEVERITY_RANK[block_severity]
     blocking: list[tuple[str, ReviewFinding]] = []
     notes: list[tuple[str, ReviewFinding]] = []
     reasons: list[str] = []
+    non_blocking_fails: list[str] = []
     for name in ("quality", "security"):
         run = runs.get(name)
         if run is None or run.verdict is None:
             continue
+        findings = run.verdict.findings
         if run.verdict.verdict == "fail":
-            reasons.append(f"{name} reviewer returned fail")
-        for finding in run.verdict.findings:
+            sub_threshold_only = bool(findings) and all(
+                SEVERITY_RANK[finding.severity] < threshold for finding in findings
+            )
+            if name == "security" and sub_threshold_only:
+                non_blocking_fails.append(
+                    f"{name} reviewer returned fail with only findings below "
+                    f"{block_severity}"
+                )
+            else:
+                reasons.append(f"{name} reviewer returned fail")
+        for finding in findings:
             if SEVERITY_RANK[finding.severity] >= threshold:
                 blocking.append((name, finding))
             else:
@@ -1128,6 +1185,7 @@ def merge_review_verdicts(
         blocking=tuple(blocking),
         notes=tuple(notes),
         reasons=tuple(reasons),
+        non_blocking_fails=tuple(non_blocking_fails),
     )
 
 
@@ -1277,12 +1335,16 @@ def render_audit_handoff(
     block_severity: str,
     source_handoff: str = "",
     dispatcher_verification: PreAuditVerification | None = None,
+    operator_influence: OperatorInfluence | None = None,
 ) -> str:
     """Render the dispatcher-written audit handoff.
 
     ``dispatcher_verification`` is a passing pre-audit run; its section and
     commands are kept in the final handoff, because the quality reviewer was
     told not to re-run them.
+
+    ``operator_influence`` adds a ``## Operator Influence`` section after the
+    merge decision; it records only the message time and digest.
     """
 
     quality_run = runs["quality"]
@@ -1333,11 +1395,21 @@ def render_audit_handoff(
     lines.append("## Merge Decision")
     lines.append("")
     lines.append(f"- Quality reviewer verdict: {quality.verdict}")
-    lines.append(f"- Security reviewer verdict: {security_verdict.verdict}")
+    security_verdict_text = security_verdict.verdict
+    if decision.non_blocking_fails:
+        security_verdict_text += (
+            f" (non-blocking: every finding is below {block_severity})"
+        )
+    lines.append(f"- Security reviewer verdict: {security_verdict_text}")
     lines.append(f"- Block severity threshold: {block_severity}")
     lines.append(f"- Blocking findings: {len(decision.blocking)}")
     lines.append(f"- Sub-threshold findings: {len(decision.notes)}")
     lines.append("")
+    if operator_influence is not None:
+        lines.append(OPERATOR_INFLUENCE_HEADING)
+        lines.append("")
+        lines.extend(operator_influence_bullets(operator_influence))
+        lines.append("")
     lines.append("## Quality Review")
     lines.append("")
     if quality.summary:
@@ -2311,6 +2383,8 @@ def _write_review_logs(
     log_dir: Path,
     scope: ReviewScope,
     runs: Mapping[str, ReviewerRun],
+    *,
+    operator_influence: OperatorInfluence | None = None,
 ) -> None:
     summary: dict[str, object] = {
         "scope": {
@@ -2320,6 +2394,11 @@ def _write_review_logs(
         },
         "reviewers": {},
     }
+    if operator_influence is not None:
+        summary["operator_influence"] = {
+            "at": operator_influence.at,
+            "message_sha256": operator_influence.message_sha256,
+        }
     for name, run in runs.items():
         try:
             (log_dir / f"{name}.stdout.txt").write_text(run.stdout, encoding="utf-8")
@@ -2472,7 +2551,11 @@ def _unresolved_text(quality: QualityReviewVerdict, decision: MergeDecision) -> 
         if not titles:
             titles.append("reviewer verdict fail; see the review sections above")
         return "; ".join(titles)
-    return _single_line(quality.unresolved_concerns) or "none"
+    concerns = _single_line(quality.unresolved_concerns) or "none"
+    if decision.non_blocking_fails:
+        downgraded = "; ".join(decision.non_blocking_fails) + " (see Security Notes)"
+        return downgraded if concerns.lower() == "none" else f"{concerns}; {downgraded}"
+    return concerns
 
 
 def _story_summary(frontmatter: HandoffRouting | None) -> str | None:

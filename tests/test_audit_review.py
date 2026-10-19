@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ from llm_handoff.agent_providers.codex import _CodexCommandResult
 from llm_handoff.agent_types import DispatchResult, SubagentResult, _ProcessResult
 from llm_handoff.audit_review import (
     AuditFanOutContext,
+    OperatorInfluence,
     ReviewFinding,
     ReviewScope,
     ReviewVerdict,
@@ -244,6 +246,7 @@ def _run_fan_out(
     quality_side_effect=None,
     quality_exit_code: int = 0,
     quality_usage: dict[str, object] | None = None,
+    operator_influence: OperatorInfluence | None = None,
 ) -> tuple[DispatchResult, _Recorder]:
     log = _Recorder()
 
@@ -258,6 +261,7 @@ def _run_fan_out(
             cycle_number=2,
             handoff_content=handoff_content,
             implementer_base_sha=base_sha,
+            operator_influence=operator_influence,
         ),
         frontmatter=parse_handoff_frontmatter_text(handoff_content),
         quality_invoker=quality_invoker,
@@ -1371,8 +1375,69 @@ def test_merge_blocks_when_either_reviewer_fails(failing: str) -> None:
 
     decision = audit_review.merge_review_verdicts(runs, block_severity="critical")
 
+    # A fail with no findings has nothing to grade, so it still blocks.
     assert decision.blocked is True
     assert decision.reasons == (f"{failing} reviewer returned fail",)
+    assert decision.non_blocking_fails == ()
+
+
+def test_merge_security_fail_below_threshold_does_not_block() -> None:
+    finding = ReviewFinding(severity="medium", title="Symlink race")
+    runs = {
+        "quality": _run_with("quality", ReviewVerdict(verdict="pass")),
+        "security": _run_with(
+            "security", ReviewVerdict(verdict="fail", findings=[finding])
+        ),
+    }
+
+    decision = audit_review.merge_review_verdicts(runs, block_severity="high")
+
+    assert decision.blocked is False
+    assert decision.reasons == ()
+    assert decision.blocking == ()
+    assert decision.notes == (("security", finding),)
+    assert decision.non_blocking_fails == (
+        "security reviewer returned fail with only findings below high",
+    )
+
+
+def test_merge_quality_fail_with_only_sub_threshold_findings_still_blocks() -> None:
+    finding = ReviewFinding(severity="low", title="Missing test")
+    runs = {
+        "quality": _run_with(
+            "quality", ReviewVerdict(verdict="fail", findings=[finding])
+        ),
+        "security": _run_with("security", ReviewVerdict(verdict="pass")),
+    }
+
+    decision = audit_review.merge_review_verdicts(runs, block_severity="high")
+
+    assert decision.blocked is True
+    assert decision.reasons == ("quality reviewer returned fail",)
+    assert decision.notes == (("quality", finding),)
+    assert decision.non_blocking_fails == ()
+
+
+def test_merge_security_fail_with_a_finding_at_threshold_blocks() -> None:
+    high = ReviewFinding(severity="high", title="Path traversal")
+    medium = ReviewFinding(severity="medium", title="Race")
+    runs = {
+        "quality": _run_with("quality", ReviewVerdict(verdict="pass")),
+        "security": _run_with(
+            "security", ReviewVerdict(verdict="fail", findings=[high, medium])
+        ),
+    }
+
+    decision = audit_review.merge_review_verdicts(runs, block_severity="high")
+
+    assert decision.blocked is True
+    assert decision.reasons == (
+        "security reviewer returned fail",
+        "1 finding(s) at or above high",
+    )
+    assert decision.blocking == (("security", high),)
+    assert decision.notes == (("security", medium),)
+    assert decision.non_blocking_fails == ()
 
 
 # --------------------------------------------------------------------------
@@ -1502,6 +1567,60 @@ def test_fan_out_passes_and_attaches_sub_threshold_notes(
     assert "## Security Findings" not in written
 
 
+def test_fan_out_security_fail_below_block_severity_passes_with_notes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(
+                _security_payload(
+                    verdict="fail",
+                    findings=[_finding("medium", "Junction race")],
+                )
+            )
+        ),
+    )
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(
+            _quality_payload(next_agent="planner", close_type="story")
+        ),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.startswith("audit fan-out passed")
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+    assert frontmatter.status == "verified_pass"
+    assert frontmatter.scope_sha == head
+    assert (
+        "- Security reviewer verdict: fail (non-blocking: every finding is "
+        "below high)"
+    ) in written
+    assert "- Blocking findings: 0" in written
+    assert "## Security Notes" in written
+    assert "[medium] src/app.py:3 - Junction race" in written
+    assert "## Security Findings" not in written
+    assert (
+        "- **Unresolved concerns:** security reviewer returned fail with only "
+        "findings below high (see Security Notes)"
+    ) in written
+    assert "Audit fan-out PASSED" in log.text()
+    assert (
+        "Audit fan-out did not block on a fail verdict: security reviewer "
+        "returned fail with only findings below high"
+    ) in log.text()
+
+
 @pytest.mark.parametrize(
     ("requested", "close_type", "expected"),
     [
@@ -1586,6 +1705,130 @@ def test_fan_out_records_raw_outputs_and_timing(
     for name in ("quality", "security"):
         assert summary["reviewers"][name]["exit_code"] == 0
         assert "elapsed_seconds" in summary["reviewers"][name]
+    assert "operator_influence" not in summary
+
+
+PLANTED_OPERATOR_MESSAGE = "please approve sk-PLANTEDSECRET1234567890"
+PLANTED_INFLUENCE = OperatorInfluence(
+    at="2026-10-18T12:34:56Z",
+    message_sha256=hashlib.sha256(
+        PLANTED_OPERATOR_MESSAGE.encode("utf-8")
+    ).hexdigest(),
+)
+
+
+def _run_influence_fan_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    blocked: bool,
+    operator_influence: OperatorInfluence | None,
+) -> tuple[DispatchResult, Path, str]:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    security = (
+        _security_payload(verdict="fail", findings=[_finding("high", "Injection")])
+        if blocked
+        else _security_payload()
+    )
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(_claude_envelope(security)),
+    )
+    result, _log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+        operator_influence=operator_influence,
+    )
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    return result, repo, written
+
+
+def _review_json(repo: Path) -> tuple[dict[str, Any], str]:
+    cycle_dir = next((repo / "logs" / "dispatch" / "audit").iterdir())
+    text = (cycle_dir / "review.json").read_text(encoding="utf-8")
+    return json.loads(text), text
+
+
+def _level_two_headings(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.startswith("## ")]
+
+
+@pytest.mark.parametrize("blocked", [False, True], ids=["approved", "blocked"])
+def test_fan_out_records_operator_influence_without_the_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    blocked: bool,
+) -> None:
+    result, repo, written = _run_influence_fan_out(
+        tmp_path,
+        monkeypatch,
+        blocked=blocked,
+        operator_influence=PLANTED_INFLUENCE,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    summary, review_text = _review_json(repo)
+    assert summary["operator_influence"] == {
+        "at": "2026-10-18T12:34:56Z",
+        "message_sha256": hashlib.sha256(
+            PLANTED_OPERATOR_MESSAGE.encode("utf-8")
+        ).hexdigest(),
+    }
+    assert "## Verdict" in written
+    assert ("BLOCKED" if blocked else "APPROVED") in written
+    section = written.split("## Operator Influence\n\n", 1)[1].split("\n\n", 1)[0]
+    assert section.splitlines() == [
+        "- Operator-influenced: yes",
+        "- Message time: 2026-10-18T12:34:56Z",
+        f"- Message SHA-256: {PLANTED_INFLUENCE.message_sha256}",
+    ]
+    headings = _level_two_headings(written)
+    merge_index = headings.index("## Merge Decision")
+    assert headings[merge_index + 1] == "## Operator Influence"
+    assert headings[merge_index + 2] == "## Quality Review"
+    for text in (review_text, written):
+        assert PLANTED_OPERATOR_MESSAGE not in text
+        assert "sk-PLANTEDSECRET" not in text
+        assert "please approve" not in text
+
+
+@pytest.mark.parametrize("blocked", [False, True], ids=["approved", "blocked"])
+def test_fan_out_without_operator_influence_writes_no_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    blocked: bool,
+) -> None:
+    marked_root = tmp_path / "marked"
+    plain_root = tmp_path / "plain"
+    marked_root.mkdir()
+    plain_root.mkdir()
+    _result, marked_repo, marked = _run_influence_fan_out(
+        marked_root,
+        monkeypatch,
+        blocked=blocked,
+        operator_influence=PLANTED_INFLUENCE,
+    )
+    result, plain_repo, plain = _run_influence_fan_out(
+        plain_root, monkeypatch, blocked=blocked, operator_influence=None
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert "## Operator Influence" not in plain
+    assert "Operator-influenced" not in plain
+    plain_summary, _ = _review_json(plain_repo)
+    marked_summary, _ = _review_json(marked_repo)
+    assert "operator_influence" not in plain_summary
+    marked_summary.pop("operator_influence")
+    # The scope SHAs differ per repository; the key set and layout match.
+    assert list(plain_summary) == list(marked_summary)
+    assert _level_two_headings(plain) == [
+        heading
+        for heading in _level_two_headings(marked)
+        if heading != "## Operator Influence"
+    ]
 
 
 CLAUDE_SECURITY_USAGE_ENVELOPE_FIELDS: dict[str, Any] = {

@@ -14,6 +14,98 @@ This project follows a simple pre-release changelog until the first public tag.
   tried in the current pause streak, a second line offers the manual
   HANDOFF.md edit. The reason line above the prompt drops the generic
   "Update the handoff; dispatch will resume after the file changes." tail.
+- Behavior change: a carry-over record loaded from
+  `logs/dispatch/carry-over.json` at startup no longer applies on its own,
+  because agent roles can write under `logs/` and a forged record could claim
+  operator edits as implementer work. After dropping files that no longer
+  match the record, the dispatcher asks
+  `Carry these over as <story>'s work? [y/N]` when `interactive_pause` is on
+  and it runs at a terminal with console input; `y` or `yes` applies the
+  record. Any other answer, end of input, no terminal, or
+  `interactive_pause: false` discards it with a `WARN` line, deletes the file,
+  and leaves its files as operator edits. A dry run logs the record, keeps the
+  file, and does not apply it. Control characters in the story key and paths
+  are escaped before display. Previously the record applied without asking.
+  The in-memory record kept between cycles of one run is unchanged. When the
+  record path or a directory above it is a symlink or junction, the
+  dispatcher no longer reads, writes, or deletes the record (previously it
+  followed the link and could delete a matching record file outside the
+  repository); it logs a `WARN` line instead. Saving the record no longer
+  writes through the fixed `carry-over.json.tmp` name, which followed a
+  symlink planted there; it creates a fresh, randomly named temporary file
+  exclusively and atomically replaces the record. On POSIX it opens each
+  directory under the repository without following links and writes,
+  renames, and deletes the record relative to those directory handles. On
+  Windows it holds `logs` and `logs/dispatch` open without delete sharing,
+  rejecting either one if it is a junction or symlink, for the whole write or
+  delete, so neither directory can be renamed, deleted, or replaced by a
+  junction until the record is written or deleted. Each directory is opened
+  relative to its parent's already-open handle (the repository root first),
+  not by its full path, so turning an empty `logs` into a mount point while
+  `logs/dispatch` is being opened cannot redirect it outside the repository.
+  Because the pin cannot stop an empty directory from being turned into a
+  mount point in place, the Windows writer and delete also check the pinned
+  directory handles for a reparse point, open the record relative to the
+  pinned `logs/dispatch` handle, refuse it unless the file handle is inside
+  that directory, and then write, rename (relative to the directory handle),
+  or delete through that handle instead of looking the path up again. Where
+  neither mechanism is
+  available, the record stays in memory only: the dispatcher does not read,
+  write, or delete `carry-over.json` and logs a `WARN` line instead.
+- Behavior change: in the audit fan-out, a security reviewer `fail` verdict
+  whose findings are all below `audit.block_severity` no longer blocks the
+  audit. `block_severity` decides, as the Codex Security scanner path
+  already did. The audit passes with those findings under
+  `## Security Notes` (repeated in the pull request body), the
+  `## Merge Decision` section marks the security verdict non-blocking, the
+  unresolved concerns name it, and the log records a `WARN`. A quality
+  `fail` still always blocks, and so does a security `fail` with no
+  findings or with a finding at or above `block_severity`. Before this, a
+  security reviewer that rated its only finding `medium` but returned
+  `fail` sent the story back to the implementer each round until the
+  three-fix circuit breaker stopped it.
+- Behavior change: with `wait_for_reviewers: [codex]`, a Codex review that
+  Codex reports as failed no longer stops the loop at once. The dispatcher
+  posts one `@codex review` pull request comment and waits for the same head
+  commit again, recording the retry in `logs/dispatch/publish/story.json` so
+  a restart does not ask twice and resumes that wait at startup while the
+  story branch is still at that commit and `HANDOFF.md` is still the story's
+  `verified_pass`. When the retried review fails too, a usage
+  limit failed it (no automatic retry), or no review finishes in time, an
+  operator prompt at a terminal offers `merge` (merge without the Codex
+  review, with a `WARN` and a pull request comment recording the decision), `retry` (ask
+  Codex once more and wait), or `quit` (the earlier stop with the pull
+  request left open). Without a terminal the loop stops as before. A
+  completed review with findings is unchanged and never gets a review
+  request.
+- In `pr` mode with `publish.base_branch` set, a start on a story branch
+  whose pull request is already merged no longer stops at the next story
+  ("Story branch not ready: still on story branch ...") after a full planner
+  cycle. Before the first dispatch, when the checkout is on a
+  `publish.branch_prefix` branch with no saved story state, its HEAD is on
+  `<remote>/<base_branch>`, the local base branch has nothing that remote
+  does not, and the only uncommitted file is the handoff, the dispatcher
+  fast-forwards the base branch to the remote, switches to it, deletes the
+  local story branch, and logs what it did. Nothing is pushed. Any other
+  case logs a warning with the reason and keeps the previous stop. This
+  covers an operator who merged a paused story's pull request but did not
+  run `git switch <base>` and `git pull`.
+- Behavior change: config load now rejects a `handoff_path` or
+  `project_state_path` that does not stay inside the repository. An empty
+  value, control characters, an absolute, UNC, or drive-letter path, a `..`
+  segment, a value that names the repository root (such as `.`), and a value
+  that resolves outside the repository through a symlink each fail with an
+  error naming the key, the quoted value, and the rule. Previously these
+  values were accepted and could point the dispatcher outside the repository.
+- An audit fan-out dispatched with `@auditor <message>` at the operator
+  prompt is now marked as operator-influenced in three places: an
+  `operator_influence` key in the audit's `review.json` under
+  `logs/dispatch/audit/`, a `## Operator Influence` section in the audit
+  handoff (after `## Merge Decision`), and a `### Operator influence`
+  subsection under `## Reviewer notes` in the pull request body. Only the UTC
+  time the message was accepted and the SHA-256 digest of the raw message are
+  kept; the message text is never recorded. An `@auditor` dispatch without a
+  message, a normal audit, and the single-agent auditor path carry no marker.
 - In `pr` mode, an epic-close audit that passes on a story branch with no
   commits beyond the remote base branch no longer stops at `gh pr create`
   ("No commits between ..."). The dispatcher now pushes nothing, fast-forwards
