@@ -18,7 +18,8 @@ from llm_handoff import operator_prompt, orchestrator, publish, work_claim
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
 from llm_handoff.operator_prompt import (
-    PROMPT_HELP_LINES,
+    PROMPT_LINE,
+    PROMPT_PLANNER_TRIED_LINE,
     REVIEW_CHOICES,
     REVIEW_PROMPT_HELP_LINES,
     ROLE_TARGET_INVALID,
@@ -57,7 +58,6 @@ producer: planner
 Which story should run next?
 """
 OTHER_USER_HANDOFF = USER_HANDOFF.replace("Which story", "Which epic")
-PROMPT_LAST_LINE = PROMPT_HELP_LINES[-1]
 PLANNER_SCHEDULED_PREFIX = "Operator prompt: scheduling a planner dispatch"
 
 
@@ -111,9 +111,13 @@ def test_unknown_role_targets_are_invalid(line: str) -> None:
         assert target in ROLE_TARGET_INVALID
 
 
-def test_help_lists_role_targeting_before_the_handoff_line() -> None:
-    assert "@backend|@frontend|@auditor <message>" in PROMPT_HELP_LINES[-2]
-    assert "editing HANDOFF.md" in PROMPT_HELP_LINES[-1]
+def test_prompt_is_one_sentence_offering_the_planner() -> None:
+    assert PROMPT_LINE.count(". ") == 0 and PROMPT_LINE.endswith(".")
+    assert PROMPT_LINE.startswith("Press Enter to have the planner fix this")
+    # Advanced actions still work but are documented, not printed.
+    for hidden in ("@backend", "retry", "quit"):
+        assert hidden not in PROMPT_LINE
+    assert "HANDOFF.md" in PROMPT_PLANNER_TRIED_LINE
 
 
 def test_free_text_is_planner_guidance() -> None:
@@ -402,7 +406,32 @@ def test_wait_returns_handoff_changed_when_file_is_rewritten(tmp_path: Path) -> 
         stream.close()
 
     assert isinstance(result, HandoffChanged)
-    assert [message for _level, message in logs] == list(PROMPT_HELP_LINES)
+    assert [message for _level, message in logs] == [PROMPT_LINE]
+
+
+def test_wait_adds_the_edit_line_once_the_planner_tried(tmp_path: Path) -> None:
+    path = _handoff(tmp_path)
+    paused_sha = content_sha(USER_HANDOFF)
+    path.write_text(OTHER_USER_HANDOFF, encoding="utf-8")
+    stream = _BlockingStream()
+    logs, log = _logs()
+    try:
+        result = wait_for_operator_or_handoff_change(
+            OperatorInputReader(stream),
+            path,
+            paused_sha,
+            0.01,
+            log,
+            planner_tried=True,
+        )
+    finally:
+        stream.close()
+
+    assert isinstance(result, HandoffChanged)
+    assert [message for _level, message in logs] == [
+        PROMPT_LINE,
+        PROMPT_PLANNER_TRIED_LINE,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -519,7 +548,7 @@ class _PromptStream:
         self._closed = False
 
     def on_log(self, level: str, message: str) -> None:
-        if level == "PAUSE" and message == PROMPT_LAST_LINE:
+        if level == "PAUSE" and message == PROMPT_LINE:
             self._release.release()
 
     def readline(self) -> str:
@@ -689,7 +718,7 @@ class _Harness:
         return [message for level, message in self.logs if level == "PAUSE"]
 
     def prompt_count(self) -> int:
-        return self.pause_messages().count(PROMPT_LAST_LINE)
+        return self.pause_messages().count(PROMPT_LINE)
 
 
 def test_enter_on_user_pause_dispatches_planner_with_best_judgment(
@@ -716,6 +745,12 @@ def test_enter_on_user_pause_dispatches_planner_with_best_judgment(
     assert instruction.isascii()
     assert harness.stream_requests == 1
     assert harness.prompt_count() == 2
+    # A user route prompts at once: no edit line until the planner has tried.
+    pauses = harness.pause_messages()
+    assert pauses.count(PROMPT_PLANNER_TRIED_LINE) == 1
+    first_prompt = pauses.index(PROMPT_LINE)
+    second_prompt = pauses.index(PROMPT_LINE, first_prompt + 1)
+    assert pauses.index(PROMPT_PLANNER_TRIED_LINE) == second_prompt + 1
     assert (
         "PAUSE",
         "The operator stopped the dispatcher from the prompt.",
@@ -773,12 +808,11 @@ def test_quit_returns_zero_without_dispatching(
     assert harness.planner_instructions == []
     assert harness.backend_calls == 0
     pauses = harness.pause_messages()
-    # The PAUSE reason comes before the prompt help.
-    reason_index = pauses.index(
-        "No routing instruction found in HANDOFF.md. Update the handoff; "
-        "dispatch will resume after the file changes."
-    )
-    assert reason_index < pauses.index(PROMPT_HELP_LINES[0])
+    # The PAUSE reason comes before the prompt, without the generic
+    # edit-the-file tail the prompt line replaces.
+    reason_index = pauses.index("No routing instruction found in HANDOFF.md.")
+    assert reason_index == pauses.index(PROMPT_LINE) - 1
+    assert not any("dispatch will resume" in message for message in pauses)
 
 
 def test_retry_on_stale_route_redispatches_same_route(
@@ -855,7 +889,9 @@ def test_prompt_follows_the_automatic_pause_recovery(
         for index, message in enumerate(pauses)
         if "scheduling one bounded planner recovery" in message
     )
-    assert recovery_index < pauses.index(PROMPT_HELP_LINES[0])
+    assert recovery_index < pauses.index(PROMPT_LINE)
+    # The planner already tried, so the prompt offers the manual edit.
+    assert pauses.index(PROMPT_PLANNER_TRIED_LINE) == pauses.index(PROMPT_LINE) + 1
 
 
 @pytest.mark.parametrize(
@@ -935,6 +971,10 @@ def test_discarded_operator_recovery_logs_a_warning(
         "Dropped the scheduled operator planner recovery because HANDOFF.md "
         "changed before it ran; routing the current handoff normally."
     ]
+    # The dropped dispatch never ran, so the next prompt does not claim the
+    # planner already tried.
+    assert harness.prompt_count() == 2
+    assert PROMPT_PLANNER_TRIED_LINE not in harness.pause_messages()
 
 
 # --- @<role> targeting ----------------------------------------------------
@@ -1448,6 +1488,10 @@ def test_discarded_role_dispatch_names_the_route(
         "Dropped the scheduled operator_role dispatch to backend because "
         "HANDOFF.md changed before it ran; routing the current handoff normally."
     ]
+    # The dropped dispatch never ran, so the next prompt does not claim the
+    # planner already tried.
+    assert harness.prompt_count() == 2
+    assert PROMPT_PLANNER_TRIED_LINE not in harness.pause_messages()
 
 
 CLAUDE_SCOPE_HANDOFF = """---
@@ -1726,6 +1770,41 @@ def test_startup_banner_shows_interactive_pause(
     assert len(banner) == 1
     assert banner[0].startswith(expected)
     assert ("only when stdin is a TTY" in banner[0]) is enabled
+
+
+@pytest.mark.parametrize(
+    ("reason", "shown"),
+    [
+        (
+            "No routing instruction found in HANDOFF.md. Update the handoff; "
+            "dispatch will resume after the file changes.",
+            "No routing instruction found in HANDOFF.md.",
+        ),
+        (
+            "Routing instruction planner is only LOW confidence. Update "
+            "HANDOFF.md; dispatch will resume after the file changes.",
+            "Routing instruction planner is only LOW confidence.",
+        ),
+        (
+            "ESCALATION DETECTED in HANDOFF.md. Resolve it manually; dispatch "
+            "will resume after the file changes.",
+            "ESCALATION DETECTED in HANDOFF.md.",
+        ),
+        # Tails with specific steps stay.
+        (
+            "STORY BRANCH NOT READY: x. The backend dispatch did not run. "
+            "Update HANDOFF.md or pick another target at the operator prompt; "
+            "dispatch will resume after the file changes.",
+            "STORY BRANCH NOT READY: x. The backend dispatch did not run. "
+            "Update HANDOFF.md or pick another target at the operator prompt; "
+            "dispatch will resume after the file changes.",
+        ),
+    ],
+)
+def test_prompt_display_reason_drops_only_the_generic_tail(
+    reason: str, shown: str
+) -> None:
+    assert orchestrator._prompt_display_reason(reason) == shown
 
 
 def test_review_prompt_needs_the_operator_prompt_at_a_terminal(
