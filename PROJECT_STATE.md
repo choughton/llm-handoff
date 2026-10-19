@@ -742,14 +742,10 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
   session; use `logs/dispatch/codex-<role>/` for every role other than
   `backend`, which keeps its current path. Claude and agy already run
   per-role agent files. `docs/INVENTORY.md` lists the new files.
-- TPM-5 (deferrable): Linear mode. Linear mode does not support
-  `antigravity` roles, so its planner already runs on claude or codex and
-  the reliability reason above does not apply there. The epic may close
-  without this story; if it is deferred, a tpm configured in Linear mode is
-  rejected at config load with a message saying Linear mode does not support
-  it yet, and this story moves to its own epic. Move selection rules 1 to 7
-  and the user-attention steps from `llm_handoff/prompt_templates/linear/roles/planner.md` into a
-  new `roles/tpm.md`; the planner section keeps only epic-level duties and a
+- TPM-5: Linear mode. The tpm picks Linear issues, as in the source
+  project. Move selection rules 1 to 7 and the user-attention steps from
+  `llm_handoff/prompt_templates/linear/roles/planner.md` into a new
+  `roles/tpm.md`; the planner section keeps only epic-level duties and a
   one-line pointer. `LINEAR_PROMPT_ROLES` gains `tpm`;
   `LINEAR_EVIDENCE_EVENTS` allows `lease_opened`, `user_attention_requested`,
   and `user_attention_cleared` from `tpm` as well as `planner`; `tpm` gets the
