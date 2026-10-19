@@ -6,6 +6,25 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Behavior change: a console Ctrl+C during a role's dispatch cycle now asks
+  for a graceful stop instead of killing the agent. Agent processes, the
+  handoff normalizers, the work-claim verification command, and the
+  supervised dispatch child now start with `CREATE_NEW_PROCESS_GROUP` on
+  Windows (POSIX keeps `start_new_session`), so Ctrl+C reaches only the
+  dispatcher; `taskkill /T /F` remains the Windows tree kill. The first
+  Ctrl+C while a role's cycle runs prints
+  `Stop requested; finishing the current <role> run. Press Ctrl+C again to
+  stop now.`, sets an in-process stop flag, and the dispatcher finishes the
+  cycle (dispatcher commit, gates, publish) and exits with code 0 before the
+  next dispatch, as `llm-handoff stop` does. A second Ctrl+C kills the
+  running agent's process tree and exits with code 130, as before; agent runs
+  on the audit fan-out's worker threads stop as well. Ctrl+C outside a role's
+  cycle (startup, between cycles, a pause wait, the operator prompt) still
+  stops at once. Under supervised dispatch Ctrl+C reaches only the
+  supervisor; use `llm-handoff stop` there. `git` commands the dispatcher
+  runs itself still receive Ctrl+C. The supervisor now kills the child
+  dispatcher's process tree, and the work-claim gate kills the verification
+  command's process tree, when either is interrupted.
 - Behavior change: a carry-over record loaded from
   `logs/dispatch/carry-over.json` at startup no longer applies on its own,
   because agent roles can write under `logs/` and a forged record could claim

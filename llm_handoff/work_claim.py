@@ -1255,6 +1255,11 @@ def run_shell_command(
             output, _ = process.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             output = ""
+    except BaseException:
+        # The command runs in its own process group, so a console Ctrl+C
+        # no longer reaches it; take its tree down before re-raising.
+        _kill_process_tree(process)
+        raise
     return CommandRun(
         command=command,
         exit_code=None if timed_out else process.returncode,

@@ -154,8 +154,11 @@ handoff, and continues, pauses, or escalates to you. Watch
 
 To stop cleanly, run `llm-handoff stop --repo-root path/to/your-project` from
 another terminal. The running agent finishes, its work is committed and
-checked as usual, and the dispatcher exits before the next dispatch. Ctrl+C
-kills the running agent immediately.
+checked as usual, and the dispatcher exits before the next dispatch. While a
+role runs, a first Ctrl+C in the dispatcher's console asks for the same stop;
+a second Ctrl+C kills the running agent immediately. Outside a role's cycle,
+and under supervised dispatch, Ctrl+C stops at once; see
+[Stopping The Dispatcher](CONFIGURATION.md#stopping-the-dispatcher).
 
 When the loop pauses and you are at a terminal, an operator prompt lets you
 press Enter to send the planner back in, type `@backend`, `@frontend`, or

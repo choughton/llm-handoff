@@ -6,7 +6,15 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** None. The planner picks the next epic by fit from the Backlog.
+- **Active Epic:** RECOVERY (RECOVERY-1 in progress). Picked over the other
+  open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
+  RECOVERY-1 is independent and removes the Windows Ctrl+C hazard; CHAT is
+  ordered after it. ACTIVE-PLANNER is meant to follow an implementer
+  environment-refusal pause, and no such pause happened in the last run.
+  TPM-ROLE matters less here because the self-host planner runs on claude,
+  not antigravity. ESCALATION-RECONCILE is meant to follow a stale user
+  escalation. WORK-INTAKE needs a design check from the user.
+  TRANSITION-RULES comes after TPM-ROLE. LINEAR-SWITCH has low urgency.
 - **Epic Awaiting Close:** None. HARDENING closed (HARD-6 merged in PR #157,
   audited at `3949ed2`; see the Completed Scope Ledger). LINEAR-WORKFLOW,
   LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY,
@@ -654,9 +662,11 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 ### 12. RECOVERY - interrupted-run recovery
 
 Fit: RECOVERY-1 is independent and alone removes the Ctrl+C hazard.
-RECOVERY-2 needs HARD-5 first: its in-flight record on disk has the same
-forgeable-record exposure, so it must use HARD-5's operator-confirmation
-rule before carrying anything over. Pick the epic when an interrupted run
+HARD-5 and HARD-6 are closed, so RECOVERY-2 is unblocked. Its in-flight
+record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
+HARD-5's operator-confirmation rule before carrying anything over and
+HARD-6's race-safe record I/O to read, write, and delete
+`logs/dispatch/in-flight.json`. Pick the epic when an interrupted run
 has just cost a manual cleanup, or before the loop is left to run
 unattended for long stretches.
 
@@ -674,6 +684,17 @@ bounces until the three-fix circuit breaker escalates.
   first Ctrl+C requests the same stop as `llm-handoff stop` and prints `Stop
   requested; finishing the current <role> run. Press Ctrl+C again to stop
   now.`; the second stops at once and takes down the agent process tree.
+  Implementation note: the SIGINT handler sets an in-process flag that the
+  loop's stop checks read, rather than writing a stop-request file from the
+  handler. A role is active for a whole cycle (set before the dispatch, the
+  audit fan-out, or the epic-close finalizer; cleared at the loop top and at
+  pauses), so the first Ctrl+C lets that cycle's commit, gates, and publish
+  finish. Supervised dispatch gets no graceful Ctrl+C stop (Ctrl+C reaches
+  only the supervisor; `llm-handoff stop` stays the graceful path there), and
+  the dispatcher's own `git` calls stay in the console process group. The
+  supervisor kills the child dispatcher's tree on any exception, and the
+  work-claim verification run kills its tree on any exception, because
+  neither child receives the console Ctrl+C anymore.
 - RECOVERY-2: In-flight record and implementer recovery. Before each step
   that can leave partial state, write `logs/dispatch/in-flight.json` (cycle,
   role, story key, phase, HEAD, a copy of the pre-dispatch `HANDOFF.md`, and
@@ -706,9 +727,9 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: operator-facing; pick it once the loop runs unattended reliably
-(RECOVERY first is the natural order) and after HARD-3 for the marker CHAT-4
-reuses.
+Fit: operator-facing; pick it once the loop runs unattended reliably.
+HARD-3 is merged, so only the RECOVERY ordering remains: RECOVERY first is
+the natural order.
 
 The operator types at any time; a message holds the loop and is answered by
 the agent it is about, from that agent's own session, read-only. Chat never

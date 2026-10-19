@@ -641,36 +641,60 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
         args=(process.stdout, output_queue),
         daemon=True,
     )
-    reader_thread.start()
-    last_output_at = start_time
-    last_heartbeat_at = start_time
-    heartbeat_state = HeartbeatState()
-    stalled = False
-    while True:
-        try:
-            raw_line = output_queue.get(timeout=1)
-        except queue.Empty:
-            now = time.monotonic()
-            if (
-                config.stalled_output_timeout_seconds > 0
-                and now - last_output_at >= config.stalled_output_timeout_seconds
-            ):
-                stalled = True
-                stall_line = (
-                    "Supervisor stalled-output timeout reached after "
-                    f"{config.stalled_output_timeout_seconds} seconds."
-                )
-                output_tail.append(stall_line)
-                log("ERROR", stall_line)
-                # The child dispatcher owns provider CLI grandchildren; a
-                # plain kill() would orphan them mid-edit.
-                _kill_process_tree(process)
+    # The child runs in its own process group, so it no longer gets the
+    # console Ctrl+C; on any exception here the supervisor must take its
+    # tree down itself before re-raising.
+    try:
+        reader_thread.start()
+        last_output_at = start_time
+        last_heartbeat_at = start_time
+        heartbeat_state = HeartbeatState()
+        stalled = False
+        while True:
+            try:
+                raw_line = output_queue.get(timeout=1)
+            except queue.Empty:
+                now = time.monotonic()
+                if (
+                    config.stalled_output_timeout_seconds > 0
+                    and now - last_output_at
+                    >= config.stalled_output_timeout_seconds
+                ):
+                    stalled = True
+                    stall_line = (
+                        "Supervisor stalled-output timeout reached after "
+                        f"{config.stalled_output_timeout_seconds} seconds."
+                    )
+                    output_tail.append(stall_line)
+                    log("ERROR", stall_line)
+                    # The child dispatcher owns provider CLI grandchildren; a
+                    # plain kill() would orphan them mid-edit.
+                    _kill_process_tree(process)
+                    break
+                if _should_emit_heartbeat(
+                    now=now,
+                    last_heartbeat_at=last_heartbeat_at,
+                    heartbeat_interval_seconds=config.heartbeat_interval_seconds,
+                ):
+                    log(
+                        "HEARTBEAT",
+                        _format_heartbeat(
+                            start_time=start_time,
+                            now=now,
+                            last_output_at=last_output_at,
+                            state=heartbeat_state,
+                        ),
+                    )
+                    last_heartbeat_at = now
+                continue
+            if raw_line is None:
                 break
-            if _should_emit_heartbeat(
-                now=now,
-                last_heartbeat_at=last_heartbeat_at,
-                heartbeat_interval_seconds=config.heartbeat_interval_seconds,
-            ):
+            now = time.monotonic()
+            _write_child_output_line(raw_line)
+            output_tail.append(raw_line.rstrip("\r\n"))
+            last_output_at = now
+            boundary = _record_child_boundary(heartbeat_state, raw_line)
+            if boundary is not None:
                 log(
                     "HEARTBEAT",
                     _format_heartbeat(
@@ -678,29 +702,13 @@ def _run_dispatch_child(config: SupervisorConfig, log: LogFn) -> DispatchProcess
                         now=now,
                         last_output_at=last_output_at,
                         state=heartbeat_state,
+                        boundary=boundary,
                     ),
                 )
                 last_heartbeat_at = now
-            continue
-        if raw_line is None:
-            break
-        now = time.monotonic()
-        _write_child_output_line(raw_line)
-        output_tail.append(raw_line.rstrip("\r\n"))
-        last_output_at = now
-        boundary = _record_child_boundary(heartbeat_state, raw_line)
-        if boundary is not None:
-            log(
-                "HEARTBEAT",
-                _format_heartbeat(
-                    start_time=start_time,
-                    now=now,
-                    last_output_at=last_output_at,
-                    state=heartbeat_state,
-                    boundary=boundary,
-                ),
-            )
-            last_heartbeat_at = now
+    except BaseException:
+        _kill_process_tree(process)
+        raise
     exit_code = process.wait()
     elapsed_seconds = time.monotonic() - start_time
     log("INFO", f"Dispatch child exited with code {exit_code}.")

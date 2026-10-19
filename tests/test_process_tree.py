@@ -141,6 +141,36 @@ def test_run_command_streaming_kills_process_tree_on_timeout(
     assert tree_kills == [process]
 
 
+def test_run_command_streaming_stops_on_a_second_console_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A second Ctrl+C raises only on the main thread; a run on a worker
+    # thread (the audit fan-out) sees the controller's flag instead.
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+
+    def fake_kill_tree(target: Any) -> None:
+        tree_kills.append(target)
+        target.kill()
+
+    monkeypatch.setattr(
+        agent_process.subprocess,
+        "Popen",
+        lambda _command, **_kwargs: process,
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", fake_kill_tree)
+    monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: True)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent_process._run_command_streaming(
+            ["agent.cmd"],
+            cwd=Path.cwd(),
+            timeout_ms=60_000,
+        )
+
+    assert tree_kills == [process]
+
+
 def test_kill_process_tree_uses_taskkill_tree_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -204,8 +234,14 @@ def test_kill_process_tree_skips_exited_process(
 def test_process_group_popen_kwargs_follow_platform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if not hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        monkeypatch.setattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
+        )
     monkeypatch.setattr(agent_process, "_WINDOWS", True)
-    assert agent_process._process_group_popen_kwargs() == {}
+    assert agent_process._process_group_popen_kwargs() == {
+        "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
+    }
     monkeypatch.setattr(agent_process, "_WINDOWS", False)
     assert agent_process._process_group_popen_kwargs() == {"start_new_session": True}
 

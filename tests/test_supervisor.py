@@ -883,6 +883,50 @@ class _ExitedChild:
         return None
 
 
+def test_run_dispatch_child_kills_tree_and_reraises_on_interrupt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    supervisor = _load_supervisor_module()
+    repo_root = _write_repo(tmp_path)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        supervisor,
+        "run_supervised_dispatch",
+        lambda config: captured.update(config=config) or 0,
+    )
+    assert supervisor.main(["--repo-root", str(repo_root), "--", "--dry-run"]) == 0
+    config = captured["config"]
+
+    child = _ExitedChild()
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *_a, **_k: child)
+    monkeypatch.setattr(
+        supervisor,
+        "_repo_snapshot",
+        lambda _repo_root, **_kwargs: supervisor.RepoSnapshot(
+            head_sha=None, dirty_files=(), handoff_sha=None
+        ),
+    )
+
+    class _InterruptingQueue:
+        def put(self, _item: object) -> None:
+            return None
+
+        def get(self, timeout: float | None = None) -> str | None:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(supervisor.queue, "Queue", _InterruptingQueue)
+    killed: list[object] = []
+    monkeypatch.setattr(supervisor, "_kill_process_tree", killed.append)
+
+    # The child runs in its own process group and never sees the console
+    # Ctrl+C, so the supervisor must take its tree down itself.
+    with pytest.raises(KeyboardInterrupt):
+        supervisor._run_dispatch_child(config, lambda level, message: None)
+
+    assert killed == [child]
+
+
 def test_supervisor_shares_repo_root_and_config_with_child_and_repair(
     tmp_path: Path,
     monkeypatch,
