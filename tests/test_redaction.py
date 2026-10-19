@@ -147,6 +147,48 @@ def test_redact_stderr_summary_caps_keeping_the_tail() -> None:
     assert redact_stderr_summary(text, limit=20) == "..." + text[-17:]
 
 
+@pytest.mark.parametrize(
+    ("limit", "expected"),
+    [(-5, ""), (0, ""), (1, "."), (2, ".."), (3, "..."), (4, "...r")],
+)
+def test_redact_stderr_summary_never_exceeds_small_limits(
+    limit: int, expected: str
+) -> None:
+    summary = redact_stderr_summary("long error", limit=limit)
+
+    assert summary == expected
+    assert len(summary) <= max(limit, 0)
+
+
+def test_redact_stderr_summary_small_limits_keep_text_that_fits() -> None:
+    assert redact_stderr_summary("ab", limit=2) == "ab"
+    assert redact_stderr_summary("", limit=0) == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            '{"SERVICE_TOKEN":"opaque-credential"}',
+            f'{{"SERVICE_TOKEN":"{REDACTED}"}}',
+        ),
+        (
+            '{"db_secret": "opaque-credential", "mode": "strict"}',
+            f'{{"db_secret": "{REDACTED}", "mode": "strict"}}',
+        ),
+        (
+            "{'DEPLOY_KEY': 'opaque-credential'}",
+            f"{{'DEPLOY_KEY': '{REDACTED}'}}",
+        ),
+    ],
+)
+def test_redact_secrets_masks_quoted_field_names(text: str, expected: str) -> None:
+    redacted = redact_secrets(text)
+
+    assert "opaque-credential" not in redacted
+    assert redacted == expected
+
+
 def test_redact_stderr_summary_leaves_short_text_uncut() -> None:
     assert redact_stderr_summary("short error", limit=11) == "short error"
 

@@ -9,7 +9,8 @@ This project follows a simple pre-release changelog until the first public tag.
 - Provider stderr is now redacted before it reaches the dispatcher log or a
   reviewer error. A new `llm_handoff/redaction.py` masks `sk-` keys, Google
   `AIza` keys, `Bearer` tokens, GitHub tokens, and `NAME=value` pairs whose
-  name ends in `_KEY`, `_TOKEN`, or `_SECRET`. The `audit_reviewer_start_failed`
+  name ends in `_KEY`, `_TOKEN`, or `_SECRET` (including quoted names such as
+  `{"NAME": "value"}`). The `audit_reviewer_start_failed`
   and `security_reviewer_failed` messages now carry a redacted one-line stderr
   tail capped at 300 characters (was the raw last 2000 characters), and the
   streamed agent stderr lines, the validator stderr warning, and the

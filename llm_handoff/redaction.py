@@ -33,11 +33,12 @@ _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
 _BEARER_RE = re.compile(r"\b(Bearer)([ \t]+)[^\s'\"]+", re.IGNORECASE)
 
 # ``NAME=value`` / ``NAME: value`` where NAME ends in _KEY, _TOKEN, _SECRET.
-# The name, separator, and any opening quote stay; the value ends at
-# whitespace or a quote.
+# The name may be quoted, as in JSON or a Python mapping
+# (``{"NAME": "value"}``). The name, separator, and any quotes before the
+# value stay; the value ends at whitespace or a quote.
 _NAMED_SECRET_RE = re.compile(
     r"(?<![A-Za-z0-9_])([A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET))"
-    r"([ \t]*[=:][ \t]*)"
+    r"([\"']?[ \t]*[=:][ \t]*)"
     r"([\"']?)"
     r"[^\s\"']+",
     re.IGNORECASE,
@@ -70,13 +71,18 @@ def redact_stderr_summary(text: str, limit: int = 300) -> str:
     Whitespace collapses to single spaces. When the result is longer than
     ``limit``, the tail is kept (the end of stderr usually holds the error)
     and prefixed with ``...``. Redaction runs before the cap, so the cap can
-    never leave an unmasked fragment of a secret.
+    never leave an unmasked fragment of a secret. A ``limit`` of three or
+    less leaves no room for a tail, so a cut result is the first ``limit``
+    characters of ``...``; a negative ``limit`` is treated as zero.
     """
 
+    limit = max(limit, 0)
     collapsed = " ".join(redact_secrets(str(text or "")).split())
     if len(collapsed) <= limit:
         return collapsed
     marker = "..."
-    keep = max(limit - len(marker), 0)
-    tail = collapsed[len(collapsed) - keep :] if keep else ""
-    return marker + tail
+    if limit <= len(marker):
+        # No room for any tail: emit as much of the marker as fits so the
+        # result still never exceeds ``limit``.
+        return marker[:limit]
+    return marker + collapsed[len(collapsed) - (limit - len(marker)) :]
