@@ -35,6 +35,7 @@ from llm_handoff.audit_review import (
     run_audit_fan_out,
     security_reviewer_startup_error,
 )
+from llm_handoff import console_interrupt
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
     CARRY_OVER_STATE_PATH,
@@ -591,6 +592,8 @@ def run_loop(
     while True:
         # Every path back to the top of the loop has finished its cycle: the
         # dispatch, the dispatcher commit, validation, and the work-claim gate.
+        # No role's cycle runs here, so a console Ctrl+C stops at once.
+        console_interrupt.set_active_role(None)
         if stop_watch.requested(log_fn):
             stop_watch.finish(
                 log_fn, dropped_recovery=pending_planner_recovery
@@ -1107,6 +1110,8 @@ def run_loop(
                 if config.commit_mode == "dispatcher"
                 else None
             )
+            # A first Ctrl+C from here to the loop top lets this cycle finish.
+            console_interrupt.set_active_role("finalizer")
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
             stop_watch.requested(log_fn)
             if finalizer_git_before is not None:
@@ -1369,6 +1374,9 @@ def run_loop(
                 and current_cycle.route in {"backend", "frontend"}
                 else None
             )
+            # A first Ctrl+C from here to the loop top lets this cycle finish:
+            # the dispatch (or audit fan-out), commit, gates, and publish.
+            console_interrupt.set_active_role(current_cycle.route)
             dispatch_result, previous_agent = _dispatch_route(
                 current_cycle.route,
                 config,
@@ -4835,21 +4843,33 @@ def _persist_implementer_leftovers(
 
 
 class _StopRequestWatch:
-    """Notices a stop request from ``llm-handoff stop`` and logs it once."""
+    """Notices a stop request and logs it once.
+
+    A request comes from ``llm-handoff stop`` (a stop-request file for this
+    pid) or from a first console Ctrl+C during a role's cycle (an in-process
+    flag). Either one, or both, logs a single PAUSE line.
+    """
 
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
         self._seen = False
 
     def requested(self, log: LogFn) -> bool:
-        if not stop_requested(self._repo_root, pid=os.getpid()):
+        console_requested = console_interrupt.stop_requested()
+        file_requested = stop_requested(self._repo_root, pid=os.getpid())
+        if not (console_requested or file_requested):
             return False
         if not self._seen:
             self._seen = True
+            source = (
+                str(stop_request_path(self._repo_root))
+                if file_requested
+                else "Ctrl+C"
+            )
             _log(
                 log,
                 "PAUSE",
-                f"Stop requested ({stop_request_path(self._repo_root)}). The "
+                f"Stop requested ({source}). The "
                 "dispatcher finishes the current cycle and exits before the "
                 "next dispatch.",
             )
@@ -5035,6 +5055,8 @@ def _pause_until_handoff_changes(
 ) -> bool:
     """Wait for a HANDOFF.md change; False when the run should stop instead."""
 
+    # A pause wait is not a role's cycle: a console Ctrl+C stops at once.
+    console_interrupt.set_active_role(None)
     _log(log, "PAUSE", reason)
     if config.poll_interval_seconds <= 0:
         return False
@@ -5143,6 +5165,8 @@ def _review_prompt(
         return None
 
     def ask(reason: str) -> str:
+        # The operator prompt is not a role's cycle: Ctrl+C stops at once.
+        console_interrupt.set_active_role(None)
         _log(log, "PAUSE", reason)
         reader = operator_prompt.reader()
         if reader.console_unavailable:
@@ -5192,6 +5216,8 @@ def _pause_at_dispatcher_pause(
             return PauseOutcome(kind="stop_request")
         return PauseOutcome(kind=kind)
 
+    # A pause is not a role's cycle: a console Ctrl+C stops at once.
+    console_interrupt.set_active_role(None)
     if stop_watch is not None and stop_watch.requested(log):
         _log(log, "PAUSE", reason)
         return stop_or("stop")

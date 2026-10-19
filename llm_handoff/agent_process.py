@@ -17,6 +17,10 @@ from typing import Callable, Mapping, TextIO
 from llm_handoff.agent_streams import StderrMode, _LiveAgentOutputMonitor
 from llm_handoff.agent_types import LogFn, _ProcessResult
 from llm_handoff.config import VENDOR_API_KEY_ENV_NAMES, AgentConfig
+from llm_handoff.console_interrupt import (
+    deferred_interrupts,
+    interrupt_now_requested,
+)
 
 
 PROCESS_READER_JOIN_TIMEOUT_SECONDS = 0.2
@@ -157,12 +161,44 @@ def _granted_vendor_keys(provider: str, *, use_api_key_env: bool) -> frozenset[s
 
 
 def _process_group_popen_kwargs() -> dict[str, object]:
-    # On POSIX, start the child in its own session so the whole process tree
-    # shares one process group that _kill_process_tree can signal at once.
-    # Windows ignores this and relies on taskkill /T instead.
+    # Start the child outside the console's process group so a console Ctrl+C
+    # reaches only the dispatcher, which then decides whether to stop.
+    # On Windows, CREATE_NEW_PROCESS_GROUP also makes the child ignore Ctrl+C;
+    # _kill_process_tree still uses taskkill /T /F for the tree kill.
+    # On POSIX, a new session gives the whole tree one process group that
+    # _kill_process_tree can signal at once.
     if _WINDOWS:
-        return {}
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     return {"start_new_session": True}
+
+
+def _start_isolated_process(
+    command: list[str] | str,
+    **popen_kwargs: object,
+) -> subprocess.Popen[str]:
+    """Start ``command`` in its own process group and return the process.
+
+    A Ctrl+C that arrives while the child is being created is held back
+    until ``Popen`` returns. If it asked to stop at once, the new child's
+    tree is killed here and the KeyboardInterrupt re-raised, so a child that
+    no longer receives the console Ctrl+C cannot outlive the dispatcher.
+    Callers should enter their own kill-on-exception ``try`` block directly
+    after this call returns. ``OSError`` from ``Popen`` propagates unchanged.
+    """
+    process: subprocess.Popen[str] | None = None
+    try:
+        with deferred_interrupts():
+            process = subprocess.Popen(  # type: ignore[call-overload]
+                command,
+                **popen_kwargs,
+                **_process_group_popen_kwargs(),
+            )
+    except KeyboardInterrupt:
+        if process is not None:
+            _kill_process_tree(process)
+        raise
+    assert process is not None
+    return process
 
 
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
@@ -172,9 +208,11 @@ def _kill_process_tree(process: subprocess.Popen[str]) -> None:
     launched through ``cmd.exe`` starts ``node``, and the Codex launcher
     script starts the native ``codex`` binary), so ``Popen.kill()`` alone
     leaves the inner process running and editing the repo. ``taskkill /T``
-    walks the tree while the parent is still alive. On POSIX the child was
-    started in its own session, so killing its process group reaches every
-    descendant.
+    walks the tree while the parent is still alive. The child was started in
+    its own process group (``CREATE_NEW_PROCESS_GROUP``), so a console Ctrl+C
+    does not reach it; this function is how the dispatcher ends it. On POSIX
+    the child was started in its own session, so killing its process group
+    reaches every descendant.
     """
     if process.poll() is not None:
         return
@@ -306,41 +344,50 @@ def _run_command_streaming(
         "encoding": "utf-8",
         "errors": "replace",
         "bufsize": 1,
-        **_process_group_popen_kwargs(),
     }
     if env is not None:
         popen_kwargs["env"] = env
 
-    try:
-        process = subprocess.Popen(resolved_command, **popen_kwargs)
-    except OSError as exc:
-        return _ProcessResult(stdout="", stderr=str(exc), exit_code=1)
-
+    # Build the run state before the child exists, so no Python call sits
+    # between the launch and the kill-on-exception block below.
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
     stream_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
-    readers = [
-        threading.Thread(
-            target=_read_process_stream,
-            args=(process.stdout, "stdout", stream_queue),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_read_process_stream,
-            args=(process.stderr, "stderr", stream_queue),
-            daemon=True,
-        ),
-    ]
-    for reader in readers:
-        reader.start()
-
-    last_output_at = time.monotonic()
-    deadline = last_output_at + (timeout_ms / 1000)
-    idle_limit = None if idle_timeout_ms is None else idle_timeout_ms / 1000
     timed_out = False
     idled_out = False
+
     try:
+        process = _start_isolated_process(resolved_command, **popen_kwargs)
+    except OSError as exc:
+        return _ProcessResult(stdout="", stderr=str(exc), exit_code=1)
+
+    # The kill-on-exception block starts right after the child exists, so
+    # an interrupt during the reader setup also takes the tree down.
+    try:
+        readers = [
+            threading.Thread(
+                target=_read_process_stream,
+                args=(process.stdout, "stdout", stream_queue),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_read_process_stream,
+                args=(process.stderr, "stderr", stream_queue),
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+
+        last_output_at = time.monotonic()
+        deadline = last_output_at + (timeout_ms / 1000)
+        idle_limit = None if idle_timeout_ms is None else idle_timeout_ms / 1000
         while process.poll() is None and time.monotonic() < deadline:
+            if interrupt_now_requested():
+                # A second console Ctrl+C. It raises KeyboardInterrupt only
+                # on the main thread, so a run on a worker thread (the audit
+                # fan-out) stops here instead.
+                raise KeyboardInterrupt
             if _drain_stream_queue(
                 stream_queue,
                 stdout_parts=stdout_parts,

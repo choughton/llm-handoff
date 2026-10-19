@@ -316,12 +316,29 @@ child dispatcher. The wrapper treats that exit like any other exit code 0: if
 the run's output contains a failure marker such as a failed post-dispatch
 gate, it may still start a repair and restart the child.
 
-Ctrl+C still aborts at once, as before: the dispatcher kills the running
-agent's process tree, releases the lock, and exits with code 130. It is not
-the graceful path because a Windows console delivers Ctrl+C to every process
-attached to it, including the agent CLI and any `git` command in progress.
-Edits the interrupted agent left are not recorded for carry-over; review them
-with `git status` before restarting.
+Agent processes start in their own process group (`CREATE_NEW_PROCESS_GROUP`
+on Windows, a new session on POSIX), so a Ctrl+C in the dispatcher's console
+reaches only the dispatcher. While a role's cycle runs, from its dispatch
+through the dispatcher commit, the gates, and any publish step, the first
+Ctrl+C asks for the same graceful stop as `llm-handoff stop`. The dispatcher
+prints `Stop requested; finishing the current <role> run. Press Ctrl+C again
+to stop now.`, finishes the cycle, and exits with code 0 before the next
+dispatch. It logs the same `PAUSE` lines as for a stop request and writes no
+file. A second Ctrl+C stops at once: the dispatcher kills the running agent's
+process tree, releases the lock, and exits with code 130. Edits an agent
+stopped this way left are not recorded for carry-over; review them with
+`git status` before restarting.
+
+Three limits apply:
+
+- Ctrl+C outside a role's cycle still stops at once, with exit code 130:
+  at startup, between cycles, while the dispatcher waits at a pause, and at
+  the operator prompt.
+- Under [supervised dispatch](docs/SUPERVISED_DISPATCH.md), Ctrl+C reaches
+  only the supervisor, which kills the child dispatcher's process tree. Use
+  `llm-handoff stop` there for a graceful stop.
+- `git` commands the dispatcher runs itself are not in a separate process
+  group and still receive Ctrl+C.
 
 If the dispatcher was killed, `.dispatch.lock` stays behind and the next start
 refuses. The refusal names the pid in the lock, says whether that pid is
