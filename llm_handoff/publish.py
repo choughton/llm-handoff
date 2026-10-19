@@ -221,8 +221,7 @@ def ensure_story_branch(
     story_id = (frontmatter.story_id or "").strip() if frontmatter else ""
     if not story_id:
         if continue_saved_story:
-            state = _load_state(repo_root)
-            if state is not None and _current_branch(repo_root) == state.branch:
+            if _checked_out_saved_story(repo_root) is not None:
                 return None
             return (
                 "publish needs a story_id in the assignment's frontmatter to "
@@ -289,6 +288,52 @@ def ensure_story_branch(
     )
     (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
     return None
+
+
+def saved_story_assignment(repo_root: Path) -> str | None:
+    """Rebuild the saved story's assignment while its branch is checked out.
+
+    An operator ``@backend`` or ``@frontend`` dispatch can continue a story
+    from a handoff without a ``story_id``, such as a dispatcher-written
+    escalation that fences the assignment (see ``continue_saved_story`` in
+    :func:`ensure_story_branch`). The dispatcher commit, the work-claim gate,
+    and the protected-file check read the story and its Work Packet from this
+    text instead. Returns None when no saved story is checked out.
+    """
+
+    state = _checked_out_saved_story(repo_root)
+    if state is None:
+        return None
+    frontmatter: dict[str, object] = {
+        "next_agent": state.implementer,
+        "reason": f"Continue {state.story_id} on {state.branch}.",
+    }
+    if state.epic_id:
+        frontmatter["epic_id"] = state.epic_id
+    frontmatter["story_id"] = state.story_id
+    _add_tracker_fields(frontmatter, state)
+    if state.story_title:
+        frontmatter["story_title"] = state.story_title
+    lines = [
+        "---",
+        yaml.safe_dump(
+            frontmatter, default_flow_style=False, sort_keys=False, allow_unicode=True
+        ).rstrip(),
+        "---",
+        "",
+        f"# Handoff: {state.story_id}",
+        "",
+    ]
+    if state.work_packet:
+        lines.extend([state.work_packet.rstrip(), ""])
+    return "\n".join(lines)
+
+
+def _checked_out_saved_story(repo_root: Path) -> StoryState | None:
+    state = _load_state(repo_root)
+    if state is None or _current_branch(repo_root) != state.branch:
+        return None
+    return state
 
 
 def unfinished_story_pause_reason(

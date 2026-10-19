@@ -12,7 +12,7 @@ from typing import Any, Callable
 import pytest
 
 from llm_handoff import config as config_module
-from llm_handoff import operator_prompt, orchestrator, publish
+from llm_handoff import operator_prompt, orchestrator, publish, work_claim
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
 from llm_handoff.operator_prompt import (
@@ -1176,12 +1176,27 @@ def test_backend_target_after_a_protected_file_escalation_continues_the_story(
         operator_lines=["@backend keep the router edit out of scope", "quit"],
         backend_writes=[USER_HANDOFF],
     )
+    commit_assignments: list[str] = []
+    commit_for_implementer = orchestrator._commit_for_implementer
+
+    def record_commit(**kwargs: Any) -> Any:
+        commit_assignments.append(kwargs["assignment_content"])
+        return commit_for_implementer(**kwargs)
+
+    monkeypatch.setattr(orchestrator, "_commit_for_implementer", record_commit)
 
     assert harness.run(config) == 0
 
     assert harness.backend_calls == 1
     assert _git(tmp_path, "branch", "--show-current") == STORY_BRANCH
     assert not any("Story branch not ready" in message for _, message in harness.logs)
+    # The commit and work-claim gate read the saved story's Work Packet, not
+    # the escalation, which only fences it.
+    assert len(commit_assignments) == 1
+    assert work_claim.extract_work_packet_section(
+        commit_assignments[0]
+    ) == work_claim.extract_work_packet_section(STORY_ASSIGNMENT)
+    assert work_claim.carry_over_key(commit_assignments[0]) == "story:W9.9"
 
 
 def test_backend_target_without_a_story_pauses_instead_of_exiting(

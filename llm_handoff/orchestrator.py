@@ -75,6 +75,7 @@ from llm_handoff.publish import (
     recover_orphaned_story,
     resume_paused_publish,
     save_review_responses,
+    saved_story_assignment,
     saved_story_base,
     settle_deferred_findings,
     unfinished_story_pause_reason,
@@ -1116,6 +1117,9 @@ def run_loop(
             if forced_additional_instruction is None:
                 pause_recovery_used = False
         else:
+            # The handoff the implementer works from. An operator dispatch that
+            # continues the saved story swaps in its rebuilt assignment.
+            assignment_content = handoff_content
             if (
                 config.publish.mode != "local"
                 and current_cycle.route in {"backend", "frontend"}
@@ -1159,6 +1163,10 @@ def run_loop(
                 if branch_error is not None:
                     _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
                     return 1
+                if operator_role_dispatch and not _handoff_story_id(handoff_content):
+                    assignment_content = (
+                        saved_story_assignment(config.repo_root) or handoff_content
+                    )
             if (
                 config.publish.mode != "local"
                 and current_cycle.route == "auditor"
@@ -1175,7 +1183,7 @@ def run_loop(
                 )
             pre_dispatch_state: PreDispatchState | None = None
             story_base_sha: str | None = None
-            story_key = carry_over_key(handoff_content)
+            story_key = carry_over_key(assignment_content)
             if _work_claim_gate_applies(config, current_cycle.route):
                 if (
                     implementer_leftovers is not None
@@ -1197,13 +1205,13 @@ def run_loop(
                     gate_story_base = (
                         story_key,
                         _story_start_sha(
-                            config, handoff_content, pre_dispatch_state.head_sha
+                            config, assignment_content, pre_dispatch_state.head_sha
                         ),
                     )
                 if gate_story_base is not None and gate_story_base[0] == story_key:
                     story_base_sha = gate_story_base[1]
                 if pre_dispatch_state.carried_over:
-                    story_id = _handoff_story_id(handoff_content)
+                    story_id = _handoff_story_id(assignment_content)
                     _log(
                         log_fn,
                         "INFO",
@@ -1235,7 +1243,7 @@ def run_loop(
                         # the whole story branch; in `local` mode the range
                         # restarts at HEAD.
                         implementer_base_sha = _story_start_sha(
-                            config, handoff_content, implementer_base_sha
+                            config, assignment_content, implementer_base_sha
                         )
                     implementer_base_story_key = story_key
             elif (
@@ -1339,7 +1347,7 @@ def run_loop(
                 config=config,
                 before=protected_before,
                 role_label=previous_agent,
-                handoff_content=handoff_content,
+                handoff_content=assignment_content,
                 log=log_fn,
             ):
                 previous_cycle = current_cycle
@@ -1457,7 +1465,7 @@ def run_loop(
             commit_result = _commit_for_implementer(
                 config=config,
                 route=current_cycle.route,
-                assignment_content=handoff_content,
+                assignment_content=assignment_content,
                 pre_dispatch_state=pre_dispatch_state,
                 log=log_fn,
                 story_base_sha=story_base_sha,
@@ -1582,7 +1590,7 @@ def run_loop(
                             config=config,
                             route=current_cycle.route,
                             previous_agent=previous_agent,
-                            assignment_content=handoff_content,
+                            assignment_content=assignment_content,
                             pre_dispatch_state=pre_dispatch_state,
                             log=log_fn,
                             story_base_sha=story_base_sha,
