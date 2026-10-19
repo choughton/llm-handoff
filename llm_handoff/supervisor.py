@@ -92,7 +92,6 @@ _DEFAULT_ALLOWED_REPAIR_DIRECTORIES = (
     ".claude/agents/",
     ".codex/skills/llm-handoff/",
     ".agents/agents/",
-    ".gemini/agents/",
 )
 _DEFAULT_ALLOWED_REPAIR_FILES: tuple[str, ...] = ()
 _REPAIR_ROLE_CHOICES = (

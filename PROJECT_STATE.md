@@ -11,7 +11,8 @@ belong in commits, handoffs, and pull requests.
   merged in PR #125; GEM-0h merged in PR #126; GEM-1 merged in PR #127;
   GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
   GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a merged in PR
-  #138; GEM-4b merged in PR #139; GEM-4c in progress).
+  #138; GEM-4b merged in PR #139; GEM-4c merged in PR #141; GEM-5a in
+  progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -99,8 +100,9 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: GEM-4b is done; take GEM-4c, then GEM-5. GEM-5 deletes the .gemini/
-trees, so no later epic may recreate them.
+Fit: GEM-4c is done; take GEM-5a, then GEM-5b; GEM-5c waits on the user
+(Claude roles cannot write `.claude/`) and does not block the epic's other
+stories.
 
 Gemini CLI stopped serving personal Google accounts on 2026-06-18 (sign-in
 fails with `IneligibleTierError`). Antigravity's `agy` replaces it, and the
@@ -416,7 +418,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
     Gemini CLI no longer serves personal Google accounts. Use
     security_provider: antigravity (the agy CLI)." Delete or rewrite the
     Gemini reviewer tests and add a rejection test.
-  - GEM-4c (this story): delete `llm_handoff/agent_providers/gemini.py`, the Gemini
+  - GEM-4c (merged in PR #141): delete `llm_handoff/agent_providers/gemini.py`, the Gemini
     sandbox checks in `orchestrator.py` and `doctor.py`, the Gemini
     environment allowlist and API key rule in `agent_process.py`, the Gemini
     sign-in patterns in `provider_auth.py`,
@@ -445,24 +447,62 @@ itself from 1.3.5 to 1.4.2 during the checks):
     - `GEMINI_API_KEY` and `GOOGLE_API_KEY` stay in
       `VENDOR_API_KEY_ENV_NAMES`, so every launch still strips them and
       `env_passthrough` still rejects them.
-- GEM-5: Remove the shipped Gemini files and docs. Delete `.gemini/agents/`,
-  `.gemini/policies/`, and their copies under `examples/reference-workflow/`.
-  Delete both `.geminiignore` files; `agy` does not read them (see the facts
-  above), so nothing changes for `agy` roles. Check whether `agy` honors
-  `.gitignore`, and say in `SECURITY.md` which of those paths `agy` roles
-  can read.
-  `init` stops writing these into target repositories and leaves existing
-  copies alone. Drop `.gemini/agents/` from the supervisor repair allowlist
-  (`llm_handoff/supervisor.py`). Rewrite `README.md`, `CONFIGURATION.md`,
-  `INSTALL.md`, `QUICKSTART.md`, `WALKTHROUGH.md`, `SECURITY.md`, `docs/`, and
-  the handoff prompts to use `antigravity`, keeping one short note that Gemini
-  CLI support was removed and why. Finish with a grep of `llm_handoff/`,
-  `tests/`, `examples/`, and the config files for `gemini`: it may find only
-  rejection code and tests, agy model ids, the agy settings path, and
-  `GEMINI.md`. `.claude/agents/handoff-router.md` and its example copy name
-  Gemini, and Claude roles cannot write `.claude/` paths, so route those
-  edits to `user` (as in LIN-9d). Remove or document the AgentConfig fields
-  mention and retries, which no adapter reads after GEM-4c.
+- GEM-5: Remove the shipped Gemini files and docs. Split by the planner on
+  2026-10-18 into GEM-5a, GEM-5b, and GEM-5c.
+  - GEM-5a (this story): Delete the shipped `.gemini/` trees and
+    `.geminiignore` files and stop `init` from writing them. Delete
+    `.gemini/agents/`, `.gemini/policies/planner_guardrails.toml`, and
+    `.geminiignore`, at the repository root and under
+    `examples/reference-workflow/`; `agy` never read them (see the facts
+    above), so nothing changes for `agy` roles. Remove the `.geminiignore`
+    managed-block code from `llm_handoff/init_workflow.py`, so `init` writes
+    no `.gemini/` path and no `.geminiignore` and leaves existing copies
+    unchanged. Drop `.gemini/agents/` from the default supervisor repair
+    allowlist (`llm_handoff/supervisor.py`). Fix the stale `GEMINI_` prefix
+    wording in the `build_work_claim_env` docstring (`work_claim.py`). Drop
+    `.gemini/` and `.geminiignore` from the `pyproject.toml` force-include
+    comment. Update the tests, `docs/INVENTORY.md`, and `CHANGELOG.md` to
+    match. Planner decisions (2026-10-18):
+    - `.gemini/**` stays in `DEFAULT_PROTECTED_PATHS`
+      (`llm_handoff/config.py`) and in the `protected_paths` list of
+      `dispatch_config.example.yaml`. `init` leaves existing `.gemini/`
+      copies in target repositories alone, and those files are still
+      instruction files a role could be tricked into editing. GEM-5b's final
+      grep allows this entry.
+    - `AgentConfig.mention` and `AgentConfig.retries` stay as fields.
+      `AgentConfig` uses `extra="forbid"`, so deleting them would break any
+      config that sets them. GEM-5b documents them in `CONFIGURATION.md` as
+      accepted and ignored. GEM-5a does not touch them.
+    - The agy-owned strings stay: `~/.gemini/antigravity-cli/settings.json`,
+      agy model ids such as `gemini-3.8-flash-low`, `GEMINI.md`, the
+      `GEMINI_API_KEY` entry in `VENDOR_API_KEY_ENV_NAMES`, and every
+      `gemini` rejection message and its tests.
+    - Checking whether `agy` honors `.gitignore` needs a live `agy` run by
+      the operator. It is not part of GEM-5a. GEM-5b writes the conservative
+      `SECURITY.md` text (treat `.env`, `logs/`, and `.git` as readable by
+      `agy` roles until a live check shows otherwise).
+  - GEM-5b: Rewrite `README.md`, `CONFIGURATION.md`, `INSTALL.md`,
+    `QUICKSTART.md`, `WALKTHROUGH.md`, `SECURITY.md`, `docs/` (including
+    `docs/handoff/` prompts and README, root and
+    `examples/reference-workflow/` copies),
+    `examples/reference-workflow/README.md`, and the provider-name prose in
+    `.agents/agents/handoff-router.md` and
+    `.codex/skills/llm-handoff-validator/SKILL.md` (root and example copies)
+    to use `antigravity`, keeping one short note that Gemini CLI support was
+    removed and why. Document `AgentConfig.mention` and `retries` in
+    `CONFIGURATION.md` as accepted and ignored. In `SECURITY.md`, say
+    `.geminiignore` is gone, `agy` never read it, and `agy` roles should be
+    assumed able to read `.env`, `logs/`, and `.git` until an operator live
+    check shows `agy` honors `.gitignore`. Finish with a grep of
+    `llm_handoff/`, `tests/`, `examples/`, and the config files for
+    `gemini`: it may find only rejection code and tests, agy model ids, the
+    agy settings path, `GEMINI.md`, the `GEMINI_API_KEY` vendor-key entry,
+    the `.gemini/**` protected path, and `CHANGELOG.md`.
+  - GEM-5c: Replace "Gemini" in the provider-name sentence of
+    `.claude/agents/handoff-router.md` and
+    `examples/reference-workflow/.claude/agents/handoff-router.md` with
+    "Antigravity". Claude roles cannot write `.claude/` paths, so this story
+    routes to `user` (as LIN-9d did).
 
 ### 10. HARDENING - security followups
 

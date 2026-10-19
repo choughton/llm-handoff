@@ -1764,7 +1764,7 @@ def test_author_role_coalesces_support_variants() -> None:
     assert validator._author_role("validator") == "auditor-family"
 
 
-# The exact body shape shipped in .gemini/agents/planner.md ("Output Shape")
+# The exact body shape shipped in .agents/agents/planner.md ("Output Shape")
 # filled with the worked example from docs/handoff/PLANNER_HANDOFF_PROMPT.md.
 SHIPPED_PLANNER_WORK_PACKET_BODY = """# Handoff: Reject empty widget names
 

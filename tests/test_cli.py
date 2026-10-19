@@ -13,7 +13,7 @@ LEGACY_PROJECT_NAME = bytes.fromhex("43726f737366697265").decode("ascii")
 
 
 def test_init_dry_run_reports_merges_without_writes(tmp_path: Path, capsys) -> None:
-    names = ("AGENTS.md", ".gitignore", ".geminiignore", ".claude/settings.json")
+    names = ("AGENTS.md", ".gitignore", ".claude/settings.json")
     for name in names:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -21,7 +21,7 @@ def test_init_dry_run_reports_merges_without_writes(tmp_path: Path, capsys) -> N
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     assert main_module.main(["init", str(tmp_path), "--dry-run"]) == 0
     output = capsys.readouterr().out
-    assert "Merge: 4 file(s)" in output
+    assert "Merge: 3 file(s)" in output
     assert "Copy:" in output
     for name in names:
         assert name in output.replace("\\", "/")

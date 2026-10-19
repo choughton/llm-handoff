@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = REPO_ROOT / "examples" / "reference-workflow"
 
 
-@pytest.mark.parametrize("name", ["AGENTS.md", ".geminiignore"])
+@pytest.mark.parametrize("name", ["AGENTS.md"])
 def test_unmarked_template_migrates_without_duplication(tmp_path: Path, name: str) -> None:
     path = tmp_path / name
     original = (TEMPLATE_ROOT / name).read_bytes()
@@ -58,7 +58,7 @@ def test_unmarked_template_migrates_without_duplication(tmp_path: Path, name: st
 
 @pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize(
-    "name", ["AGENTS.md", ".gitignore", ".geminiignore", ".claude/settings.json"]
+    "name", ["AGENTS.md", ".gitignore", ".claude/settings.json"]
 )
 @pytest.mark.parametrize("dangling", [False, True])
 def test_linked_managed_file_conflicts(
@@ -88,7 +88,7 @@ def test_linked_managed_file_conflicts(
 
 @pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize(
-    "name", ["AGENTS.md", ".gitignore", ".geminiignore", ".claude/settings.json"]
+    "name", ["AGENTS.md", ".gitignore", ".claude/settings.json"]
 )
 def test_hard_linked_managed_file_conflicts(
     tmp_path: Path, name: str, force: bool
@@ -190,7 +190,6 @@ def test_managed_files_preserve_content_and_repeat(tmp_path: Path, force: bool) 
     originals = {
         Path("AGENTS.md"): b"# Custom\r\nKeep these instructions.",
         Path(".gitignore"): b"custom/\r\n",
-        Path(".geminiignore"): b"private/\n",
     }
     for path, content in originals.items():
         (tmp_path / path).write_bytes(content)
@@ -221,7 +220,7 @@ def test_managed_files_preserve_content_and_repeat(tmp_path: Path, force: bool) 
     assert all(p.read_bytes() == content for p, content in before.items())
 
 
-@pytest.mark.parametrize("name", ["AGENTS.md", ".gitignore", ".geminiignore"])
+@pytest.mark.parametrize("name", ["AGENTS.md", ".gitignore"])
 def test_managed_block_replaced_in_place(tmp_path: Path, name: str) -> None:
     begin, end = (
         (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->")
@@ -241,7 +240,7 @@ def test_managed_block_replaced_in_place(tmp_path: Path, name: str) -> None:
     assert not init_reference_workflow(tmp_path).merged
 
 
-@pytest.mark.parametrize("name", ["AGENTS.md", ".gitignore", ".geminiignore"])
+@pytest.mark.parametrize("name", ["AGENTS.md", ".gitignore"])
 @pytest.mark.parametrize(
     "shape",
     ["{b}", "{e}", "{e}\n{b}", "{b}\n{b}\n{e}", "{b}\n{e}\n{b}\n{e}", "text{b}\n{e}"],
@@ -317,12 +316,61 @@ def test_init_reference_workflow_copies_template_files(tmp_path: Path) -> None:
     assert (tmp_path / "dispatch_config.yaml").is_file()
     assert (tmp_path / "docs" / "handoff" / "HANDOFF.md").is_file()
     assert (tmp_path / ".codex" / "skills" / "llm-handoff" / "SKILL.md").is_file()
-    assert (tmp_path / ".gemini" / "agents" / "planner.md").is_file()
+    assert not (tmp_path / ".gemini" / "agents" / "planner.md").exists()
     assert (tmp_path / ".claude" / "agents" / "auditor.md").is_file()
     assert (tmp_path / ".claude" / "settings.json").is_file()
     assert (tmp_path / ".claude" / "hooks" / "block_dangerous_commands.py").is_file()
-    assert (tmp_path / ".gemini" / "policies" / "planner_guardrails.toml").is_file()
+    assert not (tmp_path / ".gemini" / "policies" / "planner_guardrails.toml").exists()
     assert not (tmp_path / "README.md").exists()
+
+
+def test_init_on_a_fresh_repo_writes_no_gemini_files(tmp_path: Path) -> None:
+    result = init_reference_workflow(tmp_path)
+
+    assert not (tmp_path / ".gemini").exists()
+    assert not (tmp_path / ".geminiignore").exists()
+    written = (*result.copied, *result.merged)
+    assert not [
+        path
+        for path in written
+        if path.parts[0] in {".gemini", ".geminiignore"}
+    ]
+
+
+@pytest.mark.parametrize("with_markers", [False, True])
+def test_init_leaves_existing_gemini_files_unchanged(
+    tmp_path: Path, with_markers: bool
+) -> None:
+    geminiignore = tmp_path / ".geminiignore"
+    geminiignore_content = (
+        b"private/\r\n# llm-handoff:begin\r\n.env\r\nlogs\r\n# llm-handoff:end\r\n"
+        if with_markers
+        else b"private/\n"
+    )
+    geminiignore.write_bytes(geminiignore_content)
+    planner = tmp_path / ".gemini" / "agents" / "planner.md"
+    planner.parent.mkdir(parents=True)
+    planner_content = b"---\nname: planner\n---\nCustom Gemini planner.\r\n"
+    planner.write_bytes(planner_content)
+
+    preview = init_reference_workflow(tmp_path, dry_run=True)
+    result = init_reference_workflow(tmp_path)
+
+    for outcome in (preview, result):
+        touched = (
+            *outcome.copied,
+            *outcome.merged,
+            *outcome.skipped,
+            *outcome.conflicts,
+        )
+        assert Path(".geminiignore") not in touched
+        assert Path(".gemini/agents/planner.md") not in touched
+    assert geminiignore.read_bytes() == geminiignore_content
+    assert planner.read_bytes() == planner_content
+    assert sorted(p.name for p in (tmp_path / ".gemini").rglob("*")) == [
+        "agents",
+        "planner.md",
+    ]
 
 
 def test_template_files_skip_python_bytecode(tmp_path: Path) -> None:

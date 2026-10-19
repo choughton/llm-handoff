@@ -88,7 +88,6 @@ _CONFIG_PATH = Path("dispatch_config.yaml")
 _TEXT_MARKERS = {
     Path("AGENTS.md"): (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->"),
     Path(".gitignore"): (b"# llm-handoff:begin", b"# llm-handoff:end"),
-    Path(".geminiignore"): (b"# llm-handoff:begin", b"# llm-handoff:end"),
 }
 _SETTINGS_PATH = Path(".claude/settings.json")
 _AGENTS_PATH = Path("AGENTS.md")
@@ -134,30 +133,6 @@ _TRACKER_OPTION_NAMES = (
     ("tracker.label", "--tracker-label"),
     ("tracker.team", "--tracker-team"),
 )
-_GEMINIIGNORE_BLOCK = b""".git
-node_modules
-venv
-.venv
-__pycache__
-dist
-build
-out
-.next
-logs
-.pytest_cache
-htmlcov
-.ruff_cache
-.tox
-coverage
-.vscode
-.env
-.env.*
-*.db
-*.db-shm
-*.db-wal
-*.db-journal
-package-lock.json
-"""
 
 _CLAUDE_AGENTS_BLOCK = """agents:
   # All-Claude mapping written by `llm-handoff init` (Claude Code only).
@@ -1096,8 +1071,6 @@ def _marker_span(content: bytes, begin: bytes, end: bytes) -> tuple[int, int] | 
 def _merge_text(path: Path, existing: bytes, source: bytes) -> bytes:
     begin, end = _TEXT_MARKERS[path]
     unmarked_template = existing == source
-    if path == Path(".geminiignore"):
-        source = _GEMINIIGNORE_BLOCK
     source_span = _marker_span(source, begin, end)
     block = (
         source[source_span[0] : source_span[1]]

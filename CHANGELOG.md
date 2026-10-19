@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Removed the shipped Gemini CLI instruction files: `.gemini/agents/`,
+  `.gemini/policies/planner_guardrails.toml`, and `.geminiignore`, both at
+  the repository root and in `examples/reference-workflow/`. `llm-handoff
+  init` no longer writes any `.gemini/` path or a `.geminiignore` (its
+  `.geminiignore` managed-block merge is gone), and it leaves existing copies
+  of those files in a target repository unchanged. `.gemini/agents/` is no
+  longer in the default supervisor repair allowlist. `.gemini/**` stays a
+  protected path.
 - Removed the `gemini` role provider (`llm_handoff/agent_providers/gemini.py`,
   its Gemini CLI sandbox and retry handling, its sign-in failure markers, and
   its `GEMINI_*` and Google Cloud environment allowlist). `provider: gemini`

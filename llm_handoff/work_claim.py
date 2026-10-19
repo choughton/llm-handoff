@@ -1160,9 +1160,11 @@ def build_work_claim_env(
     Only the base and platform process-plumbing names from
     ``agent_process`` plus the ``passthrough`` names are kept. Names are
     compared case-insensitively, as Windows environment names are, and the
-    original key spelling is preserved. Vendor API keys and provider-owned
-    variables (``CLAUDE_``, ``CODEX_``, ``GEMINI_``) are never passed, even
-    when listed in ``passthrough``.
+    original key spelling is preserved. Vendor API keys (including
+    ``GEMINI_API_KEY`` and ``GOOGLE_API_KEY``) and provider-owned variables
+    (``CLAUDE_``, ``CODEX_``) are never passed, even when listed in
+    ``passthrough``. Other ``GEMINI_*`` names are not blocked; they pass only
+    when the operator lists them in ``passthrough``.
     """
 
     source = os.environ if environ is None else environ

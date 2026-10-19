@@ -31,7 +31,7 @@ packages = ["llm_handoff"]
 
 # examples/reference-workflow/ stays the single source for the init template.
 # force-include maps it into the wheel at build time, hidden paths included
-# (.claude/, .codex/, .gemini/, .geminiignore, .gitignore), so `init` works
+# (.claude/, .codex/, .gitignore), so `init` works
 # from an installed package.
 [tool.hatch.build.targets.wheel.force-include]
 "examples/reference-workflow" = "llm_handoff/templates/reference-workflow"
