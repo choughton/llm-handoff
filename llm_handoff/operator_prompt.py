@@ -36,16 +36,17 @@ ROLE_TARGET_INVALID = (
     "optional message to dispatch that role, or @planner <message> to send the "
     "planner guidance."
 )
-PROMPT_HELP_LINES: tuple[str, ...] = (
-    "Operator prompt: press Enter to send the planner a best judgment "
-    "instruction for this pause.",
-    "Operator prompt: type text and press Enter to send it to the planner as "
-    "guidance.",
-    "Operator prompt: type `retry` to re-run the cycle, or `quit` to stop the "
-    "dispatcher.",
-    "Operator prompt: type `@backend|@frontend|@auditor <message>` to dispatch "
-    "that role directly with an optional message.",
-    "Operator prompt: editing HANDOFF.md also resumes the dispatch loop.",
+# The one line shown at every operator prompt. `retry`, `quit`, and
+# `@<role>` still work but are documented rather than printed, so a new
+# operator sees only the action that fits most pauses.
+PROMPT_LINE = (
+    "Press Enter to have the planner fix this, or type instructions for it "
+    "and press Enter."
+)
+# Added once the planner has already tried to resolve this pause streak:
+# the manual escape hatch for when the automatic path did not work.
+PROMPT_PLANNER_TRIED_LINE = (
+    "Or edit HANDOFF.md yourself; the loop resumes when it changes."
 )
 _ROLE_TARGET_RE = re.compile(r"@(\S*)(.*)", re.DOTALL)
 
@@ -462,8 +463,12 @@ def wait_for_operator_or_handoff_change(
     *,
     hash_content: Callable[[str], str] = content_sha,
     stop_requested: Callable[[], bool] | None = None,
+    planner_tried: bool = False,
 ) -> HandoffChanged | StopRequested | OperatorAction:
     """Wait for an operator action, a HANDOFF.md change, or a stop request.
+
+    ``planner_tried`` adds the edit-HANDOFF.md line under the prompt, for a
+    pause the planner has already tried to resolve.
 
     Never returns an ``invalid`` action: those are logged and the wait goes on.
     After EOF on the operator stream it keeps polling the handoff file only.
@@ -476,8 +481,9 @@ def wait_for_operator_or_handoff_change(
             "PAUSE",
             f"Discarded {discarded} operator input line(s) typed before the prompt.",
         )
-    for line in PROMPT_HELP_LINES:
-        log("PAUSE", line)
+    log("PAUSE", PROMPT_LINE)
+    if planner_tried:
+        log("PAUSE", PROMPT_PLANNER_TRIED_LINE)
 
     eof_logged = False
     while True:

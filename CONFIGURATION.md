@@ -189,7 +189,27 @@ When the dispatcher pauses and waits for `HANDOFF.md` to change, it logs the
 `PAUSE` reason line and then, if a person is at a terminal, shows an operator
 prompt. The prompt appears at every `next_agent: user` pause, and at the other
 pauses once bounded planner recovery is used up or unavailable (for example
-with `pause_recovery: "off"`). It accepts five actions:
+with `pause_recovery: "off"`). It prints one line:
+
+```text
+Press Enter to have the planner fix this, or type instructions for it and press Enter.
+```
+
+When the planner has already tried in the current pause streak, through
+bounded recovery or an earlier operator dispatch, a second line follows:
+
+```text
+Or edit HANDOFF.md yourself; the loop resumes when it changes.
+```
+
+Above the prompt, the reason line drops a generic "Update the handoff;
+dispatch will resume after the file changes." tail, since the prompt covers
+it. Reasons that end with specific steps, such as a story branch or a publish
+merge to finish, keep them. The planner and role instructions always get the
+full reason.
+
+The prompt accepts five actions. Only the first two are printed; the rest
+are listed here:
 
 - Enter: dispatch the planner with an instruction to resolve the pause with
   its best judgment.
@@ -767,11 +787,17 @@ The outcomes:
   auditor, because the auditor rewrites `HANDOFF.md`. The second save keeps
   the responses when the claim reaches the auditor without a gate pass, for
   example after a dispatcher restart or a handoff fixed by hand after a
-  validation pause. After the gate and audit pass again, the dispatcher pushes
-  to the same pull request and updates its report. It posts each response as
-  the reply on that finding's review thread and resolves the thread. A
-  finding without a response keeps its thread unresolved, which blocks the
-  merge. A response that starts with `Deferred:` (or `**Deferred:**`) marks
+  validation pause. Saved responses last for the whole correction round: a
+  later claim in the round, such as the implementer's handback after an
+  audit bounce, merges its responses into the saved ones by finding number
+  (its response replaces the saved one for the same finding), and a claim
+  without responses keeps the saved ones. A new correction round starts with
+  none. After the gate and audit pass again, the dispatcher pushes to the
+  same pull request and updates its report. It posts each response as the
+  reply on that finding's review thread and resolves the thread. A finding
+  without a response keeps its thread unresolved, gets no reply, and logs a
+  `WARN`; it goes to the planner's pass below with the deferred findings. A
+  response that starts with `Deferred:` (or `**Deferred:**`) marks
   a real finding left unfixed for later work, often because its fix is
   outside the Work Packet's Files in scope: the dispatcher posts the reply,
   logs a `WARN` naming the finding, and leaves the thread unresolved.
@@ -787,9 +813,11 @@ The outcomes:
   leaves the threads unresolved, and routes to the planner's pass. Mixed
   responses or any change leave the handback as written.
 - Deferred findings only: when the only unresolved review threads are
-  deferred findings, the dispatcher does not pause. It rewrites `HANDOFF.md`
-  to route to `planner` with each deferred finding, the implementer's
-  response, and the current Work Packet. The planner gets one pass per pull
+  deferred findings or the story's saved findings left without a response,
+  the dispatcher does not pause and keeps the story state. It rewrites
+  `HANDOFF.md` to route to `planner` with each such finding, the
+  implementer's response (or a note that none was saved), and the current
+  Work Packet. The planner gets one pass per pull
   request and decides each finding:
   - Widen the scope: route back to the implementer with the same
     `story_id` and a Work Packet whose Files in scope cover the fix. The
@@ -805,7 +833,7 @@ The outcomes:
   The dispatcher pauses for a person when the planner leaves a finding
   neither accepted nor sent back, when the implementer defers a finding
   again after the planner's pass, or when any other review thread, such as
-  a finding without a response or a person's comment, is still unresolved.
+  a person's comment, is still unresolved.
 
   A planner handoff can also carry `## Deferred Finding Decisions` when that
   pass never started, for example after a blocked handback. The dispatcher
