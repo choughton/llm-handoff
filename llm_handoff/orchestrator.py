@@ -65,17 +65,22 @@ from llm_handoff.dispatcher_commit import (
     stamp_commit_sha,
 )
 from llm_handoff.operator_prompt import (
+    REVIEW_CHOICES,
+    REVIEW_PROMPT_HELP_LINES,
     HandoffChanged,
     OperatorInputReader,
     StopRequested,
+    ask_operator_choice,
     wait_for_operator_or_handoff_change,
 )
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
 from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
+    ReviewPromptFn,
     defer_blocked_handback,
     ensure_story_branch,
     keep_review_responses,
+    leave_merged_story_branch,
     publish_story,
     recover_orphaned_story,
     resume_paused_publish,
@@ -529,7 +534,20 @@ def run_loop(
     mark_startup_complete = getattr(log_fn, "mark_startup_complete", None)
     if callable(mark_startup_complete):
         mark_startup_complete()
+    # At most one operator input reader per run_loop call.
+    operator_prompt = _OperatorPromptState()
+    stop_watch = _StopRequestWatch(config.repo_root)
     if config.publish.mode == "pr" and not config.dry_run:
+        # An operator who merged a paused story's pull request but stayed on
+        # its branch: return to the base branch before the planner runs.
+        leave_merged_story_branch(
+            repo_root=config.repo_root,
+            prefix=config.publish.branch_prefix,
+            base_branch=config.publish.base_branch,
+            remote=config.publish.remote,
+            handoff_path=config.handoff_path,
+            log=log_fn,
+        )
         # A publish that paused on a base-branch merge resumes once the
         # operator has merged the base branch into the story branch.
         outcome = resume_paused_publish(
@@ -540,6 +558,7 @@ def run_loop(
             handoff_content=_read_required_text(config.handoff_full_path) or "",
             log=log_fn,
             review=_review_gate(config),
+            review_prompt=_review_prompt(config, operator_prompt, stop_watch, log_fn),
         )
         if outcome.handoff is not None:
             config.handoff_full_path.write_text(outcome.handoff, encoding="utf-8")
@@ -553,8 +572,6 @@ def run_loop(
     # One bounded planner recovery per pause streak. Only a cycle dispatched
     # without a forced instruction that passes validation clears it.
     pause_recovery_used = False
-    # At most one operator input reader per run_loop call.
-    operator_prompt = _OperatorPromptState()
     breaker_planner_seen: set[str] = set()
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
@@ -568,7 +585,6 @@ def run_loop(
     # Set while a dispatch's rewrite has dropped planned stories and nobody
     # has changed the handoff it left behind since.
     story_baseline: StoryListBaseline | None = None
-    stop_watch = _StopRequestWatch(config.repo_root)
     # Linear mode: one planner lease-rebuild cycle per missing-handoff streak.
     # A cycle that reads non-empty handoff content clears it.
     tracker_lease_rebuild_used = False
@@ -1856,6 +1872,9 @@ def run_loop(
                         review=_review_gate(config),
                         base_branch=config.publish.base_branch,
                         branch_prefix=config.publish.branch_prefix,
+                        review_prompt=_review_prompt(
+                            config, operator_prompt, stop_watch, log_fn
+                        ),
                     )
                     if outcome.handoff is not None:
                         config.handoff_full_path.write_text(
@@ -4329,6 +4348,49 @@ def _operator_prompt_enabled(config: DispatchConfig) -> bool:
         and config.poll_interval_seconds > 0
         and _operator_stdin_is_interactive()
     )
+
+
+def _review_prompt(
+    config: DispatchConfig,
+    operator_prompt: _OperatorPromptState,
+    stop_watch: _StopRequestWatch,
+    log: LogFn,
+) -> ReviewPromptFn | None:
+    """The merge/retry/quit prompt for a failed or missing Codex review.
+
+    ``None`` (stop with the pull request left open) unless the operator
+    prompt is enabled and stdin is a terminal.
+    """
+
+    if not _operator_prompt_enabled(config):
+        return None
+
+    def ask(reason: str) -> str:
+        _log(log, "PAUSE", reason)
+        reader = operator_prompt.reader()
+        if reader.console_unavailable:
+            _log(
+                log,
+                "WARN",
+                "Operator prompt unavailable: no console input for this terminal.",
+            )
+            return "quit"
+        choice = ask_operator_choice(
+            reader,
+            REVIEW_CHOICES,
+            REVIEW_PROMPT_HELP_LINES,
+            config.poll_interval_seconds,
+            log,
+            stop_requested=lambda: stop_watch.requested(log),
+        )
+        if choice is None:
+            if stop_watch.requested(log):
+                stop_watch.finish(log)
+            return "quit"
+        _log(log, "PAUSE", f"Operator prompt: {choice}.")
+        return choice
+
+    return ask
 
 
 def _pause_at_dispatcher_pause(

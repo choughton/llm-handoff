@@ -394,9 +394,12 @@ that route into a read-only fan-out:
    `line`, `title`, `description`, and `recommendation`. The quality verdict
    also carries the forward route and the evidence fields.
 5. The dispatcher merges the verdicts and writes `HANDOFF.md` itself. A
-   finding at or above `audit.block_severity`, or either reviewer returning
-   `fail`, routes back to the implementer with `status: verified_fail`, or to
-   the planner when the range has no committed changes. Otherwise the handoff follows the quality reviewer's route.
+   finding at or above `audit.block_severity`, a quality `fail`, or a
+   security `fail` with no findings or a finding at or above that severity,
+   routes back to the implementer with `status: verified_fail`, or to
+   the planner when the range has no committed changes. A security `fail`
+   whose findings are all below `audit.block_severity` is recorded as
+   non-blocking and its findings are attached as notes. Otherwise the handoff follows the quality reviewer's route.
 
 The single-writer rule from the provider-native helper boundary still holds:
 in fan-out mode the dispatcher is the only writer of `HANDOFF.md`. Reviewers

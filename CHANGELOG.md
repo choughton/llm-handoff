@@ -30,6 +30,44 @@ This project follows a simple pre-release changelog until the first public tag.
   renames, and deletes the record relative to those directory handles; on
   Windows it checks the paths again before the rename or delete, which
   narrows but does not close a directory-swap race.
+- Behavior change: in the audit fan-out, a security reviewer `fail` verdict
+  whose findings are all below `audit.block_severity` no longer blocks the
+  audit. `block_severity` decides, as the Codex Security scanner path
+  already did. The audit passes with those findings under
+  `## Security Notes` (repeated in the pull request body), the
+  `## Merge Decision` section marks the security verdict non-blocking, the
+  unresolved concerns name it, and the log records a `WARN`. A quality
+  `fail` still always blocks, and so does a security `fail` with no
+  findings or with a finding at or above `block_severity`. Before this, a
+  security reviewer that rated its only finding `medium` but returned
+  `fail` sent the story back to the implementer each round until the
+  three-fix circuit breaker stopped it.
+- Behavior change: with `wait_for_reviewers: [codex]`, a Codex review that
+  Codex reports as failed no longer stops the loop at once. The dispatcher
+  posts one `@codex review` pull request comment and waits for the same head
+  commit again, recording the retry in `logs/dispatch/publish/story.json` so
+  a restart does not ask twice and resumes that wait at startup while the
+  story branch is still at that commit and `HANDOFF.md` is still the story's
+  `verified_pass`. When the retried review fails too, a usage
+  limit failed it (no automatic retry), or no review finishes in time, an
+  operator prompt at a terminal offers `merge` (merge without the Codex
+  review, with a `WARN` and a pull request comment recording the decision), `retry` (ask
+  Codex once more and wait), or `quit` (the earlier stop with the pull
+  request left open). Without a terminal the loop stops as before. A
+  completed review with findings is unchanged and never gets a review
+  request.
+- In `pr` mode with `publish.base_branch` set, a start on a story branch
+  whose pull request is already merged no longer stops at the next story
+  ("Story branch not ready: still on story branch ...") after a full planner
+  cycle. Before the first dispatch, when the checkout is on a
+  `publish.branch_prefix` branch with no saved story state, its HEAD is on
+  `<remote>/<base_branch>`, the local base branch has nothing that remote
+  does not, and the only uncommitted file is the handoff, the dispatcher
+  fast-forwards the base branch to the remote, switches to it, deletes the
+  local story branch, and logs what it did. Nothing is pushed. Any other
+  case logs a warning with the reason and keeps the previous stop. This
+  covers an operator who merged a paused story's pull request but did not
+  run `git switch <base>` and `git pull`.
 - Behavior change: config load now rejects a `handoff_path` or
   `project_state_path` that does not stay inside the repository. An empty
   value, control characters, an absolute, UNC, or drive-letter path, a `..`

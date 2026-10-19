@@ -178,6 +178,41 @@ def test_a_failed_review_is_reported() -> None:
     state = read(issue_comments=[summary(HEAD[:7], status="**Failed**")])
 
     assert state.failed is True
+    assert state.usage_limited is False
+
+
+def test_a_summary_untouched_since_a_review_request_is_ignored() -> None:
+    # After the dispatcher asks Codex to review again, the failed summary of
+    # the earlier review must not end the new wait.
+    asked = datetime(2026, 10, 15, 7, 0, tzinfo=timezone.utc)
+    failed = {
+        **summary(HEAD[:7], status="**Failed**"),
+        "updated_at": "2026-10-15T06:55:00Z",
+    }
+
+    stale = read_codex_review(
+        head_sha=HEAD, bot_login=BOT, requested_at=asked, stale_before=asked,
+        issue_comments=[failed], reviews=[], review_comments=[], reactions=[],
+    )
+    fresh = read_codex_review(
+        head_sha=HEAD, bot_login=BOT, requested_at=asked, stale_before=asked,
+        issue_comments=[
+            {**summary(HEAD[:7]), "updated_at": "2026-10-15T07:04:00Z"}
+        ],
+        reviews=[], review_comments=[], reactions=[],
+    )
+
+    # GitHub timestamps have one-second resolution, so a summary updated in
+    # the second of the request may still be the old one.
+    same_second = read_codex_review(
+        head_sha=HEAD, bot_login=BOT, requested_at=asked, stale_before=asked,
+        issue_comments=[{**failed, "updated_at": "2026-10-15T07:00:00Z"}],
+        reviews=[], review_comments=[], reactions=[],
+    )
+
+    assert stale.failed is False and stale.completed is False
+    assert same_second.failed is False and same_second.completed is False
+    assert fresh.completed is True and fresh.failed is False
 
 
 def test_parse_gh_json_pages_joins_paginated_arrays() -> None:
@@ -297,6 +332,7 @@ def test_a_failed_review_after_a_usage_limit_says_so() -> None:
     )
 
     assert state.failed is True
+    assert state.usage_limited is True
     assert state.findings == ()
     assert "usage limit" in state.detail
 
