@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `docs/` (`ARCHITECTURE.md`, `TESTING.md`, `SUPERVISED_DISPATCH.md`, and the
+  `docs/handoff/` prompts and README), `examples/reference-workflow/README.md`,
+  both `AGENTS.md` copies, the `dispatch_config` audit comments, and the
+  provider-name sentence in the `.agents/agents/handoff-router.md` and
+  `llm-handoff-validator` skill helpers now name Antigravity (`agy`) instead of
+  Gemini CLI. The reference workflow README no longer lists the removed
+  `.gemini/` files or `.geminiignore`.
 - The top-level docs (`README.md`, `CONFIGURATION.md`, `INSTALL.md`,
   `QUICKSTART.md`, `WALKTHROUGH.md`, `SECURITY.md`) no longer describe Gemini
   CLI, and `CONFIGURATION.md` now documents the `mention` and `retries` role

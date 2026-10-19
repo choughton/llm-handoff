@@ -70,7 +70,7 @@ Use generic role names in public docs, examples, and config:
 - `finalizer`
 - `user`
 
-Provider names such as Codex, Gemini, and Claude should appear only as adapter
+Provider names such as Codex, Antigravity, and Claude should appear only as adapter
 or example mappings, not as required workflow roles.
 
 ## Provider-Native Helpers

@@ -12,7 +12,7 @@ belong in commits, handoffs, and pull requests.
   GEM-0e merged in PR #128; GEM-2 merged in PR #129; GEM-3a merged in PR #134;
   GEM-3c merged in PR #135; GEM-3b merged in PR #137; GEM-4a merged in PR
   #138; GEM-4b merged in PR #139; GEM-4c merged in PR #141; GEM-5a merged in
-  PR #142; GEM-5b1 in progress).
+  PR #142; GEM-5b1 merged in PR #143; GEM-5b2 in progress).
   LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS,
   PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST, and ANTIGRAVITY-ADAPTER
   closed.
@@ -100,7 +100,7 @@ Linear. Linear mode is off by default and requires `enforce_work_packet: true`.
 
 ### 9. GEMINI-REMOVAL - move Google-vendor paths to agy, drop Gemini CLI
 
-Fit: GEM-5a is done; take GEM-5b1, then GEM-5b2; GEM-5c waits on the user
+Fit: GEM-5a and GEM-5b1 are done; take GEM-5b2; GEM-5c waits on the user
 (Claude roles cannot write `.claude/`) and does not block the epic's other
 stories.
 
@@ -483,7 +483,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
       `agy` roles until a live check shows otherwise).
   - GEM-5b: Split by the planner on 2026-10-18 because GEM-5b covered about
     130 mentions across 20 files.
-  - GEM-5b1 (this story): Rewrite the six top-level docs (`README.md`,
+  - GEM-5b1 (merged in PR #143): Rewrite the six top-level docs (`README.md`,
     `CONFIGURATION.md`, `INSTALL.md`, `QUICKSTART.md`, `WALKTHROUGH.md`,
     `SECURITY.md`) to use `antigravity`, with one short note in `README.md`
     that Gemini CLI support was removed and why. Document
@@ -492,7 +492,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
     `agy` never read it, and `agy` roles should be assumed able to read
     `.env`, `logs/`, and `.git` until an operator live check shows `agy`
     honors `.gitignore`.
-  - GEM-5b2: Rewrite `docs/` (`ARCHITECTURE.md`, `TESTING.md`,
+  - GEM-5b2 (this story): Rewrite `docs/` (`ARCHITECTURE.md`, `TESTING.md`,
     `SUPERVISED_DISPATCH.md`, and the `docs/handoff/` prompts and README, in
     both the root and `examples/reference-workflow/` copies),
     `examples/reference-workflow/README.md`, the

@@ -16,7 +16,6 @@ AGENTS.md
 PROJECT_STATE.md
 dispatch_config.yaml
 .gitignore
-.geminiignore
 docs/handoff/README.md
 docs/handoff/HANDOFF.md
 docs/handoff/HANDBOOK.md
@@ -44,13 +43,6 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .codex/skills/llm-handoff-validator/SKILL.md
 .codex/skills/llm-handoff-finalizer/SKILL.md
 .codex/rules/llm-handoff.rules
-.gemini/agents/planner.md
-.gemini/agents/backend.md
-.gemini/agents/frontend.md
-.gemini/agents/auditor.md
-.gemini/agents/validator.md
-.gemini/agents/finalizer.md
-.gemini/policies/planner_guardrails.toml
 .agents/agents/planner.md
 .agents/agents/backend.md
 .agents/agents/frontend.md
@@ -61,12 +53,12 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .agents/agents/supervisor-repair.md
 ```
 
-`AGENTS.md`, `.gitignore`, `.geminiignore`, and `.claude/settings.json` are
-merged into existing target files; the rest are copied.
+`AGENTS.md`, `.gitignore`, and `.claude/settings.json` are merged into
+existing target files; the rest are copied.
 
 ## Guardrails
 
-The reference workflow ships provider guardrails that deny `git push`, `curl`,
+The reference workflow ships Claude Code guardrails that deny `git push`, `curl`,
 `wget`, `rm -rf`, and `git reset --hard`:
 
 - `.claude/settings.json` adds Claude Code deny rules for those commands and
@@ -77,20 +69,18 @@ The reference workflow ships provider guardrails that deny `git push`, `curl`,
   runs in every permission mode, including roles with `unsafe_bypass: true`.
   The hook command calls `python`; change it to `python3` on systems without
   a `python` executable.
-- `.gemini/policies/planner_guardrails.toml` holds the same deny rules in
-  Gemini CLI's policy engine schema. Gemini CLI's workspace policy tier is
-  currently disabled, so the copy inside the project has no effect. Copy it
-  to `~/.gemini/policies/` (Windows: `%USERPROFILE%\.gemini\policies\`) to
-  enforce it. User-tier rules apply to every Gemini CLI session on that
-  account.
+- `agy` deny rules live in the `agy` user settings file
+  (`~/.gemini/antigravity-cli/settings.json`) and are not shipped by this
+  template; see the `llm-handoff` CONFIGURATION.md.
 
 These rules match command prefixes. They catch mistakes and simple prompt
 injection; they do not stop an agent that writes a script to do the same
 thing. Keep push credentials out of the dispatch environment. See the threat
 model in the `llm-handoff` SECURITY.md.
 
-Both files sit under protected paths, so a role that edits them without
-listing them in its Work Packet stops the dispatch loop.
+The settings file and its hook sit under the protected `.claude/**` path, so a
+role that edits them without listing them in its Work Packet stops the
+dispatch loop.
 
 ## Role Contract
 

@@ -195,8 +195,6 @@ launches. The files are the ones "Tracker (Optional Linear Mode)" in
 - Codex: an `[mcp_servers.<server>]` table in `config.toml`
   (`$CODEX_HOME/config.toml` or `~/.codex/config.toml`, or
   `<target>/.codex/config.toml`).
-- Gemini: `mcpServers.<server>` in `settings.json`
-  (`<target>/.gemini/settings.json` or `~/.gemini/settings.json`).
 - Antigravity: `doctor` cannot read its MCP configuration. Confirm by hand
   that the Antigravity CLI has the server configured.
 

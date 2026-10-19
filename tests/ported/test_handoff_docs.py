@@ -252,7 +252,7 @@ def test_architecture_documents_subagents_and_circuit_breaker() -> None:
     content = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
 
     assert "## Provider-Native Subagents" in content
-    assert "Claude subagents, Codex skills, and Gemini agents" in content
+    assert "Claude subagents, Codex skills, and Antigravity agents" in content
     assert "only the active dispatcher role writes `handoff.md`" in content.lower()
     assert "## Circuit Breakers" in content
     assert "three-fix circuit breaker" in content

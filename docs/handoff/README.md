@@ -14,7 +14,7 @@ The handoff file is the mutex and the debugger: every transition is visible as t
 | `PLANNER_INITIAL_PROMPT.md` | planner | First planner session prompt |
 | `PLANNER_HANDOFF_PROMPT.md` | planner | Ongoing planner dispatch prompt |
 | `BACKEND_HANDOFF_PROMPT.md` | backend | Backend implementation prompt; Codex is one adapter example |
-| `FRONTEND_HANDOFF_PROMPT.md` | frontend | Frontend implementation prompt; Gemini is one adapter example |
+| `FRONTEND_HANDOFF_PROMPT.md` | frontend | Frontend implementation prompt; Antigravity is one adapter example |
 | `AUDITOR_HANDOFF_PROMPT.md` | auditor | Audit prompt; Claude is one adapter example |
 | `FINALIZER_HANDOFF_PROMPT.md` | finalizer | Project-state and handoff-close prompt |
 
