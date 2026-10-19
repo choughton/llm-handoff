@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -1581,3 +1582,101 @@ def test_shipped_configs_leave_tracker_off_and_document_it(
         assert f"#   {key}:" in text, key
     loaded = load_dispatch_config(repo_root=tmp_path, config_path=source)
     assert loaded.tracker.provider == "none"
+
+
+_REPO_PATH_KEYS = ["handoff_path", "project_state_path"]
+
+
+@pytest.mark.parametrize("key", _REPO_PATH_KEYS)
+@pytest.mark.parametrize(
+    ("value", "rule"),
+    [
+        ("/etc/x", "absolute paths are not allowed"),
+        ("\\x", "absolute paths are not allowed"),
+        ("C:\\x", "drive-letter paths are not allowed"),
+        ("C:/x", "drive-letter paths are not allowed"),
+        ("C:x", "drive-letter paths are not allowed"),
+        ("\\\\server\\share\\x", "UNC paths are not allowed"),
+        ("//server/share/x", "UNC paths are not allowed"),
+        ("docs/../../x", "'..' segments are not allowed"),
+        ("a\\..\\..\\x", "'..' segments are not allowed"),
+        ("", "the value is empty"),
+        ("   ", "the value is empty"),
+        (".", "it names the repository root"),
+        ("docs/..", "'..' segments are not allowed"),
+    ],
+)
+def test_load_rejects_unsafe_repo_paths(
+    tmp_path: Path, key: str, value: str, rule: str
+) -> None:
+    # Single-quoted YAML keeps backslashes literal.
+    quoted = value.replace("'", "''")
+    config_path = _write_config(tmp_path, f"{key}: '{quoted}'\n")
+
+    with pytest.raises(ValueError) as excinfo:
+        load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    message = str(excinfo.value)
+    assert key in message
+    assert rule in message
+    assert repr(value) in message
+    assert "must be a relative path inside the repository" in message
+
+
+@pytest.mark.parametrize("key", _REPO_PATH_KEYS)
+@pytest.mark.parametrize("value", ["docs/HAND\x00OFF.md", "docs/\tHANDOFF.md", "x\x7f"])
+def test_rejects_control_characters_in_repo_paths(
+    tmp_path: Path, key: str, value: str
+) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        DispatchConfig.model_validate({"repo_root": tmp_path, key: value})
+
+    message = str(excinfo.value)
+    assert key in message
+    assert "control characters are not allowed" in message
+    assert repr(value) in message
+    # repr() escapes the character, so it is not printed raw.
+    assert value not in message
+
+
+@pytest.mark.parametrize("key", _REPO_PATH_KEYS)
+def test_load_rejects_symlink_escaping_repo(tmp_path: Path, key: str) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    repo.mkdir()
+    outside.mkdir()
+    try:
+        os.symlink(outside, repo / "link", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    config_path = _write_config(repo, f"{key}: link/HANDOFF.md\n")
+
+    with pytest.raises(ValueError) as excinfo:
+        load_dispatch_config(repo_root=repo, config_path=config_path)
+
+    message = str(excinfo.value)
+    assert key in message
+    assert "it resolves outside the repository" in message
+
+
+@pytest.mark.parametrize("key", _REPO_PATH_KEYS)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "HANDOFF.md",
+        "docs/handoff/HANDOFF.md",
+        "./HANDOFF.md",
+        "docs\\handoff\\HANDOFF.md",
+    ],
+)
+def test_load_accepts_repo_relative_paths(
+    tmp_path: Path, key: str, value: str
+) -> None:
+    config_path = _write_config(tmp_path, f"{key}: '{value}'\n")
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert getattr(loaded, key) == Path(value)
+    full_path = (loaded.repo_root / getattr(loaded, key)).resolve()
+    assert full_path.is_relative_to(loaded.repo_root)
+    assert full_path != loaded.repo_root
