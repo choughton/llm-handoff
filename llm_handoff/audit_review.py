@@ -2155,7 +2155,8 @@ def _loads_lenient(candidate: str) -> object | None:
         # that way, and strict parsing rejected an otherwise valid verdict.
         return json.loads(candidate, strict=False)
     except json.JSONDecodeError as exc:
-        if not exc.msg.startswith("Invalid \\escape"):
+        # "Invalid \escape", or "Invalid \uXXXX escape" for `C:\users`.
+        if not exc.msg.startswith("Invalid \\"):
             return None
     # A Codex quality reviewer copies regex commands such as `rg -n 'f\('`
     # into commands_run without doubling the backslash. `\(` is not a JSON

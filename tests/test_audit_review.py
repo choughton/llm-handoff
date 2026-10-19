@@ -1271,6 +1271,20 @@ def test_parse_quality_verdict_accepts_unescaped_regex_backslashes(
     assert verdict.summary == payload["summary"]
 
 
+def test_parse_quality_verdict_accepts_unescaped_backslash_before_u() -> None:
+    # `\u` without four hex digits raises "Invalid \uXXXX escape", a different
+    # message from other bad escapes.
+    commands = ["Get-Content C:\\users\\me\\data.txt"]
+    payload = {**_quality_payload(), "commands_run": commands}
+    text = json.dumps(payload).replace("\\\\", "\\")
+    with pytest.raises(json.JSONDecodeError, match="uXXXX"):
+        json.loads(text)
+
+    verdict = audit_review.parse_quality_verdict(text)
+
+    assert verdict.commands_run == commands
+
+
 def test_parse_security_verdict_accepts_raw_newlines_in_strings() -> None:
     payload = _security_payload(
         findings=[
