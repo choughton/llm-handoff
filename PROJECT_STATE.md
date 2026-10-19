@@ -646,20 +646,29 @@ Before scoping INTAKE-1, route to `user` for a short design check.
 
 ### 15. TPM-ROLE - routine story picker split out of the planner
 
-Fit: structural; it changes who picks stories, so every later planner
-epic (WORK-INTAKE, TRANSITION-RULES) is simpler once it lands. Independent of
-GEMINI-REMOVAL apart from TPM-4 not recreating `.gemini/`; a good pick while
-GEM-3 is parked.
+Fit: reliability; since GEM-3b the default planner is `antigravity`, so
+without a tpm `agy` writes every story's Work Packet and reads
+`remaining_stories` after every pass. This epic moves that per-story work to a
+role on a provider that is strict about exact fields (codex in the example
+mapping) and leaves `agy` the epic-level judgment. Pick it once GEMINI-REMOVAL
+closes; it is independent of that epic apart from TPM-4 not recreating
+`.gemini/`. If the default planner moves off `antigravity`, most of the reason
+for this epic goes away; re-check the Fit before starting it.
 
 The source project's dispatcher separates product and boundary judgment (its
 planner lane) from routine sequencing (a TPM lane that picks the next ready
 item inside an approved scope, writes the lease, and may route only to an
-implementer, the auditor, the planner, or the user). That lane was added
-eight days after this extraction was seeded, so it was never ported: here the
-planner does both jobs, every `verified_pass` and every finalizer close route
-back to the planner, and the validator cannot constrain a picker because no
-picker role exists. Add an optional `tpm` role. The name is generic on
-purpose: `AGENTS.md` forbids provider names in roles and
+implementer, the auditor, the planner, or the user). It added that lane
+because a Gemini planner was unreliable at routine dispatch: its Work Packets
+kept failing the validator on missing fields and scope claims, and it routed
+stories whose work was already on main or had skipped audit. A Codex picker
+with explicit escalation triggers (stale or already-done stories, ambiguous
+criteria, competing next stories) caught a stale route on its first day. The
+lane was added eight days after this extraction was seeded, so it was never
+ported: here the planner does both jobs, every `verified_pass` and every
+finalizer close route back to the planner, and the validator cannot constrain
+a picker because no picker role exists. Add an optional `tpm` role. The name
+is generic on purpose: `AGENTS.md` forbids provider names in roles and
 `llm_handoff/roles.py` drops any label that contains one. The role is
 optional so that every existing `dispatch_config.yaml` keeps working: without
 `agents.tpm`, routing is unchanged.
@@ -733,8 +742,13 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
   session; use `logs/dispatch/codex-<role>/` for every role other than
   `backend`, which keeps its current path. Claude and agy already run
   per-role agent files. `docs/INVENTORY.md` lists the new files.
-- TPM-5: Linear mode. Move selection rules 1 to 7 and the user-attention
-  steps from `llm_handoff/prompt_templates/linear/roles/planner.md` into a
+- TPM-5 (deferrable): Linear mode. Linear mode does not support
+  `antigravity` roles, so its planner already runs on claude or codex and
+  the reliability reason above does not apply there. The epic may close
+  without this story; if it is deferred, a tpm configured in Linear mode is
+  rejected at config load with a message saying Linear mode does not support
+  it yet, and this story moves to its own epic. Move selection rules 1 to 7
+  and the user-attention steps from `llm_handoff/prompt_templates/linear/roles/planner.md` into a
   new `roles/tpm.md`; the planner section keeps only epic-level duties and a
   one-line pointer. `LINEAR_PROMPT_ROLES` gains `tpm`;
   `LINEAR_EVIDENCE_EVENTS` allows `lease_opened`, `user_attention_requested`,
