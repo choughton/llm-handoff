@@ -189,6 +189,58 @@ def test_redact_secrets_masks_quoted_field_names(text: str, expected: str) -> No
     assert redacted == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            'env SERVICE_SECRET="alpha beta gamma" loaded',
+            f'env SERVICE_SECRET="{REDACTED}" loaded',
+        ),
+        (
+            "env SERVICE_SECRET='alpha beta gamma' loaded",
+            f"env SERVICE_SECRET='{REDACTED}' loaded",
+        ),
+        (
+            '{"db_secret": "alpha beta gamma", "mode": "strict"}',
+            f'{{"db_secret": "{REDACTED}", "mode": "strict"}}',
+        ),
+        (
+            "env APP_TOKEN='alpha \"beta\" gamma' loaded",
+            f"env APP_TOKEN='{REDACTED}' loaded",
+        ),
+        (
+            r'env APP_KEY="alpha \" beta gamma" loaded',
+            f'env APP_KEY="{REDACTED}" loaded',
+        ),
+    ],
+)
+def test_redact_secrets_masks_whole_quoted_value(text: str, expected: str) -> None:
+    redacted = redact_secrets(text)
+
+    for word in ("alpha", "beta", "gamma"):
+        assert word not in redacted
+    assert redacted == expected
+
+
+def test_redact_secrets_unterminated_quote_stops_at_whitespace() -> None:
+    redacted = redact_secrets('SERVICE_SECRET="alpha beta\nnext line')
+
+    assert redacted == f'SERVICE_SECRET="{REDACTED} beta\nnext line'
+
+
+def test_redact_secrets_quoted_value_does_not_cross_lines() -> None:
+    redacted = redact_secrets('SERVICE_SECRET="alpha beta\nother "quoted" text')
+
+    assert "alpha" not in redacted
+    assert redacted.endswith('\nother "quoted" text')
+
+
+def test_redact_stderr_summary_masks_whole_quoted_value() -> None:
+    summary = redact_stderr_summary('fatal:\n  SERVICE_SECRET="alpha beta gamma"\n')
+
+    assert summary == f'fatal: SERVICE_SECRET="{REDACTED}"'
+
+
 def test_redact_stderr_summary_leaves_short_text_uncut() -> None:
     assert redact_stderr_summary("short error", limit=11) == "short error"
 

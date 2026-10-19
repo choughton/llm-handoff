@@ -34,15 +34,26 @@ _BEARER_RE = re.compile(r"\b(Bearer)([ \t]+)[^\s'\"]+", re.IGNORECASE)
 
 # ``NAME=value`` / ``NAME: value`` where NAME ends in _KEY, _TOKEN, _SECRET.
 # The name may be quoted, as in JSON or a Python mapping
-# (``{"NAME": "value"}``). The name, separator, and any quotes before the
-# value stay; the value ends at whitespace or a quote.
+# (``{"NAME": "value"}``). The name, separator, and any quotes around the
+# value stay. A quoted value is masked through its matching closing quote on
+# the same line, so a value with spaces (``NAME="alpha beta"``) is masked in
+# full; backslash escapes inside it do not end it. An unquoted value, or a
+# quote with no closing match on the line, ends at whitespace or a quote.
 _NAMED_SECRET_RE = re.compile(
-    r"(?<![A-Za-z0-9_])([A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET))"
-    r"([\"']?[ \t]*[=:][ \t]*)"
-    r"([\"']?)"
-    r"[^\s\"']+",
+    r"(?<![A-Za-z0-9_])(?P<name>[A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET))"
+    r"(?P<sep>[\"']?[ \t]*[=:][ \t]*)"
+    r"(?:"
+    r"(?P<quote>[\"'])(?:\\[^\r\n]|(?!(?P=quote))[^\\\r\n])+(?=(?P=quote))"
+    r"|"
+    r"(?P<bare>[\"']?)[^\s\"']+"
+    r")",
     re.IGNORECASE,
 )
+
+
+def _mask_named_secret(match: re.Match[str]) -> str:
+    opening = match.group("quote") or match.group("bare") or ""
+    return f"{match.group('name')}{match.group('sep')}{opening}{REDACTED}"
 
 
 def redact_secrets(text: str) -> str:
@@ -57,10 +68,7 @@ def redact_secrets(text: str) -> str:
     for pattern in _TOKEN_PATTERNS:
         redacted = pattern.sub(REDACTED, redacted)
     redacted = _BEARER_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", redacted)
-    redacted = _NAMED_SECRET_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{REDACTED}",
-        redacted,
-    )
+    redacted = _NAMED_SECRET_RE.sub(_mask_named_secret, redacted)
     return redacted
 
 
