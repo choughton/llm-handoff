@@ -785,7 +785,12 @@ bounces until the three-fix circuit breaker escalates.
     `dispatch` record without `protected_digests` is discarded with a WARN;
     (4) one INFO line before each question lists the uncommitted protected
     files, those changed in `<head_sha>..HEAD`, and those changed by commits
-    not on any remote-tracking ref (disclosure only).
+    not on any remote-tracking ref (disclosure only). PR #167 review round 1:
+    the HEAD comparison hashes raw bytes (CRLF to LF only), not `git
+    hash-object`, so clean filters cannot hide an edit; a hidden protected
+    edit keeps a `dispatch` record from the "nothing to recover" exit; and a
+    recovery that pauses on changed operator files hands its baseline to the
+    first dispatch after the pause.
 - RECOVERY-3: The other phases. Planner and finalizer: restore an invalid
   `HANDOFF.md` and re-run. Audit fan-out: restore the handoff and re-run the
   read-only reviewers. Work-claim gate and scanners: re-run. Publish: make

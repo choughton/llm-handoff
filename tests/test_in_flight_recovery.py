@@ -2373,6 +2373,30 @@ def test_an_unchanged_protected_file_matches_head_with_autocrlf(
     assert orchestrator._uncommitted_protected_files(_config(tmp_path)) == ()
 
 
+def test_a_clean_filter_cannot_hide_a_protected_edit(tmp_path: Path) -> None:
+    # Review finding on RECOVERY-2c: `git hash-object` applies clean filters,
+    # and the `ident` filter maps any `$Id: ... $` text back to `$Id$`, so a
+    # hidden edit hashed to HEAD's blob and counted as unchanged.
+    _init_repo(tmp_path)
+    _write(tmp_path / "AGENTS.md", "$Id$\n")
+    _write(tmp_path / ".gitattributes", "AGENTS.md ident\n")
+    _git(tmp_path, "add", "AGENTS.md", ".gitattributes")
+    _git(tmp_path, "commit", "-q", "-m", "ident-filtered protected file")
+    orchestrator = _orchestrator()
+    config = _config(tmp_path)
+    assert orchestrator._uncommitted_protected_files(config) == ()
+
+    _git(tmp_path, "update-index", "--skip-worktree", "AGENTS.md")
+    _write(tmp_path / "AGENTS.md", "$Id: forged protected instructions $\n")
+    assert _git(tmp_path, "status", "--porcelain") == ""
+    # Git's filtered hash hides the edit.
+    assert _git(tmp_path, "hash-object", "AGENTS.md") == _git(
+        tmp_path, "rev-parse", "HEAD:AGENTS.md"
+    )
+
+    assert orchestrator._uncommitted_protected_files(config) == ("AGENTS.md",)
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_a_handback_record_whose_head_is_not_a_commit_is_discarded(
     tmp_path: Path,
@@ -2607,3 +2631,112 @@ def test_without_protected_paths_a_forged_record_behaves_as_before(
     assert not any(
         "protected-file baseline" in message for _level, message in messages
     )
+
+
+def test_a_hidden_protected_edit_is_not_nothing_to_recover(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding on RECOVERY-2c: a dispatch that changed only a protected
+    # file hidden from git status, and left the handoff alone, was deleted as
+    # "left nothing to recover" before the protected files were checked.
+    _init_repo(tmp_path)
+    _git(tmp_path, "update-index", "--skip-worktree", "AGENTS.md")
+    orchestrator = _orchestrator()
+
+    def interrupted_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "AGENTS.md", "rewritten by the backend\n")
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "invoke_backend_role", interrupted_backend)
+        _set_terminal(orchestrator, patch, interactive=False, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=lambda *_: None)
+    assert _record_path(tmp_path).exists()
+    assert _git(tmp_path, "status", "--porcelain") == ""
+    assert (tmp_path / HANDOFF_RELATIVE_PATH).read_text(
+        encoding="utf-8"
+    ) == _assignment()
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert not any("left nothing to recover" in message for _l, message in messages)
+    line = _disclosure_before(messages, _recover_question())
+    assert "Protected files uncommitted now: AGENTS.md." in line
+    assert outcome.pending is not None
+    assert outcome.pending.kind == "interrupted_dispatch"
+    snapshot = outcome.pending.resumed_protected_snapshot
+    assert snapshot is not None
+    assert (
+        "AGENTS.md",
+        orchestrator.UNVERIFIED_PROTECTED_DIGEST,
+    ) in snapshot.digests
+    assert not _record_path(tmp_path).exists()
+
+
+def test_the_protected_baseline_survives_an_operator_file_pause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding on RECOVERY-2c: a confirmed recovery that paused on
+    # changed operator files dropped its protected-file baseline, so the
+    # first dispatch after the pause snapshotted the protected file the
+    # interrupted role had already changed.
+    _init_repo(tmp_path)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    _write(tmp_path / "tests" / "test_app.py", "# operator draft\n")
+
+    def interrupted_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        _write(tmp_path / "AGENTS.md", "rewritten by the backend\n")
+        path.write_text(HALF_WRITTEN_HANDOFF, encoding="utf-8")
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "invoke_backend_role", interrupted_backend)
+        _set_terminal(orchestrator, patch, interactive=False, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=lambda *_: None)
+    assert _record_path(tmp_path).exists()
+    _write(tmp_path / "tests" / "test_app.py", "# operator draft, revised\n")
+    calls: list[int] = []
+
+    def finishing_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        # Leaves AGENTS.md alone.
+        calls.append(1)
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _result()
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", finishing_backend)
+    pauses: list[str] = []
+
+    def operator_retries_once(_config: object, **kwargs: Any) -> Any:
+        # The operator answers the operator-file pause with `retry` and
+        # stops at any later pause.
+        pauses.append(kwargs["reason"])
+        return orchestrator.PauseOutcome(kind="retry" if len(pauses) == 1 else "stop")
+
+    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", operator_retries_once)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=_collecting_log(messages))
+
+    assert "AGENTS.md" in _disclosure_before(messages, _recover_question())
+    assert pauses[0].startswith("INTERRUPTED DISPATCH:")
+    assert calls == [1]
+    assert any(
+        level == "ERROR"
+        and message.startswith(orchestrator.PROTECTED_FILE_MODIFIED_PREFIX)
+        and "AGENTS.md" in message
+        for level, message in messages
+    )
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    handoff = (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8")
+    assert "next_agent: user" in handoff

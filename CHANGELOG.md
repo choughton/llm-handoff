@@ -25,7 +25,14 @@ This project follows a simple pre-release changelog until the first public tag.
   uncommitted protected-file edit. "Uncommitted" does not rely on `git status`
   alone: protected files on disk are compared with HEAD's tree, so an ignored
   protected file (absent from HEAD) and a skip-worktree or assume-unchanged
-  edit count too. With `protected_paths: []` nothing changes.
+  edit count too. That comparison hashes the raw bytes, allowing only CRLF to
+  LF, so a clean filter such as `ident` cannot map an edit back to HEAD's
+  blob. A `dispatch` record whose only change is such a hidden protected edit
+  is no longer deleted as "left nothing to recover"; it is shown and asked
+  about like any other. When a confirmed recovery pauses on changed operator
+  files, the first dispatch after the pause checks protected files against
+  the recovery's baseline instead of a new snapshot. With
+  `protected_paths: []` nothing changes.
 - Interrupted handback recovery: once a gated implementer dispatch returns,
   the dispatcher rewrites `logs/dispatch/in-flight.json` as a `handback`
   record (the handoff the implementer left and HEAD at that moment) and

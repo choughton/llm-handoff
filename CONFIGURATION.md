@@ -738,7 +738,10 @@ escaped and `none` when empty: the protected files uncommitted now (modified,
 staged, deleted, or untracked, the handoff aside; protected files on disk are
 also compared with HEAD's tree directly, so one Git ignores, or a tracked one
 flagged skip-worktree or assume-unchanged, counts when it differs from HEAD or
-is absent from it); the protected files changed
+is absent from it; the comparison hashes the file's raw bytes, allowing only
+CRLF to LF, so no clean filter applies and a filtered file such as one with
+the `ident` attribute counts once its bytes differ from HEAD's blob); the
+protected files changed
 by commits in `<record HEAD>..<HEAD>`; and the protected files changed by
 commits on HEAD that no remote-tracking ref has (up to 200 commits), or
 `not checked: no remote-tracking refs` when there are none. That last list is
@@ -751,7 +754,12 @@ so each counts as changed and, outside the Work Packet's Files in scope,
 routes the cycle to `user` with `protected_file_modified:`. That includes an
 operator's own uncommitted protected-file edit, and an ignored local file under
 a protected pattern (for example `.claude/settings.local.json`): commit,
-revert, or move it before confirming a recovery you want to continue.
+revert, or move it before confirming a recovery you want to continue. A
+`dispatch` record that left no agent file, operator change, or handoff change
+is deleted as having nothing to recover only when no protected file is
+uncommitted either. When a confirmed recovery pauses because operator files
+changed, the first dispatch after that pause (in the same run) checks
+protected files against the recovery's baseline rather than a new snapshot.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the

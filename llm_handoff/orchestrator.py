@@ -4,7 +4,7 @@ import contextlib
 from dataclasses import dataclass, replace
 import errno
 from fnmatch import fnmatchcase
-from hashlib import sha256
+from hashlib import sha1, sha256
 import inspect
 import json
 import os
@@ -647,6 +647,10 @@ def _run_loop(
     # Set when the confirmed recovery found changed operator files: the first
     # cycle pauses before it routes.
     interrupted_pause_reason = interrupted.pause_reason
+    # That paused recovery's protected-file baseline: the first dispatch after
+    # the pause checks protected files against it, so a protected file the
+    # interrupted role changed is not taken into a fresh snapshot.
+    paused_protected_snapshot = interrupted.protected_snapshot
     # Set while a dispatch's rewrite has dropped planned stories and nobody
     # has changed the handoff it left behind since.
     story_baseline: StoryListBaseline | None = None
@@ -1272,7 +1276,13 @@ def _run_loop(
                 "DISPATCH",
                 "Dispatching auditor ledger-updater for epic close.",
             )
-            protected_before = _capture_protected_snapshot(config)
+            if paused_protected_snapshot is not None:
+                # The first dispatch after a confirmed recovery paused on
+                # changed operator files.
+                protected_before = paused_protected_snapshot
+                paused_protected_snapshot = None
+            else:
+                protected_before = _capture_protected_snapshot(config)
             finalizer_git_before = (
                 git_position(config.repo_root)
                 if config.commit_mode == "dispatcher"
@@ -1561,6 +1571,11 @@ def _run_loop(
             # one captured now.
             if recovered_protected_snapshot is not None:
                 protected_before = recovered_protected_snapshot
+            elif paused_protected_snapshot is not None:
+                # The first dispatch after a confirmed recovery paused on
+                # changed operator files.
+                protected_before = paused_protected_snapshot
+                paused_protected_snapshot = None
             elif resumed_handback is not None:
                 protected_before = _resumed_protected_snapshot(
                     config, resumed_handback
@@ -5421,13 +5436,17 @@ class InterruptedDispatchRecovery:
 
     ``recovered`` is True once the operator confirmed it; ``leftovers`` then
     replace the carry-over record for this start. Either ``pending`` schedules
-    the same role again, or ``pause_reason`` pauses the first cycle.
+    the same role again, or ``pause_reason`` pauses the first cycle. With a
+    pause, ``protected_snapshot`` is the confirmed recovery's protected-file
+    baseline, which the first dispatch after the pause checks against
+    instead of a snapshot of the checkout the interrupted role changed.
     """
 
     recovered: bool = False
     leftovers: ImplementerLeftovers | None = None
     pending: PendingPlannerRecovery | None = None
     pause_reason: str | None = None
+    protected_snapshot: ProtectedFileSnapshot | None = None
 
 
 def _in_flight_state_path(config: DispatchConfig) -> Path:
@@ -5771,9 +5790,9 @@ def _uncommitted_protected_files(config: DispatchConfig) -> tuple[str, ...] | No
     every protected file on disk. So the protected files on disk (found as
     ``_protected_file_digests`` finds them) are also compared with HEAD's
     tree directly: one absent from HEAD, ignored or not, counts, as does one
-    whose content Git hashes to a different blob than HEAD's, and a protected
-    file in HEAD that is gone from disk. None when Git cannot list or hash
-    them.
+    whose raw bytes (CRLF line endings aside) are not HEAD's blob, and a
+    protected file in HEAD that is gone from disk. Clean filters are never
+    applied (``_worktree_matches_blob``). None when Git cannot list them.
     """
 
     repo_root = config.repo_root
@@ -5803,13 +5822,10 @@ def _uncommitted_protected_files(config: DispatchConfig) -> tuple[str, ...] | No
     differing.update(
         path for key, (path, _oid) in head_blobs.items() if key not in on_disk
     )
-    worktree_oids = _worktree_blob_ids(repo_root, [path for path, _oid in tracked])
-    if worktree_oids is None:
-        return None
     differing.update(
         path
-        for (path, head_oid), worktree_oid in zip(tracked, worktree_oids)
-        if worktree_oid != head_oid
+        for path, head_oid in tracked
+        if not _worktree_matches_blob(repo_root, path, head_oid)
     )
     return tuple(sorted(differing))
 
@@ -5852,28 +5868,37 @@ def _head_protected_blobs(
     return blobs
 
 
-_HASH_OBJECT_BATCH = 100
+def _worktree_matches_blob(repo_root: Path, path: str, head_oid: str) -> bool:
+    """Whether a working-tree file's raw bytes are HEAD's blob ``head_oid``.
 
-
-def _worktree_blob_ids(repo_root: Path, paths: list[str]) -> list[str] | None:
-    """The blob id Git would store for each working-tree file, in order.
-
-    ``git hash-object`` applies the same clean filters and line-ending
-    conversion as ``git add``, so an unchanged file matches HEAD's blob even
-    with ``core.autocrlf``. None when Git cannot hash a file.
+    The bytes are hashed as a Git blob here, never through ``git
+    hash-object``: that applies the repository's clean filters (``ident``,
+    custom ``filter.*.clean`` drivers), which repository content controls and
+    which could map altered bytes back to HEAD's blob. The only conversion
+    allowed is CRLF to LF, so a CRLF checkout of an LF blob (``core.autocrlf``)
+    still matches. Any other filtered or converted file counts as changed. A
+    file that cannot be read, or an object id of an unknown length, does not
+    match.
     """
 
-    oids: list[str] = []
-    for start in range(0, len(paths), _HASH_OBJECT_BATCH):
-        batch = paths[start : start + _HASH_OBJECT_BATCH]
-        output = _run_git_stdout(repo_root, ["git", "hash-object", "--", *batch])
-        if output is None:
-            return None
-        lines = output.splitlines()
-        if len(lines) != len(batch):
-            return None
-        oids.extend(line.strip() for line in lines)
-    return oids
+    try:
+        data = (repo_root / path).read_bytes()
+    except OSError:
+        return False
+    if len(head_oid) == 40:
+        object_hash = sha1
+    elif len(head_oid) == 64:
+        object_hash = sha256
+    else:
+        return False
+    expected = head_oid.lower()
+    candidates = [data]
+    if b"\r\n" in data:
+        candidates.append(data.replace(b"\r\n", b"\n"))
+    return any(
+        object_hash(b"blob %d\0" % len(candidate) + candidate).hexdigest() == expected
+        for candidate in candidates
+    )
 
 
 def _unverified_protected_snapshot(
@@ -6278,6 +6303,7 @@ def _recover_interrupted_handback(
                 "dispatch. Update HANDOFF.md; dispatch will resume after the "
                 "file changes."
             ),
+            protected_snapshot=protected_snapshot,
         )
     _log(
         log,
@@ -6418,7 +6444,20 @@ def _recover_interrupted_dispatch(
     handoff_changed = (
         _read_required_text(config.handoff_full_path) != record.handoff_content
     )
-    if not agent_files and not changed_operator_files and not handoff_changed:
+    # Computed before deciding there is nothing to recover: git status omits
+    # ignored, skip-worktree, and assume-unchanged files, so an interrupted
+    # role's protected edit can leave no agent file at all. Any protected
+    # file that differs from HEAD (or Git failing to tell) keeps the record,
+    # so the operator is shown it and a confirmed cycle routes to user.
+    uncommitted_protected: tuple[str, ...] | None = ()
+    if config.protected_paths:
+        uncommitted_protected = _uncommitted_protected_files(config)
+    if (
+        not agent_files
+        and not changed_operator_files
+        and not handoff_changed
+        and uncommitted_protected == ()
+    ):
         _log(
             log,
             "INFO",
@@ -6485,7 +6524,7 @@ def _recover_interrupted_dispatch(
             _interrupted_dispatch_assignment_summary(config, record, state_path),
         )
         if config.protected_paths:
-            disclosed = _uncommitted_protected_files(config)
+            disclosed = uncommitted_protected
             _log(
                 log,
                 "INFO",
@@ -6564,6 +6603,7 @@ def _recover_interrupted_dispatch(
                 f"{record.role} dispatch. Update HANDOFF.md; dispatch will "
                 "resume after the file changes."
             ),
+            protected_snapshot=protected_snapshot,
         )
     _log(
         log,
