@@ -62,7 +62,16 @@ from llm_handoff.redaction import redact_stderr_summary
 from llm_handoff.roles import normalize_agent_label
 from llm_handoff.router import HandoffRouting, parse_handoff_frontmatter_text
 from llm_handoff.text_io import read_dispatch_text
-from llm_handoff.work_claim import extract_work_packet_section
+from llm_handoff.audit_verification import (
+    PreAuditVerification,
+    failed_pre_audit_section,
+    passed_pre_audit_section,
+    run_pre_audit_verification,
+)
+from llm_handoff.work_claim import (
+    extract_work_packet_section,
+    replace_dispatcher_verification_section,
+)
 
 
 Severity = Literal["critical", "high", "medium", "low", "info"]
@@ -539,6 +548,61 @@ def run_audit_fan_out(
         f"Audit review scope: {scope.range_text} ({len(scope.files)} file(s)); "
         f"security reviewer: {security_provider} ({provider_origin}).",
     )
+    if not linear_mode and config.enforce_work_packet:
+        # Linear mode keeps the reviewers' path unchanged: its evidence step
+        # needs their verdicts.
+        pre_audit = run_pre_audit_verification(
+            repo_root=config.repo_root,
+            handoff_content=context.handoff_content,
+            frontmatter=frontmatter,
+            head_sha=scope.head_sha,
+            scope_files=scope.files,
+            timeout_seconds=config.work_packet_verification_timeout_seconds,
+            env_passthrough=config.work_claim_env_passthrough,
+            allowed_prefixes=config.verification_allowed_prefixes,
+            log=log,
+        )
+        if pre_audit is not None and not pre_audit.passed:
+            handoff_path.write_text(
+                render_pre_audit_failure_handoff(
+                    frontmatter=frontmatter,
+                    scope=scope,
+                    result=pre_audit,
+                    source_handoff=context.handoff_content,
+                ),
+                encoding="utf-8",
+            )
+            _log(
+                log,
+                "AGENT",
+                "Audit BLOCKED before the reviewers: dispatcher verification "
+                f"failed ({pre_audit.failed_prefix}). Routing to planner with "
+                "status verified_fail.",
+            )
+            return DispatchResult(
+                stdout=(
+                    "audit blocked by dispatcher verification: "
+                    f"{scope.range_text}"
+                ),
+                stderr="",
+                exit_code=0,
+                elapsed_seconds=time.monotonic() - start_time,
+            )
+        if pre_audit is not None:
+            # Record the pass where the quality reviewer reads it, and make
+            # the recorded handoff the reviewers' read-only baseline.
+            recorded = replace_dispatcher_verification_section(
+                context.handoff_content, passed_pre_audit_section(pre_audit)
+            )
+            handoff_path.write_text(recorded, encoding="utf-8")
+            context = replace(context, handoff_content=recorded)
+            before_sha = _content_sha(recorded)
+            _log(
+                log,
+                "AGENT",
+                "Dispatcher verification PASSED before the audit; recorded it "
+                f"in {handoff_display}.",
+            )
     if config.audit.security_model is not None and security_provider != "claude":
         _log(
             log,
@@ -681,7 +745,8 @@ def run_audit_fan_out(
             log,
             "AGENT",
             "Audit fan-out BLOCKED: " + "; ".join(decision.reasons) + ". "
-            f"Routing back to {implementer_role} with status verified_fail.",
+            f"Routing to {blocked_route(scope, implementer_role)} with status "
+            "verified_fail.",
         )
     else:
         _log(
@@ -1063,37 +1128,25 @@ def merge_review_verdicts(
     )
 
 
-def render_audit_handoff(
-    *,
+def blocked_route(scope: ReviewScope, implementer_role: str) -> str:
+    """Who receives a blocked audit.
+
+    An implementer can only fix committed work, so a block on a review range
+    with no committed changes (such as an epic close) goes to the planner.
+    """
+
+    return implementer_role if scope.files else "planner"
+
+
+def _audit_frontmatter_lines(
     frontmatter: HandoffRouting | None,
-    scope: ReviewScope,
-    runs: Mapping[str, ReviewerRun],
-    quality: QualityReviewVerdict,
-    decision: MergeDecision,
-    implementer_role: str,
-    block_severity: str,
-    source_handoff: str = "",
-) -> str:
-    quality_run = runs["quality"]
-    security_run = runs["security"]
-    security_verdict = security_run.verdict
-    assert security_verdict is not None
-
-    if decision.blocked:
-        next_agent = implementer_role
-        reason = _truncate_reason(
-            "Audit fan-out blocked: " + "; ".join(decision.reasons) + "."
-        )
-        status = "verified_fail"
-        close_type: str | None = None
-    else:
-        # verified_pass routes to the finalizer for an epic close and to the
-        # planner otherwise, so next_agent must name that same route.
-        close_type = quality.close_type
-        next_agent = "finalizer" if close_type == "epic" else "planner"
-        reason = _truncate_reason(quality.reason)
-        status = "verified_pass"
-
+    *,
+    next_agent: str,
+    reason: str,
+    status: str,
+    scope_sha: str,
+    close_type: str | None,
+) -> list[str]:
     lines: list[str] = ["---"]
     lines.append(f"next_agent: {next_agent}")
     lines.append(f"reason: {json.dumps(reason)}")
@@ -1122,13 +1175,133 @@ def render_audit_handoff(
             # the next audit needs it to route an approval to the finalizer.
             lines.append("remaining_stories: []")
     lines.append(f"status: {status}")
-    lines.append(f"scope_sha: {scope.head_sha}")
+    lines.append(f"scope_sha: {scope_sha}")
     if close_type:
         lines.append(f"close_type: {close_type}")
     if frontmatter is not None and frontmatter.prior_sha:
         lines.append(f"prior_sha: {_yaml_scalar(frontmatter.prior_sha)}")
     lines.append("producer: auditor")
     lines.append("---")
+    return lines
+
+
+def render_pre_audit_failure_handoff(
+    *,
+    frontmatter: HandoffRouting | None,
+    scope: ReviewScope,
+    result: PreAuditVerification,
+    source_handoff: str,
+) -> str:
+    """The planner handoff for a failed pre-audit dispatcher verification.
+
+    No reviewer ran. The audit has no implementer claim to bounce, so it routes
+    ``verified_fail`` to the planner with the command output and the Work
+    Packet carried forward.
+    """
+
+    reason = _truncate_reason(
+        f"Dispatcher verification failed before the audit ({result.trigger}): "
+        f"{result.failed_prefix}."
+    )
+    lines = _audit_frontmatter_lines(
+        frontmatter,
+        next_agent="planner",
+        reason=reason,
+        status="verified_fail",
+        scope_sha=scope.head_sha,
+        close_type=None,
+    )
+    lines.append("")
+    story_summary = _story_summary(frontmatter) or scope.range_text
+    lines.append(f"# Audit Report - {story_summary}")
+    lines.append("")
+    lines.append("**Agent:** auditor")
+    lines.append(
+        "**Audit mode:** dispatcher verification before the read-only fan-out "
+        f"on `{scope.range_text}`; no reviewer ran, and the dispatcher wrote "
+        "this handoff."
+    )
+    lines.append("")
+    lines.append("## Verdict")
+    lines.append("")
+    lines.append("BLOCKED")
+    lines.append("")
+    lines.append(failed_pre_audit_section(result).rstrip())
+    lines.append("")
+    work_packet = extract_work_packet_section(source_handoff)
+    if work_packet:
+        lines.append(work_packet.rstrip())
+        lines.append("")
+    commands = (
+        "; ".join(f"`{run.command}`" for run in result.runs)
+        or "none (no Verification command ran)"
+    )
+    outcome = (
+        "; ".join(f"`{run.command}` {run.describe_outcome()}" for run in result.runs)
+        or result.detail
+    )
+    lines.append("## Verification Evidence")
+    lines.append("")
+    lines.append(f"- **Commands run:** {commands}")
+    lines.append(f"- **Output summary:** {_single_line(outcome)}")
+    lines.append(f"- **Commit SHA verified:** {scope.head_sha}")
+    lines.append(f"- **Files changed or reviewed:** {_scope_files_text(scope)}")
+    lines.append(
+        "- **Unresolved concerns:** dispatcher verification failed "
+        f"({result.failed_prefix}): {_single_line(result.detail)}"
+    )
+    lines.append("")
+    lines.append("## Next Step")
+    lines.append("")
+    lines.append(
+        "- **planner:** Read the Verification Output above. Scope a fix story "
+        "for a real regression, correct the Work Packet's Verification "
+        "command, or route to user for an environment problem, then re-issue "
+        "the audit."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_audit_handoff(
+    *,
+    frontmatter: HandoffRouting | None,
+    scope: ReviewScope,
+    runs: Mapping[str, ReviewerRun],
+    quality: QualityReviewVerdict,
+    decision: MergeDecision,
+    implementer_role: str,
+    block_severity: str,
+    source_handoff: str = "",
+) -> str:
+    quality_run = runs["quality"]
+    security_run = runs["security"]
+    security_verdict = security_run.verdict
+    assert security_verdict is not None
+
+    if decision.blocked:
+        next_agent = blocked_route(scope, implementer_role)
+        reason = _truncate_reason(
+            "Audit fan-out blocked: " + "; ".join(decision.reasons) + "."
+        )
+        status = "verified_fail"
+        close_type: str | None = None
+    else:
+        # verified_pass routes to the finalizer for an epic close and to the
+        # planner otherwise, so next_agent must name that same route.
+        close_type = quality.close_type
+        next_agent = "finalizer" if close_type == "epic" else "planner"
+        reason = _truncate_reason(quality.reason)
+        status = "verified_pass"
+
+    lines = _audit_frontmatter_lines(
+        frontmatter,
+        next_agent=next_agent,
+        reason=reason,
+        status=status,
+        scope_sha=scope.head_sha,
+        close_type=close_type,
+    )
     lines.append("")
 
     story_summary = _story_summary(frontmatter) or scope.range_text
@@ -1210,7 +1383,14 @@ def render_audit_handoff(
     lines.append("")
     lines.append("## Next Step")
     lines.append("")
-    if decision.blocked:
+    if decision.blocked and next_agent == "planner":
+        lines.append(
+            f"- **planner:** The review range {scope.range_text} has no committed "
+            "changes, so no implementer can fix these findings. Decide whether "
+            "they need a fix story, a corrected Work Packet, or the user, then "
+            "re-issue the audit."
+        )
+    elif decision.blocked:
         lines.append(
             f"- **{next_agent}:** Fix the blocking findings listed above, keep the "
             "change inside the assigned scope, and route back to auditor with "
@@ -2072,7 +2252,7 @@ def _implementer_role(frontmatter: HandoffRouting | None, log: LogFn) -> AgentRo
         log,
         "WARN",
         f"Handoff producer `{producer or 'unknown'}` is not an implementer role; "
-        "security review failures will route to backend.",
+        "audit failures on committed changes will route to backend.",
     )
     return "backend"
 
@@ -2238,8 +2418,15 @@ def _output_summary_text(
     return "; ".join(parts)
 
 
+def _scope_files_text(scope: ReviewScope) -> str:
+    return _file_list_text(list(scope.files), scope)
+
+
 def _files_text(scope: ReviewScope, quality: QualityReviewVerdict) -> str:
-    files = list(scope.files) or list(quality.files_reviewed)
+    return _file_list_text(list(scope.files) or list(quality.files_reviewed), scope)
+
+
+def _file_list_text(files: list[str], scope: ReviewScope) -> str:
     if not files:
         return f"no files changed in {scope.range_text}"
     shown = files[:_MAX_EVIDENCE_FILES]

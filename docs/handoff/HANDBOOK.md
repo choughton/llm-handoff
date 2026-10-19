@@ -150,6 +150,8 @@ To ask the planner for a re-scope, use `blocked_implementation_failure`, not
 - Planner assignments without a concrete work packet.
 - A `Verification command` written as prose, such as `` `cmd1`, then
   `cmd2` ``, instead of one command per nested list item.
+- A `Verification command` that points `--basetemp`, `TMP`, or `TEMP`
+  inside the repository to work around a sandbox temp-directory error.
 - Auditor approvals that skip spec compliance.
 - Repeated implementer/auditor bounces on the same story.
 - Completion claims whose `scope_sha` is not HEAD or whose diff leaves the

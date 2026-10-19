@@ -3059,3 +3059,284 @@ def test_run_loop_logs_the_stop_reason_when_set(
     assert ("ERROR", f"Stopping the dispatch loop: {reason}") in log.messages
     assert "An audit reviewer failed to start" not in log.text()
     assert "Failure count:" not in log.text()
+
+
+# --------------------------------------------------------------------------
+# dispatcher verification before audits the work-claim gate never checked
+# --------------------------------------------------------------------------
+
+
+def _python_command(code: str) -> str:
+    return f'"{sys.executable}" -c "{code}"'
+
+
+PASSING_COMMAND = _python_command("print('suite ok')")
+FAILING_COMMAND = _python_command("import sys; print('2 failed'); sys.exit(3)")
+
+
+def _epic_close_handoff(scope_sha: str, command: str) -> str:
+    return f"""---
+next_agent: auditor
+reason: "Every story is merged; audit the epic close."
+epic_id: AUDIT-EPIC
+story_id: {STORY_ID}
+story_title: Example story
+remaining_stories: []
+scope_sha: {scope_sha}
+close_type: epic
+producer: planner
+---
+
+# Epic Close
+
+## Work Packet
+
+- **Objective:** Confirm the epic is complete.
+- **Files in scope:** none (read-only audit)
+- **Files out of bounds:** none
+- **Context:** AGENTS.md
+- **Verification command:**
+  - {command}
+- **Expected next route:** auditor
+"""
+
+
+def _epic_close_repo(tmp_path: Path, command: str) -> tuple[Path, str, str]:
+    repo, _base = _init_repo(tmp_path)
+    head = _commit_file(repo, "src/app.py", "x = 1\n", "feature")
+    handoff = _epic_close_handoff(head, command)
+    _write_handoff(repo, handoff)
+    return repo, head, handoff
+
+
+def _passing_security(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
+    def fake_security(_name: str, _command: list[str], **_kwargs: Any) -> _ProcessResult:
+        calls.append("security")
+        return _process(_claude_envelope(_security_payload()))
+
+    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_security)
+
+
+def test_epic_close_audit_records_dispatcher_verification_pass_for_reviewers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, head, handoff = _epic_close_repo(tmp_path, PASSING_COMMAND)
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    calls: list[str] = []
+    seen: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(
+            _quality_payload(next_agent="finalizer", close_type="epic")
+        ),
+        # Empty range: the epic's stories were audited and merged earlier.
+        base_sha=head,
+        quality_side_effect=lambda _prompt, _config: seen.append(
+            handoff_path.read_text(encoding="utf-8")
+        ),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == ["security"]
+    # The quality reviewer reads the PASS section its prompt tells it to trust.
+    assert "## Dispatcher Verification" in seen[0]
+    assert "- **Verdict:** PASS" in seen[0]
+    assert f"- **Verified commit:** `{head}`" in seen[0]
+    assert "(epic close)" in seen[0]
+    assert "reviewer_wrote_handoff" not in log.text()
+    assert "Dispatcher verification PASSED before the audit" in log.text()
+    written = handoff_path.read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "finalizer"
+    assert frontmatter.status == "verified_pass"
+
+
+def test_failed_dispatcher_verification_routes_epic_close_to_planner_without_reviewers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, head, handoff = _epic_close_repo(tmp_path, FAILING_COMMAND)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=head,
+        quality_side_effect=lambda _prompt, _config: calls.append("quality"),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == []
+    assert "Audit BLOCKED before the reviewers" in log.text()
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+    assert frontmatter.status == "verified_fail"
+    assert frontmatter.producer == "auditor"
+    assert frontmatter.scope_sha == head
+    assert frontmatter.epic_id == "AUDIT-EPIC"
+    assert "remaining_stories: []" in written
+    assert frontmatter.reason and "verification_failed" in frontmatter.reason
+    assert "- **Verdict:** FAIL" in written
+    assert "2 failed" in written
+    assert "Do not point `--basetemp`" in written
+    assert "## Work Packet" in written
+    assert route(written).route == "planner"
+    validation = validate_handoff_text(written, "auditor (audit)", git_cwd=repo)
+    assert validation.errors == []
+
+
+def test_dispatcher_verification_respects_the_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "ran.txt"
+    command = _python_command(f"open(r'{marker}', 'w').write('ran')")
+    repo, head, handoff = _epic_close_repo(tmp_path, command)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo, verification_allowed_prefixes=("pytest",)),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=head,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert not marker.exists()
+    assert calls == []
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+    assert "verification_not_allowed" in written
+
+
+def test_dispatcher_verification_is_not_rerun_over_a_recorded_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, head, _handoff = _epic_close_repo(tmp_path, FAILING_COMMAND)
+    handoff = (
+        _epic_close_handoff(head, FAILING_COMMAND)
+        + NL
+        + "## Dispatcher Verification"
+        + NL
+        + NL
+        + "- **Verdict:** PASS"
+        + NL
+        + f"- **Verified commit:** `{head}`"
+        + NL
+    )
+    _write_handoff(repo, handoff)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(
+            _quality_payload(next_agent="finalizer", close_type="epic")
+        ),
+        base_sha=head,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == ["security"]
+    assert "already records a PASS" in log.text()
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.status == "verified_pass"
+
+
+def test_implementer_audit_with_committed_changes_skips_dispatcher_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, head, _handoff = _fan_out_repo(tmp_path)
+    marker = tmp_path / "ran.txt"
+    packet = WORK_PACKET.replace(
+        "python -m pytest -q",
+        _python_command(f"open(r'{marker}', 'w').write('ran')"),
+    )
+    handoff = _backend_handoff(head) + NL + packet
+    _write_handoff(repo, handoff)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert not marker.exists()
+    assert calls == ["security"]
+    assert "Dispatcher verification" not in log.text()
+
+
+def test_blocked_audit_with_an_empty_range_routes_to_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _base = _init_repo(tmp_path)
+    head = _commit_file(repo, "src/app.py", "x = 1\n", "feature")
+    # No Work Packet: the dispatcher has nothing to run, so the reviewers
+    # decide, and the quality reviewer fails the audit.
+    handoff = _backend_handoff(head).replace("producer: backend", "producer: planner")
+    _write_handoff(repo, handoff)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload(verdict="fail")),
+        base_sha=head,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+    assert frontmatter.status == "verified_fail"
+    assert route(written).route == "planner"
+    assert "no committed changes, so no implementer can fix" in written
+    assert "Routing to planner with status verified_fail" in log.text()
+    assert "no Work Packet Verification command" in log.text()
+
+
+def test_blocked_audit_with_committed_changes_still_routes_to_the_implementer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload(verdict="fail")),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "backend"
+    assert "Routing to backend with status verified_fail" in log.text()

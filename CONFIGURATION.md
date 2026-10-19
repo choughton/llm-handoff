@@ -1111,8 +1111,9 @@ your user-level rules before relying on the push ban.
 
 On Windows the sandbox runs commands as a separate local account. Read-only git
 commands may need `-c safe.directory=<repository root>`, and pytest's per-user
-temp directory is not usable from the sandbox; the work-claim gate re-runs the
-Verification command outside the sandbox. If Codex still cannot start or
+temp directory is not usable from the sandbox. The work-claim gate re-runs the
+Verification command outside the sandbox, and the audit fan-out runs it before
+an epic close or an empty-range audit (see Audit fan-out below). If Codex still cannot start or
 commit in your setup, check its sandbox settings before reaching for
 `unsafe_bypass`.
 
@@ -2109,13 +2110,28 @@ With `security` enabled, the auditor route works differently:
   run routes straight to the auditor. Otherwise, when the pre-dispatch
   commit is unknown (for example after a restart in `local` mode), the
   scope falls back to `scope_sha~1..scope_sha`.
+- An epic close (`close_type: epic`) or a review range with no committed
+  changes never passed the work-claim gate, so before the reviewers start the
+  dispatcher runs the handoff's Work Packet Verification commands itself, on
+  the audit commit and outside any agent sandbox. It applies the same
+  `verification_allowed_prefixes` check, environment, and
+  `work_packet_verification_timeout_seconds` as the gate. A pass is recorded
+  as a `## Dispatcher Verification` section, so the quality reviewer does not
+  re-run the command. A failure, or a command the allowlist rejects, routes
+  `status: verified_fail` to `planner` with the command output, and no
+  reviewer runs. The step is skipped when the handoff already records a pass
+  for the audit commit, has no Verification command, or the working tree is
+  not at `scope_sha`; with `enforce_work_packet: false`; and in Linear mode,
+  whose evidence step needs the reviewers' verdicts.
 - The quality reviewer (the configured `auditor` agent) and the security
   reviewer run concurrently on that range. Both are told not to write
   `HANDOFF.md` and must return a JSON verdict.
 - The dispatcher, not a reviewer, rewrites `HANDOFF.md`. Any finding at or
   above `block_severity`, or a `fail` verdict from either reviewer, produces
   `status: verified_fail` routed back to the implementer with a
-  `## Security Findings` section. Otherwise the handoff routes where the
+  `## Security Findings` section. A block on a range with no committed
+  changes routes to `planner` instead, since no implementer has work to fix.
+  Otherwise the handoff routes where the
   quality reviewer directed, with sub-threshold findings under
   `## Security Notes`.
 - `verified_fail` results increment the story's bounce count, so the

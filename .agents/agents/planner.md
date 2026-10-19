@@ -117,6 +117,13 @@ item (`  - <command>` under the field), with no prose before, after, or
 between them. The gate runs every line as its own command, so do not join
 commands with words such as `then` or `and`.
 
+Never point pytest's `--basetemp`, or `TMP`, `TEMP`, or `TMPDIR`, at a
+path inside the repository in a Verification command, even to work around
+a sandbox temp-directory error. The dispatcher runs Work Packet
+Verification commands outside any agent sandbox, and temp directories
+inside a live checkout collide with the running dispatcher's files, such as
+`.dispatch.lock`.
+
 Do not use vague placeholders in the Work Packet: `add validation`, `handle
 errors appropriately`, `write tests`, `implement later`, or `as needed`.
 Rewrite them into concrete acceptance checks, exact files, and specific
