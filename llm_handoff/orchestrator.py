@@ -129,7 +129,6 @@ from llm_handoff.work_claim import (
     load_implementer_leftovers,
     parse_work_packet_scope,
     prune_implementer_leftovers,
-    save_implementer_leftovers,
     path_is_in_scope,
     record_passed_verification,
     verify_work_claim,
@@ -3707,9 +3706,186 @@ def _detect_carry_over_dir_fd_support() -> bool:
 
 # Directory file descriptors let the writer walk logs/dispatch without
 # following links and create, write, rename, and delete the record relative
-# to the directory it checked. Windows has no dir_fd support, so it falls back
-# to checking literal paths around each step.
+# to the directory it checked. Windows has no dir_fd support, so it pins
+# logs and logs/dispatch instead: both are held open without delete sharing
+# (see _pinned_carry_over_directories), so neither can be renamed, deleted, or
+# replaced by a junction while the record is written or deleted by path. Where
+# neither mechanism is available the record stays in memory only.
 _CARRY_OVER_DIR_FD_SUPPORTED = _detect_carry_over_dir_fd_support()
+
+
+def _detect_carry_over_windows_pin_support() -> bool:
+    """Whether this platform can pin the carry-over directories with Win32 handles."""
+
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+    except ImportError:
+        return False
+    return hasattr(ctypes, "windll") and hasattr(ctypes, "WinDLL")
+
+
+_CARRY_OVER_WINDOWS_PIN_SUPPORTED = _detect_carry_over_windows_pin_support()
+
+_WIN_FILE_LIST_DIRECTORY = 0x0001
+_WIN_FILE_READ_ATTRIBUTES = 0x0080
+_WIN_FILE_SHARE_READ = 0x00000001
+_WIN_FILE_SHARE_WRITE = 0x00000002
+_WIN_OPEN_EXISTING = 3
+_WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WIN_ERROR_FILE_NOT_FOUND = 2
+_WIN_ERROR_PATH_NOT_FOUND = 3
+
+_carry_over_kernel32_api: object | None = None
+
+
+def _carry_over_kernel32() -> object:
+    """``kernel32`` with the argument types the directory pin calls need."""
+
+    global _carry_over_kernel32_api
+    if _carry_over_kernel32_api is not None:
+        return _carry_over_kernel32_api
+    import ctypes
+    from ctypes import wintypes
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.ByHandleFileInformation = _ByHandleFileInformation
+    _carry_over_kernel32_api = kernel32
+    return kernel32
+
+
+def _pin_carry_over_directory(path: Path) -> int | None:
+    """Open ``path`` as a directory handle that blocks rename and delete.
+
+    The handle is opened without ``FILE_SHARE_DELETE``, so while it is open no
+    other process can rename, delete, or replace the directory. It requests
+    ``FILE_LIST_DIRECTORY`` as well as ``FILE_READ_ATTRIBUTES``: Windows does
+    not record or enforce share access for a handle that holds only attribute
+    rights, so an attributes-only handle would not block a rename. With
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` a junction or symlink is opened itself,
+    not followed, and is then rejected. Returns None when the path is missing.
+    Raises ``_CarryOverLinkError`` for a reparse point or a non-directory.
+    """
+
+    import ctypes
+
+    kernel32 = _carry_over_kernel32()
+    handle = kernel32.CreateFileW(  # type: ignore[attr-defined]
+        str(path),
+        _WIN_FILE_LIST_DIRECTORY | _WIN_FILE_READ_ATTRIBUTES,
+        _WIN_FILE_SHARE_READ | _WIN_FILE_SHARE_WRITE,
+        None,
+        _WIN_OPEN_EXISTING,
+        _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        code = ctypes.get_last_error()  # type: ignore[attr-defined]
+        if code in {_WIN_ERROR_FILE_NOT_FOUND, _WIN_ERROR_PATH_NOT_FOUND}:
+            return None
+        raise OSError(0, ctypes.FormatError(code), str(path), code)  # type: ignore[attr-defined]
+    try:
+        info = kernel32.ByHandleFileInformation()  # type: ignore[attr-defined]
+        if not kernel32.GetFileInformationByHandle(  # type: ignore[attr-defined]
+            handle, ctypes.byref(info)
+        ):
+            code = ctypes.get_last_error()  # type: ignore[attr-defined]
+            raise OSError(0, ctypes.FormatError(code), str(path), code)  # type: ignore[attr-defined]
+        attributes = info.dwFileAttributes
+        if attributes & _WIN_FILE_ATTRIBUTE_REPARSE_POINT or not (
+            attributes & _WIN_FILE_ATTRIBUTE_DIRECTORY
+        ):
+            raise _CarryOverLinkError(
+                errno.ELOOP, "carry-over directory is a link", str(path)
+            )
+    except BaseException:
+        kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+        raise
+    return int(handle)
+
+
+def _close_carry_over_pin(handle: int) -> None:
+    _carry_over_kernel32().CloseHandle(handle)  # type: ignore[attr-defined]
+
+
+@contextlib.contextmanager
+def _pinned_carry_over_directories(repo_root: Path, *, create: bool):
+    """Hold ``logs`` and ``logs/dispatch`` open so they cannot be swapped.
+
+    Used where directory descriptors are unavailable (Windows). Each directory
+    under the repository root is opened with ``CreateFileW`` without
+    ``FILE_SHARE_DELETE`` and checked for a reparse point; the parent stays
+    pinned while the child is created and opened, so the child's path cannot
+    be redirected either. While the context is active, path-based steps
+    inside ``logs/dispatch`` (creating, writing, renaming, and deleting files)
+    stay inside the repository. Creates missing directories when ``create`` is
+    true; otherwise yields None when one is missing, and yields the pinned
+    ``logs/dispatch`` path otherwise. Raises ``_CarryOverLinkError`` when
+    either directory is a link. The handles are closed on exit.
+    """
+
+    handles: list[int] = []
+    try:
+        directory = repo_root
+        for part in CARRY_OVER_STATE_PATH.parent.parts:
+            directory = directory / part
+            if create:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(directory)
+            handle = _pin_carry_over_directory(directory)
+            if handle is None:
+                if create:
+                    raise FileNotFoundError(
+                        errno.ENOENT, "carry-over directory missing", str(directory)
+                    )
+                yield None
+                return
+            handles.append(handle)
+        yield directory
+    finally:
+        for handle in reversed(handles):
+            _close_carry_over_pin(handle)
+
+
+def _carry_over_disk_persistence_available() -> bool:
+    """Whether the record can be written and deleted without a swap race."""
+
+    return _CARRY_OVER_DIR_FD_SUPPORTED or _CARRY_OVER_WINDOWS_PIN_SUPPORTED
 
 
 def _carry_over_record_payload(leftovers: ImplementerLeftovers) -> str:
@@ -3732,14 +3908,21 @@ def _write_carry_over_record(repo_root: Path, leftovers: ImplementerLeftovers) -
     writes through the handle it opened, and atomically replaces the record;
     ``os.replace`` swaps the directory entry and never follows a link at the
     destination. Raises ``_CarryOverLinkError`` when a link is found on the
-    way, and lets other ``OSError`` values propagate.
+    way, and lets other ``OSError`` values propagate. Without directory
+    descriptors the path-based writer runs only while ``logs`` and
+    ``logs/dispatch`` are pinned; without either mechanism nothing is written.
     """
 
     payload = _carry_over_record_payload(leftovers)
     if _CARRY_OVER_DIR_FD_SUPPORTED:
         _write_carry_over_record_with_dir_fd(repo_root, payload)
-    else:
-        _write_carry_over_record_checked(repo_root / CARRY_OVER_STATE_PATH, payload)
+    elif _CARRY_OVER_WINDOWS_PIN_SUPPORTED:
+        with _pinned_carry_over_directories(repo_root, create=True) as directory:
+            if directory is None:  # create=True never yields None
+                raise FileNotFoundError(errno.ENOENT, "carry-over directory missing")
+            _write_carry_over_record_checked(
+                directory / CARRY_OVER_STATE_PATH.name, payload
+            )
 
 
 def _open_carry_over_directory(repo_root: Path, *, create: bool) -> int | None:
@@ -3787,14 +3970,23 @@ def _unlink_carry_over_record(repo_root: Path) -> None:
     """Delete the record without following a planted directory link.
 
     On platforms with directory descriptors the unlink is relative to the
-    ``logs/dispatch`` descriptor opened with ``O_NOFOLLOW``. Elsewhere it falls
-    back to the literal path, which the caller checks for links first. Raises
+    ``logs/dispatch`` descriptor opened with ``O_NOFOLLOW``. On Windows it
+    unlinks the literal path while ``logs`` and ``logs/dispatch`` are pinned
+    without delete sharing, so neither can be swapped for a junction during
+    the delete; unlinking a file symlink removes the link, not its target.
+    Without either mechanism nothing is deleted. Raises
     ``_CarryOverLinkError`` when a link is found, and lets other ``OSError``
     values propagate. A missing record is not an error.
     """
 
     if not _CARRY_OVER_DIR_FD_SUPPORTED:
-        save_implementer_leftovers(repo_root / CARRY_OVER_STATE_PATH, None)
+        if not _CARRY_OVER_WINDOWS_PIN_SUPPORTED:
+            return
+        with _pinned_carry_over_directories(repo_root, create=False) as directory:
+            if directory is None:
+                return
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(directory / CARRY_OVER_STATE_PATH.name)
         return
     directory_fd = _open_carry_over_directory(repo_root, create=False)
     if directory_fd is None:
@@ -3857,11 +4049,16 @@ def _carry_over_handle_is_at(path: Path, file_fd: int) -> bool:
 
 
 def _write_carry_over_record_checked(state_path: Path, payload: str) -> None:
-    """Write the record by literal path, checking for links around each step.
+    """Write the record by literal path inside the pinned carry-over directory.
 
-    Used where directory descriptors are unavailable (Windows). The temporary
-    file is created exclusively under a random name, so a planted link cannot
-    be opened, and the paths are checked again right before the rename.
+    Used where directory descriptors are unavailable (Windows), and only while
+    ``_pinned_carry_over_directories`` holds ``logs`` and ``logs/dispatch``
+    open without delete sharing, so neither directory can be swapped for a
+    junction between the steps below. The temporary file is created
+    exclusively under a random name, so a planted file link cannot be opened;
+    the handle and paths are still checked for links as a second line of
+    defence, and ``os.replace`` replaces a link at the record path rather than
+    following it.
     """
 
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3958,6 +4155,17 @@ def _restore_implementer_leftovers(
     """
 
     state_path = _carry_over_state_path(config)
+    if not _carry_over_disk_persistence_available():
+        if os.path.lexists(state_path):
+            _log(
+                log,
+                "WARN",
+                f"Left the carry-over record {state_path} untouched: this "
+                "platform cannot read, write, or delete it without a "
+                "directory-swap race, so the carry-over record stays in memory "
+                "only and its files stay operator edits.",
+            )
+        return None
     if _carry_over_path_traverses_link(state_path):
         _log(log, "WARN", _carry_over_link_warning(state_path))
         return None
@@ -4037,6 +4245,22 @@ def _persist_implementer_leftovers(
     if config.dry_run:
         return
     state_path = _carry_over_state_path(config)
+    if not _carry_over_disk_persistence_available():
+        has_record = (
+            leftovers is not None
+            and bool(leftovers.story_key)
+            and bool(leftovers.fingerprints)
+        )
+        if has_record or os.path.lexists(state_path):
+            _log(
+                log,
+                "WARN",
+                f"This platform cannot write or delete {state_path} without a "
+                "directory-swap race, so the carry-over record stays in memory "
+                "only and the file is left untouched. After a restart these "
+                "uncommitted files count as operator edits.",
+            )
+        return
     if _carry_over_path_traverses_link(state_path):
         _log(log, "WARN", _carry_over_link_warning(state_path))
         return

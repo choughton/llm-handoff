@@ -27,9 +27,13 @@ This project follows a simple pre-release changelog until the first public tag.
   symlink planted there; it creates a fresh, randomly named temporary file
   exclusively and atomically replaces the record. On POSIX it opens each
   directory under the repository without following links and writes,
-  renames, and deletes the record relative to those directory handles; on
-  Windows it checks the paths again before the rename or delete, which
-  narrows but does not close a directory-swap race.
+  renames, and deletes the record relative to those directory handles. On
+  Windows it holds `logs` and `logs/dispatch` open without delete sharing,
+  rejecting either one if it is a junction or symlink, for the whole write or
+  delete, so neither directory can be renamed, deleted, or replaced by a
+  junction until the record is written or deleted. Where neither mechanism is
+  available, the record stays in memory only: the dispatcher does not read,
+  write, or delete `carry-over.json` and logs a `WARN` line instead.
 - Behavior change: in the audit fan-out, a security reviewer `fail` verdict
   whose findings are all below `audit.block_severity` no longer blocks the
   audit. `block_severity` decides, as the Codex Security scanner path

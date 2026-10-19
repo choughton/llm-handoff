@@ -6,7 +6,7 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 approved at `d981442`; HARD-5 approved at `1f60143` and merged in PR #154; HARD-6 open, the only remaining story).
+- **Active Epic:** HARDENING (HARD-1 merged in PR #146; HARD-2 merged in PR #147; HARD-3 merged in PR #151; HARD-4 approved at `d981442`; HARD-5 approved at `1f60143` and merged in PR #154; HARD-6 in progress, the only remaining story).
 - **Epic Awaiting Close:** None. GEMINI-REMOVAL closed (see the Completed
   Scope Ledger). LINEAR-WORKFLOW, LINEAR-FOUNDATIONS, CONFIG-CLEANUP,
   SCANNERS, PAUSE-RECOVERY, PUBLISH-RESUME-NITS, AUDIT-COST,
@@ -606,7 +606,16 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   guarantee is unavailable, disable disk persistence and deletion of the
   carry-over record on Windows and keep it in memory only. Test with a
   junction swap where the platform allows it, and update the `CHANGELOG.md`
-  limitation note.
+  limitation note. Decided by the planner on 2026-10-19: before writing or
+  deleting the record without directory-fd support, pin `logs` and
+  `logs/dispatch` with `CreateFileW` (through `ctypes`) without
+  `FILE_SHARE_DELETE` and with `FILE_FLAG_OPEN_REPARSE_POINT`, rejecting a
+  reparse point or non-directory, and hold both handles for the whole write or
+  delete; when pinning is unavailable, keep the record in memory only (no
+  read, write, or delete; one `WARN`); POSIX unchanged. Implementation note:
+  the pin handles request `FILE_LIST_DIRECTORY` in addition to
+  `FILE_READ_ATTRIBUTES`, because Windows does not enforce share modes on an
+  attributes-only handle (a test showed the rename succeeding without it).
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 

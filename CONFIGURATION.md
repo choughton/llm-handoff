@@ -559,7 +559,13 @@ because the untracked file would otherwise show up in the next work-claim
 gate. When `logs/dispatch/carry-over.json` or a directory above it inside the
 repository is a symlink or junction, the dispatcher does not read, write, or
 delete the record, so a link cannot point it at a file outside the
-repository; it logs a `WARN` line and the files stay operator edits.
+repository; it logs a `WARN` line and the files stay operator edits. On
+Windows the dispatcher holds `logs` and `logs/dispatch` open without delete
+sharing while it writes or deletes the record, so neither can be swapped for a
+junction mid-operation (POSIX uses directory handles opened without following
+links). Where neither mechanism is available, the record stays in memory only:
+the dispatcher leaves any `carry-over.json` on disk untouched and logs a
+`WARN` line.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the
