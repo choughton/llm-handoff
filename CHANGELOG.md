@@ -24,6 +24,11 @@ This project follows a simple pre-release changelog until the first public tag.
   does not ignore it. The half-written handoff is restored through the same
   link-refusing writer, and a handoff path that passes through a symlink or
   junction discards the record instead of writing outside the repository.
+  A record that cannot be deleted after the dispatch returns stops the
+  dispatcher before its commit and gates, a read that fails with a sharing,
+  permission, or I/O error keeps the record for a later start, and an
+  interrupted operator `@backend`/`@frontend` dispatch that continued the
+  saved story is recovered as a continuation of that story.
 
 - An audit verdict whose strings hold unescaped backslashes, such as a Codex
   quality reviewer's `rg -n '12\.'` in `commands_run`, now parses instead of

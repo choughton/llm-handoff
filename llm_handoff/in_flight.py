@@ -31,8 +31,12 @@ _PHASES = frozenset({"dispatch"})
 class InFlightRecord:
     """What the dispatcher knew right before an implementer dispatch.
 
-    ``story_key`` is the ``carry_over_key`` of ``handoff_content``, the
-    pre-dispatch ``HANDOFF.md`` text. ``dirty_fingerprints`` are the
+    ``handoff_content`` is the pre-dispatch ``HANDOFF.md`` text.
+    ``assignment_content`` is set only when the dispatch worked from another
+    assignment: an operator ``@backend`` or ``@frontend`` dispatch that
+    continued the saved story from a handoff without a ``story_id``.
+    ``story_key`` is the ``carry_over_key`` of ``assignment_content`` when it
+    is set, else of ``handoff_content``. ``dirty_fingerprints`` are the
     operator-owned dirty files and their content fingerprints, and
     ``carried_over`` the files carried over from an earlier dispatch of the
     same story, both as ``PreDispatchState`` recorded them.
@@ -46,7 +50,14 @@ class InFlightRecord:
     handoff_content: str
     dirty_fingerprints: tuple[tuple[str, str], ...]
     carried_over: tuple[str, ...]
+    assignment_content: str | None = None
     version: int = IN_FLIGHT_RECORD_VERSION
+
+    @property
+    def continues_saved_story(self) -> bool:
+        """Whether the dispatch continued the saved story's rebuilt assignment."""
+
+        return self.assignment_content is not None
 
 
 def in_flight_record_payload(record: InFlightRecord) -> str:
@@ -60,6 +71,7 @@ def in_flight_record_payload(record: InFlightRecord) -> str:
         "phase": record.phase,
         "head_sha": record.head_sha,
         "handoff_content": record.handoff_content,
+        "assignment_content": record.assignment_content,
         "dirty_fingerprints": [list(pair) for pair in record.dirty_fingerprints],
         "carried_over": list(record.carried_over),
     }
@@ -72,7 +84,8 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     Rejects invalid JSON, another ``version``, a ``role`` other than
     ``backend`` or ``frontend``, a ``phase`` other than ``dispatch``, a field
     of the wrong type, and a ``story_key`` that is not the ``carry_over_key``
-    of ``handoff_content``.
+    of ``assignment_content`` (when set) or ``handoff_content``. A missing
+    ``assignment_content`` reads as None.
     """
 
     try:
@@ -99,6 +112,9 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     handoff_content = payload.get("handoff_content")
     if not isinstance(handoff_content, str):
         return None
+    assignment_content = payload.get("assignment_content")
+    if assignment_content is not None and not isinstance(assignment_content, str):
+        return None
     story_key = payload.get("story_key")
     if not isinstance(story_key, str) or not story_key:
         return None
@@ -108,7 +124,10 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     carried_over = _strings(payload.get("carried_over"))
     if carried_over is None:
         return None
-    if story_key != carry_over_key(handoff_content):
+    keyed_content = (
+        assignment_content if assignment_content is not None else handoff_content
+    )
+    if story_key != carry_over_key(keyed_content):
         return None
     return InFlightRecord(
         version=version,
@@ -120,6 +139,7 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         handoff_content=handoff_content,
         dirty_fingerprints=dirty_fingerprints,
         carried_over=carried_over,
+        assignment_content=assignment_content,
     )
 
 

@@ -490,6 +490,9 @@ class PendingPlannerRecovery:
     # accepted (UTC) and the SHA-256 of the raw message, never its text.
     operator_message_at: str | None = None
     operator_message_sha256: str | None = None
+    # An interrupted-dispatch recovery of an operator `@backend`/`@frontend`
+    # dispatch that continued the saved story continues it again.
+    continue_saved_story: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -723,6 +726,9 @@ def run_loop(
             continue
         forced_additional_instruction: str | None = None
         active_planner_recovery_kind: str | None = None
+        # Set on an interrupted-dispatch recovery whose interrupted run was an
+        # operator dispatch that continued the saved story.
+        active_continue_saved_story = False
         # Set only on the cycle that runs an operator `@auditor <message>`
         # dispatch; every other cycle audits without the marker.
         active_operator_influence: OperatorInfluence | None = None
@@ -782,6 +788,10 @@ def run_loop(
                 pending_planner_recovery.additional_instruction
             )
             active_planner_recovery_kind = pending_planner_recovery.kind
+            active_continue_saved_story = (
+                pending_planner_recovery.kind == "interrupted_dispatch"
+                and pending_planner_recovery.continue_saved_story
+            )
             operator_prompt.planner_tried = True
             if (
                 pending_planner_recovery.kind == "operator_role"
@@ -974,6 +984,7 @@ def run_loop(
                     # The breaker also overrides an operator `@<role>`
                     # dispatch; its planner cycle is not that dispatch.
                     active_planner_recovery_kind = None
+                    active_continue_saved_story = False
                     forced_additional_instruction = (
                         THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE.format(
                             story_id=story_id,
@@ -1280,7 +1291,12 @@ def run_loop(
                 config.publish.mode != "local"
                 and current_cycle.route in {"backend", "frontend"}
             ):
-                operator_role_dispatch = active_planner_recovery_kind == "operator_role"
+                # An interrupted operator dispatch that continued the saved
+                # story is recovered the same way.
+                operator_role_dispatch = (
+                    active_planner_recovery_kind == "operator_role"
+                    or active_continue_saved_story
+                )
                 branch_error = ensure_story_branch(
                     repo_root=config.repo_root,
                     prefix=config.publish.branch_prefix,
@@ -1451,6 +1467,7 @@ def run_loop(
                     pre_dispatch_state=pre_dispatch_state,
                     log=log_fn,
                     state=in_flight_state,
+                    assignment_content=assignment_content,
                 )
             )
             # A first Ctrl+C from here to the loop top lets this cycle finish:
@@ -1486,10 +1503,22 @@ def run_loop(
                     ),
                 ),
             )
-            if in_flight_written:
+            if in_flight_written and not _delete_in_flight_record(config, log_fn):
                 # The dispatch returned, whatever its exit code; an interrupt
                 # or crash never reaches this line and leaves the record.
-                _delete_in_flight_record(config, log_fn)
+                # A record that could not be cleared would make the next
+                # start treat this finished dispatch as interrupted, so stop
+                # before the commit and gates: the record then stays true.
+                _log(
+                    log_fn,
+                    "ERROR",
+                    "Could not clear the in-flight record "
+                    f"{_in_flight_state_path(config)} after the "
+                    f"{current_cycle.route} dispatch returned, so the dispatcher "
+                    "stops before its commit and gates. The next start offers "
+                    "this dispatch's work for interrupted-dispatch recovery.",
+                )
+                return 1
             # Only logs that a stop request was seen; the loop honors it at
             # the top, after this cycle's commit, validation, and gate.
             stop_watch.requested(log_fn)
@@ -5273,16 +5302,23 @@ def _write_in_flight_record(
     pre_dispatch_state: PreDispatchState,
     log: LogFn,
     state: _InFlightRecordState,
+    assignment_content: str | None = None,
 ) -> bool:
     """Write the in-flight record before an implementer dispatch.
 
     Returns True when the record was written, so the caller deletes it once
     the dispatch returns. Writes nothing, and leaves any file on disk
     untouched, when the record cannot be kept race-safe or Git does not
-    ignore it; that logs one WARN per run.
+    ignore it; that logs one WARN per run. ``assignment_content`` is the
+    saved story's rebuilt assignment when the dispatch continues it from a
+    handoff without a ``story_id``; the record is then keyed to that story.
     """
 
-    story_key = carry_over_key(handoff_content)
+    if assignment_content == handoff_content:
+        assignment_content = None
+    story_key = carry_over_key(
+        assignment_content if assignment_content is not None else handoff_content
+    )
     if story_key is None:
         # No story to recover the files for: nothing can carry them over.
         return False
@@ -5311,6 +5347,7 @@ def _write_in_flight_record(
         handoff_content=handoff_content,
         dirty_fingerprints=pre_dispatch_state.dirty_fingerprints,
         carried_over=pre_dispatch_state.carried_over,
+        assignment_content=assignment_content,
     )
     try:
         _write_carry_over_payload(
@@ -5333,23 +5370,29 @@ def _write_in_flight_record(
     return True
 
 
-def _delete_in_flight_record(config: DispatchConfig, log: LogFn) -> None:
+def _delete_in_flight_record(config: DispatchConfig, log: LogFn) -> bool:
+    """Delete the in-flight record; False when it may still be on disk."""
+
     state_path = _in_flight_state_path(config)
     if _carry_over_path_traverses_link(state_path):
         _log(log, "WARN", _in_flight_link_warning(state_path))
-        return
+        return False
     try:
         _unlink_carry_over_record(
             config.repo_root.resolve(), IN_FLIGHT_STATE_PATH.name
         )
     except _CarryOverLinkError:
         _log(log, "WARN", _in_flight_link_warning(state_path))
+        return False
     except OSError as exc:
         _log(
             log,
             "WARN",
-            f"Could not delete the in-flight record {state_path}: {exc}.",
+            f"Could not delete the in-flight record {state_path}: "
+            f"{_escape_control_characters(str(exc))}.",
         )
+        return False
+    return True
 
 
 def _recover_interrupted_dispatch(
@@ -5390,8 +5433,20 @@ def _recover_interrupted_dispatch(
         # A link appeared after the check above; nothing was read.
         _log(log, "WARN", _in_flight_link_warning(state_path))
         return nothing
-    except OSError:
+    except _CarryOverRecordRejected:
+        # Not a plain bounded record: handled as an invalid record below.
         data = b""
+    except OSError as exc:
+        # A sharing violation, permission error, or transient I/O failure
+        # says nothing about the record; keep it for a later start.
+        _log(
+            log,
+            "WARN",
+            f"Could not read the in-flight record {state_path} "
+            f"({_escape_control_characters(str(exc))}), so it is left for the "
+            "next start; any files it names stay operator edits for now.",
+        )
+        return nothing
     if data is None:
         return nothing
     try:
@@ -5590,6 +5645,7 @@ def _recover_interrupted_dispatch(
             ),
             kind="interrupted_dispatch",
             route=record.role,
+            continue_saved_story=record.continues_saved_story,
         ),
     )
 

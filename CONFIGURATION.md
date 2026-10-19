@@ -622,7 +622,14 @@ also writes `logs/dispatch/in-flight.json` right before each `backend` or
 dispatch returns, whatever its exit code. The record names the role, the
 story, HEAD, the pre-dispatch `HANDOFF.md` text, and the operator's dirty files
 with their content hashes. Planner, auditor, finalizer, validator, and
-ungated dispatches write none. It uses the same race-safe writer and link
+ungated dispatches write none. When the record cannot be deleted after the
+dispatch returns, the dispatcher logs an `ERROR` line and stops before the
+dispatcher commit and gates, so the record still describes an unfinished
+dispatch and the next start offers its work for recovery. An operator
+`@backend` or `@frontend` dispatch that continued the saved story from a
+handoff without a `story_id` also records the rebuilt assignment, and its
+recovery continues that saved story the same way. The record uses the same
+race-safe writer and link
 checks as `carry-over.json`, and it is read the same way: `logs` and
 `logs/dispatch` are opened (or, on Windows, pinned) without following links
 and the record is opened relative to `logs/dispatch` without following a link,
@@ -637,7 +644,9 @@ the files that are dirty now but were not before (minus the handoff) are the
 agent's files, an operator file whose content changed or that is no longer
 dirty is a changed operator file, and the handoff counts as changed when its
 text differs from the pre-dispatch text. A record that does not parse, or with
-nothing changed, is deleted. A dry run logs what it found, says
+nothing changed, is deleted. A read that fails for another reason, such as a
+sharing violation or a permission error, logs a `WARN` line and keeps the
+record for a later start. A dry run logs what it found, says
 `Not applied in dry run.`, and leaves the record on disk. Otherwise the
 confirmation rule above applies: only with `interactive_pause` on and a
 terminal with console input does the dispatcher log the role, story, agent

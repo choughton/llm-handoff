@@ -1025,6 +1025,202 @@ def test_a_handoff_link_swapped_in_after_confirmation_is_not_written(
     assert not (repo / "logs" / "dispatch" / "carry-over.json").exists()
 
 
+def test_a_record_that_cannot_be_cleared_stops_before_the_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding: a record left behind by a finished dispatch would make
+    # the next start treat it as interrupted, so the cycle must not go on to
+    # commit and hand back as though the record were gone.
+    _init_repo(tmp_path)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    real_unlink = orchestrator._unlink_carry_over_record
+
+    def refusing_unlink(repo_root: Path, name: str = "carry-over.json") -> None:
+        if name == IN_FLIGHT_STATE_PATH.name:
+            raise PermissionError(13, "sharing violation")
+        real_unlink(repo_root, name)
+
+    def finishing_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _result()
+
+    monkeypatch.setattr(orchestrator, "_unlink_carry_over_record", refusing_unlink)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", finishing_backend)
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert _record_path(tmp_path).exists()
+    assert any(
+        level == "WARN" and message.startswith("Could not delete the in-flight record")
+        for level, message in messages
+    )
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].startswith("Could not clear the in-flight record")
+    assert "stops before its commit and gates" in errors[0]
+    assert not any(
+        message.startswith("Work-claim gate PASSED")
+        or message.startswith("Work-claim gate FAILED")
+        for _level, message in messages
+    )
+
+
+def test_a_transient_read_failure_keeps_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding: only a record the reader rejects is invalid; a sharing
+    # violation or I/O error says nothing about it, so it is kept.
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    _interrupt_backend(tmp_path, orchestrator, monkeypatch)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+
+    def failing_read(*_args: object, **_kwargs: object) -> bytes:
+        raise PermissionError(13, "sharing violation")
+
+    monkeypatch.setattr(orchestrator, "_read_carry_over_record", failing_read)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    assert [level for level, _message in messages] == ["WARN"]
+    assert messages[0][1].startswith("Could not read the in-flight record")
+    assert "sharing violation" in messages[0][1]
+    assert "left for the next start" in messages[0][1]
+    assert "not valid" not in messages[0][1]
+
+
+def _escalation() -> str:
+    return """---
+next_agent: user
+reason: "The dispatcher paused; an operator must decide."
+status: escalate_to_user
+producer: validator
+---
+
+# Dispatcher escalation
+
+The dispatcher paused on this story.
+"""
+
+
+def test_load_in_flight_record_keys_a_continued_story_to_its_assignment() -> None:
+    record = InFlightRecord(
+        cycle=2,
+        role="backend",
+        story_key=f"story:{STORY_ID}",
+        phase="dispatch",
+        head_sha=None,
+        handoff_content=_escalation(),
+        dirty_fingerprints=(),
+        carried_over=(),
+        assignment_content=_assignment(),
+    )
+    text = in_flight_record_payload(record)
+
+    loaded = load_in_flight_record(text)
+    assert loaded == record
+    assert loaded is not None and loaded.continues_saved_story
+    payload = json.loads(text)
+    payload["assignment_content"] = 5
+    assert load_in_flight_record(json.dumps(payload)) is None
+    payload["assignment_content"] = None
+    # Without the assignment, the key must come from the escalation.
+    assert load_in_flight_record(json.dumps(payload)) is None
+    del payload["assignment_content"]
+    assert load_in_flight_record(json.dumps(payload)) is None
+    plain = json.loads(_plain_record_payload())
+    del plain["assignment_content"]
+    assert load_in_flight_record(json.dumps(plain)) is not None
+
+
+def test_an_interrupted_operator_dispatch_continues_the_saved_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding: an operator `@backend` dispatch from an escalation with
+    # no story_id continued the saved story; its recovery must do the same
+    # rather than reject the restored escalation for lacking a story_id.
+    _init_repo(tmp_path, handoff=_escalation())
+    orchestrator = _orchestrator()
+    record = InFlightRecord(
+        cycle=4,
+        role="backend",
+        story_key=f"story:{STORY_ID}",
+        phase="dispatch",
+        head_sha=_git(tmp_path, "rev-parse", "HEAD"),
+        handoff_content=_escalation(),
+        dirty_fingerprints=(),
+        carried_over=(),
+        assignment_content=_assignment(),
+    )
+    _write(_record_path(tmp_path), in_flight_record_payload(record))
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    branch_calls: list[dict[str, Any]] = []
+
+    def fake_ensure_story_branch(**kwargs: Any) -> str | None:
+        branch_calls.append(kwargs)
+        return None
+
+    seen_records: list[dict[str, Any]] = []
+    instructions: list[str] = []
+
+    def interrupted_again(path: Path, **kwargs: object) -> DispatchResult:
+        seen_records.append(
+            json.loads(_record_path(tmp_path).read_text(encoding="utf-8"))
+        )
+        instructions.append(str(kwargs.get("additional_instruction")))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(orchestrator, "ensure_story_branch", fake_ensure_story_branch)
+    monkeypatch.setattr(
+        orchestrator, "saved_story_assignment", lambda _root: _assignment()
+    )
+    monkeypatch.setattr(
+        orchestrator, "unfinished_story_pause_reason", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", interrupted_again)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    with pytest.raises(KeyboardInterrupt):
+        orchestrator.run_loop(
+            _config(tmp_path, publish={"mode": "merge-commit"}),
+            max_cycles=1,
+            log=_collecting_log(messages),
+        )
+
+    assert ("INFO", "Routing source: interrupted_dispatch_recovery") in messages
+    assert len(branch_calls) == 1
+    assert branch_calls[0]["continue_saved_story"] is True
+    assert (
+        "INFO",
+        f"Carrying over uncommitted work from the previous {STORY_ID} "
+        "dispatch: src/app.py.",
+    ) in messages
+    assert len(instructions) == 1
+    assert "interrupted before you handed back" in instructions[0]
+    # The new record is keyed to the continued story, not the escalation.
+    assert len(seen_records) == 1
+    assert seen_records[0]["story_key"] == f"story:{STORY_ID}"
+    assert seen_records[0]["handoff_content"] == _escalation()
+    assert seen_records[0]["assignment_content"] == _assignment()
+
+
 def test_restoring_a_flat_handoff_writes_inside_the_repository_root(
     tmp_path: Path,
 ) -> None:
