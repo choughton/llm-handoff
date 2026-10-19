@@ -13,10 +13,6 @@ from llm_handoff.agent_providers.antigravity import (
 )
 from llm_handoff.agent_providers.claude import _ClaudeStreamJsonMonitor
 from llm_handoff.agent_providers.codex import _CodexJsonMonitor
-from llm_handoff.agent_providers.gemini import (
-    _GeminiStreamJsonMonitor,
-    _gemini_usage_fields,
-)
 from llm_handoff.agent_types import DispatchResult, SubagentResult, _ProcessResult
 from llm_handoff.audit_review import _log_claude_json_usage
 from llm_handoff.config import AgentConfig
@@ -226,41 +222,6 @@ def test_codex_monitor_without_turns_has_no_usage() -> None:
     assert monitor.usage is None
 
 
-def test_gemini_monitor_returns_usage_on_finalize_without_logger() -> None:
-    monitor = _GeminiStreamJsonMonitor(
-        agent_name="Gemini auditor",
-        log=None,
-        attempt_number=1,
-        max_attempts=1,
-    )
-    stats = {"inputTokens": 120, "outputTokens": 30, "totalTokens": 150}
-
-    monitor.consume_stdout(
-        json.dumps({"type": "result", "status": "success", "stats": stats}) + "\n"
-    )
-    result = monitor.finalize(_empty_process_result())
-
-    assert result.usage == _gemini_usage_fields(stats)
-    assert result.usage == {
-        "input_tokens": 120,
-        "output_tokens": 30,
-        "total_tokens": 150,
-    }
-
-
-def test_gemini_monitor_without_result_event_has_no_usage() -> None:
-    monitor = _GeminiStreamJsonMonitor(
-        agent_name="Gemini auditor",
-        log=None,
-        attempt_number=1,
-        max_attempts=1,
-    )
-
-    result = monitor.finalize(_empty_process_result())
-
-    assert result.usage is None
-
-
 def test_antigravity_monitor_returns_result_usage_on_finalize() -> None:
     logs: list[tuple[str, str]] = []
     monitor = _AntigravityStreamJsonMonitor(
@@ -313,7 +274,7 @@ def test_dispatch_from_subagent_passes_usage_through() -> None:
     assert dispatch.elapsed_seconds == 1.5
 
 
-@pytest.mark.parametrize("provider", ["codex", "gemini", "antigravity"])
+@pytest.mark.parametrize("provider", ["codex", "antigravity"])
 def test_invoke_support_provider_passes_usage_through(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

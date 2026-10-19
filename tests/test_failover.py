@@ -7,7 +7,6 @@ import pydantic
 import pytest
 
 from llm_handoff import agent_roles, config, orchestrator
-from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.audit_review import _quality_reviewer_agent_config
 from llm_handoff.config import AgentConfig, DispatchConfig, load_dispatch_config
@@ -239,26 +238,26 @@ def test_fallback_starts_without_the_primary_session(
     tmp_path: Path,
 ) -> None:
     handoff = _handoff(tmp_path)
-    gemini = Mock(return_value=_dispatch(1, stderr="RESOURCE_EXHAUSTED"))
+    antigravity = Mock(return_value=_dispatch(1, stderr="RESOURCE_EXHAUSTED"))
     codex = Mock(return_value=_dispatch(0, session_id="codex-thread"))
-    monkeypatch.setattr(agent_roles, "invoke_gemini", gemini)
+    monkeypatch.setattr(agent_roles, "invoke_antigravity", antigravity)
     monkeypatch.setattr(agent_roles, "invoke_codex", codex)
 
     result = agent_roles.invoke_role(
         "planner",
         handoff,
         agent_config=AgentConfig(
-            provider="gemini",
+            provider="antigravity",
             fallback=AgentConfig(provider="codex"),
         ),
         use_resume=True,
-        session_id="gemini-session",
+        session_id="agy-session",
         previous_handoff_sha="abc123",
         repo_root=tmp_path,
     )
 
-    assert gemini.call_args.kwargs["use_resume"] is True
-    assert gemini.call_args.kwargs["session_id"] == "gemini-session"
+    assert antigravity.call_args.kwargs["use_resume"] is True
+    assert antigravity.call_args.kwargs["session_id"] == "agy-session"
     assert codex.call_args.kwargs["use_resume"] is False
     assert codex.call_args.kwargs["role_name"] == "planner"
     assert result.exit_code == 0
@@ -394,7 +393,7 @@ def test_config_file_fallback_gets_provider_defaults(tmp_path: Path) -> None:
     ("fallback", "message"),
     [
         (
-            {"provider": "claude", "fallback": {"provider": "gemini"}},
+            {"provider": "claude", "fallback": {"provider": "antigravity"}},
             "must not define its own fallback",
         ),
         ({"provider": "codex"}, "must launch a different provider"),
@@ -456,27 +455,6 @@ def test_startup_banner_logs_fallback_launch_posture(tmp_path: Path) -> None:
     assert any(
         "Remove agents.backend.fallback.unsafe_bypass" in m for m in warnings
     )
-
-
-def test_gemini_fallback_needs_sandbox_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(gemini_provider, "detect_gemini_sandbox_runtime", lambda: None)
-    agents = {
-        role: AgentConfig(provider="claude", model=f"model-{role}")
-        for role in config.DEFAULT_AGENT_PROVIDERS
-    }
-    agents["backend"] = AgentConfig(
-        provider="codex",
-        fallback=AgentConfig(provider="gemini"),
-    )
-
-    missing = orchestrator._roles_missing_gemini_sandbox(
-        DispatchConfig(repo_root=tmp_path, agents=agents)
-    )
-
-    assert missing == ["backend fallback"]
 
 
 def test_fallback_sign_in_failure_names_the_fallback_cli(

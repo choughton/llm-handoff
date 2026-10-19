@@ -6,7 +6,7 @@ import pytest
 
 from llm_handoff import agent_roles
 from llm_handoff.agent_process import build_agent_env
-from llm_handoff.agent_providers import antigravity, claude, codex, gemini
+from llm_handoff.agent_providers import antigravity, claude, codex
 from llm_handoff.agent_types import _ProcessResult
 from llm_handoff.config import AgentConfig, load_dispatch_config
 from llm_handoff.normalizer_providers import claude as claude_normalizer
@@ -97,22 +97,6 @@ def test_codex_adapter_subprocess_gets_allowlisted_env_only(
     assert "CLAUDE_CONFIG_DIR" not in _upper(env)
 
 
-def test_gemini_adapter_subprocess_gets_allowlisted_env_only(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    secret_environ: None,
-) -> None:
-    recorder = _EnvRecorder()
-    monkeypatch.setattr(gemini, "_run_command_streaming", recorder)
-
-    gemini.invoke_gemini("planner", tmp_path / "HANDOFF.md", repo_root=tmp_path)
-
-    env = _assert_no_unrelated_secrets(recorder.envs[0])
-    assert "GEMINI_SANDBOX" in _upper(env)
-    assert _upper(env).isdisjoint(VENDOR_KEYS)
-    assert "CLAUDE_CONFIG_DIR" not in _upper(env)
-
-
 def test_role_dispatch_passes_role_env_passthrough_to_subprocess(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -144,18 +128,25 @@ def test_codex_api_key_is_passed_only_when_role_opts_in(
     assert _upper(opted_in_env).isdisjoint(VENDOR_KEYS.keys() - {"OPENAI_API_KEY"})
 
 
-def test_gemini_api_key_rule_never_passes_google_api_key(
+@pytest.mark.parametrize("env_mode", ["allowlist", "inherit"])
+@pytest.mark.parametrize("provider", ["claude", "codex", "antigravity"])
+def test_google_api_keys_are_stripped_for_every_provider_even_when_opted_in(
+    provider: str,
+    env_mode: str,
     secret_environ: None,
 ) -> None:
-    opted_in_env = build_agent_env(
-        AgentConfig(provider="gemini"),
+    # The gemini provider was removed, so no launch receives a Google key.
+    agent_config = AgentConfig(
+        provider=provider,
         use_api_key_env=True,
+        env_mode=env_mode,
     )
+    configured_env = build_agent_env(agent_config)
+    forced_env = build_agent_env(agent_config, use_api_key_env=True)
 
-    assert opted_in_env["GEMINI_API_KEY"] == "gemini-secret"
-    assert "GOOGLE_API_KEY" not in _upper(opted_in_env)
-    assert "OPENAI_API_KEY" not in _upper(opted_in_env)
-    assert "ANTHROPIC_API_KEY" not in _upper(opted_in_env)
+    for env in (configured_env, forced_env):
+        assert "GEMINI_API_KEY" not in _upper(env)
+        assert "GOOGLE_API_KEY" not in _upper(env)
 
 
 def test_claude_never_gets_an_api_key_even_when_opted_in(
@@ -240,7 +231,7 @@ def test_allowlist_matches_names_case_insensitively() -> None:
     assert env == {"Path": "C:/bin", "SystemRoot": "C:/Windows"}
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex", "gemini", "antigravity"])
+@pytest.mark.parametrize("provider", ["claude", "codex", "antigravity"])
 def test_allowlist_keeps_the_account_name(provider: str) -> None:
     env = build_agent_env(
         AgentConfig(provider=provider),
@@ -252,7 +243,7 @@ def test_allowlist_keeps_the_account_name(provider: str) -> None:
 
 def test_env_passthrough_rejects_vendor_api_keys() -> None:
     with pytest.raises(ValueError, match="use_api_key_env"):
-        AgentConfig(provider="gemini", env_passthrough=("OPENAI_API_KEY",))
+        AgentConfig(provider="antigravity", env_passthrough=("OPENAI_API_KEY",))
 
 
 def test_env_passthrough_rejects_invalid_names() -> None:

@@ -8,7 +8,6 @@ from llm_handoff import config as config_module
 from llm_handoff.agent_providers.antigravity import invoke_antigravity
 from llm_handoff.agent_providers.claude import invoke_claude_subagent
 from llm_handoff.agent_providers.codex import invoke_codex, unwrap_codex_final_message
-from llm_handoff.agent_providers.gemini import invoke_gemini
 from llm_handoff.agent_providers.manual import invoke_manual_frontend
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
 from llm_handoff.config import AgentConfig, AgentRole
@@ -38,7 +37,6 @@ def invoke_role(
     log: LogFn | None = None,
     use_manual_frontend: bool = False,
     use_resume: bool = False,
-    use_api_key_env: bool = False,
     additional_instruction: str | None = None,
     session_id: str | None = None,
     previous_handoff_sha: str | None = None,
@@ -68,7 +66,6 @@ def invoke_role(
             agent_config=launch_config,
             log=log,
             use_resume=use_resume and not is_fallback,
-            use_api_key_env=use_api_key_env,
             additional_instruction=additional_instruction,
             session_id=None if is_fallback else session_id,
             previous_handoff_sha=None if is_fallback else previous_handoff_sha,
@@ -96,7 +93,6 @@ def _invoke_role_provider(
     agent_config: AgentConfig,
     log: LogFn | None,
     use_resume: bool,
-    use_api_key_env: bool,
     additional_instruction: str | None,
     session_id: str | None,
     previous_handoff_sha: str | None,
@@ -120,34 +116,6 @@ def _invoke_role_provider(
             binary=agent_config.binary,
             skill_name=agent_config.skill_name,
             timeout_ms=agent_config.timeout_ms,
-            repo_root=repo_root,
-            agent_config=agent_config,
-        )
-
-    if provider == "gemini":
-        return invoke_gemini(
-            role,
-            handoff_path,
-            mention=agent_config.mention,
-            agent_name=_role_agent_name(
-                agent_config,
-                default=f"Gemini {role}",
-            ),
-            binary=agent_config.binary,
-            timeout_ms=agent_config.timeout_ms,
-            max_retries=agent_config.retries,
-            use_api_key_env=use_api_key_env
-            if agent_config.use_api_key_env is None
-            else agent_config.use_api_key_env,
-            additional_instruction=_combine_instructions(
-                support_prompt,
-                additional_instruction,
-            ),
-            use_resume=use_resume,
-            session_id=session_id,
-            previous_handoff_sha=previous_handoff_sha,
-            current_handoff_sha=current_handoff_sha,
-            log=log,
             repo_root=repo_root,
             agent_config=agent_config,
         )
@@ -227,7 +195,6 @@ def invoke_backend_role(
 def invoke_planner_role(
     handoff_path: Path,
     *,
-    use_api_key_env: bool = False,
     additional_instruction: str | None = None,
     use_resume: bool = False,
     session_id: str | None = None,
@@ -242,7 +209,6 @@ def invoke_planner_role(
         "planner",
         handoff_path,
         agent_config=agent_config or _default_agent_config("planner"),
-        use_api_key_env=use_api_key_env,
         additional_instruction=additional_instruction,
         use_resume=use_resume,
         session_id=session_id,
@@ -258,7 +224,6 @@ def invoke_frontend_role(
     handoff_path: Path,
     *,
     use_manual_frontend: bool = False,
-    use_api_key_env: bool = False,
     additional_instruction: str | None = None,
     log: LogFn | None = None,
     agent_config: AgentConfig | None = None,
@@ -270,7 +235,6 @@ def invoke_frontend_role(
         handoff_path,
         agent_config=agent_config or _default_agent_config("frontend"),
         use_manual_frontend=use_manual_frontend,
-        use_api_key_env=use_api_key_env,
         additional_instruction=additional_instruction,
         log=log,
         repo_root=repo_root,
@@ -357,7 +321,6 @@ def _invoke_support_provider(
         agent_config=agent_config,
         log=log,
         use_resume=use_resume,
-        use_api_key_env=bool(agent_config.use_api_key_env),
         additional_instruction=None,
         session_id=None,
         previous_handoff_sha=None,

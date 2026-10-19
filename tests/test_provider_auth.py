@@ -30,7 +30,7 @@ CLAUDE_EXPIRED = (
         "Error: Invalid API key. Please run /login.",
         "Not logged in. Please run codex login.",
         "HTTP 401 Unauthorized",
-        "Please run `gemini auth login` to authenticate.",
+        "Please run `gh auth login` to authenticate.",
     ],
 )
 def test_find_auth_failure_recognizes_provider_messages(text: str) -> None:
@@ -50,7 +50,6 @@ def test_find_auth_failure_ignores_ordinary_failures() -> None:
     [
         ("claude", "/login"),
         ("codex", "codex login"),
-        ("gemini", "GEMINI_API_KEY"),
         ("antigravity", "Run `agy` once in a terminal"),
         (None, "Sign in to the provider CLI"),
     ],
@@ -125,82 +124,17 @@ def test_run_loop_stops_on_the_first_sign_in_failure(
     assert not any("Failure count" in message for _, message in logs)
 
 
-GEMINI_INELIGIBLE = (
-    "Error authenticating: IneligibleTierError: This client is no longer "
-    "supported for Gemini Code Assist for individuals. To continue using Gemini, "
-    "please migrate to the Antigravity suite of products."
-)
-
-
-def test_find_auth_failure_recognizes_gemini_ineligible_tier() -> None:
-    assert find_auth_failure("", "stack noise\n" + GEMINI_INELIGIBLE) == (
-        GEMINI_INELIGIBLE
+def test_removed_gemini_provider_has_no_sign_in_markers_or_fix_text() -> None:
+    # The gemini provider was removed, so its sign-in markers and fix steps
+    # went with it; an unknown provider gets the generic sign-in text.
+    assert find_auth_failure("Please run gemini login first.") is None
+    assert (
+        find_auth_failure(
+            "IneligibleTierError: no longer supported for Gemini Code Assist"
+        )
+        is None
     )
-
-
-def test_gemini_fix_instructions_point_at_an_api_key() -> None:
-    text = auth_fix_instructions("gemini")
-
-    assert "IneligibleTierError" in text
-    assert "GEMINI_API_KEY" in text
-    assert "use_api_key_env: true" in text
-
-
-def test_gemini_does_not_retry_a_sign_in_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from llm_handoff.agent_providers import gemini
-    from llm_handoff.agent_types import _ProcessResult
-
-    attempts: list[int] = []
-
-    def ineligible(*_args, **kwargs) -> _ProcessResult:
-        attempts.append(kwargs["attempt_number"])
-        return _ProcessResult(stdout="", stderr=GEMINI_INELIGIBLE, exit_code=1)
-
-    monkeypatch.setattr(gemini, "_run_gemini_command", ineligible)
-    monkeypatch.setattr(gemini.time, "sleep", lambda _seconds: None)
-
-    result = gemini._run_gemini_with_retries(
-        ["gemini"],
-        repo_root=Path("."),
-        use_api_key_env=False,
-        stop_on_resume_recoverable_failure=False,
-        max_retries=3,
-        retry_base_seconds=0,
-        log=None,
-    )
-
-    assert attempts == [1]
-    assert result.exit_code == 1
-
-
-def test_gemini_still_retries_ordinary_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from llm_handoff.agent_providers import gemini
-    from llm_handoff.agent_types import _ProcessResult
-
-    attempts: list[int] = []
-
-    def flaky(*_args, **kwargs) -> _ProcessResult:
-        attempts.append(kwargs["attempt_number"])
-        return _ProcessResult(stdout="", stderr="network hiccup", exit_code=1)
-
-    monkeypatch.setattr(gemini, "_run_gemini_command", flaky)
-    monkeypatch.setattr(gemini.time, "sleep", lambda _seconds: None)
-
-    gemini._run_gemini_with_retries(
-        ["gemini"],
-        repo_root=Path("."),
-        use_api_key_env=False,
-        stop_on_resume_recoverable_failure=False,
-        max_retries=2,
-        retry_base_seconds=0,
-        log=None,
-    )
-
-    assert attempts == [1, 2, 3]
+    assert auth_fix_instructions("gemini") == auth_fix_instructions(None)
 
 
 # Antigravity (agy)
@@ -235,7 +169,7 @@ def test_find_antigravity_auth_failure_recognizes_agy_sign_in_failure(
 def test_shared_matcher_does_not_treat_authentication_required_as_sign_in(
     text: str,
 ) -> None:
-    # Claude, Codex, and Gemini output can say this about anything; only the
+    # Claude and Codex output can say this about anything; only the
     # agy adapter treats it as a sign-in failure.
     assert find_auth_failure(text) is None
 
@@ -376,7 +310,7 @@ def test_stop_on_auth_failure_names_agy_for_an_antigravity_role(
     assert any(message.startswith("Fix: Run `agy`") for message in errors)
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex", "gemini"])
+@pytest.mark.parametrize("provider", ["claude", "codex"])
 def test_stop_on_auth_failure_ignores_authentication_required_for_other_providers(
     tmp_path: Path,
     provider: str,

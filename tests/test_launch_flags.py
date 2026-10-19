@@ -5,12 +5,11 @@ from pathlib import Path
 import pytest
 
 from llm_handoff import agent_roles, config, orchestrator
-from llm_handoff.agent_providers import claude, codex, gemini
+from llm_handoff.agent_providers import claude, codex
 from llm_handoff.agent_types import _ProcessResult
 from llm_handoff.config import AgentConfig, DispatchConfig, load_dispatch_config
 
 
-REAL_DETECT_GEMINI_SANDBOX = gemini.detect_gemini_sandbox_runtime
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -400,93 +399,6 @@ def test_codex_unsafe_bypass_from_role_config_restores_yolo(
     assert "--sandbox" not in command
 
 
-# Gemini CLI
-
-
-def test_gemini_default_launch_keeps_container_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    recorder = _CommandRecorder()
-    monkeypatch.setattr(gemini, "_run_command_streaming", recorder)
-
-    gemini.invoke_gemini("planner", tmp_path / "HANDOFF.md", repo_root=tmp_path)
-
-    command = recorder.commands[0]
-    assert "--sandbox=false" not in command
-    assert command[1:5] == ["--output-format", "stream-json", "--yolo", "--sandbox"]
-
-
-def test_gemini_unsafe_bypass_restores_previous_flags(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    recorder = _CommandRecorder()
-    monkeypatch.setattr(gemini, "_run_command_streaming", recorder)
-    monkeypatch.setattr(gemini, "detect_gemini_sandbox_runtime", lambda: None)
-
-    result = gemini.invoke_gemini(
-        "planner",
-        tmp_path / "HANDOFF.md",
-        repo_root=tmp_path,
-        agent_config=AgentConfig(provider="gemini", unsafe_bypass=True),
-    )
-
-    assert result.exit_code == 0
-    assert recorder.commands[0][3:5] == ["--yolo", "--sandbox=false"]
-
-
-def test_gemini_fails_closed_without_sandbox_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    recorder = _CommandRecorder()
-    logs: list[tuple[str, str]] = []
-    monkeypatch.setattr(gemini, "_run_command_streaming", recorder)
-    monkeypatch.setattr(gemini, "detect_gemini_sandbox_runtime", lambda: None)
-
-    result = gemini.invoke_gemini(
-        "Planner",
-        tmp_path / "HANDOFF.md",
-        repo_root=tmp_path,
-        log=lambda level, message: logs.append((level, message)),
-    )
-
-    assert result.exit_code == 1
-    assert recorder.commands == []
-    assert "agents.planner.unsafe_bypass: true" in result.stderr
-    assert logs == [("ERROR", result.stderr)]
-
-
-@pytest.mark.parametrize(
-    ("platform", "configured", "available", "expected"),
-    [
-        ("win32", "", {"docker"}, "docker"),
-        ("linux", "", {"podman"}, "podman"),
-        ("linux", "", set(), None),
-        ("darwin", "", {"sandbox-exec"}, "sandbox-exec"),
-        ("linux", "podman", {"docker"}, None),
-        ("linux", "true", {"docker"}, "docker"),
-    ],
-)
-def test_detect_gemini_sandbox_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    platform: str,
-    configured: str,
-    available: set[str],
-    expected: str | None,
-) -> None:
-    monkeypatch.setattr(gemini.sys, "platform", platform)
-    monkeypatch.setenv("GEMINI_SANDBOX", configured)
-    monkeypatch.setattr(
-        gemini.shutil,
-        "which",
-        lambda name: f"/usr/bin/{name}" if name in available else None,
-    )
-
-    assert REAL_DETECT_GEMINI_SANDBOX() == expected
-
-
 # Antigravity
 
 
@@ -535,45 +447,6 @@ def test_startup_banner_warns_on_antigravity_unsafe_bypass(tmp_path: Path) -> No
 
 
 # Orchestrator startup
-
-
-def _write_planner_handoff(repo: Path) -> None:
-    handoff = repo / "docs" / "handoff" / "HANDOFF.md"
-    handoff.parent.mkdir(parents=True)
-    handoff.write_text(
-        '---\nnext_agent: planner\nreason: "Scope work."\nproducer: user\n---\n',
-        encoding="utf-8",
-    )
-
-
-def test_run_loop_fails_closed_at_startup_without_gemini_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    _write_planner_handoff(tmp_path)
-    monkeypatch.setattr(gemini, "detect_gemini_sandbox_runtime", lambda: None)
-    dispatched: list[object] = []
-    monkeypatch.setattr(
-        orchestrator,
-        "invoke_planner_role",
-        lambda *args, **kwargs: dispatched.append(args),
-    )
-    logs: list[tuple[str, str]] = []
-    agents = config._default_agent_configs()
-    agents["planner"] = AgentConfig(provider="gemini")
-    agents["frontend"] = AgentConfig(provider="gemini")
-
-    exit_code = orchestrator.run_loop(
-        DispatchConfig(repo_root=tmp_path, agents=agents, poll_interval_seconds=0),
-        max_cycles=1,
-        log=lambda level, message: logs.append((level, message)),
-    )
-
-    assert exit_code == 1
-    assert dispatched == []
-    errors = [message for level, message in logs if level == "ERROR"]
-    assert any("agents.planner.unsafe_bypass: true" in m for m in errors)
-    assert any("agents.frontend.unsafe_bypass: true" in m for m in errors)
 
 
 def test_startup_banner_shows_launch_posture_and_warns_on_unsafe_bypass(

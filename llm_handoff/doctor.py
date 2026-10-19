@@ -2,9 +2,8 @@
 
 The doctor command checks a checkout before the dispatcher runs: Git, the
 commit count (audits need a parent commit for the default review base), the
-provider CLI binaries the configured roles launch, the container runtime
-Gemini CLI roles need for their sandbox, whether the configured next-agent
-normalizer has an API key or CLI to run with, whether the audit runs the
+provider CLI binaries the configured roles launch, whether the configured
+next-agent normalizer has an API key or CLI to run with, whether the audit runs the
 security reviewer (with the opt-out reason when it does not), whether the
 work-claim gate is on (with the opt-out reason when it is not), each configured
 scanner and whether the gate will run it (its leading executable is looked up
@@ -55,10 +54,6 @@ import yaml
 
 from llm_handoff.agent_process import _run_logged_agent_command
 from llm_handoff.agent_providers.claude import _build_claude_env
-from llm_handoff.agent_providers.gemini import (
-    detect_gemini_sandbox_runtime,
-    gemini_sandbox_unavailable_message,
-)
 from llm_handoff.antigravity_permissions import (
     ANTIGRAVITY_REQUIRED_DENY,
     antigravity_allow_entries,
@@ -172,7 +167,6 @@ def run_doctor(
     git_available = _check_git(resolved_root, checks)
     if dispatch_config is not None:
         _check_role_binaries(dispatch_config, resolved_root, checks)
-        _check_container_runtime(dispatch_config, checks)
         _check_antigravity_permissions(dispatch_config, checks)
         _check_interpreter_grants(dispatch_config, checks)
         _check_normalizer(dispatch_config, resolved_root, checks)
@@ -425,40 +419,6 @@ def _check_role_binaries(
                     "was not found on PATH",
                 )
             )
-
-
-def _check_container_runtime(
-    dispatch_config: DispatchConfig,
-    checks: list[DoctorCheck],
-) -> None:
-    # Roles with unsafe_bypass: true launch Gemini CLI with --sandbox=false and
-    # do not need a container runtime, matching the Gemini provider.
-    # A fallback's setting key is agents.<role>.fallback.unsafe_bypass.
-    sandboxed_roles = [
-        label.replace(" ", ".")
-        for label, agent_config in _role_launches(dispatch_config)
-        if agent_config.provider == "gemini" and not agent_config.unsafe_bypass
-    ]
-    if not sandboxed_roles:
-        return
-    runtime = detect_gemini_sandbox_runtime()
-    if runtime is not None:
-        checks.append(
-            DoctorCheck(
-                "PASS",
-                "container runtime",
-                f"Gemini CLI sandbox runtime `{runtime}` is on PATH",
-            )
-        )
-        return
-    for role in sandboxed_roles:
-        checks.append(
-            DoctorCheck(
-                "FAIL",
-                "container runtime",
-                gemini_sandbox_unavailable_message(role),
-            )
-        )
 
 
 _ANTIGRAVITY_CHECK_NAME = "antigravity permissions"
@@ -1438,14 +1398,6 @@ def _claude_user_config_path() -> Path:
     return Path.home() / ".claude.json"
 
 
-def _gemini_user_settings_path() -> Path:
-    """User Gemini settings, rooted at ``GEMINI_CLI_HOME`` when set."""
-    root = _env_dir("GEMINI_CLI_HOME")
-    if root is None:
-        root = Path.home()
-    return root / ".gemini" / "settings.json"
-
-
 def _codex_config_paths(repo_root: Path) -> list[Path]:
     codex_home = _env_dir("CODEX_HOME")
     if codex_home is not None:
@@ -1462,8 +1414,8 @@ def _check_tracker_connectors(
 ) -> None:
     """Report, per provider CLI, whether its MCP config defines the tracker server.
 
-    Runs only in Linear mode. Lines are grouped per provider (claude, codex,
-    gemini), each ending with the role labels it covers. Only
+    Runs only in Linear mode. Lines are grouped per provider (claude, codex),
+    each ending with the role labels it covers. Only
     MCP config files are read; no provider CLI is run, nothing is written,
     and no value from a config file is printed. Only Claude launches that
     load ``tracker.claude_mcp_config`` with ``--strict-mcp-config`` can FAIL.
@@ -1477,7 +1429,6 @@ def _check_tracker_connectors(
         "claude strict": [],
         "claude": [],
         "codex": [],
-        "gemini": [],
     }
     for label, agent_config in _role_launches(dispatch_config):
         provider = agent_config.provider
@@ -1505,20 +1456,6 @@ def _check_tracker_connectors(
                     _codex_config_paths(repo_root),
                     "TOML",
                     "mcp_servers",
-                    server,
-                    covers,
-                )
-            )
-        elif group == "gemini":
-            checks.append(
-                _file_connector(
-                    "gemini",
-                    [
-                        repo_root / ".gemini" / "settings.json",
-                        _gemini_user_settings_path(),
-                    ],
-                    "JSON",
-                    "mcpServers",
                     server,
                     covers,
                 )

@@ -247,7 +247,7 @@ with `--help` for the full option list.
 | `python -m llm_handoff.supervisor ...` | Optional supervised wrapper. See [SUPERVISED_DISPATCH.md](SUPERVISED_DISPATCH.md). |
 
 Other run flags: `--manual-frontend`, `--no-interactive-pause`,
-`--no-backend-resume`, `--no-planner-resume`, `--use-planner-api-key-env`.
+`--no-backend-resume`, `--no-planner-resume`.
 See [Runtime Controls](../CONFIGURATION.md#runtime-controls).
 
 ## Test Fixture Handoffs

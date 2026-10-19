@@ -108,7 +108,6 @@ def _stub_which(monkeypatch: pytest.MonkeyPatch, available: set[str]) -> None:
         return None
 
     monkeypatch.setattr(shutil, "which", fake_which)
-    monkeypatch.delenv("GEMINI_SANDBOX", raising=False)
     # The default claude normalizer is runnable with an Anthropic key; tests
     # of the normalizer check clear it and choose their own provider inputs.
     for name in NORMALIZER_KEY_NAMES:
@@ -122,9 +121,9 @@ def _run(repo: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
 
 
 MIXED = {
-    "planner": "gemini",
+    "planner": "codex",
     "backend": "codex",
-    "frontend": "gemini",
+    "frontend": "claude",
     "auditor": "claude",
     "validator": "claude",
     "finalizer": "claude",
@@ -136,7 +135,7 @@ def test_doctor_happy_path_passes_every_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _make_repo(tmp_path, MIXED)
-    _stub_which(monkeypatch, {"fake-gemini", "fake-codex", "fake-claude", "docker"})
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
 
     exit_code, output = _run(repo, capsys)
 
@@ -150,7 +149,6 @@ def test_doctor_happy_path_passes_every_check(
         "PASS git:",
         "PASS git repository:",
         "PASS git working tree:",
-        "PASS container runtime:",
         "PASS normalizer:",
         "PASS handoff route: routes to backend",
         "PASS handoff validation:",
@@ -280,9 +278,10 @@ def test_doctor_reports_when_git_is_missing_and_handoff_has_scope_sha(
     assert lines[-1].startswith("Doctor FAIL:")
 
 
-def test_doctor_skips_container_runtime_without_gemini_roles(
+def test_doctor_has_no_container_runtime_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
+    # The container runtime check served only the removed gemini provider.
     repo = _make_repo(tmp_path, NO_GEMINI)
     _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
 
@@ -292,47 +291,17 @@ def test_doctor_skips_container_runtime_without_gemini_roles(
     assert "container runtime" not in output
 
 
-def test_doctor_requires_container_runtime_for_gemini_roles(
+def test_doctor_fails_config_for_a_removed_gemini_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    repo = _make_repo(tmp_path, MIXED)
+    repo = _make_repo(tmp_path, {**NO_GEMINI, "planner": "gemini"})
     _stub_which(monkeypatch, {"fake-gemini", "fake-codex", "fake-claude"})
 
     exit_code, output = _run(repo, capsys)
 
     assert exit_code == 1
-    runtime_lines = [
-        line for line in output.splitlines() if line.startswith("FAIL container runtime:")
-    ]
-    assert len(runtime_lines) == 2
-    for line in runtime_lines:
-        assert "Docker" in line
-        assert "Podman" in line
-        assert "sandbox-exec" in line
-    assert "agents.planner.unsafe_bypass: true" in output
-    assert "agents.frontend.unsafe_bypass: true" in output
-
-
-def test_doctor_container_runtime_skips_unsafe_bypass_gemini_roles(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _make_repo(tmp_path, NO_GEMINI, commit=False)
-    config_path = repo / "dispatch_config.yaml"
-    config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace(
-            "  planner:\n    provider: claude\n    binary: fake-claude\n",
-            "  planner:\n    provider: gemini\n    binary: fake-gemini\n"
-            "    unsafe_bypass: true\n",
-        ),
-        encoding="utf-8",
-    )
-    _stub_which(monkeypatch, {"fake-gemini", "fake-codex", "fake-claude"})
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 0, output
-    assert "PASS role planner: provider gemini" in output
-    assert "container runtime" not in output
+    assert "FAIL config: dispatch config could not be loaded" in output
+    assert config_module.GEMINI_PROVIDER_REMOVED_MESSAGE in output
 
 
 def test_doctor_reports_malformed_handoff(
@@ -1225,7 +1194,6 @@ def test_doctor_passes_an_all_codex_init_with_only_codex_on_path(
     monkeypatch.setenv(
         "PATH", os.pathsep.join([str(bin_dir), str(Path(real_git).parent)])
     )
-    monkeypatch.delenv("GEMINI_SANDBOX", raising=False)
     for name in NORMALIZER_KEY_NAMES:
         monkeypatch.delenv(name, raising=False)
     assert shutil.which("codex") is not None
@@ -1261,7 +1229,7 @@ def test_doctor_does_not_write_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _make_repo(tmp_path, MIXED)
-    _stub_which(monkeypatch, {"fake-gemini", "fake-codex", "fake-claude", "docker"})
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
     before = sorted(p.relative_to(repo) for p in repo.rglob("*") if ".git" not in p.parts)
 
     _run(repo, capsys)
@@ -2140,7 +2108,7 @@ def _linear_repo(
 ) -> Path:
     """Linear-mode repo with home at tmp_path/home and config-dir variables unset.
 
-    ``CODEX_HOME``, ``CLAUDE_CONFIG_DIR``, and ``GEMINI_CLI_HOME`` are unset.
+    ``CODEX_HOME`` and ``CLAUDE_CONFIG_DIR`` are unset.
     ``role_extra`` appends YAML lines (indented four spaces) to a role block.
     """
     repo = _make_repo(tmp_path, providers, handoff=None, commit=False)
@@ -2158,16 +2126,13 @@ def _linear_repo(
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
     _stub_which(
         monkeypatch,
         {
             "fake-claude",
             "fake-codex",
-            "fake-gemini",
             "fake-agy",
             "fake-antigravity",
-            "docker",
         },
     )
     return repo
@@ -2210,7 +2175,7 @@ def test_doctor_tracker_connector_absent_in_vanilla_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _make_repo(tmp_path, MIXED, handoff=None, commit=False)
-    _stub_which(monkeypatch, {"fake-gemini", "fake-codex", "fake-claude", "docker"})
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
 
     exit_code, output = _run(repo, capsys)
     assert exit_code == 0, output
@@ -2500,89 +2465,6 @@ def test_doctor_tracker_connector_codex_warns_on_invalid_toml(
     assert line.endswith("(covers backend)")
 
 
-GEMINI_PLANNER = {**NO_GEMINI, "planner": "gemini"}
-
-
-def test_doctor_tracker_connector_gemini_passes_from_repo_settings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
-    _write_json(repo / ".gemini" / "settings.json", _servers())
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 0, output
-    line = _provider_line(output, "gemini")
-    assert line == (
-        f"PASS {TRACKER_CHECK}: gemini: {repo / '.gemini' / 'settings.json'} "
-        "defines MCP server `linear` (covers planner)"
-    )
-
-
-def test_doctor_tracker_connector_gemini_passes_from_user_settings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
-    _write_json(tmp_path / "home" / ".gemini" / "settings.json", _servers())
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 0, output
-    line = _provider_line(output, "gemini")
-    assert line.startswith(f"PASS {TRACKER_CHECK}: gemini:")
-    assert str(tmp_path / "home" / ".gemini" / "settings.json") in line
-
-
-def test_doctor_tracker_connector_gemini_honors_gemini_cli_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
-    gemini_home = tmp_path / "gemini-home"
-    settings = _write_json(gemini_home / ".gemini" / "settings.json", _servers())
-    monkeypatch.setenv("GEMINI_CLI_HOME", str(gemini_home))
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 0, output
-    assert _provider_line(output, "gemini") == (
-        f"PASS {TRACKER_CHECK}: gemini: {settings} defines MCP server `linear` "
-        "(covers planner)"
-    )
-
-
-def test_doctor_tracker_connector_gemini_cli_home_hides_default_user_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
-    gemini_home = tmp_path / "gemini-home"
-    gemini_home.mkdir()
-    _write_json(tmp_path / "home" / ".gemini" / "settings.json", _servers())
-    monkeypatch.setenv("GEMINI_CLI_HOME", str(gemini_home))
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 0, output
-    line = _provider_line(output, "gemini")
-    assert line.startswith(f"WARN {TRACKER_CHECK}: gemini:")
-    assert str(gemini_home / ".gemini" / "settings.json") in line
-    assert str(tmp_path / "home" / ".gemini" / "settings.json") not in line
-
-
-def test_doctor_tracker_connector_gemini_warns_when_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:
-    repo = _linear_repo(tmp_path, monkeypatch, GEMINI_PLANNER)
-
-    exit_code, output = _run(repo, capsys)
-
-    assert exit_code == 0, output
-    line = _provider_line(output, "gemini")
-    assert line.startswith(f"WARN {TRACKER_CHECK}: gemini:")
-    assert str(repo / ".gemini" / "settings.json") in line
-    assert str(tmp_path / "home" / ".gemini" / "settings.json") in line
-    assert line.endswith("(covers planner)")
-
-
 def test_doctor_tracker_connector_fails_config_load_for_antigravity_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
@@ -2617,12 +2499,13 @@ def test_doctor_tracker_connector_reports_one_line_per_provider_in_order(
 
     assert exit_code == 0, output
     lines = _tracker_lines(output)
-    assert len(lines) == 3, output
+    assert len(lines) == 2, output
     providers = [line.split(":", 2)[1].strip() for line in lines]
-    assert providers == ["claude", "codex", "gemini"]
-    assert lines[0].endswith("(covers backend fallback, auditor, validator, finalizer)")
-    assert lines[1].endswith("(covers backend)")
-    assert lines[2].endswith("(covers planner, frontend)")
+    assert providers == ["claude", "codex"]
+    assert lines[0].endswith(
+        "(covers backend fallback, frontend, auditor, validator, finalizer)"
+    )
+    assert lines[1].endswith("(covers planner, backend)")
 
 
 def test_doctor_tracker_connector_never_prints_config_values(
@@ -2641,7 +2524,6 @@ def test_doctor_tracker_connector_never_prints_config_values(
         "headers": {"Authorization": f"Bearer {SECRET_SENTINEL}"},
     }
     _write_json(repo / "config" / "linear-mcp.json", {"mcpServers": {"linear": entry}})
-    _write_json(repo / ".mcp.json", {"mcpServers": {"other": entry}})
     _write_json(
         tmp_path / "home" / ".claude.json",
         {"mcpServers": {"other": entry}, "projects": {str(repo): {"mcpServers": {}}}},
@@ -2653,14 +2535,14 @@ def test_doctor_tracker_connector_never_prints_config_values(
     )
     # Invalid JSON whose text holds the sentinel: the parse error must not echo it.
     _write_text(
-        repo / ".gemini" / "settings.json",
+        repo / ".mcp.json",
         '{"mcpServers": {"linear": {"env": {"T": "' + SECRET_SENTINEL + '"}}',
     )
 
     exit_code, output = _run(repo, capsys)
 
     assert exit_code == 0, output
-    assert len(_tracker_lines(output)) == 4, output
+    assert len(_tracker_lines(output)) == 3, output
     assert SECRET_SENTINEL not in output
     assert "sentinel" not in output.lower()
 
@@ -2684,7 +2566,7 @@ def test_doctor_tracker_connector_runs_no_provider_cli(
     exit_code, output = _run(repo, capsys)
 
     assert exit_code == 0, output
-    assert len(_tracker_lines(output)) == 3, output
+    assert len(_tracker_lines(output)) == 2, output
     assert "git" in calls
     provider_binaries = {"claude", "codex", "gemini", "agy", "antigravity"}
     for name in calls:

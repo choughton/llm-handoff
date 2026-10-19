@@ -23,9 +23,6 @@ AUTH_FAILURE_MARKERS = (
     "not logged in",
     "please run /login",
     "401 Unauthorized",
-    # Gemini CLI: Google no longer accepts personal Gemini Code Assist sign-ins.
-    "IneligibleTierError",
-    "no longer supported for Gemini Code Assist",
 )
 # Antigravity CLI (agy): a headless run that is not signed in. The phrase is
 # too generic to match for every provider, so only the agy adapter checks it
@@ -35,7 +32,7 @@ ANTIGRAVITY_AUTH_FAILURE_MARKERS = ("authentication required",)
 AUTH_FAILURE_PATTERNS = (
     re.compile(r"\bplease\s+run\b.*\bauth\s+login\b", re.IGNORECASE),
     re.compile(r"\brun\b.*\bauth\s+login\b.*\bto\s+authenticate\b", re.IGNORECASE),
-    re.compile(r"\bplease\s+run\b.*\b(?:codex|gemini)\s+login\b", re.IGNORECASE),
+    re.compile(r"\bplease\s+run\b.*\bcodex\s+login\b", re.IGNORECASE),
 )
 
 _FIX_INSTRUCTIONS = {
@@ -46,14 +43,6 @@ _FIX_INSTRUCTIONS = {
     "codex": (
         "Run `codex login` and finish signing in. "
         'Check it with: codex exec "Reply with OK"'
-    ),
-    "gemini": (
-        "Run `gemini` in a terminal and finish signing in. If Google reports "
-        "IneligibleTierError, personal Gemini Code Assist sign-ins no longer "
-        "work: set GEMINI_API_KEY (from Google AI Studio) and add "
-        "`use_api_key_env: true` to each Gemini role in dispatch_config.yaml, "
-        "or map those roles to another provider. "
-        'Check it with: gemini -p "Reply with OK"'
     ),
     "antigravity": (
         "Run `agy` once in a terminal and finish signing in. "

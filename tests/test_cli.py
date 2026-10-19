@@ -171,6 +171,54 @@ def test_init_command_rejects_the_removed_gemini_provider(
         assert not any(tmp_path.iterdir())
 
 
+PLANNER_API_KEY_ENV_FLAG_REMOVED_TEXT = (
+    "--use-planner-api-key-env was removed with the gemini provider: Gemini CLI "
+    "no longer serves personal Google accounts. Use provider: antigravity (the "
+    "agy CLI)."
+)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [(), ("--dry-run",), ("--dry-run", "--manual-frontend")],
+)
+def test_removed_planner_api_key_env_flag_exits_2_before_any_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    extra: tuple[str, ...],
+) -> None:
+    (tmp_path / ".git").mkdir()
+    # A config the loader would reject proves the flag stops before loading.
+    (tmp_path / "dispatch_config.yaml").write_text(
+        "planner_api_key_env: true\n", encoding="utf-8"
+    )
+    calls: list[object] = []
+
+    def fail(*args: object, **kwargs: object) -> int:
+        calls.append((args, kwargs))
+        raise AssertionError("the removed flag must stop before dispatch")
+
+    monkeypatch.setattr(main_module, "run_loop", fail)
+    monkeypatch.setattr(main_module, "load_dispatch_config", fail)
+
+    exit_code = main_module.main(
+        ["--use-planner-api-key-env", *extra, "--repo-root", str(tmp_path)]
+    )
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert captured.err.strip() == PLANNER_API_KEY_ENV_FLAG_REMOVED_TEXT
+    assert calls == []
+    assert not (tmp_path / ".dispatch.lock").exists()
+
+
+def test_removed_planner_api_key_env_flag_is_hidden_from_help(capsys) -> None:
+    assert main_module.main(["--help"]) == 0
+
+    assert "--use-planner-api-key-env" not in capsys.readouterr().out
+
+
 def test_init_command_provider_antigravity_writes_all_agy_mapping(
     tmp_path: Path,
     capsys,

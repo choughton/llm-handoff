@@ -2,18 +2,18 @@
 #
 # This file documents the shipped reference role-to-provider mapping for source
 # checkout users and target-repo templates. Roles can be remapped to registered
-# runtime adapters: codex, antigravity, gemini, or claude.
+# runtime adapters: codex, antigravity, or claude.
 #
 # Launch flags are safe by default: Claude Code runs in dontAsk mode with an
-# allowed_tools list, Codex in its workspace-write sandbox, and Gemini CLI in
-# its container sandbox (needs Docker or Podman). `unsafe_bypass: true` on a
+# allowed_tools list, Codex in its workspace-write sandbox, and the Antigravity
+# CLI (agy) with no permission flags, so its shell commands need
+# permissions.allow grants in the agy user settings. `unsafe_bypass: true` on a
 # role restores the old bypass flags and is logged as a startup warning.
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
 backend_resume: true
 planner_resume: true
-planner_api_key_env: false
 # Bounded planner recovery at dispatcher pauses (not next_agent: user): one
 # planner attempt per pause streak, then the dispatcher waits for a HANDOFF.md
 # edit. "off" (quoted; YAML reads a bare off as false) always waits.

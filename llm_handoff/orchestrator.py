@@ -16,7 +16,6 @@ from typing import Callable, Literal, TextIO, cast
 from llm_handoff.agent_providers import antigravity as antigravity_provider
 from llm_handoff.agent_providers import claude as claude_provider
 from llm_handoff.agent_providers import codex as codex_provider
-from llm_handoff.agent_providers import gemini as gemini_provider
 from llm_handoff.agent_types import HandoffStatus
 from llm_handoff.agent_roles import (
     invoke_backend_role,
@@ -462,15 +461,6 @@ def run_loop(
     log_fn = log or _default_log
 
     _log_startup_banner(config, log_fn)
-    missing_sandbox_roles = _roles_missing_gemini_sandbox(config)
-    if missing_sandbox_roles and not config.dry_run:
-        for role in missing_sandbox_roles:
-            _log(
-                log_fn,
-                "ERROR",
-                gemini_provider.gemini_sandbox_unavailable_message(role),
-            )
-        return 1
     if not config.dry_run:
         # Stops the run before any agent launches when the security reviewer
         # (configured or chosen automatically) cannot launch.
@@ -1829,7 +1819,6 @@ def _dispatch_route(
             _invoke_dispatch_callable(
                 invoke_planner_role,
                 handoff_path,
-                use_api_key_env=config.planner_api_key_env_enabled,
                 additional_instruction=_with_commit_mode_instruction(
                     config,
                     additional_instruction,
@@ -1858,7 +1847,6 @@ def _dispatch_route(
                 invoke_frontend_role,
                 handoff_path,
                 use_manual_frontend=config.use_manual_frontend,
-                use_api_key_env=config.planner_api_key_env_enabled,
                 additional_instruction=_with_commit_mode_instruction(
                     config, additional_instruction
                 ),
@@ -2302,7 +2290,6 @@ def _dispatch_handoff_hygiene_repair(
             invoke_frontend_role,
             config.handoff_full_path,
             use_manual_frontend=config.use_manual_frontend,
-            use_api_key_env=config.planner_api_key_env_enabled,
             additional_instruction=repair_prompt,
             log=log,
             agent_config=config.agents["frontend"],
@@ -4368,13 +4355,6 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         if config.planner_resume_enabled
         else "Planner session:    STATELESS (new session per dispatch)",
     )
-    _log(
-        log,
-        "INFO",
-        "Planner API env:    PRESERVE configured provider API key"
-        if config.planner_api_key_env_enabled
-        else "Planner API env:    STRIP configured provider API keys",
-    )
     if config.audit.security_enabled:
         _log(
             log,
@@ -4450,17 +4430,6 @@ def _launch_agents(config: DispatchConfig) -> list[tuple[str, str, AgentConfig]]
     return agents
 
 
-def _roles_missing_gemini_sandbox(config: DispatchConfig) -> list[str]:
-    gemini_roles = [
-        label
-        for label, _key, agent_config in _launch_agents(config)
-        if agent_config.provider == "gemini" and not agent_config.unsafe_bypass
-    ]
-    if not gemini_roles or gemini_provider.detect_gemini_sandbox_runtime():
-        return []
-    return gemini_roles
-
-
 def _launch_args_for_role(config: DispatchConfig, role: str) -> list[str]:
     return _launch_args_for_agent(config.agents[role])
 
@@ -4472,10 +4441,6 @@ def _launch_args_for_agent(agent_config: AgentConfig) -> list[str]:
         return codex_provider.codex_permission_args(
             unsafe_bypass=agent_config.unsafe_bypass
         )
-    if agent_config.provider == "gemini":
-        return gemini_provider.gemini_sandbox_args(
-            unsafe_bypass=agent_config.unsafe_bypass
-        )
     if agent_config.provider == "antigravity":
         return antigravity_provider.antigravity_permission_args(
             unsafe_bypass=agent_config.unsafe_bypass
@@ -4485,9 +4450,6 @@ def _launch_args_for_agent(agent_config: AgentConfig) -> list[str]:
 
 def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
     launch_agents = _launch_agents(config)
-    gemini_runtime: str | None = None
-    if any(agent_config.provider == "gemini" for _, _, agent_config in launch_agents):
-        gemini_runtime = gemini_provider.detect_gemini_sandbox_runtime()
     for label, config_key, agent_config in launch_agents:
         args = _launch_args_for_agent(agent_config)
         summary = " ".join(args)
@@ -4501,8 +4463,6 @@ def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
                 f"--permission-mode dontAsk ({len(allowed)} allowed tool rules; "
                 "WebFetch/WebSearch denied)"
             )
-        if agent_config.provider == "gemini" and not agent_config.unsafe_bypass:
-            summary = f"{summary} (sandbox runtime: {gemini_runtime or 'NOT FOUND'})"
         if agent_config.provider == "antigravity" and not agent_config.unsafe_bypass:
             summary = (
                 "(no permission flags; workspace edits allowed, shell commands "

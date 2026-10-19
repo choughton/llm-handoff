@@ -13,7 +13,6 @@ from llm_handoff import agent_types as _types
 from llm_handoff import agent_roles as _roles
 from llm_handoff.agent_providers import claude as _claude
 from llm_handoff.agent_providers import codex as _codex
-from llm_handoff.agent_providers import gemini as _gemini
 from llm_handoff.agent_providers import manual as _manual
 
 _EXPORTED_MODULES = (shutil, subprocess, time)
@@ -46,50 +45,6 @@ _run_command = _process._run_command
 _run_command_streaming = _process._run_command_streaming
 _wait_for_manual_continue = _process._wait_for_manual_continue
 
-GeminiRole = _gemini.GeminiRole
-RateLimitLastBlockPolicy = _gemini.RateLimitLastBlockPolicy
-_GeminiRateLimitEvent = _gemini._GeminiRateLimitEvent
-_GeminiRateLimitBlock = _gemini._GeminiRateLimitBlock
-_GeminiRateLimitStreamState = _gemini._GeminiRateLimitStreamState
-_GeminiLiveRateLimitMonitor = _gemini._GeminiLiveRateLimitMonitor
-_GeminiStreamJsonMonitor = _gemini._GeminiStreamJsonMonitor
-_build_gemini_command = _gemini._build_gemini_command
-_build_gemini_prompt = _gemini._build_gemini_prompt
-_run_gemini_with_retries = _gemini._run_gemini_with_retries
-_run_tenacity_with_real_clock = _gemini._run_tenacity_with_real_clock
-_should_retry_gemini_result = _gemini._should_retry_gemini_result
-_log_gemini_retry_wait = _gemini._log_gemini_retry_wait
-_return_last_gemini_retry_result = _gemini._return_last_gemini_retry_result
-_is_gemini_resume_recoverable_failure = _gemini._is_gemini_resume_recoverable_failure
-_gemini_stream_json_unsupported = _gemini._gemini_stream_json_unsupported
-_parse_gemini_stream_json_line = _gemini._parse_gemini_stream_json_line
-_extract_gemini_stream_text = _gemini._extract_gemini_stream_text
-_format_gemini_tool_use_label = _gemini._format_gemini_tool_use_label
-_format_gemini_result_tokens = _gemini._format_gemini_result_tokens
-_build_gemini_env = _gemini._build_gemini_env
-_log_gemini_failure = _gemini._log_gemini_failure
-_extract_gemini_rate_limit_events = _gemini._extract_gemini_rate_limit_events
-_extract_ready_gemini_rate_limit_blocks = (
-    _gemini._extract_ready_gemini_rate_limit_blocks
-)
-_extract_completed_gemini_rate_limit_blocks = (
-    _gemini._extract_completed_gemini_rate_limit_blocks
-)
-_extract_gemini_rate_limit_blocks = _gemini._extract_gemini_rate_limit_blocks
-_build_gemini_rate_limit_event = _gemini._build_gemini_rate_limit_event
-_event_has_full_metadata = _gemini._event_has_full_metadata
-_log_live_gemini_rate_limit_event = _gemini._log_live_gemini_rate_limit_event
-_log_gemini_rate_limit_block_detail = _gemini._log_gemini_rate_limit_block_detail
-_log_gemini_rate_limit_events = _gemini._log_gemini_rate_limit_events
-_format_gemini_rate_limit_metadata = _gemini._format_gemini_rate_limit_metadata
-_format_gemini_rate_limit_detail = _gemini._format_gemini_rate_limit_detail
-_gemini_failure_text = _gemini._gemini_failure_text
-_last_match = _gemini._last_match
-_text_has_rate_limit_markers = _gemini._text_has_rate_limit_markers
-_command_requests_gemini_stream_json = _gemini._command_requests_gemini_stream_json
-_gemini_agent_name_from_command = _gemini._gemini_agent_name_from_command
-_strip_gemini_stream_json_args = _gemini._strip_gemini_stream_json_args
-
 _CodexCommandResult = _codex._CodexCommandResult
 _CodexArtifactPaths = _codex._CodexArtifactPaths
 _CodexJsonMonitor = _codex._CodexJsonMonitor
@@ -121,9 +76,6 @@ invoke_planner_role = _roles.invoke_planner_role
 invoke_frontend_role = _roles.invoke_frontend_role
 invoke_support_role = _roles.invoke_support_role
 
-_ORIGINAL_GEMINI_RUN_COMMAND = _gemini._run_gemini_command
-_ORIGINAL_GEMINI_RUN_STREAM_JSON_COMMAND = _gemini._run_gemini_stream_json_command
-_ORIGINAL_GEMINI_RUN_PLAIN_TEXT_COMMAND = _gemini._run_gemini_plain_text_command
 _ORIGINAL_CODEX_RUN_JSON_COMMAND = _codex._run_codex_json_command
 _ORIGINAL_CLAUDE_RUN_STREAM_JSON_COMMAND = _claude._run_claude_stream_json_command
 _ORIGINAL_PROCESS_RUN_LOGGED_AGENT_COMMAND = _process._run_logged_agent_command
@@ -137,26 +89,6 @@ def _selected(global_name: str, facade_func: object, original_func: object) -> o
 
 def _sync_process() -> None:
     _process._run_command_streaming = globals()["_run_command_streaming"]
-
-
-def _sync_gemini() -> None:
-    _sync_process()
-    _gemini._run_command_streaming = globals()["_run_command_streaming"]
-    _gemini._run_gemini_command = _selected(
-        "_run_gemini_command",
-        _facade_run_gemini_command,
-        _ORIGINAL_GEMINI_RUN_COMMAND,
-    )
-    _gemini._run_gemini_stream_json_command = _selected(
-        "_run_gemini_stream_json_command",
-        _facade_run_gemini_stream_json_command,
-        _ORIGINAL_GEMINI_RUN_STREAM_JSON_COMMAND,
-    )
-    _gemini._run_gemini_plain_text_command = _selected(
-        "_run_gemini_plain_text_command",
-        _facade_run_gemini_plain_text_command,
-        _ORIGINAL_GEMINI_RUN_PLAIN_TEXT_COMMAND,
-    )
 
 
 def _sync_codex() -> None:
@@ -190,26 +122,6 @@ def _sync_manual() -> None:
     _manual._wait_for_manual_continue = globals()["_wait_for_manual_continue"]
 
 
-def invoke_gemini(*args, **kwargs):
-    _sync_gemini()
-    return _gemini.invoke_gemini(*args, **kwargs)
-
-
-def _facade_run_gemini_command(*args, **kwargs):
-    _sync_gemini()
-    return _ORIGINAL_GEMINI_RUN_COMMAND(*args, **kwargs)
-
-
-def _facade_run_gemini_stream_json_command(*args, **kwargs):
-    _sync_gemini()
-    return _ORIGINAL_GEMINI_RUN_STREAM_JSON_COMMAND(*args, **kwargs)
-
-
-def _facade_run_gemini_plain_text_command(*args, **kwargs):
-    _sync_gemini()
-    return _ORIGINAL_GEMINI_RUN_PLAIN_TEXT_COMMAND(*args, **kwargs)
-
-
 def invoke_codex(*args, **kwargs):
     _sync_codex()
     return _codex.invoke_codex(*args, **kwargs)
@@ -240,9 +152,6 @@ def _facade_run_logged_agent_command(*args, **kwargs):
     return _ORIGINAL_PROCESS_RUN_LOGGED_AGENT_COMMAND(*args, **kwargs)
 
 
-_run_gemini_command = _facade_run_gemini_command
-_run_gemini_stream_json_command = _facade_run_gemini_stream_json_command
-_run_gemini_plain_text_command = _facade_run_gemini_plain_text_command
 _run_codex_json_command = _facade_run_codex_json_command
 _run_claude_stream_json_command = _facade_run_claude_stream_json_command
 _run_logged_agent_command = _facade_run_logged_agent_command
