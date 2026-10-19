@@ -16,6 +16,10 @@ connector app) of the exact commit it pushed. Codex reports progress through:
 Only activity from the configured bot login counts, so a comment written by
 anyone else cannot mark a review complete. Signals are matched to the head
 commit's SHA, so a review of an earlier push never satisfies the gate.
+
+After a review is re-requested, ``stale_before`` ignores a summary comment
+Codex has not touched since the request, so the failed status of the earlier
+review does not end the new wait at once.
 """
 
 from __future__ import annotations
@@ -93,6 +97,7 @@ class CodexReviewState:
     failed: bool = False
     findings: tuple[ReviewFinding, ...] = ()
     detail: str = "no Codex activity yet"
+    usage_limited: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,8 @@ class ReviewResult:
     outcome: ReviewOutcome
     findings: tuple[ReviewFinding, ...] = field(default_factory=tuple)
     detail: str = ""
+    # A failed review because the Codex account is out of code review usage.
+    usage_limited: bool = False
 
 
 def read_codex_review(
@@ -111,8 +118,13 @@ def read_codex_review(
     reviews: list[dict[str, Any]],
     review_comments: list[dict[str, Any]],
     reactions: list[dict[str, Any]],
+    stale_before: datetime | None = None,
 ) -> CodexReviewState:
-    """Interpret the Codex signals on a pull request for ``head_sha``."""
+    """Interpret the Codex signals on a pull request for ``head_sha``.
+
+    With ``stale_before``, a summary comment last updated before it is
+    ignored.
+    """
 
     head = head_sha.lower()
 
@@ -152,6 +164,10 @@ def read_codex_review(
         body = comment.get("body") or ""
         if not by_bot(comment) or SUMMARY_MARKER not in body:
             continue
+        if stale_before is not None and _parse_time(
+            comment.get("updated_at") or comment.get("created_at")
+        ) < stale_before:
+            continue
         summary_status, unresolved = _summary_status(body, head)
 
     thumbs_up = any(
@@ -182,6 +198,7 @@ def read_codex_review(
                 if usage_limited
                 else "Codex reported the review of this commit as failed"
             ),
+            usage_limited=usage_limited,
         )
     if unresolved and not findings:
         findings = [
@@ -218,6 +235,7 @@ def wait_for_codex_review(
     log: LogFn,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    stale_before: datetime | None = None,
 ) -> ReviewResult:
     """Poll the pull request until Codex finishes reviewing ``head_sha``."""
 
@@ -243,13 +261,16 @@ def wait_for_codex_review(
                 head_sha=head_sha,
                 bot_login=bot_login,
                 requested_at=requested_at,
+                stale_before=stale_before,
                 **responses,
             )
             if state.detail != last_detail:
                 log("INFO", f"PR review: {state.detail}.")
                 last_detail = state.detail
             if state.failed:
-                return ReviewResult("failed", state.findings, state.detail)
+                return ReviewResult(
+                    "failed", state.findings, state.detail, state.usage_limited
+                )
             if state.completed:
                 outcome: ReviewOutcome = "findings" if state.findings else "clean"
                 return ReviewResult(outcome, state.findings, state.detail)

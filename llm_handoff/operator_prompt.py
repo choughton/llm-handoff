@@ -404,6 +404,55 @@ def _read_handoff(path: Path) -> str | None:
     return read_dispatch_text(path)
 
 
+REVIEW_CHOICES: tuple[str, ...] = ("merge", "retry", "quit")
+REVIEW_PROMPT_HELP_LINES: tuple[str, ...] = (
+    "Operator prompt: type `merge` to merge the pull request without a Codex "
+    "review.",
+    "Operator prompt: type `retry` to ask Codex to review the head commit "
+    "again and wait for it.",
+    "Operator prompt: type `quit` to leave the pull request open and stop the "
+    "dispatcher.",
+)
+
+
+def ask_operator_choice(
+    reader: OperatorInputReader,
+    choices: tuple[str, ...],
+    help_lines: tuple[str, ...],
+    poll_interval_seconds: float,
+    log: LogFn,
+    *,
+    stop_requested: Callable[[], bool] | None = None,
+) -> str | None:
+    """Wait for the operator to type one of ``choices``.
+
+    Any other line, including an empty one, is answered with the choices and
+    the wait goes on. Returns ``None`` when the operator stream closes or a
+    stop request arrives.
+    """
+
+    discarded = reader.drain()
+    if discarded:
+        log(
+            "PAUSE",
+            f"Discarded {discarded} operator input line(s) typed before the prompt.",
+        )
+    for line in help_lines:
+        log("PAUSE", line)
+    while True:
+        line = reader.read_line(timeout=poll_interval_seconds)
+        if line is not None:
+            choice = line.strip().lower()
+            if choice in choices:
+                return choice
+            log("PAUSE", f"Type one of: {', '.join(choices)}.")
+            continue
+        if reader.eof_reached:
+            return None
+        if stop_requested is not None and stop_requested():
+            return None
+
+
 def wait_for_operator_or_handoff_change(
     reader: OperatorInputReader,
     handoff_path: Path,
