@@ -1120,6 +1120,7 @@ def run_loop(
                 config.publish.mode != "local"
                 and current_cycle.route in {"backend", "frontend"}
             ):
+                operator_role_dispatch = active_planner_recovery_kind == "operator_role"
                 branch_error = ensure_story_branch(
                     repo_root=config.repo_root,
                     prefix=config.publish.branch_prefix,
@@ -1128,7 +1129,33 @@ def run_loop(
                     implementer=current_cycle.route,
                     remote=config.publish.remote,
                     handoff_path=config.handoff_path,
+                    continue_saved_story=operator_role_dispatch,
                 )
+                if branch_error is not None and operator_role_dispatch:
+                    # The operator chose the role at a pause; the handoff is
+                    # unchanged, so pause again rather than end the run.
+                    _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
+                    pause = _pause_at_dispatcher_pause(
+                        config,
+                        handoff_sha=current_cycle.handoff_sha,
+                        reason=(
+                            f"STORY BRANCH NOT READY: {branch_error}. The "
+                            f"{current_cycle.route} dispatch did not run. "
+                            "Update HANDOFF.md or pick another target at the "
+                            "operator prompt; dispatch will resume after the "
+                            "file changes."
+                        ),
+                        log=log_fn,
+                        operator_prompt=operator_prompt,
+                        stop_watch=stop_watch,
+                    )
+                    if pause.stop:
+                        return 0
+                    if pause.kind == "retry":
+                        previous_cycle = None
+                    elif pause.pending_planner_recovery is not None:
+                        pending_planner_recovery = pause.pending_planner_recovery
+                    continue
                 if branch_error is not None:
                     _log(log_fn, "ERROR", f"Story branch not ready: {branch_error}.")
                     return 1

@@ -198,12 +198,18 @@ def ensure_story_branch(
     implementer: str = "backend",
     remote: str | None = None,
     handoff_path: Path | None = None,
+    continue_saved_story: bool = False,
 ) -> str | None:
     """Check out the story's branch before an implementer runs.
 
     A new branch is refused when the base has commits that ``remote`` does not
     and that change ``handoff_path``: the branch would carry that live handoff
     state into the pull request.
+
+    ``continue_saved_story`` is for an operator ``@backend`` or ``@frontend``
+    dispatch from a pause. The handoff there is often a dispatcher-written
+    escalation whose frontmatter has no ``story_id``; when the checkout is
+    still on the branch the saved story state tracks, that story continues.
 
     Returns an error message when the dispatcher must stop, else ``None``.
     """
@@ -214,6 +220,15 @@ def ensure_story_branch(
         frontmatter = None
     story_id = (frontmatter.story_id or "").strip() if frontmatter else ""
     if not story_id:
+        if continue_saved_story:
+            state = _load_state(repo_root)
+            if state is not None and _current_branch(repo_root) == state.branch:
+                return None
+            return (
+                "publish needs a story_id in the assignment's frontmatter to "
+                "name the story branch, and the checkout is not on a saved "
+                "story's branch to continue"
+            )
         return (
             "publish needs a story_id in the assignment's frontmatter to name "
             "the story branch"
