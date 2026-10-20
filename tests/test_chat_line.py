@@ -33,6 +33,48 @@ def test_prompt_text_without_role_is_empty() -> None:
     assert stream.getvalue() == ""
 
 
+class _CountingStream(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self) -> None:
+        self.flush_count += 1
+        super().flush()
+
+
+def test_prompt_text_flushes_stream_with_and_without_role() -> None:
+    stream = _CountingStream()
+    chat_line = ChatLine(stream, terminal_columns=lambda: 120)
+
+    before = stream.flush_count
+    assert chat_line.prompt_text() == ""
+    assert stream.flush_count == before + 1
+
+    chat_line.set_role("backend")
+    before = stream.flush_count
+    assert chat_line.prompt_text() == "[backend running] chat> "
+    assert stream.flush_count == before + 1
+
+
+def test_every_public_method_flushes_stream() -> None:
+    stream = _CountingStream()
+    chat_line = ChatLine(stream, terminal_columns=lambda: 120)
+    calls = [
+        lambda: chat_line.set_role("backend"),
+        lambda: chat_line.set_buffer("hi"),
+        chat_line.prompt_text,
+        lambda: chat_line.write_above("line"),
+        chat_line.clear,
+        chat_line.redraw,
+        lambda: chat_line.set_role(None),
+    ]
+    for call in calls:
+        before = stream.flush_count
+        call()
+        assert stream.flush_count == before + 1
+
+
 def test_write_above_without_role_writes_plain_line() -> None:
     chat_line, stream = _chat_line()
 

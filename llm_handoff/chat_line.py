@@ -59,7 +59,9 @@ class ChatLine:
 
     def prompt_text(self) -> str:
         with self._lock:
-            return self._prompt_text()
+            text = self._prompt_text()
+            self._flush()
+            return text
 
     def write_above(self, line: str) -> None:
         with self._lock:
