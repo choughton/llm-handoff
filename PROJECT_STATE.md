@@ -6,9 +6,19 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** TIDY, with TIDY-11 (Linear init renders Linear MCP tools
-  into the Claude backend, auditor, and finalizer subagents) in progress,
-  picked because it needs no operator input. TIDY-6 (non-Claude helper
+- **Active Epic:** CHAT, with CHAT-8 (agent and normalizer processes start
+  with stdin closed) in progress, picked by fit: its Fit line says to take it
+  after TIDY and nothing blocks it. CHAT-1 was split into CHAT-8 and CHAT-9.
+  ACTIVE-PLANNER and ESCALATION-RECONCILE still wait on their triggers,
+  TPM-ROLE matters less while the self-host planner runs on claude,
+  TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
+- **Parked Epic:** TIDY, with TIDY-7 and TIDY-8 remaining. TIDY-7 waits for
+  the operator to say they are ready to make the `.claude/agents/*.md`
+  deferral edits; the planner then writes the edits out and routes to
+  `user`. TIDY-8 waits for the operator to confirm they want Linear
+  `epic_closed` and `handoff_repaired` evidence events. TIDY-11 (Linear init
+  renders Linear MCP tools into the Claude backend, auditor, and finalizer
+  subagents) was approved at `f81ed5b` and merged in PR #192. TIDY-6 (non-Claude helper
   files defer to the configured project state path) was approved at
   `138d448` and merged in PR #191. TIDY-5 (one
   refusal summary per dispatch) was approved at `80682fd` and merged in PR
@@ -22,14 +32,7 @@ belong in commits, handoffs, and pull requests.
   (dispatcher verification for planner-issued audits) was approved at
   `2df9673` and merged in PR #183. RECOVERY is closed (RECOVERY-13
   approved at `ab2f9d3`, merged in PR #182, epic close `c07dcdd`; the
-  per-story SHAs are in the RECOVERY section). TIDY was picked by fit over
-  the other open epics: CHAT is a feature epic and comes next, after TIDY.
-  ACTIVE-PLANNER and ESCALATION-RECONCILE wait on triggers that did not
-  happen in the last run (an implementer environment-refusal pause, a stale
-  user escalation). TPM-ROLE matters less here because the self-host planner
-  runs on claude. TRANSITION-RULES comes after TPM-ROLE. WORK-INTAKE needs a
-  design check from the user. LINEAR-SWITCH has low urgency. No epic is
-  parked.
+  per-story SHAs are in the RECOVERY section).
 - **Epic Awaiting Close:** None. HARDENING closed (HARD-6 merged in PR #157,
   audited at `3949ed2`; see the Completed Scope Ledger). LINEAR-WORKFLOW,
   LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY,
@@ -1034,9 +1037,8 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: operator-facing; pick it once the loop runs unattended reliably.
-HARD-3 is merged and RECOVERY is closed, so nothing orders CHAT; pick it
-after TIDY.
+Fit: active; CHAT-8 is in progress. Picked after TIDY was parked; HARD-3 is
+merged and RECOVERY is closed, so nothing blocks it.
 
 The operator types at any time; a message holds the loop and is answered by
 the agent it is about, from that agent's own session, read-only. Chat never
@@ -1044,10 +1046,19 @@ changes routing on its own: only a confirmed action re-dispatches a role.
 Console only, TTY only; without a TTY the loop behaves exactly as today. No new
 dependencies; Windows (`msvcrt`) and POSIX.
 
-- CHAT-1: Console chat line. During a run, a prompt line stays at the bottom of
-  the console (`[<role> running] chat> `) and is redrawn around log lines.
-  Agent processes start with `stdin=DEVNULL` so they never read the operator's
-  keystrokes.
+- CHAT-8 (was part of CHAT-1): Agent and normalizer processes start with
+  stdin closed. `_run_command_streaming` (the launch path for every agent
+  role provider) and `_run_command` (audit reviewers) in
+  `llm_handoff/agent_process.py`, and the Claude normalizer's
+  `subprocess.run` in `llm_handoff/normalizer_providers/claude.py`, pass
+  `stdin=subprocess.DEVNULL`, so no agent reads the operator's keystrokes.
+  The Codex normalizer's `stdin=subprocess.PIPE`, the supervisor's child
+  dispatcher launch, the work-claim gate, and the dispatcher's own `git`
+  calls stay unchanged.
+- CHAT-9 (was part of CHAT-1): Console chat line. During a run, the bottom
+  prompt line `[<role> running] chat> ` stays at the bottom of the console
+  and is redrawn around log lines written by `DispatchLogger._write_console`
+  (`llm_handoff/logging_util.py`). TTY only.
 - CHAT-2: A sent message holds the loop at the next safe point: after the
   current dispatch, its dispatcher commit, and its gates, and before the next
   dispatch. The graceful-stop check at the loop top is not enough, because
@@ -1501,11 +1512,11 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: active; TIDY-11 is in progress. Independent and cheap; each story is
-one Work Packet and fills a wait. Nothing here blocks another epic or waits
-on one. TIDY-7 routes to `user` (Claude roles cannot write `.claude/`).
-TIDY-8 needs the operator to confirm they want a Linear-side record before
-it starts; park it otherwise.
+Fit: parked. TIDY-7 waits for the operator to say they are ready to make the
+`.claude/agents/*.md` deferral edits; the planner then writes the edits out
+and routes to `user` (Claude roles cannot write `.claude/`). TIDY-8 waits for
+the operator to confirm they want Linear `epic_closed` and
+`handoff_repaired` evidence events. Nothing here blocks another epic.
 
 The Open Followups that were still open on 2026-10-19, promoted to stories.
 Line numbers are from `105ea42`; re-check them when writing the Work Packet.
@@ -1673,7 +1684,7 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `init --tracker linear` appends their role's tools as GEM-3b does for
   planner and frontend. Files: `llm_handoff/init_workflow.py`,
   `tests/test_init_tracker.py`, `CHANGELOG.md`. Closes the GEM-3b audit
-  followup (was TIDY-7 (b)).
+  followup (was TIDY-7 (b)). Approved at `f81ed5b`, merged in PR #192.
 
 ## Open Followups
 

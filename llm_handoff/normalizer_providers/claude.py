@@ -110,6 +110,9 @@ def _normalize_next_agent_with_claude_cli(
             command,
             cwd=cwd,
             env=_claude_cli_oauth_env(),
+            # The prompt travels in argv; closed stdin keeps the CLI off
+            # the operator's console input.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",

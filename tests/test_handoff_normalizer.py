@@ -120,6 +120,35 @@ def test_normalizer_uses_cli_path_when_api_key_is_absent(
     )
 
 
+def test_claude_cli_normalizer_starts_with_stdin_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The prompt travels in argv; the CLI must not read the operator's console.
+    seen_kwargs: list[dict[str, object]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        seen_kwargs.append(kwargs)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"structured_output": {"normalized": "backend"}}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(claude_normalizer.subprocess, "run", fake_run)
+
+    assert (
+        claude_normalizer._normalize_next_agent_with_claude_cli(
+            "implementer",
+            model="claude-haiku-test",
+            timeout_ms=12345,
+        )
+        == "backend"
+    )
+    [kwargs] = seen_kwargs
+    assert kwargs["stdin"] is subprocess.DEVNULL
+
+
 class _FakeOpenAIResponses:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
