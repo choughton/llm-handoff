@@ -360,7 +360,7 @@ What survives a restart, all under `logs/dispatch/`:
   line and its files stay operator edits. See
   [Dispatcher Commits](#dispatcher-commits);
 - the in-flight record (`in-flight.json`), which exists only while an
-  implementer, planner, or finalizer dispatch runs. A record found at startup means that
+  implementer, planner, finalizer, or audit fan-out dispatch runs. A record found at startup means that
   role was interrupted mid-dispatch; it applies only after the operator
   confirms it at a terminal. See [Dispatcher Commits](#dispatcher-commits).
 
@@ -621,9 +621,10 @@ also writes `logs/dispatch/in-flight.json` right before each `backend` or
 `frontend` dispatch the work-claim gate applies to. The record names the role,
 the story, HEAD, the pre-dispatch `HANDOFF.md` text, the operator's dirty
 files with their content hashes, and the SHA-256 digests of the protected
-control files (`protected_paths`). Planner and finalizer dispatches write
-their own records (described below); auditor, validator, ungated, and dry-run
-dispatches write none. Once the dispatch returns,
+control files (`protected_paths`). Planner, finalizer, and audit fan-out
+dispatches write their own records (described below); the single-agent
+auditor (`audit.reviewers` without `security`), validator, ungated, and
+dry-run dispatches write none. Once the dispatch returns,
 whatever its exit code, the dispatcher rewrites the record as a `handback`
 record that also holds the `HANDOFF.md` text the implementer left and HEAD at
 that moment, and deletes it when the cycle is finished: at the top of the next
@@ -835,9 +836,53 @@ protected-baseline checks as a `planner` record, then:
   again. Either way that cycle checks protected files against the baseline
   described below.
 
-Re-running an interrupted audit fan-out (RECOVERY-3c) or work-claim gate and
-scanners (RECOVERY-3d), making publish steps safe to repeat (RECOVERY-3e), and
-starts with no record (RECOVERY-4) are pending.
+An audit fan-out (the `auditor` route with the security reviewer on) writes an
+`auditor` record to the same path right before it starts. It has the same
+shape as a `planner` record (cycle, HEAD, `head_branch`, the `HANDOFF.md` text
+the audit starts from, and the protected-file digests; `dispatch` phase only,
+no operator files, carried-over files, or separate assignment). The
+dispatcher deletes it as soon as the fan-out returns, whatever its exit code
+or stop request; when that delete fails it logs an `ERROR` line naming the
+record and stops before checking the audit's result. The single-agent
+auditor, a resumed handback, and dry runs write none, and the same
+one-`WARN`-per-run rule applies when the record cannot be kept. The reviewers
+are read-only, so recovering an interrupted audit means restoring the handoff
+it started from and running it again. At startup an `auditor` record goes
+through the same link, read, validity, and protected-baseline checks as a
+`planner` record, then:
+
+- a. Git is compared with the record's HEAD and branch, read-only, in any
+  commit mode. When HEAD or the checked-out branch differs, the dispatcher
+  logs one `ERROR` line naming the record, both HEADs, and both branches,
+  keeps the record, and stops before any dispatch. The dispatcher never resets
+  or checks out anything for an auditor record. A dry run logs an `INFO` line
+  instead and goes on.
+- b. When `HANDOFF.md` still equals the record's text, the dispatcher logs one
+  `INFO` line that there is nothing to recover and deletes the record (a dry
+  run keeps it). The loop then routes the unchanged handoff to the auditor as
+  usual.
+- c. Any other handoff (missing, empty, truncated, with a recorded
+  `## Dispatcher Verification` section, edited by a reviewer, or a finished
+  verdict) is replaced by the record's text only after the operator confirms.
+  A dry run logs the summary with `Not applied in dry run.` and keeps the
+  record. A handoff path behind a link discards the record with a `WARN` line
+  before the prompt. The dispatcher logs the summary, the assignment summary,
+  and (with `protected_paths` set) the protected-file disclosure, then asks
+  `Restore the handoff and re-run auditor's interrupted <story> audit? [y/N]`.
+  Any other answer, end of input, no terminal, or `interactive_pause: false`
+  discards the record with a `WARN` line and leaves the handoff as it is. On
+  `y` the handoff is restored with the link-safe writer (a link that appears
+  in between writes nothing, deletes the record, and logs a `WARN` line) and
+  the record is deleted (a failed delete stops the run). The first cycle then
+  dispatches the auditor on the restored handoff (routing source
+  `interrupted_audit_recovery`) with no forced instruction, checks protected
+  files against the baseline described below, and writes a fresh `auditor`
+  record. Partial `logs/dispatch/audit/<timestamp>-cycle<N>/` directories
+  from the interrupted run are left as they are.
+
+Re-running an interrupted work-claim gate and scanners (RECOVERY-7), making
+publish steps safe to repeat (RECOVERY-8), and starts with no record
+(RECOVERY-9) are pending.
 
 A Git process killed mid-write, for example by a second Ctrl+C during a
 dispatcher commit (the dispatcher's own `git` calls share the console's

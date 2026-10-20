@@ -1,4 +1,4 @@
-"""RECOVERY-2a/2b/2c/3b1/3b2: the in-flight record and interrupted-dispatch recovery."""
+"""RECOVERY-2a/2b/2c/3b1/3b2/6: the in-flight record and interrupted-dispatch recovery."""
 
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ def test_in_flight_record_round_trips_with_sorted_keys() -> None:
     [
         pytest.param("version", 2, id="wrong_version"),
         pytest.param("version", "1", id="version_type"),
-        pytest.param("role", "auditor", id="wrong_role"),
+        pytest.param("role", "validator", id="wrong_role"),
         pytest.param("phase", "commit", id="wrong_phase"),
         pytest.param("cycle", "3", id="cycle_type"),
         pytest.param("cycle", True, id="cycle_bool"),
@@ -4545,3 +4545,638 @@ def test_a_linked_handoff_path_refuses_the_finalizer_restore_before_the_prompt(
     assert "finalizer's interrupted" in warnings[0]
     assert "docs/handoff/HANDOFF.md passes through a symlink or junction" in warnings[0]
     assert not _record_path(repo).exists()
+
+
+# ---------------------------------------------------------------------------
+# RECOVERY-6: interrupted audit fan-out
+# ---------------------------------------------------------------------------
+
+
+AUDIT_QUESTION = (
+    f"Restore the handoff and re-run auditor's interrupted {STORY_ID} audit? [y/N]"
+)
+FAN_OUT_AUDIT = {"reviewers": ["quality", "security"]}
+
+VERDICT_HANDOFF = f"""---
+next_agent: planner
+reason: "Audit passed."
+epic_id: EPIC-1
+story_id: {STORY_ID}
+story_title: Change the value
+status: verified_pass
+producer: auditor
+---
+
+# Audit verdict
+
+Approved.
+"""
+
+
+def _auditor_payload(**changes: Any) -> dict[str, Any]:
+    record = InFlightRecord(
+        cycle=2,
+        role="auditor",
+        story_key=f"story:{STORY_ID}",
+        phase="dispatch",
+        head_sha="a" * 40,
+        head_branch="main",
+        handoff_content=_pending_claim(),
+        dirty_fingerprints=(),
+        carried_over=(),
+        protected_digests=(),
+    )
+    payload = json.loads(in_flight_record_payload(record))
+    payload.update(changes)
+    return payload
+
+
+def _fan_out_config(repo_root: Path, **overrides: Any) -> DispatchConfig:
+    return _config(repo_root, audit=FAN_OUT_AUDIT, **overrides)
+
+
+def _allow_fan_out(orchestrator: Any, patch: pytest.MonkeyPatch) -> None:
+    # The security reviewer's launch check is not under test.
+    patch.setattr(
+        orchestrator, "security_reviewer_startup_error", lambda *_a, **_k: None
+    )
+
+
+def _interrupt_audit(
+    repo_root: Path,
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    leave: Any = HALF_WRITTEN_HANDOFF,
+) -> None:
+    """Run one audit fan-out that is interrupted mid-dispatch.
+
+    The fan-out writes ``leave`` to the handoff (deletes it when None, leaves
+    it alone with ``_KEEP``) and is then interrupted; the record stays.
+    """
+
+    def interrupted_fan_out(config: Any, log: Any, **_kwargs: Any) -> DispatchResult:
+        handoff = repo_root / HANDOFF_RELATIVE_PATH
+        if leave is None:
+            handoff.unlink()
+        elif leave is not _KEEP:
+            handoff.write_text(leave, encoding="utf-8")
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        _allow_fan_out(orchestrator, patch)
+        patch.setattr(orchestrator, "_dispatch_audit_fan_out", interrupted_fan_out)
+        _set_terminal(orchestrator, patch, interactive=False, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(
+                _fan_out_config(repo_root), max_cycles=1, log=lambda *_: None
+            )
+    assert _record_path(repo_root).exists()
+
+
+def test_load_in_flight_record_accepts_an_auditor_record() -> None:
+    record = load_in_flight_record(json.dumps(_auditor_payload()))
+
+    assert record is not None
+    assert record.role == "auditor"
+    assert record.story_key == f"story:{STORY_ID}"
+    assert record.head_branch == "main"
+
+
+def test_load_in_flight_record_accepts_an_auditor_record_without_a_story() -> None:
+    payload = _auditor_payload(handoff_content=_planner_assignment(), story_key=None)
+
+    record = load_in_flight_record(json.dumps(payload))
+
+    assert record is not None
+    assert record.story_key is None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param(
+            {"phase": "handback", "handback_content": VERDICT_HANDOFF},
+            id="auditor_handback",
+        ),
+        pytest.param(
+            {"dirty_fingerprints": [["notes.txt", "f" * 64]]},
+            id="auditor_dirty_fingerprints",
+        ),
+        pytest.param({"carried_over": ["src/app.py"]}, id="auditor_carried_over"),
+        pytest.param(
+            {"assignment_content": _pending_claim()},
+            id="auditor_assignment_content",
+        ),
+        pytest.param({"story_key": None}, id="auditor_null_key_with_a_story"),
+    ],
+)
+def test_load_in_flight_record_rejects_a_bad_auditor_record(
+    changes: dict[str, Any],
+) -> None:
+    assert load_in_flight_record(json.dumps(_auditor_payload(**changes))) is None
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_an_auditor_record_exists_only_while_the_fan_out_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    seen: list[dict[str, Any]] = []
+
+    def fake_fan_out(config: Any, log: Any, **_kwargs: Any) -> DispatchResult:
+        seen.append(json.loads(_record_path(tmp_path).read_text(encoding="utf-8")))
+        return _result(exit_code)
+
+    _allow_fan_out(orchestrator, monkeypatch)
+    monkeypatch.setattr(orchestrator, "_dispatch_audit_fan_out", fake_fan_out)
+    # The unchanged handoff's self-loop validator is not under test.
+    monkeypatch.setattr(orchestrator, "_run_validator", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_pause_at_dispatcher_pause",
+        lambda *_args, **_kwargs: orchestrator.PauseOutcome(kind="stop"),
+    )
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(
+        _fan_out_config(tmp_path, max_consecutive_failures=1),
+        max_cycles=1,
+        log=_collecting_log(messages),
+    )
+
+    assert len(seen) == 1
+    assert seen[0]["role"] == "auditor"
+    assert seen[0]["phase"] == "dispatch"
+    assert seen[0]["cycle"] == 1
+    assert seen[0]["story_key"] == f"story:{STORY_ID}"
+    assert seen[0]["handoff_content"] == _pending_claim()
+    assert seen[0]["head_sha"] == head
+    assert seen[0]["head_branch"] == _git(tmp_path, "symbolic-ref", "--short", "HEAD")
+    assert seen[0]["dirty_fingerprints"] == []
+    assert seen[0]["carried_over"] == []
+    assert seen[0]["assignment_content"] is None
+    assert isinstance(seen[0]["protected_digests"], list)
+    assert load_in_flight_record(json.dumps(seen[0])) is not None
+    assert not _record_path(tmp_path).exists()
+    assert not any("in-flight" in message for _level, message in messages)
+
+
+def test_an_auditor_record_that_cannot_be_cleared_stops_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+
+    def fake_fan_out(config: Any, log: Any, **_kwargs: Any) -> DispatchResult:
+        (tmp_path / HANDOFF_RELATIVE_PATH).write_text(
+            VERDICT_HANDOFF, encoding="utf-8"
+        )
+        return _result()
+
+    _allow_fan_out(orchestrator, monkeypatch)
+    monkeypatch.setattr(orchestrator, "_dispatch_audit_fan_out", fake_fan_out)
+    monkeypatch.setattr(
+        orchestrator, "_delete_in_flight_record", lambda _config, _log: False
+    )
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _fan_out_config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "after the audit fan-out returned" in errors[0]
+    assert str(_record_path(tmp_path).resolve()) in errors[0]
+    assert _record_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    ("audit", "dry_run"),
+    [
+        pytest.param(None, False, id="single_agent_auditor"),
+        pytest.param(FAN_OUT_AUDIT, True, id="dry_run"),
+    ],
+)
+def test_no_auditor_record_without_the_fan_out_or_in_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    audit: dict[str, Any] | None,
+    dry_run: bool,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    seen: list[bool] = []
+
+    def fake_dispatch_route(route: str, *_args: Any, **_kwargs: Any) -> Any:
+        assert route == "auditor"
+        seen.append(_record_path(tmp_path).exists())
+        return _result(1), "auditor (audit)"
+
+    _allow_fan_out(orchestrator, monkeypatch)
+    monkeypatch.setattr(orchestrator, "_dispatch_route", fake_dispatch_route)
+    overrides: dict[str, Any] = {"dry_run": dry_run, "max_consecutive_failures": 1}
+    if audit is not None:
+        overrides["audit"] = audit
+
+    orchestrator.run_loop(
+        _config(tmp_path, **overrides), max_cycles=1, log=lambda *_: None
+    )
+
+    assert seen == ([] if dry_run else [False])
+    assert not _record_path(tmp_path).exists()
+
+
+def test_an_interrupted_audit_leaves_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch)
+
+    record = load_in_flight_record(_record_path(tmp_path).read_text(encoding="utf-8"))
+    assert record is not None
+    assert record.role == "auditor"
+    assert record.head_sha == head
+    assert record.head_branch == _git(tmp_path, "symbolic-ref", "--short", "HEAD")
+    assert record.handoff_content == _pending_claim()
+    assert record.protected_digests is not None
+
+
+def test_an_unchanged_handoff_deletes_the_auditor_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch, leave=_KEEP)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "interrupted audit fan-out that left nothing to recover" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _pending_claim()
+
+
+@pytest.mark.parametrize(
+    "leave",
+    [
+        pytest.param(HALF_WRITTEN_HANDOFF, id="truncated"),
+        pytest.param("", id="empty"),
+        pytest.param(None, id="missing"),
+        pytest.param(
+            _pending_claim() + "\n## Dispatcher Verification\n\nPASS\n",
+            id="dispatcher_verification",
+        ),
+        pytest.param(VERDICT_HANDOFF, id="finished_verdict"),
+    ],
+)
+def test_a_confirmed_audit_recovery_schedules_the_audit_with_its_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    leave: str | None,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch, leave=leave)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    _disclosure_before(messages, AUDIT_QUESTION)
+    prompt_index = messages.index(("INFO", AUDIT_QUESTION))
+    assignment_level, assignment_line = messages[prompt_index - 2]
+    assert assignment_level == "INFO"
+    assert "cannot verify" in assignment_line
+    summary_level, summary_line = messages[prompt_index - 3]
+    assert summary_level == "INFO"
+    assert summary_line.startswith(f"Found in-flight record {_record_path(tmp_path)}")
+    assert "audit fan-out was interrupted" in summary_line
+    assert outcome.stop is False
+    assert outcome.recovered is False
+    pending = outcome.pending
+    assert pending is not None
+    assert pending.kind == "interrupted_audit"
+    assert pending.route == "auditor"
+    assert pending.additional_instruction == ""
+    assert pending.handoff_sha == orchestrator._content_sha(_pending_claim())
+    assert pending.resumed_protected_snapshot is not None
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _pending_claim()
+
+
+def test_a_confirmed_audit_recovery_runs_the_audit_on_the_recovered_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch, leave=VERDICT_HANDOFF)
+    partial = tmp_path / "logs" / "dispatch" / "audit" / "partial-cycle1"
+    _write(partial / "quality.md", "partial review\n")
+    calls: list[dict[str, Any]] = []
+    snapshots: list[Any] = []
+    baselines: list[Any] = []
+    real_snapshot = orchestrator._unverified_protected_snapshot
+    real_enforce = orchestrator._enforce_protected_files
+
+    def capturing_snapshot(*args: Any, **kwargs: Any) -> Any:
+        snapshots.append(real_snapshot(*args, **kwargs))
+        return snapshots[-1]
+
+    def capturing_enforce(**kwargs: Any) -> Any:
+        baselines.append(kwargs["before"])
+        return real_enforce(**kwargs)
+
+    def rerun_fan_out(config: Any, log: Any, **kwargs: Any) -> DispatchResult:
+        calls.append(
+            {
+                "handoff": (tmp_path / HANDOFF_RELATIVE_PATH).read_text(
+                    encoding="utf-8"
+                ),
+                "record": json.loads(
+                    _record_path(tmp_path).read_text(encoding="utf-8")
+                ),
+                **kwargs,
+            }
+        )
+        return _result(1)
+
+    _allow_fan_out(orchestrator, monkeypatch)
+    monkeypatch.setattr(orchestrator, "_unverified_protected_snapshot", capturing_snapshot)
+    monkeypatch.setattr(orchestrator, "_enforce_protected_files", capturing_enforce)
+    monkeypatch.setattr(orchestrator, "_dispatch_audit_fan_out", rerun_fan_out)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(
+        _fan_out_config(tmp_path, max_consecutive_failures=1),
+        max_cycles=1,
+        log=_collecting_log(messages),
+    )
+
+    assert ("INFO", AUDIT_QUESTION) in messages
+    assert ("INFO", "Routing source: interrupted_audit_recovery") in messages
+    assert len(calls) == 1
+    assert calls[0]["handoff"] == _pending_claim()
+    assert calls[0].get("additional_instruction") is None
+    # The re-run audit writes a fresh record of its own.
+    assert calls[0]["record"]["role"] == "auditor"
+    assert calls[0]["record"]["handoff_content"] == _pending_claim()
+    assert len(snapshots) == 1
+    assert calls[0]["record"]["protected_digests"] == [
+        list(pair) for pair in snapshots[0].digests
+    ]
+    assert baselines
+    assert all(baseline is snapshots[0] for baseline in baselines)
+    assert not _record_path(tmp_path).exists()
+    assert (partial / "quality.md").read_text(encoding="utf-8") == "partial review\n"
+
+
+@pytest.mark.parametrize(
+    ("interactive", "operator_input", "interactive_pause"),
+    [
+        pytest.param(False, None, True, id="no_tty"),
+        pytest.param(True, "n\n", True, id="tty_declines"),
+        pytest.param(True, "", True, id="tty_eof"),
+        pytest.param(True, None, False, id="interactive_pause_off"),
+    ],
+)
+def test_an_unconfirmed_audit_recovery_keeps_the_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interactive: bool,
+    operator_input: str | None,
+    interactive_pause: bool,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch, leave=VERDICT_HANDOFF)
+    _set_terminal(
+        orchestrator,
+        monkeypatch,
+        interactive=interactive,
+        operator_input=operator_input,
+    )
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(
+        orchestrator, tmp_path, messages, interactive_pause=interactive_pause
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    asked = ("INFO", AUDIT_QUESTION) in messages
+    assert asked == (interactive and interactive_pause)
+    warnings = [message for level, message in messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Discarded the in-flight record")
+    assert "auditor's interrupted" in warnings[0]
+    assert "not confirmed at a terminal" in warnings[0]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == VERDICT_HANDOFF
+
+
+@pytest.mark.parametrize("move", ["head", "branch"])
+@pytest.mark.parametrize("commit_mode", ["dispatcher", "agent"])
+def test_a_moved_checkout_stops_and_keeps_the_auditor_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    move: str,
+    commit_mode: str,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch)
+    before = _git(tmp_path, "rev-parse", "HEAD")
+    if move == "head":
+        _write(tmp_path / "src" / "api.py", "API = 'operator'\n")
+        _git(tmp_path, "add", "--", "src/api.py")
+        _git(tmp_path, "commit", "-q", "-m", "operator commit")
+    else:
+        _git(tmp_path, "checkout", "-q", "-b", "other-branch")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    branch = _git(tmp_path, "symbolic-ref", "--short", "HEAD")
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, commit_mode=commit_mode)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery(stop=True)
+    assert [level for level, _message in messages] == ["ERROR"]
+    error = messages[0][1]
+    assert before[:12] in error
+    assert head[:12] in error
+    assert f"now {head[:12]} on `{branch}`" in error
+    assert "never resets or checks out anything" in error
+    assert "keeps the record" in error
+    assert not any("[y/N]" in message for _level, message in messages)
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert _git(tmp_path, "symbolic-ref", "--short", "HEAD") == branch
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_dry_run_reports_a_moved_checkout_without_stopping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch)
+    _git(tmp_path, "checkout", "-q", "-b", "other-branch")
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, dry_run=True)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO", "INFO"]
+    assert "the checkout moved" in messages[0][1]
+    assert "Not applied in dry run" in messages[0][1]
+    assert messages[1][1].endswith("Not applied in dry run.")
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+
+
+def test_dry_run_keeps_the_auditor_record_and_the_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch, leave=VERDICT_HANDOFF)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, dry_run=True)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "audit fan-out was interrupted" in messages[0][1]
+    assert messages[0][1].endswith("Not applied in dry run.")
+    assert ("INFO", AUDIT_QUESTION) not in messages
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == VERDICT_HANDOFF
+
+
+def test_an_auditor_record_without_a_protected_snapshot_is_discarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch)
+    _rewrite_record(tmp_path, protected_digests=None)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "auditor's interrupted" in messages[0][1]
+    assert "no pre-dispatch protected-file snapshot" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_an_unanchored_auditor_record_is_discarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch)
+    _rewrite_record(tmp_path, head_sha="b" * 40)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "auditor's interrupted" in messages[0][1]
+    assert "does not resolve to a commit" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+
+
+def test_a_linked_handoff_path_refuses_the_audit_restore_before_the_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(repo, orchestrator, monkeypatch)
+    config = _config(repo)
+    external = _link_handoff_directory_outside(repo, tmp_path / "outside")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert external.read_text(encoding="utf-8") == "external file\n"
+    assert not any("[y/N]" in message for _level, message in messages)
+    warnings = [message for level, message in messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert "auditor's interrupted" in warnings[0]
+    assert "docs/handoff/HANDOFF.md passes through a symlink or junction" in warnings[0]
+    assert not _record_path(repo).exists()
+
+
+def test_a_confirmed_auditor_record_that_cannot_be_deleted_stops_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch)
+
+    def refusing_fan_out(*_args: Any, **_kwargs: Any) -> DispatchResult:
+        raise AssertionError("a record that cannot be cleared must not dispatch")
+
+    _allow_fan_out(orchestrator, monkeypatch)
+    monkeypatch.setattr(orchestrator, "_dispatch_audit_fan_out", refusing_fan_out)
+    monkeypatch.setattr(
+        orchestrator, "_delete_in_flight_record", lambda _config, _log: False
+    )
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _fan_out_config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "before running the audit again" in errors[0]
+    assert _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _pending_claim()

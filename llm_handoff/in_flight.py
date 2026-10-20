@@ -26,6 +26,12 @@ it as soon as that dispatch returns, so the next start can tell a ledger the
 interrupted finalizer already committed from one it never touched, and
 restore a handoff it left half-written.
 
+An ``auditor`` record follows the same rules as a ``planner`` record. The
+dispatcher writes it right before an audit fan-out (the auditor route with
+the security reviewer enabled) and deletes it as soon as that dispatch
+returns, so the next start can restore the handoff the audit started from
+and run the audit again. The single-agent auditor writes no record.
+
 This module only builds and parses the record. It does no file I/O; the
 orchestrator reads, writes, and deletes the file through its race-safe
 helpers.
@@ -40,9 +46,9 @@ from typing import Literal
 from llm_handoff.work_claim import carry_over_key
 
 IN_FLIGHT_RECORD_VERSION = 1
-InFlightRole = Literal["backend", "frontend", "planner", "finalizer"]
+InFlightRole = Literal["backend", "frontend", "planner", "finalizer", "auditor"]
 InFlightPhase = Literal["dispatch", "handback"]
-_ROLES = frozenset({"backend", "frontend", "planner", "finalizer"})
+_ROLES = frozenset({"backend", "frontend", "planner", "finalizer", "auditor"})
 _IMPLEMENTER_ROLES = frozenset({"backend", "frontend"})
 _PHASES = frozenset({"dispatch", "handback"})
 
@@ -83,6 +89,10 @@ class InFlightRecord:
     A ``finalizer`` record has the same shape as a ``planner`` record and
     keeps ``head_sha``, ``head_branch``, and ``protected_digests`` from right
     before the epic-close ledger update.
+
+    An ``auditor`` record has the same shape as a ``planner`` record and
+    keeps ``head_sha``, ``head_branch``, and ``protected_digests`` from right
+    before an audit fan-out.
     """
 
     cycle: int
@@ -137,12 +147,11 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     """Parse a record; None when it is malformed or does not hold together.
 
     Rejects invalid JSON, another ``version``, a ``role`` other than
-    ``backend``, ``frontend``, ``planner``, or ``finalizer``, a ``phase``
-    other than ``dispatch`` or ``handback``, a field of the wrong type, and a
-    ``story_key`` that is not the ``carry_over_key`` of
-    ``assignment_content`` (when set) or ``handoff_content``. A ``planner``
-    or ``finalizer``
-    record must be a ``dispatch`` record with empty ``dirty_fingerprints``
+    ``backend``, ``frontend``, ``planner``, ``finalizer``, or ``auditor``, a
+    ``phase`` other than ``dispatch`` or ``handback``, a field of the wrong
+    type, and a ``story_key`` that is not the ``carry_over_key`` of
+    ``assignment_content`` (when set) or ``handoff_content``. A ``planner``,
+    ``finalizer``, or ``auditor`` record must be a ``dispatch`` record with empty ``dirty_fingerprints``
     and ``carried_over`` and a null ``assignment_content``; its ``story_key``
     may be JSON null, but only when ``handoff_content`` has no
     ``carry_over_key``. An implementer record always needs a non-empty string
@@ -203,8 +212,8 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         return None
     story_key = payload.get("story_key")
     if story_key is None:
-        # Only a planner or finalizer may have started from a handoff
-        # without a story.
+        # Only a planner, finalizer, or auditor may have started from a
+        # handoff without a story.
         if role in _IMPLEMENTER_ROLES:
             return None
     elif not isinstance(story_key, str) or not story_key:
@@ -221,7 +230,8 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         or carried_over
         or assignment_content is not None
     ):
-        # A planner or finalizer record is deleted when its dispatch returns
+        # A planner, finalizer, or auditor record is deleted when its
+        # dispatch returns
         # and holds nothing but the handoff it started from.
         return None
     keyed_content = (

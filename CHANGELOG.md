@@ -16,6 +16,23 @@ This project follows a simple pre-release changelog until the first public tag.
   a directory above it is a symlink or junction, nothing is written and one
   warning names the handoff, where before the restore wrote through the link
   to a file outside the repository.
+- An interrupted audit fan-out is now recoverable (RECOVERY-6). The
+  dispatcher writes an `auditor` record to `logs/dispatch/in-flight.json`
+  right before an audit fan-out (the `auditor` route with the security
+  reviewer on; not the single-agent auditor, a resumed handback, or a dry
+  run), with the same shape as a `planner` record, and deletes it as soon as
+  the fan-out returns, whatever its exit code or stop request; a failed
+  delete logs an `ERROR` line and stops. At startup, after the usual link,
+  read, validity, and protected-baseline checks, the checkout is compared
+  with the record's HEAD and branch, read-only, in any commit mode: a moved
+  HEAD or a switched branch logs an `ERROR` line and stops, keeping the
+  record; the dispatcher never resets or checks out anything for an auditor
+  record. An unchanged handoff deletes the record. Any other handoff
+  (missing, empty, truncated, a recorded dispatcher verification, a reviewer
+  edit, or a finished verdict) is replaced by the record's handoff only after
+  the operator confirms at a terminal; the auditor then runs the audit again
+  on the restored handoff (routing source `interrupted_audit_recovery`) with
+  no forced instruction, against the recovered protected-file baseline.
 - An interrupted finalizer dispatch is now recoverable (RECOVERY-3b2). The
   dispatcher writes a `finalizer` record to `logs/dispatch/in-flight.json`
   right before the epic-close ledger update (not in a dry run), with the same
