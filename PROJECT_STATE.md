@@ -7,12 +7,15 @@ belong in commits, handoffs, and pull requests.
 ## Current Status
 
 - **Operator direction (2026-10-20):** park CHAT once the CHAT story in
-  flight merges, and start TPM-ROLE with TPM-1 next. CHAT resumes after
+  flight (CHAT-16, read-only session answer launchers for Claude and Codex)
+  merges, and start TPM-ROLE with TPM-1 next; when CHAT-16 merges, TPM-ROLE
+  becomes the Active Epic and CHAT moves to Parked Epic. CHAT resumes after
   TPM-ROLE with its remaining stories. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, with CHAT-15 (the loop records each dispatch in the
-  dispatch record) in progress. CHAT-3 (dispatch record file) was approved at
+- **Active Epic:** CHAT, with CHAT-16 in progress until it merges (see the
+  operator direction above). CHAT-15 (the loop records each dispatch in the
+  dispatch record) was merged in PR #203. CHAT-3 (dispatch record file) was approved at
   `6d387ab` and merged in PR #202. CHAT-14 (Claude and Codex role dispatches report their session id) was
   approved at `b61b313` and merged in PR #201. CHAT-2 (sent chat messages are saved
   to the queue and announced) was approved at `dd26c6a` and merged in PR
