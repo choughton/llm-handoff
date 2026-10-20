@@ -1425,26 +1425,28 @@ def _index_flags_changed(before: IndexFlags, after: IndexFlags) -> list[str]:
     )
 
 
-def _path_fingerprint(path: Path) -> tuple[str, str]:
+def _path_fingerprint(path: Path) -> tuple[str, str] | None:
     """Return a path's file type and content digest, without following links.
 
     A regular file is ``file`` (``executable`` when the platform reports an
     executable bit) with the sha256 of its bytes; a symlink is ``symlink``
-    with the sha256 of its target; a directory or missing path has an empty
-    digest.
+    with the sha256 of its target; a directory, missing path, or other file
+    type has an empty digest. Returns None, so callers fail closed, when the
+    path's type, bytes, or link target cannot be read: a file unreadable both
+    before and after a change must not compare as unchanged.
     """
 
     try:
         info = os.lstat(path)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return "missing", ""
     except OSError:
-        return "unreadable", ""
+        return None
     if stat.S_ISLNK(info.st_mode):
         try:
             target = os.readlink(path)
         except OSError:
-            return "symlink", ""
+            return None
         return "symlink", hashlib.sha256(os.fsencode(target)).hexdigest()
     if stat.S_ISDIR(info.st_mode):
         return "directory", ""
@@ -1454,7 +1456,7 @@ def _path_fingerprint(path: Path) -> tuple[str, str]:
     try:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
-        digest = ""
+        return None
     return kind, digest
 
 
@@ -1468,8 +1470,9 @@ def _worktree_snapshot(
     path ``git status`` lists (untracked files included). A path status does
     not list has an empty status code. A tracked submodule (a gitlink entry)
     is fingerprinted by its HEAD and its own worktree snapshot. Returns None
-    on any git failure, or when a submodule checkout cannot be compared, so
-    callers fail closed.
+    on any git failure, when any path's type, content, or link target cannot
+    be read, or when a submodule checkout cannot be compared, so callers fail
+    closed.
     """
 
     tracked = _index_entries(repo_root)
@@ -1504,11 +1507,11 @@ def _worktree_snapshot(
     for name in sorted(names | codes.keys()):
         if name in gitlinks:
             fingerprint = _gitlink_fingerprint(repo_root / name)
-            if fingerprint is None:
-                return None
-            kind, digest = fingerprint
         else:
-            kind, digest = _path_fingerprint(repo_root / name)
+            fingerprint = _path_fingerprint(repo_root / name)
+        if fingerprint is None:
+            return None
+        kind, digest = fingerprint
         snapshot[name] = (codes.get(name, ""), kind, digest)
     return snapshot
 
@@ -1523,10 +1526,13 @@ def _gitlink_fingerprint(path: Path) -> tuple[str, str] | None:
     path or an empty directory (a submodule that is not checked out) has an
     empty digest, as before. Returns None, so callers fail closed, when the
     checkout cannot be compared: Git fails inside it, or the directory has
-    content but no ``.git``.
+    content but no ``.git``, or the path itself cannot be read.
     """
 
-    kind, digest = _path_fingerprint(path)
+    fingerprint = _path_fingerprint(path)
+    if fingerprint is None:
+        return None
+    kind, digest = fingerprint
     if kind != "directory":
         return kind, digest
     try:
