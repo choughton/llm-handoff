@@ -517,6 +517,55 @@ def test_failover_result_still_has_no_session_id(
     assert result.session_invalidated is True
 
 
+def test_support_role_failover_dispatch_result_has_no_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    handoff = tmp_path / "docs" / "handoff" / "HANDOFF.md"
+    handoff.parent.mkdir(parents=True)
+    handoff.write_text("---\nnext_agent: validator\n---\n", encoding="utf-8")
+    fallback_usage: dict[str, object] = {"input_tokens": 5}
+    claude_mock = Mock(
+        side_effect=[
+            SubagentResult(
+                stdout="",
+                stderr="status 429",
+                exit_code=1,
+                elapsed_seconds=1.0,
+                session_id="primary-session",
+            ),
+            SubagentResult(
+                stdout="verdict",
+                stderr="",
+                exit_code=0,
+                elapsed_seconds=1.0,
+                session_id="fallback-session",
+                usage=dict(fallback_usage),
+            ),
+        ]
+    )
+    monkeypatch.setattr(agent_roles, "invoke_claude_subagent", claude_mock)
+
+    subagent = agent_roles.invoke_support_role(
+        "handoff-router",
+        "Clarify the route.",
+        role="validator",
+        agent_config=AgentConfig(
+            provider="claude",
+            model="claude-opus-4-7",
+            fallback=AgentConfig(provider="claude", model="claude-sonnet-4-6"),
+        ),
+        repo_root=tmp_path,
+    )
+    dispatch = orchestrator._dispatch_from_subagent(subagent)
+
+    assert claude_mock.call_count == 2
+    assert isinstance(dispatch, DispatchResult)
+    assert dispatch.exit_code == 0
+    assert dispatch.session_id is None
+    assert dispatch.usage == fallback_usage
+
+
 def test_claude_planner_launch_command_ignores_session_id(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

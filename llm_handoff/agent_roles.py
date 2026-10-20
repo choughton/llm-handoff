@@ -442,7 +442,9 @@ def _run_with_failover(
             session_id=None,
             session_invalidated=True,
         )
-    return replace(secondary, elapsed_seconds=elapsed)
+    # The fallback's session belongs to another agent, so the support-role
+    # result reports no session id.
+    return replace(secondary, elapsed_seconds=elapsed, session_id=None)
 
 
 def _describe_agent(agent_config: AgentConfig) -> str:
