@@ -354,7 +354,11 @@ active.
 What survives a restart, all under `logs/dispatch/`:
 
 - per-story bounce counts (`bounce-counts.json`);
-- the publish story state (`publish/story.json`), so a paused publish resumes;
+- the publish story state (`publish/story.json`), so a paused publish
+  resumes, an interrupted `pr` publish can finish, and a publish of the same
+  head reuses its review request time (`publish_requested_head`,
+  `publish_requested_at`). See
+  [Resuming An Interrupted Publish](#resuming-an-interrupted-publish);
 - the carry-over record (`carry-over.json`), which applies only after the
   operator confirms it at a terminal; otherwise it is discarded with a `WARN`
   line and its files stay operator edits. See
@@ -1162,6 +1166,55 @@ result makes sense, and a blank line that both sides added can appear only
 once, so only use it for files where that is safe. `init` does
 not add it: the reference workflow does not ship a changelog, and
 `.gitattributes` belongs to the target repository.
+
+#### Resuming An Interrupted Publish
+
+A `pr` publish can be cut off part way, for example by a second Ctrl+C, a
+closed window, or a crash. The next start then finds the story state in
+`logs/dispatch/publish/story.json`, the checkout on the story branch, and
+`HANDOFF.md` still the story's `verified_pass`. Right after the paused-publish
+resume above, and only outside `--dry-run`, the dispatcher checks that state.
+It acts only when the story state has no paused publish and no pending Codex
+review retry, the story branch is checked out, and the handoff has the saved
+story's `story_id`, `status: verified_pass`, `close_type` `story` or `epic`,
+and a `scope_sha` that resolves to a commit. It then pauses (exit code 0,
+story state kept, a message starting `INTERRUPTED PUBLISH:` with the manual
+steps) when:
+
+- a merge is in progress, or a file other than the handoff and
+  `logs/dispatch/` is uncommitted;
+- HEAD is not the audited `scope_sha` plus only clean base-branch merges;
+- `gh pr view` fails for any reason other than "no pull requests found";
+- the pull request is closed (the dispatcher never reopens or recreates it);
+- the pull request is merged at a head other than the local HEAD, for
+  example when it was merged while the dispatcher was down and an audited
+  correction was never pushed to it;
+- the pull request is merged with an unresolved review thread or saved
+  finding;
+- the story's saved review findings were made on HEAD and are not resolved:
+  the review-bounce handoff to the implementer was lost, and publishing again
+  would count that correction round twice.
+
+A merged pull request with every thread resolved is cleaned up without any
+push or `gh` write: the dispatcher switches to the base branch, runs
+`git pull --ff-only`, deletes the merged local story branch, and clears the
+story state. For an open pull request, or none yet, it logs the branch, HEAD,
+the pull request, and what it will do, then asks
+`Resume publishing <story_id> on <branch>? [y/N]` at the dispatch terminal.
+`y` publishes again as usual: it merges the base branch, pushes, reuses the
+open pull request or opens one, waits for the review, and merges. Any other
+answer, or no interactive terminal (`interactive_pause: false` or redirected
+input), logs a `WARN` line, keeps the story state, pushes nothing, and the
+loop continues as before.
+
+`story.json` records the head commit the dispatcher last pushed for review
+and when (`publish_requested_head`, `publish_requested_at`). A publish of the
+same head after a restart waits for Codex signals since that time, so a
+review or thumbs-up Codex gave while the dispatcher was down still counts. A
+new head, such as a correction round or a new base-branch merge, gets a new
+time.
+
+The `merge-commit` mode does not resume an interrupted publish yet.
 
 #### Waiting For The Codex Pull Request Review
 

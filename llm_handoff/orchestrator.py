@@ -93,6 +93,7 @@ from llm_handoff.publish import (
     StateConflictResolver,
     publish_story,
     recover_orphaned_story,
+    resume_interrupted_publish,
     resume_paused_publish,
     save_review_responses,
     saved_story_assignment,
@@ -637,6 +638,42 @@ def _run_loop(
             config.handoff_full_path.write_text(outcome.handoff, encoding="utf-8")
         if outcome.stop:
             return outcome.exit_code
+        if outcome.handoff is None:
+            # A publish the previous run left interrupted finishes, once the
+            # operator confirms it at a terminal, instead of the planner
+            # running on the story's stale verified_pass handoff.
+            def confirm_publish_resume(question: str) -> bool:
+                if not (
+                    config.interactive_pause
+                    and _operator_stdin_is_interactive()
+                    and not operator_prompt.reader().console_unavailable
+                ):
+                    return False
+                return _confirm_carry_over_at_terminal(
+                    operator_prompt.reader(),
+                    _escape_control_characters(question),
+                    log_fn,
+                )
+
+            outcome = resume_interrupted_publish(
+                repo_root=config.repo_root,
+                remote=config.publish.remote,
+                auto_merge=config.publish.auto_merge,
+                wait_for_checks=config.publish.wait_for_checks,
+                handoff_content=_read_required_text(config.handoff_full_path) or "",
+                log=log_fn,
+                handoff_path=config.handoff_path,
+                confirm=confirm_publish_resume,
+                review=_review_gate(config),
+                review_prompt=_review_prompt(
+                    config, operator_prompt, stop_watch, log_fn
+                ),
+                state_resolver=_state_conflict_resolver(config, log_fn),
+            )
+            if outcome.handoff is not None:
+                config.handoff_full_path.write_text(outcome.handoff, encoding="utf-8")
+            if outcome.stop:
+                return outcome.exit_code
 
     consecutive_failures = 0
     previous_cycle: Cycle | None = None

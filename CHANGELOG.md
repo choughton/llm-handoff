@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An interrupted `pr` publish now finishes on the next start (RECOVERY-8).
+  When the story state, the checked-out story branch, and a `verified_pass`
+  handoff for that story show a publish was cut off, the dispatcher cleans up
+  a pull request that already merged (no push, no `gh` write), and for an
+  open pull request or none asks
+  `Resume publishing <story_id> on <branch>? [y/N]` before it pushes, reuses
+  or opens the pull request, waits for the review, and merges. A merge in
+  progress, uncommitted files, commits beyond the audited `scope_sha` other
+  than clean base-branch merges, a failed `gh pr view`, a closed pull
+  request, a merged one whose head is not the local HEAD or that has
+  unresolved threads, or a lost review bounce
+  pauses with an `INTERRUPTED PUBLISH:` message and keeps the story state.
+  Before, the planner ran and the orphaned-story check paused. `story.json`
+  now saves the pushed head and its review request time
+  (`publish_requested_head`, `publish_requested_at`), so a publish of the
+  same head after a restart counts a Codex review given while the dispatcher
+  was down. The `merge-commit` mode is unchanged (RECOVERY-12).
 - An interrupted work-claim gate is now recoverable (RECOVERY-7). The
   implementer's `handback` record in `logs/dispatch/in-flight.json` is
   rewritten right after the dispatcher commit step and again right before
