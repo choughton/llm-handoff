@@ -23,7 +23,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 1. `docs/handoff/HANDBOOK.md`
 2. `AGENTS.md`
 3. `docs/handoff/HANDOFF.md`
-4. `PROJECT_STATE.md` if present and needed for close-type validation or to distinguish story close from epic close
+4. The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md` names another path), if present and needed for close-type validation or to distinguish story close from epic close
 
 ## Handoff Validation
 

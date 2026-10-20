@@ -188,6 +188,43 @@ def test_finalizer_helpers_defer_to_the_configured_project_state_path() -> None:
             assert "PROJECT_STATE.md/HANDOFF.md commit" not in content, path
 
 
+NON_CLAUDE_ROLE_HELPER_FILES = (
+    ".agents/agents/planner.md",
+    ".agents/agents/backend.md",
+    ".agents/agents/frontend.md",
+    ".agents/agents/auditor.md",
+    ".agents/agents/handoff-validator.md",
+    ".agents/agents/handoff-router.md",
+    ".codex/skills/llm-handoff/SKILL.md",
+    ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".codex/skills/llm-handoff-frontend/SKILL.md",
+    ".codex/skills/llm-handoff-auditor/SKILL.md",
+    ".codex/skills/llm-handoff-validator/SKILL.md",
+)
+
+PROJECT_STATE_DEFERRAL = (
+    "The project state file (`PROJECT_STATE.md` unless the dispatcher prompt "
+    "or `AGENTS.md` names another path)"
+)
+
+
+def test_non_claude_role_helpers_defer_to_the_configured_project_state_path() -> None:
+    for root in (REPO_ROOT, REFERENCE_WORKFLOW):
+        for relative_path in NON_CLAUDE_ROLE_HELPER_FILES:
+            path = root / relative_path
+            content = path.read_text(encoding="utf-8")
+
+            assert PROJECT_STATE_DEFERRAL in content, path
+            assert "`PROJECT_STATE.md` if present" not in content, path
+            assert "Do not modify `PROJECT_STATE.md`" not in content, path
+            assert "Do not edit `PROJECT_STATE.md`" not in content, path
+            is_planner = (
+                path.name == "planner.md" or "llm-handoff-planner" in relative_path
+            )
+            if not is_planner:
+                assert content.count("PROJECT_STATE.md") == 1, path
+
+
 def test_reference_workflow_config_loads() -> None:
     config = load_dispatch_config(
         repo_root=REFERENCE_WORKFLOW,

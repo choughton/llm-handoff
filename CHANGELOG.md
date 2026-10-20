@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Non-Claude role helper files defer to the configured project state path (TIDY-6). The
+  `.agents/agents/` and `.codex/skills/` helpers, root and reference-workflow copies, now say
+  "The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md`
+  names another path)". The Claude copies follow in TIDY-7.
 - One refusal summary per dispatch (TIDY-5). After a Claude run with permission refusals, the
   Claude provider logs one WARN line with the refusal count and the distinct refused prefixes
   (program basename, `git` subcommand, or tool name; `<command>` for unsafe text). The `agy`

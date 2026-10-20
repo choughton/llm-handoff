@@ -12,7 +12,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 
 1. `docs/handoff/HANDBOOK.md`
 2. `AGENTS.md`
-3. `PROJECT_STATE.md` if present
+3. The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md` names another path), if present
 4. `docs/handoff/HANDOFF.md`
 5. `docs/handoff/README.md`
 6. The files and tests named in the handoff
@@ -41,7 +41,7 @@ prompted, and the refusal fails the dispatch.
 - Run git from the repository root without `-C`; `git -C <path> ...` does not match the allowed git commands.
 - Treat skipped tests, uncommitted work, unresolved conflicts, missing SHAs, and ambiguous ownership as blockers unless the handoff explains why they are intentional.
 - Do not commit, push, amend, or write implementation fixes.
-- Do not edit `PROJECT_STATE.md`; the finalizer owns durable state updates unless local instructions say otherwise.
+- Do not edit the project state file; the finalizer owns durable state updates unless local instructions say otherwise.
 
 ## Routing Frontmatter
 
