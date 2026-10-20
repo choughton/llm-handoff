@@ -15,7 +15,8 @@ This project follows a simple pre-release changelog until the first public tag.
   or opens the pull request, waits for the review, and merges. A merge in
   progress, uncommitted files, commits beyond the audited `scope_sha` other
   than clean base-branch merges, a failed `gh pr view`, a closed pull
-  request, a merged one with unresolved threads, or a lost review bounce
+  request, a merged one whose head is not the local HEAD or that has
+  unresolved threads, or a lost review bounce
   pauses with an `INTERRUPTED PUBLISH:` message and keeps the story state.
   Before, the planner ran and the orphaned-story check paused. `story.json`
   now saves the pushed head and its review request time

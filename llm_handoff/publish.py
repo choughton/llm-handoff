@@ -1685,8 +1685,8 @@ def resume_interrupted_publish(
       the dispatcher's logs, pauses.
     - HEAD must be ``scope_sha`` plus only clean base-branch merges.
     - A ``gh pr view`` failure other than "no pull requests found" pauses, a
-      closed pull request pauses, and a merged one with an unresolved review
-      thread or saved finding pauses.
+      closed pull request pauses, and a merged one pauses when its head is
+      not HEAD or it has an unresolved review thread or saved finding.
     - A review bounce whose handoff was lost (open findings saved for HEAD)
       pauses.
 
@@ -1774,6 +1774,17 @@ def resume_interrupted_publish(
     if view is not None and pr_state not in {"OPEN", "MERGED"}:
         return blocked(f"{where} is {pr_state.lower() or 'in an unknown state'}")
     if view is not None and pr_state == "MERGED":
+        # A pull request merged while the dispatcher was down may hold an
+        # older head than the audited local one (a correction never pushed);
+        # treating it as done would strand those commits on a local branch.
+        pr_head = str(view.get("headRefOid") or "")
+        if not _OBJECT_ID_RE.fullmatch(pr_head):
+            return blocked(f"`gh pr view` did not report the head {where} merged")
+        if pr_head != head:
+            return blocked(
+                f"{where} merged {pr_head[:12]}, not the local HEAD "
+                f"{head[:12]}, so the local commits after it were never merged"
+            )
         number = view.get("number")
         threads = (
             _review_threads(gh_command, repo_root, number)

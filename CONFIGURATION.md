@@ -1186,6 +1186,9 @@ steps) when:
 - HEAD is not the audited `scope_sha` plus only clean base-branch merges;
 - `gh pr view` fails for any reason other than "no pull requests found";
 - the pull request is closed (the dispatcher never reopens or recreates it);
+- the pull request is merged at a head other than the local HEAD, for
+  example when it was merged while the dispatcher was down and an audited
+  correction was never pushed to it;
 - the pull request is merged with an unresolved review thread or saved
   finding;
 - the story's saved review findings were made on HEAD and are not resolved:

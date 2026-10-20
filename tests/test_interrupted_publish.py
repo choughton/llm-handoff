@@ -98,7 +98,9 @@ elif args[:2] == ["pr", "view"]:
         sys.exit("HTTP 502: Bad Gateway")
     if "pr" not in state:
         sys.exit("no pull requests found for branch \"x\"")
-    head = subprocess.run(
+    # A merged pull request keeps reporting the head it merged after its
+    # branch is deleted.
+    head = state.get("merged_head") or subprocess.run(
         [*git_dir, "rev-parse", "-q", "--verify", f"refs/heads/{args[2]}"],
         capture_output=True, text=True,
     ).stdout.strip()
@@ -112,6 +114,10 @@ elif args[:2] == ["pr", "merge"]:
         [*git_dir, "update-ref", "refs/heads/main", f"refs/heads/{branch}"],
         check=True,
     )
+    state["merged_head"] = subprocess.run(
+        [*git_dir, "rev-parse", f"refs/heads/{branch}"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
     state["pr"] = "MERGED"
     save()
 elif args[0] == "api":
@@ -268,7 +274,7 @@ class Story:
         self.push_branch()
         _remote_git(self.remote, "update-ref", "refs/heads/main", self.head())
         _remote_git(self.remote, "update-ref", "-d", f"refs/heads/{BRANCH}")
-        self.set_gh(pr="MERGED")
+        self.set_gh(pr="MERGED", merged_head=self.head())
 
     def confirm_yes(self, question: str) -> bool:
         self.questions.append(question)
@@ -482,6 +488,26 @@ def test_a_merged_pull_request_is_cleaned_up_without_a_push_or_merge(
         ["switch", "main"],
         ["pull", "--ff-only"],
     ]
+
+
+def test_a_pull_request_merged_before_an_audited_correction_was_pushed_pauses(
+    story: Story,
+) -> None:
+    # The pull request was merged at the first head while the dispatcher was
+    # down; the audited correction after it was never pushed.
+    story.merge_on_github()
+    merged = story.head()
+    story.commit({"src/widget.py": "WIDGET = 2\n"}, "W9.9 Fix the review finding")
+    story.audited = story.head()
+    story.handoff = story.verified()
+
+    outcome = story.resume(confirm=_fail_confirm)
+
+    story.assert_paused(outcome, f"merged {merged[:12]}", story.audited[:12])
+    assert _git(story.repo, "branch", "--show-current") == BRANCH
+    assert story.head() == story.audited
+    assert story.gh_kinds() == [["pr", "view"]]
+    assert [args[:1] for args in story.git_calls if args[0] in {"switch", "pull"}] == []
 
 
 def test_a_merged_pull_request_with_an_unresolved_thread_pauses(
