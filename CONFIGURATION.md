@@ -360,9 +360,9 @@ What survives a restart, all under `logs/dispatch/`:
   line and its files stay operator edits. See
   [Dispatcher Commits](#dispatcher-commits);
 - the in-flight record (`in-flight.json`), which exists only while an
-  implementer dispatch runs. A record found at startup means that implementer
-  was interrupted mid-dispatch; it applies only after the operator confirms it
-  at a terminal. See [Dispatcher Commits](#dispatcher-commits).
+  implementer or planner dispatch runs. A record found at startup means that
+  role was interrupted mid-dispatch; it applies only after the operator
+  confirms it at a terminal. See [Dispatcher Commits](#dispatcher-commits).
 
 What does not survive: a scheduled planner recovery or operator-prompt
 dispatch that had not run yet (the dispatcher logs a `WARN` line naming it),
@@ -621,8 +621,9 @@ also writes `logs/dispatch/in-flight.json` right before each `backend` or
 `frontend` dispatch the work-claim gate applies to. The record names the role,
 the story, HEAD, the pre-dispatch `HANDOFF.md` text, the operator's dirty
 files with their content hashes, and the SHA-256 digests of the protected
-control files (`protected_paths`). Planner, auditor, finalizer, validator,
-ungated, and dry-run dispatches write none. Once the dispatch returns,
+control files (`protected_paths`). Planner dispatches write their own record
+(described below); auditor, finalizer, validator, ungated, and dry-run
+dispatches write none. Once the dispatch returns,
 whatever its exit code, the dispatcher rewrites the record as a `handback`
 record that also holds the `HANDOFF.md` text the implementer left and HEAD at
 that moment, and deletes it when the cycle is finished: at the top of the next
@@ -717,10 +718,71 @@ shown before the question is of the same text the commit and gate use. The
 start does not repair or normalize the confirmed handback before that cycle,
 because a rewrite would no longer match the confirmed text; the cycle's usual
 post-dispatch repair and `next_agent` normalization run on it before
-validation. That cycle writes no in-flight record. Re-running an interrupted
-planner or finalizer dispatch (RECOVERY-3b), audit fan-out (RECOVERY-3c), or
-work-claim gate and scanners (RECOVERY-3d), making publish steps safe to repeat
-(RECOVERY-3e), and starts with no record (RECOVERY-4) are pending.
+validation. That cycle writes no in-flight record.
+
+A planner dispatch writes a `planner` record to the same path right before it
+starts. It holds the cycle, HEAD, the checked-out branch (`head_branch`,
+`null` on a detached HEAD), the `HANDOFF.md` text the planner starts from, and
+the protected-file digests; it never has a `handback` phase, operator
+files, carried-over files, or a separate assignment, and its story is empty
+when that handoff names no story. The dispatcher deletes it as soon as the
+planner returns, whatever its exit code; when that delete fails it logs an
+`ERROR` line and stops. The planner lease-rebuild cycle in Linear mode and dry
+runs write none, and the same one-`WARN`-per-run rule applies when the record
+cannot be kept. At startup a `planner` record goes through the same link,
+read, and validity checks. Next, with `protected_paths` set, the same
+protected-baseline checks described below: a record without protected-file
+digests, or whose HEAD is not a commit that is HEAD or an ancestor of HEAD, is
+discarded with a `WARN` line (a dry run keeps it), and Git is not touched.
+In dispatcher commit mode, the checkout is then compared with the record's
+HEAD and branch, as the check after a planner dispatch that returned would,
+but without changing anything: the record's HEAD comes from a file a role can
+write, so it proves nothing. A branch switch, rewritten history, or a commit
+with other files logs an `ERROR` line and stops the run before any dispatch,
+keeping the record and the checkout so the next start checks again. Commits
+since the record that change only the handoff are undone only after the
+operator confirms the exact reset: with `interactive_pause` and a terminal,
+the dispatcher logs the commits, the record's HEAD, and that confirming moves
+the branch back with `git reset --soft` and unstages the handoff, then asks
+``Undo the interrupted planner's handoff commits with `git reset --soft <sha>`? [y/N]``.
+On `y` the commits are undone (one `WARN` line; the handoff stays
+uncommitted); a checkout that moved again before the answer logs an `ERROR`
+line and stops with nothing undone. Any other answer, end of input, no
+terminal, or `interactive_pause: false` discards the record with a `WARN`
+line and leaves HEAD, the index, and the handoff as they are. A dry run only
+reports a moved checkout. A record HEAD that is not a commit is not
+reconciled. Then:
+
+- When `HANDOFF.md` still equals the record's text, the dispatcher logs one
+  `INFO` line that there is nothing to recover and deletes the record.
+- When it changed and passes the planner's post-dispatch validation, the
+  planner finished writing it before the interrupt: the dispatcher keeps it,
+  logs one `INFO` line, and deletes the record without asking.
+- When it is missing, empty, or fails that validation, a dry run logs the
+  summary and keeps the record. Otherwise the confirmation rule above applies:
+  the dispatcher logs the record path, the escaped validation error codes, the
+  note that the half-written handoff will be replaced, the assignment summary,
+  and (with `protected_paths` set) the protected-file disclosure, then asks
+  `Restore the handoff from before planner's interrupted dispatch and run planner again? [y/N]`.
+  Any answer other than `y` or `yes`, end of input, no terminal, or
+  `interactive_pause: false` discards the record with a `WARN` line and leaves
+  the handoff as it is, so the usual invalid-handoff handling runs. On `y` the
+  handoff is restored with the same link-safe writer (a link on its path
+  discards the record before the prompt; a failed restore recovers nothing),
+  the record is deleted (when that delete fails, the dispatcher logs an
+  `ERROR` line and stops before dispatching; the next start finds the
+  restored handoff unchanged and deletes the record), and the first cycle
+  dispatches the planner (routing
+  source `interrupted_planner_recovery`) with a note that its previous run was
+  interrupted and the handoff was restored, checking protected files against
+  the baseline described below. A forced instruction the interrupted cycle
+  carried, such as an operator `@planner` message or a routing-recovery
+  instruction, is not kept.
+
+Re-running an interrupted finalizer dispatch (RECOVERY-3b2), audit fan-out
+(RECOVERY-3c), or work-claim gate and scanners (RECOVERY-3d), making publish
+steps safe to repeat (RECOVERY-3e), and starts with no record (RECOVERY-4) are
+pending.
 
 A Git process killed mid-write, for example by a second Ctrl+C during a
 dispatcher commit (the dispatcher's own `git` calls share the console's
@@ -779,6 +841,10 @@ is deleted as having nothing to recover only when no protected file is
 uncommitted either. When a confirmed recovery pauses because operator files
 changed, the first dispatch after that pause (in the same run) checks
 protected files against the recovery's baseline rather than a new snapshot.
+A `planner` record follows the same rules, and its recovered cycle is the
+re-dispatched planner; unlike a `dispatch` record, an unchanged handoff
+deletes it as having nothing to recover whether or not a protected file is
+uncommitted, because nothing from the record is applied.
 
 The one-shot handoff repair follows the same rule: in dispatcher mode its
 prompt says to leave the handoff uncommitted, and if the repair commits the

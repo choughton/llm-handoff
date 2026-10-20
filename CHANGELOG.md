@@ -19,6 +19,44 @@ This project follows a simple pre-release changelog until the first public tag.
   comment when it happens at the retried `gh pr merge`). Any failed check, a
   conflict in another file, or a second conflict in the same publish aborts
   the merge and pauses as before, with the reason in the pause message.
+- An interrupted planner dispatch is now recoverable (RECOVERY-3b1). The
+  dispatcher writes a `planner` record to `logs/dispatch/in-flight.json` right
+  before each planner dispatch (not in a dry run or the Linear lease-rebuild
+  cycle) holding the cycle, HEAD, the checked-out branch, the handoff the
+  planner starts from, and the protected-file digests, and deletes it as soon
+  as the planner returns,
+  whatever its exit code; a failed delete logs an `ERROR` line and stops. A
+  planner record is a `dispatch` record only, with no operator files, carried
+  files, or assignment, and its story key is `null` when the handoff names no
+  story; the record version stays 1, so implementer records load unchanged.
+  At startup, after the usual link, read, and validity checks and (with
+  `protected_paths` set) the protected-baseline checks, dispatcher commit mode
+  compares the checkout with the record's HEAD and branch, read-only, as a
+  returned planner dispatch would: a branch switch, rewritten history, or a
+  commit with other files logs an `ERROR` line and stops before any dispatch,
+  keeping the record. Handoff-only commits are undone with `git reset --soft`
+  only after the operator confirms
+  ``Undo the interrupted planner's handoff commits with `git reset --soft <sha>`? [y/N]``
+  at a terminal, since the record's HEAD is untrusted; decline, end of input,
+  no terminal, or `interactive_pause: false` discards the record with a
+  `WARN` line and leaves HEAD, the index, and the handoff alone. Then: an
+  unchanged handoff logs
+  one `INFO` line and deletes the record; a changed handoff that passes the
+  planner's post-dispatch validation is kept, with one `INFO` line, and the
+  record deleted; a missing, empty, or invalid handoff is shown with its
+  escaped validation error codes, the assignment summary, and the
+  protected-file disclosure, and the dispatcher asks
+  `Restore the handoff from before planner's interrupted dispatch and run planner again? [y/N]`.
+  Yes restores the handoff with the link-safe writer, deletes the record (a
+  failed delete logs an `ERROR` line and stops), and dispatches the
+  planner (routing source `interrupted_planner_recovery`) with a note that its
+  previous run was interrupted, against the recovery's protected-file
+  baseline. Decline, end of input, or no terminal discards the record with a
+  `WARN` line and leaves the handoff for the usual invalid-handoff handling; a
+  dry run logs the summary and keeps both. Limitation: a forced instruction
+  the interrupted planner cycle carried (an operator `@planner` message or a
+  routing-recovery instruction) is not kept; the re-dispatched planner gets
+  only the interrupted-planner note.
 - A leftover Git index lock now pauses a real run at startup (RECOVERY-3a).
   Before the publish resume and interrupted-run recovery, the dispatcher
   resolves the index with `git rev-parse --git-path index` (which follows an
