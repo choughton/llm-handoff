@@ -89,6 +89,7 @@ from llm_handoff.publish import (
     ensure_story_branch,
     keep_review_responses,
     leave_merged_story_branch,
+    StateConflictResolver,
     publish_story,
     recover_orphaned_story,
     resume_paused_publish,
@@ -619,6 +620,7 @@ def _run_loop(
             log=log_fn,
             review=_review_gate(config),
             review_prompt=_review_prompt(config, operator_prompt, stop_watch, log_fn),
+            state_resolver=_state_conflict_resolver(config, log_fn),
         )
         if outcome.handoff is not None:
             config.handoff_full_path.write_text(outcome.handoff, encoding="utf-8")
@@ -2188,6 +2190,7 @@ def _run_loop(
                         review_prompt=_review_prompt(
                             config, operator_prompt, stop_watch, log_fn
                         ),
+                        state_resolver=_state_conflict_resolver(config, log_fn),
                     )
                     if outcome.handoff is not None:
                         config.handoff_full_path.write_text(
@@ -2227,6 +2230,70 @@ def _review_gate(config: DispatchConfig) -> ReviewGate | None:
         max_rounds=publish.max_review_rounds,
         codex_bot_login=publish.codex_bot_login,
     )
+
+
+def _state_conflict_resolver(
+    config: DispatchConfig, log: LogFn
+) -> StateConflictResolver | None:
+    """The planner dispatch for a base-branch merge that conflicts only in
+    ``project_state_path`` (``publish.resolve_project_state_conflicts``).
+
+    The planner gets a bounded prompt of its own, not its handoff prompt.
+    A dispatch that changes a protected control file or the handoff counts
+    as failed; the handoff is put back as it was.
+    """
+
+    if config.publish.resolve_project_state_conflicts != "planner" or config.dry_run:
+        return None
+    path = config.project_state_path.as_posix()
+    if path == config.handoff_path.as_posix():
+        return None
+
+    def handoff_bytes() -> bytes | None:
+        try:
+            return config.handoff_full_path.read_bytes()
+        except OSError:
+            return None
+
+    def run(prompt: str) -> bool:
+        handoff_before = handoff_bytes()
+        protected_before = _capture_protected_snapshot(config)
+        _log(log, "DISPATCH", f"Dispatching planner to resolve a {path} merge conflict.")
+        result = _invoke_support_callable(
+            "planner",
+            prompt,
+            role="planner",
+            handoff_path=config.handoff_full_path,
+            agent_config=config.agents["planner"],
+            log=log,
+            repo_root=config.repo_root,
+            **_failover_kwargs(config, "planner"),
+        )
+        _log(log, "AGENT", f"Planner (merge conflict) exited with code {result.exit_code}")
+        succeeded = result.exit_code == 0
+        if handoff_bytes() != handoff_before:
+            _log(
+                log,
+                "WARN",
+                f"The planner changed {config.handoff_path.as_posix()} while "
+                "resolving the merge conflict; restored it.",
+            )
+            if handoff_before is not None:
+                config.handoff_full_path.write_bytes(handoff_before)
+            succeeded = False
+        if protected_before is not None:
+            changed = _protected_file_changes(config, protected_before)
+            if changed:
+                _log(
+                    log,
+                    "WARN",
+                    "The planner changed protected control files while "
+                    f"resolving the merge conflict: {_protected_paths_display(changed)}.",
+                )
+                succeeded = False
+        return succeeded
+
+    return StateConflictResolver(path=path, run=run)
 
 
 def _dispatch_route(

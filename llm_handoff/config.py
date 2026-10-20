@@ -223,6 +223,9 @@ PublishReviewer = Literal["codex"]
 # What the dispatcher does at a non-user pause: schedule one bounded planner
 # recovery per pause streak, or pause and wait for a HANDOFF.md edit.
 PauseRecoveryMode = Literal["planner", "off"]
+# What `pr` mode does when a base-branch merge conflicts only in the project
+# state file: have the planner resolve it, or pause for the operator.
+ProjectStateConflictMode = Literal["planner", "off"]
 DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 # The security reviewer runs by default. Leaving it out of `audit.reviewers`
 # also needs a non-empty `audit.security_opt_out_reason`.
@@ -541,6 +544,22 @@ class PublishConfig(BaseModel):
     # retry one the reviewer reports as failed.
     max_review_rounds: int = 1
     codex_bot_login: str = DEFAULT_CODEX_BOT_LOGIN
+    # pr mode: when merging the base branch into the story branch conflicts
+    # only in project_state_path, "planner" has the planner resolve it once;
+    # "off" pauses for the operator, as for any other conflict.
+    resolve_project_state_conflicts: ProjectStateConflictMode = "planner"
+
+    @field_validator("resolve_project_state_conflicts", mode="before")
+    @classmethod
+    def _reject_boolean_conflict_mode(cls, value: object) -> object:
+        # YAML 1.1 reads a bare `off` as the boolean false.
+        if isinstance(value, bool):
+            raise ValueError(
+                'publish.resolve_project_state_conflicts must be "planner" or '
+                '"off"; YAML reads a bare off as a boolean, so write '
+                'resolve_project_state_conflicts: "off" with quotes.'
+            )
+        return value
 
     @model_validator(mode="after")
     def _validate_reviewers(self) -> PublishConfig:
