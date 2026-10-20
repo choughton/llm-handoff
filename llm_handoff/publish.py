@@ -56,8 +56,10 @@ from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import textwrap
 from collections.abc import Callable, Sequence
@@ -1194,11 +1196,14 @@ def _resolve_state_conflict(
     # Status and file bytes miss a staged blob or mode swapped behind
     # assume-unchanged or skip-worktree, so every index entry is compared too.
     index_before = _index_entries(repo_root)
+    # The flags themselves can hide a working-tree edit from `git status`.
+    flags_before = _index_flags(repo_root)
     if (
         not head
         or merge_head.returncode != 0
         or snapshot is None
         or index_before is None
+        or flags_before is None
     ):
         return "", "the merge state could not be read"
     log(
@@ -1246,6 +1251,14 @@ def _resolve_state_conflict(
         staged = _index_paths_changed(index_before, index_after, path)
         if staged:
             problems.append(f"it also changed the index entries of {_path_list(staged)}")
+    flags_after = _index_flags(repo_root)
+    if flags_after is None:
+        if index_after is not None:
+            problems.append("the index could not be read")
+    else:
+        flagged = _index_flags_changed(flags_before, flags_after)
+        if flagged:
+            problems.append(f"it also changed the index flags of {_path_list(flagged)}")
     if not problems:
         try:
             text: str | None = (repo_root / path).read_text(
@@ -1371,15 +1384,101 @@ def _staged_resolution_problem(
     return ""
 
 
-def _worktree_snapshot(repo_root: Path) -> dict[str, tuple[str, str]] | None:
-    """Map each path ``git status`` lists to its status code and content hash."""
+IndexFlags = dict[str, tuple[bool, bool]]
 
+
+def _index_flags(repo_root: Path) -> IndexFlags | None:
+    """Map each index path to its ``(assume-unchanged, skip-worktree)`` flags.
+
+    Read from ``git ls-files -v -z``, whose tag letter is lowercase for an
+    assume-unchanged entry and ``S`` for a skip-worktree one. Only the two
+    flags are kept, so staging a conflicted path (tag ``M`` to ``H``) is not
+    a flag change. Returns None when git fails or prints a record with no tag
+    and path, so callers fail closed.
+    """
+
+    listed = _git(repo_root, ["ls-files", "-v", "-z"])
+    if listed.returncode != 0:
+        return None
+    flags: IndexFlags = {}
+    for record in (listed.stdout or "").split("\0"):
+        if not record:
+            continue
+        # With -z: "<tag> <path>"; an unmerged path is listed once per stage.
+        if len(record) < 3 or record[1] != " " or not record[0].strip():
+            return None
+        tag, name = record[0], record[2:]
+        entry = (tag.islower(), tag.upper() == "S")
+        # Any flagged stage marks the path.
+        previous = flags.get(name, (False, False))
+        flags[name] = (previous[0] or entry[0], previous[1] or entry[1])
+    return flags
+
+
+def _index_flags_changed(before: IndexFlags, after: IndexFlags) -> list[str]:
+    """The paths whose index flags changed, appeared, or disappeared."""
+
+    return sorted(
+        name
+        for name in before.keys() | after.keys()
+        if before.get(name) != after.get(name)
+    )
+
+
+def _path_fingerprint(path: Path) -> tuple[str, str]:
+    """Return a path's file type and content digest, without following links.
+
+    A regular file is ``file`` (``executable`` when the platform reports an
+    executable bit) with the sha256 of its bytes; a symlink is ``symlink``
+    with the sha256 of its target; a directory or missing path has an empty
+    digest.
+    """
+
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return "missing", ""
+    except OSError:
+        return "unreadable", ""
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            target = os.readlink(path)
+        except OSError:
+            return "symlink", ""
+        return "symlink", hashlib.sha256(os.fsencode(target)).hexdigest()
+    if stat.S_ISDIR(info.st_mode):
+        return "directory", ""
+    if not stat.S_ISREG(info.st_mode):
+        return "other", ""
+    kind = "executable" if info.st_mode & 0o111 else "file"
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        digest = ""
+    return kind, digest
+
+
+def _worktree_snapshot(
+    repo_root: Path,
+) -> dict[str, tuple[str, str, str]] | None:
+    """Map each tracked or status-listed path to its status, type, and digest.
+
+    Covers every tracked path from ``git ls-files -z``, which lists entries
+    whatever their assume-unchanged or skip-worktree flag, plus every path
+    ``git status`` lists (untracked files included). A path status does not
+    list has an empty status code. Returns None on any git failure, so
+    callers fail closed.
+    """
+
+    tracked = _git(repo_root, ["ls-files", "-z"])
+    if tracked.returncode != 0:
+        return None
     status = _git(
         repo_root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
     )
     if status.returncode != 0:
         return None
-    snapshot: dict[str, tuple[str, str]] = {}
+    codes: dict[str, str] = {}
     fields = (status.stdout or "").split("\0")
     index = 0
     while index < len(fields):
@@ -1393,11 +1492,13 @@ def _worktree_snapshot(repo_root: Path) -> dict[str, tuple[str, str]] | None:
             names.append(fields[index])
             index += 1
         for name in names:
-            try:
-                digest = hashlib.sha256((repo_root / name).read_bytes()).hexdigest()
-            except OSError:
-                digest = ""
-            snapshot[name] = (entry[:2], digest)
+            codes[name] = entry[:2]
+    # Unmerged paths are listed once per stage; the set dedupes them.
+    names = {name for name in (tracked.stdout or "").split("\0") if name}
+    snapshot: dict[str, tuple[str, str, str]] = {}
+    for name in sorted(names | codes.keys()):
+        kind, digest = _path_fingerprint(repo_root / name)
+        snapshot[name] = (codes.get(name, ""), kind, digest)
     return snapshot
 
 
