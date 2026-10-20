@@ -6,14 +6,16 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-3a in progress; RECOVERY-2d approved at
+- **Active Epic:** RECOVERY (RECOVERY-3b1 in progress; RECOVERY-3a approved
+  at `c29943e`, merged in PR #169; RECOVERY-2d approved at
   `ee76517`, merged in PR #168; RECOVERY-2c approved at `10bdbee`, merged in
   PR #167; RECOVERY-2b merged in PR #166; RECOVERY-2a approved at `9831e0b`,
   merged in PR #165; RECOVERY-1 approved at 14f195b, merged in PR #160).
-  RECOVERY-3 is split into RECOVERY-3a..3e; RECOVERY-3b..3e and RECOVERY-4
-  follow. RECOVERY-3a (stale Git index lock pause at startup) goes first
-  because it is small and standalone, and every later recovery phase and the
-  startup publish resume run Git writes that a leftover lock breaks.
+  RECOVERY-3 is split into RECOVERY-3a..3e, and RECOVERY-3b into
+  RECOVERY-3b1 (interrupted planner dispatch) and RECOVERY-3b2 (interrupted
+  finalizer dispatch). RECOVERY-3b1 goes first because it reuses the
+  RECOVERY-2a in-flight record with the fewest new cases; RECOVERY-3b2,
+  RECOVERY-3c..3e, and RECOVERY-4 follow.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -671,10 +673,10 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 Fit: RECOVERY-1 is merged (PR #160) and removed the Ctrl+C hazard;
 RECOVERY-2a, RECOVERY-2b, RECOVERY-2c, and RECOVERY-2d are merged (PRs #165,
 #166, #167, and #168). RECOVERY-3 is split into RECOVERY-3a..3e; RECOVERY-3a
-(stale Git index lock pause at startup) is active and goes first because it
-is small and standalone, and every later phase (3b-3e, RECOVERY-4) and the
-startup publish resume run Git writes that a lock left by a killed `git`
-breaks. RECOVERY-3b..3e and RECOVERY-4 follow. HARD-5 and HARD-6 are closed,
+(stale Git index lock pause at startup) is merged (PR #169). RECOVERY-3b is
+split into RECOVERY-3b1 and RECOVERY-3b2; RECOVERY-3b1 (interrupted planner
+dispatch) is active. RECOVERY-3b2, RECOVERY-3c..3e, and RECOVERY-4 follow.
+HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
 HARD-5's operator-confirmation rule before carrying anything over and
@@ -810,7 +812,8 @@ bounces until the three-fix circuit breaker escalates.
     None on Git failure are unchanged. Disclosure paths stay escaped with
     `_escape_control_characters`. `_git_changed_files_since` is unchanged.
 - RECOVERY-3: Split by the planner on 2026-10-19 (the other phases):
-  - RECOVERY-3a: Stale Git index lock pauses at startup. A `.git/index.lock`
+  - RECOVERY-3a (approved at `c29943e`, merged in PR #169): Stale Git index
+    lock pauses at startup. A `.git/index.lock`
     left by a killed `git` (for example a second Ctrl+C during a dispatcher
     commit, since the dispatcher's own `git` calls stay in the console
     process group) pauses a real run at startup with its path (from
@@ -818,8 +821,23 @@ bounces until the three-fix circuit breaker escalates.
     `GIT_INDEX_FILE` is followed) and the check to run, before the
     publish resume and interrupted-run recovery; it is never deleted
     automatically. Polls until the file is gone; a dry run only warns.
-  - RECOVERY-3b: Interrupted planner and finalizer dispatch: restore an
-    invalid `HANDOFF.md` and re-run that role.
+  - RECOVERY-3b: Split by the planner on 2026-10-19:
+    - RECOVERY-3b1: Interrupted planner dispatch. A planner dispatch writes a
+      `planner` in-flight record (dispatch phase only, null story key when
+      the handoff has none, no operator files) and deletes it once
+      `_dispatch_route` returns. At startup an unchanged handoff or a changed
+      handoff that passes planner validation deletes the record and keeps the
+      handoff; a missing, empty, or invalid handoff is restored from the
+      record only after HARD-5 confirmation, and the planner runs again
+      (`interrupted_planner_recovery`) against the recovery's protected-file
+      baseline; an earlier forced instruction is not kept. In dispatcher
+      commit mode, handoff-only commits since the record's untrusted HEAD are
+      undone only after the operator confirms the exact `git reset --soft`.
+    - RECOVERY-3b2: Interrupted finalizer dispatch: restore an invalid
+      `HANDOFF.md` and run the finalizer again. The finalizer runs through
+      `_invoke_epic_close` and may commit `PROJECT_STATE.md` itself, so
+      partial ledger edits and commits since the record's HEAD need their own
+      rules.
   - RECOVERY-3c: Interrupted audit fan-out: restore the handoff and re-run
     the read-only reviewers.
   - RECOVERY-3d: Interrupted work-claim gate and scanners: re-run them.
