@@ -6,11 +6,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from llm_handoff import agent_roles
+from llm_handoff import agent_roles, orchestrator
 from llm_handoff.agent_providers import claude, codex
 from llm_handoff.agent_providers.claude import _ClaudeStreamJsonMonitor
 from llm_handoff.agent_types import DispatchResult, SubagentResult, _ProcessResult
-from llm_handoff.config import AgentConfig
+from llm_handoff.config import AgentConfig, DispatchConfig
+from llm_handoff.validator import ValidationResult
 
 
 CLAUDE_INIT = {
@@ -236,6 +237,118 @@ def test_invoke_support_provider_passes_session_id_through(
 
     assert isinstance(result, SubagentResult)
     assert result.session_id == "provider-session"
+
+
+# --- orchestrator support-role dispatches -----------------------------------
+
+
+SUPPORT_USAGE: dict[str, object] = {"input_tokens": 120, "output_tokens": 45}
+QUALITY_ONLY_AUDIT: dict[str, object] = {
+    "reviewers": ["quality"],
+    "security_opt_out_reason": "Throwaway prototype; no secrets or user data.",
+}
+
+
+def _support_result() -> SubagentResult:
+    return SubagentResult(
+        stdout="support report",
+        stderr="",
+        exit_code=0,
+        elapsed_seconds=2.0,
+        session_id="support-session-1",
+        usage=dict(SUPPORT_USAGE),
+    )
+
+
+def _patch_support_role(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    def fake_support(subagent_name: str, prompt: str, **_kwargs: object):
+        del prompt
+        calls.append(subagent_name)
+        return _support_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    return calls
+
+
+def test_orchestrator_single_auditor_route_keeps_session_id_and_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = _patch_support_role(monkeypatch)
+
+    def fail_fan_out(*_args: object, **_kwargs: object) -> DispatchResult:
+        raise AssertionError("fan-out must not run when security is opted out")
+
+    monkeypatch.setattr(orchestrator, "run_audit_fan_out", fail_fan_out)
+    config = DispatchConfig(repo_root=tmp_path, audit=QUALITY_ONLY_AUDIT)
+
+    result, label = orchestrator._dispatch_route(
+        "auditor", config, lambda level, message: None
+    )
+
+    assert calls == ["auditor"]
+    assert label == "auditor (audit)"
+    assert result.session_id == "support-session-1"
+    assert result.usage == SUPPORT_USAGE
+
+
+def test_orchestrator_validator_route_keeps_session_id_and_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = _patch_support_role(monkeypatch)
+    config = DispatchConfig(repo_root=tmp_path)
+
+    result, label = orchestrator._dispatch_route(
+        "validator", config, lambda level, message: None
+    )
+
+    assert calls == ["handoff-router"]
+    assert label == "validator"
+    assert result.session_id == "support-session-1"
+    assert result.usage == SUPPORT_USAGE
+
+
+def test_orchestrator_auditor_hygiene_repair_keeps_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = _patch_support_role(monkeypatch)
+    config = DispatchConfig(repo_root=tmp_path)
+    validation_result = ValidationResult(
+        verdict="NO",
+        warnings=[],
+        errors=[
+            "scope_claim_missing: Handoff is missing an **Agent:** ownership line."
+        ],
+        routing_instruction="auditor",
+    )
+
+    result = orchestrator._dispatch_handoff_hygiene_repair(
+        config=config,
+        previous_agent="auditor (audit)",
+        validation_result=validation_result,
+        log=lambda level, message: None,
+    )
+
+    assert calls == ["auditor"]
+    assert result is not None
+    assert result.session_id == "support-session-1"
+    assert result.usage == SUPPORT_USAGE
+
+
+def test_orchestrator_dispatch_from_subagent_without_session_id_is_none() -> None:
+    subagent = SubagentResult(
+        stdout="out", stderr="", exit_code=0, elapsed_seconds=1.0
+    )
+
+    dispatch = orchestrator._dispatch_from_subagent(subagent)
+
+    assert dispatch.session_id is None
+    assert dispatch.usage is None
+    assert dispatch.stdout == "out"
 
 
 # --- Codex ------------------------------------------------------------------
