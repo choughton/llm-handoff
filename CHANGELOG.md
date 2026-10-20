@@ -6,6 +6,11 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Tracker probe and stop-request notes (TIDY-4), no behavior change. `doctor --probe-tracker`
+  keeps its per-tool write denylist: Claude Code applies deny rules first, so a server-wide
+  deny would also block the two read tools. A code comment, a new test, and a corrected
+  residual-risk note in `CONFIGURATION.md` explain this. A stop request that names no pid is
+  now documented as intended, since only one dispatcher can hold `.dispatch.lock`.
 - Docs and text cleanup (TIDY-3): (a) rewrapped the two `CHANGELOG.md` lines over 100
   characters; (b) `CONFIGURATION.md` now recommends pinning each scanner's version; (c)
   `docs/TESTING.md` and `CONFIGURATION.md` describe doctor's `tracker connector` lines per

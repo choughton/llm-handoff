@@ -2915,6 +2915,30 @@ def test_doctor_probe_argv_without_claude_mcp_config(
     assert isinstance(call["env"], dict)
 
 
+def test_doctor_probe_never_denies_whole_tracker_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # Deny rules win over allow rules, so a server-wide deny would also block
+    # the two read tools; the probe keeps a per-tool write denylist instead.
+    repo = _linear_repo(tmp_path, monkeypatch)
+    runner = _install_runner(monkeypatch, stdout=_envelope())
+
+    exit_code, output = _run_probe(repo, capsys)
+
+    assert exit_code == 0, output
+    command = runner.calls[0]["command"]
+    read_tools = {"mcp__linear__get_issue", "mcp__linear__list_issue_statuses"}
+    allowed = _option_value(command, "--allowedTools").split(",")
+    disallowed = _option_value(command, "--disallowedTools").split(",")
+    for tool in allowed:
+        if tool.startswith("mcp__linear__"):
+            assert tool in read_tools
+    for server_wide in ("mcp__linear", "mcp__linear__*"):
+        assert server_wide not in allowed
+        assert server_wide not in disallowed
+    assert not read_tools & set(disallowed)
+
+
 def test_doctor_probe_argv_with_claude_mcp_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

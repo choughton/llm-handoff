@@ -137,6 +137,9 @@ def stop_requested(repo_root: Path, *, pid: int | None = None) -> bool:
     """True when a stop request applies to the dispatcher with ``pid``.
 
     A request for another pid does not apply. Without ``pid`` any request does.
+    A request that names no pid applies to any pid by design: only one
+    dispatcher can hold ``.dispatch.lock`` in a repository, so it can only
+    mean the dispatcher running there.
     """
 
     if not stop_request_path(repo_root).is_file():

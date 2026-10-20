@@ -1479,6 +1479,13 @@ _TRACKER_PROBE_CHECK_NAME = "tracker probe"
 _TRACKER_PROBE_TIMEOUT_MS = 180_000
 _TRACKER_PROBE_ISSUE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$")
 _TRACKER_PROBE_READ_TOOLS = ("get_issue", "list_issue_statuses")
+# Claude Code applies deny rules before allow rules, so the probe cannot deny
+# the whole tracker server (`mcp__<server>` or `mcp__<server>__*`): that would
+# also block the two read tools above. Under `--permission-mode dontAsk` every
+# tool without an allow rule is already denied, so this denylist only guards
+# against write tools that an allow rule in the user's own Claude settings
+# pre-approves. A write tool under any other name is not covered; see the
+# residual-risk note for `--probe-tracker` in CONFIGURATION.md.
 _TRACKER_PROBE_WRITE_TOOLS = (
     "save_issue",
     "save_comment",
