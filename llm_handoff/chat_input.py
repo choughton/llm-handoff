@@ -141,9 +141,13 @@ class PosixChatKeyReader:
             [self._fd], [], [], max(timeout, 0)
         )
         if not ready:
-            # A quiet poll interval after ESC means the Esc key was pressed
-            # on its own, so the next key starts fresh.
-            self._escape_state = None
+            # A quiet poll interval right after ESC means the Esc key was
+            # pressed on its own, so the next key starts fresh. Once a CSI,
+            # SS3, or intermediate sequence has begun, the ESC was not a lone
+            # key press: keep that state so a delayed continuation is still
+            # dropped instead of leaking into the chat buffer.
+            if self._escape_state == "esc":
+                self._escape_state = None
             return ""
         data = os.read(self._fd, 4096)
         if not data:

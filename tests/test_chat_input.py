@@ -824,6 +824,32 @@ def test_posix_read_lone_escape_then_quiet_poll_keeps_next_key(pipe_fds) -> None
     assert reader.read_chars(0) == "[x"
 
 
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        (b"\x1b[", b"Ahello"),
+        (b"\x1b[1;", b"5Chello"),
+        (b"\x1bO", b"Phello"),
+        (b"\x1b(", b"Bhello"),
+    ],
+)
+def test_posix_read_quiet_poll_inside_sequence_keeps_escape_state(
+    pipe_fds, chunks
+) -> None:
+    read_fd, write_fd = pipe_fds
+    select = _FakeSelect()
+    reader = PosixChatKeyReader(read_fd, "utf-8", _FakeTermios(), select)
+
+    os.write(write_fd, b"ab" + chunks[0])
+    assert reader.read_chars(0) == "ab"
+    select.ready = False
+    assert reader.read_chars(0) == ""
+    assert reader.read_chars(0) == ""
+    select.ready = True
+    os.write(write_fd, chunks[1])
+    assert reader.read_chars(0) == "hello"
+
+
 def test_posix_read_control_char_ends_escape_and_is_kept(pipe_fds) -> None:
     read_fd, write_fd = pipe_fds
     reader = PosixChatKeyReader(read_fd, "utf-8", _FakeTermios(), _FakeSelect())
