@@ -3740,7 +3740,9 @@ def test_run_loop_handoff_repair_keeps_the_handoff_uncommitted_in_dispatcher_mod
 
     orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
 
-    assert len(repair_prompts) == 1, " | ".join(f"{l} {m}" for l, m in messages[22:])
+    assert len(repair_prompts) == 1, " | ".join(
+        f"{level} {message}" for level, message in messages[22:]
+    )
     assert "leave docs/handoff/HANDOFF.md uncommitted" in repair_prompts[0]
     assert "Commit exactly" not in repair_prompts[0]
     assert _commit_files(tmp_path, "HEAD") == ["src/app.py"]

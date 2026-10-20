@@ -271,7 +271,7 @@ def wait_for_codex_review(
 ) -> ReviewResult:
     """Poll the pull request until Codex finishes reviewing ``head_sha``."""
 
-    base = f"repos/{{owner}}/{{repo}}"
+    base = "repos/{owner}/{repo}"
     endpoints = {
         "issue_comments": f"{base}/issues/{pr_number}/comments",
         "reviews": f"{base}/pulls/{pr_number}/reviews",
