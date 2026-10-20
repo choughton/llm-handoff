@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Three operator-facing message fixes (TIDY-1). The operator-prompt scheduling lines now read
+  `scheduling the <role> dispatch`, so the auditor line no longer says "a auditor". An
+  `@<role>` dispatch that repeats the previous cycle's role on an unchanged `HANDOFF.md` still
+  runs, but now logs one WARN naming the role and the handoff SHA. Doctor's scanner check now
+  says when a command starts with a placeholder, and names that placeholder, instead of the
+  generic "does not start with a plain program name" message.
 - Scanner executable lookups no longer search the current directory (TIDY-2).
   Before, doctor and the work-claim gate used `shutil.which`, which on
   Windows also checks the current directory, so a scanner in the repository

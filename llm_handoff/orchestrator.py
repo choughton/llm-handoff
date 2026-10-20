@@ -1305,6 +1305,22 @@ def _run_loop(
                 pending_planner_recovery = pause.pending_planner_recovery
             continue
 
+        if (
+            # The operator chose to rerun a role whose last cycle left the
+            # handoff unchanged; run it, but say so.
+            active_planner_recovery_kind == "operator_role"
+            and previous_cycle is not None
+            and previous_cycle.route == current_cycle.route
+            and previous_cycle.handoff_sha == current_cycle.handoff_sha
+        ):
+            _log(
+                log_fn,
+                "WARN",
+                f"Operator prompt: the {current_cycle.route} role runs again on an "
+                f"unchanged HANDOFF.md (sha {current_cycle.handoff_sha}); the "
+                f"previous {current_cycle.route} cycle did not change it.",
+            )
+
         _log(log_fn, "INFO", f"Routing instruction: {decision.route}")
         for warning in decision.warnings:
             _log(log_fn, "WARN", warning)
@@ -9282,7 +9298,7 @@ def _pause_at_dispatcher_pause(
         _log(
             log,
             "PAUSE",
-            f"Operator prompt: scheduling a {role} dispatch with {summary}.",
+            f"Operator prompt: scheduling the {role} dispatch with {summary}.",
         )
         return PauseOutcome(kind="planner", pending_planner_recovery=role_pending)
 
@@ -9307,7 +9323,7 @@ def _pause_at_dispatcher_pause(
     _log(
         log,
         "PAUSE",
-        f"Operator prompt: scheduling a planner dispatch with {summary}.",
+        f"Operator prompt: scheduling the planner dispatch with {summary}.",
     )
     return PauseOutcome(kind="planner", pending_planner_recovery=pending)
 

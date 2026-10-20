@@ -6,9 +6,11 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** TIDY, with TIDY-2 (scanner lookups ignore the current
-  directory on Windows) in progress, picked because it fixes a scanner-gate
-  correctness gap and needs no operator input. TIDY-9 (merge-aware audit
+- **Active Epic:** TIDY, with TIDY-1 (operator-prompt and doctor message
+  fixes) in progress, picked because it is fully specified, needs no
+  operator input, and fixes operator-facing messages. TIDY-2 (scanner
+  lookups ignore the current directory on Windows) was approved at
+  `6515634` and merged in PR #185. TIDY-9 (merge-aware audit
   range) was approved at `935b9c8` and merged in PR #184. TIDY-10
   (dispatcher verification for planner-issued audits) was approved at
   `2df9673` and merged in PR #183. RECOVERY is closed (RECOVERY-13
@@ -1492,7 +1494,7 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: active; TIDY-2 is in progress. Independent and cheap; each story is
+Fit: active; TIDY-1 is in progress. Independent and cheap; each story is
 one Work Packet and fills a wait. Nothing here blocks another epic or waits
 on one. TIDY-7 routes to `user`
 (Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
@@ -1512,7 +1514,11 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   with a plain program name" WARN (`llm_handoff/doctor.py` ~line 1130); name
   the placeholder case in that message. Files: `llm_handoff/orchestrator.py`,
   `llm_handoff/doctor.py`, `tests/`, `CHANGELOG.md`. Closes PAUSE-RECOVERY
-  (a) and (b) and SCANNERS (b).
+  (a) and (b) and SCANNERS (b). Decided by the planner on 2026-10-20: both
+  scheduling lines read "scheduling the <role> dispatch"; the repeat-target
+  WARN fires only for an operator_role cycle whose route and handoff SHA
+  match the previous cycle; the placeholder WARN names the leading
+  placeholder token.
 - TIDY-2: Scanner lookups ignore the current directory on Windows. On
   Windows, `shutil.which` can also search the current directory, so doctor
   (`llm_handoff/doctor.py` ~line 1136) and the work-claim gate
@@ -1531,7 +1537,7 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `PATH`, run from that directory, and expect both to report it missing; a
   second test puts the directory on `PATH` and expects both to find it.
   Files: `llm_handoff/doctor.py`, `llm_handoff/work_claim.py`, `tests/`,
-  `CHANGELOG.md`. Closes SCANNERS (c).
+  `CHANGELOG.md`. Closes SCANNERS (c). Approved at 6515634, merged in PR #185.
 - TIDY-3: Docs and text cleanup. (a) Rewrap `CHANGELOG.md` lines over 100
   characters (one at ~line 445 on `105ea42`). (b) `CONFIGURATION.md` scanner
   section: add one line recommending pinned scanner versions. (c)

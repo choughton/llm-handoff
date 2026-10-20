@@ -1122,7 +1122,19 @@ def _check_scanners(
         executable = command_executable(scanner.command)
         # A leading placeholder is only known once the gate renders the
         # command, so doctor cannot check it either.
-        if executable is None or "{" in executable:
+        if executable is not None and "{" in executable:
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    name,
+                    "doctor could not check the executable because the command "
+                    f"starts with a placeholder (`{executable}`) that the gate "
+                    "fills in only when it runs; the gate will run the command "
+                    "and treat a not-found exit as a missing scanner",
+                )
+            )
+            continue
+        if executable is None:
             checks.append(
                 DoctorCheck(
                     "WARN",
