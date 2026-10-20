@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The audit fan-out no longer reviews upstream files that a story branch
+  brought in by merging its base branch (TIDY-9). Before, the review range
+  started at the saved story base, so after a base-branch merge the
+  reviewers also saw the merged upstream changes and the quality reviewer
+  failed the story on scope. Now, outside `local` publish mode, an auditor
+  dispatch starts the review at the merge-base of the scope commit and the
+  remote base branch when that merge-base descends from the saved story base
+  and leaves a non-empty range, and logs one INFO line naming both commits.
+  Any other case, including a git failure, keeps the saved base. The
+  work-claim gate's story base is unchanged.
 - A story audit that no implementer handed back now gets the dispatcher's
   pre-audit Verification run (TIDY-10). Before, the run fired only for an
   epic close or an empty review range, so a story audit the planner

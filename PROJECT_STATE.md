@@ -6,8 +6,10 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** TIDY, with TIDY-10 (dispatcher verification for
-  planner-issued audits) in progress. RECOVERY is closed (RECOVERY-13
+- **Active Epic:** TIDY, with TIDY-9 (merge-aware audit range) in progress,
+  picked first because it fixes a failure the loop hit in real runs. TIDY-10
+  (dispatcher verification for planner-issued audits) was approved at
+  `2df9673` and merged in PR #183. RECOVERY is closed (RECOVERY-13
   approved at `ab2f9d3`, merged in PR #182, epic close `c07dcdd`; the
   per-story SHAs are in the RECOVERY section). TIDY was picked by fit over
   the other open epics: CHAT is a feature epic and comes next, after TIDY.
@@ -1488,7 +1490,7 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: active; TIDY-10 is in progress. Independent and cheap; each story is
+Fit: active; TIDY-9 is in progress. Independent and cheap; each story is
 one Work Packet and fills a wait. Nothing here blocks another epic or waits
 on one. TIDY-7 routes to `user`
 (Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
@@ -1603,8 +1605,19 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   (RECOVERY-2a cycles 7 and 9). Use
   `git merge-base HEAD <remote>/<base branch>` as the review base when it
   descends from the saved base. Files: `llm_handoff/orchestrator.py`,
-  `llm_handoff/publish.py`, `tests/`, `CHANGELOG.md`.
-- TIDY-10: Dispatcher verification for planner-issued audits.
+  `llm_handoff/publish.py`, `tests/`, `CHANGELOG.md`. Decided by the planner
+  on 2026-10-20: a new `publish.merge_aware_review_base` returns the full
+  merge-base of the scope commit (or `HEAD`) and
+  `refs/remotes/<remote>/<base branch>` only when the saved story state
+  belongs to the checked-out story branch, the merge-base differs from the
+  saved base and descends from it, and it is not the scope commit itself;
+  otherwise, or on any git failure, it returns the saved base. The
+  orchestrator applies it only to the `AuditFanOutContext` base on an
+  auditor route outside `local` publish mode and logs one INFO line when the
+  base moves; `gate_story_base`, `_story_start_sha`, `saved_story_base`, and
+  the work-claim gate are unchanged, and `audit_review.py` is unchanged.
+- TIDY-10: Dispatcher verification for planner-issued audits. Approved at
+  `2df9673`, merged in PR #183.
   `audit_verification.pre_audit_trigger` fires only for an epic close or an
   empty review range, so a story audit the planner re-issues reaches a
   sandboxed reviewer with no `## Dispatcher Verification` PASS (RECOVERY-2a
