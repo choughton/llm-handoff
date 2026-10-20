@@ -10,16 +10,9 @@ The current repository is a pre-release scaffold. The full dispatcher test
 suite now runs as one public gate, including the ported migration coverage and
 the focused public-default tests.
 
-Current full-suite result on Windows:
-
-```text
-1344 passed, 18 skipped
-```
-
 One test, `test_timed_out_cmd_shim_child_is_killed_with_its_tree` in
 `tests/test_process_tree.py`, launches a real Windows `.cmd` shim process tree
-and is skipped on other platforms, where the result is `724 passed, 1 skipped`.
-Two tests in `tests/test_npm_shim_launch.py` launch a fake npm `.cmd` shim
+and is skipped on other platforms. Two tests in `tests/test_npm_shim_launch.py` launch a fake npm `.cmd` shim
 through `node` and are skipped off Windows or when `node` is not on `PATH`.
 
 The `tests/ported/` directory is still named as migration history, but it is
@@ -195,15 +188,17 @@ launches. The files are the ones "Tracker (Optional Linear Mode)" in
 - Codex: an `[mcp_servers.<server>]` table in `config.toml`
   (`$CODEX_HOME/config.toml` or `~/.codex/config.toml`, or
   `<target>/.codex/config.toml`).
-- Antigravity: `doctor` cannot read its MCP configuration. Confirm by hand
-  that the Antigravity CLI has the server configured.
+
+Linear mode does not support `antigravity` roles.
 
 ### Preflight
 
 1. Run `llm-handoff doctor --repo-root <target>`. Expect one
-   `tracker connector` line for each provider CLI the roles and fallbacks
-   launch. Fix any FAIL. A WARN for Antigravity is expected; a WARN for
-   another CLI means `doctor` did not find the server in the files it reads.
+   `tracker connector` line per launch group of the roles and fallbacks: up
+   to two for Claude (`claude strict` for Claude launches that load
+   `tracker.claude_mcp_config`, `claude` for the others, when both kinds
+   exist) and one for Codex. Fix any FAIL. A WARN means `doctor` did not
+   find the server in the files it reads.
 2. Run `llm-handoff doctor --repo-root <target> --probe-tracker ENG-123`
    with one of the sandbox issue identifiers. Expect a `tracker probe` PASS:
    the issue was read and every configured state name is one of the team's

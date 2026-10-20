@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Docs and text cleanup (TIDY-3): (a) rewrapped the two `CHANGELOG.md` lines over 100
+  characters; (b) `CONFIGURATION.md` now recommends pinning each scanner's version; (c)
+  `docs/TESTING.md` and `CONFIGURATION.md` describe doctor's `tracker connector` lines per
+  launch group (`claude strict`, `claude`, `codex`) and drop the Antigravity connector text;
+  (e) `docs/TESTING.md` no longer hard-codes suite counts; (f) `tests/test_doctor.py` uses
+  `\u` escapes instead of non-ASCII characters. The new `tests/test_text_hygiene.py` keeps
+  (a) and (f) fixed.
 - Three operator-facing message fixes (TIDY-1). The operator-prompt scheduling lines now read
   `scheduling the <role> dispatch`, so the auditor line no longer says "a auditor". An
   `@<role>` dispatch that repeats the previous cycle's role on an unchanged `HANDOFF.md` still
@@ -293,7 +300,8 @@ This project follows a simple pre-release changelog until the first public tag.
   assignment shown before that question is the exact text the resumed commit
   and gate use, and the start does not repair or normalize the confirmed
   handback first (the resumed cycle's post-dispatch repair does), so a
-  handback such as `next_agent: AUDITOR` still resumes. A moved HEAD or a changed handoff discards the record with a `WARN` line and
+  handback such as `next_agent: AUDITOR` still resumes. A moved HEAD or a
+  changed handoff discards the record with a `WARN` line and
   restores nothing; declining, no terminal, or `interactive_pause: false`
   discards it and the files stay operator edits; a changed operator file
   pauses with an `INTERRUPTED HANDBACK:` reason; a dry run only logs it. When
@@ -782,7 +790,8 @@ This project follows a simple pre-release changelog until the first public tag.
   replaces URL userinfo, authorization headers, bearer tokens, secret-named
   `NAME=value` pairs and `--flag value` arguments, and common token prefixes
   with `[REDACTED]`, so a refused `git push https://user:TOKEN@host/...` does
-  not write the token to the console or dispatch log. A resumed run that fails this way is not rerun in a fresh conversation. Other
+  not write the token to the console or dispatch log. A resumed run that
+  fails this way is not rerun in a fresh conversation. Other
   tool errors, and commands that run and fail on their own, still pass.
 - The post-dispatch gate now fails a handoff rewrite that silently drops
   planned stories. It compares the new `remaining_stories` with the handoff
