@@ -1165,10 +1165,7 @@ class DispatchConfig(BaseModel):
         # agy agent files limit each role's tools and give it no Linear MCP
         # access, so Linear mode fails closed on any antigravity launch.
         antigravity_locations: list[str] = []
-        for role in DEFAULT_AGENT_PROVIDERS:
-            agent_config = self.agents.get(role)
-            if agent_config is None:
-                continue
+        for role, agent_config in self.agents.items():
             if agent_config.provider == "antigravity":
                 antigravity_locations.append(f"agents.{role}")
             fallback = agent_config.fallback

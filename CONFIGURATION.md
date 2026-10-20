@@ -2348,6 +2348,13 @@ provider defaults.
 | `validator` | `claude` | `.claude/agents/handoff-validator.md` |
 | `finalizer` | `claude` | `.claude/agents/ledger-updater.md` |
 
+`tpm` is an optional seventh role. Without `agents.tpm` the planner picks
+stories and every route is unchanged. With it, the role uses the same
+provider, launch-flag, timeout, and fallback handling as the other roles and
+always starts a fresh session. `doctor` reports
+`role tpm: not configured (planner picks stories)` when it is absent. Routing
+to the tpm is not wired yet, so a handoff with `next_agent: tpm` still pauses.
+
 The `planner` and `frontend` roles on `antigravity` need the `agy` user
 settings entries described in
 [Launch Permissions And Sandboxing](#launch-permissions-and-sandboxing).
