@@ -1343,7 +1343,10 @@ def run_scanner(
     non-zero exit is ``scanner_failed:<name>``, a
     timeout is ``scanner_timeout:<name>``, and a missing executable is
     ``scanner_missing:<name>`` when the scanner is required or a skip when it
-    is optional.
+    is optional. When the command starts with a plain program token, the
+    runner receives the command with that token replaced by the quoted
+    absolute path :func:`find_scanner_executable` returned, so the shell
+    cannot pick a same-named program from the repository instead.
     """
 
     name = scanner.name
@@ -1389,17 +1392,21 @@ def run_scanner(
             None,
         )
 
-    executable = command_executable(rendered.command)
-    if executable is not None and (
-        find_scanner_executable(
+    command = rendered.command
+    executable = command_executable(command)
+    if executable is not None:
+        resolved = find_scanner_executable(
             executable, path=_env_path(build_work_claim_env(env_passthrough))
         )
-        is None
-    ):
-        return _missing_scanner(scanner, rendered.command, executable)
+        if resolved is None:
+            return _missing_scanner(scanner, command, executable)
+        # Run the program the lookup found, not the bare name: the shell would
+        # resolve it again and, on Windows, cmd.exe checks the repository
+        # (its working directory) before PATH.
+        command = bind_command_executable(command, resolved)
 
     run = runner(
-        rendered.command,
+        command,
         cwd=context.repo_root,
         timeout_seconds=scanner.timeout_ms / 1000,
         env_passthrough=env_passthrough,
@@ -1502,6 +1509,29 @@ def command_executable(command: str) -> str | None:
     if not token or any(char in _SHELL_SYNTAX_CHARS for char in token):
         return None
     return token
+
+
+def bind_command_executable(command: str, resolved: str) -> str:
+    """Replace the leading program token of ``command`` with ``resolved``.
+
+    The token is found the same way as in :func:`command_executable` (a
+    quoted or whitespace-delimited first word), and ``resolved`` is quoted
+    with :func:`shell_quote` so the shell runs that exact file. The rest of
+    the command is kept byte for byte.
+    """
+
+    stripped = command.lstrip()
+    if not stripped:
+        return command
+    if stripped[0] in "\"'":
+        end = stripped.find(stripped[0], 1)
+        if end == -1:
+            return command
+        rest = stripped[end + 1 :]
+    else:
+        parts = stripped.split(None, 1)
+        rest = stripped[len(parts[0]) :]
+    return shell_quote(resolved) + rest
 
 
 _DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
@@ -2678,10 +2708,12 @@ __all__ = [
     "load_implementer_leftovers",
     "prune_implementer_leftovers",
     "save_implementer_leftovers",
+    "bind_command_executable",
     "command_executable",
     "evidence_commit_value",
     "evidence_sha_token",
     "extract_work_packet_section",
+    "find_scanner_executable",
     "git_path_is_ignored",
     "parse_work_packet",
     "path_is_in_scope",

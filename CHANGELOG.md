@@ -13,7 +13,9 @@ This project follows a simple pre-release changelog until the first public tag.
   `work_claim.find_scanner_executable`, that walks only the absolute `PATH`
   entries (the gate's allowlisted environment `PATH` for the gate), tries
   each `PATHEXT` extension on Windows, and accepts a name with a path
-  separator only when it is absolute.
+  separator only when it is absolute. The gate then runs the scanner by the
+  quoted absolute path the lookup returned, so cmd.exe cannot run a
+  same-named program from the repository in place of the one on `PATH`.
 - The audit fan-out no longer reviews upstream files that a story branch
   brought in by merging its base branch (TIDY-9). Before, the review range
   started at the saved story base, so after a base-branch merge the

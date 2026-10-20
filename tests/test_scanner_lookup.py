@@ -15,8 +15,11 @@ from llm_handoff.config import ScannerConfig
 from llm_handoff.work_claim import (
     CommandRun,
     ScannerContext,
+    bind_command_executable,
     find_scanner_executable,
     run_scanner,
+    run_shell_command,
+    shell_quote,
 )
 
 
@@ -168,6 +171,84 @@ def test_gate_runs_scanner_on_an_absolute_path_entry(
     assert scanner_run.missing is False
     assert scanner_run.outcome == "PASS"
     assert len(calls) == 1
+    # The runner gets the resolved absolute path, not the bare name.
+    resolved = find_scanner_executable("fakescan")
+    assert resolved is not None
+    assert Path(resolved) == planted
+    assert calls[0] == f"{shell_quote(resolved)} {shell_quote('src/app.py')}"
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_rest"),
+    [
+        ("fakescan", ""),
+        ("fakescan --flag {x}", " --flag {x}"),
+        ("  fakescan\t-q", "\t-q"),
+        ('"fake scan" -q', " -q"),
+        ("'fakescan' -q", " -q"),
+    ],
+)
+def test_bind_command_executable_replaces_only_the_leading_token(
+    command: str, expected_rest: str
+) -> None:
+    resolved = os.path.join(os.path.abspath(os.sep), "tools dir", "fakescan")
+
+    assert (
+        bind_command_executable(command, resolved)
+        == shell_quote(resolved) + expected_rest
+    )
+
+
+def _plant_echo_scanner(directory: Path, message: str, exit_code: int) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        planted = directory / "fakescan.bat"
+        planted.write_text(
+            f"@echo {message}\r\n@exit /b {exit_code}\r\n",
+            encoding="utf-8",
+            newline="",
+        )
+    else:
+        planted = directory / "fakescan"
+        planted.write_text(
+            f"#!/bin/sh\necho {message}\nexit {exit_code}\n", encoding="utf-8"
+        )
+        planted.chmod(0o755)
+    return planted
+
+
+def test_gate_runs_trusted_path_scanner_not_repository_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A same-named program in the repository must not shadow the trusted
+    # scanner on PATH: cmd.exe would otherwise check the working directory
+    # first when it resolves a bare name.
+    if os.name == "nt":
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    trusted = _plant_echo_scanner(tmp_path / "trusted", "trusted-scanner", 0)
+    repo_root = tmp_path / "repo"
+    _plant_echo_scanner(repo_root, "hijacked-scanner", 1)
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv(
+        "PATH", str(trusted.parent) + os.pathsep + os.environ.get("PATH", "")
+    )
+
+    scanner_run, error = run_scanner(
+        ScannerConfig(name="fakescan", command="fakescan {changed_files}"),
+        ScannerContext(
+            repo_root=repo_root,
+            diff_range="aaa..bbb",
+            changed_files=("src/app.py",),
+            changed_py_files=("src/app.py",),
+        ),
+        runner=run_shell_command,
+    )
+
+    assert error is None, scanner_run.detail
+    assert scanner_run.outcome == "PASS"
+    assert scanner_run.run is not None
+    assert "trusted-scanner" in scanner_run.run.output_tail
+    assert "hijacked-scanner" not in scanner_run.run.output_tail
 
 
 def test_gate_uses_the_gate_environment_path(
