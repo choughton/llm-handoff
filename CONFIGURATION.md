@@ -947,8 +947,10 @@ commit. The dispatcher then checks the result itself:
 - HEAD did not move and the merge is still in progress;
 - no file other than `project_state_path` changed, by `git status` entry and
   content, compared with the state right after the merge stopped;
-- the file exists, is not empty, and has no conflict marker line
-  (`<<<<<<<`, `|||||||`, `=======`, or `>>>>>>>` at the start of a line).
+- the file exists, is not empty, and has no conflict marker line: a line
+  that starts with a run of `<`, `|`, or `>` at least the marker size long,
+  or a line of exactly that many `=`. The marker size is 7 unless the file's
+  `conflict-marker-size` attribute in `.gitattributes` sets another.
 
 When every check passes, the dispatcher stages the file and commits the merge
 (`git commit --no-edit`), so the merge commit holds only the conflict
@@ -968,8 +970,9 @@ Files the planner changed beyond `project_state_path` are left as they are for
 you to review. The planner runs at most once per publish and never in
 `--dry-run`. `resolve_project_state_conflicts: "off"` (quoted; YAML reads a
 bare off as false) always pauses. The check for markers is textual: a file
-that uses a line of exactly seven `=` characters (a Markdown setext heading
-underline) always fails it and pauses.
+that uses a line of exactly the marker size in `=` characters (seven by
+default, such as a Markdown setext heading underline of that length) always
+fails it and pauses.
 
 Uncommitted files are never stashed, discarded, or committed by the
 dispatcher. When the checkout has uncommitted files (staged, unstaged, or

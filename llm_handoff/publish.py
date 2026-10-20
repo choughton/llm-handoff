@@ -240,10 +240,39 @@ Do not run `git add`, `git commit`, `git merge`, `git checkout`, `git restore`, 
 `git reset`, or `git stash`: the dispatcher checks the file and commits the \
 merge itself. When you are done, reply with one line on how you resolved it.
 """
-# Git's conflict marker lines, at the default marker size, with LF or CRLF.
-_CONFLICT_MARKER_RE = re.compile(
-    r"^(?:(?:<{7}|\|{7}|>{7})(?: |\r?$)|={7}\r?$)", re.M
-)
+# Git's default conflict marker size; `conflict-marker-size` in
+# .gitattributes changes it per path.
+_CONFLICT_MARKER_SIZE = 7
+
+
+def _conflict_marker_re(size: int) -> re.Pattern[str]:
+    """Match Git's conflict marker lines of ``size`` characters, LF or CRLF.
+
+    The ``<``, ``|``, and ``>`` markers match runs of at least ``size``, which
+    also covers the wider markers of a recursive merge base. The ``=``
+    separator must be exactly ``size`` long, so a longer Markdown setext
+    heading underline does not match.
+    """
+
+    run = "{%d,}" % size
+    return re.compile(
+        rf"^(?:(?:<{run}|\|{run}|>{run})(?: |\r?$)|={{{size}}}\r?$)", re.M
+    )
+
+
+def _conflict_marker_size(repo_root: Path, path: str) -> int:
+    """Return the conflict marker size Git uses for ``path``."""
+
+    checked = _git(
+        repo_root, ["check-attr", "-z", "conflict-marker-size", "--", path]
+    )
+    # With -z: path NUL attribute NUL value NUL.
+    fields = (checked.stdout or "").split("\0")
+    if checked.returncode == 0 and len(fields) >= 3 and fields[2].isdigit():
+        size = int(fields[2])
+        if size > 0:
+            return size
+    return _CONFLICT_MARKER_SIZE
 
 
 def story_branch_name(prefix: str, story_id: str, story_title: str | None) -> str:
@@ -1052,8 +1081,9 @@ def _sync_with_base(
                 f"`{state.base_branch}`.",
             )
         return None, ""
-    unmerged = _git(repo_root, ["diff", "--name-only", "--diff-filter=U"])
-    conflicts = [line.strip() for line in unmerged.stdout.splitlines() if line.strip()]
+    # -z lists each name as is, without core.quotePath quoting.
+    unmerged = _git(repo_root, ["diff", "--name-only", "-z", "--diff-filter=U"])
+    conflicts = [name for name in (unmerged.stdout or "").split("\0") if name]
     unresolved = ""
     if resolver is not None and [normalize_repo_path(path) for path in conflicts] == [
         normalize_repo_path(resolver.path)
@@ -1188,7 +1218,9 @@ def _resolve_state_conflict(
             problems.append(f"`{path}` is missing")
         elif not text.strip():
             problems.append(f"`{path}` is empty")
-        elif _CONFLICT_MARKER_RE.search(text):
+        elif _conflict_marker_re(_conflict_marker_size(repo_root, path)).search(
+            text
+        ):
             problems.append(f"`{path}` still has conflict markers")
     if not problems:
         for args in (

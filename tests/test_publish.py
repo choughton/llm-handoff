@@ -1107,21 +1107,26 @@ def _state_conflict_story(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     base_files: dict[str, str] | None = None,
+    *,
+    state_file: str = STATE_FILE,
+    initial: dict[str, str] | None = None,
 ) -> tuple[Path, Path, list[str]]:
-    """A story whose status edit to PROJECT_STATE.md conflicts with ``main``."""
+    """A story whose status edit to the state file conflicts with ``main``."""
 
     repo, remote, gh, env = _with_remote(tmp_path)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    _commit_all(repo, {STATE_FILE: STATE_BASE}, "Add the project state")
+    _commit_all(
+        repo, {state_file: STATE_BASE, **(initial or {})}, "Add the project state"
+    )
     _git(repo, "push", "-q", "origin", "main")
     _start_story(repo)
-    _commit_all(repo, {STATE_FILE: STATE_STORY}, "W9.9 status")
+    _commit_all(repo, {state_file: STATE_STORY}, "W9.9 status")
     _commit_on_remote(
         tmp_path,
         remote,
         "main",
-        {STATE_FILE: STATE_OPERATOR, **(base_files or {})},
+        {state_file: STATE_OPERATOR, **(base_files or {})},
         "Regroom the backlog",
     )
     return repo, remote, gh
@@ -1134,6 +1139,7 @@ def _planner(
     also: dict[str, str] | None = None,
     finished: bool = True,
     raises: Exception | None = None,
+    path: str = STATE_FILE,
 ) -> tuple[StateConflictResolver, list[str]]:
     """A fake planner dispatch that writes ``text`` into the state file."""
 
@@ -1142,14 +1148,14 @@ def _planner(
     def run(prompt: str) -> bool:
         prompts.append(prompt)
         if text is not None:
-            (repo / STATE_FILE).write_text(text, encoding="utf-8")
+            (repo / path).write_text(text, encoding="utf-8")
         for name, content in (also or {}).items():
             (repo / name).write_text(content, encoding="utf-8")
         if raises is not None:
             raise raises
         return finished
 
-    return StateConflictResolver(path=STATE_FILE, run=run), prompts
+    return StateConflictResolver(path=path, run=run), prompts
 
 
 def _merge_in_progress(repo: Path) -> bool:
@@ -1418,9 +1424,55 @@ def test_the_conflict_resolver_dispatches_the_planner_with_its_own_prompt(
     ],
 )
 def test_conflict_markers_are_found_at_line_starts(text: str, found: bool) -> None:
-    from llm_handoff.publish import _CONFLICT_MARKER_RE
+    from llm_handoff.publish import _conflict_marker_re
 
-    assert bool(_CONFLICT_MARKER_RE.search(text)) is found
+    assert bool(_conflict_marker_re(7).search(text)) is found
+    wide = _conflict_marker_re(12)
+    assert wide.search("a\n<<<<<<<<<<<< HEAD\n")
+    assert wide.search("a\n============\n")
+    assert not wide.search("a\n=======\n")
+
+
+def test_a_marker_of_the_configured_size_left_behind_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path,
+        monkeypatch,
+        initial={".gitattributes": f"{STATE_FILE} conflict-marker-size=12\n"},
+    )
+    resolver, prompts = _planner(
+        repo,
+        text=STATE_RESOLVED.replace(
+            "## Epic E2", ">>>>>>>>>>>> origin/main\n## Epic E2"
+        ),
+    )
+    _entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert len(prompts) == 1
+    assert outcome.stop is True
+    assert f"`{STATE_FILE}` still has conflict markers" in outcome.message
+    assert not _merge_in_progress(repo)
+
+
+def test_the_planner_resolves_a_conflict_in_a_non_ascii_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Git quotes this name in its default output (core.quotePath).
+    state_file = "ÉTAT.md"
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path, monkeypatch, state_file=state_file
+    )
+    resolver, prompts = _planner(repo, path=state_file)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert outcome == PublishOutcome()
+    assert len(prompts) == 1
+    assert (repo / state_file).read_text(encoding="utf-8") == STATE_RESOLVED
 
 
 def test_resolve_project_state_conflicts_config(tmp_path: Path) -> None:
