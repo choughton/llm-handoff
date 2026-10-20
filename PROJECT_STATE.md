@@ -62,7 +62,8 @@ Story size and IDs (operator rule, 2026-10-19). A story is one behavior
 change: about four source modules or fewer plus their tests and docs, one
 verification focus, and one role. A story that would edit `.claude/` does
 not mix that edit with code: Claude roles cannot write `.claude/`, so those
-edits go in one operator story at the end of the epic that routes to `user`.
+edits go in one operator story that routes to `user`, at the end of the
+epic unless a later story needs those files first.
 Story IDs are flat: `EPIC-N` only. When a story turns out too large, replace
 it with new stories numbered after the epic's highest number and add
 `(was EPIC-3)` to each; never use letter or nested suffixes such as `3a` or
@@ -935,7 +936,7 @@ without a tpm `agy` writes every story's Work Packet and reads
 `remaining_stories` after every pass. This epic moves that per-story work to a
 role on a provider that is strict about exact fields (codex in the example
 mapping) and leaves `agy` the epic-level judgment. Pick it once GEMINI-REMOVAL
-closes; it is independent of that epic apart from TPM-8 not recreating
+closes; it is independent of that epic apart from TPM-6 not recreating
 `.gemini/`. If the default planner moves off `antigravity`, most of the reason
 for this epic goes away; re-check the Fit before starting it.
 
@@ -958,7 +959,11 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
 `agents.tpm`, routing is unchanged.
 
 Groomed on 2026-10-19 from six stories into twelve, each one Work Packet;
-the `(was ...)` notes give the old IDs. None had started.
+the `(was ...)` notes give the old IDs. None had started. Order matters: the
+tpm's contract (prompt, helper files, Codex artifacts, Linear rules, and the
+operator's `.claude/` agent) lands in TPM-1 to TPM-9, and routing work to
+the tpm (TPM-10, TPM-11) comes only after it, so a configured tpm is never
+dispatched without its instructions.
 
 - TPM-1 (was part of TPM-1): Role vocabulary. Add `tpm` to `DispatchRole`,
   `CANONICAL_DISPATCH_ROLES`, and `ROLE_DISPLAY_NAMES`
@@ -996,23 +1001,14 @@ the `(was ...)` notes give the old IDs. None had started.
   configured, the orchestrator treats the handoff as not dispatchable and
   schedules the existing planner repair with the instruction `tpm is not
   configured; route to planner or an implementer` instead of pausing.
-- TPM-4 (was part of TPM-3): Routing to the tpm when it is configured
-  (`llm_handoff/orchestrator.py`; `build_audit_handoff()` in
-  `llm_handoff/audit_review.py` ~line 1147, which hard-codes the non-epic
-  pass route to `planner`, and its routing tests). The auditor's story-level
-  `verified_pass` routes to `tpm`; the epic-level `verified_pass` with
-  `close_type: epic` still routes to `finalizer`; the finalizer routes to
-  `tpm` after an epic close, or to `planner` when `PROJECT_STATE.md` lists no
-  next epic. The planner opens an epic by writing `epic_id` and
-  `remaining_stories`, then routes to `tpm` instead of assigning the first
-  story itself. Pause recovery (`pause_recovery: planner`), the tracker
-  lease rebuild, the planner self-loop path, and operator-prompt planner
-  dispatch stay on the planner. Without `agents.tpm` every route is
-  unchanged.
-- TPM-5 (was part of TPM-3): Operator prompt `@tpm <message>`, like the
-  other `@role` targets, refused with a clear message when `agents.tpm` is
-  not configured.
-- TPM-6 (was part of TPM-3): The tpm prompt and the protocol docs. New
+- TPM-4 (was part of TPM-4): Per-role Codex artifacts. Today every Codex
+  role shares `logs/dispatch/codex/last-message.json` and `session.json`
+  (`llm_handoff/agent_providers/codex.py` ~line 410), so a Codex tpm and a
+  Codex backend, or a Codex auditor, would overwrite each other's saved
+  session; use `logs/dispatch/codex-<role>/` for every role other than
+  `backend`, which keeps its current path. `CONFIGURATION.md` lists the
+  paths.
+- TPM-5 (was part of TPM-3): The tpm prompt and the protocol docs. New
   `docs/handoff/TPM_HANDOFF_PROMPT.md`: read the handbook, `AGENTS.md`,
   `PROJECT_STATE.md`, and the handoff; take the next entry of
   `remaining_stories`; write the Work Packet from the code; escalate to
@@ -1025,20 +1021,13 @@ the `(was ...)` notes give the old IDs. None had started.
   `AUDITOR_HANDOFF_PROMPT.md`, and `FINALIZER_HANDOFF_PROMPT.md` so each
   describes both configurations (tpm present, tpm absent). These are
   protected paths and must be in Files in scope. Docs only.
-- TPM-7 (was part of TPM-4): Per-role Codex artifacts. Today every Codex
-  role shares `logs/dispatch/codex/last-message.json` and `session.json`
-  (`llm_handoff/agent_providers/codex.py` ~line 410), so a Codex tpm and a
-  Codex backend, or a Codex auditor, would overwrite each other's saved
-  session; use `logs/dispatch/codex-<role>/` for every role other than
-  `backend`, which keeps its current path. `CONFIGURATION.md` lists the
-  paths.
-- TPM-8 (was part of TPM-4): tpm helper files outside `.claude/`. Add
+- TPM-6 (was part of TPM-4): tpm helper files outside `.claude/`. Add
   `.codex/skills/llm-handoff-tpm/SKILL.md` with `agents/openai.yaml` and
   `.agents/agents/tpm.md` (agy) to the source checkout and to
   `examples/reference-workflow/`; `init` copies them. No `.gemini/agents/`
   file: GEM-5 deleted both of those trees, and nothing may recreate them.
   `docs/INVENTORY.md` lists the new files.
-- TPM-9 (was part of TPM-5): Linear prompt templates. The tpm picks Linear
+- TPM-7 (was part of TPM-5): Linear prompt templates. The tpm picks Linear
   issues, as in the source project. Move selection rules 1 to 7 and the
   user-attention steps from
   `llm_handoff/prompt_templates/linear/roles/planner.md` into a new
@@ -1051,7 +1040,7 @@ the `(was ...)` notes give the old IDs. None had started.
   release the lease, and route to `planner`; an eligible issue with no
   priority is reported in the `lease_opened` comment as picked without one
   (rule 5 already covers the wording).
-- TPM-10 (was part of TPM-5): Linear evidence and tools for the tpm.
+- TPM-8 (was part of TPM-5): Linear evidence and tools for the tpm.
   `LINEAR_EVIDENCE_EVENTS` allows `lease_opened`,
   `user_attention_requested`, and `user_attention_cleared` from `tpm` as
   well as `planner`; `tpm` gets the planner's Linear tool set. The
@@ -1061,18 +1050,35 @@ the `(was ...)` notes give the old IDs. None had started.
   only `planner` and `finalizer` count and every other route is recorded as
   `audit_failed`, so without this a successful audit would post a failure
   comment. Add route tests for it.
-- TPM-11 (was TPM-6): Documentation and changelog sweep. `README.md` role
+- TPM-9 (was part of TPM-4): Operator edit of the Claude tpm agent (routes
+  to `user`). Claude roles cannot write `.claude/`, so the planner writes
+  `.claude/agents/tpm.md` (root and `examples/reference-workflow/` copies)
+  into the handoff for the operator to add, as GEM-5c did, plus the Linear
+  section TPM-7 renders into it. It comes before TPM-10 because a Claude
+  tpm needs this file before any route reaches it.
+- TPM-10 (was part of TPM-3): Routing to the tpm when it is configured
+  (`llm_handoff/orchestrator.py`; `build_audit_handoff()` in
+  `llm_handoff/audit_review.py` ~line 1147, which hard-codes the non-epic
+  pass route to `planner`, and its routing tests). The auditor's story-level
+  `verified_pass` routes to `tpm`; the epic-level `verified_pass` with
+  `close_type: epic` still routes to `finalizer`; the finalizer routes to
+  `tpm` after an epic close, or to `planner` when `PROJECT_STATE.md` lists no
+  next epic. The planner opens an epic by writing `epic_id` and
+  `remaining_stories`, then routes to `tpm` instead of assigning the first
+  story itself. Pause recovery (`pause_recovery: planner`), the tracker
+  lease rebuild, the planner self-loop path, and operator-prompt planner
+  dispatch stay on the planner. Without `agents.tpm` every route is
+  unchanged.
+- TPM-11 (was part of TPM-3): Operator prompt `@tpm <message>`, like the
+  other `@role` targets, refused with a clear message when `agents.tpm` is
+  not configured.
+- TPM-12 (was TPM-6): Documentation and changelog sweep. `README.md` role
   table and loop diagram, `docs/ARCHITECTURE.md` (role list, "planner picks
   stories unless tpm is configured"), `CONFIGURATION.md` (`agents.tpm`
   reference), `docs/TESTING.md` (a tpm scenario in the acceptance run),
   `docs/SUPERVISED_DISPATCH.md` if the repair role list changes,
   `CHANGELOG.md`. Each earlier story updates the docs its code touches; this
   story checks the set reads as one.
-- TPM-12 (was part of TPM-4): Operator edit of the Claude tpm agent (routes
-  to `user`). Claude roles cannot write `.claude/`, so the planner writes
-  `.claude/agents/tpm.md` (root and `examples/reference-workflow/` copies)
-  into the handoff for the operator to add, as GEM-5c did, plus any Linear
-  section `init --tracker linear` renders into it.
 
 ### 16. ESCALATION-RECONCILE - a stale user escalation gets one planner pass
 
