@@ -1167,7 +1167,15 @@ def _resolve_state_conflict(
     head = git_head(repo_root)
     merge_head = _git(repo_root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])
     snapshot = _worktree_snapshot(repo_root)
-    if not head or merge_head.returncode != 0 or snapshot is None:
+    # Status and file bytes miss a staged blob or mode swapped behind
+    # assume-unchanged or skip-worktree, so every index entry is compared too.
+    index_before = _index_entries(repo_root)
+    if (
+        not head
+        or merge_head.returncode != 0
+        or snapshot is None
+        or index_before is None
+    ):
         return "", "the merge state could not be read"
     log(
         "AGENT",
@@ -1207,6 +1215,13 @@ def _resolve_state_conflict(
         )
         if others:
             problems.append(f"it also changed {_path_list(others)}")
+    index_after = _index_entries(repo_root)
+    if index_after is None:
+        problems.append("the index could not be read")
+    else:
+        staged = _index_paths_changed(index_before, index_after, path)
+        if staged:
+            problems.append(f"it also changed the index entries of {_path_list(staged)}")
     if not problems:
         try:
             text: str | None = (repo_root / path).read_text(
@@ -1223,15 +1238,24 @@ def _resolve_state_conflict(
         ):
             problems.append(f"`{path}` still has conflict markers")
     if not problems:
-        for args in (
-            ["add", "--", path],
-            # Drops the "# Conflicts:" comment lines git leaves in MERGE_MSG.
-            ["commit", "--no-edit", "--no-verify", "--cleanup=strip"],
-        ):
-            result = _git(repo_root, args)
-            if result.returncode != 0:
-                problems.append(f"git {args[0]} failed: {_first_line(result)}")
-                break
+        added = _git(repo_root, ["add", "--", path])
+        if added.returncode != 0:
+            problems.append(f"git add failed: {_first_line(added)}")
+    if not problems:
+        # The commit takes the whole index, so it must hold the pre-planner
+        # entries plus this one resolved path and nothing else.
+        problem = _staged_resolution_problem(
+            index_before, _index_entries(repo_root), path
+        )
+        if problem:
+            problems.append(problem)
+    if not problems:
+        # Drops the "# Conflicts:" comment lines git leaves in MERGE_MSG.
+        committed = _git(
+            repo_root, ["commit", "--no-edit", "--no-verify", "--cleanup=strip"]
+        )
+        if committed.returncode != 0:
+            problems.append(f"git commit failed: {_first_line(committed)}")
     if problems:
         problem = "; ".join(problems)
         log(
@@ -1250,12 +1274,77 @@ def _resolve_state_conflict(
         f"Merging `{upstream}` into `{state.branch}` conflicted only in `{path}`, "
         "and the planner resolved it "
         "(`publish.resolve_project_state_conflicts: planner`). The dispatcher "
-        "checked that no conflict markers remain and that no other file "
-        f"changed, then committed the merge as `{short}`. Review the "
+        "checked that no conflict markers remain and that no other file or "
+        f"index entry changed, then committed the merge as `{short}`. Review the "
         f"resolution with `git show {short} -- {path}`, which shows the lines "
         "that differ from both sides.",
         "",
     )
+
+
+IndexEntries = dict[tuple[str, str], tuple[str, str]]
+
+
+def _index_entries(repo_root: Path) -> IndexEntries | None:
+    """Map each index entry's ``(path, stage)`` to its ``(mode, blob ID)``.
+
+    Read from ``git ls-files --stage -z``, which lists every entry whatever
+    its assume-unchanged or skip-worktree flag, with names as is (no
+    core.quotePath quoting). Returns None when git fails or prints a line it
+    does not recognise, so callers fail closed.
+    """
+
+    listed = _git(repo_root, ["ls-files", "--stage", "-z"])
+    if listed.returncode != 0:
+        return None
+    entries: IndexEntries = {}
+    for record in (listed.stdout or "").split("\0"):
+        if not record:
+            continue
+        # With -z: "<mode> <object> <stage>\t<path>".
+        meta, tab, name = record.partition("\t")
+        fields = meta.split(" ")
+        if not tab or not name or len(fields) != 3:
+            return None
+        mode, blob, stage = fields
+        entries[(name, stage)] = (mode, blob)
+    return entries
+
+
+def _index_paths_changed(
+    before: IndexEntries, after: IndexEntries, path: str
+) -> list[str]:
+    """The paths other than ``path`` whose index entries differ."""
+
+    return sorted(
+        {
+            name
+            for name, stage in before.keys() | after.keys()
+            if name != path and before.get((name, stage)) != after.get((name, stage))
+        }
+    )
+
+
+def _staged_resolution_problem(
+    before: IndexEntries, after: IndexEntries | None, path: str
+) -> str:
+    """Why the index after ``git add -- path`` is not just the resolution.
+
+    It must match the pre-planner index except that ``path`` now has one
+    regular-file entry at stage 0 and none at stages 1-3. Returns "" when it
+    does.
+    """
+
+    if after is None:
+        return "the index could not be read after staging the resolution"
+    others = _index_paths_changed(before, after, path)
+    if others:
+        return f"the staged merge also changed {_path_list(others)}"
+    stages = sorted(stage for name, stage in after if name == path)
+    mode = after.get((path, "0"), ("", ""))[0]
+    if stages != ["0"] or mode not in {"100644", "100755"}:
+        return f"`{path}` was not staged as one resolved file"
+    return ""
 
 
 def _worktree_snapshot(repo_root: Path) -> dict[str, tuple[str, str]] | None:

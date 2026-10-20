@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -1409,6 +1410,237 @@ def test_the_conflict_resolver_dispatches_the_planner_with_its_own_prompt(
     assert orchestrator._state_conflict_resolver(off, log) is None
     dry = _pr_loop_config(tmp_path, dry_run=True)
     assert orchestrator._state_conflict_resolver(dry, log) is None
+
+
+NOTES_FILE = "docs/notes.md"
+
+
+def _index_tampering_planner(
+    repo: Path, tamper: str
+) -> tuple[StateConflictResolver, list[str]]:
+    """A planner that resolves the state file and also edits the index."""
+
+    prompts: list[str] = []
+
+    def run(prompt: str) -> bool:
+        prompts.append(prompt)
+        (repo / STATE_FILE).write_text(STATE_RESOLVED, encoding="utf-8")
+        if tamper == "blob":
+            # Swap the staged blob, keep the working-tree bytes, and hide the
+            # difference from `git status`.
+            blob = subprocess.run(
+                ["git", "-C", str(repo), "hash-object", "-w", "--stdin"],
+                input="planted\n",
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            _git(repo, "update-index", "--cacheinfo", f"100644,{blob},{NOTES_FILE}")
+            _git(repo, "update-index", "--assume-unchanged", NOTES_FILE)
+        elif tamper == "mode":
+            _git(repo, "update-index", "--chmod=+x", NOTES_FILE)
+            _git(repo, "update-index", "--assume-unchanged", NOTES_FILE)
+        else:
+            (repo / "extra.txt").write_text("extra\n", encoding="utf-8")
+            _git(repo, "add", "--", "extra.txt")
+        return True
+
+    return StateConflictResolver(path=STATE_FILE, run=run), prompts
+
+
+@pytest.mark.parametrize(
+    ("tamper", "changed"),
+    [("blob", NOTES_FILE), ("mode", NOTES_FILE), ("extra", "extra.txt")],
+)
+def test_a_planner_that_changes_another_index_entry_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str, changed: str
+) -> None:
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path, monkeypatch, base_files={NOTES_FILE: "base notes\n"}
+    )
+    head = _git(repo, "rev-parse", "HEAD")
+    resolver, prompts = _index_tampering_planner(repo, tamper)
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert len(prompts) == 1
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"conflicts in `{STATE_FILE}`, which the planner did not resolve" in (
+        outcome.message
+    )
+    assert f"`{changed}`" in outcome.message
+    assert not any("Planner resolved" in message for _level, message in entries)
+    # Nothing was committed: HEAD is still the story head.
+    assert _git(repo, "rev-parse", "HEAD") == head
+    if tamper == "blob":
+        # `git merge --abort` refuses to drop a staged blob that differs from
+        # both the file and HEAD, so the pause says to finish it by hand.
+        assert "`git merge --abort` failed" in outcome.message
+    else:
+        assert "The merge was aborted" in outcome.message
+        assert not _merge_in_progress(repo)
+    assert _saved_state(repo)["paused_publish"] == "push"
+    assert _gh_calls(tmp_path) == []
+
+
+def test_a_staged_resolution_with_another_entry_is_not_committed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import publish
+
+    before = {
+        (STATE_FILE, "1"): ("100644", "a" * 40),
+        (STATE_FILE, "2"): ("100644", "b" * 40),
+        (STATE_FILE, "3"): ("100644", "c" * 40),
+        (NOTES_FILE, "0"): ("100644", "d" * 40),
+    }
+    resolved = {
+        (STATE_FILE, "0"): ("100644", "e" * 40),
+        (NOTES_FILE, "0"): before[(NOTES_FILE, "0")],
+    }
+    check = publish._staged_resolution_problem
+
+    assert check(before, resolved, STATE_FILE) == ""
+    assert "could not be read" in check(before, None, STATE_FILE)
+    assert f"`{NOTES_FILE}`" in check(
+        before, {**resolved, (NOTES_FILE, "0"): ("100644", "f" * 40)}, STATE_FILE
+    )
+    assert "`extra.txt`" in check(
+        before, {**resolved, ("extra.txt", "0"): ("100644", "f" * 40)}, STATE_FILE
+    )
+    assert "not staged as one resolved file" in check(
+        before, {**resolved, (STATE_FILE, "2"): before[(STATE_FILE, "2")]}, STATE_FILE
+    )
+    assert "not staged as one resolved file" in check(
+        before, {**resolved, (STATE_FILE, "0"): ("120000", "e" * 40)}, STATE_FILE
+    )
+    # A failed `git ls-files` fails closed.
+    monkeypatch.setattr(
+        publish,
+        "_git",
+        lambda repo_root, args: subprocess.CompletedProcess(args, 128, "", "fatal"),
+    )
+    assert publish._index_entries(tmp_path) is None
+
+
+def _handoff_resolver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    planner: object,
+) -> tuple[StateConflictResolver, list[tuple[str, str]]]:
+    def fake_support(*args: object, **kwargs: object) -> SubagentResult:
+        planner()  # type: ignore[operator]
+        return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.0)
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    entries, log = _logs()
+    resolver = orchestrator._state_conflict_resolver(_pr_loop_config(tmp_path), log)
+    assert resolver is not None
+    return resolver, entries
+
+
+def test_the_conflict_resolver_restores_the_handoff_byte_for_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff = tmp_path / "docs" / "handoff" / "HANDOFF.md"
+    handoff.parent.mkdir(parents=True)
+    saved = VERIFIED.replace("\n", "\r\n").encode("utf-8") + b"caf\xc3\xa9\r\n"
+    handoff.write_bytes(saved)
+    resolver, entries = _handoff_resolver(
+        tmp_path,
+        monkeypatch,
+        lambda: handoff.write_text("rewritten\n", encoding="utf-8"),
+    )
+
+    assert resolver.run("resolve it") is False
+
+    assert handoff.read_bytes() == saved
+    assert any(level == "WARN" and "restored it" in message for level, message in entries)
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if sys.platform != "win32":
+        pytest.skip("cannot create a directory symlink here")
+    import _winapi
+
+    _winapi.CreateJunction(str(target), str(link))
+
+
+def _assert_not_restored(entries: list[tuple[str, str]]) -> None:
+    warnings = [
+        message
+        for level, message in entries
+        if level == "WARN" and "docs/handoff/HANDOFF.md" in message
+    ]
+    assert len(warnings) == 1
+    assert "was not restored because a symlink or junction" in warnings[0]
+
+
+def test_the_conflict_resolver_does_not_write_through_a_handoff_file_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    handoff = repo / "docs" / "handoff" / "HANDOFF.md"
+    handoff.parent.mkdir(parents=True)
+    handoff.write_bytes(VERIFIED.encode("utf-8"))
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"outside bytes\n")
+    probe = tmp_path / "probe"
+    try:
+        probe.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    probe.unlink()
+
+    def plant_link() -> None:
+        handoff.unlink()
+        handoff.symlink_to(outside)
+
+    resolver, entries = _handoff_resolver(repo, monkeypatch, plant_link)
+
+    assert resolver.run("resolve it") is False
+
+    assert outside.read_bytes() == b"outside bytes\n"
+    assert handoff.is_symlink()
+    _assert_not_restored(entries)
+
+
+def test_the_conflict_resolver_does_not_write_through_a_handoff_directory_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    handoff = repo / "docs" / "handoff" / "HANDOFF.md"
+    handoff.parent.mkdir(parents=True)
+    handoff.write_bytes(VERIFIED.encode("utf-8"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "HANDOFF.md").write_bytes(b"outside bytes\n")
+    # Skips here, not inside the dispatch, when no directory link can be made.
+    probe = tmp_path / "probe"
+    _link_directory(probe, outside)
+    if sys.platform == "win32":
+        os.rmdir(probe)
+    else:
+        probe.unlink()
+
+    def plant_link() -> None:
+        shutil.rmtree(repo / "docs" / "handoff")
+        _link_directory(repo / "docs" / "handoff", outside)
+
+    resolver, entries = _handoff_resolver(repo, monkeypatch, plant_link)
+
+    assert resolver.run("resolve it") is False
+
+    assert (outside / "HANDOFF.md").read_bytes() == b"outside bytes\n"
+    assert sorted(item.name for item in outside.iterdir()) == ["HANDOFF.md"]
+    _assert_not_restored(entries)
 
 
 @pytest.mark.parametrize(

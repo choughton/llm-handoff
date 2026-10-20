@@ -1,4 +1,4 @@
-"""The in-flight record for an implementer or planner dispatch.
+"""The in-flight record for an implementer, planner, or finalizer dispatch.
 
 The dispatcher writes this record right before it launches an implementer
 (``backend`` or ``frontend``) under the work-claim gate. Once the dispatch
@@ -20,6 +20,12 @@ operator dirty-file fingerprints, no carried-over files, and no
 ``assignment_content``, and its ``story_key`` is None when that handoff
 names no story.
 
+A ``finalizer`` record follows the same rules as a ``planner`` record. The
+dispatcher writes it right before the epic-close ledger update and deletes
+it as soon as that dispatch returns, so the next start can tell a ledger the
+interrupted finalizer already committed from one it never touched, and
+restore a handoff it left half-written.
+
 This module only builds and parses the record. It does no file I/O; the
 orchestrator reads, writes, and deletes the file through its race-safe
 helpers.
@@ -34,16 +40,16 @@ from typing import Literal
 from llm_handoff.work_claim import carry_over_key
 
 IN_FLIGHT_RECORD_VERSION = 1
-InFlightRole = Literal["backend", "frontend", "planner"]
+InFlightRole = Literal["backend", "frontend", "planner", "finalizer"]
 InFlightPhase = Literal["dispatch", "handback"]
-_ROLES = frozenset({"backend", "frontend", "planner"})
+_ROLES = frozenset({"backend", "frontend", "planner", "finalizer"})
 _IMPLEMENTER_ROLES = frozenset({"backend", "frontend"})
 _PHASES = frozenset({"dispatch", "handback"})
 
 
 @dataclass(frozen=True)
 class InFlightRecord:
-    """What the dispatcher knew right before an implementer or planner dispatch.
+    """What the dispatcher knew right before a role's dispatch.
 
     ``handoff_content`` is the pre-dispatch ``HANDOFF.md`` text.
     ``assignment_content`` is set only when the dispatch worked from another
@@ -73,6 +79,10 @@ class InFlightRecord:
     dispatch (None on a detached HEAD), so the next start can tell whether
     the interrupted planner moved the checkout. An implementer record leaves
     it None.
+
+    A ``finalizer`` record has the same shape as a ``planner`` record and
+    keeps ``head_sha``, ``head_branch``, and ``protected_digests`` from right
+    before the epic-close ledger update.
     """
 
     cycle: int
@@ -127,10 +137,11 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     """Parse a record; None when it is malformed or does not hold together.
 
     Rejects invalid JSON, another ``version``, a ``role`` other than
-    ``backend``, ``frontend``, or ``planner``, a ``phase`` other than
-    ``dispatch`` or ``handback``, a field of the wrong type, and a
+    ``backend``, ``frontend``, ``planner``, or ``finalizer``, a ``phase``
+    other than ``dispatch`` or ``handback``, a field of the wrong type, and a
     ``story_key`` that is not the ``carry_over_key`` of
     ``assignment_content`` (when set) or ``handoff_content``. A ``planner``
+    or ``finalizer``
     record must be a ``dispatch`` record with empty ``dirty_fingerprints``
     and ``carried_over`` and a null ``assignment_content``; its ``story_key``
     may be JSON null, but only when ``handoff_content`` has no
@@ -192,7 +203,8 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         return None
     story_key = payload.get("story_key")
     if story_key is None:
-        # Only a planner may have started from a handoff without a story.
+        # Only a planner or finalizer may have started from a handoff
+        # without a story.
         if role in _IMPLEMENTER_ROLES:
             return None
     elif not isinstance(story_key, str) or not story_key:
@@ -209,8 +221,8 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         or carried_over
         or assignment_content is not None
     ):
-        # A planner record is deleted when its dispatch returns and holds
-        # nothing but the handoff it started from.
+        # A planner or finalizer record is deleted when its dispatch returns
+        # and holds nothing but the handoff it started from.
         return None
     keyed_content = (
         assignment_content if assignment_content is not None else handoff_content
