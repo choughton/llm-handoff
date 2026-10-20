@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+import unicodedata
 from typing import Callable, Final, TextIO
 
 from llm_handoff.logging_util import terminal_safe
@@ -21,6 +22,57 @@ FALLBACK_COLUMNS: Final[int] = 80
 
 def _default_terminal_columns() -> int:
     return shutil.get_terminal_size().columns
+
+
+def char_width(ch: str) -> int:
+    """Terminal cells a single character occupies (0, 1, or 2).
+
+    Wide and fullwidth East Asian characters (which include most emoji) take
+    two cells; combining marks take none. Control and format characters never
+    reach here because ``terminal_safe`` escapes them first.
+    """
+
+    if unicodedata.combining(ch) or unicodedata.category(ch) in {"Mn", "Me"}:
+        return 0
+    if unicodedata.east_asian_width(ch) in {"W", "F"}:
+        return 2
+    return 1
+
+
+def display_width(text: str) -> int:
+    """Terminal cells ``text`` occupies, using ``char_width`` per character."""
+
+    return sum(char_width(ch) for ch in text)
+
+
+def _head_within(text: str, width: int) -> str:
+    """Longest prefix of ``text`` that fits in ``width`` cells."""
+
+    used = 0
+    for index, ch in enumerate(text):
+        used += char_width(ch)
+        if used > width:
+            return text[:index]
+    return text
+
+
+def _tail_within(text: str, width: int) -> str:
+    """Longest suffix of ``text`` that fits in ``width`` cells.
+
+    A cut suffix drops leading zero-width characters, so a combining mark
+    whose base character was cut off does not attach to the prompt prefix.
+    """
+
+    used = 0
+    for index in range(len(text) - 1, -1, -1):
+        used += char_width(text[index])
+        if used > width:
+            tail = text[index + 1 :]
+            start = 0
+            while start < len(tail) and char_width(tail[start]) == 0:
+                start += 1
+            return tail[start:]
+    return text
 
 
 class ChatLine:
@@ -104,12 +156,13 @@ class ChatLine:
         max_width = self._columns() - 1
         prefix = self._prompt_prefix()
         buffer = terminal_safe(self.buffer)
-        if len(prefix) + len(buffer) <= max_width:
+        prefix_width = display_width(prefix)
+        if prefix_width + display_width(buffer) <= max_width:
             return prefix + buffer
-        available = max_width - len(prefix)
+        available = max_width - prefix_width
         if available <= 0:
-            return prefix[:max_width]
-        return prefix + buffer[-available:]
+            return _head_within(prefix, max_width)
+        return prefix + _tail_within(buffer, available)
 
     def _draw(self) -> None:
         self.stream.write(self._fitted_prompt())

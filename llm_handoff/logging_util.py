@@ -117,8 +117,15 @@ class DispatchLogger:
         self.log("AGENT", message)
 
     def attach_chat_line(self, chat_line: ChatLine | None) -> None:
-        """Route console lines through ``chat_line``, or directly when None."""
+        """Route console lines through ``chat_line``, or directly when None.
 
+        A previously attached chat line is cleared first, so its drawn prompt
+        does not stay on screen in front of the next console line.
+        """
+
+        previous = self.chat_line
+        if previous is not None and previous is not chat_line:
+            previous.clear()
         self.chat_line = chat_line
 
     def mark_startup_complete(self) -> None:

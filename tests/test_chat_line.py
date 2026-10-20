@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import io
 from pathlib import Path
 
-from llm_handoff.chat_line import ChatLine
+from llm_handoff.chat_line import ChatLine, display_width
 from llm_handoff.logging_util import LEVEL_TO_COLOR, RESET_COLOR, DispatchLogger
 
 
@@ -177,6 +177,69 @@ def test_prefix_is_cut_when_it_does_not_fit() -> None:
     assert stream.getvalue() == "[backend "
 
 
+def test_wide_buffer_characters_are_measured_in_terminal_cells() -> None:
+    chat_line, stream = _chat_line(columns=30)
+    prefix = "[qa running] chat> "
+    chat_line.set_role("qa")
+    chat_line.clear()
+    stream.seek(0)
+    stream.truncate()
+
+    # Each CJK character takes two cells: 19 prefix cells leave 10 cells.
+    chat_line.set_buffer("一二三四五六七八")
+
+    drawn = stream.getvalue()
+    assert drawn == prefix + "四五六七八"
+    assert display_width(drawn) == 29
+
+
+def test_wide_character_that_does_not_fit_whole_is_dropped() -> None:
+    chat_line, stream = _chat_line(columns=30)
+    prefix = "[qa running] chat> "
+    chat_line.set_role("qa")
+    chat_line.clear()
+    stream.seek(0)
+    stream.truncate()
+
+    # 10 cells available: "a" + four wide characters is 9 cells, and the
+    # next wide character would need 2 more, so it is dropped.
+    chat_line.set_buffer("一二a三四五六")
+
+    drawn = stream.getvalue()
+    assert drawn == prefix + "a三四五六"
+    assert display_width(drawn) <= 29
+
+
+def test_emoji_buffer_is_measured_in_terminal_cells() -> None:
+    chat_line, stream = _chat_line(columns=30)
+    chat_line.set_role("qa")
+
+    chat_line.set_buffer("\U0001f600" * 20)
+
+    drawn = stream.getvalue().rsplit(ERASE, 1)[-1]
+    assert drawn == "[qa running] chat> " + "\U0001f600" * 5
+    assert display_width(drawn) == 29
+
+
+def test_cut_buffer_does_not_start_with_combining_mark() -> None:
+    chat_line, stream = _chat_line(columns=21)
+    chat_line.set_role("qa")
+
+    # 19 prefix cells leave 1: the last "e" + combining acute fits, and the
+    # cut drops the orphaned combining mark before it.
+    chat_line.set_buffer("xéé")
+
+    drawn = stream.getvalue().rsplit(ERASE, 1)[-1]
+    assert drawn == "[qa running] chat> é"
+
+
+def test_display_width_counts_cells() -> None:
+    assert display_width("abc") == 3
+    assert display_width("一") == 2
+    assert display_width("\U0001f600") == 2
+    assert display_width("é") == 1
+
+
 def test_terminal_columns_oserror_falls_back_to_80() -> None:
     def broken() -> int:
         raise OSError("no terminal")
@@ -260,3 +323,60 @@ def test_dispatch_logger_attach_and_detach_chat_line(tmp_path: Path) -> None:
         f"{LEVEL_TO_COLOR['WARN']}[2026-04-17T12:34:56] [WARN] direct{RESET_COLOR}\n"
     )
     assert console.getvalue() == expected_line
+
+
+def test_detaching_chat_line_clears_drawn_prompt(tmp_path: Path) -> None:
+    stream = io.StringIO()
+    chat_line = ChatLine(stream, terminal_columns=lambda: 120)
+    logger = DispatchLogger(
+        repo_root=tmp_path,
+        console=stream,
+        now=lambda: FIXED_NOW,
+        chat_line=chat_line,
+    )
+    chat_line.set_role("backend")
+
+    logger.attach_chat_line(None)
+    logger.warn("direct")
+
+    expected_line = (
+        f"{LEVEL_TO_COLOR['WARN']}[2026-04-17T12:34:56] [WARN] direct{RESET_COLOR}\n"
+    )
+    assert stream.getvalue() == "[backend running] chat> " + ERASE + expected_line
+    assert chat_line.drawn is False
+    assert chat_line.role == "backend"
+
+
+def test_replacing_chat_line_clears_previous_prompt(tmp_path: Path) -> None:
+    stream = io.StringIO()
+    old_line = ChatLine(stream, terminal_columns=lambda: 120)
+    new_line = ChatLine(stream, terminal_columns=lambda: 120)
+    logger = DispatchLogger(
+        repo_root=tmp_path,
+        console=io.StringIO(),
+        now=lambda: FIXED_NOW,
+        chat_line=old_line,
+    )
+    old_line.set_role("backend")
+
+    logger.attach_chat_line(new_line)
+
+    assert stream.getvalue() == "[backend running] chat> " + ERASE
+    assert old_line.drawn is False
+
+
+def test_reattaching_same_chat_line_keeps_prompt(tmp_path: Path) -> None:
+    stream = io.StringIO()
+    chat_line = ChatLine(stream, terminal_columns=lambda: 120)
+    logger = DispatchLogger(
+        repo_root=tmp_path,
+        console=io.StringIO(),
+        now=lambda: FIXED_NOW,
+        chat_line=chat_line,
+    )
+    chat_line.set_role("backend")
+
+    logger.attach_chat_line(chat_line)
+
+    assert stream.getvalue() == "[backend running] chat> "
+    assert chat_line.drawn is True
