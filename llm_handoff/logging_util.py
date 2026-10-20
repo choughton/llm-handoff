@@ -4,8 +4,11 @@ from datetime import datetime
 from pathlib import Path
 import re
 import sys
-from typing import Callable, Final, TextIO
+from typing import TYPE_CHECKING, Callable, Final, TextIO
 import unicodedata
+
+if TYPE_CHECKING:
+    from llm_handoff.chat_line import ChatLine
 
 
 DEFAULT_LOG_DIRECTORY: Final[Path] = Path("logs") / "dispatch"
@@ -81,9 +84,11 @@ class DispatchLogger:
         max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES,
         backend_resume: bool = True,
         planner_resume: bool = True,
+        chat_line: ChatLine | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.console = console or sys.stdout
+        self.chat_line = chat_line
         self._now = now or datetime.now
         self.max_consecutive_failures = max_consecutive_failures
         self.backend_resume = backend_resume
@@ -110,6 +115,11 @@ class DispatchLogger:
 
     def agent(self, message: str) -> None:
         self.log("AGENT", message)
+
+    def attach_chat_line(self, chat_line: ChatLine | None) -> None:
+        """Route console lines through ``chat_line``, or directly when None."""
+
+        self.chat_line = chat_line
 
     def mark_startup_complete(self) -> None:
         self._startup_phase = False
@@ -222,7 +232,11 @@ class DispatchLogger:
 
     def _write_console(self, level: str, text: str) -> None:
         color = LEVEL_TO_COLOR[level]
-        self.console.write(f"{color}{terminal_safe(text)}{RESET_COLOR}\n")
+        rendered = f"{color}{terminal_safe(text)}{RESET_COLOR}"
+        if self.chat_line is not None:
+            self.chat_line.write_above(rendered)
+            return
+        self.console.write(rendered + "\n")
         flush = getattr(self.console, "flush", None)
         if callable(flush):
             flush()

@@ -6,9 +6,12 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** CHAT, with CHAT-8 (agent and normalizer processes start
-  with stdin closed) in progress, picked by fit: its Fit line says to take it
-  after TIDY and nothing blocks it. CHAT-1 was split into CHAT-8 and CHAT-9.
+- **Active Epic:** CHAT, with CHAT-9 (console chat line renderer) in
+  progress, picked because it is the next unblocked CHAT story. CHAT-8 (agent
+  and normalizer processes start with stdin closed) was approved at `4c1e9b2`
+  and merged in PR #193. CHAT-1 was split into CHAT-8 and CHAT-9; CHAT-9 was
+  narrowed to the renderer, and its wiring and keystroke capture moved to
+  CHAT-10.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still wait on their triggers,
   TPM-ROLE matters less while the self-host planner runs on claude,
   TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
@@ -1037,7 +1040,7 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: active; CHAT-8 is in progress. Picked after TIDY was parked; HARD-3 is
+Fit: active; CHAT-9 is in progress. Picked after TIDY was parked; HARD-3 is
 merged and RECOVERY is closed, so nothing blocks it.
 
 The operator types at any time; a message holds the loop and is answered by
@@ -1048,17 +1051,34 @@ dependencies; Windows (`msvcrt`) and POSIX.
 
 - CHAT-8 (was part of CHAT-1): Agent and normalizer processes start with
   stdin closed. `_run_command_streaming` (the launch path for every agent
-  role provider) and `_run_command` (audit reviewers) in
-  `llm_handoff/agent_process.py`, and the Claude normalizer's
-  `subprocess.run` in `llm_handoff/normalizer_providers/claude.py`, pass
+  role provider and audit reviewer, through `_run_logged_agent_command`) and
+  `_run_command` in `llm_handoff/agent_process.py`, and the Claude
+  normalizer's `subprocess.run` in
+  `llm_handoff/normalizer_providers/claude.py`, pass
   `stdin=subprocess.DEVNULL`, so no agent reads the operator's keystrokes.
   The Codex normalizer's `stdin=subprocess.PIPE`, the supervisor's child
   dispatcher launch, the work-claim gate, and the dispatcher's own `git`
   calls stay unchanged.
-- CHAT-9 (was part of CHAT-1): Console chat line. During a run, the bottom
-  prompt line `[<role> running] chat> ` stays at the bottom of the console
-  and is redrawn around log lines written by `DispatchLogger._write_console`
-  (`llm_handoff/logging_util.py`). TTY only.
+- CHAT-9 (was part of CHAT-1): Console chat line renderer. New
+  `llm_handoff/chat_line.py` defines `ChatLine`, which draws the bottom
+  prompt line `[<role> running] chat> <buffer>` (terminal-safe, cut to the
+  terminal width with the buffer's last characters kept) and redraws it
+  around lines written above it. `DispatchLogger` takes an optional
+  `chat_line` (and `attach_chat_line`); when one is attached,
+  `_write_console` writes through it, otherwise console output is unchanged.
+  Not wired in yet: nothing creates a `ChatLine` besides tests.
+- CHAT-10 (was part of CHAT-9): Chat line wiring and keystroke capture during
+  role runs. When stdin and stdout are both TTYs and the run is not a dry
+  run, `__main__` attaches a `ChatLine` to the `DispatchLogger`; the
+  orchestrator sets its role when a role's dispatch starts (next to
+  `console_interrupt.set_active_role`) and clears it when the role exits.
+  While a role runs, typed characters edit the chat line buffer (Windows
+  `msvcrt`, POSIX non-canonical mode restored on exit). The chat line is
+  cleared and input capture stops while the pause operator prompt or the
+  manual frontend keypress wait is shown. Enter queues the line as a pending
+  message for CHAT-2 to consume; until CHAT-2 lands, the console says the
+  message was received but chat answers are not available yet. Under the
+  supervisor the child's stdout is a pipe, so no chat line appears.
 - CHAT-2: A sent message holds the loop at the next safe point: after the
   current dispatch, its dispatcher commit, and its gates, and before the next
   dispatch. The graceful-stop check at the loop top is not enough, because
