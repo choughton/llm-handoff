@@ -6,9 +6,10 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** CHAT, with CHAT-11 (chat line and keystroke capture
-  wiring) in progress, picked because it is the next unblocked CHAT story.
-  CHAT-10 (chat keystroke capture component) was approved at `9ac6a21` and
+- **Active Epic:** CHAT, with CHAT-12 (chat message queue file) in
+  progress, picked because CHAT-2 was too large for one packet and its
+  persistence half is unblocked. CHAT-11 (chat line and keystroke capture
+  wiring) was approved at `7a6170b` and merged in PR #196. CHAT-10 (chat keystroke capture component) was approved at `9ac6a21` and
   merged in PR #195. CHAT-9 (console chat line renderer) was approved at
   `3ac5fcf` and merged in PR #194.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still wait on their triggers,
@@ -1039,7 +1040,7 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: active; CHAT-11 is in progress. Picked after TIDY was parked; HARD-3 is
+Fit: active; CHAT-12 is in progress. Picked after TIDY was parked; HARD-3 is
 merged and RECOVERY is closed, so nothing blocks it.
 
 The operator types at any time; a message holds the loop and is answered by
@@ -1096,6 +1097,11 @@ dependencies; Windows (`msvcrt`) and POSIX.
   restores the role afterward. On Enter, the console says the message was
   received but chat answers are not available yet. Under the supervisor the
   child's stdout is a pipe, so no chat line appears.
+- CHAT-12 (was part of CHAT-2): Chat message queue file. New
+  `llm_handoff/chat_queue.py` saves `ChatMessage(text, role, received_at)` to
+  `logs/dispatch/chat-queue.json` (`CHAT_QUEUE_STATE_PATH`) via temp-file
+  replace; a bad file loads `[]`, bad entries are skipped; also clear and the
+  queued-message notice. Not wired in yet; CHAT-2 holds the loop on it.
 - CHAT-2: A sent message holds the loop at the next safe point: after the
   current dispatch, its dispatcher commit, and its gates, and before the next
   dispatch. The graceful-stop check at the loop top is not enough, because
@@ -1105,7 +1111,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   message about the running agent prints `Question queued until after the
   current <role> run completes.` While held, print `Press Enter to continue`;
   the loop never resumes on its own after a message. Queued messages are saved
-  under `logs/dispatch/` and survive `llm-handoff stop`; a saved message found
+  through the CHAT-12 queue file; a saved message found
   at startup holds the loop before the publish resume.
 - CHAT-3: Dispatch record. Save each dispatch in the run (role, story,
   provider, session id, time) under `logs/dispatch/`, so a question can find
