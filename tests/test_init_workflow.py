@@ -324,6 +324,20 @@ def test_init_reference_workflow_copies_template_files(tmp_path: Path) -> None:
     assert not (tmp_path / "README.md").exists()
 
 
+def test_init_writes_the_tpm_helper_files(tmp_path: Path) -> None:
+    init_reference_workflow(tmp_path)
+
+    for relative_path in (
+        Path(".codex") / "skills" / "llm-handoff-tpm" / "SKILL.md",
+        Path(".agents") / "agents" / "tpm.md",
+    ):
+        written = tmp_path / relative_path
+        assert written.is_file(), relative_path
+        assert written.read_bytes() == (TEMPLATE_ROOT / relative_path).read_bytes()
+    assert not (tmp_path / ".gemini").exists()
+    assert not [path for path in tmp_path.rglob("*") if ".gemini" in path.parts]
+
+
 def test_init_on_a_fresh_repo_writes_no_gemini_files(tmp_path: Path) -> None:
     result = init_reference_workflow(tmp_path)
 

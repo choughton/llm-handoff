@@ -6,6 +6,11 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- New tpm helper files for the optional `tpm` role (TPM-6), also shipped in the reference
+  workflow so `llm-handoff init` copies them: `.codex/skills/llm-handoff-tpm/SKILL.md` for
+  a tpm on `codex` (`skill_name: llm-handoff-tpm`) and `.agents/agents/tpm.md` for a tpm on
+  `agy` (`agy --agent tpm`). Both carry the tpm prompt's rules. The tpm skill ships no
+  `agents/openai.yaml`. The Claude subagent comes in a later operator step.
 - New `docs/handoff/TPM_HANDOFF_PROMPT.md` for the optional `tpm` role (TPM-5), also shipped
   in the reference workflow. The tpm assigns the next `remaining_stories` entry with a Work
   Packet and escalates to the planner or the user; it never implements, audits, closes an

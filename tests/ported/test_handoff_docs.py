@@ -28,11 +28,13 @@ AGENT_INSTRUCTION_DOCS = [
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
     ".codex/skills/llm-handoff-frontend/SKILL.md",
     ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".codex/skills/llm-handoff-tpm/SKILL.md",
     ".codex/skills/llm-handoff-validator/SKILL.md",
 ]
 PLANNER_INSTRUCTION_DOCS = [
     ".claude/agents/planner.md",
     ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".codex/skills/llm-handoff-tpm/SKILL.md",
     "docs/handoff/PLANNER_INITIAL_PROMPT.md",
     "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
     "docs/handoff/TPM_HANDOFF_PROMPT.md",
