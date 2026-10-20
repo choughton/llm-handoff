@@ -82,6 +82,7 @@ from llm_handoff.in_flight import (
     in_flight_record_payload,
     load_in_flight_record,
 )
+from llm_handoff.no_record_recovery import find_no_record_candidates
 from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
 from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
@@ -689,6 +690,11 @@ def _run_loop(
     implementer_base_story_key: str | None = None
     # (story key, HEAD before that story's first gated dispatch).
     gate_story_base: tuple[str | None, str] | None = None
+    # Whether either record was on disk before recovery read or deleted it:
+    # the no-record fallback below asks only when neither was.
+    had_recovery_record = os.path.lexists(
+        _in_flight_state_path(config)
+    ) or os.path.lexists(_carry_over_state_path(config))
     # An implementer a previous run left interrupted mid-dispatch comes first:
     # once confirmed, its files are this start's carry-over record.
     interrupted = _recover_interrupted_dispatch(config, log_fn, operator_prompt)
@@ -698,6 +704,16 @@ def _run_loop(
         implementer_leftovers = interrupted.leftovers
     else:
         implementer_leftovers = _restore_implementer_leftovers(
+            config, log_fn, operator_prompt
+        )
+    if (
+        not had_recovery_record
+        and not interrupted.recovered
+        and interrupted.pending is None
+        and interrupted.pause_reason is None
+        and implementer_leftovers is None
+    ):
+        implementer_leftovers = _recover_unrecorded_implementer(
             config, log_fn, operator_prompt
         )
     pending_planner_recovery = interrupted.pending
@@ -5730,6 +5746,98 @@ def _restore_implementer_leftovers(
         "stay operator edits.",
     )
     _delete_carry_over_record(config, log)
+    return None
+
+
+def _recover_unrecorded_implementer(
+    config: DispatchConfig,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
+) -> ImplementerLeftovers | None:
+    """Offer an interrupted implementer's files when no record was left (RECOVERY-9).
+
+    Runs only when neither the in-flight record nor the carry-over record
+    existed at start-up. The handoff on disk must still route to ``backend``
+    or ``frontend`` with a Work Packet; its in-scope, unprotected dirty files
+    that no commit after the story's last commit changed are offered. They
+    carry over to that story's next dispatch only once the operator confirms
+    them at a terminal; otherwise they stay operator edits. Nothing is
+    written, staged, or deleted here.
+    """
+
+    handoff_content = _read_required_text(config.handoff_full_path)
+    if not handoff_content:
+        return None
+    candidates = find_no_record_candidates(
+        config.repo_root,
+        handoff_content,
+        config.handoff_path,
+        tuple(config.protected_paths),
+        protected_match=_protected_path_matches,
+    )
+    if candidates is None:
+        return None
+    role = _escape_control_characters(candidates.role)
+    story, _no_files = _carry_over_display(
+        ImplementerLeftovers(story_key=candidates.story_key, fingerprints=())
+    )
+    files = ", ".join(_escape_control_characters(path) for path in candidates.offered)
+    if config.dry_run:
+        _log(
+            log,
+            "INFO",
+            f"No in-flight or carry-over record was found, but {role}'s "
+            f"assignment for {story} has uncommitted files it may have left "
+            f"when interrupted: {files}. Not applied in dry run.",
+        )
+        return None
+    if (
+        config.interactive_pause
+        and _operator_stdin_is_interactive()
+        and not operator_prompt.reader().console_unavailable
+    ):
+        reader = operator_prompt.reader()
+        left_out_note = ""
+        if candidates.left_out:
+            left_out = ", ".join(
+                _escape_control_characters(path) for path in candidates.left_out
+            )
+            left_out_note = (
+                f" Not offered, these stay operator edits: {left_out}."
+            )
+        _log(
+            log,
+            "INFO",
+            f"No in-flight or carry-over record was found, but {role}'s "
+            f"assignment for {story} has uncommitted files it may have left "
+            f"when interrupted: {files}.{left_out_note}",
+        )
+        if _confirm_carry_over_at_terminal(
+            reader, f"Treat these as {role}'s interrupted {story} work? [y/N]", log
+        ):
+            leftovers = ImplementerLeftovers(
+                story_key=candidates.story_key,
+                fingerprints=tuple(
+                    sorted(
+                        (path, working_tree_fingerprint(config.repo_root, path))
+                        for path in candidates.offered
+                    )
+                ),
+            )
+            _log(
+                log,
+                "INFO",
+                f"The operator confirmed {files} as {role}'s interrupted "
+                f"{story} work; files still unchanged carry over to that "
+                "story's next dispatch.",
+            )
+            return leftovers
+    _log(
+        log,
+        "WARN",
+        f"Did not treat {files} as {role}'s interrupted {story} work because "
+        "it was not confirmed at a terminal; these files stay operator edits.",
+    )
     return None
 
 

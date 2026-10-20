@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An implementer interrupted with no in-flight or carry-over record left on
+  disk can now be recovered at startup, once the operator confirms
+  (RECOVERY-9). When neither record existed and the handoff still routes to
+  `backend` or `frontend` with a Work Packet, the dispatcher offers the dirty
+  files in the packet's Files in scope that are not protected and that no
+  commit after the story's last commit changed, and asks
+  `Treat these as <role>'s interrupted <story> work? [y/N]`. On `y` they
+  carry over to that story's next dispatch. Any other answer, no terminal, or
+  `interactive_pause: false` leaves them as operator edits with a `WARN`
+  line; a dry run only logs them. Before, a restart treated those files as
+  operator edits and never committed them.
 - An interrupted `pr` publish now finishes on the next start (RECOVERY-8).
   When the story state, the checked-out story branch, and a `verified_pass`
   handoff for that story show a publish was cut off, the dispatcher cleans up

@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-8 in progress; RECOVERY-7 approved at
+- **Active Epic:** RECOVERY (RECOVERY-9 in progress; RECOVERY-8 approved at
+  `e9f084a`, merged in PR #177; RECOVERY-7 approved at
   `c39b42a`, merged in PR #176; RECOVERY-6 approved at
   `7dcd6ad`, merged in PR #175; RECOVERY-5 (was
   RECOVERY-3b2) approved at `2e62500`, merged in PR #174;
@@ -22,11 +23,12 @@ belong in commits, handoffs, and pull requests.
   sees hidden working-tree edits, from the RECOVERY-5 security review), then
   RECOVERY-11 (failed in-flight record deletes stop every recovery path, from
   the RECOVERY-6 audit), then RECOVERY-12 (interrupted merge-commit publish,
-  split from RECOVERY-8). Epic order: 8, 9, 10, 11, 12.
-  RECOVERY-8 (publish steps safe to repeat, `pr` mode) is active because it
-  is next in the epic's order, unblocked, and fixes an interrupted publish
-  that otherwise needs manual cleanup: the next start ran the planner and
-  paused instead of finishing the publish.
+  split from RECOVERY-8). Epic order: 9, 10, 11, 12.
+  RECOVERY-9 (no-record fallback) is active because it is next in the epic's
+  order (8, 9, 10, 11, 12), unblocked (RECOVERY-2 through RECOVERY-8 are
+  merged), and covers the interrupted implementer whose files a restart
+  otherwise treats as operator edits that are never committed. The other
+  open epics' Fit lines are unchanged since RECOVERY-8 was picked.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -704,10 +706,12 @@ interrupted finalizer dispatch) is approved at `2e62500` and merged (PR #174).
 RECOVERY-6 (interrupted audit fan-out) is approved at `7dcd6ad` and merged
 (PR #175). RECOVERY-7 (interrupted work-claim gate and scanners) is approved
 at `c39b42a` and merged (PR #176). RECOVERY-8 (publish steps safe to repeat,
-`pr` mode) is active because it is next in the epic's order, unblocked, and
-fixes an interrupted publish that otherwise needs manual cleanup; RECOVERY-9
-(was RECOVERY-4) follows, then RECOVERY-10, RECOVERY-11, and RECOVERY-12
-(interrupted merge-commit publish, split from RECOVERY-8).
+`pr` mode) is approved at `e9f084a` and merged (PR #177). RECOVERY-9 (was
+RECOVERY-4, no-record fallback) is active because it is next in the epic's
+order, unblocked, and covers the interrupted implementer whose files a
+restart otherwise treats as operator edits that are never committed;
+RECOVERY-10, RECOVERY-11, and RECOVERY-12 (interrupted merge-commit publish,
+split from RECOVERY-8) follow.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
@@ -935,7 +939,8 @@ bounces until the three-fix circuit breaker escalates.
   the record and stops the run before the gate. An interrupt between
   `git commit` returning and the refresh write still discards the record
   (RECOVERY-9's no-record fallback is the follow-up).
-- RECOVERY-8 (was RECOVERY-3e): Publish steps safe to repeat, `pr` mode only
+- RECOVERY-8 (was RECOVERY-3e; approved at `e9f084a`, merged in PR #177):
+  Publish steps safe to repeat, `pr` mode only
   (the `merge-commit` half is RECOVERY-12). Decided by the planner on
   2026-10-19: `StoryState` saves `publish_requested_head` and
   `publish_requested_at` before each push, and a publish of the same head
@@ -958,7 +963,22 @@ bounces until the three-fix circuit breaker escalates.
   are dirty, in scope for the story's Work Packet, and clean at the story's
   last commit, ask `Treat these as <role>'s interrupted <story> work? [y/N]`;
   yes carries them over, no leaves them as operator edits. Never decide this
-  without the operator.
+  without the operator. Decided by the planner on 2026-10-19: (1) the
+  fallback runs in `_run_loop` only when neither `logs/dispatch/in-flight.json`
+  nor `logs/dispatch/carry-over.json` existed at startup and the interrupted
+  and carry-over recoveries returned nothing, so a start with a record never
+  gets a second question; (2) the handoff must route to `backend` or
+  `frontend` with a carry-over key and an enforceable Work Packet; (3) offered
+  files are dirty (handoff and `logs/dispatch/` aside), in scope, not
+  protected, and unchanged by any commit after the story's last commit (the
+  newest of 500 commits on HEAD whose subject is the `story_id` or starts with
+  it and a space; HEAD without a `story_id` or such a commit), and any Git
+  failure offers nothing; (4) a dry run logs one INFO line and asks nothing;
+  otherwise, with `interactive_pause`, a TTY, and a console, the dispatcher
+  logs the offered files and the ones left as operator edits, then asks the
+  escaped question; `y` returns the files' fingerprints as this start's
+  carry-over files, and anything else logs one WARN line and writes, stages,
+  or deletes nothing.
 - RECOVERY-10: Merge-conflict resolver sees hidden working-tree edits. From
   the RECOVERY-5 security review (medium, below the block threshold): the
   resolver's working-tree snapshot (`llm_handoff/publish.py` ~line 1350)
