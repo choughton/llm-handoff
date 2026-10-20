@@ -16,7 +16,8 @@ belong in commits, handoffs, and pull requests.
 - **Active Epic:** TPM-ROLE, by the operator direction above. TPM-1 (role
   vocabulary) was approved at `67474dd` and merged in PR #206; TPM-2
   (launching a configured tpm) was approved at `16bbc32` and merged in PR
-  #207; TPM-3 (validator rules for `producer: tpm`) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+  #207; TPM-3 (validator rules for `producer: tpm`) was approved at `831ff3f`
+  and merged in PR #208; TPM-4 (per-role Codex artifacts) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,

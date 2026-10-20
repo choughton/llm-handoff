@@ -2433,6 +2433,14 @@ skill in `skill_name`, and the Codex adapter tells Codex to use that skill:
 The validator skill covers both the handoff validation and handoff routing
 tasks; the dispatcher's prompt names which one applies.
 
+Each Codex role keeps its own run artifacts. The `backend` role uses
+`logs/dispatch/codex/last-message.json` and `logs/dispatch/codex/session.json`.
+Every other Codex role uses `logs/dispatch/codex-<role>/` with the same two
+files, for example `logs/dispatch/codex-planner/session.json`, so roles never
+resume each other's session or read each other's last message. A
+non-backend session saved under the old shared `logs/dispatch/codex/` path is
+not migrated; that role starts a fresh session on its next resume.
+
 `llm-handoff init --provider codex` writes this mapping into
 `dispatch_config.yaml`, with every role on `provider: codex`,
 `audit.security_provider: codex`, `normalizer.provider: codex` (the

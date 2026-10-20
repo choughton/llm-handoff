@@ -343,6 +343,116 @@ def test_codex_launch_uses_package_schema_for_external_repo(tmp_path: Path) -> N
     )
 
 
+def test_codex_backend_artifact_paths_are_unchanged(tmp_path: Path) -> None:
+    default = codex._codex_artifact_paths(tmp_path)
+    backend = codex._codex_artifact_paths(tmp_path, role="backend")
+
+    assert default == backend
+    assert backend.output_directory == (tmp_path / "logs/dispatch/codex").resolve()
+    assert backend.output_last_message_path == (
+        tmp_path / "logs/dispatch/codex/last-message.json"
+    ).resolve()
+    assert backend.session_state_path == (
+        tmp_path / "logs/dispatch/codex/session.json"
+    ).resolve()
+    assert backend.output_directory == (tmp_path / config.CODEX_OUTPUT_DIRECTORY).resolve()
+
+
+@pytest.mark.parametrize("role", ["tpm", "planner"])
+def test_codex_non_backend_roles_get_their_own_artifact_directory(
+    tmp_path: Path, role: str
+) -> None:
+    paths = codex._codex_artifact_paths(tmp_path, role=role)
+
+    directory = (tmp_path / "logs" / "dispatch" / f"codex-{role}").resolve()
+    assert paths.output_directory == directory
+    assert paths.output_last_message_path == directory / "last-message.json"
+    assert paths.session_state_path == directory / "session.json"
+    assert paths.output_schema_path == config.CODEX_OUTPUT_SCHEMA_PATH.resolve()
+
+
+@pytest.mark.parametrize("role", ["../x", "codex", "", "Backend"])
+def test_codex_artifact_paths_reject_unknown_roles(tmp_path: Path, role: str) -> None:
+    with pytest.raises(ValueError, match="Unknown Codex artifact role"):
+        codex._codex_artifact_paths(tmp_path, role=role)
+
+
+def _write_codex_session(path: Path, thread_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'{{"thread_id": "{thread_id}"}}', encoding="utf-8")
+
+
+def _resumed_thread_id(command: list[str]) -> str:
+    assert command[command.index("exec") + 1] == "resume"
+    return command[command.index("--output-last-message") + 2]
+
+
+def test_codex_resume_reads_only_the_role_session_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = _CommandRecorder()
+    monkeypatch.setattr(codex, "_run_command_streaming", recorder)
+    _write_codex_session(
+        tmp_path / "logs/dispatch/codex/session.json", "thread-backend"
+    )
+    _write_codex_session(
+        tmp_path / "logs/dispatch/codex-tpm/session.json", "thread-tpm"
+    )
+
+    codex.invoke_codex(
+        tmp_path / "HANDOFF.md", repo_root=tmp_path, role_name="tpm", use_resume=True
+    )
+    codex.invoke_codex(
+        tmp_path / "HANDOFF.md",
+        repo_root=tmp_path,
+        role_name="backend",
+        use_resume=True,
+    )
+
+    tpm_command, backend_command = recorder.commands
+    assert _resumed_thread_id(tpm_command) == "thread-tpm"
+    assert "thread-backend" not in tpm_command
+    assert tpm_command[tpm_command.index("--output-last-message") + 1] == str(
+        (tmp_path / "logs/dispatch/codex-tpm/last-message.json").resolve()
+    )
+    assert _resumed_thread_id(backend_command) == "thread-backend"
+    assert "thread-tpm" not in backend_command
+
+
+def test_codex_role_without_saved_session_ignores_backend_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = _CommandRecorder()
+    monkeypatch.setattr(codex, "_run_command_streaming", recorder)
+    _write_codex_session(
+        tmp_path / "logs/dispatch/codex/session.json", "thread-backend"
+    )
+
+    codex.invoke_codex(
+        tmp_path / "HANDOFF.md", repo_root=tmp_path, role_name="tpm", use_resume=True
+    )
+
+    [command] = recorder.commands
+    assert "resume" not in command
+    assert "thread-backend" not in command
+
+
+def test_codex_auditor_last_message_lives_in_its_own_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = _CommandRecorder()
+    monkeypatch.setattr(codex, "_run_command_streaming", recorder)
+
+    codex.invoke_codex(tmp_path / "HANDOFF.md", repo_root=tmp_path, role_name="auditor")
+
+    [command] = recorder.commands
+    last_message = Path(command[command.index("--output-last-message") + 1])
+    auditor_directory = (tmp_path / "logs" / "dispatch" / "codex-auditor").resolve()
+    assert last_message == auditor_directory / "last-message.json"
+    assert auditor_directory.is_dir()
+    assert not (tmp_path / "logs" / "dispatch" / "codex").exists()
+
+
 def test_codex_default_launch_uses_workspace_sandbox(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

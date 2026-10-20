@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Each Codex role keeps its own run artifacts (TPM-4). The `backend` role still uses
+  `logs/dispatch/codex/last-message.json` and `session.json`; every other Codex role now
+  uses `logs/dispatch/codex-<role>/` with the same two files. Before, every Codex role
+  shared the backend directory, so in a mapping with two or more Codex roles one role
+  could resume another role's saved session and read its last message. The role must
+  be a canonical dispatch role, or the adapter raises `ValueError`. A non-backend
+  session saved under the old shared path is not migrated; that role starts a fresh
+  session on its next resume.
 - The Codex review gate no longer waits out its timeout when Codex marks a review
   completed without naming a commit (state marker `commit_sha: null`, a dash in the
   summary's Commit cell, and no review or +1 reaction). Before, the gate matched every
