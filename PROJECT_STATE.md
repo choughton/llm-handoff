@@ -6,11 +6,11 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-5 next; RECOVERY-3b1 merged in PR
-  #171; RECOVERY-3a approved at `c29943e`, merged in PR #169; RECOVERY-2d approved at
-  `ee76517`, merged in PR #168; RECOVERY-2c approved at `10bdbee`, merged in
-  PR #167; RECOVERY-2b merged in PR #166; RECOVERY-2a approved at `9831e0b`,
-  merged in PR #165; RECOVERY-1 approved at 14f195b, merged in PR #160).
+- **Active Epic:** RECOVERY (RECOVERY-5 next; RECOVERY-3b1 merged in PR #171;
+  RECOVERY-3a approved at `c29943e`, merged in PR #169; RECOVERY-2d approved at
+  `ee76517`, merged in PR #168; RECOVERY-2c approved at `10bdbee`, merged in PR
+  #167; RECOVERY-2b merged in PR #166; RECOVERY-2a approved at `9831e0b`, merged
+  in PR #165; RECOVERY-1 approved at 14f195b, merged in PR #160).
   The remaining stories were renumbered flat on 2026-10-19: RECOVERY-5
   (interrupted finalizer dispatch, was RECOVERY-3b2), RECOVERY-6 to
   RECOVERY-8 (were RECOVERY-3c to 3e), and RECOVERY-9 (no-record fallback,
@@ -837,17 +837,17 @@ bounces until the three-fix circuit breaker escalates.
   - RECOVERY-3b: Interrupted planner and finalizer dispatch, split on
     2026-10-19. The planner half merged as RECOVERY-3b1; the finalizer half
     is RECOVERY-5 below.
-    - RECOVERY-3b1 (merged in PR #171): Interrupted planner dispatch. A
-      planner dispatch writes a `planner` in-flight record (dispatch phase only, null story key when
-      the handoff has none, no operator files) and deletes it once
-      `_dispatch_route` returns. At startup an unchanged handoff or a changed
-      handoff that passes planner validation deletes the record and keeps the
-      handoff; a missing, empty, or invalid handoff is restored from the
-      record only after HARD-5 confirmation, and the planner runs again
+    - RECOVERY-3b1 (merged in PR #171): Interrupted planner dispatch. A planner
+      dispatch writes a `planner` in-flight record (dispatch phase only, null
+      story key when the handoff has none, no operator files) and deletes it
+      once `_dispatch_route` returns. At startup an unchanged handoff or a
+      changed handoff that passes planner validation deletes the record and
+      keeps the handoff; a missing, empty, or invalid handoff is restored from
+      the record only after HARD-5 confirmation, and the planner runs again
       (`interrupted_planner_recovery`) against the recovery's protected-file
-      baseline; an earlier forced instruction is not kept. In dispatcher
-      commit mode, handoff-only commits since the record's untrusted HEAD are
-      undone only after the operator confirms the exact `git reset --soft`.
+      baseline; an earlier forced instruction is not kept. In dispatcher commit
+      mode, handoff-only commits since the record's untrusted HEAD are undone
+      only after the operator confirms the exact `git reset --soft`.
 - The rest of RECOVERY, renumbered flat on 2026-10-19 (old IDs in brackets;
   a live handoff's `remaining_stories` may still use them). Order: 5, 6, 7,
   8, then 9.
