@@ -94,6 +94,7 @@ from llm_handoff.publish import (
     StateConflictResolver,
     publish_story,
     recover_orphaned_story,
+    resume_interrupted_merge_commit,
     resume_interrupted_publish,
     resume_paused_publish,
     save_review_responses,
@@ -611,6 +612,33 @@ def _run_loop(
     # operator removes it.
     if not _wait_for_git_index_lock_removal(config, log_fn, stop_watch):
         return 0
+
+    # A publish the previous run left interrupted finishes, once the operator
+    # confirms it at a terminal, instead of the planner running on the story's
+    # stale verified_pass handoff.
+    def confirm_publish_resume(question: str) -> bool:
+        if not (
+            config.interactive_pause
+            and _operator_stdin_is_interactive()
+            and not operator_prompt.reader().console_unavailable
+        ):
+            return False
+        return _confirm_carry_over_at_terminal(
+            operator_prompt.reader(),
+            _escape_control_characters(question),
+            log_fn,
+        )
+
+    if config.publish.mode == "merge-commit" and not config.dry_run:
+        outcome = resume_interrupted_merge_commit(
+            repo_root=config.repo_root,
+            handoff_content=_read_required_text(config.handoff_full_path) or "",
+            handoff_path=config.handoff_path,
+            log=log_fn,
+            confirm=confirm_publish_resume,
+        )
+        if outcome.stop:
+            return outcome.exit_code
     if config.publish.mode == "pr" and not config.dry_run:
         # An operator who merged a paused story's pull request but stayed on
         # its branch: return to the base branch before the planner runs.
@@ -640,22 +668,6 @@ def _run_loop(
         if outcome.stop:
             return outcome.exit_code
         if outcome.handoff is None:
-            # A publish the previous run left interrupted finishes, once the
-            # operator confirms it at a terminal, instead of the planner
-            # running on the story's stale verified_pass handoff.
-            def confirm_publish_resume(question: str) -> bool:
-                if not (
-                    config.interactive_pause
-                    and _operator_stdin_is_interactive()
-                    and not operator_prompt.reader().console_unavailable
-                ):
-                    return False
-                return _confirm_carry_over_at_terminal(
-                    operator_prompt.reader(),
-                    _escape_control_characters(question),
-                    log_fn,
-                )
-
             outcome = resume_interrupted_publish(
                 repo_root=config.repo_root,
                 remote=config.publish.remote,
