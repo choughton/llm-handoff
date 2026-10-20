@@ -6,8 +6,9 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** CHAT, with CHAT-14 (Claude and Codex role dispatches
-  report their session id) in progress. CHAT-2 (sent chat messages are saved
+- **Active Epic:** CHAT, with CHAT-3 (dispatch record file) in progress.
+  CHAT-14 (Claude and Codex role dispatches report their session id) was
+  approved at `b61b313` and merged in PR #201. CHAT-2 (sent chat messages are saved
   to the queue and announced) was approved at `dd26c6a` and merged in PR
   #200. CHAT-13 (hold the loop on saved chat
   messages) was approved at `cd0df4c` and merged in PR #199; it took the hold
@@ -1046,7 +1047,7 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: active; CHAT-14 is in progress. Picked after TIDY was parked; HARD-3 is
+Fit: active; CHAT-3 is in progress. Picked after TIDY was parked; HARD-3 is
 merged and RECOVERY is closed, so nothing blocks it.
 
 The operator types at any time; a message holds the loop and is answered by
@@ -1133,20 +1134,27 @@ dependencies; Windows (`msvcrt`) and POSIX.
   <role> run completes.`) instead of `CHAT_UNAVAILABLE_MESSAGE`. CHAT-13
   then holds the loop on the saved message at the next safe point.
 - CHAT-14 (was part of CHAT-3): Claude and Codex role dispatches report
-  their session id. The Claude stream monitor keeps the `session_id` string
+  their session id. Approved at `b61b313` (PR #201). The Claude stream monitor keeps the `session_id` string
   from the first `system`/`init` event (with or without a logger) and
   `SubagentResult.session_id` carries it into `DispatchResult.session_id`;
   `invoke_codex` returns the `thread.started` `thread_id` of the run that
   produced the result. A missing id, the Claude buffered text fallback, and a
   failover result give None. Resume behavior is unchanged: the Claude and
   Codex role branches still ignore the `session_id` argument.
-- CHAT-3: Dispatch record. Save each dispatch in the run (role, story,
-  provider, session id, time) under `logs/dispatch/`, so a question can find
-  the agent it is about. Reads session ids from `DispatchResult.session_id`
-  (CHAT-14). Nothing reads the record yet besides tests.
+- CHAT-3: Dispatch record file. New `llm_handoff/dispatch_record.py` saves
+  `DispatchEntry(role, story_id, provider, session_id, recorded_at)` to
+  `logs/dispatch/dispatch-record.json` (`DISPATCH_RECORD_STATE_PATH`) via
+  temp-file replace; a bad file loads `[]`, bad entries are skipped; also
+  clear and `record_dispatch` (UTC time, blank session id stored as None).
+  Nothing in the loop writes the record yet; CHAT-15 does.
+- CHAT-15 (was part of CHAT-3): The loop records each dispatch. After each
+  role dispatch returns, the orchestrator appends a `DispatchEntry` (role,
+  story id, the role's configured provider, `DispatchResult.session_id`)
+  through `record_dispatch`; the record is cleared at run start; a dry run
+  writes nothing; a write `OSError` logs one WARN and the loop continues.
 - CHAT-4 (was part of CHAT-3): Read-only answers from Claude and Codex
-  sessions. A question resumes that agent's own session and prints the
-  answer; follow-ups stay in the same thread. Each answer runs behind a
+  sessions. A question finds the agent it is about in the CHAT-15 dispatch
+  record, resumes that agent's own session, and prints the answer; follow-ups stay in the same thread. Each answer runs behind a
   read-only boundary the provider enforces, not a prompt-level mode: Claude
   `--resume` with only read tools (Read, Grep, Glob, read-only `git`); Codex
   `exec resume` in the read-only sandbox. After each answer the dispatcher
