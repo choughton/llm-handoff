@@ -571,7 +571,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 Fit: closed. HARD-1 through HARD-6 are merged (HARD-6 in PR #157); the epic
 close was approved at `3949ed2388e6a726012cfbf0c8d3511fba5ea179`. Nothing
-remains. CHAT-19's dependency on the HARD-3 marker is
+remains. CHAT-18's dependency on the HARD-3 marker is
 satisfied.
 
 The security-relevant Open Followups, promoted to stories. Each story names
@@ -611,7 +611,7 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   story publishes. Record only the marker, the time, and a SHA-256 digest of
   the message, never its text: an operator may type private context or a
   credential at the console, and `SECURITY.md` keeps secrets out of
-  `HANDOFF.md`, logs, and anything published. CHAT-19 reuses
+  `HANDOFF.md`, logs, and anything published. CHAT-18 reuses
   this marker.
   Decided by the planner on 2026-10-18: fan-out path only (the single-agent
   auditor writes its own handoff and stays unmarked); the marker is a
@@ -1196,46 +1196,59 @@ dependencies; Windows (`msvcrt`) and POSIX.
   replaces it.
 - CHAT-17 (replaces CHAT-16): Chat side-session launcher. A new module
   starts one chat session for a message and resumes it for follow-ups,
-  returning the answer text, the session id, the exit code, and a short
-  error. It runs in the repository root on the provider of the active role
-  (`claude` or `codex`), with that role's normal launch arguments,
-  `unsafe_bypass` included, so it has the role's tools and permissions. The
-  prompt names the active role, the story, the `HANDOFF.md` path, and the
-  role's log, and says the session may edit files and `HANDOFF.md` to do
-  what the operator asks. Another provider raises before launch. Not wired
-  into the loop.
-- CHAT-18 (was part of CHAT-4): Messages are answered right away. A non-blank
-  chat submission goes to the CHAT-17 side session instead of the CHAT-12
-  queue, and the answer prints above the chat line while the role keeps
-  running; messages typed while an answer runs wait in order, and follow-ups
-  resume the same side session for the rest of the run. The CHAT-13 `Press
-  Enter to continue` hold is removed. At the points where it ran (before the
-  publish and settle steps), and before the work-claim gate commits, the loop
-  instead waits for a running chat answer to finish. An agy role prints that
-  chat is not available for agy yet.
-- CHAT-19 (was part of CHAT-4): Chat file changes are committed and audited.
-  The dispatcher fingerprints the checkout before and after each chat answer
-  and records the files chat changed under `logs/dispatch/`, with the time
-  and a SHA-256 of the message, never its text. During an implementer role,
-  the work-claim gate commits those files with the role's work even outside
-  the Work Packet's files in scope, and the commit and pull request carry
-  the HARD-3 operator-influenced marker. During any other role, the
-  dispatcher commits them itself after the role's cycle, before the next
-  route, with the same marker. Chat changes committed after an approved
-  audit send the story back to the audit fan-out before it publishes, so
-  nothing unaudited is published.
-- CHAT-20 (was part of CHAT-4): A chat rewrite of `HANDOFF.md` takes over the
+  returning the answer text, the session id, the exit code, a short error,
+  and the files the session's own edit events name (Claude `Edit`, `Write`,
+  `MultiEdit`, and `NotebookEdit` tool calls in its stream output; Codex
+  file-change items). It runs in the repository root on the provider of the
+  active role (`claude` or `codex`), with that role's normal launch
+  arguments, `unsafe_bypass` included, so it has the role's tools and
+  permissions. The prompt names the active role, the story, the
+  `HANDOFF.md` path, and the role's log, and says the session may edit files
+  and `HANDOFF.md` to do what the operator asks. Another provider raises
+  before launch. Not wired into the loop.
+- CHAT-18 (was part of CHAT-4): Chat file changes are committed and audited.
+  After a chat answer, the dispatcher records the files the CHAT-17 result
+  names under `logs/dispatch/`, with their fingerprints, the time, and a
+  SHA-256 of the message, never its text. Only those files count as chat
+  changes: a file the role edits while the answer runs, or one chat changed
+  without an edit event (for example through a shell command), stays the
+  role's and goes through the normal scope check. During an implementer
+  role, the work-claim gate commits the recorded files with the role's work
+  even outside the Work Packet's files in scope, and the commit and pull
+  request carry the HARD-3 operator-influenced marker. During any other
+  role, the dispatcher commits them itself after the role's cycle, before
+  the next route, with the same marker. Chat changes committed after an
+  approved audit send the story back to the audit fan-out before it
+  publishes, so nothing unaudited is published. Tested with a faked
+  CHAT-17 result; the loop calls it once CHAT-20 wires chat in.
+- CHAT-19 (was part of CHAT-4): A chat rewrite of `HANDOFF.md` takes over the
   run. When a chat answer changes `HANDOFF.md` while a role runs, the
   dispatcher stops that role as an operator interrupt does, keeps the role's
   partial file changes as carry-over, validates the chat's handoff, and
-  continues from it; an invalid handoff pauses as today. File changes
-  without a `HANDOFF.md` change let the role keep running.
-  `docs/ARCHITECTURE.md` says chat may write `HANDOFF.md` this way.
+  continues from it; an invalid handoff pauses as today. The role is stopped
+  before it can write its own handback, so the chat's handoff is not
+  overwritten. File changes without a `HANDOFF.md` change let the role keep
+  running. `docs/ARCHITECTURE.md` says chat may write `HANDOFF.md` this way.
+  Tested with a faked CHAT-17 result; the loop calls it once CHAT-20 wires
+  chat in.
+- CHAT-20 (was part of CHAT-4): Messages are answered right away. Lands after
+  CHAT-18 and CHAT-19, so writable chat is never wired in without them. A
+  non-blank chat submission goes to the CHAT-17 side session instead of the
+  CHAT-12 queue, and the answer prints above the chat line while the role
+  keeps running; messages typed while an answer runs wait in order, and
+  follow-ups resume the same side session for the rest of the run. After
+  each answer the loop applies CHAT-18 and CHAT-19. New submissions no
+  longer write the CHAT-12 queue, and the CHAT-13 `Press Enter to continue`
+  hold runs only when that file already holds messages (saved before this
+  story, or kept by an earlier stop), so none is stranded. At the points
+  where the hold runs (before the publish and settle steps), and before the
+  work-claim gate commits, the loop also waits for a running chat answer to
+  finish. An agy role prints that chat is not available for agy yet.
 - CHAT-4 (was part of CHAT-3): `@role` asks a finished role's own session.
   `@role <message>` finds the role's latest entry in the CHAT-15 dispatch
   record and resumes that session with the role's normal launch arguments,
-  so the role that did the work answers and can fix it; the CHAT-19 and
-  CHAT-20 rules apply to what it changes. `@role` for the running role, or a
+  so the role that did the work answers and can fix it; the CHAT-18 and
+  CHAT-19 rules apply to what it changes. `@role` for the running role, or a
   role with no recorded session, goes to the side session. Untargeted
   messages always go to the side session (the old CHAT-7 normalizer
   classification is dropped).
