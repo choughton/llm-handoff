@@ -14,6 +14,7 @@ import threading
 import time
 from typing import Callable, Mapping, TextIO
 
+from llm_handoff import chat_session
 from llm_handoff.agent_streams import StderrMode, _LiveAgentOutputMonitor
 from llm_handoff.agent_types import LogFn, _ProcessResult
 from llm_handoff.config import VENDOR_API_KEY_ENV_NAMES, AgentConfig
@@ -685,6 +686,12 @@ def _resolve_command_binary(command: str) -> str:
 
 
 def _wait_for_manual_continue() -> None:
+    # The keypress is read from the console, so chat capture must not read it.
+    with chat_session.suspended():
+        _read_manual_continue_key()
+
+
+def _read_manual_continue_key() -> None:
     if os.name == "nt":
         try:
             import msvcrt

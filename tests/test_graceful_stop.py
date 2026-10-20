@@ -273,6 +273,161 @@ def test_run_dispatch_keeps_a_stop_request_for_its_own_pid(
     assert captured["request_during_run"] is True
 
 
+class _TTYStream(io.StringIO):
+    def __init__(self, tty: bool) -> None:
+        super().__init__()
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+class _ChatLoggerFake:
+    def __init__(self, **_kwargs: object) -> None:
+        self.chat_line: object | None = None
+        self.attached: list[object | None] = []
+        self.logged: list[tuple[str, str]] = []
+
+    def __call__(self, level: str, message: str) -> None:
+        self.logged.append((level, message))
+
+    def attach_chat_line(self, chat_line: object | None) -> None:
+        self.chat_line = chat_line
+        self.attached.append(chat_line)
+
+
+class _IdleKeyReader:
+    def __init__(self) -> None:
+        self.open_count = 0
+        self.close_count = 0
+
+    def open(self) -> None:
+        self.open_count += 1
+
+    def read_chars(self, timeout: float) -> str:
+        return ""
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+def _chat_run_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    dry_run: bool,
+    stdin_tty: bool = True,
+    stdout_tty: bool = True,
+    run_loop_error: BaseException | None = None,
+) -> tuple[int, dict[str, Any]]:
+    from llm_handoff import chat_session
+    from llm_handoff.chat_input import ChatInput
+
+    (tmp_path / ".git").mkdir()
+    seen: dict[str, Any] = {"factory_calls": 0, "logger": None}
+
+    class Logger(_ChatLoggerFake):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            seen["logger"] = self
+
+    def factory(stdin: object, chat_line: Any, **_kwargs: object) -> ChatInput:
+        seen["factory_calls"] += 1
+        seen["chat_line"] = chat_line
+        return ChatInput(chat_line, _IdleKeyReader(), poll_interval=0.01)
+
+    def fake_run_loop(_config: object, *, log: Any = None) -> int:
+        seen["chat_line_during_run"] = log.chat_line
+        seen["session_attached_during_run"] = chat_session.SESSION.attached
+        if run_loop_error is not None:
+            raise run_loop_error
+        return 0
+
+    monkeypatch.setattr(main_module, "DispatchLogger", Logger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+    monkeypatch.setattr(main_module, "chat_input_for_console", factory)
+    monkeypatch.setattr(
+        main_module, "_set_dispatch_console_title", lambda: ("", False)
+    )
+    monkeypatch.setattr(main_module.sys, "stdin", _TTYStream(stdin_tty))
+    monkeypatch.setattr(main_module.sys, "stdout", _TTYStream(stdout_tty))
+
+    exit_code = main_module._run_dispatch(
+        dry_run=dry_run, use_manual_frontend=False, repo_root=tmp_path
+    )
+    seen["session_attached_after_run"] = chat_session.SESSION.attached
+    return exit_code, seen
+
+
+def test_run_dispatch_attaches_the_chat_line_for_an_interactive_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exit_code, seen = _chat_run_dispatch(tmp_path, monkeypatch, dry_run=False)
+
+    assert exit_code == 0
+    assert seen["factory_calls"] == 1
+    assert seen["chat_line_during_run"] is seen["chat_line"]
+    assert seen["session_attached_during_run"] is True
+    assert seen["session_attached_after_run"] is False
+    assert seen["logger"].chat_line is None
+    assert seen["logger"].attached == [seen["chat_line"], None]
+
+
+def test_run_dispatch_detaches_the_chat_line_on_keyboard_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exit_code, seen = _chat_run_dispatch(
+        tmp_path, monkeypatch, dry_run=False, run_loop_error=KeyboardInterrupt()
+    )
+
+    assert exit_code == 130
+    assert seen["chat_line_during_run"] is seen["chat_line"]
+    assert seen["session_attached_after_run"] is False
+    assert seen["logger"].chat_line is None
+    assert any(
+        "Dispatch interrupted by user" in text for _level, text in seen["logger"].logged
+    )
+
+
+def test_run_dispatch_detaches_the_chat_line_when_run_loop_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(RuntimeError):
+        _chat_run_dispatch(
+            tmp_path, monkeypatch, dry_run=False, run_loop_error=RuntimeError("x")
+        )
+
+    from llm_handoff import chat_session
+
+    assert chat_session.SESSION.attached is False
+
+
+@pytest.mark.parametrize(
+    ("dry_run", "stdin_tty", "stdout_tty"),
+    [(True, True, True), (False, False, True), (False, True, False)],
+)
+def test_run_dispatch_keeps_the_chat_line_off_without_an_interactive_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+    stdin_tty: bool,
+    stdout_tty: bool,
+) -> None:
+    exit_code, seen = _chat_run_dispatch(
+        tmp_path,
+        monkeypatch,
+        dry_run=dry_run,
+        stdin_tty=stdin_tty,
+        stdout_tty=stdout_tty,
+    )
+
+    assert exit_code == 0
+    assert seen["factory_calls"] == 0
+    assert seen["chat_line_during_run"] is None
+    assert seen["session_attached_during_run"] is False
+    assert seen["logger"].attached == []
+
+
 def test_stop_request_for_another_pid_does_not_apply(tmp_path: Path) -> None:
     request_stop(tmp_path, target_pid=os.getpid() + 1)
 
