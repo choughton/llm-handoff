@@ -45,12 +45,18 @@ from llm_handoff.chat_queue import (
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
     CARRY_OVER_STATE_PATH,
+    DISPATCH_RECORD_STATE_PATH,
     IN_FLIGHT_STATE_PATH,
     AgentConfig,
     AgentRole,
     DispatchConfig,
     NormalizerConfig,
     claude_default_allowed_tools,
+)
+from llm_handoff.dispatch_record import (
+    clear_dispatch_record,
+    dispatch_record_path,
+    record_dispatch,
 )
 from llm_handoff.ledger import (
     bounce_count,
@@ -607,6 +613,10 @@ def _run_loop(
             _log(log_fn, "ERROR", reviewer_launch_error)
             return 1
     _restore_bounce_counts(config, log_fn)
+    # A dry run neither clears nor writes the dispatch record.
+    dispatch_record_enabled = (
+        _clear_run_dispatch_record(config, log_fn) if not config.dry_run else False
+    )
     mark_startup_complete = getattr(log_fn, "mark_startup_complete", None)
     if callable(mark_startup_complete):
         mark_startup_complete()
@@ -1895,6 +1905,15 @@ def _run_loop(
                         ),
                     ),
                 )
+                # Whatever its exit code, stop request, or session state.
+                if dispatch_record_enabled:
+                    _record_role_dispatch(
+                        config,
+                        route=current_cycle.route,
+                        story_id=_handoff_story_id(assignment_content),
+                        dispatch_result=dispatch_result,
+                        log=log_fn,
+                    )
             # The planner returned, whatever its exit code: its handoff is
             # whatever it wrote, so its record names nothing interrupted.
             if planner_in_flight_written and not _delete_in_flight_record(
@@ -2624,6 +2643,75 @@ def _state_conflict_resolver(
         return succeeded
 
     return StateConflictResolver(path=path, run=run)
+
+
+def _clear_run_dispatch_record(config: DispatchConfig, log: LogFn) -> bool:
+    """Start the run with an empty dispatch record; a failure only warns.
+
+    Returns whether the run may write the record: False when Git does not
+    ignore its path, because an untracked record would itself show up as an
+    uncommitted file in the next work-claim gate (one WARN per run).
+    """
+
+    path = dispatch_record_path(config.repo_root)
+    try:
+        clear_dispatch_record(path)
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not clear the dispatch record {path} at run start: {exc}. "
+            "The run continues.",
+        )
+    if not git_path_is_ignored(
+        config.repo_root, DISPATCH_RECORD_STATE_PATH.as_posix()
+    ):
+        _log(
+            log,
+            "WARN",
+            f"Git does not ignore {DISPATCH_RECORD_STATE_PATH.as_posix()}, so "
+            "this run does not record its role dispatches; add /logs/dispatch/ "
+            "to .gitignore.",
+        )
+        return False
+    return True
+
+
+def _record_role_dispatch(
+    config: DispatchConfig,
+    *,
+    route: RouteName,
+    story_id: str | None,
+    dispatch_result: DispatchResult,
+    log: LogFn,
+) -> None:
+    """Append the returned role dispatch to the run's dispatch record.
+
+    ``role`` is the route name. ``provider`` is the configured primary, or
+    None for the manual frontend. A write ``OSError`` only warns.
+    """
+
+    if route == "frontend" and config.use_manual_frontend:
+        provider: str | None = None
+    else:
+        agent_config = config.agents.get(cast(AgentRole, route))
+        provider = agent_config.provider if agent_config is not None else None
+    path = dispatch_record_path(config.repo_root)
+    try:
+        record_dispatch(
+            path,
+            role=route,
+            story_id=story_id,
+            provider=provider,
+            session_id=dispatch_result.session_id,
+        )
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not write the dispatch record {path} after the {route} "
+            f"dispatch: {exc}. The cycle continues.",
+        )
 
 
 def _dispatch_route(

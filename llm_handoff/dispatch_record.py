@@ -2,8 +2,8 @@
 
 Each entry names the role, the story it worked, the provider that ran it, and
 the session id the provider reported (CHAT-14), so a later chat answer can
-reach the session that did the work. Nothing in the loop writes the record yet;
-CHAT-15 wires the orchestrator to it.
+reach the session that did the work. The loop clears the record at run start and
+appends one entry after each role dispatch returns (CHAT-15).
 """
 
 from __future__ import annotations
