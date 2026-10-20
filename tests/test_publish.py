@@ -1628,6 +1628,50 @@ def test_the_worktree_snapshot_sees_a_symlink_type_change(tmp_path: Path) -> Non
     assert before["README.md"] != after["README.md"]
 
 
+def test_the_worktree_snapshot_sees_hidden_submodule_changes(tmp_path: Path) -> None:
+    from llm_handoff import publish
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    sub = repo / "vendor" / "lib"
+    _build_init(sub)
+    # Adding an embedded repository tracks it as a gitlink entry.
+    _git(repo, "add", "vendor/lib")
+    _git(repo, "commit", "-q", "-m", "Add the submodule")
+    assert _git(repo, "ls-files", "--stage", "vendor/lib").startswith("160000 ")
+    # Hide every submodule change from `git status`, and start it dirty.
+    _git(repo, "config", "diff.ignoreSubmodules", "all")
+    (sub / "README.md").write_text("dirty\n", encoding="utf-8")
+    before = publish._worktree_snapshot(repo)
+    assert before is not None
+    assert before["vendor/lib"][1] == "submodule"
+
+    # The same status, but different bytes inside the submodule.
+    (sub / "README.md").write_text("planted\n", encoding="utf-8")
+    edited = publish._worktree_snapshot(repo)
+    assert edited is not None
+    assert edited["vendor/lib"][0] == before["vendor/lib"][0]
+    assert edited["vendor/lib"] != before["vendor/lib"]
+
+    # A new commit in the submodule moves its HEAD.
+    (sub / "README.md").write_text("dirty\n", encoding="utf-8")
+    assert publish._worktree_snapshot(repo) == before
+    _git(sub, "commit", "-q", "--allow-empty", "-m", "moved")
+    moved = publish._worktree_snapshot(repo)
+    assert moved is not None
+    assert moved["vendor/lib"] != before["vendor/lib"]
+
+    # A checkout that is not a repository cannot be compared: fail closed.
+    (sub / ".git").rename(tmp_path / "moved-git")
+    assert publish._worktree_snapshot(repo) is None
+    # An empty directory is a submodule that is not checked out.
+    for child in sub.iterdir():
+        child.unlink()
+    empty = publish._worktree_snapshot(repo)
+    assert empty is not None
+    assert empty["vendor/lib"][1:] == ("directory", "")
+
+
 def test_the_index_flag_snapshot_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

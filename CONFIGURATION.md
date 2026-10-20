@@ -1095,7 +1095,10 @@ commit. The dispatcher then checks the result itself:
   compared by `git status` entry, file type (regular file, executable,
   symlink, directory, or missing, read without following links), and content,
   whatever its `assume-unchanged` or `skip-worktree` flag, along with every
-  untracked path `git status` lists;
+  untracked path `git status` lists. A tracked submodule is compared by its
+  HEAD and the same per-path snapshot of its own checkout, so a submodule
+  edit hidden by submodule ignore settings is caught; a submodule directory
+  that has content but no `.git`, or that Git cannot read, fails the check;
 - no index flag changed on any path, `project_state_path` included: an
   `assume-unchanged` or `skip-worktree` flag set, cleared, or added for a new
   entry (from `git ls-files -v`) is rejected;

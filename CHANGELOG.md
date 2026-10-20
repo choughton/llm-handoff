@@ -13,6 +13,9 @@ This project follows a simple pre-release changelog until the first public tag.
   compares every tracked path by file type and content whatever its flags,
   plus untracked paths, and rejects any `assume-unchanged` or `skip-worktree`
   flag change; a rejected resolution aborts the merge and pauses as before.
+  A tracked submodule is compared by its HEAD and its own checkout's
+  contents rather than as a plain directory, and a submodule checkout that
+  cannot be read fails the check.
 - An implementer interrupted with no in-flight or carry-over record left on
   disk can now be recovered at startup, once the operator confirms
   (RECOVERY-9). When neither record existed and the handoff still routes to

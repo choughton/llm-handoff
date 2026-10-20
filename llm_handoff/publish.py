@@ -1463,15 +1463,17 @@ def _worktree_snapshot(
 ) -> dict[str, tuple[str, str, str]] | None:
     """Map each tracked or status-listed path to its status, type, and digest.
 
-    Covers every tracked path from ``git ls-files -z``, which lists entries
-    whatever their assume-unchanged or skip-worktree flag, plus every path
-    ``git status`` lists (untracked files included). A path status does not
-    list has an empty status code. Returns None on any git failure, so
+    Covers every tracked path from ``git ls-files --stage -z``, which lists
+    entries whatever their assume-unchanged or skip-worktree flag, plus every
+    path ``git status`` lists (untracked files included). A path status does
+    not list has an empty status code. A tracked submodule (a gitlink entry)
+    is fingerprinted by its HEAD and its own worktree snapshot. Returns None
+    on any git failure, or when a submodule checkout cannot be compared, so
     callers fail closed.
     """
 
-    tracked = _git(repo_root, ["ls-files", "-z"])
-    if tracked.returncode != 0:
+    tracked = _index_entries(repo_root)
+    if tracked is None:
         return None
     status = _git(
         repo_root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
@@ -1494,12 +1496,60 @@ def _worktree_snapshot(
         for name in names:
             codes[name] = entry[:2]
     # Unmerged paths are listed once per stage; the set dedupes them.
-    names = {name for name in (tracked.stdout or "").split("\0") if name}
+    names = {name for name, _stage in tracked}
+    gitlinks = {
+        name for (name, _stage), (mode, _blob) in tracked.items() if mode == "160000"
+    }
     snapshot: dict[str, tuple[str, str, str]] = {}
     for name in sorted(names | codes.keys()):
-        kind, digest = _path_fingerprint(repo_root / name)
+        if name in gitlinks:
+            fingerprint = _gitlink_fingerprint(repo_root / name)
+            if fingerprint is None:
+                return None
+            kind, digest = fingerprint
+        else:
+            kind, digest = _path_fingerprint(repo_root / name)
         snapshot[name] = (codes.get(name, ""), kind, digest)
     return snapshot
+
+
+def _gitlink_fingerprint(path: Path) -> tuple[str, str] | None:
+    """Return a tracked submodule's type and a digest of its checkout.
+
+    ``os.lstat`` sees a checked-out submodule as a plain directory, and its
+    `git status` entry can be hidden by submodule ignore settings or index
+    flags, so the digest covers the submodule's HEAD and its own worktree
+    snapshot (taken the same way, nested submodules included). A missing
+    path or an empty directory (a submodule that is not checked out) has an
+    empty digest, as before. Returns None, so callers fail closed, when the
+    checkout cannot be compared: Git fails inside it, or the directory has
+    content but no ``.git``.
+    """
+
+    kind, digest = _path_fingerprint(path)
+    if kind != "directory":
+        return kind, digest
+    try:
+        has_git = os.path.lexists(path / ".git")
+        with os.scandir(path) as entries:
+            empty = not any(entries)
+    except OSError:
+        return None
+    if empty:
+        return "directory", ""
+    if not has_git:
+        return None
+    head = _git(path, ["rev-parse", "-q", "--verify", "HEAD"])
+    if head.returncode != 0 or not head.stdout.strip():
+        return None
+    nested = _worktree_snapshot(path)
+    if nested is None:
+        return None
+    serialized = "\0".join(
+        "\0".join((name, *fields)) for name, fields in sorted(nested.items())
+    )
+    combined = f"{head.stdout.strip()}\n{serialized}".encode("utf-8", "replace")
+    return "submodule", hashlib.sha256(combined).hexdigest()
 
 
 def _with_resolution_note(body: str, note: str) -> str:

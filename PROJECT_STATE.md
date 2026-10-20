@@ -1007,7 +1007,12 @@ bounces until the three-fix circuit breaker escalates.
   failure or a record with no tag and path fails closed. Backend
   implementation note: only the two flags are compared, not the raw tag letter, so a conflicted path's `M` to `H`
   tag change on staging is not a flag change. The existing index-entry and
-  staged-resolution checks are unchanged.
+  staged-resolution checks are unchanged. PR #179 review correction: a
+  tracked submodule (gitlink, mode 160000 in `git ls-files --stage`) is
+  fingerprinted by its HEAD plus its own recursive worktree snapshot instead
+  of the constant directory fingerprint; an empty submodule directory keeps
+  the directory fingerprint, and a non-empty one without `.git` or that Git
+  cannot read fails closed.
 - RECOVERY-11: Failed in-flight record deletes stop every recovery path.
   From the RECOVERY-6 audit (non-blocking): the implementer
   dispatch/handback, planner, and finalizer startup recovery paths call
