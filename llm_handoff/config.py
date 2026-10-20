@@ -183,6 +183,8 @@ IN_FLIGHT_STATE_PATH = Path("logs") / "dispatch" / "in-flight.json"
 # Operator chat messages queued while a role runs, so a held loop keeps them
 # across a dispatcher restart.
 CHAT_QUEUE_STATE_PATH = Path("logs") / "dispatch" / "chat-queue.json"
+# Each role dispatch in the current run, with the session id the role reported.
+DISPATCH_RECORD_STATE_PATH = Path("logs") / "dispatch" / "dispatch-record.json"
 
 
 def detect_repo_root(start: Path | None = None) -> Path:
