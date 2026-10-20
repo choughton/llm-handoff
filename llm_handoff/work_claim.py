@@ -39,7 +39,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import time
 from typing import Literal, Mapping
@@ -1391,7 +1390,12 @@ def run_scanner(
         )
 
     executable = command_executable(rendered.command)
-    if executable is not None and shutil.which(executable) is None:
+    if executable is not None and (
+        find_scanner_executable(
+            executable, path=_env_path(build_work_claim_env(env_passthrough))
+        )
+        is None
+    ):
         return _missing_scanner(scanner, rendered.command, executable)
 
     run = runner(
@@ -1482,7 +1486,7 @@ def command_executable(command: str) -> str | None:
     """Return the leading program of a shell command when it is a plain token.
 
     ``llm-handoff doctor`` imports this so its scanner check finds the same
-    executable the gate looks up with ``shutil.which``.
+    executable the gate looks up with :func:`find_scanner_executable`.
     """
 
     stripped = command.lstrip()
@@ -1498,6 +1502,74 @@ def command_executable(command: str) -> str | None:
     if not token or any(char in _SHELL_SYNTAX_CHARS for char in token):
         return None
     return token
+
+
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+
+
+def find_scanner_executable(
+    executable: str,
+    *,
+    path: str | None = None,
+) -> str | None:
+    """Return the scanner program the gate would run, or ``None``.
+
+    Unlike ``shutil.which``, this never searches the current directory: on
+    Windows, Python 3.11's ``shutil.which`` checks it first even when
+    ``path`` is given. A name with a path separator or drive is accepted only
+    when it is absolute. A bare name is looked up in the absolute entries of
+    ``path`` (default ``PATH``); empty and relative entries such as ``.`` are
+    skipped. On Windows each ``PATHEXT`` extension is also tried unless the
+    name already ends with one. There is no ``.cmd`` stem fallback.
+    ``llm-handoff doctor`` and the work-claim gate both use this lookup.
+    """
+
+    if not executable:
+        return None
+    separators = ("/", "\\") if os.name == "nt" else ("/",)
+    has_drive = bool(os.path.splitdrive(executable)[0])
+    if has_drive or any(sep in executable for sep in separators):
+        if not os.path.isabs(executable):
+            return None
+        for candidate in _executable_candidates(executable):
+            if _is_executable_file(candidate):
+                return candidate
+        return None
+
+    search_path = os.environ.get("PATH", "") if path is None else path
+    for entry in search_path.split(os.pathsep):
+        if not entry or not os.path.isabs(entry):
+            continue
+        for candidate in _executable_candidates(os.path.join(entry, executable)):
+            if _is_executable_file(candidate):
+                return candidate
+    return None
+
+
+def _executable_candidates(base: str) -> list[str]:
+    candidates = [base]
+    if os.name != "nt":
+        return candidates
+    pathext = os.environ.get("PATHEXT") or _DEFAULT_PATHEXT
+    extensions = [ext for ext in pathext.split(os.pathsep) if ext]
+    lowered = base.lower()
+    if any(lowered.endswith(ext.lower()) for ext in extensions):
+        return candidates
+    candidates.extend(base + ext for ext in extensions)
+    return candidates
+
+
+def _is_executable_file(candidate: str) -> bool:
+    return os.path.isfile(candidate) and os.access(candidate, os.X_OK)
+
+
+def _env_path(env: Mapping[str, str]) -> str:
+    """Return the ``PATH`` value of ``env``, matching the name case-insensitively."""
+
+    for key, value in env.items():
+        if key.upper() == "PATH":
+            return value
+    return ""
 
 
 def _scanner_context(

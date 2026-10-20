@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Scanner executable lookups no longer search the current directory (TIDY-2).
+  Before, doctor and the work-claim gate used `shutil.which`, which on
+  Windows also checks the current directory, so a scanner in the repository
+  but not on `PATH` was accepted. Both now call one helper,
+  `work_claim.find_scanner_executable`, that walks only the absolute `PATH`
+  entries (the gate's allowlisted environment `PATH` for the gate), tries
+  each `PATHEXT` extension on Windows, and accepts a name with a path
+  separator only when it is absolute.
 - The audit fan-out no longer reviews upstream files that a story branch
   brought in by merging its base branch (TIDY-9). Before, the review range
   started at the saved story base, so after a base-branch merge the

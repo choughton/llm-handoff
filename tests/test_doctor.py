@@ -108,6 +108,12 @@ def _stub_which(monkeypatch: pytest.MonkeyPatch, available: set[str]) -> None:
         return None
 
     monkeypatch.setattr(shutil, "which", fake_which)
+
+    def fake_find_scanner(name: str, *args: object, **kwargs: object) -> str | None:
+        return f"/usr/bin/{name}" if name in available else None
+
+    # Scanner lookups use their own helper, not shutil.which.
+    monkeypatch.setattr(doctor, "find_scanner_executable", fake_find_scanner)
     # The default claude normalizer is runnable with an Anthropic key; tests
     # of the normalizer check clear it and choose their own provider inputs.
     for name in NORMALIZER_KEY_NAMES:
@@ -680,6 +686,67 @@ def test_doctor_scanner_lookup_has_no_cmd_fallback(
 
     assert exit_code == 1, output
     assert _scanner_lines(output)[0].startswith("FAIL scanner bandit:")
+
+
+def _plant_fakescan(directory: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    directory.mkdir(parents=True)
+    if os.name == "nt":
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        planted = directory / "fakescan.bat"
+        planted.write_text("@exit /b 0\r\n", encoding="utf-8", newline="")
+    else:
+        planted = directory / "fakescan"
+        planted.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        planted.chmod(0o755)
+    return planted
+
+
+def _use_real_scanner_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from llm_handoff import work_claim
+
+    monkeypatch.setattr(
+        doctor, "find_scanner_executable", work_claim.find_scanner_executable
+    )
+
+
+def test_doctor_fails_scanner_that_is_only_in_the_current_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(repo, "scanners:\n  - name: fakescan\n    command: fakescan -q\n")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    _use_real_scanner_lookup(monkeypatch)
+    planted = _plant_fakescan(tmp_path / "cwd", monkeypatch)
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(planted.parent)
+    monkeypatch.setenv("PATH", str(other) + os.pathsep + os.environ.get("PATH", ""))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    line = _scanner_lines(output)[0]
+    assert line.startswith("FAIL scanner fakescan:")
+    assert "was not found on PATH" in line
+
+
+def test_doctor_passes_scanner_on_an_absolute_path_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(repo, "scanners:\n  - name: fakescan\n    command: fakescan -q\n")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+    _use_real_scanner_lookup(monkeypatch)
+    planted = _plant_fakescan(tmp_path / "cwd", monkeypatch)
+    monkeypatch.chdir(planted.parent)
+    monkeypatch.setenv(
+        "PATH", str(planted.parent) + os.pathsep + os.environ.get("PATH", "")
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _scanner_lines(output)[0].startswith("PASS scanner fakescan:")
 
 
 def test_doctor_does_not_run_scanner_commands(
