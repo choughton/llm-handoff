@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Agent processes start with stdin closed (CHAT-8). Agent role launches, audit reviewers, and
+  the Claude normalizer now start with stdin set to `DEVNULL`, so they cannot read the
+  operator's console input; a child that reads stdin gets EOF at once. The Codex normalizer
+  still pipes its prompt on stdin, and the supervisor's child dispatcher keeps the console.
 - Linear init covers more Claude subagents (TIDY-11). In Linear mode `init` now also appends
   the role's Linear MCP tools to the `tools:` line of the copied `.claude/agents/backend.md`,
   `auditor.md`, and `ledger-updater.md` (finalizer), as it already did for planner, frontend,

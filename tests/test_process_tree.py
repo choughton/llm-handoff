@@ -174,6 +174,68 @@ def test_run_command_streaming_stops_on_a_second_console_ctrl_c(
     assert tree_kills == [process]
 
 
+def test_run_command_streaming_starts_child_with_stdin_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An agent must never read the operator's console input.
+    process = _FakeProcess()
+    process.returncode = 0
+    seen_kwargs: list[dict[str, Any]] = []
+
+    def fake_start(_command: Any, **kwargs: Any) -> Any:
+        seen_kwargs.append(kwargs)
+        return process
+
+    monkeypatch.setattr(agent_process, "_start_isolated_process", fake_start)
+
+    result = agent_process._run_command_streaming(
+        ["agent.cmd"],
+        cwd=Path.cwd(),
+        timeout_ms=60_000,
+    )
+
+    assert result.exit_code == 0
+    [kwargs] = seen_kwargs
+    assert kwargs["stdin"] is subprocess.DEVNULL
+
+
+def test_run_command_starts_child_with_stdin_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_kwargs: list[dict[str, Any]] = []
+
+    def fake_run(command: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen_kwargs.append(kwargs)
+        return subprocess.CompletedProcess(
+            args=command, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(agent_process.subprocess, "run", fake_run)
+
+    result = agent_process._run_command(
+        ["reviewer.cmd"],
+        cwd=Path.cwd(),
+        timeout_ms=60_000,
+    )
+
+    assert result.exit_code == 0
+    [kwargs] = seen_kwargs
+    assert kwargs["stdin"] is subprocess.DEVNULL
+
+
+def test_run_command_streaming_child_reads_eof_from_stdin(tmp_path: Path) -> None:
+    # A real child that reads stdin gets EOF at once instead of blocking on
+    # the console.
+    result = agent_process._run_command_streaming(
+        [sys.executable, "-c", "import sys; print(repr(sys.stdin.read()))"],
+        cwd=tmp_path,
+        timeout_ms=30_000,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "''"
+
+
 def test_kill_process_tree_uses_taskkill_tree_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
