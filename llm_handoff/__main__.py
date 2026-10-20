@@ -22,7 +22,9 @@ from llm_handoff.antigravity_permissions import (
     antigravity_allow_entries,
     format_antigravity_permissions,
 )
-from llm_handoff import console_interrupt
+from llm_handoff import chat_session, console_interrupt
+from llm_handoff.chat_input import chat_input_for_console
+from llm_handoff.chat_line import ChatLine
 from llm_handoff.config import (
     DISPATCH_WINDOW_TITLE,
     detect_repo_root,
@@ -130,6 +132,34 @@ def _restore_console_title(previous_title: str, *, changed: bool) -> None:
         return
 
 
+def _stream_is_tty(stream: object) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    if not callable(isatty):
+        return False
+    try:
+        return bool(isatty())
+    except Exception:  # noqa: BLE001 - any failure means "not a terminal"
+        return False
+
+
+def _attach_console_chat(logger: DispatchLogger) -> bool:
+    """Attach the console chat line and key capture for an interactive run.
+
+    Only when both stdin and stdout are terminals; under the supervisor the
+    child's stdout is a pipe, so the chat line stays off there.
+    """
+
+    if not (_stream_is_tty(sys.stdin) and _stream_is_tty(sys.stdout)):
+        return False
+    chat_line = ChatLine(sys.stdout)
+    chat_input = chat_input_for_console(sys.stdin, chat_line)
+    if chat_input is None:
+        return False
+    logger.attach_chat_line(chat_line)
+    chat_session.attach(chat_line, chat_input)
+    return True
+
+
 def _run_dispatch(
     *,
     dry_run: bool,
@@ -183,10 +213,20 @@ def _run_dispatch(
             )
         previous_title, changed_title = _set_dispatch_console_title()
         try:
-            # The first Ctrl+C during a role's cycle asks for a graceful stop;
-            # a second one, or one outside a cycle, raises KeyboardInterrupt.
-            with console_interrupt.installed():
-                return run_loop(config, log=logger)
+            try:
+                if not dry_run:
+                    _attach_console_chat(logger)
+                # The first Ctrl+C during a role's cycle asks for a graceful
+                # stop; a second one, or one outside a cycle, raises
+                # KeyboardInterrupt.
+                with console_interrupt.installed():
+                    return run_loop(config, log=logger)
+            finally:
+                # Stop key capture and erase the chat line before any later
+                # console line, on every exit path.
+                chat_session.detach()
+                if getattr(logger, "chat_line", None) is not None:
+                    logger.attach_chat_line(None)
         except KeyboardInterrupt:
             logger("WARN", "Dispatch interrupted by user. Exiting.")
             return 130

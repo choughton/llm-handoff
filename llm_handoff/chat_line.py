@@ -2,8 +2,9 @@
 
 Draws a ``[<role> running] chat> <buffer>`` prompt on the bottom console line
 and keeps it there while log lines are written above it. This module only
-renders; nothing creates a ``ChatLine`` outside tests yet (CHAT-11 wires it
-in, together with the keystroke capture in ``chat_input``).
+renders. ``__main__._run_dispatch`` creates one for an interactive, non-dry
+run and attaches it to the logger, and ``chat_session`` draws or erases it as
+roles start and stop, together with the keystroke capture in ``chat_input``.
 """
 
 from __future__ import annotations

@@ -2,8 +2,10 @@
 
 While a role runs, a background thread reads keystrokes from the console
 without echo and edits a ``ChatLine`` buffer. Enter queues the line as a
-pending message. Nothing creates a ``ChatInput`` outside tests yet (CHAT-11
-wires it in, and CHAT-2 consumes the pending messages).
+pending message. ``__main__._run_dispatch`` creates one for an interactive,
+non-dry run, and ``chat_session`` starts and stops it as roles run and while
+the dispatcher reads the console itself. Nothing consumes the pending
+messages yet (CHAT-2 does).
 
 The platform readers take their platform modules (``msvcrt``, or ``termios``
 and ``select``) as constructor arguments, so tests can pass fakes on any OS.

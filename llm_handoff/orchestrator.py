@@ -36,7 +36,7 @@ from llm_handoff.audit_review import (
     run_audit_fan_out,
     security_reviewer_startup_error,
 )
-from llm_handoff import console_interrupt
+from llm_handoff import chat_session, console_interrupt
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
     CARRY_OVER_STATE_PATH,
@@ -754,6 +754,7 @@ def _run_loop(
             return 1
         # No role's cycle runs here, so a console Ctrl+C stops at once.
         console_interrupt.set_active_role(None)
+        chat_session.set_role(None)
         if stop_watch.requested(log_fn):
             stop_watch.finish(
                 log_fn, dropped_recovery=pending_planner_recovery
@@ -1455,6 +1456,7 @@ def _run_loop(
             )
             # A first Ctrl+C from here to the loop top lets this cycle finish.
             console_interrupt.set_active_role("finalizer")
+            chat_session.set_role("finalizer")
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
             # The finalizer returned, whatever its exit code or output: the
             # ledger and handoff are whatever it left, so its record names
@@ -1831,6 +1833,7 @@ def _run_loop(
             # A first Ctrl+C from here to the loop top lets this cycle finish:
             # the dispatch (or audit fan-out), commit, gates, and publish.
             console_interrupt.set_active_role(current_cycle.route)
+            chat_session.set_role(current_cycle.route)
             if resumed_handback is not None:
                 # The interrupted dispatch already returned; its cycle resumes
                 # at the dispatcher commit as if the role had exited 0.
@@ -5741,14 +5744,16 @@ CARRY_OVER_CONFIRM_READ_TIMEOUT_SECONDS = 1.0
 def _confirm_carry_over_at_terminal(
     reader: OperatorInputReader, question: str, log: LogFn
 ) -> bool:
-    _log(log, "INFO", question)
-    reader.drain()
-    while True:
-        line = reader.read_line(CARRY_OVER_CONFIRM_READ_TIMEOUT_SECONDS)
-        if line is not None:
-            return line.strip().lower() in {"y", "yes"}
-        if reader.eof_reached:
-            return False
+    # The operator answers at the console, so chat capture must not read keys.
+    with chat_session.suspended():
+        _log(log, "INFO", question)
+        reader.drain()
+        while True:
+            line = reader.read_line(CARRY_OVER_CONFIRM_READ_TIMEOUT_SECONDS)
+            if line is not None:
+                return line.strip().lower() in {"y", "yes"}
+            if reader.eof_reached:
+                return False
 
 
 def _restore_implementer_leftovers(
@@ -8965,6 +8970,7 @@ def _pause_until_handoff_changes(
 
     # A pause wait is not a role's cycle: a console Ctrl+C stops at once.
     console_interrupt.set_active_role(None)
+    chat_session.set_role(None)
     _log(log, "PAUSE", reason)
     if config.poll_interval_seconds <= 0:
         return False
@@ -9041,6 +9047,7 @@ def _wait_for_git_index_lock_removal(
 
     # A pause wait is not a role's cycle: a console Ctrl+C stops at once.
     console_interrupt.set_active_role(None)
+    chat_session.set_role(None)
     _log(
         log,
         "PAUSE",
@@ -9151,6 +9158,7 @@ def _review_prompt(
     def ask(reason: str) -> str:
         # The operator prompt is not a role's cycle: Ctrl+C stops at once.
         console_interrupt.set_active_role(None)
+        chat_session.set_role(None)
         _log(log, "PAUSE", reason)
         reader = operator_prompt.reader()
         if reader.console_unavailable:
@@ -9202,6 +9210,7 @@ def _pause_at_dispatcher_pause(
 
     # A pause is not a role's cycle: a console Ctrl+C stops at once.
     console_interrupt.set_active_role(None)
+    chat_session.set_role(None)
     if stop_watch is not None and stop_watch.requested(log):
         _log(log, "PAUSE", reason)
         return stop_or("stop")
