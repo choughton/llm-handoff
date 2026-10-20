@@ -6,8 +6,10 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** TIDY, with TIDY-9 (merge-aware audit range) in progress,
-  picked first because it fixes a failure the loop hit in real runs. TIDY-10
+- **Active Epic:** TIDY, with TIDY-2 (scanner lookups ignore the current
+  directory on Windows) in progress, picked because it fixes a scanner-gate
+  correctness gap and needs no operator input. TIDY-9 (merge-aware audit
+  range) was approved at `935b9c8` and merged in PR #184. TIDY-10
   (dispatcher verification for planner-issued audits) was approved at
   `2df9673` and merged in PR #183. RECOVERY is closed (RECOVERY-13
   approved at `ab2f9d3`, merged in PR #182, epic close `c07dcdd`; the
@@ -1490,7 +1492,7 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: active; TIDY-9 is in progress. Independent and cheap; each story is
+Fit: active; TIDY-2 is in progress. Independent and cheap; each story is
 one Work Packet and fills a wait. Nothing here blocks another epic or waits
 on one. TIDY-7 routes to `user`
 (Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
@@ -1598,7 +1600,8 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   handoff posts nothing; add a `handoff_repaired` event so the
   `LINEAR-EVIDENCE` check accepts a repaired lease whose producer changed.
   Vanilla mode is unchanged. Closes source-dispatcher comparison (a) and (b).
-- TIDY-9: Merge-aware audit range. When a story branch has merged its base
+- TIDY-9: Merge-aware audit range. Approved at `935b9c8`, merged in PR #184.
+  When a story branch has merged its base
   branch after the saved story base, the audit fan-out range (base from
   `_story_start_sha` / `publish.saved_story_base`) includes the merged
   upstream files, and the quality reviewer fails phase 1 on scope

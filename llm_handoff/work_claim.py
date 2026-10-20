@@ -39,7 +39,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import time
 from typing import Literal, Mapping
@@ -1344,7 +1343,10 @@ def run_scanner(
     non-zero exit is ``scanner_failed:<name>``, a
     timeout is ``scanner_timeout:<name>``, and a missing executable is
     ``scanner_missing:<name>`` when the scanner is required or a skip when it
-    is optional.
+    is optional. When the command starts with a plain program token, the
+    runner receives the command with that token replaced by the quoted
+    absolute path :func:`find_scanner_executable` returned, so the shell
+    cannot pick a same-named program from the repository instead.
     """
 
     name = scanner.name
@@ -1390,12 +1392,21 @@ def run_scanner(
             None,
         )
 
-    executable = command_executable(rendered.command)
-    if executable is not None and shutil.which(executable) is None:
-        return _missing_scanner(scanner, rendered.command, executable)
+    command = rendered.command
+    executable = command_executable(command)
+    if executable is not None:
+        resolved = find_scanner_executable(
+            executable, path=_env_path(build_work_claim_env(env_passthrough))
+        )
+        if resolved is None:
+            return _missing_scanner(scanner, command, executable)
+        # Run the program the lookup found, not the bare name: the shell would
+        # resolve it again and, on Windows, cmd.exe checks the repository
+        # (its working directory) before PATH.
+        command = bind_command_executable(command, resolved)
 
     run = runner(
-        rendered.command,
+        command,
         cwd=context.repo_root,
         timeout_seconds=scanner.timeout_ms / 1000,
         env_passthrough=env_passthrough,
@@ -1482,7 +1493,7 @@ def command_executable(command: str) -> str | None:
     """Return the leading program of a shell command when it is a plain token.
 
     ``llm-handoff doctor`` imports this so its scanner check finds the same
-    executable the gate looks up with ``shutil.which``.
+    executable the gate looks up with :func:`find_scanner_executable`.
     """
 
     stripped = command.lstrip()
@@ -1498,6 +1509,97 @@ def command_executable(command: str) -> str | None:
     if not token or any(char in _SHELL_SYNTAX_CHARS for char in token):
         return None
     return token
+
+
+def bind_command_executable(command: str, resolved: str) -> str:
+    """Replace the leading program token of ``command`` with ``resolved``.
+
+    The token is found the same way as in :func:`command_executable` (a
+    quoted or whitespace-delimited first word), and ``resolved`` is quoted
+    with :func:`shell_quote` so the shell runs that exact file. The rest of
+    the command is kept byte for byte.
+    """
+
+    stripped = command.lstrip()
+    if not stripped:
+        return command
+    if stripped[0] in "\"'":
+        end = stripped.find(stripped[0], 1)
+        if end == -1:
+            return command
+        rest = stripped[end + 1 :]
+    else:
+        parts = stripped.split(None, 1)
+        rest = stripped[len(parts[0]) :]
+    return shell_quote(resolved) + rest
+
+
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+
+
+def find_scanner_executable(
+    executable: str,
+    *,
+    path: str | None = None,
+) -> str | None:
+    """Return the scanner program the gate would run, or ``None``.
+
+    Unlike ``shutil.which``, this never searches the current directory: on
+    Windows, Python 3.11's ``shutil.which`` checks it first even when
+    ``path`` is given. A name with a path separator or drive is accepted only
+    when it is absolute. A bare name is looked up in the absolute entries of
+    ``path`` (default ``PATH``); empty and relative entries such as ``.`` are
+    skipped. On Windows each ``PATHEXT`` extension is also tried unless the
+    name already ends with one. There is no ``.cmd`` stem fallback.
+    ``llm-handoff doctor`` and the work-claim gate both use this lookup.
+    """
+
+    if not executable:
+        return None
+    separators = ("/", "\\") if os.name == "nt" else ("/",)
+    has_drive = bool(os.path.splitdrive(executable)[0])
+    if has_drive or any(sep in executable for sep in separators):
+        if not os.path.isabs(executable):
+            return None
+        for candidate in _executable_candidates(executable):
+            if _is_executable_file(candidate):
+                return candidate
+        return None
+
+    search_path = os.environ.get("PATH", "") if path is None else path
+    for entry in search_path.split(os.pathsep):
+        if not entry or not os.path.isabs(entry):
+            continue
+        for candidate in _executable_candidates(os.path.join(entry, executable)):
+            if _is_executable_file(candidate):
+                return candidate
+    return None
+
+
+def _executable_candidates(base: str) -> list[str]:
+    candidates = [base]
+    if os.name != "nt":
+        return candidates
+    pathext = os.environ.get("PATHEXT") or _DEFAULT_PATHEXT
+    extensions = [ext for ext in pathext.split(os.pathsep) if ext]
+    lowered = base.lower()
+    if any(lowered.endswith(ext.lower()) for ext in extensions):
+        return candidates
+    candidates.extend(base + ext for ext in extensions)
+    return candidates
+
+
+def _is_executable_file(candidate: str) -> bool:
+    return os.path.isfile(candidate) and os.access(candidate, os.X_OK)
+
+
+def _env_path(env: Mapping[str, str]) -> str:
+    """Return the ``PATH`` value of ``env``, matching the name case-insensitively."""
+
+    for key, value in env.items():
+        if key.upper() == "PATH":
+            return value
+    return ""
 
 
 def _scanner_context(
@@ -2606,10 +2708,12 @@ __all__ = [
     "load_implementer_leftovers",
     "prune_implementer_leftovers",
     "save_implementer_leftovers",
+    "bind_command_executable",
     "command_executable",
     "evidence_commit_value",
     "evidence_sha_token",
     "extract_work_packet_section",
+    "find_scanner_executable",
     "git_path_is_ignored",
     "parse_work_packet",
     "path_is_in_scope",

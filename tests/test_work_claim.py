@@ -45,6 +45,7 @@ from llm_handoff.work_claim import (
     carry_over_key,
     evidence_commit_value,
     extract_work_packet_section,
+    find_scanner_executable,
     git_dirty_files,
     git_head,
     git_head_and_dirty_files,
@@ -2583,10 +2584,14 @@ def test_verify_work_claim_logs_scanner_and_verification_commands_before_running
         "log",
         "verify",
     ]
+    # The scanner runs, and is logged, by the absolute path the lookup found.
+    scan_a = find_scanner_executable("scan-a")
+    assert scan_a is not None
     assert logged == [
         (
             "INFO",
-            f"work-claim: running scanner a: scan-a {state.head_sha}..{head}",
+            "work-claim: running scanner a: "
+            f"{shell_quote(scan_a)} {state.head_sha}..{head}",
         ),
         ("INFO", "work-claim: running verification command: verify-cmd --quiet"),
     ]

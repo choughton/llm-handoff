@@ -82,7 +82,7 @@ from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatte
 from llm_handoff.router import route as route_handoff
 from llm_handoff.text_io import read_dispatch_text
 from llm_handoff.validator import validate_handoff_text
-from llm_handoff.work_claim import command_executable
+from llm_handoff.work_claim import command_executable, find_scanner_executable
 
 CheckStatus = Literal["PASS", "FAIL", "WARN"]
 
@@ -1091,8 +1091,9 @@ def _check_scanners(
     """Report each configured scanner and whether the work-claim gate runs it.
 
     The leading program comes from ``work_claim.command_executable`` and is
-    looked up with ``shutil.which`` only, the same lookup the gate uses (no
-    ``.cmd`` fallback). Scanner commands are never run.
+    looked up with ``work_claim.find_scanner_executable``, the same lookup the
+    gate uses: absolute ``PATH`` entries only, never the current directory,
+    and no ``.cmd`` fallback. Scanner commands are never run.
     """
     scanners = dispatch_config.scanners
     if not scanners:
@@ -1133,7 +1134,7 @@ def _check_scanners(
             )
             continue
         condition = _scanner_applies_condition(scanner.command)
-        if shutil.which(executable) is not None:
+        if find_scanner_executable(executable) is not None:
             if condition:
                 outcome = (
                     f"will run scanner {scanner.name} on claims {condition} "
