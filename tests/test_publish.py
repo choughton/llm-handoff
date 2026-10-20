@@ -1484,6 +1484,206 @@ def test_a_planner_that_changes_another_index_entry_is_rejected(
     assert _gh_calls(tmp_path) == []
 
 
+def _hidden_edit_planner(
+    repo: Path, flag: str, *, edit: bool = True
+) -> tuple[StateConflictResolver, list[str]]:
+    """A planner that resolves the state file and hides an edit behind a flag."""
+
+    prompts: list[str] = []
+
+    def run(prompt: str) -> bool:
+        prompts.append(prompt)
+        (repo / STATE_FILE).write_text(STATE_RESOLVED, encoding="utf-8")
+        _git(repo, "update-index", flag, NOTES_FILE)
+        if edit:
+            (repo / NOTES_FILE).write_text("planted\n", encoding="utf-8")
+        return True
+
+    return StateConflictResolver(path=STATE_FILE, run=run), prompts
+
+
+@pytest.mark.parametrize(
+    ("flag", "edit", "problem"),
+    [
+        ("--assume-unchanged", True, "it also changed `docs/notes.md`"),
+        ("--skip-worktree", True, "it also changed `docs/notes.md`"),
+        ("--assume-unchanged", False, "index flags of `docs/notes.md`"),
+    ],
+    ids=["assume-unchanged-edit", "skip-worktree-edit", "flag-only"],
+)
+def test_a_planner_edit_hidden_behind_an_index_flag_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+    edit: bool,
+    problem: str,
+) -> None:
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path, monkeypatch, initial={NOTES_FILE: "base notes\n"}
+    )
+    head = _git(repo, "rev-parse", "HEAD")
+    resolver, prompts = _hidden_edit_planner(repo, flag, edit=edit)
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert len(prompts) == 1
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"conflicts in `{STATE_FILE}`, which the planner did not resolve" in (
+        outcome.message
+    )
+    assert f"`{NOTES_FILE}`" in outcome.message
+    assert problem in outcome.message
+    assert "index flags" in outcome.message
+    assert not any("Planner resolved" in message for _level, message in entries)
+    # Nothing was committed: HEAD is still the story head.
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _saved_state(repo)["paused_publish"] == "push"
+    assert _gh_calls(tmp_path) == []
+
+
+def test_a_pre_existing_index_flag_does_not_block_the_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path, monkeypatch, initial={NOTES_FILE: "base notes\n"}
+    )
+    _git(repo, "update-index", "--assume-unchanged", NOTES_FILE)
+    resolver, prompts = _planner(repo)
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert outcome == PublishOutcome()
+    assert len(prompts) == 1
+    assert (repo / STATE_FILE).read_text(encoding="utf-8") == STATE_RESOLVED
+    assert any(
+        f"Planner resolved a {STATE_FILE} merge conflict" in message
+        for _level, message in entries
+    )
+
+
+def test_the_worktree_snapshot_sees_hidden_edits_and_missing_files(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff import publish
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    _commit_all(
+        repo, {NOTES_FILE: "notes\n", "docs/gone.md": "gone\n"}, "Add the docs"
+    )
+    _git(repo, "update-index", "--skip-worktree", NOTES_FILE)
+    before = publish._worktree_snapshot(repo)
+    assert before is not None
+    assert before[NOTES_FILE] == (
+        "", "file", hashlib.sha256((repo / NOTES_FILE).read_bytes()).hexdigest()
+    )
+    assert before["README.md"][:2] == ("", "file")
+
+    (repo / NOTES_FILE).write_text("planted\n", encoding="utf-8")
+    (repo / "docs" / "gone.md").unlink()
+    (repo / "new.txt").write_text("new\n", encoding="utf-8")
+    after = publish._worktree_snapshot(repo)
+
+    assert after is not None
+    # `git status` hides the skip-worktree edit, but the digest changes.
+    assert after[NOTES_FILE][0] == ""
+    assert after[NOTES_FILE][2] == (
+        hashlib.sha256((repo / NOTES_FILE).read_bytes()).hexdigest()
+    )
+    assert after[NOTES_FILE][2] != before[NOTES_FILE][2]
+    assert after["docs/gone.md"] == (" D", "missing", "")
+    assert after["new.txt"][:2] == ("??", "file")
+    assert publish._worktree_snapshot(tmp_path / "not-a-repo") is None
+
+    flags = publish._index_flags(repo)
+    assert flags is not None
+    assert flags[NOTES_FILE] == (False, True)
+    assert flags["README.md"] == (False, False)
+    _git(repo, "update-index", "--assume-unchanged", "README.md")
+    changed = publish._index_flags(repo)
+    assert changed is not None
+    assert publish._index_flags_changed(flags, changed) == ["README.md"]
+
+
+def test_the_worktree_snapshot_sees_a_symlink_type_change(tmp_path: Path) -> None:
+    from llm_handoff import publish
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    before = publish._worktree_snapshot(repo)
+    assert before is not None
+    (repo / "README.md").unlink()
+    try:
+        os.symlink("elsewhere", repo / "README.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+    after = publish._worktree_snapshot(repo)
+
+    assert after is not None
+    assert after["README.md"][1:] == (
+        "symlink", hashlib.sha256(b"elsewhere").hexdigest()
+    )
+    assert before["README.md"] != after["README.md"]
+
+
+def test_the_worktree_snapshot_sees_hidden_submodule_changes(tmp_path: Path) -> None:
+    from llm_handoff import publish
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    sub = repo / "vendor" / "lib"
+    _build_init(sub)
+    # Adding an embedded repository tracks it as a gitlink entry.
+    _git(repo, "add", "vendor/lib")
+    _git(repo, "commit", "-q", "-m", "Add the submodule")
+    assert _git(repo, "ls-files", "--stage", "vendor/lib").startswith("160000 ")
+    # Hide every submodule change from `git status`, and start it dirty.
+    _git(repo, "config", "diff.ignoreSubmodules", "all")
+    (sub / "README.md").write_text("dirty\n", encoding="utf-8")
+    before = publish._worktree_snapshot(repo)
+    assert before is not None
+    assert before["vendor/lib"][1] == "submodule"
+
+    # The same status, but different bytes inside the submodule.
+    (sub / "README.md").write_text("planted\n", encoding="utf-8")
+    edited = publish._worktree_snapshot(repo)
+    assert edited is not None
+    assert edited["vendor/lib"][0] == before["vendor/lib"][0]
+    assert edited["vendor/lib"] != before["vendor/lib"]
+
+    # A new commit in the submodule moves its HEAD.
+    (sub / "README.md").write_text("dirty\n", encoding="utf-8")
+    assert publish._worktree_snapshot(repo) == before
+    _git(sub, "commit", "-q", "--allow-empty", "-m", "moved")
+    moved = publish._worktree_snapshot(repo)
+    assert moved is not None
+    assert moved["vendor/lib"] != before["vendor/lib"]
+
+    # A checkout that is not a repository cannot be compared: fail closed.
+    (sub / ".git").rename(tmp_path / "moved-git")
+    assert publish._worktree_snapshot(repo) is None
+    # An empty directory is a submodule that is not checked out.
+    for child in sub.iterdir():
+        child.unlink()
+    empty = publish._worktree_snapshot(repo)
+    assert empty is not None
+    assert empty["vendor/lib"][1:] == ("directory", "")
+
+
+def test_the_index_flag_snapshot_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import publish
+
+    def fake_git(repo_root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["git", *args], 0, "H\0", "")
+
+    monkeypatch.setattr(publish, "_git", fake_git)
+    assert publish._index_flags(tmp_path) is None
+
+
 def test_a_staged_resolution_with_another_entry_is_not_committed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

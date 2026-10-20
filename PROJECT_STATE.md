@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-9 in progress; RECOVERY-8 approved at
+- **Active Epic:** RECOVERY (RECOVERY-10 in progress; RECOVERY-9 approved
+  at `1e41789`, merged in PR #178; RECOVERY-8 approved at
   `e9f084a`, merged in PR #177; RECOVERY-7 approved at
   `c39b42a`, merged in PR #176; RECOVERY-6 approved at
   `7dcd6ad`, merged in PR #175; RECOVERY-5 (was
@@ -24,11 +25,11 @@ belong in commits, handoffs, and pull requests.
   RECOVERY-11 (failed in-flight record deletes stop every recovery path, from
   the RECOVERY-6 audit), then RECOVERY-12 (interrupted merge-commit publish,
   split from RECOVERY-8). Epic order: 9, 10, 11, 12.
-  RECOVERY-9 (no-record fallback) is active because it is next in the epic's
-  order (8, 9, 10, 11, 12), unblocked (RECOVERY-2 through RECOVERY-8 are
-  merged), and covers the interrupted implementer whose files a restart
-  otherwise treats as operator edits that are never committed. The other
-  open epics' Fit lines are unchanged since RECOVERY-8 was picked.
+  RECOVERY-10 (merge-conflict resolver sees hidden working-tree edits) is
+  active because it is next in the epic's order (10, 11, 12), unblocked
+  (RECOVERY-2 through RECOVERY-9 are merged), and closes a gap in the
+  planner merge-conflict resolver, a step that commits on its own. The other
+  open epics' Fit lines are unchanged since RECOVERY-9 was picked.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -707,11 +708,12 @@ RECOVERY-6 (interrupted audit fan-out) is approved at `7dcd6ad` and merged
 (PR #175). RECOVERY-7 (interrupted work-claim gate and scanners) is approved
 at `c39b42a` and merged (PR #176). RECOVERY-8 (publish steps safe to repeat,
 `pr` mode) is approved at `e9f084a` and merged (PR #177). RECOVERY-9 (was
-RECOVERY-4, no-record fallback) is active because it is next in the epic's
-order, unblocked, and covers the interrupted implementer whose files a
-restart otherwise treats as operator edits that are never committed;
-RECOVERY-10, RECOVERY-11, and RECOVERY-12 (interrupted merge-commit publish,
-split from RECOVERY-8) follow.
+RECOVERY-4, no-record fallback) is approved at `1e41789` and merged
+(PR #178). RECOVERY-10 (merge-conflict resolver sees hidden working-tree
+edits) is active because it is next in the epic's order (10, 11, 12),
+unblocked, and closes a gap in a step that commits on its own; RECOVERY-11
+and RECOVERY-12 (interrupted merge-commit publish, split from RECOVERY-8)
+follow. The other open epics' Fit lines are unchanged.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
@@ -958,7 +960,8 @@ bounces until the three-fix circuit breaker escalates.
   merged pull request with every thread resolved is cleaned up with no push
   or `gh` write; an open one, or none, publishes again only after HARD-5
   confirmation (`Resume publishing <story_id> on <branch>? [y/N]`).
-- RECOVERY-9 (was RECOVERY-4): No-record fallback. When there is no
+- RECOVERY-9 (was RECOVERY-4; approved at `1e41789`, merged in PR #178):
+  No-record fallback. When there is no
   in-flight record (a run from before RECOVERY-2, or a lost record) and files
   are dirty, in scope for the story's Work Packet, and clean at the story's
   last commit, ask `Treat these as <role>'s interrupted <story> work? [y/N]`;
@@ -988,7 +991,28 @@ bounces until the three-fix circuit breaker escalates.
   because it ignores those flags. Snapshot the content and file type of
   every tracked path independently of `git status` and index flags, reject
   index-flag changes, and add regressions for a hidden edit with an
-  unchanged staged blob.
+  unchanged staged blob. Decided by the planner on 2026-10-19: (1)
+  `_worktree_snapshot` covers the union of every tracked path from
+  `git ls-files -z` (unmerged paths deduped) and every path
+  `git status --porcelain=v1 -z --untracked-files=all` lists (renames and
+  copies as before); each path records its status code (empty when status
+  does not list it), its `os.lstat` file type without following links
+  (regular file, executable, symlink, directory, or missing), and a digest
+  (sha256 of a regular file's bytes or a symlink's target, empty for a
+  directory or missing path); any Git failure returns None so the callers
+  fail closed; (2) an index-flag snapshot from `git ls-files -v -z` is taken
+  before and after the planner, and any path, `project_state_path` included,
+  whose `assume-unchanged` or `skip-worktree` flag changed, appeared, or
+  disappeared adds `it also changed the index flags of <paths>`; a Git
+  failure or a record with no tag and path fails closed. Backend
+  implementation note: only the two flags are compared, not the raw tag letter, so a conflicted path's `M` to `H`
+  tag change on staging is not a flag change. The existing index-entry and
+  staged-resolution checks are unchanged. PR #179 review correction: a
+  tracked submodule (gitlink, mode 160000 in `git ls-files --stage`) is
+  fingerprinted by its HEAD plus its own recursive worktree snapshot instead
+  of the constant directory fingerprint; an empty submodule directory keeps
+  the directory fingerprint, and a non-empty one without `.git` or that Git
+  cannot read fails closed.
 - RECOVERY-11: Failed in-flight record deletes stop every recovery path.
   From the RECOVERY-6 audit (non-blocking): the implementer
   dispatch/handback, planner, and finalizer startup recovery paths call
