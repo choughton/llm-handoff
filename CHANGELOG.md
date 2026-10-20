@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A story audit that no implementer handed back now gets the dispatcher's
+  pre-audit Verification run (TIDY-10). Before, the run fired only for an
+  epic close or an empty review range, so a story audit the planner
+  re-issued after a bounce or a restart, over committed changes, reached a
+  sandboxed quality reviewer without the work-claim gate's check. Now any
+  audit handoff whose `producer` is not `backend` or `frontend` triggers the
+  run (`audit issued by <producer>`): a pass is recorded as a
+  `## Dispatcher Verification` section for the reviewers, and a failure
+  routes `verified_fail` to the planner with no reviewer run. Implementer
+  handbacks still skip it, since the work-claim gate already ran the command.
 - The planner merge-conflict resolver now fails closed when it cannot read a
   file (RECOVERY-13). Before, a tracked or listed path whose bytes or link
   target could not be read got an empty digest, so a file unreadable both

@@ -1753,7 +1753,8 @@ On Windows the sandbox runs commands as a separate local account. Read-only git
 commands may need `-c safe.directory=<repository root>`, and pytest's per-user
 temp directory is not usable from the sandbox. The work-claim gate re-runs the
 Verification command outside the sandbox, and the audit fan-out runs it before
-an epic close or an empty-range audit (see Audit fan-out below). If Codex still cannot start or
+an epic close, an empty-range audit, or a story audit no implementer
+handed back (see Audit fan-out below). If Codex still cannot start or
 commit in your setup, check its sandbox settings before reaching for
 `unsafe_bypass`.
 
@@ -2750,8 +2751,11 @@ With `security` enabled, the auditor route works differently:
   run routes straight to the auditor. Otherwise, when the pre-dispatch
   commit is unknown (for example after a restart in `local` mode), the
   scope falls back to `scope_sha~1..scope_sha`.
-- An epic close (`close_type: epic`) or a review range with no committed
-  changes never passed the work-claim gate, so before the reviewers start the
+- An epic close (`close_type: epic`), a review range with no committed
+  changes, or a story audit whose handoff was not produced by an implementer
+  (its `producer` is not `backend` or `frontend`, for example an audit the
+  planner re-issues after a bounce or a restart) never passed the work-claim
+  gate, so before the reviewers start the
   dispatcher runs the handoff's Work Packet Verification commands itself, on
   the audit commit and outside any agent sandbox. It applies the same
   `verification_allowed_prefixes` check, environment, and

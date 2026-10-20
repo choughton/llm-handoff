@@ -380,8 +380,10 @@ that route into a read-only fan-out:
    so after a dispatcher restart the next implementer dispatch records a new
    one. Without a recorded base it falls back to `scope_sha~1`. Reviewers are
    never asked to scan the whole repository.
-2. For an epic close or a range with no committed changes, which never
-   passed the work-claim gate, the dispatcher first runs the Work Packet's
+2. For an epic close, a range with no committed changes, or a story audit
+   whose handoff was not produced by an implementer (for example one the
+   planner re-issues after a bounce or a restart), none of which passed the
+   work-claim gate, the dispatcher first runs the Work Packet's
    Verification commands on the audit commit outside any agent sandbox. A
    pass is recorded as a `## Dispatcher Verification` section for the
    quality reviewer; a failure routes `verified_fail` to the planner and no
