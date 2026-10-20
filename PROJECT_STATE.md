@@ -13,7 +13,7 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** TPM-ROLE, with TPM-1 (role vocabulary) next, by the
+- **Active Epic:** TPM-ROLE, with TPM-1 (role vocabulary) in flight, by the
   operator direction above. ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
@@ -1315,7 +1315,7 @@ dispatched without its instructions.
 
 - TPM-1 (was part of TPM-1): Role vocabulary. Add `tpm` to `DispatchRole`,
   `CANONICAL_DISPATCH_ROLES`, and `ROLE_DISPLAY_NAMES`
-  (`llm_handoff/roles.py`), `AgentRole` and `LINEAR_ROLE_TOOLS`
+  (`llm_handoff/roles.py`), `AgentRole`
   (`llm_handoff/config.py`), `NextAgent` (`llm_handoff/router.py`), and the
   normalizer's canonical set. `DEFAULT_AGENT_PROVIDERS` and
   `REQUIRED_AGENT_ROLES` stay at six roles; a config without `agents.tpm`
@@ -1323,7 +1323,8 @@ dispatched without its instructions.
   `llm_handoff/rationalization_patterns.yaml`. `AGENTS.md` and
   `examples/reference-workflow/AGENTS.md` add `tpm` to the public role
   vocabulary (~lines 61-71); both are protected paths, so list them in Files
-  in scope.
+  in scope. The tpm Linear tool set moves to TPM-8; until TPM-2 and TPM-3
+  land, a handoff routed to `tpm` pauses instead of dispatching.
 - TPM-2 (was part of TPM-1): Launching a configured tpm. With `agents.tpm`
   present the role gets the same provider, launch-flag, timeout, fallback,
   and resume handling as the other roles (`llm_handoff/agent_roles.py`,

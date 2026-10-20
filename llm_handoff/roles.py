@@ -13,6 +13,7 @@ DispatchRole = Literal[
     "auditor",
     "validator",
     "finalizer",
+    "tpm",
     "user",
     "unknown",
 ]
@@ -33,6 +34,7 @@ CANONICAL_DISPATCH_ROLES: tuple[DispatchRole, ...] = (
     "auditor",
     "validator",
     "finalizer",
+    "tpm",
     "user",
     "unknown",
 )
@@ -58,7 +60,8 @@ ROLE_DISPLAY_NAMES: dict[DispatchRole, str] = {
     "auditor": "auditor",
     "validator": "validator",
     "finalizer": "finalizer",
-    "user": "user escalation",
+    "tpm": "tpm",
+    "user":"user escalation",
     "unknown": "unknown",
 }
 

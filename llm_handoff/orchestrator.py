@@ -423,6 +423,12 @@ THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
     "is unsafe, or route to the correct next role with explicit acceptance "
     "criteria and verification evidence requirements."
 )
+# Interim pause reason until the dispatcher can launch a configured tpm.
+TPM_ROUTE_NOT_LAUNCHED_REASON = (
+    "HANDOFF.md routes to tpm, which this dispatcher does not launch yet. "
+    "Route to planner or an implementer; dispatch will resume after the file "
+    "changes."
+)
 # Linear mode: a missing or empty HANDOFF.md gets one planner cycle that
 # rebuilds the lease from the tracker pool. The dispatcher never calls the
 # tracker itself; the planner reads and comments through its own tools.
@@ -1245,6 +1251,26 @@ def _run_loop(
                 reason=(
                     "ESCALATION DETECTED in HANDOFF.md. Resolve it manually; dispatch will resume after the file changes."
                 ),
+                log=log_fn,
+                operator_prompt=operator_prompt,
+                stop_watch=stop_watch,
+            )
+            if pause.stop:
+                return 0
+            if pause.kind == "retry":
+                previous_cycle = None
+            elif pause.pending_planner_recovery is not None:
+                pending_planner_recovery = pause.pending_planner_recovery
+            continue
+
+        if decision.route == "tpm":
+            # Interim guard: this dispatcher does not launch a tpm yet, so a
+            # tpm route pauses instead of reaching _dispatch(). No pause
+            # recovery is scheduled; the operator or planner edits the file.
+            pause = _pause_at_dispatcher_pause(
+                config,
+                handoff_sha=handoff_sha,
+                reason=TPM_ROUTE_NOT_LAUNCHED_REASON,
                 log=log_fn,
                 operator_prompt=operator_prompt,
                 stop_watch=stop_watch,

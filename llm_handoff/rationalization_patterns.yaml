@@ -32,6 +32,17 @@ planner:
   - pattern: "\\b(run relevant tests|write tests for this|verify as appropriate)\\b"
     failure_mode: "planner omitted concrete verification command"
 
+tpm:
+  # Vague assignment language in a routine story pick.
+  - pattern: "\\b(handle errors appropriately|add validation|as needed)\\b"
+    failure_mode: "tpm emitted vague placeholder work"
+  # Skipped scope check before assigning the story.
+  - pattern: "\\b(no need to check|skip(ping)? the scope check|assume the story is ready)\\b"
+    failure_mode: "tpm skipped the story scope check"
+  # Missing verification specificity.
+  - pattern: "\\b(run relevant tests|verify as appropriate)\\b"
+    failure_mode: "tpm omitted concrete verification command"
+
 auditor:
   # Unsupported approval.
   - pattern: "\\b(looks good|seems fine|should be okay)\\b"

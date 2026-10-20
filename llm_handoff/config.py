@@ -209,6 +209,7 @@ AgentRole = Literal[
     "auditor",
     "validator",
     "finalizer",
+    "tpm",
 ]
 ProviderName = Literal["codex", "claude", "antigravity", "openai"]
 EnvMode = Literal["allowlist", "inherit"]

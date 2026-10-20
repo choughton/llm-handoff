@@ -26,6 +26,7 @@ NextAgent = Literal[
     "frontend",
     "planner",
     "validator",
+    "tpm",
     "user",
 ]
 CloseType = Literal["story", "epic"]

@@ -63,6 +63,7 @@ removed.
 Use generic role names in public docs, examples, and config:
 
 - `planner`
+- `tpm`
 - `backend`
 - `frontend`
 - `auditor`
