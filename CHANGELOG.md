@@ -11,7 +11,8 @@ This project follows a simple pre-release changelog until the first public tag.
   (RECOVERY-9). When neither record existed and the handoff still routes to
   `backend` or `frontend` with a Work Packet, the dispatcher offers the dirty
   files in the packet's Files in scope that are not protected and that no
-  commit after the story's last commit changed, and asks
+  commit after the story's last commit changed (merge commits included), and
+  asks
   `Treat these as <role>'s interrupted <story> work? [y/N]`. On `y` they
   carry over to that story's next dispatch. Any other answer, no terminal, or
   `interactive_pause: false` leaves them as operator edits with a `WARN`

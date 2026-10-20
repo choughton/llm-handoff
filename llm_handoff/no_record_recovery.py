@@ -160,8 +160,12 @@ def _changed_since_story_commit(
 
     The result is the union of the paths every commit in ``<base>..HEAD``
     touched, so a path changed and later restored still counts, plus the
-    endpoint diff ``<base> HEAD``, which also catches a change made only in
-    a merge commit's conflict resolution.
+    endpoint diff ``<base> HEAD``. Merge commits are diffed against each of
+    their parents, so a change made only in a merge (for example in its
+    conflict resolution) counts even when a later merge restores it. A merge
+    diff against a parent from another branch can list a path no commit in
+    the range changed; that only keeps the path from being offered, which is
+    the safe direction.
     """
 
     if not story_id:
@@ -177,6 +181,11 @@ def _changed_since_story_commit(
             "--literal-pathspecs",
             "log",
             "-z",
+            # Walk every commit in the range, even a merge that is TREESAME
+            # to one parent, and list each merge's changes against every
+            # parent so a change made only in a merge counts.
+            "--full-history",
+            "-m",
             "--name-only",
             "--no-renames",
             "--format=",

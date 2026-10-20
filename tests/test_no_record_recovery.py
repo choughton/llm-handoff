@@ -485,6 +485,62 @@ def test_a_file_changed_and_restored_after_the_story_commit_is_not_offered(
     assert candidates.left_out == ("src/app.py",)
 
 
+def _merge_with_change(
+    repo_root: Path, branch: str, path: Path, content: str
+) -> str:
+    """Merge a side branch whose only change to ``path`` is in the merge itself."""
+
+    main_branch = _git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
+    _git(repo_root, "checkout", "-q", "-b", branch)
+    _write(repo_root / f"{branch}.txt", f"{branch}\n")
+    _commit(repo_root, f"Side work on {branch}")
+    _git(repo_root, "checkout", "-q", main_branch)
+    _git(repo_root, "merge", "-q", "--no-ff", "--no-commit", branch)
+    _write(path, content)
+    return _commit(repo_root, f"Merge {branch}")
+
+
+def test_a_file_changed_and_restored_by_merges_after_the_story_commit_is_not_offered(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    assert 2\n")
+    story_commit = _commit(tmp_path, f"{STORY_ID} Change the value")
+    first_merge = _merge_with_change(
+        tmp_path, "side-one", tmp_path / "src" / "app.py", "VALUE = 3\n"
+    )
+    _merge_with_change(tmp_path, "side-two", tmp_path / "src" / "app.py", "VALUE = 1\n")
+    # Only the merges touched src/app.py, and the endpoint trees match for it.
+    assert len(_git(tmp_path, "rev-list", "--parents", "-n", "1", first_merge).split()) == 3
+    assert _git(tmp_path, "diff", "--name-only", story_commit, "HEAD", "--", "src/app.py") == ""
+    assert (
+        _git(
+            tmp_path,
+            "log",
+            "--name-only",
+            "--format=",
+            f"{story_commit}..HEAD",
+            "--",
+            "src/app.py",
+        )
+        == ""
+    )
+    _write(tmp_path / "src" / "app.py", "VALUE = 4\n")
+    _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    assert 3\n")
+
+    candidates = no_record_recovery.find_no_record_candidates(
+        tmp_path,
+        _assignment(),
+        HANDOFF_RELATIVE_PATH,
+        (),
+        protected_match=_orchestrator()._protected_path_matches,
+    )
+
+    assert candidates is not None
+    assert candidates.offered == ("tests/test_app.py",)
+    assert candidates.left_out == ("src/app.py",)
+
+
 def test_the_story_commit_subject_must_match_the_story_id_exactly(
     tmp_path: Path,
 ) -> None:
