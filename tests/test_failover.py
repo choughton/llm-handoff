@@ -39,12 +39,16 @@ def _subagent(
     stdout: str = "",
     stderr: str = "",
     elapsed: float = 1.0,
+    session_id: str | None = None,
+    usage: dict[str, object] | None = None,
 ) -> SubagentResult:
     return SubagentResult(
         stdout=stdout,
         stderr=stderr,
         exit_code=exit_code,
         elapsed_seconds=elapsed,
+        session_id=session_id,
+        usage=usage,
     )
 
 
@@ -355,6 +359,80 @@ def test_support_role_fails_over_to_non_claude_provider(
     assert codex.call_args.kwargs["use_resume"] is False
     assert "Clarify the route." in codex.call_args.kwargs["additional_instruction"]
     assert any("sign-in fix" in message for _level, message in logs)
+
+
+def test_support_role_failover_drops_the_fallback_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _handoff(tmp_path)
+    claude = Mock(
+        side_effect=[
+            _subagent(1, stderr="status 429", session_id="primary-session"),
+            _subagent(
+                0,
+                stdout="verdict",
+                session_id="fallback-session",
+                usage={"input_tokens": 5},
+            ),
+        ]
+    )
+    monkeypatch.setattr(agent_roles, "invoke_claude_subagent", claude)
+
+    result = agent_roles.invoke_support_role(
+        "handoff-router",
+        "Clarify the route.",
+        role="validator",
+        agent_config=AgentConfig(
+            provider="claude",
+            model="claude-opus-4-7",
+            fallback=AgentConfig(provider="claude", model="claude-sonnet-4-6"),
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert claude.call_count == 2
+    assert isinstance(result, SubagentResult)
+    assert result.exit_code == 0
+    assert result.session_id is None
+    assert result.usage == {"input_tokens": 5}
+
+
+def test_support_role_codex_failover_drops_the_codex_thread_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _handoff(tmp_path)
+    monkeypatch.setattr(
+        agent_roles,
+        "invoke_claude_subagent",
+        Mock(
+            return_value=_subagent(
+                1, stderr="status 429", session_id="primary-session"
+            )
+        ),
+    )
+    codex = Mock(
+        return_value=_dispatch(0, stdout="routed", session_id="codex-thread")
+    )
+    monkeypatch.setattr(agent_roles, "invoke_codex", codex)
+
+    result = agent_roles.invoke_support_role(
+        "handoff-router",
+        "Clarify the route.",
+        role="validator",
+        agent_config=AgentConfig(
+            provider="claude",
+            model="claude-opus-4-7",
+            fallback=AgentConfig(provider="codex"),
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert codex.call_count == 1
+    assert isinstance(result, SubagentResult)
+    assert result.stdout == "routed"
+    assert result.session_id is None
 
 
 # --- configuration ---------------------------------------------------------

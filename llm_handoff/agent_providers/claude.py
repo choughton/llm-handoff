@@ -49,6 +49,9 @@ class _ClaudeStreamJsonMonitor:
     final_result_text: str | None = None
     model: str | None = None
     usage: dict[str, object] | None = None
+    # From the first `system`/`init` event; None when absent or not a string.
+    session_id: str | None = None
+    _saw_init: bool = False
 
     def consume_stdout(self, chunk: str) -> None:
         if not chunk:
@@ -101,6 +104,7 @@ class _ClaudeStreamJsonMonitor:
             stderr=result.stderr,
             exit_code=result.exit_code,
             usage=dict(usage) if usage is not None else None,
+            session_id=self.session_id,
         )
 
     def _handle_event(self, event: dict[str, object]) -> None:
@@ -122,6 +126,11 @@ class _ClaudeStreamJsonMonitor:
             return
         if isinstance(event.get("model"), str):
             self.model = str(event["model"])
+        if not self._saw_init:
+            self._saw_init = True
+            raw_session_id = event.get("session_id")
+            if isinstance(raw_session_id, str) and raw_session_id:
+                self.session_id = raw_session_id
         if self.log is None:
             return
 
@@ -339,13 +348,14 @@ def invoke_claude_subagent(
             log=log,
             stream_all_stdout=True,
         )
-        # Buffered text mode carries no usage events.
+        # Buffered text mode carries no usage events and no session id.
         return SubagentResult(
             stdout=result.stdout,
             stderr=result.stderr,
             exit_code=result.exit_code,
             elapsed_seconds=time.monotonic() - start_time,
             usage=None,
+            session_id=None,
         )
     return SubagentResult(
         stdout=result.stdout,
@@ -353,6 +363,7 @@ def invoke_claude_subagent(
         exit_code=result.exit_code,
         elapsed_seconds=time.monotonic() - start_time,
         usage=result.usage,
+        session_id=result.session_id,
     )
 
 

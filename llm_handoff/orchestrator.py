@@ -2882,6 +2882,8 @@ def _dispatch_from_subagent(result: SubagentResult) -> DispatchResult:
         stderr=result.stderr,
         exit_code=result.exit_code,
         elapsed_seconds=result.elapsed_seconds,
+        session_id=result.session_id,
+        usage=result.usage,
     )
 
 
