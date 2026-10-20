@@ -6,9 +6,10 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** TIDY, with TIDY-4 (tracker probe and stop-request
-  hardening) in progress, picked because it is fully specified, needs no
-  operator input, and is cheap. TIDY-3 (docs and text cleanup) was approved
+- **Active Epic:** TIDY, with TIDY-5 (one refusal summary per dispatch) in
+  progress, picked because it is fully specified, needs no operator input,
+  and is cheap. TIDY-4 (tracker probe and stop-request hardening) was
+  approved at `ec81ba8` and merged in PR #188. TIDY-3 (docs and text cleanup) was approved
   at `bf27c64` and merged in PR #187. TIDY-1 (operator-prompt and doctor message fixes) was approved at
   `33a8600` and merged in PR #186. TIDY-2 (scanner
   lookups ignore the current directory on Windows) was approved at
@@ -1496,7 +1497,7 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: active; TIDY-4 is in progress. Independent and cheap; each story is
+Fit: active; TIDY-5 is in progress. Independent and cheap; each story is
 one Work Packet and fills a wait. Nothing here blocks another epic or waits
 on one. TIDY-7 routes to `user`
 (Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
@@ -1579,7 +1580,7 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   corrected residual-risk note in `CONFIGURATION.md` record this. (b) keeps
   the pidless stop request as intended, because only one dispatcher can hold
   `.dispatch.lock` in a repository; only the `stop_requested` docstring and
-  `CONFIGURATION.md` change.
+  `CONFIGURATION.md` change. Approved at `ec81ba8`, merged in PR #188.
 - TIDY-5: One refusal summary per dispatch. The Claude provider logs a WARN
   per refused command (`refused by the permission rules`,
   `llm_handoff/agent_providers/claude.py` ~line 208) and no total. Count
@@ -1589,7 +1590,12 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   agy provider (`llm_handoff/agent_providers/antigravity.py`, deny-rule
   handling ~lines 290 and 539) the same summary line. Keep the per-command
   WARN lines. Files: both provider modules, `tests/`, `CHANGELOG.md`. Closes
-  the 2026-10-18 pause review followup.
+  the 2026-10-18 pause review followup. Decided by the planner on
+  2026-10-20: one WARN summary per process run, logged from each monitor's
+  `finalize` and never appended to stderr; Claude prefixes are the program
+  basename (plus the `git` subcommand) or the tool name, with `<command>`
+  for anything outside a safe character set; `agy` names the matched deny
+  rules, since it keeps no command text (GEM-0h).
 - TIDY-6: Non-Claude helper files defer to the configured project state
   path. The planner, backend, frontend, auditor, validator, router, and
   ledger-updater helper files under `.agents/agents/` and the role skills

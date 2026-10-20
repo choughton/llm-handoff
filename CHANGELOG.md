@@ -6,6 +6,11 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- One refusal summary per dispatch (TIDY-5). After a Claude run with permission refusals, the
+  Claude provider logs one WARN line with the refusal count and the distinct refused prefixes
+  (program basename, `git` subcommand, or tool name; `<command>` for unsafe text). The `agy`
+  provider logs one WARN line with the deny-rule hit count and the matched deny rules. Neither
+  line carries raw command arguments or is added to stderr; per-refusal lines are unchanged.
 - Tracker probe and stop-request notes (TIDY-4), no behavior change. `doctor --probe-tracker`
   keeps its per-tool write denylist: Claude Code applies deny rules first, so a server-wide
   deny would also block the two read tools. A code comment, a new test, and a corrected
