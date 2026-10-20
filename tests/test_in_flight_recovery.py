@@ -1,4 +1,4 @@
-"""RECOVERY-2a/2b/2c/3b1/3b2/6: the in-flight record and interrupted-dispatch recovery."""
+"""RECOVERY-2a/2b/2c/3b1/3b2/6/7: the in-flight record and interrupted-dispatch recovery."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Any, Callable
@@ -23,7 +24,7 @@ from llm_handoff.in_flight import (
     load_in_flight_record,
 )
 import llm_handoff.ledger as ledger
-from llm_handoff.work_claim import carry_over_key
+from llm_handoff.work_claim import carry_over_key, has_passing_dispatcher_verification
 
 
 HANDOFF_RELATIVE_PATH = Path("docs/handoff/HANDOFF.md")
@@ -1588,8 +1589,16 @@ def test_the_record_is_a_handback_record_until_the_cycle_ends(
         path.write_text(_pending_claim(), encoding="utf-8")
         return _result()
 
+    at_gate: list[tuple[str, str]] = []
+
     def recording_gate(**kwargs: Any) -> bool:
         seen.append(json.loads(_record_path(tmp_path).read_text(encoding="utf-8")))
+        at_gate.append(
+            (
+                _git(tmp_path, "rev-parse", "HEAD"),
+                (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8"),
+            )
+        )
         return real_gate(**kwargs)
 
     monkeypatch.setattr(orchestrator, "invoke_backend_role", finishing_backend)
@@ -1602,8 +1611,12 @@ def test_the_record_is_a_handback_record_until_the_cycle_ends(
     assert exit_code == 0
     assert len(seen) == 1
     assert seen[0]["phase"] == "handback"
-    assert seen[0]["handback_head_sha"] == head
-    assert seen[0]["handback_content"] == _pending_claim()
+    # RECOVERY-7: refreshed after the dispatcher commit, so it holds the
+    # commit and the stamped claim the gate checks.
+    assert seen[0]["head_sha"] == head
+    assert seen[0]["handback_head_sha"] == at_gate[0][0] != head
+    assert seen[0]["handback_content"] == at_gate[0][1]
+    assert PENDING_COMMIT_SHA not in seen[0]["handback_content"]
     assert seen[0]["handoff_content"] == _assignment()
     assert not _record_path(tmp_path).exists()
 
@@ -5213,3 +5226,483 @@ def test_a_confirmed_auditor_record_that_cannot_be_deleted_stops_the_run(
     assert _record_path(tmp_path).exists()
     handoff = tmp_path / HANDOFF_RELATIVE_PATH
     assert handoff.read_text(encoding="utf-8") == _pending_claim()
+
+
+# ---------------------------------------------------------------------------
+# RECOVERY-7: interrupted work-claim gate and scanners
+# ---------------------------------------------------------------------------
+
+
+def _frontmatter_scope_sha(content: str) -> str | None:
+    match = re.search(r"(?m)^scope_sha:[ \t]*([0-9a-fA-F]+)[ \t]*$", content)
+    return match.group(1) if match else None
+
+
+def _agent_claim(sha: str) -> str:
+    """An agent-mode claim the agent committed itself, with a raw route
+    value the post-dispatch normalization rewrites."""
+
+    return (
+        _pending_claim()
+        .replace("next_agent: auditor", "next_agent: AUDITOR")
+        .replace("status: ready_for_review\n", f"status: ready_for_review\nscope_sha: {sha}\n")
+        .replace(PENDING_COMMIT_SHA, sha)
+    )
+
+
+def _interrupt_gate(
+    repo_root: Path,
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    commit_mode: str = "dispatcher",
+    after_pass: bool = False,
+) -> InFlightRecord:
+    """Run one backend cycle interrupted inside (or right after) the gate.
+
+    The backend changes src/app.py and hands back. In ``agent`` commit mode
+    it commits src/app.py itself. The cycle is then interrupted from inside
+    ``verify_work_claim``, or with ``after_pass`` right after the gate wrote
+    its PASS block. Returns the handback record left on disk.
+    """
+
+    def finishing_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(repo_root / "src" / "app.py", "VALUE = 2\n")
+        if commit_mode == "agent":
+            _git(repo_root, "add", "src/app.py")
+            _git(repo_root, "commit", "-q", "-m", "backend: set VALUE")
+            path.write_text(
+                _agent_claim(_git(repo_root, "rev-parse", "HEAD")), encoding="utf-8"
+            )
+        else:
+            path.write_text(_pending_claim(), encoding="utf-8")
+        return _result()
+
+    def interrupted_verify(**_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    real_gate = orchestrator._run_work_claim_gate
+
+    def gate_then_interrupt(**kwargs: Any) -> bool:
+        real_gate(**kwargs)
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "invoke_backend_role", finishing_backend)
+        if after_pass:
+            patch.setattr(orchestrator, "_run_work_claim_gate", gate_then_interrupt)
+        else:
+            patch.setattr(orchestrator, "verify_work_claim", interrupted_verify)
+        _set_terminal(orchestrator, patch, interactive=False, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(
+                _config(repo_root, commit_mode=commit_mode),
+                max_cycles=1,
+                log=lambda *_: None,
+            )
+    record = load_in_flight_record(_record_path(repo_root).read_text(encoding="utf-8"))
+    assert record is not None and record.phase == "handback"
+    return record
+
+
+def _counting_verify(orchestrator: Any, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    calls: list[int] = []
+    real_verify = orchestrator.verify_work_claim
+
+    def counting_verify(**kwargs: Any) -> Any:
+        calls.append(1)
+        return real_verify(**kwargs)
+
+    monkeypatch.setattr(orchestrator, "verify_work_claim", counting_verify)
+    return calls
+
+
+def _in_flight_write_phases(
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail_handback_from: int | None = None,
+) -> list[str]:
+    """Record each in-flight record write's phase; with ``fail_handback_from``
+    the handback writes from that (1-based) one on fail."""
+
+    real_write = orchestrator._write_carry_over_payload
+    phases: list[str] = []
+
+    def recording_write(
+        root: Path, content: str, name: str = "carry-over.json", **kwargs: Any
+    ) -> None:
+        if name == IN_FLIGHT_STATE_PATH.name:
+            phases.append(json.loads(content)["phase"])
+            if (
+                fail_handback_from is not None
+                and phases[-1] == "handback"
+                and phases.count("handback") >= fail_handback_from
+            ):
+                raise PermissionError(13, "sharing violation")
+        real_write(root, content, name, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "_write_carry_over_payload", recording_write)
+    return phases
+
+
+def test_the_handback_record_holds_the_dispatcher_commit_and_stamped_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+
+    record = _interrupt_gate(tmp_path, orchestrator, monkeypatch)
+
+    new_head = _git(tmp_path, "rev-parse", "HEAD")
+    assert new_head != head
+    assert _commit_files(tmp_path, new_head) == ["src/app.py"]
+    handoff = (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8")
+    assert record.head_sha == head
+    assert record.handoff_content == _assignment()
+    assert record.handback_head_sha == new_head
+    assert record.handback_content == handoff
+    assert _frontmatter_scope_sha(handoff) == new_head
+    assert PENDING_COMMIT_SHA not in handoff
+    assert record.protected_digests == orchestrator._protected_file_digests(
+        _config(tmp_path)
+    )
+
+
+def test_a_confirmed_resume_after_an_interrupted_gate_runs_the_gate_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    _interrupt_gate(tmp_path, orchestrator, monkeypatch)
+    committed = _git(tmp_path, "rev-parse", "HEAD")
+    commits_before = _git(tmp_path, "rev-list", "--count", "HEAD")
+    _refuse_dispatch(orchestrator, monkeypatch)
+    calls = _counting_verify(orchestrator, monkeypatch)
+    real_commit = orchestrator._commit_for_implementer
+    commit_results: list[Any] = []
+
+    def recording_commit(**kwargs: Any) -> Any:
+        result = real_commit(**kwargs)
+        commit_results.append(result)
+        return result
+
+    monkeypatch.setattr(orchestrator, "_commit_for_implementer", recording_commit)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    assert ("INFO", _resume_question()) in messages
+    found = [
+        message
+        for level, message in messages
+        if level == "INFO" and message.startswith("Found in-flight record")
+    ]
+    assert len(found) == 1
+    assert "interrupted after the dispatcher commit" in found[0]
+    assert "work-claim gate (with scanners)" in found[0]
+    assert ("INFO", "Routing source: interrupted_handback_recovery") in messages
+    assert not any("Dispatching backend" in message for _level, message in messages)
+    assert len(commit_results) == 1
+    assert commit_results[0].nothing_to_commit
+    assert commit_results[0].sha is None
+    assert _git(tmp_path, "rev-parse", "HEAD") == committed
+    assert _git(tmp_path, "rev-list", "--count", "HEAD") == commits_before
+    assert calls == [1]
+    assert any(
+        level == "AGENT" and message == "Work-claim gate PASSED for backend."
+        for level, message in messages
+    )
+    handoff = (tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8")
+    assert _frontmatter_scope_sha(handoff) == committed
+    assert has_passing_dispatcher_verification(handoff, committed)
+    assert not _record_path(tmp_path).exists()
+
+
+def test_a_declined_resume_after_an_interrupted_gate_discards_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    _interrupt_gate(tmp_path, orchestrator, monkeypatch)
+    handoff_path = tmp_path / HANDOFF_RELATIVE_PATH
+    handoff_before = handoff_path.read_text(encoding="utf-8")
+    calls = _counting_verify(orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="n\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert ("INFO", _resume_question()) in messages
+    assert any(
+        level == "WARN"
+        and "Discarded the in-flight handback record" in message
+        and "not confirmed at a terminal" in message
+        for level, message in messages
+    )
+    assert not _record_path(tmp_path).exists()
+    assert handoff_path.read_text(encoding="utf-8") == handoff_before
+    assert calls == []
+
+
+def test_an_interrupt_after_the_gate_passed_discards_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    record = _interrupt_gate(tmp_path, orchestrator, monkeypatch, after_pass=True)
+    committed = _git(tmp_path, "rev-parse", "HEAD")
+    handoff_path = tmp_path / HANDOFF_RELATIVE_PATH
+    handoff = handoff_path.read_text(encoding="utf-8")
+    assert has_passing_dispatcher_verification(handoff, committed)
+    assert record.handback_head_sha == committed
+    assert record.handback_content != handoff
+    calls = _counting_verify(orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["WARN"]
+    assert messages[0][1].startswith("Discarded the in-flight handback record")
+    assert "the handoff changed" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    assert handoff_path.read_text(encoding="utf-8") == handoff
+    assert calls == []
+
+
+def test_a_failed_refresh_deletes_the_record_and_the_gate_still_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    phases = _in_flight_write_phases(orchestrator, monkeypatch, fail_handback_from=2)
+    calls = _counting_verify(orchestrator, monkeypatch)
+    real_delete = orchestrator._delete_in_flight_record
+    record_after_refresh: list[bool] = []
+
+    def recording_delete(config: DispatchConfig, log: Any) -> bool:
+        deleted = real_delete(config, log)
+        record_after_refresh.append(_record_path(tmp_path).exists())
+        return deleted
+
+    def finishing_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _result()
+
+    monkeypatch.setattr(orchestrator, "_delete_in_flight_record", recording_delete)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", finishing_backend)
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    assert phases == ["dispatch", "handback", "handback"]
+    assert record_after_refresh == [False]
+    assert calls == [1]
+    assert any(
+        level == "AGENT" and message == "Work-claim gate PASSED for backend."
+        for level, message in messages
+    )
+    assert any(
+        level == "WARN" and "Could not write the in-flight record" in message
+        for level, message in messages
+    )
+    assert not any(level == "ERROR" for level, _message in messages)
+    assert not _record_path(tmp_path).exists()
+
+
+def test_a_failed_refresh_and_failed_delete_stop_before_the_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    phases = _in_flight_write_phases(orchestrator, monkeypatch, fail_handback_from=2)
+    calls = _counting_verify(orchestrator, monkeypatch)
+    real_unlink = orchestrator._unlink_carry_over_record
+
+    def refusing_unlink(repo_root: Path, name: str = "carry-over.json") -> None:
+        if name == IN_FLIGHT_STATE_PATH.name:
+            raise PermissionError(13, "sharing violation")
+        real_unlink(repo_root, name)
+
+    def finishing_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+        path.write_text(_pending_claim(), encoding="utf-8")
+        return _result()
+
+    monkeypatch.setattr(orchestrator, "_unlink_carry_over_record", refusing_unlink)
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", finishing_backend)
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    assert phases == ["dispatch", "handback", "handback"]
+    assert calls == []
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].startswith(
+        "Could not refresh or delete the in-flight handback record"
+    )
+    assert str(orchestrator._in_flight_state_path(_config(tmp_path))) in errors[0]
+    assert "before the work-claim gate" in errors[0]
+    # The record left is the one from before the commit; the next start
+    # sees HEAD moved and discards it.
+    assert _git(tmp_path, "rev-parse", "HEAD") != head
+    record = load_in_flight_record(_record_path(tmp_path).read_text(encoding="utf-8"))
+    assert record is not None and record.handback_head_sha == head
+
+
+def test_agent_commit_mode_refreshes_before_the_gate_and_resumes_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+
+    record = _interrupt_gate(tmp_path, orchestrator, monkeypatch, commit_mode="agent")
+
+    committed = _git(tmp_path, "rev-parse", "HEAD")
+    assert committed != head
+    handoff_path = tmp_path / HANDOFF_RELATIVE_PATH
+    handoff = handoff_path.read_text(encoding="utf-8")
+    # Normalization rewrote the handback after the record was first written;
+    # the refresh before the gate holds the text the gate checks.
+    assert "next_agent: auditor" in handoff
+    assert record.handback_content == handoff
+    assert record.handback_head_sha == committed
+    assert record.head_sha == head
+
+    _refuse_dispatch(orchestrator, monkeypatch)
+    calls = _counting_verify(orchestrator, monkeypatch)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path, commit_mode="agent"),
+        max_cycles=1,
+        log=_collecting_log(messages),
+    )
+
+    assert exit_code == 0
+    assert ("INFO", _resume_question()) in messages
+    assert ("INFO", "Routing source: interrupted_handback_recovery") in messages
+    assert calls == [1]
+    assert _git(tmp_path, "rev-parse", "HEAD") == committed
+    assert any(
+        level == "AGENT" and message == "Work-claim gate PASSED for backend."
+        for level, message in messages
+    )
+    assert has_passing_dispatcher_verification(
+        handoff_path.read_text(encoding="utf-8"), committed
+    )
+    assert not _record_path(tmp_path).exists()
+
+
+def test_the_refresh_writes_nothing_in_a_dry_run_or_without_a_handback_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    phases = _in_flight_write_phases(orchestrator, monkeypatch)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    pre_dispatch = orchestrator.PreDispatchState(
+        head_sha=head, dirty_files=(), dirty_fingerprints=(), carried_over=()
+    )
+    messages: list[tuple[str, str]] = []
+
+    for dry_run, on_disk in ((True, True), (False, False)):
+        state = orchestrator._InFlightRecordState()
+        state.handback_on_disk = on_disk
+        state.handback_inputs = orchestrator._HandbackRecordInputs(
+            cycle=1,
+            role="backend",
+            handoff_content=_assignment(),
+            pre_dispatch_state=pre_dispatch,
+            assignment_content=None,
+            protected_snapshot=None,
+        )
+        state.handback_content = "older handback"
+        state.handback_head_sha = "b" * 40
+
+        assert orchestrator._refresh_in_flight_handback(
+            _config(tmp_path, dry_run=dry_run), _collecting_log(messages), state
+        )
+        assert state.handback_on_disk == on_disk
+
+    assert phases == []
+    assert messages == []
+    assert not _record_path(tmp_path).exists()
+
+
+def test_a_dry_run_backend_cycle_writes_no_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    phases = _in_flight_write_phases(orchestrator, monkeypatch)
+
+    orchestrator.run_loop(
+        _config(tmp_path, dry_run=True), max_cycles=1, log=lambda *_: None
+    )
+
+    assert phases == []
+    assert not _record_path(tmp_path).exists()
+
+
+def test_a_planner_cycle_writes_no_handback_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    phases = _in_flight_write_phases(orchestrator, monkeypatch)
+    real_refresh = orchestrator._refresh_in_flight_handback
+    refreshed: list[bool] = []
+
+    def recording_refresh(config: DispatchConfig, log: Any, state: Any) -> bool:
+        refreshed.append(state.handback_on_disk)
+        return real_refresh(config, log, state)
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        path.write_text(_assignment(), encoding="utf-8")
+        return _result()
+
+    monkeypatch.setattr(orchestrator, "_refresh_in_flight_handback", recording_refresh)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=lambda *_: None
+    )
+
+    assert exit_code == 0
+    assert phases == ["dispatch"]
+    assert refreshed and not any(refreshed)
+    assert not _record_path(tmp_path).exists()

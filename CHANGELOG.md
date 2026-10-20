@@ -6,6 +6,22 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An interrupted work-claim gate is now recoverable (RECOVERY-7). The
+  implementer's `handback` record in `logs/dispatch/in-flight.json` is
+  rewritten right after the dispatcher commit step and again right before
+  the work-claim gate, with the HEAD and `HANDOFF.md` text at that moment
+  (agent commit mode included), so an interrupt from there until the gate
+  finishes, including one while the gate runs its verification commands or
+  scanners, leaves a record the next start offers to resume with the same
+  `Resume <role>'s interrupted <story> handback at the dispatcher commit?
+  [y/N]` question. A confirmed resume makes no second commit, keeps the
+  stamped `scope_sha`, and re-runs validation and the work-claim gate on the
+  stamped claim. Before, the next start saw HEAD moved, discarded the record,
+  and dispatched the auditor on a `ready_for_review` claim the gate never
+  checked. A failed rewrite deletes the record; when that delete fails too,
+  the dispatcher logs an `ERROR` naming the record and stops before the gate.
+  An interrupt between `git commit` returning and the rewrite still discards
+  the record.
 - Security: the `PROJECT_STATE.md` merge-conflict resolver now compares every
   index entry (mode, blob ID, stage, from `git ls-files --stage`) before and
   after the planner runs, and checks the staged result again before

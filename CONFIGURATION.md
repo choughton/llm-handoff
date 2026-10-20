@@ -687,9 +687,21 @@ written as UTF-8 with LF line endings.
 
 A `handback` record found at startup means the implementer returned but its
 cycle was interrupted before the dispatcher commit, validation, the
-work-claim gate, or publish finished. When HEAD differs from the HEAD the
+work-claim gate, or publish finished. The dispatcher rewrites the record
+right after the dispatcher commit step and again right before the work-claim
+gate, with the HEAD and `HANDOFF.md` text at that moment, so the record can
+describe a cycle interrupted after the dispatcher commit, including one
+interrupted while the gate ran its verification commands or scanners.
+Resuming such a record finds nothing new to commit, keeps the stamped
+`scope_sha`, and re-runs validation and the work-claim gate (with scanners)
+on the stamped claim. When that rewrite fails, the record is deleted and the
+cycle goes on; when the delete fails too, the dispatcher logs an `ERROR`
+naming the record and stops before the gate. An interrupt between the
+dispatcher's `git commit` and that rewrite still leaves the earlier record,
+which the next start discards as below. When HEAD differs from the HEAD the
 record holds, or `HANDOFF.md` differs from the handback text it holds, the
-cycle got past its commit or a gate rewrote the handoff: the dispatcher logs
+cycle got past the record's state or a gate rewrote the handoff (for example
+the gate's `## Dispatcher Verification` block or a bounce): the dispatcher logs
 one `WARN` line naming the record, role, and story, resumes nothing, restores
 no handoff, and deletes the record (a dry run keeps it); any uncommitted files
 stay operator edits. When `protected_paths` is set but the record holds no
@@ -719,7 +731,9 @@ shown before the question is of the same text the commit and gate use. The
 start does not repair or normalize the confirmed handback before that cycle,
 because a rewrite would no longer match the confirmed text; the cycle's usual
 post-dispatch repair and `next_agent` normalization run on it before
-validation. That cycle writes no in-flight record.
+validation. That cycle writes no in-flight record. In agent commit mode
+there is no dispatcher commit; the rewrite before the gate still records the
+current HEAD and handoff, so a resumed cycle runs the gate once.
 
 A planner dispatch writes a `planner` record to the same path right before it
 starts. It holds the cycle, HEAD, the checked-out branch (`head_branch`,
