@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-7 in progress; RECOVERY-6 approved at
+- **Active Epic:** RECOVERY (RECOVERY-8 in progress; RECOVERY-7 approved at
+  `c39b42a`, merged in PR #176; RECOVERY-6 approved at
   `7dcd6ad`, merged in PR #175; RECOVERY-5 (was
   RECOVERY-3b2) approved at `2e62500`, merged in PR #174;
   RECOVERY-3b1 approved at `bb4678f`, merged in PR #171;
@@ -20,11 +21,12 @@ belong in commits, handoffs, and pull requests.
   was RECOVERY-4), in that order, then RECOVERY-10 (merge-conflict resolver
   sees hidden working-tree edits, from the RECOVERY-5 security review), then
   RECOVERY-11 (failed in-flight record deletes stop every recovery path, from
-  the RECOVERY-6 audit).
-  RECOVERY-7 (interrupted work-claim gate and scanners) is active because it
-  is next in the epic's order, unblocked, and closes a gap where an interrupt
-  after the dispatcher commit sends an ungated `ready_for_review` claim
-  straight to the auditor.
+  the RECOVERY-6 audit), then RECOVERY-12 (interrupted merge-commit publish,
+  split from RECOVERY-8). Epic order: 8, 9, 10, 11, 12.
+  RECOVERY-8 (publish steps safe to repeat, `pr` mode) is active because it
+  is next in the epic's order, unblocked, and fixes an interrupted publish
+  that otherwise needs manual cleanup: the next start ran the planner and
+  paused instead of finishing the publish.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -700,10 +702,12 @@ split; RECOVERY-3b1 (interrupted planner dispatch) is approved at `bb4678f`
 and merged (PR #171), and the rest is renumbered flat: RECOVERY-5 (was 3b2,
 interrupted finalizer dispatch) is approved at `2e62500` and merged (PR #174).
 RECOVERY-6 (interrupted audit fan-out) is approved at `7dcd6ad` and merged
-(PR #175). RECOVERY-7 (interrupted work-claim gate and scanners) is active
-because it is next in the epic's order and unblocked; RECOVERY-8 and
-RECOVERY-9 (was RECOVERY-4) follow in order, then RECOVERY-10, then
-RECOVERY-11.
+(PR #175). RECOVERY-7 (interrupted work-claim gate and scanners) is approved
+at `c39b42a` and merged (PR #176). RECOVERY-8 (publish steps safe to repeat,
+`pr` mode) is active because it is next in the epic's order, unblocked, and
+fixes an interrupted publish that otherwise needs manual cleanup; RECOVERY-9
+(was RECOVERY-4) follows, then RECOVERY-10, RECOVERY-11, and RECOVERY-12
+(interrupted merge-commit publish, split from RECOVERY-8).
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
@@ -866,7 +870,7 @@ bounces until the three-fix circuit breaker escalates.
       only after the operator confirms the exact `git reset --soft`.
 - The rest of RECOVERY, renumbered flat on 2026-10-19 (old IDs in brackets;
   a live handoff's `remaining_stories` may still use them).
-  Order: 7, 8, 9, 10, then 11.
+  Order: 8, 9, 10, 11, then 12.
 - RECOVERY-5 (was RECOVERY-3b2; approved at `2e62500`, merged in PR #174):
   Interrupted finalizer dispatch. A finalizer
   dispatch writes a `finalizer` in-flight record (same shape as a planner
@@ -917,7 +921,8 @@ bounces until the three-fix circuit breaker escalates.
     baseline and no forced instruction, and writes a fresh `auditor` record.
     Partial `logs/dispatch/audit/<timestamp>-cycle<N>/` directories are left
     untouched.
-- RECOVERY-7 (was RECOVERY-3d): Interrupted work-claim gate and scanners:
+- RECOVERY-7 (was RECOVERY-3d; approved at `c39b42a`, merged in PR #176):
+  Interrupted work-claim gate and scanners:
   re-run them. Decided by the planner on 2026-10-19: reuse the RECOVERY-2b
   handback resume rather than add a new phase. Once the dispatcher commit
   step has run, and again right before each work-claim gate call, the
@@ -930,9 +935,24 @@ bounces until the three-fix circuit breaker escalates.
   the record and stops the run before the gate. An interrupt between
   `git commit` returning and the refresh write still discards the record
   (RECOVERY-9's no-record fallback is the follow-up).
-- RECOVERY-8 (was RECOVERY-3e): Publish steps safe to repeat (push again,
-  reuse the open pull request, skip a merge that already happened), using
-  `story.json`.
+- RECOVERY-8 (was RECOVERY-3e): Publish steps safe to repeat, `pr` mode only
+  (the `merge-commit` half is RECOVERY-12). Decided by the planner on
+  2026-10-19: `StoryState` saves `publish_requested_head` and
+  `publish_requested_at` before each push, and a publish of the same head
+  reuses that time for the review wait, so a Codex review given while the
+  dispatcher was down counts. At startup, after the paused-publish resume and
+  outside dry run, `resume_interrupted_publish` acts when the saved story has
+  no paused publish or pending review retry, its branch is checked out, and
+  the handoff is that story's `verified_pass` with `close_type` `story` or
+  `epic` and a resolvable `scope_sha`. It pauses with `INTERRUPTED PUBLISH:`
+  (state kept) on a merge in progress or uncommitted files beyond the handoff
+  and `logs/dispatch/`, HEAD beyond `scope_sha` other than clean base-branch
+  merges, a `gh pr view` failure other than "no pull requests found", a
+  closed pull request, a merged one with unresolved threads or saved
+  findings, or a lost review bounce (unresolved findings saved for HEAD). A
+  merged pull request with every thread resolved is cleaned up with no push
+  or `gh` write; an open one, or none, publishes again only after HARD-5
+  confirmation (`Resume publishing <story_id> on <branch>? [y/N]`).
 - RECOVERY-9 (was RECOVERY-4): No-record fallback. When there is no
   in-flight record (a run from before RECOVERY-2, or a lost record) and files
   are dirty, in scope for the story's Work Packet, and clean at the story's
@@ -957,6 +977,12 @@ bounces until the three-fix circuit breaker escalates.
   branches), so a run can continue while a stale record stays on disk; make
   each such call log an ERROR naming the record and stop the run, as
   RECOVERY-6 did for the auditor path, with a regression per path.
+- RECOVERY-12: Interrupted merge-commit publish. Split from RECOVERY-8 on
+  2026-10-19. In `merge-commit` mode an interrupt between `git switch <base>`,
+  `git merge --no-ff`, and `git branch -d <story>` leaves the checkout on the
+  base branch with `story.json` kept. A start should finish the remaining
+  steps when the story branch is already merged into the base branch, and
+  pause otherwise.
 
 ### 13. CHAT - talk to the agents while the loop runs
 

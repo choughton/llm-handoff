@@ -181,6 +181,12 @@ class StoryState:
     # requesting another one automatically.
     review_retry_head: str = ""
     review_retry_at: str = ""
+    # The head commit `pr` mode last pushed for review, and when it started
+    # that push (UTC, ISO 8601). A publish of the same head after an
+    # interruption waits for Codex signals since that time, so a review that
+    # finished while the dispatcher was down still counts.
+    publish_requested_head: str = ""
+    publish_requested_at: str = ""
 
 
 _TRACKER_FIELDS = ("tracker_issue", "tracker_url", "selection_basis")
@@ -813,7 +819,25 @@ def publish_story(
         emptied = _drop_empty_story_branch(repo_root, remote, state, log)
         if emptied is not None:
             return emptied
-    requested_at = utc_now()
+    # A publish of the same head after an interruption keeps the first push's
+    # time, so a Codex review given while the dispatcher was down counts. A
+    # new head, such as a correction round, gets a new time.
+    push_head = git_head(repo_root) or ""
+    saved_at = (
+        _parse_timestamp(state.publish_requested_at)
+        if push_head and state.publish_requested_head == push_head
+        else None
+    )
+    if saved_at is not None:
+        requested_at = saved_at
+    else:
+        requested_at = utc_now()
+        state = replace(
+            state,
+            publish_requested_head=push_head,
+            publish_requested_at=requested_at.isoformat(),
+        )
+        _save_state(repo_root, state)
     pushed = _git(repo_root, ["push", "-u", remote, state.branch])
     if pushed.returncode != 0:
         return _stop(
@@ -1623,6 +1647,196 @@ def _review_retry_pending(
         and (frontmatter.story_id or "").strip() == state.story_id
         and _current_branch(repo_root) == state.branch
         and git_head(repo_root) == state.review_retry_head
+    )
+
+
+# A handoff ``scope_sha``: 7 to 64 hex characters, never an option or a
+# revision expression.
+_SCOPE_SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
+
+
+def resume_interrupted_publish(
+    *,
+    repo_root: Path,
+    remote: str,
+    auto_merge: bool,
+    wait_for_checks: bool,
+    handoff_content: str,
+    log: LogFn,
+    handoff_path: Path,
+    confirm: Callable[[str], bool] | None,
+    gh_command: Sequence[str] = ("gh",),
+    review: ReviewGate | None = None,
+    sleep: Callable[[float], None] | None = None,
+    review_prompt: ReviewPromptFn | None = None,
+    state_resolver: StateConflictResolver | None = None,
+) -> PublishOutcome:
+    """Finish a ``pr`` publish that a previous run left interrupted.
+
+    Runs once when the dispatcher starts, after :func:`resume_paused_publish`.
+    Does nothing unless the saved story state exists with no paused publish
+    and no pending review retry, its story branch is checked out, and
+    ``HANDOFF.md`` is still that story's ``verified_pass`` with a
+    ``close_type`` of ``story`` or ``epic`` and a ``scope_sha`` that resolves.
+
+    Then, failing closed with a pause that keeps the story state:
+
+    - A merge in progress, or any uncommitted file other than the handoff and
+      the dispatcher's logs, pauses.
+    - HEAD must be ``scope_sha`` plus only clean base-branch merges.
+    - A ``gh pr view`` failure other than "no pull requests found" pauses, a
+      closed pull request pauses, and a merged one with an unresolved review
+      thread or saved finding pauses.
+    - A review bounce whose handoff was lost (open findings saved for HEAD)
+      pauses.
+
+    A merged pull request with every thread resolved is cleaned up (switch to
+    the base branch, pull, delete the local branch, clear the state) with no
+    push or ``gh`` write. An open pull request, or none yet, publishes again
+    with :func:`publish_story` once ``confirm`` returns True; without
+    ``confirm``, or when it returns False, the story state is kept and
+    nothing is pushed.
+    """
+
+    nothing = PublishOutcome()
+    state = _load_state(repo_root)
+    if state is None or state.paused_publish:
+        return nothing
+    if _review_retry_pending(repo_root, state, handoff_content):
+        return nothing
+    if _current_branch(repo_root) != state.branch:
+        return nothing
+    try:
+        frontmatter = parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        return nothing
+    if frontmatter is None:
+        return nothing
+    if (frontmatter.status or "") != "verified_pass":
+        return nothing
+    if (frontmatter.story_id or "").strip() != state.story_id:
+        return nothing
+    if (frontmatter.close_type or "").strip() not in {"story", "epic"}:
+        return nothing
+    scope_sha = (frontmatter.scope_sha or "").strip()
+    if not _SCOPE_SHA_RE.fullmatch(scope_sha):
+        return nothing
+    resolved = _git(
+        repo_root, ["rev-parse", "-q", "--verify", f"{scope_sha}^{{commit}}"]
+    )
+    audited = (resolved.stdout or "").strip()
+    if resolved.returncode != 0 or not _OBJECT_ID_RE.fullmatch(audited):
+        return nothing
+
+    def blocked(problem: str) -> PublishOutcome:
+        return _pause(
+            repo_root,
+            log,
+            f"INTERRUPTED PUBLISH: Publishing `{state.branch}` for "
+            f"`{state.story_id}` was interrupted, and {problem}, so the "
+            "dispatcher did not resume it. The story state was kept. Publish "
+            "or merge it yourself, run `git switch "
+            f"{state.base_branch}` and `git pull`, then start the dispatcher "
+            "again.",
+            keep_state=True,
+        )
+
+    if _git(repo_root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode == 0:
+        return blocked("a merge is in progress on it")
+    dirty = git_dirty_files(repo_root)
+    if dirty is None:
+        return blocked("git status failed, so uncommitted files could not be checked")
+    handoff = normalize_repo_path(handoff_path.as_posix())
+    uncommitted = [
+        path
+        for path in dirty
+        if path != handoff and not path.startswith("logs/dispatch/")
+    ]
+    if uncommitted:
+        return blocked(
+            f"files other than the handoff are uncommitted ({_path_list(uncommitted)})"
+        )
+    head = git_head(repo_root) or ""
+    if not _OBJECT_ID_RE.fullmatch(head):
+        return blocked("git rev-parse HEAD failed")
+    problem = _clean_merges_problem(repo_root, remote, state, audited, head)
+    if problem is not None:
+        return blocked(problem)
+    view, error = _view_pull_request(gh_command, repo_root, state.branch)
+    if view is None and "no pull requests found" not in error.lower():
+        return blocked(f"`gh pr view {state.branch}` failed ({error})")
+    # No pull request yet: a saved URL would be stale, so none is named.
+    url = str(view.get("url") or state.pull_request_url) if view is not None else ""
+    pr_state = str(view.get("state") or "") if view is not None else ""
+    where = url or f"the pull request for `{state.branch}`"
+    if view is not None and pr_state == "CLOSED":
+        return blocked(f"{where} is closed; the dispatcher does not reopen it")
+    if view is not None and pr_state not in {"OPEN", "MERGED"}:
+        return blocked(f"{where} is {pr_state.lower() or 'in an unknown state'}")
+    if view is not None and pr_state == "MERGED":
+        number = view.get("number")
+        threads = (
+            _review_threads(gh_command, repo_root, number)
+            if isinstance(number, int)
+            else None
+        )
+        if threads is None:
+            return blocked(f"the review threads of {where} could not be read")
+        unresolved_threads = [t for t in threads if not t["resolved"]]
+        resolved_ids = {t["comment_id"] for t in threads if t["resolved"]}
+        saved = [
+            finding
+            for finding in _unresolved_findings(state)
+            if finding.get("comment_id") not in resolved_ids
+        ]
+        if unresolved_threads or saved:
+            return blocked(
+                f"{where} merged with "
+                f"{max(len(unresolved_threads), len(saved))} unresolved review "
+                "thread(s)"
+            )
+    if state.reviewed_head == head and _unresolved_findings(state):
+        return blocked(
+            f"Codex review findings on {head[:12]} are saved with no fix "
+            "committed after them; the review-bounce handoff to the "
+            "implementer was lost, and publishing again would count that "
+            "correction round twice"
+        )
+    if pr_state == "MERGED":
+        return _clean_up_merged_story(repo_root, remote, state, url, log, blocked)
+
+    action = (
+        "push and reuse the open pull request"
+        if pr_state == "OPEN"
+        else "push and open a pull request"
+    )
+    log(
+        "INFO",
+        f"Publishing `{state.branch}` for `{state.story_id}` was interrupted: "
+        f"HEAD {head[:12]}, {url or 'no pull request yet'}. Resuming will "
+        f"{action}.",
+    )
+    question = f"Resume publishing {state.story_id} on {state.branch}? [y/N]"
+    if confirm is None or not confirm(question):
+        log(
+            "WARN",
+            f"The interrupted publish of `{state.branch}` was not resumed; the "
+            "story state was kept.",
+        )
+        return nothing
+    return publish_story(
+        repo_root=repo_root,
+        mode="pr",
+        remote=remote,
+        auto_merge=auto_merge,
+        wait_for_checks=wait_for_checks,
+        handoff_content=handoff_content,
+        log=log,
+        gh_command=gh_command,
+        review=review,
+        sleep=sleep,
+        review_prompt=review_prompt,
+        state_resolver=state_resolver,
     )
 
 
