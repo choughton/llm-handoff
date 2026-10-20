@@ -6279,6 +6279,48 @@ def _delete_in_flight_record(config: DispatchConfig, log: LogFn) -> bool:
     return True
 
 
+def _delete_recovered_in_flight_record(
+    config: DispatchConfig,
+    log: LogFn,
+    state_path: Path,
+    record: InFlightRecord | None,
+    story: str | None = None,
+) -> InterruptedDispatchRecovery:
+    """Delete a record startup recovery discarded or consumed; stop if it stays.
+
+    A record left on disk would outlive the run that ignored it, and a later
+    start would offer it again over newer work. A failed delete therefore
+    logs one ERROR naming the record and the role and story it was read for
+    (``record`` is None for a record that is not valid) and returns
+    ``stop``, keeping the record. A dry run deletes nothing and never stops.
+    """
+
+    if config.dry_run or _delete_in_flight_record(config, log):
+        return InterruptedDispatchRecovery()
+    if record is None:
+        read_for = "no role or story, because it is not valid"
+    else:
+        if record.role == "auditor":
+            work = "audit"
+        elif record.phase == "handback":
+            work = "handback"
+        else:
+            work = "work"
+        read_for = (
+            f"{_escape_control_characters(record.role)}'s interrupted "
+            f"{story or _in_flight_story_display(record)} {work}"
+        )
+    _log(
+        log,
+        "ERROR",
+        "Could not delete the in-flight record "
+        f"{_escape_control_characters(str(state_path))} read for {read_for}, so "
+        "the dispatcher stops before any dispatch and keeps the record. Delete "
+        "the record, then start the dispatcher again.",
+    )
+    return InterruptedDispatchRecovery(stop=True)
+
+
 def _record_in_flight_handback(
     config: DispatchConfig,
     *,
@@ -6698,18 +6740,20 @@ def _discard_unanchored_in_flight_record(
     record: InFlightRecord,
     state_path: Path,
     story: str,
-) -> bool:
+) -> InterruptedDispatchRecovery | None:
     """Discard a record whose pre-dispatch HEAD Git does not vouch for.
 
-    Returns True, after one WARN, when the record was discarded (kept in a
-    dry run). Only runs when protected paths are configured.
+    Returns None when the record is kept for recovery. Otherwise, after one
+    WARN, the record is discarded (kept in a dry run) and the recovery
+    result is returned: nothing, or ``stop`` when the delete failed. Only
+    runs when protected paths are configured.
     """
 
     if not config.protected_paths:
-        return False
+        return None
     rejection = _in_flight_baseline_rejection(config, record)
     if rejection is None:
-        return False
+        return None
     work = "handback" if record.phase == "handback" else "work"
     record_kind = "handback record" if record.phase == "handback" else "record"
     _log(
@@ -6721,9 +6765,9 @@ def _discard_unanchored_in_flight_record(
         "uncommitted files stay operator edits."
         + (" Not deleted in dry run." if config.dry_run else ""),
     )
-    if not config.dry_run:
-        _delete_in_flight_record(config, log)
-    return True
+    return _delete_recovered_in_flight_record(
+        config, log, state_path, record, story
+    )
 
 
 def _interrupted_dispatch_assignment(
@@ -6895,9 +6939,9 @@ def _recover_interrupted_handback(
             "stay operator edits."
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     if config.protected_paths and record.protected_digests is None:
         # The resumed cycle checks protected files against the record's
         # pre-dispatch digests; without them it cannot tell whether the
@@ -6912,11 +6956,14 @@ def _recover_interrupted_handback(
             "files stay operator edits."
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
-        return nothing
-    if _discard_unanchored_in_flight_record(config, log, record, state_path, story):
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
+    discarded = _discard_unanchored_in_flight_record(
+        config, log, record, state_path, story
+    )
+    if discarded is not None:
+        return discarded
     interrupted_files = _interrupted_dispatch_files(config, record, state_path, log)
     if interrupted_files is None:
         return nothing
@@ -6992,8 +7039,9 @@ def _recover_interrupted_handback(
             f"{files}) because it was not confirmed at a terminal; these files "
             "stay operator edits.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     repo_root = config.repo_root
     # Built once recovery is confirmed, from the checkout as it is now.
     protected_snapshot = (
@@ -7008,7 +7056,11 @@ def _recover_interrupted_handback(
         ),
     )
     _persist_implementer_leftovers(config, leftovers, log)
-    _delete_in_flight_record(config, log)
+    deleted = _delete_recovered_in_flight_record(
+        config, log, state_path, record, story
+    )
+    if deleted.stop:
+        return deleted
     if changed_operator_files:
         return InterruptedDispatchRecovery(
             recovered=True,
@@ -7204,8 +7256,9 @@ def _reconcile_interrupted_planner_git(
     only on ``y``; decline, end of input, no terminal, or
     ``interactive_pause: false`` discards the record with one WARN and
     returns ``"discarded"``, leaving HEAD, the index, and the handoff as they
-    are. A checkout that moved again before the answer stops the run. Dry run
-    only reports. Runs after the record's anchor checks.
+    are; a record that cannot be deleted then returns ``"stop"`` after one
+    ERROR. A checkout that moved again before the answer stops the run. Dry
+    run only reports. Runs after the record's anchor checks.
     """
 
     drift = _interrupted_planner_git_drift(config, record)
@@ -7263,7 +7316,10 @@ def _reconcile_interrupted_planner_git(
                 f"handoff commits ({commit_list}) was not confirmed at a "
                 "terminal; HEAD, the index, and the handoff stay as they are.",
             )
-            _delete_in_flight_record(config, log)
+            if _delete_recovered_in_flight_record(
+                config, log, state_path, record, story
+            ).stop:
+                return "stop"
             return "discarded"
         if git_position(config.repo_root) != current:
             # The operator confirmed undoing the disclosed commits only.
@@ -7342,11 +7398,14 @@ def _recover_interrupted_planner(
             "cycle. Nothing is restored; the handoff stays as it is."
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
-        return nothing
-    if _discard_unanchored_in_flight_record(config, log, record, state_path, story):
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
+    discarded = _discard_unanchored_in_flight_record(
+        config, log, record, state_path, story
+    )
+    if discarded is not None:
+        return discarded
     # The record is untrusted (HARD-5): its HEAD is never applied to Git
     # before the checks above and the operator's confirmation of the reset.
     git_outcome = _reconcile_interrupted_planner_git(
@@ -7358,6 +7417,11 @@ def _recover_interrupted_planner(
         return nothing
     current = _read_required_text(config.handoff_full_path)
     if current == record.handoff_content:
+        deleted = _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
+        if deleted.stop:
+            return deleted
         _log(
             log,
             "INFO",
@@ -7365,11 +7429,14 @@ def _recover_interrupted_planner(
             "dispatch that left nothing to recover"
             + ("; not deleted in dry run." if config.dry_run else "; deleted it."),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
         return nothing
     errors = _interrupted_planner_handoff_errors(config, record, current)
     if not errors:
+        deleted = _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
+        if deleted.stop:
+            return deleted
         _log(
             log,
             "INFO",
@@ -7382,8 +7449,6 @@ def _recover_interrupted_planner(
                 else " and deleted the record."
             ),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
         return nothing
     handoff_display = _escape_control_characters(
         normalize_repo_path(config.handoff_path.as_posix())
@@ -7410,8 +7475,9 @@ def _recover_interrupted_planner(
             f"{handoff_display} passes through a symlink or junction, so the "
             "dispatcher does not restore it. The handoff stays as it is.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     confirmed = False
     disclosed: tuple[str, ...] | None = None
     if (
@@ -7451,8 +7517,9 @@ def _recover_interrupted_planner(
             f"planner's interrupted {story} work because it was not confirmed "
             f"at a terminal; the handoff {handoff_display} stays as it is.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     failure: str | None = None
     try:
         _restore_handoff_text(config, record.handoff_content)
@@ -7468,8 +7535,9 @@ def _recover_interrupted_planner(
             f"({failure}), so nothing is recovered from the in-flight record "
             f"{state_path}.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     _log(
         log,
         "INFO",
@@ -7754,11 +7822,14 @@ def _recover_interrupted_finalizer(
             "they are."
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
-        return nothing
-    if _discard_unanchored_in_flight_record(config, log, record, state_path, story):
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
+    discarded = _discard_unanchored_in_flight_record(
+        config, log, record, state_path, story
+    )
+    if discarded is not None:
+        return discarded
     # The record is untrusted (HARD-5): Git is only inspected, never changed.
     git_state = _interrupted_finalizer_git_state(config, record)
     if git_state.error is not None:
@@ -7821,6 +7892,11 @@ def _recover_interrupted_finalizer(
         and normalize_next_agent_value(frontmatter.next_agent or "") == "finalizer"
     )
     if current != record.handoff_content and not errors and not still_finalizer:
+        deleted = _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
+        if deleted.stop:
+            return deleted
         _log(
             log,
             "INFO",
@@ -7833,10 +7909,13 @@ def _recover_interrupted_finalizer(
                 else " and deleted the record."
             ),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
         return nothing
     if not ledger_committed and current == record.handoff_content:
+        deleted = _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
+        if deleted.stop:
+            return deleted
         _log(
             log,
             "INFO",
@@ -7845,8 +7924,6 @@ def _recover_interrupted_finalizer(
             "unchanged handoff"
             + ("; not deleted in dry run." if config.dry_run else "; deleted it."),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
         return nothing
     handoff_display = _escape_control_characters(
         normalize_repo_path(config.handoff_path.as_posix())
@@ -7885,8 +7962,9 @@ def _recover_interrupted_finalizer(
             "dispatcher does not restore it. The handoff and the ledger stay as "
             "they are.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     question = (
         "Restore the handoff from before finalizer's interrupted dispatch and "
         "run planner to continue from the committed ledger? [y/N]"
@@ -7943,8 +8021,9 @@ def _recover_interrupted_finalizer(
             f"at a terminal; the handoff {handoff_display} and the ledger stay "
             "as they are.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     if current != record.handoff_content:
         failure: str | None = None
         try:
@@ -7961,8 +8040,9 @@ def _recover_interrupted_finalizer(
                 "so nothing is recovered from the in-flight record "
                 f"{state_path}.",
             )
-            _delete_in_flight_record(config, log)
-            return nothing
+            return _delete_recovered_in_flight_record(
+                config, log, state_path, record, story
+            )
         _log(
             log,
             "INFO",
@@ -8053,11 +8133,14 @@ def _recover_interrupted_auditor(
             "cycle. Nothing is restored; the handoff stays as it is."
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
-        return nothing
-    if _discard_unanchored_in_flight_record(config, log, record, state_path, story):
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
+    discarded = _discard_unanchored_in_flight_record(
+        config, log, record, state_path, story
+    )
+    if discarded is not None:
+        return discarded
     # The record is untrusted (HARD-5): Git is only inspected, never changed.
     current_position = git_position(config.repo_root)
     if (
@@ -8151,8 +8234,9 @@ def _recover_interrupted_auditor(
             f"{handoff_display} passes through a symlink or junction, so the "
             "dispatcher does not restore it. The handoff stays as it is.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     confirmed = False
     disclosed: tuple[str, ...] | None = None
     if (
@@ -8193,8 +8277,9 @@ def _recover_interrupted_auditor(
             f"auditor's interrupted {story} audit because it was not confirmed "
             f"at a terminal; the handoff {handoff_display} stays as it is.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     failure: str | None = None
     try:
         _restore_handoff_text(config, record.handoff_content)
@@ -8209,8 +8294,9 @@ def _recover_interrupted_auditor(
             f"Could not restore the handoff {handoff_display} ({failure}), so "
             f"nothing is recovered from the in-flight record {state_path}.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     _log(
         log,
         "INFO",
@@ -8325,9 +8411,7 @@ def _recover_interrupted_dispatch(
             "recovered from it; any files it names stay operator edits."
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(config, log, state_path, None)
     if record.role == "planner":
         return _recover_interrupted_planner(
             config, log, operator_prompt, record, state_path
@@ -8361,10 +8445,10 @@ def _recover_interrupted_dispatch(
             "operator edits."
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
-        return nothing
-    if _discard_unanchored_in_flight_record(
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, record_story
+        )
+    discarded = _discard_unanchored_in_flight_record(
         config,
         log,
         record,
@@ -8372,8 +8456,9 @@ def _recover_interrupted_dispatch(
         _carry_over_display(
             ImplementerLeftovers(story_key=record.story_key, fingerprints=())
         )[0],
-    ):
-        return nothing
+    )
+    if discarded is not None:
+        return discarded
     repo_root = config.repo_root
     interrupted_files = _interrupted_dispatch_files(config, record, state_path, log)
     if interrupted_files is None:
@@ -8397,6 +8482,11 @@ def _recover_interrupted_dispatch(
         and not handoff_changed
         and uncommitted_protected == ()
     ):
+        deleted = _delete_recovered_in_flight_record(
+            config, log, state_path, record
+        )
+        if deleted.stop:
+            return deleted
         _log(
             log,
             "INFO",
@@ -8404,8 +8494,6 @@ def _recover_interrupted_dispatch(
             f"{record.role} dispatch that left nothing to recover"
             + ("; not deleted in dry run." if config.dry_run else "; deleted it."),
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
         return nothing
     story, files = _carry_over_display(
         ImplementerLeftovers(
@@ -8441,8 +8529,9 @@ def _recover_interrupted_dispatch(
             "junction, so the dispatcher does not restore it. These files stay "
             "operator edits.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     confirmed = False
     disclosed: tuple[str, ...] | None = None
     if (
@@ -8483,8 +8572,9 @@ def _recover_interrupted_dispatch(
             "because it was not confirmed at a terminal; these files stay "
             "operator edits.",
         )
-        _delete_in_flight_record(config, log)
-        return nothing
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
 
     if handoff_changed:
         # Restored before the carry-over record is saved, so a refused write
@@ -8505,8 +8595,9 @@ def _recover_interrupted_dispatch(
                 f"{state_path}; {record.role}'s files ({files}) stay operator "
                 "edits.",
             )
-            _delete_in_flight_record(config, log)
-            return nothing
+            return _delete_recovered_in_flight_record(
+                config, log, state_path, record, story
+            )
         _log(
             log,
             "INFO",
@@ -8529,7 +8620,11 @@ def _recover_interrupted_dispatch(
         ),
     )
     _persist_implementer_leftovers(config, leftovers, log)
-    _delete_in_flight_record(config, log)
+    deleted = _delete_recovered_in_flight_record(
+        config, log, state_path, record, story
+    )
+    if deleted.stop:
+        return deleted
     if changed_operator_files:
         return InterruptedDispatchRecovery(
             recovered=True,

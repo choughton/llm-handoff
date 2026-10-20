@@ -5706,3 +5706,212 @@ def test_a_planner_cycle_writes_no_handback_record(
     assert phases == ["dispatch"]
     assert refreshed and not any(refreshed)
     assert not _record_path(tmp_path).exists()
+
+
+# ---------------------------------------------------------------------------
+# RECOVERY-11: a failed startup delete of the in-flight record stops the run
+# ---------------------------------------------------------------------------
+
+
+def _unanchor_backend_record(repo_root: Path) -> None:
+    # A commit on a side branch: a child of HEAD, so not HEAD's ancestor.
+    side = _git(repo_root, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "side")
+    _git(repo_root, "update-ref", "refs/heads/side", side)
+    _rewrite_record(repo_root, head_sha=side)
+
+
+def _setup_failed_delete(
+    scenario: str, repo_root: Path, orchestrator: Any, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, Any], str | None, str]:
+    """Leave the record ``scenario`` needs on disk.
+
+    Returns the config overrides, the operator's terminal input (None for
+    no terminal input), and the role and story text the ERROR must name.
+    """
+
+    backend_work = f"backend's interrupted {STORY_ID} work"
+    if scenario.startswith("dispatch_") or scenario == "unanchored":
+        _init_repo(repo_root)
+        _interrupt_backend(repo_root, orchestrator, monkeypatch)
+        if scenario == "dispatch_nothing_to_recover":
+            _git(repo_root, "checkout", "--", ".")
+            return {}, None, backend_work
+        if scenario == "unanchored":
+            _unanchor_backend_record(repo_root)
+            return {}, None, backend_work
+        return {}, "n\n" if scenario == "dispatch_decline" else "y\n", backend_work
+    if scenario == "invalid_record":
+        _init_repo(repo_root)
+        _write(_record_path(repo_root), "{not json")
+        return {}, None, "no role or story, because it is not valid"
+    if scenario.startswith("handback_"):
+        _init_repo(repo_root)
+        _interrupt_handback(repo_root, orchestrator, monkeypatch)
+        answer = "n\n" if scenario == "handback_decline" else "y\n"
+        return {}, answer, f"backend's interrupted {STORY_ID} handback"
+    planner_work = "planner's interrupted planning work"
+    if scenario == "planner_unchanged":
+        _init_repo(repo_root, handoff=_planner_assignment())
+        _interrupt_planner(repo_root, orchestrator, monkeypatch, keep=True)
+        return {}, None, planner_work
+    if scenario == "planner_decline":
+        _init_repo(repo_root, handoff=_planner_assignment())
+        _interrupt_planner(repo_root, orchestrator, monkeypatch)
+        return {}, "n\n", planner_work
+    if scenario == "planner_reset_decline":
+        _init_repo(repo_root, handoff=_planner_assignment())
+        _interrupt_committing_planner(repo_root, orchestrator, monkeypatch)
+        return {}, "n\n", planner_work
+    if scenario == "finalizer_nothing_to_recover":
+        _init_repo(repo_root, handoff=FINALIZER_HANDOFF)
+        _interrupt_finalizer(repo_root, orchestrator, monkeypatch, leave=_KEEP)
+        return {}, None, "finalizer's interrupted planning work"
+    assert scenario == "auditor_decline"
+    _init_repo(repo_root, handoff=_pending_claim())
+    _interrupt_audit(repo_root, orchestrator, monkeypatch, leave=VERDICT_HANDOFF)
+    _allow_fan_out(orchestrator, monkeypatch)
+    return {"audit": FAN_OUT_AUDIT}, "n\n", f"auditor's interrupted {STORY_ID} audit"
+
+
+def _refuse_every_dispatch(orchestrator: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    def refusing(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("a record that cannot be deleted must not dispatch")
+
+    for name in (
+        "invoke_backend_role",
+        "invoke_frontend_role",
+        "invoke_planner_role",
+        "invoke_support_role",
+        "_dispatch_audit_fan_out",
+        "_invoke_epic_close",
+        "_commit_for_implementer",
+    ):
+        monkeypatch.setattr(orchestrator, name, refusing)
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "dispatch_nothing_to_recover",
+        "dispatch_decline",
+        "dispatch_confirmed",
+        "invalid_record",
+        "handback_decline",
+        "handback_confirmed",
+        "planner_unchanged",
+        "planner_decline",
+        "planner_reset_decline",
+        "finalizer_nothing_to_recover",
+        "auditor_decline",
+        "unanchored",
+    ],
+)
+def test_a_startup_record_that_cannot_be_deleted_stops_before_any_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    orchestrator = _orchestrator()
+    overrides, operator_input, read_for = _setup_failed_delete(
+        scenario, tmp_path, orchestrator, monkeypatch
+    )
+    record_text = _record_path(tmp_path).read_text(encoding="utf-8")
+    _refuse_every_dispatch(orchestrator, monkeypatch)
+    monkeypatch.setattr(
+        orchestrator, "_delete_in_flight_record", lambda _config, _log: False
+    )
+    _set_terminal(
+        orchestrator,
+        monkeypatch,
+        interactive=operator_input is not None,
+        operator_input=operator_input,
+    )
+    config = _config(tmp_path, **overrides)
+    if scenario == "unanchored":
+        assert config.protected_paths
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert exit_code == 1
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].startswith(
+        f"Could not delete the in-flight record {_record_path(tmp_path)} "
+        f"read for {read_for}, "
+    )
+    assert "stops before any dispatch and keeps the record" in errors[0]
+    assert "Delete the record, then start the dispatcher again." in errors[0]
+    # No success line claims the record was deleted.
+    assert not any(
+        "deleted it" in message or "deleted the record" in message
+        for _level, message in messages
+    )
+    assert not any("Dispatching" in message for _level, message in messages)
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == record_text
+
+
+def test_a_failed_delete_error_escapes_control_characters_in_the_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    orchestrator = _orchestrator()
+    monkeypatch.setattr(
+        orchestrator, "_delete_in_flight_record", lambda _config, _log: False
+    )
+    record = InFlightRecord(
+        cycle=1,
+        role="backend",
+        story_key="story:EVIL\x1b[2J-1",
+        phase="dispatch",
+        head_sha="a" * 40,
+        handoff_content=_assignment(),
+        dirty_fingerprints=(),
+        carried_over=(),
+    )
+    state_path = tmp_path / "logs" / "dispatch\x1b]0;x\x07" / "in-flight.json"
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._delete_recovered_in_flight_record(
+        _config(tmp_path), _collecting_log(messages), state_path, record
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery(stop=True)
+    assert [level for level, _message in messages] == ["ERROR"]
+    error = messages[0][1]
+    assert "\x1b" not in error
+    assert "\x07" not in error
+    assert "backend's interrupted EVIL" in error
+
+
+@pytest.mark.parametrize(
+    "scenario", ["dispatch_nothing_to_recover", "invalid_record", "unanchored"]
+)
+def test_a_dry_run_never_deletes_or_stops_on_a_startup_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    orchestrator = _orchestrator()
+    overrides, _operator_input, _read_for = _setup_failed_delete(
+        scenario, tmp_path, orchestrator, monkeypatch
+    )
+    record_text = _record_path(tmp_path).read_text(encoding="utf-8")
+
+    def refusing_delete(_config: Any, _log: Any) -> bool:
+        raise AssertionError("a dry run must not delete the record")
+
+    monkeypatch.setattr(orchestrator, "_delete_in_flight_record", refusing_delete)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path, dry_run=True, **overrides),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert not any(level == "ERROR" for level, _message in messages)
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == record_text
