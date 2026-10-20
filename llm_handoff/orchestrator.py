@@ -1323,8 +1323,6 @@ def _run_loop(
             active_planner_recovery_kind = None
             active_continue_saved_story = False
             tpm_planner_repair_ran = True
-        elif decision.route != "tpm":
-            tpm_planner_repair_ran = False
 
         if decision.route == "tpm":
             # Interim guard: this dispatcher does not launch a configured tpm
@@ -1944,6 +1942,11 @@ def _run_loop(
             )
             # A first Ctrl+C from here to the loop top lets this cycle finish:
             # the dispatch (or audit fan-out), commit, gates, and publish.
+            # The tpm repair guard clears only once another route actually
+            # reaches dispatch here; a route that paused or continued before
+            # this point leaves it set.
+            if decision.source != TPM_NOT_CONFIGURED_PLANNER_REPAIR_SOURCE:
+                tpm_planner_repair_ran = False
             console_interrupt.set_active_role(current_cycle.route)
             chat_session.set_role(current_cycle.route)
             if resumed_handback is not None:

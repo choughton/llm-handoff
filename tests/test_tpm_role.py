@@ -337,6 +337,166 @@ def test_run_loop_pauses_when_repaired_handoff_still_routes_to_tpm(
     assert "resume after the file changes" in reason
 
 
+_TPM_HANDOFF = (
+    "---\n"
+    "next_agent: tpm\n"
+    'reason: "Pick the next story."\n'
+    "producer: planner\n"
+    "---\n\n"
+    "# Handoff\n"
+)
+
+_TPM_HANDOFF_AGAIN = (
+    "---\n"
+    "next_agent: tpm\n"
+    'reason: "Backend finished; pick the next story."\n'
+    "producer: planner\n"
+    "---\n\n"
+    "# Handoff\n"
+)
+
+_USER_HANDOFF = (
+    "---\n"
+    "next_agent: user\n"
+    'reason: "Planner needs an answer."\n'
+    "status: escalate_to_user\n"
+    "producer: planner\n"
+    "---\n\n"
+    "# Handoff\n\n"
+    "Which story comes next?\n"
+)
+
+_BACKEND_HANDOFF = (
+    "---\n"
+    "next_agent: backend\n"
+    'reason: "Implement the story."\n'
+    "producer: planner\n"
+    "---\n\n"
+    "# Handoff\n\n"
+    "## Work Packet\n\n"
+    "- **Objective:** Implement the story.\n"
+    "- **Files in scope:** `src/app.py`\n"
+    "- **Files out of bounds:** none\n"
+    "- **Context:** Test fixture.\n"
+    "- **Verification command:**\n"
+    "  - python -m pytest tests -q\n"
+    "- **Expected next route:** auditor\n"
+)
+
+
+def _run_scripted_unconfigured_tpm_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    dispatch_rewrites: list[str],
+    pause_rewrites: list[str],
+    max_dispatches: int,
+) -> tuple[Any, list[tuple[str, Any]]]:
+    """Run the loop with scripted handoff rewrites at dispatches and pauses.
+
+    Each dispatch writes the next entry of `dispatch_rewrites`; each pause
+    other than the tpm-not-configured pause writes the next entry of
+    `pause_rewrites` and resumes. The tpm-not-configured pause, an exhausted
+    pause script, or reaching `max_dispatches` stops the loop. Pause recovery
+    is off, so the tpm repair is the only planner dispatch the loop adds.
+    """
+
+    handoff_path = _write_tpm_route_fixture(tmp_path)
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+    events: list[tuple[str, Any]] = []
+    dispatch_script = list(dispatch_rewrites)
+    pause_script = list(pause_rewrites)
+
+    def dispatch_count() -> int:
+        return sum(1 for kind, _ in events if kind == "dispatch")
+
+    def fake_dispatch(route: str, *args: Any, **kwargs: Any) -> Any:
+        events.append(("dispatch", (route, kwargs)))
+        if dispatch_script:
+            handoff_path.write_text(dispatch_script.pop(0), encoding="utf-8")
+        return (
+            DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.1),
+            route,
+        )
+
+    def fake_schedule(*args: Any, **kwargs: Any) -> Any:
+        events.append(("schedule_pause_recovery", kwargs))
+        raise AssertionError("pause recovery must not be scheduled for tpm")
+
+    def scripted_pause(*args: Any, **kwargs: Any) -> Any:
+        reason = kwargs["reason"]
+        events.append(("pause", reason))
+        if reason == orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON:
+            return orchestrator.PauseOutcome(kind="stop")
+        if dispatch_count() >= max_dispatches or not pause_script:
+            return orchestrator.PauseOutcome(kind="stop")
+        handoff_path.write_text(pause_script.pop(0), encoding="utf-8")
+        return orchestrator.PauseOutcome(kind="resume")
+
+    monkeypatch.setattr(orchestrator, "_dispatch_route", fake_dispatch)
+    monkeypatch.setattr(orchestrator, "_schedule_pause_recovery", fake_schedule)
+    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", scripted_pause)
+
+    # The fixture handoffs are not full handbacks, so a role's post-dispatch
+    # gates may fail; with pause recovery off they pause through the script.
+    config = _dispatch_config(tmp_path, pause_recovery="off")
+    assert "tpm" not in config.agents
+    orchestrator.run_loop(config, log=lambda level, message: None)
+    return orchestrator, events
+
+
+def test_repair_guard_survives_a_route_that_pauses_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Repair -> planner writes a user route -> the user route pauses before
+    # dispatch -> the operator puts the tpm route back. No role dispatched in
+    # between, so the guard pauses instead of repairing a second time.
+    orchestrator, events = _run_scripted_unconfigured_tpm_loop(
+        tmp_path,
+        monkeypatch,
+        dispatch_rewrites=[_USER_HANDOFF],
+        pause_rewrites=[_TPM_HANDOFF],
+        max_dispatches=2,
+    )
+
+    dispatches = [payload for kind, payload in events if kind == "dispatch"]
+    assert [route for route, _ in dispatches] == ["planner"]
+    pauses = [payload for kind, payload in events if kind == "pause"]
+    assert len(pauses) == 2
+    assert pauses[0].startswith("ESCALATION DETECTED")
+    assert pauses[1] == orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON
+    assert not any(kind == "schedule_pause_recovery" for kind, _ in events)
+
+
+def test_repair_guard_clears_after_another_route_dispatches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Repair -> planner writes a backend route -> backend dispatches and puts
+    # the tpm route back. A role dispatched in between, so the tpm route gets
+    # a fresh planner repair instead of the guard pause.
+    orchestrator, events = _run_scripted_unconfigured_tpm_loop(
+        tmp_path,
+        monkeypatch,
+        # A changed tpm handoff, so the second repair is not a stale route.
+        dispatch_rewrites=[_BACKEND_HANDOFF, _TPM_HANDOFF_AGAIN],
+        pause_rewrites=[_TPM_HANDOFF_AGAIN],
+        max_dispatches=3,
+    )
+
+    dispatches = [payload for kind, payload in events if kind == "dispatch"]
+    assert [route for route, _ in dispatches] == ["planner", "backend", "planner"]
+    instruction = orchestrator.TPM_NOT_CONFIGURED_PLANNER_INSTRUCTION
+    assert dispatches[0][1]["additional_instruction"] == instruction
+    assert dispatches[1][1]["additional_instruction"] != instruction
+    assert dispatches[2][1]["additional_instruction"] == instruction
+    third = events.index(("dispatch", dispatches[2]))
+    assert ("pause", orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON) not in events[
+        :third
+    ]
+
+
 # TPM-3 checks 1 to 5: validator rules for producer: tpm
 
 
