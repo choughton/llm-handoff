@@ -20,6 +20,13 @@ commit's SHA, so a review of an earlier push never satisfies the gate.
 After a review is re-requested, ``stale_before`` ignores a summary comment
 Codex has not touched since the request, so the failed status of the earlier
 review does not end the new wait at once.
+
+Codex can also mark a review completed without naming a commit: the state
+marker's ``commit_sha`` is null, the table's Commit cell is a dash, and there
+is no review or reaction. Nothing ties that review to the head commit, so it
+is not a pass. When a summary updated after the push or request shows it on
+two polls in a row (so a +1 reaction posted just after the summary still
+counts), the wait ends as ``failed`` with ``unattributed`` set.
 """
 
 from __future__ import annotations
@@ -44,6 +51,13 @@ _CODE_REVIEW_ROW_RE = re.compile(
     r"^\|[^|\n]*\*\*Code Review\*\*[^|\n]*\|([^|\n]*)\|\s*`([0-9a-fA-F]{7,40})`",
     re.MULTILINE,
 )
+# The same row with any Commit cell, such as the dash Codex writes when a
+# completed review names no commit.
+_CODE_REVIEW_ANY_ROW_RE = re.compile(
+    r"^\|[^|\n]*\*\*Code Review\*\*[^|\n]*\|([^|\n]*)\|([^|\n]*)\|",
+    re.MULTILINE,
+)
+_SHA_CELL_RE = re.compile(r"`[0-9a-fA-F]{7,40}`")
 _RUNNING_STATUSES = {"running", "queued", "pending", "in_progress", "started"}
 _FAILED_STATUSES = {"failed", "error", "errored", "cancelled", "canceled"}
 _BADGE_RE = re.compile(r"!\[(\w+) Badge\]\([^)]*\)")
@@ -98,6 +112,8 @@ class CodexReviewState:
     findings: tuple[ReviewFinding, ...] = ()
     detail: str = "no Codex activity yet"
     usage_limited: bool = False
+    # The summary marks a review completed but names no commit.
+    unattributed: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,6 +123,9 @@ class ReviewResult:
     detail: str = ""
     # A failed review because the Codex account is out of code review usage.
     usage_limited: bool = False
+    # A failed review because Codex marked one completed without naming the
+    # commit it reviewed.
+    unattributed: bool = False
 
 
 def read_codex_review(
@@ -161,15 +180,18 @@ def read_codex_review(
 
     summary_status: str | None = None
     unresolved = False
+    unattributed = False
     for comment in issue_comments:
         body = comment.get("body") or ""
         if not by_bot(comment) or SUMMARY_MARKER not in body:
             continue
-        if stale_before is not None and _parse_time(
-            comment.get("updated_at") or comment.get("created_at")
-        ) <= stale_before:
+        updated = _parse_time(comment.get("updated_at") or comment.get("created_at"))
+        if stale_before is not None and updated <= stale_before:
             continue
         summary_status, unresolved = _summary_status(body, head)
+        # Only a summary Codex updated after the push or request counts, so
+        # an earlier review that named no commit does not end a new wait.
+        unattributed = updated > requested_at and _completed_without_commit(body)
 
     thumbs_up = any(
         by_bot(reaction)
@@ -209,6 +231,15 @@ def read_codex_review(
             )
         ]
     completed = summary_status == "completed" or bool(head_reviews) or thumbs_up
+    if summary_status is None and unattributed and not completed and not findings:
+        return CodexReviewState(
+            completed=False,
+            unattributed=True,
+            detail=(
+                "Codex marked a review completed without naming a commit, so "
+                f"the dispatcher cannot tell it reviewed {head[:12]}"
+            ),
+        )
     if completed:
         detail = (
             f"Codex finished reviewing {head[:12]} with {len(findings)} finding(s)"
@@ -250,6 +281,7 @@ def wait_for_codex_review(
     deadline = clock() + timeout_seconds
     last_detail = ""
     state = CodexReviewState(completed=False)
+    unattributed_polls = 0
     while True:
         responses: dict[str, list[dict[str, Any]]] = {}
         for key, endpoint in endpoints.items():
@@ -275,7 +307,14 @@ def wait_for_codex_review(
             if state.completed:
                 outcome: ReviewOutcome = "findings" if state.findings else "clean"
                 return ReviewResult(outcome, state.findings, state.detail)
+            # Two polls in a row, so a +1 reaction Codex posts a few seconds
+            # after the summary still makes the review clean.
+            unattributed_polls = unattributed_polls + 1 if state.unattributed else 0
+            if unattributed_polls >= 2:
+                return ReviewResult("failed", detail=state.detail, unattributed=True)
         if clock() >= deadline:
+            if state.unattributed:
+                return ReviewResult("failed", detail=state.detail, unattributed=True)
             if state.findings:
                 return ReviewResult("findings", state.findings, state.detail)
             return ReviewResult(
@@ -384,6 +423,28 @@ def _summary_status(body: str, head: str) -> tuple[str | None, bool]:
     if "fail" in cell or "error" in cell:
         return "failed", False
     return "running", False
+
+
+def _completed_without_commit(body: str) -> bool:
+    """Whether the summary marks a code review completed but names no commit."""
+
+    marker = _STATE_MARKER_RE.search(body)
+    if marker is not None:
+        try:
+            code_review = json.loads(marker.group(1)).get("code_review")
+        except (ValueError, AttributeError):
+            code_review = None
+        if isinstance(code_review, dict):
+            return (
+                not code_review.get("commit_sha")
+                and str(code_review.get("status") or "").lower() == "completed"
+            )
+    row = _CODE_REVIEW_ANY_ROW_RE.search(body)
+    return (
+        row is not None
+        and "completed" in row.group(1).lower()
+        and _SHA_CELL_RE.search(row.group(2)) is None
+    )
 
 
 def _clean_body(body: str) -> str:

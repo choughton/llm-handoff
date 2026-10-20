@@ -367,3 +367,207 @@ def test_a_usage_limit_comment_without_a_review_of_this_head_is_ignored() -> Non
 
         assert state.failed is False
         assert state.completed is False
+
+
+# The summary Codex left on a pull request on 2026-10-20: the review is
+# Completed, but the state marker's commit_sha is null and the Commit cell
+# is an em dash, with no review, inline comment, or reaction.
+def unattributed_summary(updated_at: str = "2026-10-15T06:51:22Z") -> dict:
+    return {
+        "user": {"login": BOT},
+        "created_at": "2026-10-15T06:48:09Z",
+        "updated_at": updated_at,
+        "body": (
+            "<!-- codex-pull-request-review-summary -->\n"
+            '<!-- codex-review-state:v1 {"code_review":{"commit_sha":null,'
+            '"has_any_findings":null,"has_unresolved_findings":null,'
+            '"status":"completed"},"security_review":{"commit_sha":null,'
+            '"has_any_findings":null,"has_unresolved_findings":null,'
+            '"status":null}} -->\n'
+            "\n## Codex Review Summary\n\n"
+            "| Review | Status | Commit | Review trigger |\n"
+            "| --- | --- | --- | --- |\n"
+            "| \U0001f4dd **Code Review** | ✅ **Completed** "
+            '<relative-time datetime="2026-10-15T06:51:22.040937Z">x'
+            "</relative-time> | — | PR opened |\n"
+        ),
+    }
+
+
+# The same summary when Codex names the commit, as on the pull request
+# before it, followed by the +1 reaction two seconds later.
+def attributed_summary(sha: str) -> dict:
+    return {
+        **unattributed_summary(),
+        "body": summary(
+            sha[:7],
+            status="✅ **Completed**",
+            marker=(
+                '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"'
+                + sha
+                + '","has_any_findings":false,"has_unresolved_findings":false,'
+                '"status":"completed"},"security_review":{"commit_sha":null,'
+                '"has_any_findings":null,"has_unresolved_findings":null,'
+                '"status":null}} -->\n'
+            ),
+        )["body"],
+    }
+
+
+THUMBS_UP = {
+    "user": {"login": BOT},
+    "content": "+1",
+    "created_at": "2026-10-15T06:51:24Z",
+}
+UNATTRIBUTED_DETAIL = (
+    "Codex marked a review completed without naming a commit, so the "
+    f"dispatcher cannot tell it reviewed {HEAD[:12]}"
+)
+
+
+def test_a_completed_review_that_names_no_commit_is_unattributed_not_clean() -> None:
+    state = read(issue_comments=[unattributed_summary()])
+
+    assert state.completed is False
+    assert state.failed is False
+    assert state.unattributed is True
+    assert state.detail == UNATTRIBUTED_DETAIL
+
+
+def test_a_completed_review_that_names_the_head_commit_is_still_clean() -> None:
+    state = read(issue_comments=[attributed_summary(HEAD)], reactions=[THUMBS_UP])
+
+    assert state.completed is True
+    assert state.unattributed is False
+    assert state.findings == ()
+
+
+def test_a_head_review_or_thumbs_up_outranks_a_summary_that_names_no_commit() -> None:
+    for signals in (
+        {"reactions": [THUMBS_UP]},
+        {"reviews": [FINDINGS_REVIEW], "review_comments": [INLINE_FINDING]},
+    ):
+        state = read(issue_comments=[unattributed_summary()], **signals)
+
+        assert state.completed is True
+        assert state.unattributed is False
+
+
+def test_a_summary_that_names_no_commit_counts_only_after_the_request() -> None:
+    old = read(issue_comments=[unattributed_summary("2026-10-15T06:40:00Z")])
+    impostor = read(
+        issue_comments=[{**unattributed_summary(), "user": {"login": "someone"}}]
+    )
+    running = read(
+        issue_comments=[
+            {
+                **unattributed_summary(),
+                "body": unattributed_summary()["body"].replace(
+                    '"status":"completed"', '"status":"running"'
+                ),
+            }
+        ]
+    )
+
+    for state in (old, impostor, running):
+        assert state.unattributed is False
+        assert state.completed is False
+
+
+def test_a_table_row_without_a_commit_and_no_marker_is_unattributed() -> None:
+    body = unattributed_summary()["body"]
+    without_marker = "\n".join(
+        line for line in body.split("\n") if "codex-review-state" not in line
+    )
+
+    state = read(issue_comments=[{**unattributed_summary(), "body": without_marker}])
+
+    assert state.unattributed is True
+
+
+def _waiter(pages: dict, now: list, on_sleep=None):
+    def fetch(endpoint: str) -> list:
+        for key, path in (
+            ("issue_comments", "issues/8/comments"),
+            ("reviews", "pulls/8/reviews"),
+            ("review_comments", "pulls/8/comments"),
+            ("reactions", "issues/8/reactions"),
+        ):
+            if endpoint.endswith(path):
+                return pages[key]
+        raise AssertionError(endpoint)
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+        if on_sleep is not None:
+            on_sleep()
+
+    logs: list[tuple[str, str]] = []
+    common = dict(
+        fetch=fetch,
+        pr_number=8,
+        head_sha=HEAD,
+        bot_login=BOT,
+        requested_at=REQUESTED,
+        poll_seconds=30,
+        log=lambda level, message: logs.append((level, message)),
+        sleep=sleep,
+        clock=lambda: now[0],
+    )
+    return common, logs
+
+
+def test_wait_ends_early_on_a_completed_review_that_names_no_commit() -> None:
+    now = [0.0]
+    pages = {
+        "issue_comments": [unattributed_summary()],
+        "reviews": [],
+        "review_comments": [],
+        "reactions": [],
+    }
+    common, logs = _waiter(pages, now)
+
+    result = wait_for_codex_review(timeout_seconds=1200, **common)
+
+    assert result.outcome == "failed"
+    assert result.unattributed is True
+    assert result.usage_limited is False
+    assert result.detail == UNATTRIBUTED_DETAIL
+    # One more poll to confirm it, not the whole timeout.
+    assert now[0] == 30
+    assert logs == [("INFO", f"PR review: {UNATTRIBUTED_DETAIL}.")]
+
+
+def test_wait_stays_clean_when_the_thumbs_up_follows_the_summary() -> None:
+    now = [0.0]
+    pages = {
+        "issue_comments": [unattributed_summary()],
+        "reviews": [],
+        "review_comments": [],
+        "reactions": [],
+    }
+    common, _logs = _waiter(
+        pages, now, on_sleep=lambda: pages.__setitem__("reactions", [THUMBS_UP])
+    )
+
+    result = wait_for_codex_review(timeout_seconds=1200, **common)
+
+    assert result.outcome == "clean"
+    assert result.unattributed is False
+
+
+def test_wait_reports_a_review_that_names_no_commit_at_the_deadline() -> None:
+    now = [0.0]
+    pages = {
+        "issue_comments": [unattributed_summary()],
+        "reviews": [],
+        "review_comments": [],
+        "reactions": [],
+    }
+    common, _logs = _waiter(pages, now)
+
+    result = wait_for_codex_review(timeout_seconds=0, **common)
+
+    assert result.outcome == "failed"
+    assert result.unattributed is True
+    assert now[0] == 0
