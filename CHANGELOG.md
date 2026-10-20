@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The planner merge-conflict resolver now fails closed when it cannot read a
+  file (RECOVERY-13). Before, a tracked or listed path whose bytes or link
+  target could not be read got an empty digest, so a file unreadable both
+  before and after the planner ran compared as unchanged and could hide a
+  content change. Now any read failure other than a missing path makes the
+  working-tree snapshot unreadable: before the planner runs the resolver
+  pauses with `the merge state could not be read` without prompting the
+  planner, and after it the resolution is rejected with
+  `the checkout could not be read`, the merge is aborted, and the run pauses
+  as before.
 - An interrupted `merge-commit` publish now finishes on the next start, or
   pauses (RECOVERY-12). Before, only `pr` mode had a startup resume, so the
   planner ran on the story's stale `verified_pass` handoff and the next story

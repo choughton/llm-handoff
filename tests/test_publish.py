@@ -1672,6 +1672,137 @@ def test_the_worktree_snapshot_sees_hidden_submodule_changes(tmp_path: Path) -> 
     assert empty["vendor/lib"][1:] == ("directory", "")
 
 
+def _deny_reads(monkeypatch: pytest.MonkeyPatch, target: Path, call: str) -> None:
+    """Make one read call in the publish module fail for ``target`` only."""
+
+    from llm_handoff import publish
+
+    def denied(path: object) -> bool:
+        return Path(os.fspath(path)) == target  # type: ignore[arg-type]
+
+    if call == "read_bytes":
+        original_read = Path.read_bytes
+
+        def read_bytes(self: Path) -> bytes:
+            if denied(self):
+                raise PermissionError(13, "Permission denied", str(self))
+            return original_read(self)
+
+        monkeypatch.setattr(Path, "read_bytes", read_bytes)
+        return
+    original = getattr(publish.os, call)
+
+    def fail(path: object, *args: object, **kwargs: object) -> object:
+        if denied(path):
+            raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[arg-type]
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(publish.os, call, fail)
+
+
+@pytest.mark.parametrize("call", ["read_bytes", "lstat"])
+def test_the_worktree_snapshot_fails_closed_on_an_unreadable_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    from llm_handoff import publish
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    _commit_all(
+        repo, {NOTES_FILE: "notes\n", "docs/gone.md": "gone\n"}, "Add the docs"
+    )
+    # A deleted tracked file is still a readable fact, not a failure.
+    (repo / "docs" / "gone.md").unlink()
+    readable = publish._worktree_snapshot(repo)
+    assert readable is not None
+    assert readable["docs/gone.md"] == (" D", "missing", "")
+
+    _deny_reads(monkeypatch, repo / NOTES_FILE, call)
+
+    assert publish._path_fingerprint(repo / NOTES_FILE) is None
+    assert publish._worktree_snapshot(repo) is None
+    assert publish._path_fingerprint(repo / "docs" / "gone.md") == ("missing", "")
+
+
+def test_the_worktree_snapshot_fails_closed_on_an_unreadable_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import publish
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "README.md").unlink()
+    try:
+        os.symlink("elsewhere", repo / "README.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+    assert publish._worktree_snapshot(repo) is not None
+
+    _deny_reads(monkeypatch, repo / "README.md", "readlink")
+
+    assert publish._path_fingerprint(repo / "README.md") is None
+    assert publish._worktree_snapshot(repo) is None
+
+
+def test_a_file_unreadable_after_the_planner_pauses_the_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path, monkeypatch, initial={NOTES_FILE: "base notes\n"}
+    )
+    head = _git(repo, "rev-parse", "HEAD")
+    prompts: list[str] = []
+
+    def run(prompt: str) -> bool:
+        prompts.append(prompt)
+        (repo / STATE_FILE).write_text(STATE_RESOLVED, encoding="utf-8")
+        # The file cannot be read once the planner is done, so the
+        # dispatcher cannot tell whether the planner changed it.
+        _deny_reads(monkeypatch, repo / NOTES_FILE, "read_bytes")
+        return True
+
+    resolver = StateConflictResolver(path=STATE_FILE, run=run)
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert len(prompts) == 1
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"conflicts in `{STATE_FILE}`, which the planner did not resolve" in (
+        outcome.message
+    )
+    assert "the checkout could not be read" in outcome.message
+    assert "The merge was aborted" in outcome.message
+    assert not any("Planner resolved" in message for _level, message in entries)
+    assert not _merge_in_progress(repo)
+    # No merge commit: HEAD is still the story head.
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _saved_state(repo)["paused_publish"] == "push"
+    assert _gh_calls(tmp_path) == []
+
+
+def test_a_file_unreadable_before_the_planner_pauses_without_the_planner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path, monkeypatch, initial={NOTES_FILE: "base notes\n"}
+    )
+    head = _git(repo, "rev-parse", "HEAD")
+    _deny_reads(monkeypatch, repo / NOTES_FILE, "read_bytes")
+    resolver, prompts = _planner(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert prompts == []
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "the merge state could not be read" in outcome.message
+    assert not _merge_in_progress(repo)
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _saved_state(repo)["paused_publish"] == "push"
+    assert _gh_calls(tmp_path) == []
+
+
 def test_the_index_flag_snapshot_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

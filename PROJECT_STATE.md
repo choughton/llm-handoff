@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-12 in progress; RECOVERY-11 merged in
+- **Active Epic:** RECOVERY (RECOVERY-13 in progress; RECOVERY-12 merged in
+  PR #181 (HEAD `2e5279b`); RECOVERY-11 merged in
   PR #180 (HEAD `d227641`); RECOVERY-10 merged in
   PR #179 (HEAD `1685281`); RECOVERY-9 approved
   at `1e41789`, merged in PR #178; RECOVERY-8 approved at
@@ -29,11 +30,12 @@ belong in commits, handoffs, and pull requests.
   split from RECOVERY-8), then RECOVERY-13 (merge-conflict resolver fails
   closed on unreadable files, from the RECOVERY-10 security review). Epic
   order: 12, 13.
-  RECOVERY-12 (interrupted merge-commit publish) is active because it is
-  next in the epic's order (12, 13), unblocked (RECOVERY-2 through
-  RECOVERY-11 are merged), and closes the `merge-commit` half of the
-  interrupted-publish gap that RECOVERY-8 fixed for `pr` mode. The other open
-  epics' Fit lines are unchanged since RECOVERY-10 was picked.
+  RECOVERY-12 (interrupted merge-commit publish) is merged in PR #181 (HEAD
+  `2e5279b`). RECOVERY-13 (merge-conflict resolver fails closed on
+  unreadable files) is active because it is the last RECOVERY story and
+  unblocked (RECOVERY-2 through RECOVERY-12 are merged); RECOVERY closes
+  after it. The other open epics' Fit lines are unchanged since RECOVERY-10
+  was picked.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -716,10 +718,10 @@ RECOVERY-4, no-record fallback) is approved at `1e41789` and merged
 (PR #178). RECOVERY-10 (merge-conflict resolver sees hidden working-tree
 edits) is merged (PR #179). RECOVERY-11 (failed in-flight record deletes stop
 every recovery path) is merged (PR #180). RECOVERY-12 (interrupted
-merge-commit publish, split from RECOVERY-8) is active because it is next in
-the epic's order (12, 13) and unblocked; RECOVERY-13 (merge-conflict resolver
-fails closed on unreadable files) follows. The other open epics' Fit lines
-are unchanged.
+merge-commit publish, split from RECOVERY-8) is merged (PR #181).
+RECOVERY-13 (merge-conflict resolver fails closed on unreadable files) is
+active because it is the last RECOVERY story and unblocked; the epic closes
+after it. The other open epics' Fit lines are unchanged.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
@@ -1060,7 +1062,14 @@ bounces until the three-fix circuit breaker escalates.
   records an empty digest when a file cannot be read, so a file unreadable
   in both snapshots with unchanged status and type hides a content change.
   A read failure makes the snapshot fail (None), so conflict resolution
-  pauses, with a regression.
+  pauses, with a regression. Decided by the planner on 2026-10-20:
+  `_path_fingerprint` returns None when `os.lstat` fails with anything but
+  `FileNotFoundError` or `NotADirectoryError` (still `missing`), or when a
+  symlink's target or a regular file's bytes cannot be read; directories and
+  other types keep an empty digest. `_worktree_snapshot` and
+  `_gitlink_fingerprint` return None when it does, so the resolver pauses
+  with "the merge state could not be read" or "the checkout could not be
+  read".
 
 ### 13. CHAT - talk to the agents while the loop runs
 

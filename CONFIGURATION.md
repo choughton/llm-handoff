@@ -1110,7 +1110,10 @@ commit. The dispatcher then checks the result itself:
   untracked path `git status` lists. A tracked submodule is compared by its
   HEAD and the same per-path snapshot of its own checkout, so a submodule
   edit hidden by submodule ignore settings is caught; a submodule directory
-  that has content but no `.git`, or that Git cannot read, fails the check;
+  that has content but no `.git`, or that Git cannot read, fails the check.
+  A tracked or listed path whose type, content, or link target cannot be
+  read, before or after the planner runs, also fails the check, so a file
+  unreadable in both snapshots cannot hide a change;
 - no index flag changed on any path, `project_state_path` included: an
   `assume-unchanged` or `skip-worktree` flag set, cleared, or added for a new
   entry (from `git ls-files -v`) is rejected;
