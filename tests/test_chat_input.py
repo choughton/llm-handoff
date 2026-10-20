@@ -207,6 +207,189 @@ def test_unavailable_message_text() -> None:
     )
 
 
+# --- on_submit ------------------------------------------------------------------
+
+
+def _submit_chat(
+    on_submit: Any,
+    reader: Any | None = None,
+) -> tuple[ChatInput, ChatLine, list[str]]:
+    chat_line = ChatLine(io.StringIO(), terminal_columns=lambda: 120)
+    notes: list[str] = []
+    chat = ChatInput(
+        chat_line,
+        reader if reader is not None else _ScriptedReader(),
+        notify=notes.append,
+        interrupt=lambda: None,
+        poll_interval=0.01,
+        on_submit=on_submit,
+    )
+    return chat, chat_line, notes
+
+
+def test_on_submit_receives_stripped_text_and_its_notice_is_shown() -> None:
+    calls: list[str] = []
+
+    def on_submit(text: str) -> str:
+        calls.append(text)
+        return f"saved {text}"
+
+    chat, chat_line, notes = _submit_chat(on_submit)
+    chat.feed("  hello there  \r")
+
+    assert calls == ["hello there"]
+    assert notes == ["saved hello there"]
+    assert chat.take_pending() == []
+    assert chat.buffer == ""
+    assert chat_line.buffer == ""
+
+
+def test_on_submit_is_never_called_for_blank_lines() -> None:
+    calls: list[str] = []
+    chat, chat_line, notes = _submit_chat(lambda text: calls.append(text) or "x")
+    chat.feed("\r   \r\n\t\r")
+
+    assert calls == []
+    assert notes == []
+    assert chat.buffer == ""
+    assert chat_line.buffer == ""
+
+
+def test_on_submit_oserror_keeps_buffer_and_enter_retries() -> None:
+    calls: list[str] = []
+    failures = [OSError("disk full")]
+
+    def on_submit(text: str) -> str:
+        calls.append(text)
+        if failures:
+            raise failures.pop()
+        return "saved"
+
+    chat, chat_line, notes = _submit_chat(on_submit)
+    chat.feed("hello\r")
+
+    assert calls == ["hello"]
+    assert notes == ["Chat message not saved; press Enter to try again."]
+    assert chat.buffer == "hello"
+    assert chat_line.buffer == "hello"
+    assert chat.take_pending() == []
+
+    chat.feed("\r")
+
+    assert calls == ["hello", "hello"]
+    assert notes[-1] == "saved"
+    assert chat.buffer == ""
+    assert chat.take_pending() == []
+
+
+def test_on_submit_oserror_keeps_the_capture_thread_running() -> None:
+    calls: list[str] = []
+    failures = [OSError("disk full")]
+
+    def on_submit(text: str) -> str:
+        calls.append(text)
+        if failures:
+            raise failures.pop()
+        return "saved"
+
+    reader = _ScriptedReader(["hello\r"])
+    chat, _chat_line, notes = _submit_chat(on_submit, reader)
+    chat.start()
+    try:
+        assert _wait_until(
+            lambda: notes == ["Chat message not saved; press Enter to try again."]
+        )
+        assert chat.running
+        assert chat.buffer == "hello"
+        reader.add("\r")
+        assert _wait_until(lambda: notes[-1:] == ["saved"])
+        assert calls == ["hello", "hello"]
+        assert chat.running
+    finally:
+        chat.stop()
+    assert chat.take_pending() == []
+
+
+def test_stale_generation_submission_never_calls_on_submit() -> None:
+    calls: list[str] = []
+    chat, chat_line, notes = _submit_chat(lambda text: calls.append(text) or "x")
+    chat.feed("hello")
+    stale = chat._generation
+    chat._generation += 1
+
+    chat._submit(stale)
+
+    assert calls == []
+    assert notes == []
+    assert chat.buffer == "hello"
+    assert chat_line.buffer == "hello"
+
+
+def test_stop_waits_for_an_in_progress_on_submit() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def on_submit(text: str) -> str:
+        calls.append(text)
+        entered.set()
+        release.wait(5)
+        return "saved"
+
+    reader = _ScriptedReader(["hello\r"])
+    chat, _chat_line, notes = _submit_chat(on_submit, reader)
+    chat.start()
+    stop_done = threading.Event()
+    stopper: threading.Thread | None = None
+    try:
+        assert entered.wait(2)
+        stopper = threading.Thread(target=lambda: (chat.stop(), stop_done.set()))
+        stopper.start()
+        # stop() is blocked behind the in-progress save.
+        assert not stop_done.wait(0.05)
+        release.set()
+        assert stop_done.wait(2)
+    finally:
+        release.set()
+        if stopper is not None:
+            stopper.join(2)
+        chat.stop()
+    assert calls == ["hello"]
+    assert chat.buffer == ""
+    # The generation went stale during the save, so no late notice.
+    assert notes == []
+    assert reader.close_count == 1
+
+
+def test_submission_after_stop_saves_nothing() -> None:
+    calls: list[str] = []
+    reader = _ScriptedReader(["par"])
+    chat, _chat_line, _notes = _submit_chat(
+        lambda text: calls.append(text) or "x", reader
+    )
+    chat.start()
+    assert _wait_until(lambda: chat.buffer == "par" and reader.drained.is_set())
+    chat.stop()
+    stale = chat._generation - 1
+
+    chat._submit(stale)
+
+    assert calls == []
+    assert chat.buffer == "par"
+
+
+def test_factory_passes_on_submit_through() -> None:
+    def on_submit(text: str) -> str:
+        return text
+
+    chat = chat_input_for_console(
+        _Stream(True), _plain_chat_line(), on_submit=on_submit
+    )
+
+    assert isinstance(chat, ChatInput)
+    assert chat._on_submit is on_submit
+
+
 # --- lifecycle ------------------------------------------------------------------
 
 

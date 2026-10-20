@@ -111,6 +111,28 @@ def test_set_role_twice_with_the_same_value_is_harmless() -> None:
     assert chat_line.drawn is False
 
 
+def test_set_role_none_keeps_the_role_readable_while_capture_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _chat_line, chat_input, _stream, _reader = _attached()
+    chat_session.set_role("backend")
+    seen: list[str | None] = []
+    real_stop = chat_input.stop
+
+    def recording_stop() -> None:
+        seen.append(chat_session.SESSION.role)
+        real_stop()
+        seen.append(chat_session.SESSION.role)
+
+    monkeypatch.setattr(chat_input, "stop", recording_stop)
+
+    chat_session.set_role(None)
+
+    assert seen == ["backend", "backend"]
+    assert chat_session.SESSION.role is None
+    assert chat_input.running is False
+
+
 def test_a_start_that_raises_oserror_leaves_capture_off() -> None:
     chat_line, chat_input, stream, reader = _attached(
         _IdleReader(open_error=OSError("no console"))
@@ -139,6 +161,28 @@ def test_detach_stops_capture_clears_the_line_and_forgets_both() -> None:
     chat_session.set_role("backend")
     assert chat_line.drawn is False
     assert reader.open_count == 1
+
+
+def test_detach_keeps_the_role_readable_while_capture_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _chat_line, chat_input, _stream, _reader = _attached()
+    chat_session.set_role("backend")
+    seen: list[str | None] = []
+    real_stop = chat_input.stop
+
+    def recording_stop() -> None:
+        seen.append(chat_session.SESSION.role)
+        real_stop()
+        seen.append(chat_session.SESSION.role)
+
+    monkeypatch.setattr(chat_input, "stop", recording_stop)
+
+    chat_session.detach()
+
+    assert seen == ["backend", "backend"]
+    assert chat_session.SESSION.role is None
+    assert chat_input.running is False
 
 
 # --- suspended -------------------------------------------------------------------

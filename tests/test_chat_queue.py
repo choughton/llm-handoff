@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from llm_handoff.chat_queue import (
     clear_chat_messages,
     load_chat_messages,
     queued_message_notice,
+    save_chat_message,
 )
 from llm_handoff.config import CHAT_QUEUE_STATE_PATH
 
@@ -38,6 +40,7 @@ def test_public_names_are_exported() -> None:
         "clear_chat_messages",
         "load_chat_messages",
         "queued_message_notice",
+        "save_chat_message",
     }
 
 
@@ -311,3 +314,81 @@ def test_queued_message_notice_text() -> None:
         queued_message_notice("auditor")
         == "Question queued until after the current auditor run completes."
     )
+
+
+# --- save_chat_message ---------------------------------------------------------
+
+
+def test_save_appends_after_existing_with_role_and_utc_time(tmp_path: Path) -> None:
+    path = _queue(tmp_path)
+    earlier = ChatMessage(text="earlier", role="planner", received_at="t0")
+    append_chat_messages(path, [earlier])
+
+    notice = save_chat_message(
+        path,
+        "why the retry?",
+        "backend",
+        now=lambda: datetime(2026, 10, 20, 12, 30, 45, 123456, tzinfo=timezone.utc),
+    )
+
+    assert notice == queued_message_notice("backend")
+    assert load_chat_messages(path) == [
+        earlier,
+        ChatMessage(
+            text="why the retry?",
+            role="backend",
+            received_at="2026-10-20T12:30:45+00:00",
+        ),
+    ]
+
+
+def test_save_without_role_returns_safe_point_notice(tmp_path: Path) -> None:
+    path = _queue(tmp_path)
+
+    notice = save_chat_message(
+        path,
+        "hello",
+        None,
+        now=lambda: datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert notice == "Question queued until the loop holds at its next safe point."
+    assert load_chat_messages(path) == [
+        ChatMessage(text="hello", role=None, received_at="2026-10-20T12:00:00+00:00")
+    ]
+
+
+def test_save_normalizes_non_utc_now_to_utc(tmp_path: Path) -> None:
+    path = _queue(tmp_path)
+    eastern = timezone(timedelta(hours=-4))
+
+    save_chat_message(
+        path,
+        "hello",
+        "auditor",
+        now=lambda: datetime(2026, 10, 20, 8, 15, 0, tzinfo=eastern),
+    )
+
+    assert [m.received_at for m in load_chat_messages(path)] == [
+        "2026-10-20T12:15:00+00:00"
+    ]
+
+
+def test_save_default_clock_writes_a_utc_timestamp(tmp_path: Path) -> None:
+    path = _queue(tmp_path)
+
+    save_chat_message(path, "hello", "backend")
+
+    [message] = load_chat_messages(path)
+    parsed = datetime.fromisoformat(message.received_at)
+    assert parsed.utcoffset() == timedelta(0)
+    assert message.received_at.endswith("+00:00")
+
+
+def test_save_propagates_write_failure(tmp_path: Path) -> None:
+    blocker = tmp_path / "logs"
+    blocker.write_text("not a directory", encoding="utf-8")
+    path = blocker / "dispatch" / "chat-queue.json"
+
+    with pytest.raises(OSError):
+        save_chat_message(path, "hello", "backend")

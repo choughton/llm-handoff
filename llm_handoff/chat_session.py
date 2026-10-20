@@ -53,9 +53,11 @@ class ChatSession:
         chat_line, chat_input = self._chat_line, self._chat_input
         self._chat_line = None
         self._chat_input = None
-        self._role = None
+        # Stop capture before clearing the role, as in ``set_role(None)``: a
+        # save racing the detach still reads the role that was running.
         if chat_input is not None:
             chat_input.stop()
+        self._role = None
         if chat_line is not None:
             chat_line.set_role(None)
 
@@ -63,11 +65,14 @@ class ChatSession:
         chat_line, chat_input = self._chat_line, self._chat_input
         if chat_line is None or chat_input is None:
             return
-        self._role = role
         if role is None:
+            # Stop capture first: a save racing this clear still reads the
+            # role that was running.
             chat_input.stop()
+            self._role = None
             chat_line.set_role(None)
             return
+        self._role = role
         chat_line.set_role(role)
         try:
             chat_input.start()

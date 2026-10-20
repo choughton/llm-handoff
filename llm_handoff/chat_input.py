@@ -1,11 +1,12 @@
 """Keystroke capture for the console chat line.
 
 While a role runs, a background thread reads keystrokes from the console
-without echo and edits a ``ChatLine`` buffer. Enter queues the line as a
-pending message. ``__main__._run_dispatch`` creates one for an interactive,
-non-dry run, and ``chat_session`` starts and stops it as roles run and while
-the dispatcher reads the console itself. Nothing consumes the pending
-messages yet (CHAT-2 does).
+without echo and edits a ``ChatLine`` buffer. Enter hands the line to the
+``on_submit`` callback when one is given (``__main__`` saves it to the chat
+queue, CHAT-2) and shows the notice it returns; without one, the line is kept
+as a pending message for ``take_pending``. ``__main__._run_dispatch`` creates
+one for an interactive, non-dry run, and ``chat_session`` starts and stops it
+as roles run and while the dispatcher reads the console itself.
 
 The platform readers take their platform modules (``msvcrt``, or ``termios``
 and ``select``) as constructor arguments, so tests can pass fakes on any OS.
@@ -26,6 +27,9 @@ from llm_handoff.chat_line import ChatLine
 
 CHAT_UNAVAILABLE_MESSAGE: Final[str] = (
     "Message received; chat answers are not available yet."
+)
+CHAT_SAVE_FAILED_MESSAGE: Final[str] = (
+    "Chat message not saved; press Enter to try again."
 )
 
 _BACKSPACE_CHARS: Final[frozenset[str]] = frozenset({"\b", "\x7f"})
@@ -235,9 +239,16 @@ class ChatInput:
         notify: Callable[[str], None] | None = None,
         interrupt: Callable[[], None] | None = None,
         poll_interval: float = 0.05,
+        on_submit: Callable[[str], str] | None = None,
     ) -> None:
         self._chat_line = chat_line
         self._reader = reader
+        self._on_submit = on_submit
+        # Held by the worker around the generation check plus the on_submit
+        # call, and taken by stop() after it bumps the generation, so a
+        # submission is saved before stop() returns or not at all. Never
+        # taken while holding _state_lock.
+        self._save_lock = threading.Lock()
         self._notify = notify if notify is not None else chat_line.write_above
         self._interrupt = interrupt if interrupt is not None else _thread.interrupt_main
         self._poll_interval = poll_interval
@@ -310,6 +321,10 @@ class ChatInput:
                 self._generation += 1
                 thread = self._thread
             if thread is not None and thread is not threading.current_thread():
+                # Wait out an on_submit call already in progress; any later
+                # submission sees the bumped generation and saves nothing.
+                with self._save_lock:
+                    pass
                 # Bounded: a worker still inside a slow callback after this
                 # keeps ownership (see start) and exits or is adopted later.
                 thread.join(timeout=max(self._poll_interval * 4, 0.2))
@@ -414,6 +429,9 @@ class ChatInput:
         generation never begins a late notification.
         """
 
+        if self._on_submit is not None:
+            self._submit_to_callback(generation, self._on_submit)
+            return
         text = self._buffer.strip()
         if text:
             with self._state_lock:
@@ -427,6 +445,37 @@ class ChatInput:
         if not self._is_current(generation):
             return
         self._notify(CHAT_UNAVAILABLE_MESSAGE)
+
+    def _submit_to_callback(
+        self, generation: int | None, on_submit: Callable[[str], str]
+    ) -> None:
+        """Hand the buffer to ``on_submit``, clear it, then notify its notice.
+
+        The generation check and the call run under the save lock, which
+        stop() takes after it bumps the generation: a submission is either
+        saved before stop() returns or not at all, and a stale one leaves the
+        buffer intact. An ``OSError`` from ``on_submit`` keeps the buffer, so
+        Enter retries.
+        """
+
+        text = self._buffer.strip()
+        if not text:
+            self._set_buffer("")
+            return
+        with self._save_lock:
+            if not self._is_current(generation):
+                return
+            try:
+                notice = on_submit(text)
+                saved = True
+            except OSError:
+                notice = CHAT_SAVE_FAILED_MESSAGE
+                saved = False
+        if saved:
+            self._set_buffer("")
+        if not self._is_current(generation):
+            return
+        self._notify(notice)
 
 
 def _stream_is_tty(stream: Any) -> bool:
@@ -470,6 +519,7 @@ def chat_input_for_console(
 
 
 __all__ = [
+    "CHAT_SAVE_FAILED_MESSAGE",
     "CHAT_UNAVAILABLE_MESSAGE",
     "ChatInput",
     "ChatKeyReader",

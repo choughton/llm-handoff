@@ -25,6 +25,7 @@ from llm_handoff.antigravity_permissions import (
 from llm_handoff import chat_session, console_interrupt
 from llm_handoff.chat_input import chat_input_for_console
 from llm_handoff.chat_line import ChatLine
+from llm_handoff.chat_queue import chat_queue_path, save_chat_message
 from llm_handoff.config import (
     DISPATCH_WINDOW_TITLE,
     detect_repo_root,
@@ -142,17 +143,23 @@ def _stream_is_tty(stream: object) -> bool:
         return False
 
 
-def _attach_console_chat(logger: DispatchLogger) -> bool:
+def _attach_console_chat(logger: DispatchLogger, repo_root: Path) -> bool:
     """Attach the console chat line and key capture for an interactive run.
 
     Only when both stdin and stdout are terminals; under the supervisor the
-    child's stdout is a pipe, so the chat line stays off there.
+    child's stdout is a pipe, so the chat line stays off there. A sent line
+    is saved to the chat queue with the running role.
     """
 
     if not (_stream_is_tty(sys.stdin) and _stream_is_tty(sys.stdout)):
         return False
+    queue_path = chat_queue_path(repo_root)
+
+    def save(text: str) -> str:
+        return save_chat_message(queue_path, text, chat_session.SESSION.role)
+
     chat_line = ChatLine(sys.stdout)
-    chat_input = chat_input_for_console(sys.stdin, chat_line)
+    chat_input = chat_input_for_console(sys.stdin, chat_line, on_submit=save)
     if chat_input is None:
         return False
     logger.attach_chat_line(chat_line)
@@ -215,7 +222,7 @@ def _run_dispatch(
         try:
             try:
                 if not dry_run:
-                    _attach_console_chat(logger)
+                    _attach_console_chat(logger, config.repo_root)
                 # The first Ctrl+C during a role's cycle asks for a graceful
                 # stop; a second one, or one outside a cycle, raises
                 # KeyboardInterrupt.
