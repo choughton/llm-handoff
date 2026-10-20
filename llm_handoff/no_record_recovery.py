@@ -157,6 +157,11 @@ def _changed_since_story_commit(
 
     Without a ``story_id``, or with no commit for it, HEAD is the story's last
     commit and nothing has changed since.
+
+    The result is the union of the paths every commit in ``<base>..HEAD``
+    touched, so a path changed and later restored still counts, plus the
+    endpoint diff ``<base> HEAD``, which also catches a change made only in
+    a merge commit's conflict resolution.
     """
 
     if not story_id:
@@ -166,6 +171,22 @@ def _changed_since_story_commit(
         return None
     if not base:
         return frozenset()
+    touched = _git_nul_entries(
+        repo_root,
+        [
+            "--literal-pathspecs",
+            "log",
+            "-z",
+            "--name-only",
+            "--no-renames",
+            "--format=",
+            f"{base}..HEAD",
+            "--",
+            *paths,
+        ],
+    )
+    if touched is None:
+        return None
     entries = _git_nul_entries(
         repo_root,
         [
@@ -182,7 +203,9 @@ def _changed_since_story_commit(
     )
     if entries is None:
         return None
-    return frozenset(normalize_repo_path(entry) for entry in entries)
+    return frozenset(
+        normalize_repo_path(entry) for entry in (*touched, *entries)
+    )
 
 
 def _git_nul_entries(repo_root: Path, args: list[str]) -> tuple[str, ...] | None:

@@ -908,7 +908,7 @@ startup and the handoff on disk still routes to `backend` or `frontend` with a
 gets a second question. The dispatcher offers the dirty files (the handoff and
 `logs/dispatch/` aside) that the Work Packet's Files in scope cover, that do
 not match `protected_paths`, and that no commit after the story's last commit
-changed. The story's last commit is the newest of the last 500 commits on HEAD
+touched, even when a later commit restored the file's content. The story's last commit is the newest of the last 500 commits on HEAD
 whose subject is the `story_id` or starts with it and a space, as the
 dispatcher's commit subject does; without a `story_id` or such a commit, HEAD
 is used. Any Git failure offers nothing. With nothing to offer it logs

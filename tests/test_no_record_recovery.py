@@ -457,6 +457,34 @@ def test_a_file_changed_after_the_story_commit_is_not_offered(
     assert candidates.left_out == ("src/app.py",)
 
 
+def test_a_file_changed_and_restored_after_the_story_commit_is_not_offered(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    assert 2\n")
+    story_commit = _commit(tmp_path, f"{STORY_ID} Change the value")
+    _write(tmp_path / "src" / "app.py", "VALUE = 3\n")
+    _commit(tmp_path, "Later operator commit")
+    _write(tmp_path / "src" / "app.py", "VALUE = 1\n")
+    _commit(tmp_path, "Restore the value")
+    # The endpoint trees match for src/app.py, but intervening commits touched it.
+    assert _git(tmp_path, "diff", "--name-only", story_commit, "HEAD") == ""
+    _write(tmp_path / "src" / "app.py", "VALUE = 4\n")
+    _write(tmp_path / "tests" / "test_app.py", "def test_value():\n    assert 3\n")
+
+    candidates = no_record_recovery.find_no_record_candidates(
+        tmp_path,
+        _assignment(),
+        HANDOFF_RELATIVE_PATH,
+        (),
+        protected_match=_orchestrator()._protected_path_matches,
+    )
+
+    assert candidates is not None
+    assert candidates.offered == ("tests/test_app.py",)
+    assert candidates.left_out == ("src/app.py",)
+
+
 def test_the_story_commit_subject_must_match_the_story_id_exactly(
     tmp_path: Path,
 ) -> None:
