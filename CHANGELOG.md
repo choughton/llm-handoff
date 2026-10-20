@@ -17,7 +17,8 @@ This project follows a simple pre-release changelog until the first public tag.
   not a descendant of that HEAD, or a commit with any file other than the
   project state file (plus the handoff in agent commit mode) logs an `ERROR`
   line and stops, keeping the record; the dispatcher never resets Git for a
-  finalizer record. An uncommitted project state edit stops the run too, so
+  finalizer record. An uncommitted project state edit in the working tree or
+  index, including a staged rename away from the file, stops the run too, so
   a partial ledger edit is never silently discarded. A finished finalizer
   (a valid changed handoff that no longer routes to `finalizer`) and one that
   did nothing (no ledger commit, unchanged handoff) delete the record. Every

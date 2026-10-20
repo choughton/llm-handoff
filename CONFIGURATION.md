@@ -801,7 +801,8 @@ protected-baseline checks as a `planner` record, then:
   or rewrites Git for a finalizer record. Otherwise commits since the
   record's HEAD count as a ledger commit.
 - b. When the project state file differs from HEAD in the working tree or
-  index (or Git cannot tell), the interrupted finalizer may have left a
+  index, including a rename or deletion of it (or Git cannot tell), the
+  interrupted finalizer may have left a
   partial ledger edit: the dispatcher logs one `ERROR` line naming the file,
   keeps the record, and stops; commit or discard the edit and start again. A
   dry run logs an `INFO` line instead and keeps the record.

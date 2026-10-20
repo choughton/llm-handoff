@@ -7203,6 +7203,33 @@ def _interrupted_finalizer_git_state(
     return _InterruptedFinalizerGitState(commits=commits, files=files)
 
 
+def _project_state_has_uncommitted_changes(config: DispatchConfig) -> bool | None:
+    """Whether the project state file differs from HEAD in the index or tree.
+
+    Asks ``git status`` about that one literal path with rename detection
+    off, so a staged or unstaged rename away from the file still reports
+    the file itself as deleted instead of only naming the destination.
+    Untracked counts too. None when Git fails. Read-only.
+    """
+
+    output = _run_git_stdout_raw(
+        config.repo_root,
+        [
+            "git",
+            "status",
+            "--porcelain=v1",
+            "--no-renames",
+            "--untracked-files=all",
+            "-z",
+            "--",
+            ":(literal)" + normalize_repo_path(config.project_state_path.as_posix()),
+        ],
+    )
+    if output is None:
+        return None
+    return bool(output.strip("\0"))
+
+
 def _recover_interrupted_finalizer(
     config: DispatchConfig,
     log: LogFn,
@@ -7263,14 +7290,12 @@ def _recover_interrupted_finalizer(
     project_state_display = _escape_control_characters(
         normalize_repo_path(config.project_state_path.as_posix())
     )
-    dirty_files = git_dirty_files(config.repo_root)
-    if dirty_files is None or normalize_repo_path(
-        config.project_state_path.as_posix()
-    ) in {normalize_repo_path(path) for path in dirty_files}:
+    ledger_dirty = _project_state_has_uncommitted_changes(config)
+    if ledger_dirty is None or ledger_dirty:
         reason = (
             "Git could not list uncommitted files, so the dispatcher cannot "
             f"tell whether {project_state_display} holds a partial ledger edit"
-            if dirty_files is None
+            if ledger_dirty is None
             else f"{project_state_display} has uncommitted changes, which may "
             "be a partial ledger edit"
         )

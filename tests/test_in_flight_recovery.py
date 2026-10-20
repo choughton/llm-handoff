@@ -4059,6 +4059,46 @@ def test_an_uncommitted_ledger_edit_keeps_the_finalizer_record(
     assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("change", ["staged_rename", "index_only"])
+def test_a_staged_ledger_change_keeps_the_finalizer_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+    dry_run: bool,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    # No ledger commit and an unchanged handoff: only the staged change
+    # keeps this from the "nothing done" branch.
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch, leave=_KEEP)
+    if change == "staged_rename":
+        _git(tmp_path, "mv", "PROJECT_STATE.md", "archived-state.md")
+    else:
+        head_ledger = (tmp_path / "PROJECT_STATE.md").read_text(encoding="utf-8")
+        _write(tmp_path / "PROJECT_STATE.md", PARTIAL_LEDGER)
+        _git(tmp_path, "add", "--", "PROJECT_STATE.md")
+        _write(tmp_path / "PROJECT_STATE.md", head_ledger)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, dry_run=dry_run)
+
+    if dry_run:
+        assert outcome == orchestrator.InterruptedDispatchRecovery()
+        assert [level for level, _message in messages] == ["INFO"]
+        assert "Not applied in dry run" in messages[0][1]
+    else:
+        assert outcome == orchestrator.InterruptedDispatchRecovery(stop=True)
+        assert [level for level, _message in messages] == ["ERROR"]
+        assert "partial ledger edit" in messages[0][1]
+    assert "PROJECT_STATE.md" in messages[0][1]
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == FINALIZER_HANDOFF
+
+
 def test_a_finished_finalizer_keeps_the_handoff_and_deletes_the_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
