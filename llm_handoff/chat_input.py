@@ -275,44 +275,62 @@ class ChatInput:
         """Apply the editing rules to ``chars`` (the capture thread's input)."""
 
         for char in chars:
-            self._handle_char(char)
+            self._handle_char(char, None)
 
     def _run(self) -> None:
         current = threading.current_thread()
-        while True:
-            with self._state_lock:
-                if not self._active:
-                    # Commit to exit under the lock, so start() either sees
-                    # this worker as gone or adopts it before this check.
-                    if self._thread is current:
-                        self._thread = None
-                    return
-                generation = self._generation
-            try:
-                chars = self._reader.read_chars(self._poll_interval)
-            except (EOFError, OSError):
+        try:
+            while True:
                 with self._state_lock:
-                    if self._generation == generation:
-                        self._active = False
-                continue
-            if chars:
-                self._feed_batch(chars, generation)
+                    if not self._active:
+                        # Commit to exit under the lock, so start() either
+                        # sees this worker as gone or adopts it before this
+                        # check.
+                        if self._thread is current:
+                            self._thread = None
+                        return
+                    generation = self._generation
+                try:
+                    chars = self._reader.read_chars(self._poll_interval)
+                except (EOFError, OSError):
+                    with self._state_lock:
+                        if self._generation == generation:
+                            self._active = False
+                    continue
+                if chars:
+                    self._feed_batch(chars, generation)
+        finally:
+            # Any other exit (a renderer, notify, or interrupt callback
+            # raised) still releases ownership, so the next start() creates
+            # a fresh worker instead of adopting this dead one. The normal
+            # exit above already cleared _thread, and start() never replaces
+            # a non-None _thread, so a newer worker is never disturbed.
+            with self._state_lock:
+                if self._thread is current:
+                    self._thread = None
+                    self._active = False
+
+    def _is_current(self, generation: int | None) -> bool:
+        if generation is None:
+            return True
+        with self._state_lock:
+            return self._generation == generation
 
     def _feed_batch(self, chars: str, generation: int) -> None:
         # Checked before every character, so a batch read before stop() (or
         # before a restart) does nothing once its callback returns.
         for char in chars:
-            if self._generation != generation:
+            if not self._is_current(generation):
                 return
-            self._handle_char(char)
+            self._handle_char(char, generation)
 
-    def _handle_char(self, char: str) -> None:
+    def _handle_char(self, char: str, generation: int | None) -> None:
         if char == "\n" and self._after_cr:
             self._after_cr = False
             return
         self._after_cr = char == "\r"
         if char in ("\r", "\n"):
-            self._submit()
+            self._submit(generation)
         elif char in _BACKSPACE_CHARS:
             if self._buffer:
                 self._set_buffer(self._buffer[:-1])
@@ -327,13 +345,30 @@ class ChatInput:
         self._buffer = text
         self._chat_line.set_buffer(text)
 
-    def _submit(self) -> None:
+    def _submit(self, generation: int | None) -> None:
+        """Queue the buffer, clear it, then notify.
+
+        ``generation`` is the capture generation the character was read
+        under (None for ``feed``). The queue append is checked against it
+        under the state lock, so a submission either lands before stop()
+        bumps the generation or not at all; a stale submission leaves the
+        buffer intact. The notification is checked again after the
+        (possibly slow) renderer returns, so a stopped or restarted
+        generation never begins a late notification.
+        """
+
         text = self._buffer.strip()
+        if text:
+            with self._state_lock:
+                if generation is not None and self._generation != generation:
+                    return
+                with self._pending_lock:
+                    self._pending.append(text)
         self._set_buffer("")
         if not text:
             return
-        with self._pending_lock:
-            self._pending.append(text)
+        if not self._is_current(generation):
+            return
         self._notify(CHAT_UNAVAILABLE_MESSAGE)
 
 

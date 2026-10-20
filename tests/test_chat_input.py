@@ -412,6 +412,173 @@ def test_slow_renderer_across_stop_drops_rest_of_batch() -> None:
     assert chat.buffer == "a"
 
 
+def _blocking_clear_chat(
+    reader: Any,
+) -> tuple[ChatInput, threading.Event, threading.Event, list[str]]:
+    """ChatInput whose renderer blocks on the first submit's buffer clear."""
+
+    entered = threading.Event()
+    release = threading.Event()
+    notes: list[str] = []
+
+    class _SlowClearChatLine(ChatLine):
+        def set_buffer(self, text: str) -> None:
+            super().set_buffer(text)
+            if text == "" and not entered.is_set():
+                entered.set()
+                release.wait(5)
+
+    chat = ChatInput(
+        _SlowClearChatLine(io.StringIO(), terminal_columns=lambda: 120),
+        reader,
+        notify=notes.append,
+        interrupt=lambda: None,
+        poll_interval=0.01,
+    )
+    return chat, entered, release, notes
+
+
+def test_slow_renderer_during_submit_never_submits_or_notifies_after_stop() -> None:
+    reader = _ScriptedReader(["hello\r"])
+    chat, entered, release, notes = _blocking_clear_chat(reader)
+
+    chat.start()
+    try:
+        assert entered.wait(2)
+        worker = chat._thread
+        assert worker is not None
+        chat.stop()
+        # Enter was handled before stop, so the message is already queued.
+        assert chat.take_pending() == ["hello"]
+        assert notes == []
+    finally:
+        release.set()
+    assert _wait_until(lambda: not worker.is_alive())
+    assert chat.take_pending() == []
+    assert notes == []
+    assert reader.close_count == 1
+
+
+def test_slow_renderer_during_submit_across_restart_drops_late_notification() -> None:
+    reader = _ScriptedReader(["hello\r"])
+    chat, entered, release, notes = _blocking_clear_chat(reader)
+
+    chat.start()
+    try:
+        assert entered.wait(2)
+        worker = chat._thread
+        assert worker is not None
+        chat.stop()
+        chat.start()
+        assert chat._thread is worker
+        assert chat.take_pending() == ["hello"]
+
+        release.set()
+        reader.add("next\r")
+        assert _wait_until(lambda: notes == [CHAT_UNAVAILABLE_MESSAGE])
+        assert chat.take_pending() == ["next"]
+        time.sleep(0.05)
+        # Only the post-restart submit notified; the stale one never did.
+        assert notes == [CHAT_UNAVAILABLE_MESSAGE]
+    finally:
+        release.set()
+        chat.stop()
+    assert _wait_until(lambda: not worker.is_alive())
+
+
+@pytest.fixture
+def thread_errors(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    errors: list[str] = []
+
+    def hook(args: Any) -> None:
+        errors.append(type(args.exc_value).__name__)
+
+    monkeypatch.setattr(threading, "excepthook", hook)
+    return errors
+
+
+def test_notify_exception_releases_worker_and_stop_start_recovers(
+    thread_errors: list[str],
+) -> None:
+    reader = _ScriptedReader()
+    notes: list[str] = []
+    failures = [OSError("output unavailable")]
+
+    def notify(text: str) -> None:
+        if failures:
+            raise failures.pop()
+        notes.append(text)
+
+    chat = ChatInput(
+        ChatLine(io.StringIO(), terminal_columns=lambda: 120),
+        reader,
+        notify=notify,
+        interrupt=lambda: None,
+        poll_interval=0.01,
+    )
+    chat.start()
+    worker = chat._thread
+    assert worker is not None
+    reader.add("hello\r")
+    assert _wait_until(lambda: not worker.is_alive())
+    assert thread_errors == ["OSError"]
+    assert chat._thread is None
+    assert not chat.running
+
+    chat.stop()
+    assert reader.close_count == 1
+    reader.add("again\r")
+    chat.start()
+    try:
+        assert chat.running
+        assert chat._thread is not None and chat._thread is not worker
+        assert reader.open_count == 2
+        assert _wait_until(lambda: notes == [CHAT_UNAVAILABLE_MESSAGE])
+        assert chat.take_pending() == ["hello", "again"]
+    finally:
+        chat.stop()
+    assert reader.close_count == 2
+
+
+def test_interrupt_exception_releases_worker_and_start_reopens(
+    thread_errors: list[str],
+) -> None:
+    reader = _ScriptedReader()
+    calls: list[int] = []
+
+    def interrupt() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("no main thread")
+
+    chat = ChatInput(
+        ChatLine(io.StringIO(), terminal_columns=lambda: 120),
+        reader,
+        notify=lambda text: None,
+        interrupt=interrupt,
+        poll_interval=0.01,
+    )
+    chat.start()
+    worker = chat._thread
+    assert worker is not None
+    reader.add("a\x03")
+    assert _wait_until(lambda: not worker.is_alive())
+    assert thread_errors == ["RuntimeError"]
+    assert not chat.running
+
+    # start() without stop() closes the earlier open before reopening.
+    reader.add("b")
+    chat.start()
+    try:
+        assert chat.running
+        assert reader.close_count == 1
+        assert reader.open_count == 2
+        assert _wait_until(lambda: chat.buffer == "ab")
+    finally:
+        chat.stop()
+    assert reader.close_count == 2
+
+
 def test_context_manager_starts_and_stops() -> None:
     reader = _ScriptedReader(["x"])
     chat, _, _, _ = _chat(reader)
