@@ -6,12 +6,11 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** CHAT, with CHAT-9 (console chat line renderer) in
-  progress, picked because it is the next unblocked CHAT story. CHAT-8 (agent
-  and normalizer processes start with stdin closed) was approved at `4c1e9b2`
-  and merged in PR #193. CHAT-1 was split into CHAT-8 and CHAT-9; CHAT-9 was
-  narrowed to the renderer, and its wiring and keystroke capture moved to
-  CHAT-10.
+- **Active Epic:** CHAT, with CHAT-10 (chat keystroke capture component) in
+  progress, picked because it is the next unblocked CHAT story. CHAT-9
+  (console chat line renderer) was approved at `3ac5fcf` and merged in PR
+  #194. CHAT-10 was narrowed to the capture component, and its wiring moved
+  to CHAT-11.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still wait on their triggers,
   TPM-ROLE matters less while the self-host planner runs on claude,
   TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
@@ -1040,7 +1039,7 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: active; CHAT-9 is in progress. Picked after TIDY was parked; HARD-3 is
+Fit: active; CHAT-10 is in progress. Picked after TIDY was parked; HARD-3 is
 merged and RECOVERY is closed, so nothing blocks it.
 
 The operator types at any time; a message holds the loop and is answered by
@@ -1067,18 +1066,31 @@ dependencies; Windows (`msvcrt`) and POSIX.
   `chat_line` (and `attach_chat_line`); when one is attached,
   `_write_console` writes through it, otherwise console output is unchanged.
   Not wired in yet: nothing creates a `ChatLine` besides tests.
-- CHAT-10 (was part of CHAT-9): Chat line wiring and keystroke capture during
-  role runs. When stdin and stdout are both TTYs and the run is not a dry
-  run, `__main__` attaches a `ChatLine` to the `DispatchLogger`; the
-  orchestrator sets its role when a role's dispatch starts (next to
-  `console_interrupt.set_active_role`) and clears it when the role exits.
-  While a role runs, typed characters edit the chat line buffer (Windows
-  `msvcrt`, POSIX non-canonical mode restored on exit). The chat line is
-  cleared and input capture stops while the pause operator prompt or the
-  manual frontend keypress wait is shown. Enter queues the line as a pending
-  message for CHAT-2 to consume; until CHAT-2 lands, the console says the
-  message was received but chat answers are not available yet. Under the
-  supervisor the child's stdout is a pipe, so no chat line appears.
+- CHAT-10 (was part of CHAT-9): Chat keystroke capture component. New
+  `llm_handoff/chat_input.py` defines `ChatInput`, which runs one daemon
+  thread that reads keys through a `ChatKeyReader` (`open`, `read_chars`,
+  `close`) and edits a `ChatLine` buffer: printable characters append,
+  Backspace/Delete remove the last character, Enter (CR, LF, or CR+LF once)
+  submits, Ctrl+C calls `interrupt()` (default `_thread.interrupt_main`),
+  and other control or format characters are ignored. A non-blank submit
+  queues the stripped text for `take_pending()` (CHAT-2 consumes it) and
+  notifies `CHAT_UNAVAILABLE_MESSAGE`. `start`/`stop` restart cleanly, `stop`
+  is idempotent and closes the reader once per start, and EOF or `OSError`
+  ends the thread quietly. `WindowsChatKeyReader(msvcrt)` reads without echo
+  and drops prefix keys; `PosixChatKeyReader(fd, encoding, termios, select)`
+  clears `ICANON` and `ECHO` (keeping `ISIG`), drops escape sequences, and
+  restores the terminal with `TCSADRAIN`. `chat_input_for_console` returns
+  None for a non-TTY stdin or a missing platform module. Not wired in yet.
+- CHAT-11 (was part of CHAT-10): Chat line and keystroke capture wiring.
+  When stdin and stdout are both TTYs and the run is not a dry run,
+  `__main__` attaches a `ChatLine` to the `DispatchLogger` and starts a
+  `ChatInput`; the orchestrator sets the chat line role when a role's
+  dispatch starts (next to `console_interrupt.set_active_role`) and clears
+  it when the role exits. Capture stops and the chat line is cleared while
+  the pause operator prompt, the carry-over confirm read, or the manual
+  frontend keypress wait is shown. On Enter, the console says the message
+  was received but chat answers are not available yet. Under the supervisor
+  the child's stdout is a pipe, so no chat line appears.
 - CHAT-2: A sent message holds the loop at the next safe point: after the
   current dispatch, its dispatcher commit, and its gates, and before the next
   dispatch. The graceful-stop check at the loop top is not enough, because
