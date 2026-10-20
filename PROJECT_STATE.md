@@ -6,9 +6,10 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** TIDY, with TIDY-3 (docs and text cleanup) in progress,
-  picked because it is fully specified, needs no operator input, and is
-  cheap. TIDY-1 (operator-prompt and doctor message fixes) was approved at
+- **Active Epic:** TIDY, with TIDY-4 (tracker probe and stop-request
+  hardening) in progress, picked because it is fully specified, needs no
+  operator input, and is cheap. TIDY-3 (docs and text cleanup) was approved
+  at `bf27c64` and merged in PR #187. TIDY-1 (operator-prompt and doctor message fixes) was approved at
   `33a8600` and merged in PR #186. TIDY-2 (scanner
   lookups ignore the current directory on Windows) was approved at
   `6515634` and merged in PR #185. TIDY-9 (merge-aware audit
@@ -1495,7 +1496,7 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: active; TIDY-3 is in progress. Independent and cheap; each story is
+Fit: active; TIDY-4 is in progress. Independent and cheap; each story is
 one Work Packet and fills a wait. Nothing here blocks another epic or waits
 on one. TIDY-7 routes to `user`
 (Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
@@ -1557,7 +1558,7 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   planner on 2026-10-20: (d) was already done at `1bde084`, so it needs no
   edit; (c) also corrects the `CONFIGURATION.md` sentence and drops the
   Antigravity connector text; a new `tests/test_text_hygiene.py` keeps (a)
-  and (f) fixed.
+  and (f) fixed. Approved at `bf27c64`, merged in PR #187.
 - TIDY-4: Tracker probe and stop-request hardening. (a) The
   `doctor --probe-tracker` write denylist (`_TRACKER_PROBE_WRITE_TOOLS`,
   `llm_handoff/doctor.py` ~line 1469) names only five tools; deny every
@@ -1571,7 +1572,14 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   dispatcher in the repository) or require the pid, and say which in the
   handback. Files: `llm_handoff/doctor.py`, `llm_handoff/stop_request.py`,
   `tests/`, `CONFIGURATION.md`, `CHANGELOG.md`. Closes LINEAR-FOUNDATIONS (c)
-  and (e).
+  and (e). Decided by the planner on 2026-10-20: (a) takes the fallback,
+  keeping the explicit `--allowedTools` and the write denylist, because
+  Claude Code applies deny rules before allow rules, so a server-wide deny
+  would also block the two read tools; a code comment, a test, and a
+  corrected residual-risk note in `CONFIGURATION.md` record this. (b) keeps
+  the pidless stop request as intended, because only one dispatcher can hold
+  `.dispatch.lock` in a repository; only the `stop_requested` docstring and
+  `CONFIGURATION.md` change.
 - TIDY-5: One refusal summary per dispatch. The Claude provider logs a WARN
   per refused command (`refused by the permission rules`,
   `llm_handoff/agent_providers/claude.py` ~line 208) and no total. Count
