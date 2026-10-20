@@ -4028,6 +4028,73 @@ def test_an_agent_mode_finalizer_may_commit_the_handoff_with_the_ledger(
     assert handoff.read_text(encoding="utf-8") == FINISHED_FINALIZER_HANDOFF
 
 
+@pytest.mark.parametrize(
+    ("commit_mode", "extra", "rejected"),
+    [
+        pytest.param("agent", None, None, id="agent_ledger_and_handoff"),
+        pytest.param("dispatcher", None, "docs/handoff/ÜBERGABE.md", id="dispatcher_handoff"),
+        pytest.param("agent", "src/äpi.py", "src/äpi.py", id="agent_other_file"),
+    ],
+)
+def test_finalizer_git_state_reads_non_ascii_commit_paths_literally(
+    tmp_path: Path,
+    commit_mode: str,
+    extra: str | None,
+    rejected: str | None,
+) -> None:
+    # Under core.quotePath Git quotes and octal-escapes these names unless
+    # the paths are read NUL-delimited.
+    state_name = "ÉTAT.md"
+    handoff_name = "docs/handoff/ÜBERGABE.md"
+    _init_repo(tmp_path)
+    _git(tmp_path, "config", "core.quotePath", "true")
+    _write(tmp_path / state_name, "# STATE\n")
+    _write(tmp_path / handoff_name, FINALIZER_HANDOFF)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "non-ASCII ledger and handoff")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    branch = _git(tmp_path, "symbolic-ref", "--short", "HEAD")
+    _write(tmp_path / state_name, PARTIAL_LEDGER)
+    _write(tmp_path / handoff_name, FINISHED_FINALIZER_HANDOFF)
+    committed = [state_name, handoff_name]
+    if extra is not None:
+        _write(tmp_path / extra, "API = 'finalizer'\n")
+        committed.append(extra)
+    _git(tmp_path, "add", "--", *committed)
+    _git(tmp_path, "commit", "-q", "-m", "finalizer ledger commit")
+    orchestrator = _orchestrator()
+    record = InFlightRecord(
+        cycle=1,
+        role="finalizer",
+        story_key=None,
+        phase="dispatch",
+        head_sha=head,
+        head_branch=branch,
+        handoff_content=FINALIZER_HANDOFF,
+        dirty_fingerprints=(),
+        carried_over=(),
+        protected_digests=(),
+    )
+    config = _config(
+        tmp_path,
+        commit_mode=commit_mode,
+        project_state_path=state_name,
+        handoff_path=handoff_name,
+    )
+
+    state = orchestrator._interrupted_finalizer_git_state(config, record)
+
+    assert state.commits == (_git(tmp_path, "rev-parse", "HEAD"),)
+    assert set(state.files) == set(committed)
+    if rejected is None:
+        assert state.error is None
+    else:
+        assert state.error is not None
+        assert rejected in state.error
+        assert state_name not in state.error.split(": ", 1)[1]
+        assert "\\303" not in state.error
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_an_uncommitted_ledger_edit_keeps_the_finalizer_record(
     tmp_path: Path,

@@ -7230,11 +7230,15 @@ def _interrupted_finalizer_git_state(
         repo_root, ["git", "rev-list", "--reverse", f"{head_sha}..{current.head}"]
     )
     # Each commit's own files, so a file changed and changed back still counts.
-    changed = _run_git_stdout(
+    # ``-z`` keeps each path literal, as in ``_protected_paths_in_commits``:
+    # without it Git quotes and octal-escapes a non-ASCII name, which would
+    # never match the configured project state or handoff path.
+    changed = _run_git_stdout_raw(
         repo_root,
         [
             "git",
             "log",
+            "-z",
             "-m",
             "--no-renames",
             "--name-only",
@@ -7245,7 +7249,7 @@ def _interrupted_finalizer_git_state(
     if listed is None or changed is None:
         return rewritten
     commits = tuple(listed.split())
-    files = tuple(sorted({line for line in changed.splitlines() if line.strip()}))
+    files = tuple(sorted({entry for entry in changed.split("\0") if entry}))
     allowed = {normalize_repo_path(config.project_state_path.as_posix())}
     if config.commit_mode != "dispatcher":
         allowed.add(normalize_repo_path(config.handoff_path.as_posix()))
