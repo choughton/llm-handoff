@@ -16,12 +16,17 @@ This project follows a simple pre-release changelog until the first public tag.
   planner record is a `dispatch` record only, with no operator files, carried
   files, or assignment, and its story key is `null` when the handoff names no
   story; the record version stays 1, so implementer records load unchanged.
-  At startup, after the usual link, read, and validity checks, dispatcher
-  commit mode first reconciles the checkout with the record's HEAD and branch
-  as a returned planner dispatch would: handoff-only commits are undone with
-  `git reset --soft`, and a branch switch, rewritten history, or a commit with
-  other files logs an `ERROR` line and stops before any dispatch, keeping the
-  record. After the (with `protected_paths` set) protected-baseline checks: an
+  At startup, after the usual link, read, and validity checks and (with
+  `protected_paths` set) the protected-baseline checks, dispatcher commit mode
+  compares the checkout with the record's HEAD and branch, read-only, as a
+  returned planner dispatch would: a branch switch, rewritten history, or a
+  commit with other files logs an `ERROR` line and stops before any dispatch,
+  keeping the record. Handoff-only commits are undone with `git reset --soft`
+  only after the operator confirms
+  ``Undo the interrupted planner's handoff commits with `git reset --soft <sha>`? [y/N]``
+  at a terminal, since the record's HEAD is untrusted; decline, end of input,
+  no terminal, or `interactive_pause: false` discards the record with a
+  `WARN` line and leaves HEAD, the index, and the handoff alone. Then: an
   unchanged handoff logs
   one `INFO` line and deletes the record; a changed handoff that passes the
   planner's post-dispatch validation is kept, with one `INFO` line, and the

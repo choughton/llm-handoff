@@ -730,18 +730,28 @@ planner returns, whatever its exit code; when that delete fails it logs an
 `ERROR` line and stops. The planner lease-rebuild cycle in Linear mode and dry
 runs write none, and the same one-`WARN`-per-run rule applies when the record
 cannot be kept. At startup a `planner` record goes through the same link,
-read, and validity checks. In dispatcher commit mode, the checkout is then
-reconciled with the record's HEAD and branch, as the check after a planner
-dispatch that returned would: commits since the record that change only the
-handoff are undone with `git reset --soft` (one `WARN` line; the handoff stays
-uncommitted), and a branch switch, rewritten history, or a commit with other
-files logs an `ERROR` line and stops the run before any dispatch, keeping the
-record so the next start checks again. A dry run only reports a moved
-checkout. A record HEAD that is not a commit is not reconciled. Next, with
-`protected_paths` set, the same
+read, and validity checks. Next, with `protected_paths` set, the same
 protected-baseline checks described below: a record without protected-file
 digests, or whose HEAD is not a commit that is HEAD or an ancestor of HEAD, is
-discarded with a `WARN` line (a dry run keeps it). Then:
+discarded with a `WARN` line (a dry run keeps it), and Git is not touched.
+In dispatcher commit mode, the checkout is then compared with the record's
+HEAD and branch, as the check after a planner dispatch that returned would,
+but without changing anything: the record's HEAD comes from a file a role can
+write, so it proves nothing. A branch switch, rewritten history, or a commit
+with other files logs an `ERROR` line and stops the run before any dispatch,
+keeping the record and the checkout so the next start checks again. Commits
+since the record that change only the handoff are undone only after the
+operator confirms the exact reset: with `interactive_pause` and a terminal,
+the dispatcher logs the commits, the record's HEAD, and that confirming moves
+the branch back with `git reset --soft` and unstages the handoff, then asks
+``Undo the interrupted planner's handoff commits with `git reset --soft <sha>`? [y/N]``.
+On `y` the commits are undone (one `WARN` line; the handoff stays
+uncommitted); a checkout that moved again before the answer logs an `ERROR`
+line and stops with nothing undone. Any other answer, end of input, no
+terminal, or `interactive_pause: false` discards the record with a `WARN`
+line and leaves HEAD, the index, and the handoff as they are. A dry run only
+reports a moved checkout. A record HEAD that is not a commit is not
+reconciled. Then:
 
 - When `HANDOFF.md` still equals the record's text, the dispatcher logs one
   `INFO` line that there is nothing to recover and deletes the record.

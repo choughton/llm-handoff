@@ -6602,39 +6602,127 @@ def _interrupted_planner_handoff_errors(
     return list(result.errors)
 
 
-def _reconcile_interrupted_planner_git(
-    config: DispatchConfig,
-    log: LogFn,
-    record: InFlightRecord,
-    state_path: Path,
-) -> bool:
-    """Apply the planner's dispatcher-commit-mode Git rule an interrupt skipped.
+@dataclass(frozen=True, slots=True)
+class _InterruptedPlannerGitDrift:
+    """How the checkout moved since an interrupted planner record's HEAD.
 
-    A planner dispatch that returns has its handoff-only commits undone and
-    any other commit or branch switch stopped by ``undo_planner_handoff_commits``;
-    an interrupted one never reaches that check. So, in dispatcher commit
-    mode, the checkout is compared with the record's HEAD and branch first:
-    handoff-only commits since then are undone with ``git reset --soft``, and
-    a branch switch, rewritten history, or a commit with other files logs an
-    ERROR and returns False, keeping the record so the next start checks it
-    again. A ``head_sha`` that does not resolve to a commit cannot be
-    reconciled and is left to the anchor checks. Dry run only reports.
+    ``current`` is the checkout as inspected. ``error`` names a move the
+    dispatcher never undoes; otherwise ``commits`` lists the handoff-only
+    commits since the record's HEAD that ``git reset --soft`` would undo.
+    """
+
+    current: GitPosition
+    commits: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _interrupted_planner_git_drift(
+    config: DispatchConfig, record: InFlightRecord
+) -> _InterruptedPlannerGitDrift | None:
+    """Compare the checkout with an interrupted planner record, read-only.
+
+    None when there is nothing to reconcile: outside dispatcher commit mode,
+    when the record's ``head_sha`` does not resolve to a commit (left to the
+    anchor checks), or when HEAD and the branch still match the record. This
+    never changes HEAD, the index, or the working tree.
     """
 
     head_sha = record.head_sha
+    repo_root = config.repo_root
     if (
         config.commit_mode != "dispatcher"
         or head_sha is None
         or _FULL_COMMIT_SHA_RE.fullmatch(head_sha) is None
         or _run_git_stdout(
-            config.repo_root, ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"]
+            repo_root, ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"]
         )
         is None
     ):
-        return True
-    current = git_position(config.repo_root)
+        return None
+    current = git_position(repo_root)
     if current.head == head_sha and current.branch == record.head_branch:
-        return True
+        return None
+    before_branch = _escape_control_characters(record.head_branch or "detached HEAD")
+    after_branch = _escape_control_characters(current.branch or "detached HEAD")
+    if current.branch != record.head_branch:
+        return _InterruptedPlannerGitDrift(
+            current=current,
+            error=(
+                f"the planner moved the checkout from `{before_branch}` to "
+                f"`{after_branch}`"
+            ),
+        )
+    rewritten = _InterruptedPlannerGitDrift(
+        current=current,
+        error=(
+            f"the planner rewrote history on `{after_branch}` (HEAD was "
+            f"{head_sha[:12]})"
+        ),
+    )
+    if current.head is None or (
+        _run_git_stdout(
+            repo_root,
+            ["git", "merge-base", "--is-ancestor", head_sha, current.head],
+        )
+        is None
+    ):
+        return rewritten
+    listed = _run_git_stdout(
+        repo_root, ["git", "rev-list", "--reverse", f"{head_sha}..{current.head}"]
+    )
+    changed = _run_git_stdout(
+        repo_root, ["git", "diff", "--name-only", head_sha, current.head]
+    )
+    if listed is None or changed is None:
+        return rewritten
+    commits = tuple(listed.split())
+    others = sorted(set(changed.splitlines()) - {config.handoff_path.as_posix()})
+    if others:
+        return _InterruptedPlannerGitDrift(
+            current=current,
+            commits=commits,
+            error=(
+                f"the planner committed {', '.join(c[:12] for c in commits)} "
+                "with files other than the handoff: "
+                + _escape_control_characters(", ".join(others))
+            ),
+        )
+    return _InterruptedPlannerGitDrift(current=current, commits=commits)
+
+
+_InterruptedPlannerGitOutcome = Literal["continue", "discarded", "stop"]
+
+
+def _reconcile_interrupted_planner_git(
+    config: DispatchConfig,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
+    record: InFlightRecord,
+    state_path: Path,
+    story: str,
+) -> _InterruptedPlannerGitOutcome:
+    """Apply the planner's dispatcher-commit-mode Git rule an interrupt skipped.
+
+    A planner dispatch that returns has its handoff-only commits undone and
+    any other commit or branch switch stopped by ``undo_planner_handoff_commits``;
+    an interrupted one never reaches that check. The record's HEAD and branch
+    come from a file a role can write, so they prove nothing (HARD-5): the
+    checkout is only inspected until the operator confirms the exact
+    ``git reset --soft`` at a terminal. A branch switch, rewritten history, or
+    a commit with other files logs an ERROR and returns ``"stop"``, keeping
+    the record and the checkout. Handoff-only commits are disclosed and undone
+    only on ``y``; decline, end of input, no terminal, or
+    ``interactive_pause: false`` discards the record with one WARN and
+    returns ``"discarded"``, leaving HEAD, the index, and the handoff as they
+    are. A checkout that moved again before the answer stops the run. Dry run
+    only reports. Runs after the record's anchor checks.
+    """
+
+    drift = _interrupted_planner_git_drift(config, record)
+    if drift is None:
+        return "continue"
+    head_sha = record.head_sha or ""
+    current = drift.current
     before_branch = _escape_control_characters(record.head_branch or "detached HEAD")
     after_branch = _escape_control_characters(current.branch or "detached HEAD")
     if config.dry_run:
@@ -6646,29 +6734,75 @@ def _reconcile_interrupted_planner_git(
             f"checkout is now at {(current.head or 'no commit')[:12]} on "
             f"`{after_branch}`. Not reconciled in dry run.",
         )
-        return True
-    if current.branch != record.head_branch:
-        error = (
-            f"the planner moved the checkout from `{before_branch}` to "
-            f"`{after_branch}`"
+        return "continue"
+    error = drift.error
+    if error is None:
+        commit_list = ", ".join(sha[:12] for sha in drift.commits)
+        question = (
+            "Undo the interrupted planner's handoff commits with "
+            f"`git reset --soft {head_sha[:12]}`? [y/N]"
         )
-    else:
+        confirmed = False
+        if (
+            config.interactive_pause
+            and _operator_stdin_is_interactive()
+            and not operator_prompt.reader().console_unavailable
+        ):
+            _log(
+                log,
+                "INFO",
+                f"Found in-flight record {state_path}: planner was interrupted "
+                f"mid-dispatch on {story}, and `{after_branch}` now has commits "
+                f"since the record's HEAD {head_sha} that change only the "
+                f"handoff ({commit_list}), which dispatcher commit mode does not "
+                "allow. The record is a file a role can write, so its HEAD is "
+                f"not proof that these commits are the planner's. Confirming "
+                f"moves `{after_branch}` from {(current.head or '')[:12]} back to "
+                f"{head_sha[:12]} with `git reset --soft` and unstages the "
+                "handoff; the working tree keeps every file as it is.",
+            )
+            confirmed = _confirm_carry_over_at_terminal(
+                operator_prompt.reader(), question, log
+            )
+        if not confirmed:
+            _log(
+                log,
+                "WARN",
+                f"Discarded the in-flight record read from {state_path} for "
+                f"planner's interrupted {story} work because undoing the "
+                f"handoff commits ({commit_list}) was not confirmed at a "
+                "terminal; HEAD, the index, and the handoff stay as they are.",
+            )
+            _delete_in_flight_record(config, log)
+            return "discarded"
+        if git_position(config.repo_root) != current:
+            # The operator confirmed undoing the disclosed commits only.
+            _log(
+                log,
+                "ERROR",
+                f"The checkout moved while the operator was asked to undo the "
+                f"interrupted planner's handoff commits (in-flight record "
+                f"{state_path}), so nothing was undone. The dispatcher stops "
+                "before any dispatch and keeps the record, so the next start "
+                "checks the checkout again.",
+            )
+            return "stop"
         check = undo_planner_handoff_commits(
             config.repo_root,
             config.handoff_path,
             GitPosition(head=head_sha, branch=record.head_branch),
         )
         if check.error is None:
-            if check.undone:
-                _log(
-                    log,
-                    "WARN",
-                    "The interrupted planner committed the handoff ("
-                    + ", ".join(sha[:12] for sha in check.undone)
-                    + ") despite dispatcher commit mode; undid it with "
-                    "`git reset --soft`. The handoff stays uncommitted.",
-                )
-            return True
+            _log(
+                log,
+                "WARN",
+                "The interrupted planner committed the handoff ("
+                + ", ".join(sha[:12] for sha in check.undone)
+                + ") despite dispatcher commit mode; undid it with "
+                "`git reset --soft` as the operator confirmed. The handoff "
+                "stays uncommitted.",
+            )
+            return "continue"
         error = _escape_control_characters(check.error)
     _log(
         log,
@@ -6679,7 +6813,7 @@ def _reconcile_interrupted_planner_git(
         "again. Return the checkout to the record's HEAD and branch, or delete "
         "the record if those commits are yours, then start the dispatcher again.",
     )
-    return False
+    return "stop"
 
 
 def _recover_interrupted_planner(
@@ -6698,17 +6832,14 @@ def _recover_interrupted_planner(
     record's handoff text, and the planner runs again, only after the
     operator confirms at a terminal (HARD-5). Otherwise the record is
     discarded and the handoff stays as it is. In dispatcher commit mode the
-    planner's commits since the record are reconciled first; a checkout that
-    cannot be reconciled, or a confirmed record that cannot be deleted, stops
-    the run.
+    planner's commits since the record are reconciled after the record's
+    anchor checks, and Git is changed only after the operator confirms the
+    exact reset; a checkout that cannot be reconciled, or a confirmed record
+    that cannot be deleted, stops the run.
     """
 
     nothing = InterruptedDispatchRecovery()
     story = _in_flight_story_display(record)
-    # Before the record is discarded or used: the planner's commits since the
-    # record are reconciled as a planner dispatch that returned would be.
-    if not _reconcile_interrupted_planner_git(config, log, record, state_path):
-        return InterruptedDispatchRecovery(stop=True)
     if config.protected_paths and record.protected_digests is None:
         # The re-dispatched planner's protected-file check needs the record's
         # pre-dispatch digests; without them nothing is restored.
@@ -6725,6 +6856,15 @@ def _recover_interrupted_planner(
             _delete_in_flight_record(config, log)
         return nothing
     if _discard_unanchored_in_flight_record(config, log, record, state_path, story):
+        return nothing
+    # The record is untrusted (HARD-5): its HEAD is never applied to Git
+    # before the checks above and the operator's confirmation of the reset.
+    git_outcome = _reconcile_interrupted_planner_git(
+        config, log, operator_prompt, record, state_path, story
+    )
+    if git_outcome == "stop":
+        return InterruptedDispatchRecovery(stop=True)
+    if git_outcome == "discarded":
         return nothing
     current = _read_required_text(config.handoff_full_path)
     if current == record.handoff_content:

@@ -830,7 +830,9 @@ bounces until the three-fix circuit breaker escalates.
       handoff; a missing, empty, or invalid handoff is restored from the
       record only after HARD-5 confirmation, and the planner runs again
       (`interrupted_planner_recovery`) against the recovery's protected-file
-      baseline; an earlier forced instruction is not kept.
+      baseline; an earlier forced instruction is not kept. In dispatcher
+      commit mode, handoff-only commits since the record's untrusted HEAD are
+      undone only after the operator confirms the exact `git reset --soft`.
     - RECOVERY-3b2: Interrupted finalizer dispatch: restore an invalid
       `HANDOFF.md` and run the finalizer again. The finalizer runs through
       `_invoke_epic_close` and may commit `PROJECT_STATE.md` itself, so

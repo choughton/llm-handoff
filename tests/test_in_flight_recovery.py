@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Callable
 import unicodedata
 
 import pytest
@@ -3322,7 +3322,43 @@ def _interrupt_committing_planner(
     assert _record_path(repo_root).exists()
 
 
-def test_an_interrupted_planner_handoff_commit_is_undone_at_startup(
+def _undo_question(head: str) -> str:
+    return (
+        "Undo the interrupted planner's handoff commits with "
+        f"`git reset --soft {head[:12]}`? [y/N]"
+    )
+
+
+def _script_answers(
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    answers: list[bool],
+    *,
+    before_answer: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Answer each terminal confirmation from ``answers``; return the questions.
+
+    Each question is also logged, as the real prompt logs it.
+    """
+
+    questions: list[str] = []
+
+    def scripted(_reader: object, question: str, log: Any) -> bool:
+        questions.append(question)
+        log("INFO", question)
+        if before_answer is not None:
+            before_answer(question)
+        return answers.pop(0)
+
+    monkeypatch.setattr(orchestrator, "_confirm_carry_over_at_terminal", scripted)
+    return questions
+
+
+def _staged_paths(repo_root: Path) -> str:
+    return _git(repo_root, "diff", "--cached", "--name-only")
+
+
+def test_an_interrupted_planner_handoff_commit_is_undone_only_once_confirmed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3330,15 +3366,27 @@ def test_an_interrupted_planner_handoff_commit_is_undone_at_startup(
     head = _git(tmp_path, "rev-parse", "HEAD")
     orchestrator = _orchestrator()
     _interrupt_committing_planner(tmp_path, orchestrator, monkeypatch)
-    assert _git(tmp_path, "rev-parse", "HEAD") != head
-    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    planner_commit = _git(tmp_path, "rev-parse", "HEAD")
+    assert planner_commit != head
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, [True, True])
     messages: list[tuple[str, str]] = []
 
     outcome = orchestrator._recover_interrupted_dispatch(
         _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
     )
 
+    assert questions == [_undo_question(head), PLANNER_QUESTION]
+    disclosure_level, disclosure = messages[
+        messages.index(("INFO", _undo_question(head))) - 1
+    ]
+    assert disclosure_level == "INFO"
+    assert planner_commit[:12] in disclosure
+    assert head in disclosure
+    assert "a role can write" in disclosure
+    assert "git reset --soft" in disclosure
     assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert _staged_paths(tmp_path) == ""
     assert any(
         level == "WARN" and message.startswith("The interrupted planner committed")
         for level, message in messages
@@ -3349,6 +3397,154 @@ def test_an_interrupted_planner_handoff_commit_is_undone_at_startup(
     assert not _record_path(tmp_path).exists()
     handoff = tmp_path / HANDOFF_RELATIVE_PATH
     assert handoff.read_text(encoding="utf-8") == _planner_assignment()
+
+
+@pytest.mark.parametrize(
+    ("interactive", "answers", "interactive_pause"),
+    [
+        pytest.param(False, [], True, id="no_tty"),
+        pytest.param(True, [False], True, id="tty_declines"),
+        pytest.param(True, [], False, id="interactive_pause_off"),
+    ],
+)
+def test_an_unconfirmed_planner_commit_undo_leaves_git_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interactive: bool,
+    answers: list[bool],
+    interactive_pause: bool,
+) -> None:
+    # Audit finding on RECOVERY-3b1: a record's HEAD reset Git unconfirmed.
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    _interrupt_committing_planner(tmp_path, orchestrator, monkeypatch)
+    planner_commit = _git(tmp_path, "rev-parse", "HEAD")
+    status = _git(tmp_path, "status", "--porcelain")
+    _set_terminal(orchestrator, monkeypatch, interactive=interactive, operator_input="")
+    expected_questions = [_undo_question(head)] if answers else []
+    questions = _script_answers(orchestrator, monkeypatch, answers)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path, interactive_pause=interactive_pause),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert questions == expected_questions
+    warnings = [message for level, message in messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Discarded the in-flight record")
+    assert "not confirmed at a terminal" in warnings[0]
+    assert "HEAD, the index, and the handoff stay as they are" in warnings[0]
+    assert _git(tmp_path, "rev-parse", "HEAD") == planner_commit
+    assert _git(tmp_path, "status", "--porcelain") == status
+    assert _staged_paths(tmp_path) == ""
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_a_forged_planner_record_never_resets_an_operator_commit_unasked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The operator commits a handoff-only change; a role then writes a
+    # planner record naming the commit before it.
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    parent = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    operator_handoff = _planner_assignment() + "\nOperator note.\n"
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, operator_handoff)
+    _git(tmp_path, "add", "--", HANDOFF_RELATIVE_PATH.as_posix())
+    _git(tmp_path, "commit", "-q", "-m", "operator handoff commit")
+    operator_commit = _git(tmp_path, "rev-parse", "HEAD")
+    _interrupt_planner(tmp_path, orchestrator, monkeypatch, keep=True)
+    _rewrite_record(tmp_path, head_sha=parent)
+    _set_terminal(orchestrator, monkeypatch, interactive=False, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, [])
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert questions == []
+    warnings = [message for level, message in messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert "not confirmed at a terminal" in warnings[0]
+    assert _git(tmp_path, "rev-parse", "HEAD") == operator_commit
+    assert _staged_paths(tmp_path) == ""
+    assert _git(tmp_path, "status", "--porcelain") == ""
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == operator_handoff
+
+
+def test_a_planner_record_without_a_baseline_never_resets_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_committing_planner(tmp_path, orchestrator, monkeypatch)
+    planner_commit = _git(tmp_path, "rev-parse", "HEAD")
+    _rewrite_record(tmp_path, protected_digests=None)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, [True])
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert questions == []
+    assert [level for level, _message in messages] == ["WARN"]
+    assert "no pre-dispatch protected-file snapshot" in messages[0][1]
+    assert _git(tmp_path, "rev-parse", "HEAD") == planner_commit
+    assert _staged_paths(tmp_path) == ""
+    assert not _record_path(tmp_path).exists()
+
+
+def test_a_checkout_that_moves_before_the_answer_is_not_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    _interrupt_committing_planner(tmp_path, orchestrator, monkeypatch)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+
+    def another_handoff_commit(_question: str) -> None:
+        _write(tmp_path / HANDOFF_RELATIVE_PATH, "another half-written handoff\n")
+        _git(tmp_path, "add", "--", HANDOFF_RELATIVE_PATH.as_posix())
+        _git(tmp_path, "commit", "-q", "-m", "another handoff commit")
+
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(
+        orchestrator, monkeypatch, [True], before_answer=another_handoff_commit
+    )
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+    moved = _git(tmp_path, "rev-parse", "HEAD")
+
+    assert outcome.stop is True
+    assert questions == [_undo_question(head)]
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "nothing was undone" in errors[0]
+    assert moved != head
+    assert _git(tmp_path, "rev-list", "--count", f"{head}..{moved}") == "2"
+    assert _staged_paths(tmp_path) == ""
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
 
 
 @pytest.mark.parametrize(
