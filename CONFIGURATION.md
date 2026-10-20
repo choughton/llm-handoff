@@ -1421,6 +1421,12 @@ The outcomes:
   The comment never goes in the pull request body.
   A failure Codex attributes to its usage limit for code reviews is not
   retried automatically.
+- A completed review that names no commit (the summary's state marker has
+  `commit_sha: null` and its `Commit` cell is a dash, with no review or +1
+  reaction from Codex): nothing ties that review to the head commit, so it
+  is not a pass. When a summary updated after the push or request shows it
+  on two polls in a row, the wait ends and is handled like a failed review:
+  one `@codex review` comment, then the operator prompt below.
 - When the retried review fails too, the account hit its usage limit, or no
   review finishes within `review_timeout_seconds`, the dispatcher pauses at
   a short operator prompt if `interactive_pause` is on and stdin is a
