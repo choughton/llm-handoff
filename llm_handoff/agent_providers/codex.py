@@ -17,6 +17,7 @@ from llm_handoff.agent_streams import (
 )
 from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
 from llm_handoff.redaction import redact_secrets
+from llm_handoff.roles import CANONICAL_DISPATCH_ROLES
 from llm_handoff.usage_log import format_usage_line, usage_fields_from_codex_turn
 
 
@@ -177,7 +178,7 @@ def invoke_codex(
     # target repo, so the launch directory must come from the config rather
     # than from the process cwd.
     repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
-    artifact_paths = _codex_artifact_paths(repo_root)
+    artifact_paths = _codex_artifact_paths(repo_root, role=role_name)
     _cleanup_codex_output_artifacts(artifact_paths)
     resolved_binary = binary or config.CODEX_BINARY
     resolved_skill_name = skill_name or config.CODEX_SKILL_NAME
@@ -409,14 +410,34 @@ def _build_codex_resume_prompt(
     return _append_agent_additional_instruction(prompt, additional_instruction)
 
 
-def _codex_artifact_paths(repo_root: Path) -> _CodexArtifactPaths:
+def _codex_artifact_paths(
+    repo_root: Path,
+    *,
+    role: str = "backend",
+) -> _CodexArtifactPaths:
+    """Return the Codex artifact paths for one dispatcher role.
+
+    The backend keeps the original ``logs/dispatch/codex/`` directory; every
+    other role gets ``logs/dispatch/codex-<role>/`` so two Codex roles never
+    resume each other's session or share a last-message file. The role must
+    be a canonical dispatch role, so the path segment never comes from
+    arbitrary text.
+    """
+    if role not in CANONICAL_DISPATCH_ROLES:
+        raise ValueError(f"Unknown Codex artifact role: {role!r}")
+    if role == "backend":
+        output_directory = config.CODEX_OUTPUT_DIRECTORY
+        last_message_path = config.CODEX_OUTPUT_LAST_MESSAGE_PATH
+        session_state_path = config.CODEX_SESSION_STATE_PATH
+    else:
+        output_directory = config.CODEX_OUTPUT_DIRECTORY.with_name(f"codex-{role}")
+        last_message_path = output_directory / config.CODEX_OUTPUT_LAST_MESSAGE_PATH.name
+        session_state_path = output_directory / config.CODEX_SESSION_STATE_PATH.name
     return _CodexArtifactPaths(
-        output_directory=(repo_root / config.CODEX_OUTPUT_DIRECTORY).resolve(),
-        output_last_message_path=(
-            repo_root / config.CODEX_OUTPUT_LAST_MESSAGE_PATH
-        ).resolve(),
+        output_directory=(repo_root / output_directory).resolve(),
+        output_last_message_path=(repo_root / last_message_path).resolve(),
         output_schema_path=config.CODEX_OUTPUT_SCHEMA_PATH.resolve(),
-        session_state_path=(repo_root / config.CODEX_SESSION_STATE_PATH).resolve(),
+        session_state_path=(repo_root / session_state_path).resolve(),
     )
 
 
