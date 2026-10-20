@@ -5816,6 +5816,12 @@ def test_a_startup_record_that_cannot_be_deleted_stops_before_any_dispatch(
         scenario, tmp_path, orchestrator, monkeypatch
     )
     record_text = _record_path(tmp_path).read_text(encoding="utf-8")
+    carry_over_path = tmp_path / "logs" / "dispatch" / "carry-over.json"
+    carry_over_before = (
+        carry_over_path.read_text(encoding="utf-8")
+        if carry_over_path.exists()
+        else None
+    )
     _refuse_every_dispatch(orchestrator, monkeypatch)
     monkeypatch.setattr(
         orchestrator, "_delete_in_flight_record", lambda _config, _log: False
@@ -5849,6 +5855,15 @@ def test_a_startup_record_that_cannot_be_deleted_stops_before_any_dispatch(
     )
     assert not any("Dispatching" in message for _level, message in messages)
     assert _record_path(tmp_path).read_text(encoding="utf-8") == record_text
+    # A confirmed recovery saves no carry-over list before the stop: a restart
+    # after the operator deletes the record must not carry the files over
+    # without the protected baseline the record held.
+    carry_over_after = (
+        carry_over_path.read_text(encoding="utf-8")
+        if carry_over_path.exists()
+        else None
+    )
+    assert carry_over_after == carry_over_before
 
 
 def test_a_failed_delete_error_escapes_control_characters_in_the_story(

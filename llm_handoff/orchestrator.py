@@ -7055,18 +7055,21 @@ def _recover_interrupted_handback(
             (path, working_tree_fingerprint(repo_root, path)) for path in agent_files
         ),
     )
-    _persist_implementer_leftovers(config, leftovers, log)
+    # The carry-over record is saved only once the in-flight record is gone:
+    # a stop on a failed delete then leaves no carry-over list without the
+    # protected baseline the in-flight record holds.
     deleted = _delete_recovered_in_flight_record(
         config, log, state_path, record, story
     )
     if deleted.stop:
         return deleted
+    _persist_implementer_leftovers(config, leftovers, log)
     if changed_operator_files:
         return InterruptedDispatchRecovery(
             recovered=True,
             leftovers=leftovers,
             pause_reason=(
-                f"INTERRUPTED HANDBACK: operator files changed while "
+                f"INTERRUPTED HANDBACK:operator files changed while "
                 f"{record.role}'s {story} handback was interrupted: "
                 f"{operator_files}. They stay operator edits that the "
                 "dispatcher never stages or commits. The interrupted work "
@@ -8619,18 +8622,21 @@ def _recover_interrupted_dispatch(
             (path, working_tree_fingerprint(repo_root, path)) for path in agent_files
         ),
     )
-    _persist_implementer_leftovers(config, leftovers, log)
+    # The carry-over record is saved only once the in-flight record is gone:
+    # a stop on a failed delete then leaves no carry-over list without the
+    # protected baseline the in-flight record holds.
     deleted = _delete_recovered_in_flight_record(
         config, log, state_path, record, story
     )
     if deleted.stop:
         return deleted
+    _persist_implementer_leftovers(config, leftovers, log)
     if changed_operator_files:
         return InterruptedDispatchRecovery(
             recovered=True,
             leftovers=leftovers,
             pause_reason=(
-                f"INTERRUPTED DISPATCH: operator files changed while {record.role} "
+                f"INTERRUPTED DISPATCH:operator files changed while {record.role} "
                 f"was interrupted on {story}: {operator_files}. They stay "
                 "operator edits that the dispatcher never stages or commits. "
                 f"The interrupted work ({files}) carries over to {story}'s next "

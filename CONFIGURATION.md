@@ -906,8 +906,11 @@ record, a record whose protected-file baseline cannot be checked, a declined
 or confirmed recovery, or one with nothing to recover) checks that the delete
 worked. When it fails, the dispatcher logs one `ERROR` line naming the record
 and the role and story it was read for, keeps the record, and stops before any
-dispatch; delete the record, then start the dispatcher again. A dry run never
-deletes the record, so it never stops for this.
+dispatch; delete the record, then start the dispatcher again. A confirmed
+`dispatch` or `handback` recovery saves its carry-over record only after the
+in-flight record is deleted, so this stop saves no carry-over list that a
+later start would use without the protected baseline the record holds. A
+dry run never deletes the record, so it never stops for this.
 
 A start with no record at all (a run from before the in-flight record
 existed, or a record that was lost) has a fallback. It runs only when neither
