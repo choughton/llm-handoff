@@ -860,7 +860,9 @@ through the same link, read, validity, and protected-baseline checks as a
 - b. When `HANDOFF.md` still equals the record's text, the dispatcher logs one
   `INFO` line that there is nothing to recover and deletes the record (a dry
   run keeps it). The loop then routes the unchanged handoff to the auditor as
-  usual.
+  usual. When the record cannot be deleted, the dispatcher logs one `ERROR`
+  line naming it and stops before running the audit, so the stale record
+  cannot outlive the audit and be offered for restore at a later start.
 - c. Any other handoff (missing, empty, truncated, with a recorded
   `## Dispatcher Verification` section, edited by a reviewer, or a finished
   verdict) is replaced by the record's text only after the operator confirms.

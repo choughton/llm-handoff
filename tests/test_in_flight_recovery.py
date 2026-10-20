@@ -4833,6 +4833,39 @@ def test_an_unchanged_handoff_deletes_the_auditor_record(
     assert handoff.read_text(encoding="utf-8") == _pending_claim()
 
 
+def test_an_unchanged_handoff_whose_auditor_record_cannot_be_deleted_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_pending_claim())
+    orchestrator = _orchestrator()
+    _interrupt_audit(tmp_path, orchestrator, monkeypatch, leave=_KEEP)
+
+    def refusing_fan_out(*_args: Any, **_kwargs: Any) -> DispatchResult:
+        raise AssertionError("a record that cannot be cleared must not dispatch")
+
+    _allow_fan_out(orchestrator, monkeypatch)
+    monkeypatch.setattr(orchestrator, "_dispatch_audit_fan_out", refusing_fan_out)
+    monkeypatch.setattr(
+        orchestrator, "_delete_in_flight_record", lambda _config, _log: False
+    )
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _fan_out_config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "left nothing to recover, but it could not be deleted" in errors[0]
+    assert "stops before running the audit" in errors[0]
+    assert _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == _pending_claim()
+
+
 @pytest.mark.parametrize(
     "leave",
     [

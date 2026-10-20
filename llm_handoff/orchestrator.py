@@ -7777,7 +7777,8 @@ def _recover_interrupted_auditor(
     checks, Git is compared with the record's HEAD and branch, read-only in
     any commit mode: a moved HEAD or a switched branch stops the run and
     keeps the record. An unchanged handoff leaves nothing to recover and
-    deletes the record. Any other handoff (missing, empty, truncated, a
+    deletes the record; when that delete fails the run stops, so the record
+    cannot outlive the audit that follows. Any other handoff (missing, empty, truncated, a
     recorded dispatcher verification, a reviewer edit, or a finished
     verdict) is replaced by the record's handoff text, and the auditor runs
     again, only after the operator confirms at a terminal (HARD-5).
@@ -7838,15 +7839,33 @@ def _recover_interrupted_auditor(
             return InterruptedDispatchRecovery(stop=True)
     current = _read_required_text(config.handoff_full_path)
     if current == record.handoff_content:
+        if config.dry_run:
+            _log(
+                log,
+                "INFO",
+                f"The in-flight record {state_path} names an interrupted audit "
+                "fan-out that left nothing to recover; not deleted in dry run.",
+            )
+            return nothing
+        if not _delete_in_flight_record(config, log):
+            # A record left behind here would outlive the audit this run is
+            # about to dispatch, and a later start would offer to restore
+            # this obsolete pre-audit handoff over the finished verdict.
+            _log(
+                log,
+                "ERROR",
+                f"The in-flight record {state_path} names an interrupted audit "
+                f"fan-out on {story} that left nothing to recover, but it could "
+                "not be deleted, so the dispatcher stops before running the "
+                "audit. Delete the record, then start the dispatcher again.",
+            )
+            return InterruptedDispatchRecovery(stop=True)
         _log(
             log,
             "INFO",
             f"The in-flight record {state_path} names an interrupted audit "
-            "fan-out that left nothing to recover"
-            + ("; not deleted in dry run." if config.dry_run else "; deleted it."),
+            "fan-out that left nothing to recover; deleted it.",
         )
-        if not config.dry_run:
-            _delete_in_flight_record(config, log)
         return nothing
     handoff_display = _escape_control_characters(
         normalize_repo_path(config.handoff_path.as_posix())
