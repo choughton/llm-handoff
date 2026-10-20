@@ -513,7 +513,7 @@ class PendingPlannerRecovery:
     # cycle, resolved once; its commit and work-claim gate use exactly it.
     resumed_assignment: str | None = None
     # A confirmed interrupted-dispatch, interrupted-handback,
-    # interrupted-planner, or interrupted-finalizer recovery's
+    # interrupted-planner, interrupted-finalizer, or interrupted-audit recovery's
     # protected-file baseline: the record's digests with every protected file
     # uncommitted at startup marked unverified, so the recovered cycle's
     # protected-file check never trusts the record for those files.
@@ -851,6 +851,18 @@ def _run_loop(
                     ),
                     warnings=[],
                 )
+            elif pending_planner_recovery.kind == "interrupted_audit":
+                decision = RoutingDecision(
+                    route="auditor",
+                    confidence="HIGH",
+                    source="interrupted_audit_recovery",
+                    reasoning=(
+                        "The operator confirmed restoring the handoff a "
+                        "previous run's interrupted audit fan-out started "
+                        "from, so the auditor runs that audit again."
+                    ),
+                    warnings=[],
+                )
             elif pending_planner_recovery.route == "planner":
                 decision = RoutingDecision(
                     route="planner",
@@ -902,8 +914,12 @@ def _run_loop(
                     ),
                     warnings=[],
                 )
+            # A re-run audit gets no forced instruction: it audits the
+            # restored handoff exactly as the interrupted run would have.
             forced_additional_instruction = (
-                pending_planner_recovery.additional_instruction
+                None
+                if pending_planner_recovery.kind == "interrupted_audit"
+                else pending_planner_recovery.additional_instruction
             )
             active_planner_recovery_kind = pending_planner_recovery.kind
             active_continue_saved_story = (
@@ -916,6 +932,7 @@ def _run_loop(
                 "interrupted_handback",
                 "interrupted_planner",
                 "interrupted_finalizer",
+                "interrupted_audit",
             }:
                 recovered_protected_snapshot = (
                     pending_planner_recovery.resumed_protected_snapshot
@@ -1164,6 +1181,7 @@ def _run_loop(
             "interrupted_handback_recovery",
             "interrupted_planner_recovery",
             "interrupted_finalizer_recovery",
+            "interrupted_audit_recovery",
         }:
             # Another rule took the recovered cycle over; its dispatch starts
             # from the checkout as it is now.
@@ -1710,6 +1728,24 @@ def _run_loop(
                     protected_snapshot=protected_before,
                 )
             )
+            # An audit fan-out's record exists only while it runs, so a later
+            # start can restore the handoff the audit started from and run the
+            # audit again. The single-agent auditor writes none.
+            auditor_in_flight_written = (
+                current_cycle.route == "auditor"
+                and config.audit.security_enabled
+                and resumed_handback is None
+                and not config.dry_run
+                and _write_planner_in_flight_record(
+                    config,
+                    cycle=cycle_number,
+                    handoff_content=handoff_content,
+                    log=log_fn,
+                    state=in_flight_state,
+                    protected_snapshot=protected_before,
+                    role="auditor",
+                )
+            )
             # A first Ctrl+C from here to the loop top lets this cycle finish:
             # the dispatch (or audit fan-out), commit, gates, and publish.
             console_interrupt.set_active_role(current_cycle.route)
@@ -1771,6 +1807,23 @@ def _run_loop(
                     "planner's handoff. The next start keeps a valid handoff "
                     "and offers to restore the one the planner dispatch "
                     "started from only when it is not valid.",
+                )
+                return 1
+            # The audit fan-out returned, whatever its exit code or stop
+            # request: the handoff is whatever it left, so its record names
+            # nothing interrupted.
+            if auditor_in_flight_written and not _delete_in_flight_record(
+                config, log_fn
+            ):
+                _log(
+                    log_fn,
+                    "ERROR",
+                    "Could not clear the in-flight record "
+                    f"{_in_flight_state_path(config)} after the audit fan-out "
+                    "returned, so the dispatcher stops before checking the "
+                    "audit's result. The next start compares the handoff with "
+                    "the record and offers to restore the one the audit "
+                    "started from when it changed.",
                 )
                 return 1
             # The dispatch returned, whatever its exit code; an interrupt or
@@ -5894,6 +5947,10 @@ FINALIZER_IN_FLIGHT_CONSEQUENCE = (
     "after a restart, and the next start cannot tell whether it committed the "
     "ledger."
 )
+AUDITOR_IN_FLIGHT_CONSEQUENCE = (
+    "An audit fan-out interrupted mid-dispatch leaves whatever handoff it "
+    "wrote after a restart, with no offer to restore the one it started from."
+)
 
 
 def _write_planner_in_flight_record(
@@ -5904,24 +5961,24 @@ def _write_planner_in_flight_record(
     log: LogFn,
     state: _InFlightRecordState,
     protected_snapshot: ProtectedFileSnapshot | None = None,
-    role: Literal["planner", "finalizer"] = "planner",
+    role: Literal["planner", "finalizer", "auditor"] = "planner",
 ) -> bool:
-    """Write the in-flight record before a planner or finalizer dispatch.
+    """Write the in-flight record before a planner, finalizer, or audit fan-out.
 
     The record holds the handoff the role starts from, HEAD, the checked-out
     branch, and the pre-dispatch protected-file digests, so a start after an
-    interrupted planner or finalizer can restore a half-written handoff. It
-    is a ``dispatch`` record only and is deleted as soon as the dispatch
-    returns. Returns True when it was written; writes nothing, with the same
-    one WARN per run, when the record cannot be kept race-safe or Git does
-    not ignore it. HEAD is read only once the record can be kept.
+    interrupted planner, finalizer, or audit fan-out can restore a
+    half-written handoff. It is a ``dispatch`` record only and is deleted as
+    soon as the dispatch returns. Returns True when it was written; writes
+    nothing, with the same one WARN per run, when the record cannot be kept
+    race-safe or Git does not ignore it. HEAD is read only once the record
+    can be kept.
     """
 
-    consequence = (
-        FINALIZER_IN_FLIGHT_CONSEQUENCE
-        if role == "finalizer"
-        else PLANNER_IN_FLIGHT_CONSEQUENCE
-    )
+    consequence = {
+        "finalizer": FINALIZER_IN_FLIGHT_CONSEQUENCE,
+        "auditor": AUDITOR_IN_FLIGHT_CONSEQUENCE,
+    }.get(role, PLANNER_IN_FLIGHT_CONSEQUENCE)
     if not _in_flight_record_writable(
         config, log=log, state=state, consequence=consequence
     ):
@@ -7706,6 +7763,240 @@ def _recover_interrupted_finalizer(
     return InterruptedDispatchRecovery(protected_snapshot=protected_snapshot)
 
 
+def _recover_interrupted_auditor(
+    config: DispatchConfig,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
+    record: InFlightRecord,
+    state_path: Path,
+) -> InterruptedDispatchRecovery:
+    """Restore the handoff an interrupted audit fan-out started from.
+
+    The reviewers are read-only, so recovering an audit means restoring the
+    pre-audit handoff and running the audit again. After the record's anchor
+    checks, Git is compared with the record's HEAD and branch, read-only in
+    any commit mode: a moved HEAD or a switched branch stops the run and
+    keeps the record. An unchanged handoff leaves nothing to recover and
+    deletes the record; when that delete fails the run stops, so the record
+    cannot outlive the audit that follows. Any other handoff (missing, empty, truncated, a
+    recorded dispatcher verification, a reviewer edit, or a finished
+    verdict) is replaced by the record's handoff text, and the auditor runs
+    again, only after the operator confirms at a terminal (HARD-5).
+    Otherwise the record is discarded and the handoff stays as it is. A
+    confirmed record that cannot be deleted stops the run. The dispatcher
+    never resets or checks out anything for an auditor record.
+    """
+
+    nothing = InterruptedDispatchRecovery()
+    story = _in_flight_story_display(record)
+    if config.protected_paths and record.protected_digests is None:
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record {state_path} for auditor's "
+            f"interrupted {story} audit: it holds no pre-dispatch protected-file "
+            "snapshot, so the protected-file check cannot run on a recovered "
+            "cycle. Nothing is restored; the handoff stays as it is."
+            + (" Not deleted in dry run." if config.dry_run else ""),
+        )
+        if not config.dry_run:
+            _delete_in_flight_record(config, log)
+        return nothing
+    if _discard_unanchored_in_flight_record(config, log, record, state_path, story):
+        return nothing
+    # The record is untrusted (HARD-5): Git is only inspected, never changed.
+    current_position = git_position(config.repo_root)
+    if (
+        current_position.head != record.head_sha
+        or current_position.branch != record.head_branch
+    ):
+        before_branch = _escape_control_characters(
+            record.head_branch or "detached HEAD"
+        )
+        after_branch = _escape_control_characters(
+            current_position.branch or "detached HEAD"
+        )
+        before_head = _escape_control_characters((record.head_sha or "none")[:12])
+        after_head = (current_position.head or "none")[:12]
+        moved = (
+            f"Found in-flight record {state_path}: auditor's audit fan-out was "
+            f"interrupted on {story}, and the checkout moved since it started "
+            f"(HEAD {before_head} on `{before_branch}`, now {after_head} on "
+            f"`{after_branch}`)."
+        )
+        if config.dry_run:
+            _log(log, "INFO", f"{moved} Not applied in dry run; the record is kept.")
+        else:
+            _log(
+                log,
+                "ERROR",
+                f"{moved} The dispatcher never resets or checks out anything "
+                "for an interrupted audit, so it stops before any dispatch and "
+                "keeps the record. Return the checkout to the record's HEAD and "
+                "branch, or delete the record if those changes are yours, then "
+                "start the dispatcher again.",
+            )
+            return InterruptedDispatchRecovery(stop=True)
+    current = _read_required_text(config.handoff_full_path)
+    if current == record.handoff_content:
+        if config.dry_run:
+            _log(
+                log,
+                "INFO",
+                f"The in-flight record {state_path} names an interrupted audit "
+                "fan-out that left nothing to recover; not deleted in dry run.",
+            )
+            return nothing
+        if not _delete_in_flight_record(config, log):
+            # A record left behind here would outlive the audit this run is
+            # about to dispatch, and a later start would offer to restore
+            # this obsolete pre-audit handoff over the finished verdict.
+            _log(
+                log,
+                "ERROR",
+                f"The in-flight record {state_path} names an interrupted audit "
+                f"fan-out on {story} that left nothing to recover, but it could "
+                "not be deleted, so the dispatcher stops before running the "
+                "audit. Delete the record, then start the dispatcher again.",
+            )
+            return InterruptedDispatchRecovery(stop=True)
+        _log(
+            log,
+            "INFO",
+            f"The in-flight record {state_path} names an interrupted audit "
+            "fan-out that left nothing to recover; deleted it.",
+        )
+        return nothing
+    handoff_display = _escape_control_characters(
+        normalize_repo_path(config.handoff_path.as_posix())
+    )
+    if current is None:
+        handoff_state = "is missing"
+    elif not current.strip():
+        handoff_state = "is empty"
+    else:
+        handoff_state = (
+            f"changed since the audit started (sha256 {_content_sha(current)[:12]})"
+        )
+    summary = (
+        f"Found in-flight record {state_path}: auditor's audit fan-out was "
+        f"interrupted on {story}, and the handoff {handoff_display} "
+        f"{handoff_state}."
+    )
+    if config.dry_run:
+        _log(log, "INFO", f"{summary} Not applied in dry run.")
+        return nothing
+    if _carry_over_path_traverses_link(_handoff_restore_destination(config)):
+        # Checked before the prompt, so the operator is never asked to
+        # confirm a restore that would write outside the repository.
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record read from {state_path} for "
+            f"auditor's interrupted {story} audit: the handoff path "
+            f"{handoff_display} passes through a symlink or junction, so the "
+            "dispatcher does not restore it. The handoff stays as it is.",
+        )
+        _delete_in_flight_record(config, log)
+        return nothing
+    confirmed = False
+    disclosed: tuple[str, ...] | None = None
+    if (
+        config.interactive_pause
+        and _operator_stdin_is_interactive()
+        and not operator_prompt.reader().console_unavailable
+    ):
+        _log(
+            log,
+            "INFO",
+            f"{summary} The handoff {handoff_display} will be replaced by the "
+            "handoff text the in-flight record holds, and the audit runs "
+            "again.",
+        )
+        _log(
+            log,
+            "INFO",
+            _interrupted_dispatch_assignment_summary(config, record, state_path),
+        )
+        if config.protected_paths:
+            disclosed = _uncommitted_protected_files(config)
+            _log(
+                log,
+                "INFO",
+                _protected_baseline_disclosure(config, record, disclosed),
+            )
+        confirmed = _confirm_carry_over_at_terminal(
+            operator_prompt.reader(),
+            f"Restore the handoff and re-run auditor's interrupted {story} "
+            "audit? [y/N]",
+            log,
+        )
+    if not confirmed:
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record read from {state_path} for "
+            f"auditor's interrupted {story} audit because it was not confirmed "
+            f"at a terminal; the handoff {handoff_display} stays as it is.",
+        )
+        _delete_in_flight_record(config, log)
+        return nothing
+    failure: str | None = None
+    try:
+        _restore_handoff_text(config, record.handoff_content)
+    except _CarryOverLinkError:
+        failure = "a symlink or junction appeared on its path"
+    except OSError as exc:
+        failure = _escape_control_characters(str(exc))
+    if failure is not None:
+        _log(
+            log,
+            "WARN",
+            f"Could not restore the handoff {handoff_display} ({failure}), so "
+            f"nothing is recovered from the in-flight record {state_path}.",
+        )
+        _delete_in_flight_record(config, log)
+        return nothing
+    _log(
+        log,
+        "INFO",
+        f"Restored the handoff {handoff_display} to the operator-approved text "
+        "from the in-flight record of the interrupted audit fan-out.",
+    )
+    # Built once recovery is confirmed, from the checkout as it is now.
+    protected_snapshot = (
+        _unverified_protected_snapshot(config, record, disclosed)
+        if config.protected_paths
+        else None
+    )
+    if not _delete_in_flight_record(config, log):
+        _log(
+            log,
+            "ERROR",
+            f"Could not clear the in-flight record {state_path} after restoring "
+            f"the handoff of auditor's interrupted {story} audit, so the "
+            "dispatcher stops before running the audit again. The restored "
+            "handoff stays; the next start finds it unchanged from the record "
+            "and deletes the record.",
+        )
+        return InterruptedDispatchRecovery(stop=True)
+    _log(
+        log,
+        "INFO",
+        "The operator confirmed restoring the handoff of auditor's interrupted "
+        f"{story} audit; scheduling the audit again.",
+    )
+    return InterruptedDispatchRecovery(
+        pending=PendingPlannerRecovery(
+            handoff_sha=_content_sha(record.handoff_content),
+            additional_instruction="",
+            kind="interrupted_audit",
+            route="auditor",
+            resumed_protected_snapshot=protected_snapshot,
+        ),
+    )
+
+
 def _recover_interrupted_dispatch(
     config: DispatchConfig,
     log: LogFn,
@@ -7720,8 +8011,9 @@ def _recover_interrupted_dispatch(
     approves that assignment. Otherwise it is discarded and the files stay
     operator edits. A ``handback`` record is handled by
     ``_recover_interrupted_handback``, a ``planner`` record by
-    ``_recover_interrupted_planner``, and a ``finalizer`` record by
-    ``_recover_interrupted_finalizer``.
+    ``_recover_interrupted_planner``, a ``finalizer`` record by
+    ``_recover_interrupted_finalizer``, and an ``auditor`` record by
+    ``_recover_interrupted_auditor``.
     """
 
     nothing = InterruptedDispatchRecovery()
@@ -7788,6 +8080,10 @@ def _recover_interrupted_dispatch(
         )
     if record.role == "finalizer":
         return _recover_interrupted_finalizer(
+            config, log, operator_prompt, record, state_path
+        )
+    if record.role == "auditor":
+        return _recover_interrupted_auditor(
             config, log, operator_prompt, record, state_path
         )
     if record.phase == "handback":

@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-5 (was RECOVERY-3b2) in progress;
+- **Active Epic:** RECOVERY (RECOVERY-6 in progress; RECOVERY-5 (was
+  RECOVERY-3b2) approved at `2e62500`, merged in PR #174;
   RECOVERY-3b1 approved at `bb4678f`, merged in PR #171;
   RECOVERY-3a approved at `c29943e`, merged in PR #169; RECOVERY-2d approved at
   `ee76517`, merged in PR #168; RECOVERY-2c approved at `10bdbee`, merged in PR
@@ -15,9 +16,11 @@ belong in commits, handoffs, and pull requests.
   The remaining stories were renumbered flat on 2026-10-19: RECOVERY-5
   (interrupted finalizer dispatch, was RECOVERY-3b2), RECOVERY-6 to
   RECOVERY-8 (were RECOVERY-3c to 3e), and RECOVERY-9 (no-record fallback,
-  was RECOVERY-4), in that order. RECOVERY-5 is active because an
-  interrupted finalizer can re-run the ledger update on a ledger it already
-  committed.
+  was RECOVERY-4), in that order, then RECOVERY-10 (merge-conflict resolver
+  sees hidden working-tree edits, from the RECOVERY-5 security review).
+  RECOVERY-6 (interrupted audit fan-out) is active because it is next in the
+  epic's order, unblocked, and reuses the planner/finalizer in-flight record
+  machinery just shipped.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -691,8 +694,11 @@ RECOVERY-2a, RECOVERY-2b, RECOVERY-2c, and RECOVERY-2d are merged (PRs #165,
 (stale Git index lock pause at startup) is merged (PR #169). RECOVERY-3b is
 split; RECOVERY-3b1 (interrupted planner dispatch) is approved at `bb4678f`
 and merged (PR #171), and the rest is renumbered flat: RECOVERY-5 (was 3b2,
-interrupted finalizer dispatch) is active, and RECOVERY-6 through RECOVERY-9
-(was RECOVERY-4) follow in order.
+interrupted finalizer dispatch) is approved at `2e62500` and merged (PR #174).
+RECOVERY-6 (interrupted audit fan-out) is active because it is next in the
+epic's order, unblocked, and reuses the planner/finalizer in-flight record
+machinery just shipped; RECOVERY-7 through RECOVERY-9 (was RECOVERY-4)
+follow in order, then RECOVERY-10.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
@@ -854,9 +860,10 @@ bounces until the three-fix circuit breaker escalates.
       mode, handoff-only commits since the record's untrusted HEAD are undone
       only after the operator confirms the exact `git reset --soft`.
 - The rest of RECOVERY, renumbered flat on 2026-10-19 (old IDs in brackets;
-  a live handoff's `remaining_stories` may still use them). Order: 5, 6, 7,
-  8, then 9.
-- RECOVERY-5 (was RECOVERY-3b2): Interrupted finalizer dispatch. A finalizer
+  a live handoff's `remaining_stories` may still use them). Order: 6, 7, 8, 9,
+  then 10.
+- RECOVERY-5 (was RECOVERY-3b2; approved at `2e62500`, merged in PR #174):
+  Interrupted finalizer dispatch. A finalizer
   dispatch writes a `finalizer` in-flight record (same shape as a planner
   record) right before `_invoke_epic_close` and deletes it once that returns.
   At startup, after the anchor checks: (a) Git is compared read-only with
@@ -875,7 +882,35 @@ bounces until the three-fix circuit breaker escalates.
   merge-conflict resolver did not compare index entries, and its handoff
   restore followed links) because its audit range includes that code.
 - RECOVERY-6 (was RECOVERY-3c): Interrupted audit fan-out: restore the
-  handoff and re-run the read-only reviewers.
+  handoff and re-run the read-only reviewers. Decided by the planner on
+  2026-10-19:
+  - Record: `auditor` joins the in-flight roles with the planner/finalizer
+    shape (`dispatch` phase only, empty `dirty_fingerprints` and
+    `carried_over`, null `assignment_content`, `story_key` null only when the
+    handoff has no `carry_over_key`); the loader rejects anything else.
+  - Write: `run_loop` writes an `auditor` record right before
+    `_dispatch_route` when the route is `auditor`, `audit.security_enabled`
+    is true (the fan-out path), there is no resumed handback, and it is not
+    a dry run, and deletes it as soon as `_dispatch_route` returns, whatever
+    its exit code or stop request; a failed delete logs an ERROR naming the
+    record and returns 1. The single-agent auditor and dry runs write none.
+  - Startup (`_recover_interrupted_auditor`): (a) `protected_paths` without
+    record digests discards with one WARN; (b) the unanchored-record
+    check; (c) a moved HEAD or switched branch, read-only in any commit mode,
+    logs an ERROR naming the record, both 12-hex SHAs, and both escaped
+    branches, keeps the record, and stops (dry run: INFO, no stop); (d) an
+    unchanged handoff logs INFO "left nothing to recover" and deletes the
+    record; (e) any other handoff is restored only after HARD-5 confirmation
+    (`Restore the handoff and re-run auditor's interrupted <story> audit? [y/N]`),
+    with a linked handoff path discarded before the prompt, decline, EOF,
+    no TTY, or `interactive_pause: false` discarding, and a confirmed
+    record that cannot be deleted stopping the run.
+  - Re-run: a confirmed recovery schedules `PendingPlannerRecovery` kind
+    `interrupted_audit`; the matching cycle routes to `auditor`
+    (`interrupted_audit_recovery`) with the recovery's protected-file
+    baseline and no forced instruction, and writes a fresh `auditor` record.
+    Partial `logs/dispatch/audit/<timestamp>-cycle<N>/` directories are left
+    untouched.
 - RECOVERY-7 (was RECOVERY-3d): Interrupted work-claim gate and scanners:
   re-run them.
 - RECOVERY-8 (was RECOVERY-3e): Publish steps safe to repeat (push again,
@@ -887,6 +922,16 @@ bounces until the three-fix circuit breaker escalates.
   last commit, ask `Treat these as <role>'s interrupted <story> work? [y/N]`;
   yes carries them over, no leaves them as operator edits. Never decide this
   without the operator.
+- RECOVERY-10: Merge-conflict resolver sees hidden working-tree edits. From
+  the RECOVERY-5 security review (medium, below the block threshold): the
+  resolver's working-tree snapshot (`llm_handoff/publish.py` ~line 1350)
+  hashes only paths `git status` reports, so a tracked file marked
+  `assume-unchanged` or `skip-worktree` can be edited while the planner
+  resolves the project state file, and the index comparison misses it
+  because it ignores those flags. Snapshot the content and file type of
+  every tracked path independently of `git status` and index flags, reject
+  index-flag changes, and add regressions for a hidden edit with an
+  unchanged staged blob.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
