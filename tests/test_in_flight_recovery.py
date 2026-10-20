@@ -4099,6 +4099,69 @@ def test_a_staged_ledger_change_keeps_the_finalizer_record(
     assert handoff.read_text(encoding="utf-8") == FINALIZER_HANDOFF
 
 
+@pytest.mark.parametrize("change", ["edited", "deleted"])
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_a_ledger_edit_hidden_by_an_index_flag_keeps_the_finalizer_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+    change: str,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    # No ledger commit and an unchanged handoff: only the hidden ledger
+    # change keeps this from the "nothing done" branch.
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch, leave=_KEEP)
+    _git(tmp_path, "update-index", flag, "--", "PROJECT_STATE.md")
+    if change == "edited":
+        _write(tmp_path / "PROJECT_STATE.md", PARTIAL_LEDGER)
+    else:
+        (tmp_path / "PROJECT_STATE.md").unlink()
+    # Git status alone reports nothing for the flagged file.
+    assert _git(tmp_path, "status", "--porcelain", "--", "PROJECT_STATE.md") == ""
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery(stop=True)
+    assert [level for level, _message in messages] == ["ERROR"]
+    assert "partial ledger edit" in messages[0][1]
+    assert "PROJECT_STATE.md" in messages[0][1]
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == FINALIZER_HANDOFF
+
+
+def test_an_ignored_ledger_absent_from_head_counts_as_uncommitted(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _git(tmp_path, "rm", "-q", "--cached", "--", "PROJECT_STATE.md")
+    _git(tmp_path, "commit", "-q", "-m", "untrack the ledger")
+    _write(tmp_path / ".git" / "info" / "exclude", "PROJECT_STATE.md\n")
+    assert _git(tmp_path, "status", "--porcelain", "--", "PROJECT_STATE.md") == ""
+
+    assert (
+        orchestrator._project_state_has_uncommitted_changes(_config(tmp_path))
+        is True
+    )
+
+
+def test_a_clean_ledger_counts_as_committed(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+
+    assert (
+        orchestrator._project_state_has_uncommitted_changes(_config(tmp_path))
+        is False
+    )
+
+
 def test_a_finished_finalizer_keeps_the_handoff_and_deletes_the_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

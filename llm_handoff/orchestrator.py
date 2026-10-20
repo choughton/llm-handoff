@@ -7276,11 +7276,21 @@ def _project_state_has_uncommitted_changes(config: DispatchConfig) -> bool | Non
     Asks ``git status`` about that one literal path with rename detection
     off, so a staged or unstaged rename away from the file still reports
     the file itself as deleted instead of only naming the destination.
-    Untracked counts too. None when Git fails. Read-only.
+    Untracked counts too. Git status alone is not enough: it hides ignored
+    files and tracked files flagged skip-worktree or assume-unchanged. So
+    the index entry and the file on disk are also compared with HEAD's blob
+    directly, as ``_uncommitted_protected_files`` does: an index entry that
+    is not HEAD's blob at stage 0, a file on disk whose raw bytes (CRLF
+    line endings aside, ``_worktree_matches_blob``) are not HEAD's blob, a
+    file in HEAD that is gone from disk, and a file absent from HEAD that
+    is on disk or in the index all count. None when Git fails. Read-only.
     """
 
+    repo_root = config.repo_root
+    state_rel = normalize_repo_path(config.project_state_path.as_posix())
+    literal = ":(literal)" + state_rel
     output = _run_git_stdout_raw(
-        config.repo_root,
+        repo_root,
         [
             "git",
             "status",
@@ -7289,12 +7299,59 @@ def _project_state_has_uncommitted_changes(config: DispatchConfig) -> bool | Non
             "--untracked-files=all",
             "-z",
             "--",
-            ":(literal)" + normalize_repo_path(config.project_state_path.as_posix()),
+            literal,
         ],
     )
     if output is None:
         return None
-    return bool(output.strip("\0"))
+    if output.strip("\0"):
+        return True
+    head_oid = _head_blob_id(repo_root, state_rel)
+    if head_oid is None:
+        return None
+    index_output = _run_git_stdout_raw(
+        repo_root, ["git", "ls-files", "--stage", "-z", "--", literal]
+    )
+    if index_output is None:
+        return None
+    index_entries: list[tuple[str, str]] = []
+    for entry in index_output.split("\0"):
+        header, separator, path = entry.partition("\t")
+        if not separator or not _same_repo_path(path, state_rel):
+            continue
+        fields = header.split()
+        if len(fields) != 3:
+            return True
+        index_entries.append((fields[1], fields[2]))
+    on_disk = (repo_root / state_rel).exists()
+    if not head_oid:
+        return on_disk or bool(index_entries)
+    if index_entries != [(head_oid, "0")]:
+        return True
+    return not _worktree_matches_blob(repo_root, state_rel, head_oid)
+
+
+def _head_blob_id(repo_root: Path, path: str) -> str | None:
+    """HEAD's blob id for ``path``, ``""`` when HEAD has no such blob.
+
+    Lists HEAD's whole tree (as ``_head_protected_blobs`` does) rather than
+    passing the path to Git as a pattern. A non-blob entry at that path
+    (a submodule) counts as no blob. None when Git cannot list the tree.
+    """
+
+    output = _run_git_stdout_raw(
+        repo_root, ["git", "ls-tree", "-r", "-z", "--full-tree", "HEAD"]
+    )
+    if output is None:
+        return None
+    for entry in output.split("\0"):
+        header, separator, entry_path = entry.partition("\t")
+        if not separator or not _same_repo_path(entry_path, path):
+            continue
+        fields = header.split()
+        if len(fields) == 3 and fields[1] == "blob":
+            return fields[2]
+    return ""
 
 
 def _recover_interrupted_finalizer(
