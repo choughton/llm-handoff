@@ -6,44 +6,17 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-13 in progress; RECOVERY-12 merged in
-  PR #181 (HEAD `2e5279b`); RECOVERY-11 merged in
-  PR #180 (HEAD `d227641`); RECOVERY-10 merged in
-  PR #179 (HEAD `1685281`); RECOVERY-9 approved
-  at `1e41789`, merged in PR #178; RECOVERY-8 approved at
-  `e9f084a`, merged in PR #177; RECOVERY-7 approved at
-  `c39b42a`, merged in PR #176; RECOVERY-6 approved at
-  `7dcd6ad`, merged in PR #175; RECOVERY-5 (was
-  RECOVERY-3b2) approved at `2e62500`, merged in PR #174;
-  RECOVERY-3b1 approved at `bb4678f`, merged in PR #171;
-  RECOVERY-3a approved at `c29943e`, merged in PR #169; RECOVERY-2d approved at
-  `ee76517`, merged in PR #168; RECOVERY-2c approved at `10bdbee`, merged in PR
-  #167; RECOVERY-2b merged in PR #166; RECOVERY-2a approved at `9831e0b`, merged
-  in PR #165; RECOVERY-1 approved at 14f195b, merged in PR #160).
-  The remaining stories were renumbered flat on 2026-10-19: RECOVERY-5
-  (interrupted finalizer dispatch, was RECOVERY-3b2), RECOVERY-6 to
-  RECOVERY-8 (were RECOVERY-3c to 3e), and RECOVERY-9 (no-record fallback,
-  was RECOVERY-4), in that order, then RECOVERY-10 (merge-conflict resolver
-  sees hidden working-tree edits, from the RECOVERY-5 security review), then
-  RECOVERY-11 (failed in-flight record deletes stop every recovery path, from
-  the RECOVERY-6 audit), then RECOVERY-12 (interrupted merge-commit publish,
-  split from RECOVERY-8), then RECOVERY-13 (merge-conflict resolver fails
-  closed on unreadable files, from the RECOVERY-10 security review). Epic
-  order: 12, 13.
-  RECOVERY-12 (interrupted merge-commit publish) is merged in PR #181 (HEAD
-  `2e5279b`). RECOVERY-13 (merge-conflict resolver fails closed on
-  unreadable files) is active because it is the last RECOVERY story and
-  unblocked (RECOVERY-2 through RECOVERY-12 are merged); RECOVERY closes
-  after it. The other open epics' Fit lines are unchanged since RECOVERY-10
-  was picked.
-  Picked over the other
-  open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
-  CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
-  environment-refusal pause, and no such pause happened in the last run.
-  TPM-ROLE matters less here because the self-host planner runs on claude,
-  not antigravity. ESCALATION-RECONCILE is meant to follow a stale user
-  escalation. WORK-INTAKE needs a design check from the user.
-  TRANSITION-RULES comes after TPM-ROLE. LINEAR-SWITCH has low urgency.
+- **Active Epic:** TIDY, with TIDY-10 (dispatcher verification for
+  planner-issued audits) in progress. RECOVERY is closed (RECOVERY-13
+  approved at `ab2f9d3`, merged in PR #182, epic close `c07dcdd`; the
+  per-story SHAs are in the RECOVERY section). TIDY was picked by fit over
+  the other open epics: CHAT is a feature epic and comes next, after TIDY.
+  ACTIVE-PLANNER and ESCALATION-RECONCILE wait on triggers that did not
+  happen in the last run (an implementer environment-refusal pause, a stale
+  user escalation). TPM-ROLE matters less here because the self-host planner
+  runs on claude. TRANSITION-RULES comes after TPM-ROLE. WORK-INTAKE needs a
+  design check from the user. LINEAR-SWITCH has low urgency. No epic is
+  parked.
 - **Epic Awaiting Close:** None. HARDENING closed (HARD-6 merged in PR #157,
   audited at `3949ed2`; see the Completed Scope Ledger). LINEAR-WORKFLOW,
   LINEAR-FOUNDATIONS, CONFIG-CLEANUP, SCANNERS, PAUSE-RECOVERY,
@@ -703,33 +676,8 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 
 ### 12. RECOVERY - interrupted-run recovery
 
-Fit: RECOVERY-1 is merged (PR #160) and removed the Ctrl+C hazard;
-RECOVERY-2a, RECOVERY-2b, RECOVERY-2c, and RECOVERY-2d are merged (PRs #165,
-#166, #167, and #168). RECOVERY-3 is split into RECOVERY-3a..3e; RECOVERY-3a
-(stale Git index lock pause at startup) is merged (PR #169). RECOVERY-3b is
-split; RECOVERY-3b1 (interrupted planner dispatch) is approved at `bb4678f`
-and merged (PR #171), and the rest is renumbered flat: RECOVERY-5 (was 3b2,
-interrupted finalizer dispatch) is approved at `2e62500` and merged (PR #174).
-RECOVERY-6 (interrupted audit fan-out) is approved at `7dcd6ad` and merged
-(PR #175). RECOVERY-7 (interrupted work-claim gate and scanners) is approved
-at `c39b42a` and merged (PR #176). RECOVERY-8 (publish steps safe to repeat,
-`pr` mode) is approved at `e9f084a` and merged (PR #177). RECOVERY-9 (was
-RECOVERY-4, no-record fallback) is approved at `1e41789` and merged
-(PR #178). RECOVERY-10 (merge-conflict resolver sees hidden working-tree
-edits) is merged (PR #179). RECOVERY-11 (failed in-flight record deletes stop
-every recovery path) is merged (PR #180). RECOVERY-12 (interrupted
-merge-commit publish, split from RECOVERY-8) is merged (PR #181).
-RECOVERY-13 (merge-conflict resolver fails closed on unreadable files) is
-active because it is the last RECOVERY story and unblocked; the epic closes
-after it. The other open epics' Fit lines are unchanged.
-HARD-5 and HARD-6 are closed,
-so RECOVERY-2 was unblocked. Its in-flight
-record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
-HARD-5's operator-confirmation rule before carrying anything over and
-HARD-6's race-safe record I/O to read, write, and delete
-`logs/dispatch/in-flight.json`. Pick the epic when an interrupted run
-has just cost a manual cleanup, or before the loop is left to run
-unattended for long stretches.
+Fit: closed. RECOVERY-13, the last story, merged in PR #182, and the epic
+close is commit `c07dcdd`.
 
 A Ctrl+C, a closed window, or a crash at any point must leave the loop able
 to continue from a record it wrote, without the operator cleaning the working
@@ -1074,8 +1022,8 @@ bounces until the three-fix circuit breaker escalates.
 ### 13. CHAT - talk to the agents while the loop runs
 
 Fit: operator-facing; pick it once the loop runs unattended reliably.
-HARD-3 is merged, so only the RECOVERY ordering remains: RECOVERY first is
-the natural order.
+HARD-3 is merged and RECOVERY is closed, so nothing orders CHAT; pick it
+after TIDY.
 
 The operator types at any time; a message holds the loop and is answered by
 the agent it is about, from that agent's own session, read-only. Chat never
@@ -1540,8 +1488,9 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: independent and cheap; each story is one Work Packet and fills a wait.
-Nothing here blocks another epic or waits on one. TIDY-7 routes to `user`
+Fit: active; TIDY-10 is in progress. Independent and cheap; each story is
+one Work Packet and fills a wait. Nothing here blocks another epic or waits
+on one. TIDY-7 routes to `user`
 (Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
 they want a Linear-side record before it starts; park it otherwise.
 
@@ -1662,7 +1611,10 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   cycle 12). Also trigger it when the handoff's producer is not an
   implementer and has no PASS for the audit commit. Files:
   `llm_handoff/audit_verification.py`, `llm_handoff/orchestrator.py`,
-  `tests/`, `CHANGELOG.md`.
+  `tests/`, `CHANGELOG.md`. Decided by the planner on 2026-10-20: a third
+  trigger in `pre_audit_trigger` for any non-implementer producer (`audit
+  issued by <producer>`); the call site in `audit_review.py` is unchanged and
+  `orchestrator.py` needs no edit.
 
 ## Open Followups
 

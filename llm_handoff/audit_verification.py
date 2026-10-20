@@ -2,8 +2,10 @@
 
 The work-claim gate runs the Work Packet's Verification command outside any
 agent sandbox, but only on an implementer's ``ready_for_review`` claim. An
-epic close, or any audit whose review range has no committed changes, reaches
-the auditor without that check, and a sandboxed reviewer may not be able to
+epic close, any audit whose review range has no committed changes, and a
+story audit whose handoff no implementer produced (for example one the
+planner re-issues after a bounce or a restart) reach the auditor without
+that check, and a sandboxed reviewer may not be able to
 run the command at all (for example pytest's per-user temp directory under
 the Codex Windows sandbox). For those audits the dispatcher runs the command
 itself, on the audit commit, before the reviewers start.
@@ -15,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from llm_handoff.roles import normalize_next_agent_value
 from llm_handoff.router import HandoffRouting
 from llm_handoff.work_claim import (
     DISPATCHER_VERIFICATION_HEADING,
@@ -33,6 +36,9 @@ from llm_handoff.work_claim import (
 
 LogFn = Callable[[str, str], None]
 
+# Producers whose ``ready_for_review`` claim the work-claim gate checks.
+IMPLEMENTER_PRODUCERS = frozenset({"backend", "frontend"})
+
 
 @dataclass(frozen=True)
 class PreAuditVerification:
@@ -49,12 +55,22 @@ class PreAuditVerification:
 def pre_audit_trigger(
     frontmatter: HandoffRouting | None, scope_files: tuple[str, ...]
 ) -> str | None:
-    """Name why the audit needs dispatcher verification, or None."""
+    """Name why the audit needs dispatcher verification, or None.
+
+    The triggers are checked in order: an epic close, an empty review range,
+    then a handoff that no implementer produced (for example a story audit
+    the planner re-issued after a bounce or a restart), which the work-claim
+    gate never checked.
+    """
 
     if frontmatter is not None and frontmatter.close_type == "epic":
         return "epic close"
     if not scope_files:
         return "empty review range"
+    if frontmatter is not None:
+        producer = normalize_next_agent_value(frontmatter.producer or "")
+        if producer not in IMPLEMENTER_PRODUCERS:
+            return f"audit issued by {producer or 'an unknown producer'}"
     return None
 
 
@@ -73,8 +89,9 @@ def run_pre_audit_verification(
 ) -> PreAuditVerification | None:
     """Run the Work Packet's Verification commands before an audit.
 
-    Returns None when the step does not apply: the audit is neither an epic
-    close nor an empty review range, the handoff already has a passing
+    Returns None when the step does not apply: the audit is not an epic
+    close, not an empty review range, and not issued by a non-implementer
+    producer (see ``pre_audit_trigger``), the handoff already has a passing
     ``## Dispatcher Verification`` section for ``head_sha`` that lists the
     same commands, there is no Work Packet Verification command, or the
     working tree is not a clean checkout of ``head_sha`` (the handoff itself

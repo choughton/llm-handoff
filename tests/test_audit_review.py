@@ -27,6 +27,7 @@ from llm_handoff.audit_review import (
     ReviewVerdict,
     ReviewerRun,
 )
+from llm_handoff.audit_verification import pre_audit_trigger
 from llm_handoff.config import DispatchConfig, load_dispatch_config
 from llm_handoff.router import parse_handoff_frontmatter_text, route
 from llm_handoff.validator import validate_handoff_text
@@ -3713,6 +3714,180 @@ def test_implementer_audit_with_committed_changes_skips_dispatcher_verification(
     assert not marker.exists()
     assert calls == ["security"]
     assert "Dispatcher verification" not in log.text()
+
+
+def _planner_story_audit_handoff(scope_sha: str, command: str) -> str:
+    return f"""---
+next_agent: auditor
+reason: "Re-issuing the story audit after a bounce."
+epic_id: AUDIT-EPIC
+story_id: {STORY_ID}
+story_title: Example story
+remaining_stories: []
+scope_sha: {scope_sha}
+producer: planner
+---
+
+# Story Audit
+
+## Work Packet
+
+- **Objective:** Audit the committed story change.
+- **Files in scope:** src/app.py
+- **Files out of bounds:** none
+- **Context:** AGENTS.md
+- **Verification command:**
+  - {command}
+- **Expected next route:** auditor
+"""
+
+
+def _planner_story_audit_repo(tmp_path: Path, command: str) -> tuple[Path, str, str, str]:
+    repo, base = _init_repo(tmp_path)
+    head = _commit_file(repo, "src/app.py", "x = 1\n", "feature")
+    handoff = _planner_story_audit_handoff(head, command)
+    _write_handoff(repo, handoff)
+    return repo, base, head, handoff
+
+
+def test_planner_story_audit_records_dispatcher_verification_pass_for_reviewers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, head, handoff = _planner_story_audit_repo(tmp_path, PASSING_COMMAND)
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    calls: list[str] = []
+    seen: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        # The range holds a committed change, so only the producer triggers.
+        base_sha=base,
+        quality_side_effect=lambda _prompt, _config: seen.append(
+            handoff_path.read_text(encoding="utf-8")
+        ),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == ["security"]
+    assert "## Dispatcher Verification" in seen[0]
+    assert "- **Verdict:** PASS" in seen[0]
+    assert f"- **Verified commit:** `{head}`" in seen[0]
+    assert "(audit issued by planner)" in seen[0]
+    assert "Dispatcher verification PASSED before the audit" in log.text()
+
+
+def test_failed_dispatcher_verification_routes_planner_story_audit_to_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, head, handoff = _planner_story_audit_repo(tmp_path, FAILING_COMMAND)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+        quality_side_effect=lambda _prompt, _config: calls.append("quality"),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == []
+    assert "Audit BLOCKED before the reviewers" in log.text()
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+    assert frontmatter.status == "verified_fail"
+    assert frontmatter.producer == "auditor"
+    assert frontmatter.scope_sha == head
+    assert frontmatter.reason and "audit issued by planner" in frontmatter.reason
+    assert "- **Verdict:** FAIL" in written
+    assert route(written).route == "planner"
+
+
+def test_planner_story_audit_is_not_rerun_over_a_recorded_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, head, _handoff = _planner_story_audit_repo(tmp_path, FAILING_COMMAND)
+    handoff = (
+        _planner_story_audit_handoff(head, FAILING_COMMAND)
+        + NL
+        + "## Dispatcher Verification"
+        + NL
+        + NL
+        + "- **Verdict:** PASS"
+        + NL
+        + f"- **Verified commit:** `{head}`"
+        + NL
+        + f"- **Verification command:** `{FAILING_COMMAND}` (exited 0 after 1.0s)"
+        + NL
+    )
+    _write_handoff(repo, handoff)
+    calls: list[str] = []
+    _passing_security(monkeypatch, calls)
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == ["security"]
+    assert "already records a PASS" in log.text()
+    assert "Audit BLOCKED before the reviewers" not in log.text()
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.status == "verified_pass"
+
+
+def _trigger_frontmatter(producer: str | None, close_type: str | None = None):
+    lines = ["---", "next_agent: auditor", 'reason: "Audit requested."']
+    if close_type is not None:
+        lines.append(f"close_type: {close_type}")
+    if producer is not None:
+        lines.append(f"producer: {producer}")
+    lines.extend(["---", "", "# Audit", ""])
+    frontmatter = parse_handoff_frontmatter_text(NL.join(lines))
+    assert frontmatter is not None
+    return frontmatter
+
+
+@pytest.mark.parametrize(
+    ("producer", "expected"),
+    [
+        ("backend", None),
+        ("frontend", None),
+        ("planner", "audit issued by planner"),
+        ("validator", "audit issued by validator"),
+        (None, "audit issued by an unknown producer"),
+    ],
+)
+def test_pre_audit_trigger_names_non_implementer_producers(
+    producer: str | None, expected: str | None
+) -> None:
+    frontmatter = _trigger_frontmatter(producer)
+
+    assert pre_audit_trigger(frontmatter, ("src/app.py",)) == expected
+
+
+def test_pre_audit_trigger_without_frontmatter_and_a_non_empty_range_is_none() -> None:
+    assert pre_audit_trigger(None, ("src/app.py",)) is None
+
+
+def test_pre_audit_trigger_keeps_epic_close_first_for_a_planner() -> None:
+    frontmatter = _trigger_frontmatter("planner", close_type="epic")
+
+    assert pre_audit_trigger(frontmatter, ("src/app.py",)) == "epic close"
 
 
 def test_blocked_audit_with_an_empty_range_routes_to_planner(
