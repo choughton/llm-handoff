@@ -3021,6 +3021,77 @@ def test_a_review_timeout_asks_the_operator_without_an_automatic_retry(
     assert outcome.stop is True and "left open" in outcome.message
 
 
+def _codex_unattributed_summary(updated_at: str) -> dict:
+    """A Completed summary whose marker and Commit cell name no commit."""
+
+    return {
+        "user": {"login": BOT},
+        "updated_at": updated_at,
+        "body": "<!-- codex-pull-request-review-summary -->\n"
+        '<!-- codex-review-state:v1 {"code_review":{"commit_sha":null,'
+        '"has_any_findings":null,"has_unresolved_findings":null,'
+        '"status":"completed"},"security_review":null} -->\n\n'
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        "| **Code Review** | **Completed** | — | PR opened |\n",
+    }
+
+
+def test_a_review_that_names_no_commit_is_retried_once_then_asks_the_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    _set_api(tmp_path, comments=[_codex_unattributed_summary("2099-01-01T00:00:00Z")])
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_unattributed_summary(AFTER_REQUEST)])
+    )
+    prompt = _Prompt(repo, "quit")
+    entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    cause = (
+        "Codex marked a review completed without naming a commit, so the "
+        f"dispatcher cannot tell it reviewed {head[:12]}"
+    )
+    assert any(
+        level == "AGENT" and message.startswith(f"{cause}; asked Codex to review")
+        for level, message in entries
+    )
+    assert not any("as failed" in message for _level, message in entries)
+    [reason] = prompt.reasons
+    assert f"left open because {cause}." in reason
+    assert "`merge`" in reason and "`retry`" in reason
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert outcome.stop is True and cause in outcome.message
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_a_review_that_names_no_commit_merges_when_the_retry_is_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    _set_api(tmp_path, comments=[_codex_unattributed_summary("2099-01-01T00:00:00Z")])
+    clean = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _after_review_requests(tmp_path, _api(comments=[clean]))
+    prompt = _Prompt(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, review_prompt=prompt)
+
+    assert outcome == PublishOutcome()
+    assert prompt.reasons == []
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+
+
 def test_a_usage_limit_failure_goes_straight_to_the_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

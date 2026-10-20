@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The Codex review gate no longer waits out its timeout when Codex marks a review
+  completed without naming a commit (state marker `commit_sha: null`, a dash in the
+  summary's Commit cell, and no review or +1 reaction). Before, the gate matched every
+  signal to the head SHA, ignored that summary, and logged "waiting for Codex to start
+  reviewing" until the timeout. Now, when a summary updated after the push or review
+  request shows this on two polls in a row, the wait ends as a failed review, not a pass,
+  with the message "Codex marked a review completed without naming a commit, so the
+  dispatcher cannot tell it reviewed <head>". The failed-review rule applies: one
+  automatic `@codex review` request, then the `merge`/`retry`/`quit` prompt. A head-SHA
+  review or a +1 reaction still makes the review complete.
 - Docs and text cleanup (TIDY-3): (a) rewrapped the two `CHANGELOG.md` lines over 100
   characters; (b) `CONFIGURATION.md` now recommends pinning each scanner's version; (c)
   `docs/TESTING.md` and `CONFIGURATION.md` describe doctor's `tracker connector` lines per

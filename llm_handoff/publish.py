@@ -13,7 +13,8 @@
   With ``wait_for_reviewers: [codex]`` it first waits for the Codex review
   that GitHub runs on the pushed commit: no findings merges, findings go back
   to the implementer on the same branch and pull request for one correction
-  round (``max_review_rounds``). A review Codex reports as failed is
+  round (``max_review_rounds``). A review Codex reports as failed, or marks
+  completed without naming a commit, is
   requested once more with an ``@codex review`` comment; when that one fails
   too, or no review arrives in time, the operator prompt offers ``merge``,
   ``retry``, or ``quit``, and without a terminal the loop stops with the pull
@@ -3607,10 +3608,15 @@ def _wait_for_reviewers(
     if result.outcome == "failed" and not result.usage_limited and retry_at is None:
         retry_at, problem = request_again()
         if retry_at is not None:
+            cause = (
+                result.detail
+                if result.unattributed
+                else f"Codex reported the review of {head_sha[:12]} as failed"
+            )
             log(
                 "AGENT",
-                f"Codex reported the review of {head_sha[:12]} as failed; asked "
-                f"Codex to review {url} again with a pull request comment.",
+                f"{cause}; asked Codex to review {url} again with a pull "
+                "request comment.",
             )
             result = wait(retry_at)
 
