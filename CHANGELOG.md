@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Linear init covers more Claude subagents (TIDY-11). In Linear mode `init` now also appends
+  the role's Linear MCP tools to the `tools:` line of the copied `.claude/agents/backend.md`,
+  `auditor.md`, and `ledger-updater.md` (finalizer), as it already did for planner, frontend,
+  and handoff-validator. Vanilla init is unchanged.
 - Non-Claude role helper files defer to the configured project state path (TIDY-6). The
   `.agents/agents/` and `.codex/skills/` helpers, root and reference-workflow copies, now say
   "The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md`

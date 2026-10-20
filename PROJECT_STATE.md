@@ -6,9 +6,11 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** TIDY, with TIDY-6 (non-Claude helper files defer to the
-  configured project state path) in progress, picked because it is fully
-  specified, needs no operator input, and must precede TIDY-7. TIDY-5 (one
+- **Active Epic:** TIDY, with TIDY-11 (Linear init renders Linear MCP tools
+  into the Claude backend, auditor, and finalizer subagents) in progress,
+  picked because it needs no operator input. TIDY-6 (non-Claude helper
+  files defer to the configured project state path) was approved at
+  `138d448` and merged in PR #191. TIDY-5 (one
   refusal summary per dispatch) was approved at `80682fd` and merged in PR
   #190. TIDY-4 (tracker probe and stop-request hardening) was
   approved at `ec81ba8` and merged in PR #188. TIDY-3 (docs and text cleanup) was approved
@@ -1499,11 +1501,11 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: active; TIDY-6 is in progress. Independent and cheap; each story is
+Fit: active; TIDY-11 is in progress. Independent and cheap; each story is
 one Work Packet and fills a wait. Nothing here blocks another epic or waits
-on one. TIDY-7 routes to `user`
-(Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
-they want a Linear-side record before it starts; park it otherwise.
+on one. TIDY-7 routes to `user` (Claude roles cannot write `.claude/`).
+TIDY-8 needs the operator to confirm they want a Linear-side record before
+it starts; park it otherwise.
 
 The Open Followups that were still open on 2026-10-19, promoted to stories.
 Line numbers are from `105ea42`; re-check them when writing the Work Packet.
@@ -1615,16 +1617,16 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   only the finalizer's dispatcher prompt names the configured path; the
   planner story-recording paragraph keeps the literal name because
   `tests/test_story_list.py` asserts it across every planner prompt tree.
+  Approved at `138d448`, merged in PR #191.
 - TIDY-7: Operator edit of the Claude helper files (routes to `user`).
   Claude roles cannot write `.claude/`, so the planner writes the exact edits
   into the handoff and routes to `user`, as GEM-5c and LIN-9d did: (a) the
   same project state deferral wording as TIDY-6 in `.claude/agents/*.md` and
-  `examples/reference-workflow/.claude/agents/*.md`; (b) add the Linear MCP
-  tools to the example Claude backend, auditor, and ledger-updater subagent
-  templates under `examples/reference-workflow/.claude/agents/`, matching what
-  GEM-3b renders for the planner and frontend. Take it after TIDY-6 so both
-  trees use the same wording. Closes CONFIG-CLEANUP (a) inside `.claude/` and
-  the GEM-3b audit followup.
+  `examples/reference-workflow/.claude/agents/*.md`. Part (b) moved to
+  TIDY-11 on 2026-10-20: the GEM-3b render is `_LINEAR_AGENT_TOOLS` in
+  `llm_handoff/init_workflow.py`, not a `.claude/` edit. Take it after TIDY-6
+  so both trees use the same wording. Closes CONFIG-CLEANUP (a) inside
+  `.claude/` only.
 - TIDY-8: Linear evidence events for epic closes and handoff repairs
   (confirm with the operator first). (a) In Linear mode the finalizer posts
   nothing, so an epic close leaves no evidence comment; add an `epic_closed`
@@ -1664,6 +1666,14 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   trigger in `pre_audit_trigger` for any non-implementer producer (`audit
   issued by <producer>`); the call site in `audit_review.py` is unchanged and
   `orchestrator.py` needs no edit.
+- TIDY-11: Linear init renders Linear MCP tools into the Claude backend,
+  auditor, and finalizer subagents. Add `.claude/agents/backend.md`
+  (backend), `auditor.md` (auditor), and `ledger-updater.md` (finalizer) to
+  `_LINEAR_AGENT_TOOLS` in `llm_handoff/init_workflow.py`, so
+  `init --tracker linear` appends their role's tools as GEM-3b does for
+  planner and frontend. Files: `llm_handoff/init_workflow.py`,
+  `tests/test_init_tracker.py`, `CHANGELOG.md`. Closes the GEM-3b audit
+  followup (was TIDY-7 (b)).
 
 ## Open Followups
 

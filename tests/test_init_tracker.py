@@ -607,18 +607,35 @@ def test_linear_changes_only_config_agents_handbook_and_subagent_tools(
     linear = _snapshot(linear_root)
     assert vanilla.keys() == linear.keys()
     changed = {path for path in vanilla if vanilla[path] != linear[path]}
-    assert changed == {CONFIG, AGENTS, HANDBOOK, PLANNER_AGENT, FRONTEND_AGENT}
+    assert changed == {
+        CONFIG,
+        AGENTS,
+        HANDBOOK,
+        PLANNER_AGENT,
+        FRONTEND_AGENT,
+        BACKEND_AGENT,
+        AUDITOR_AGENT,
+        FINALIZER_AGENT,
+    }
 
 
-# Claude planner and frontend subagent tools lines gain their role's Linear
-# MCP tools, since a subagent's `tools:` list is an allowlist.
+# Claude planner, frontend, backend, auditor, and finalizer subagent tools
+# lines gain their role's Linear MCP tools, since a subagent's `tools:` list
+# is an allowlist.
 
 PLANNER_AGENT = Path(".claude/agents/planner.md")
 FRONTEND_AGENT = Path(".claude/agents/frontend.md")
+BACKEND_AGENT = Path(".claude/agents/backend.md")
+AUDITOR_AGENT = Path(".claude/agents/auditor.md")
+FINALIZER_AGENT = Path(".claude/agents/ledger-updater.md")
 _WRITER_TOOLS = b"tools: Read, Edit, Write, Grep, Glob, Bash"
+_AUDITOR_TOOLS = b"tools: Read, Grep, Glob, Bash"
+_FINALIZER_TOOLS = b"tools: Read, Edit, Grep, Glob, Bash"
 
 
-def _single_changed_line(root: Path, relative_path: Path) -> bytes:
+def _single_changed_line(
+    root: Path, relative_path: Path, template_line: bytes = _WRITER_TOOLS
+) -> bytes:
     rendered = (root / relative_path).read_bytes().splitlines(keepends=True)
     template = (
         (init_workflow._TEMPLATE_ROOT / relative_path)
@@ -628,7 +645,7 @@ def _single_changed_line(root: Path, relative_path: Path) -> bytes:
     assert len(rendered) == len(template)
     differing = [i for i, (a, b) in enumerate(zip(rendered, template)) if a != b]
     assert len(differing) == 1
-    assert template[differing[0]].rstrip(b"\r\n") == _WRITER_TOOLS
+    assert template[differing[0]].rstrip(b"\r\n") == template_line
     return rendered[differing[0]].rstrip(b"\r\n")
 
 
@@ -654,6 +671,58 @@ def test_planner_and_frontend_tools_lines_add_linear_tools(
     )
 
 
+@pytest.mark.parametrize("server", ["linear", "team-linear"])
+def test_backend_auditor_and_finalizer_tools_lines_add_linear_tools(
+    tmp_path: Path, server: str
+) -> None:
+    _linear(tmp_path, tracker_mcp_server=server)
+    prefix = f"mcp__{server}__".encode()
+    expected = {
+        BACKEND_AGENT: (
+            _WRITER_TOOLS,
+            (b"get_issue", b"list_issues", b"list_comments", b"save_comment"),
+        ),
+        AUDITOR_AGENT: (
+            _AUDITOR_TOOLS,
+            (
+                b"get_issue",
+                b"list_issues",
+                b"list_comments",
+                b"save_comment",
+                b"save_issue",
+            ),
+        ),
+        FINALIZER_AGENT: (
+            _FINALIZER_TOOLS,
+            (b"get_issue", b"list_issues", b"list_comments"),
+        ),
+    }
+    for relative_path, (base, tools) in expected.items():
+        line = _single_changed_line(tmp_path, relative_path, base)
+        assert line == base + b"".join(b", " + prefix + tool for tool in tools)
+
+
+def test_linear_agent_tools_bases_match_template_tools_lines() -> None:
+    for relative_path, (_role, base_tools) in init_workflow._LINEAR_AGENT_TOOLS.items():
+        lines = (init_workflow._TEMPLATE_ROOT / relative_path).read_text(
+            encoding="utf-8"
+        ).splitlines()
+        assert lines[0] == "---"
+        frontmatter = lines[1 : lines.index("---", 1)]
+        tools_lines = [line for line in frontmatter if line.startswith("tools: ")]
+        assert len(tools_lines) == 1, relative_path
+        # The handoff-validator template already lists the default-server
+        # Linear tools; every other template lists built-in tools only.
+        built_in = [
+            tool
+            for tool in tools_lines[0][len("tools: ") :].split(", ")
+            if not tool.startswith("mcp__")
+        ]
+        assert f"tools: {', '.join(built_in)}" == f"tools: {base_tools}", (
+            relative_path
+        )
+
+
 def test_claude_provider_linear_init_adds_planner_linear_tools(
     tmp_path: Path,
 ) -> None:
@@ -662,8 +731,11 @@ def test_claude_provider_linear_init_adds_planner_linear_tools(
     assert line.endswith(b", mcp__linear__save_issue")
 
 
-@pytest.mark.parametrize("relative_path", [PLANNER_AGENT, FRONTEND_AGENT])
-def test_vanilla_init_keeps_planner_and_frontend_templates(
+@pytest.mark.parametrize(
+    "relative_path",
+    [PLANNER_AGENT, FRONTEND_AGENT, BACKEND_AGENT, AUDITOR_AGENT, FINALIZER_AGENT],
+)
+def test_vanilla_init_keeps_linear_subagent_templates(
     tmp_path: Path, relative_path: Path
 ) -> None:
     _init(tmp_path)
