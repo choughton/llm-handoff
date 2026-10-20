@@ -3094,7 +3094,7 @@ def test_doctor_probe_fails_on_nonzero_exit_with_escaped_truncated_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _linear_repo(tmp_path, monkeypatch)
-    long_line = "café  ☃\t" + "x" * 400
+    long_line = "caf\u00e9  \u2603\t" + "x" * 400
     _install_runner(
         monkeypatch,
         stdout=_envelope(),
@@ -3115,7 +3115,7 @@ def test_doctor_probe_fails_on_nonzero_exit_with_escaped_truncated_stderr(
     assert "second line" not in line
 
 
-CONTROL_TEXT = "\x1b[2K\x1b[1Ared\x07bell\x08back\x7fdel\x00nul‎ltr"
+CONTROL_TEXT = "\x1b[2K\x1b[1Ared\x07bell\x08back\x7fdel\x00nul\u200eltr"
 CONTROL_ESCAPED = (
     "\\x1b[2K\\x1b[1Ared\\x07bell\\x08back\\x7fdel\\x00nul\\u200eltr"
 )
@@ -3204,7 +3204,7 @@ def test_doctor_probe_fails_when_the_issue_is_not_found(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _linear_repo(tmp_path, monkeypatch)
-    reason = "get_issue was refused\nüber " + "y" * 300
+    reason = "get_issue was refused\n\u00fcber " + "y" * 300
     _install_runner(
         monkeypatch, stdout=_envelope(issue_found=False, team_states=[], error=reason)
     )

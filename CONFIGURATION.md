@@ -1495,7 +1495,9 @@ and never runs a scanner command.
 For Python repositories, `bandit`, `pip-audit`, and `gitleaks` are the
 recommended starting set. Use `semgrep` only with a pinned local ruleset kept
 in the repository (`--config <local ruleset path>`), not `--config auto`,
-which downloads whatever rules the registry serves at run time.
+which downloads whatever rules the registry serves at run time. Pin each
+scanner's version in the target repository's tool setup, so the gate's results
+do not change when a scanner updates itself.
 
 ```yaml
 enforce_work_packet: true
@@ -2093,8 +2095,11 @@ issue. See [Audit Fan-Out](#audit-fan-out) for how that step is launched and
 checked.
 
 In Linear mode, `llm-handoff doctor` prints `tracker connector` lines, one
-per provider CLI the configured roles and fallbacks launch (in the order
-claude, codex), each ending with `(covers <labels>)`.
+per launch group of the configured roles and fallbacks: up to two for Claude
+(`claude strict` for Claude launches that load `tracker.claude_mcp_config`,
+`claude` for the others, when both kinds exist) and one for Codex, in that
+order, each ending with `(covers <labels>)`. Linear mode does not support
+`antigravity` roles, so there is no Antigravity line.
 Each line says whether that CLI's MCP config defines a server named
 `tracker.mcp_server`:
 
