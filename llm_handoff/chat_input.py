@@ -93,7 +93,8 @@ class PosixChatKeyReader:
 
     ``open`` clears ``ICANON`` and ``ECHO`` and keeps ``ISIG``, so the
     terminal still turns Ctrl+C into SIGINT. ``close`` restores the saved
-    attributes.
+    attributes. Escape sequences (arrow, function, and Alt keys) are removed
+    even when a read splits them; the text around them is kept.
     """
 
     def __init__(
@@ -109,6 +110,9 @@ class PosixChatKeyReader:
         self._select = select_module
         self._saved: list[Any] | None = None
         self._decoder = self._new_decoder()
+        # Escape-sequence parse state carried across reads: None, "esc",
+        # "csi", "ss3", or "intermediate".
+        self._escape_state: str | None = None
 
     def _new_decoder(self) -> codecs.IncrementalDecoder:
         try:
@@ -130,22 +134,69 @@ class PosixChatKeyReader:
         termios.tcsetattr(self._fd, termios.TCSANOW, attrs)
         self._saved = saved
         self._decoder = self._new_decoder()
+        self._escape_state = None
 
     def read_chars(self, timeout: float) -> str:
         ready, _write, _error = self._select.select(
             [self._fd], [], [], max(timeout, 0)
         )
         if not ready:
+            # A quiet poll interval after ESC means the Esc key was pressed
+            # on its own, so the next key starts fresh.
+            self._escape_state = None
             return ""
         data = os.read(self._fd, 4096)
         if not data:
             raise EOFError
-        text = self._decoder.decode(data)
-        escape_at = text.find(_ESCAPE)
-        if escape_at >= 0:
-            # Arrow and function keys arrive as an escape sequence in one read.
-            text = text[:escape_at]
-        return text
+        return self._strip_escapes(self._decoder.decode(data))
+
+    def _strip_escapes(self, text: str) -> str:
+        """Remove escape sequences, tracking one that a read split.
+
+        Arrow, function, and Alt keys arrive as ``ESC [ ... final`` (CSI),
+        ``ESC O x`` (SS3), or ``ESC`` plus one character. Only the sequence
+        is removed; text before and after it is kept. A control character
+        inside a sequence ends it and is kept, so Enter after a lone Esc
+        still submits.
+        """
+
+        kept: list[str] = []
+        state = self._escape_state
+        for char in text:
+            code = ord(char)
+            if state is None:
+                if char == _ESCAPE:
+                    state = "esc"
+                else:
+                    kept.append(char)
+            elif char == _ESCAPE:
+                state = "esc"
+            elif code < 0x20 or code == 0x7F:
+                state = None
+                kept.append(char)
+            elif state == "esc":
+                if char == "[":
+                    state = "csi"
+                elif char == "O":
+                    state = "ss3"
+                elif 0x20 <= code <= 0x2F:
+                    state = "intermediate"
+                else:
+                    state = None
+            elif state == "csi":
+                if 0x40 <= code <= 0x7E:
+                    state = None
+                elif not 0x20 <= code <= 0x3F:
+                    # Not a CSI byte: the sequence was malformed; keep it.
+                    state = None
+                    kept.append(char)
+            elif state == "intermediate":
+                if not 0x20 <= code <= 0x2F:
+                    state = None
+            else:  # "ss3": exactly one final character.
+                state = None
+        self._escape_state = state
+        return "".join(kept)
 
     def close(self) -> None:
         saved, self._saved = self._saved, None

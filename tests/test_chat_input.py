@@ -781,6 +781,71 @@ def test_posix_read_drops_escape_sequences(pipe_fds) -> None:
     assert reader.read_chars(0) == "c"
 
 
+def test_posix_read_keeps_text_after_escape_sequence_in_same_read(pipe_fds) -> None:
+    read_fd, write_fd = pipe_fds
+    reader = PosixChatKeyReader(read_fd, "utf-8", _FakeTermios(), _FakeSelect())
+
+    os.write(write_fd, b"\x1b[Ahello\x1bOPx\x1b[1;5Cy\x1bz!")
+    assert reader.read_chars(0) == "hellox" + "y" + "!"
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        (b"\x1b", b"[Ahello"),
+        (b"\x1b[", b"Ahello"),
+        (b"\x1b[1;", b"5Chello"),
+        (b"\x1bO", b"Phello"),
+    ],
+)
+def test_posix_read_drops_escape_sequence_split_across_reads(
+    pipe_fds, chunks
+) -> None:
+    read_fd, write_fd = pipe_fds
+    reader = PosixChatKeyReader(read_fd, "utf-8", _FakeTermios(), _FakeSelect())
+
+    os.write(write_fd, b"ab" + chunks[0])
+    assert reader.read_chars(0) == "ab"
+    os.write(write_fd, chunks[1])
+    assert reader.read_chars(0) == "hello"
+
+
+def test_posix_read_lone_escape_then_quiet_poll_keeps_next_key(pipe_fds) -> None:
+    read_fd, write_fd = pipe_fds
+    select = _FakeSelect()
+    reader = PosixChatKeyReader(read_fd, "utf-8", _FakeTermios(), select)
+
+    os.write(write_fd, b"\x1b")
+    assert reader.read_chars(0) == ""
+    select.ready = False
+    assert reader.read_chars(0) == ""
+    select.ready = True
+    os.write(write_fd, b"[x")
+    assert reader.read_chars(0) == "[x"
+
+
+def test_posix_read_control_char_ends_escape_and_is_kept(pipe_fds) -> None:
+    read_fd, write_fd = pipe_fds
+    reader = PosixChatKeyReader(read_fd, "utf-8", _FakeTermios(), _FakeSelect())
+
+    os.write(write_fd, b"hi\x1b\r")
+    assert reader.read_chars(0) == "hi\r"
+    os.write(write_fd, b"\x1b[\x7fz")
+    assert reader.read_chars(0) == "\x7fz"
+
+
+def test_posix_open_resets_split_escape_state(pipe_fds) -> None:
+    read_fd, write_fd = pipe_fds
+    reader = PosixChatKeyReader(read_fd, "utf-8", _FakeTermios(), _FakeSelect())
+
+    os.write(write_fd, b"\x1b[")
+    assert reader.read_chars(0) == ""
+    reader.open()
+    os.write(write_fd, b"Ahello")
+    assert reader.read_chars(0) == "Ahello"
+    reader.close()
+
+
 def test_posix_read_decodes_utf8_split_across_reads(pipe_fds) -> None:
     read_fd, write_fd = pipe_fds
     reader = PosixChatKeyReader(read_fd, "utf-8", _FakeTermios(), _FakeSelect())
