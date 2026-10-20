@@ -900,9 +900,32 @@ through the same link, read, validity, and protected-baseline checks as a
   record. Partial `logs/dispatch/audit/<timestamp>-cycle<N>/` directories
   from the interrupted run are left as they are.
 
-Re-running an interrupted work-claim gate and scanners (RECOVERY-7), making
-publish steps safe to repeat (RECOVERY-8), and starts with no record
-(RECOVERY-9) are pending.
+A start with no record at all (a run from before the in-flight record
+existed, or a record that was lost) has a fallback. It runs only when neither
+`logs/dispatch/in-flight.json` nor `logs/dispatch/carry-over.json` existed at
+startup and the handoff on disk still routes to `backend` or `frontend` with a
+`## Work Packet` the gate can enforce; a start that found either record never
+gets a second question. The dispatcher offers the dirty files (the handoff and
+`logs/dispatch/` aside) that the Work Packet's Files in scope cover, that do
+not match `protected_paths`, and that no commit after the story's last commit
+touched, even when a later commit restored the file's content. Merge commits
+count too: each is compared with every parent, so a change made only in a
+merge still keeps the file out. The story's last commit is the newest of the
+last 500 commits on HEAD
+whose subject is the `story_id` or starts with it and a space, as the
+dispatcher's commit subject does; without a `story_id` or such a commit, HEAD
+is used. Any Git failure offers nothing. With nothing to offer it logs
+nothing. A dry run logs one `INFO` line naming the role, story, and files,
+ending `Not applied in dry run.`, and asks nothing. Otherwise the confirmation
+rule above applies: only with `interactive_pause` on and a terminal with
+console input does the dispatcher log the offered files, and any dirty files
+it did not offer as operator edits, then ask
+`Treat these as <role>'s interrupted <story> work? [y/N]`. Every path and
+story shown is escaped. On `y` the offered files become that story's
+carry-over files for this run, so its next dispatch carries over the ones
+still unchanged. Any other answer, end of input, no terminal, or
+`interactive_pause: false` logs one `WARN` line and the files stay operator
+edits. The fallback writes, stages, and deletes nothing.
 
 A Git process killed mid-write, for example by a second Ctrl+C during a
 dispatcher commit (the dispatcher's own `git` calls share the console's
