@@ -922,6 +922,7 @@ publish:
   review_poll_seconds: 30
   max_review_rounds: 1 # >1 needs Codex to review every push on its own
   codex_bot_login: chatgpt-codex-connector[bot]
+  resolve_project_state_conflicts: planner # pr mode: planner | "off"
 ```
 
 - `local`: commits stay on the branch you have checked out.
@@ -982,6 +983,48 @@ dispatcher merges the pull request. If the retried
 `gh pr merge` fails again, the dispatcher pauses the same way and leaves the
 pull request open. The next start retries the merge, or you can merge it
 yourself.
+
+When `project_state_path` is the only conflicted file, the dispatcher first
+asks the planner to resolve it (`resolve_project_state_conflicts: planner`,
+the default). This covers the common case of an operator editing the backlog
+in `PROJECT_STATE.md` while a story that also updates its own status there is
+running. The planner gets one bounded prompt, not its handoff prompt: keep
+both sides (the operator's base-branch edits and the story's own status
+edits), take the base-branch version of any epic the story did not touch,
+remove every conflict marker, edit only that file, and do not stage or
+commit. The dispatcher then checks the result itself:
+
+- the planner exited with code 0 and left the handoff and every protected
+  control file unchanged (a changed handoff is put back);
+- HEAD did not move and the merge is still in progress;
+- no file other than `project_state_path` changed, by `git status` entry and
+  content, compared with the state right after the merge stopped;
+- the file exists, is not empty, and has no conflict marker line: a line
+  that starts with a run of `<`, `|`, or `>` at least the marker size long,
+  or a line of exactly that many `=`. The marker size is 7 unless the file's
+  `conflict-marker-size` attribute in `.gitattributes` sets another.
+
+When every check passes, the dispatcher stages the file and commits the merge
+(`git commit --no-edit`), so the merge commit holds only the conflict
+resolution, logs `Planner resolved a PROJECT_STATE.md merge conflict` with the
+merge commit, and continues publishing. The pull request records it for
+review under `### Merge conflict resolution` with a
+`git show <merge> -- PROJECT_STATE.md` command, which shows the lines that
+differ from both sides. A resolution before the push goes in the pull request
+body; one at the retried `gh pr merge` goes in a pull request comment, because
+the body is already written, and that merge goes ahead without another Codex
+review, like the clean base-branch merges there.
+
+Any failed check, a planner failure, a conflict in any other file, or a second
+conflict in the same publish runs `git merge --abort` and pauses as described
+above; the pause message says why the planner's resolution was not used.
+Files the planner changed beyond `project_state_path` are left as they are for
+you to review. The planner runs at most once per publish and never in
+`--dry-run`. `resolve_project_state_conflicts: "off"` (quoted; YAML reads a
+bare off as false) always pauses. The check for markers is textual: a file
+that uses a line of exactly the marker size in `=` characters (seven by
+default, such as a Markdown setext heading underline of that length) always
+fails it and pauses.
 
 Uncommitted files are never stashed, discarded, or committed by the
 dispatcher. When the checkout has uncommitted files (staged, unstaged, or

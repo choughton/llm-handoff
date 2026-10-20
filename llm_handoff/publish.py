@@ -33,7 +33,10 @@ In ``pr`` mode the dispatcher only auto-merges a pull request whose review
 threads are all resolved. Before each push it merges the remote base branch
 into the story branch, so the review sees the merged result. When ``gh pr
 merge`` reports the pull request is not mergeable, it does that once more,
-pushes, and retries. A base merge that does not go through is aborted and
+pushes, and retries. A base merge that conflicts only in the project state
+file goes to the planner once per publish (``StateConflictResolver``); the
+dispatcher checks its resolution and commits the merge itself. A base merge
+that does not go through otherwise is aborted and
 pauses the loop with the story state kept; after the operator merges the base
 branch into the story branch, the next start resumes publishing. A resume
 pushes only when the story branch gained nothing but merge commits (or
@@ -51,6 +54,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -198,6 +202,77 @@ class PublishOutcome:
     message: str = ""
     handoff: str | None = None
     pause: bool = False
+
+
+@dataclass(frozen=True)
+class StateConflictResolver:
+    """Has the planner resolve a base-branch merge that conflicts only in the
+    project state file (``publish.resolve_project_state_conflicts``).
+
+    ``path`` is the project state file, relative to the repository root.
+    ``run`` dispatches the planner with the given prompt and returns whether
+    it finished cleanly; the dispatcher checks the result itself.
+    """
+
+    path: str
+    run: Callable[[str], bool]
+
+
+_STATE_CONFLICT_PROMPT = """\
+Resolve a Git merge conflict in `{path}`. Do only this; do not plan, route, or \
+rewrite the handoff.
+
+The dispatcher is merging `{upstream}` into the story branch `{branch}` before \
+it publishes story {story} (epic {epic}). `{path}` is the only conflicted file, \
+and it now holds Git conflict markers. The HEAD side is the story branch: the \
+story's own status edits. The `{upstream}` side is the base branch: backlog \
+edits the operator made while the story ran. To see each side's edits, run \
+`git diff MERGE_HEAD...HEAD -- {path}` (the story) and \
+`git diff HEAD...MERGE_HEAD -- {path}` (the base branch).
+
+Edit `{path}` so it keeps both sides: keep the operator's base-branch edits and \
+the story's own status edits. For any epic or section the story did not touch, \
+take the base-branch version. Remove every conflict marker line (`<<<<<<<`, \
+`|||||||`, `=======`, `>>>>>>>`).
+
+Edit only `{path}`. Do not change, create, stage, or delete any other file. \
+Do not run `git add`, `git commit`, `git merge`, `git checkout`, `git restore`, \
+`git reset`, or `git stash`: the dispatcher checks the file and commits the \
+merge itself. When you are done, reply with one line on how you resolved it.
+"""
+# Git's default conflict marker size; `conflict-marker-size` in
+# .gitattributes changes it per path.
+_CONFLICT_MARKER_SIZE = 7
+
+
+def _conflict_marker_re(size: int) -> re.Pattern[str]:
+    """Match Git's conflict marker lines of ``size`` characters, LF or CRLF.
+
+    The ``<``, ``|``, and ``>`` markers match runs of at least ``size``, which
+    also covers the wider markers of a recursive merge base. The ``=``
+    separator must be exactly ``size`` long, so a longer Markdown setext
+    heading underline does not match.
+    """
+
+    run = "{%d,}" % size
+    return re.compile(
+        rf"^(?:(?:<{run}|\|{run}|>{run})(?: |\r?$)|={{{size}}}\r?$)", re.M
+    )
+
+
+def _conflict_marker_size(repo_root: Path, path: str) -> int:
+    """Return the conflict marker size Git uses for ``path``."""
+
+    checked = _git(
+        repo_root, ["check-attr", "-z", "conflict-marker-size", "--", path]
+    )
+    # With -z: path NUL attribute NUL value NUL.
+    fields = (checked.stdout or "").split("\0")
+    if checked.returncode == 0 and len(fields) >= 3 and fields[2].isdigit():
+        size = int(fields[2])
+        if size > 0:
+            return size
+    return _CONFLICT_MARKER_SIZE
 
 
 def story_branch_name(prefix: str, story_id: str, story_title: str | None) -> str:
@@ -627,6 +702,7 @@ def publish_story(
     base_branch: str | None = None,
     branch_prefix: str | None = None,
     review_prompt: ReviewPromptFn | None = None,
+    state_resolver: StateConflictResolver | None = None,
 ) -> PublishOutcome:
     """Merge or open a pull request for an audited story.
 
@@ -634,6 +710,8 @@ def publish_story(
     ``publish.branch_prefix``) identify the base branch for an epic close
     that has no story state. ``review_prompt`` asks the operator what to do
     when the Codex review fails or times out; without it the loop stops.
+    ``state_resolver`` lets the planner resolve one base-branch merge per
+    publish that conflicts only in the project state file.
     """
 
     try:
@@ -717,11 +795,20 @@ def publish_story(
         _save_state(repo_root, state)
     # A second conflict on that resume must keep the merge-step marker, or the
     # next resume loses the "left open for a person" pause below.
-    synced = _sync_with_base(
-        repo_root, remote, state, log, step="merge" if resumed_at_merge else "push"
+    synced, resolution = _sync_with_base(
+        repo_root,
+        remote,
+        state,
+        log,
+        step="merge" if resumed_at_merge else "push",
+        resolver=state_resolver,
     )
     if synced is not None:
         return synced
+    if resolution:
+        # The pull request body (new or edited below) records it for review.
+        body = _with_resolution_note(body, _without_mentions(resolution))
+        message_path.write_text(body, encoding="utf-8")
     if frontmatter.close_type == "epic":
         emptied = _drop_empty_story_branch(repo_root, remote, state, log)
         if emptied is not None:
@@ -845,6 +932,8 @@ def publish_story(
         state=state,
         url=url,
         log=log,
+        # One planner resolution per publish: a second conflict pauses.
+        resolver=None if resolution else state_resolver,
     )
 
 
@@ -856,12 +945,14 @@ def _merge_pull_request(
     state: StoryState,
     url: str,
     log: LogFn,
+    resolver: StateConflictResolver | None = None,
 ) -> PublishOutcome:
     """Merge the story's pull request and continue on the updated base branch.
 
     When the base branch moved during the review and the pull request is no
     longer mergeable, the base branch is merged into the story branch, pushed,
-    and the merge is tried once more.
+    and the merge is tried once more. A planner resolution of that merge is
+    recorded in a pull request comment, since the body was already written.
     """
 
     merge_command = [
@@ -877,7 +968,9 @@ def _merge_pull_request(
         )
         # Answering review findings saved progress, so read the state again.
         state = _load_state(repo_root) or state
-        synced = _sync_with_base(repo_root, remote, state, log, step="merge", url=url)
+        synced, resolution = _sync_with_base(
+            repo_root, remote, state, log, step="merge", url=url, resolver=resolver
+        )
         if synced is not None:
             return synced
         pushed = _git(repo_root, ["push", "-u", remote, state.branch])
@@ -885,6 +978,8 @@ def _merge_pull_request(
             return _stop(
                 log, f"git push {remote} {state.branch} failed: {_first_line(pushed)}"
             )
+        if resolution:
+            _comment_resolution(gh_command, repo_root, state, resolution, url, log)
         merged = _run(merge_command, repo_root, _GH_TIMEOUT_SECONDS)
         if merged.returncode != 0:
             _save_state(
@@ -934,15 +1029,21 @@ def _sync_with_base(
     *,
     step: str,
     url: str = "",
-) -> PublishOutcome | None:
+    resolver: StateConflictResolver | None = None,
+) -> tuple[PublishOutcome | None, str]:
     """Merge the remote base branch into the story branch before a push.
 
-    Returns ``None`` when the story branch is up to date or the merge is
-    clean. A merge that does not go through is aborted, and the dispatcher
-    pauses with the story state kept, so a start after the operator's merge
-    resumes publishing at ``step`` ("push" or "merge"). Uncommitted files
-    the merge would change are never stashed, discarded, or committed: the
-    dispatcher pauses and names them instead.
+    Returns ``(None, "")`` when the story branch is up to date or the merge
+    is clean. A merge that does not go through is aborted, and the
+    dispatcher pauses with the story state kept, so a start after the
+    operator's merge resumes publishing at ``step`` ("push" or "merge").
+    Uncommitted files the merge would change are never stashed, discarded,
+    or committed: the dispatcher pauses and names them instead.
+
+    With ``resolver``, a merge that conflicts only in the project state file
+    goes to the planner first; when the result passes the dispatcher's
+    checks, the dispatcher commits the merge and returns ``(None, note)``
+    with a note for the pull request. Otherwise it pauses as above.
     """
 
     upstream = f"{remote}/{state.base_branch}"
@@ -951,7 +1052,7 @@ def _sync_with_base(
         return _stop(
             log,
             f"git fetch {remote} {state.base_branch} failed: {_first_line(fetched)}",
-        )
+        ), ""
     before = git_head(repo_root)
     overlap = _dirty_paths_the_merge_changes(repo_root, upstream)
     if overlap:
@@ -968,7 +1069,7 @@ def _sync_with_base(
                 f"would overwrite uncommitted changes to {_path_list(overlap)}, "
                 f"which {upstream} also changes"
             ),
-        )
+        ), ""
     merged = _git(repo_root, ["merge", "--no-edit", "--no-verify", upstream])
     if merged.returncode == 0:
         after = git_head(repo_root)
@@ -979,11 +1080,22 @@ def _sync_with_base(
                 f"{(after or '')[:12]} so the pull request has the latest "
                 f"`{state.base_branch}`.",
             )
-        return None
-    unmerged = _git(repo_root, ["diff", "--name-only", "--diff-filter=U"])
-    conflicts = [line.strip() for line in unmerged.stdout.splitlines() if line.strip()]
+        return None, ""
+    # -z lists each name as is, without core.quotePath quoting.
+    unmerged = _git(repo_root, ["diff", "--name-only", "-z", "--diff-filter=U"])
+    conflicts = [name for name in (unmerged.stdout or "").split("\0") if name]
+    unresolved = ""
+    if resolver is not None and [normalize_repo_path(path) for path in conflicts] == [
+        normalize_repo_path(resolver.path)
+    ]:
+        resolution, unresolved = _resolve_state_conflict(
+            repo_root, upstream, state, resolver, log
+        )
+        if resolution:
+            return None, resolution
+    aborted = True
     if _git(repo_root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode == 0:
-        _git(repo_root, ["merge", "--abort"])
+        aborted = _git(repo_root, ["merge", "--abort"]).returncode == 0
     if not conflicts:
         # Git refused to start the merge: it stops before touching any file
         # when the merge would overwrite local changes.
@@ -1003,8 +1115,10 @@ def _sync_with_base(
                 if blocking
                 else f"failed: {error}"
             ),
-        )
+        ), ""
     problem = f"conflicts in {_path_list(conflicts)}"
+    if unresolved:
+        problem += f", which the planner did not resolve ({unresolved})"
     if step == "merge":
         outcome = f"the pull request {url or state.branch} was left open"
         resume = (
@@ -1018,14 +1132,192 @@ def _sync_with_base(
     _save_state(
         repo_root, replace(state, paused_publish=step, paused_head=before or "")
     )
+    aborted_text = (
+        "The merge was aborted"
+        if aborted
+        else "`git merge --abort` failed, so finish or abort the merge yourself,"
+    )
     return _pause(
         repo_root,
         log,
-        f"Merging {upstream} into `{state.branch}` {problem}, so {outcome}. The "
-        "merge was aborted and the story state was kept. To resume: on "
+        f"Merging {upstream} into `{state.branch}` {problem}, so {outcome}. "
+        f"{aborted_text} and the story state was kept. To resume: on "
         f"`{state.branch}`, run `git merge {upstream}`, resolve the conflicts, "
         f"and commit the merge; then start the dispatcher again. It {resume}.",
         keep_state=True,
+    ), ""
+
+
+def _resolve_state_conflict(
+    repo_root: Path,
+    upstream: str,
+    state: StoryState,
+    resolver: StateConflictResolver,
+    log: LogFn,
+) -> tuple[str, str]:
+    """Have the planner resolve a merge conflicted only in the state file.
+
+    Returns ``(note, "")`` once the dispatcher has checked the planner's
+    result and committed the merge, or ``("", problem)`` with the merge
+    still in progress for the caller to abort. The merge commit holds only
+    the conflict resolution, as the resume checks expect of a merge.
+    """
+
+    path = normalize_repo_path(resolver.path)
+    head = git_head(repo_root)
+    merge_head = _git(repo_root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+    snapshot = _worktree_snapshot(repo_root)
+    if not head or merge_head.returncode != 0 or snapshot is None:
+        return "", "the merge state could not be read"
+    log(
+        "AGENT",
+        f"Merging {upstream} into `{state.branch}` conflicts only in `{path}`; "
+        "dispatching the planner to resolve it.",
+    )
+    prompt = _STATE_CONFLICT_PROMPT.format(
+        path=path,
+        upstream=upstream,
+        branch=state.branch,
+        story=f"{state.story_id}: {state.story_title}".strip().rstrip(":"),
+        epic=state.epic_id or "unknown",
+    )
+    try:
+        finished = resolver.run(prompt)
+        failure = "" if finished else "the planner dispatch failed"
+    except Exception as exc:  # noqa: BLE001 - any failure falls back to the pause
+        failure = f"the planner dispatch raised {type(exc).__name__}: {exc}"
+    except BaseException:
+        # A second Ctrl+C stops the run: leave no merge in progress behind.
+        _git(repo_root, ["merge", "--abort"])
+        raise
+    problems = [failure] if failure else []
+    if git_head(repo_root) != head:
+        problems.append("HEAD moved")
+    after = _git(repo_root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+    if after.returncode != 0 or after.stdout.strip() != merge_head.stdout.strip():
+        problems.append("the merge is no longer in progress")
+    changed = _worktree_snapshot(repo_root)
+    if changed is None:
+        problems.append("the checkout could not be read")
+    else:
+        others = sorted(
+            name
+            for name in snapshot.keys() | changed.keys()
+            if name != path and snapshot.get(name) != changed.get(name)
+        )
+        if others:
+            problems.append(f"it also changed {_path_list(others)}")
+    if not problems:
+        try:
+            text: str | None = (repo_root / path).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            text = None
+        if text is None:
+            problems.append(f"`{path}` is missing")
+        elif not text.strip():
+            problems.append(f"`{path}` is empty")
+        elif _conflict_marker_re(_conflict_marker_size(repo_root, path)).search(
+            text
+        ):
+            problems.append(f"`{path}` still has conflict markers")
+    if not problems:
+        for args in (
+            ["add", "--", path],
+            # Drops the "# Conflicts:" comment lines git leaves in MERGE_MSG.
+            ["commit", "--no-edit", "--no-verify", "--cleanup=strip"],
+        ):
+            result = _git(repo_root, args)
+            if result.returncode != 0:
+                problems.append(f"git {args[0]} failed: {_first_line(result)}")
+                break
+    if problems:
+        problem = "; ".join(problems)
+        log(
+            "WARN",
+            f"The planner did not resolve the `{path}` merge conflict: {problem}.",
+        )
+        return "", problem
+    short = (git_head(repo_root) or "")[:12]
+    log(
+        "AGENT",
+        f"Planner resolved a {path} merge conflict: merged {upstream} into "
+        f"`{state.branch}` as {short}. Review it with `git show {short} -- {path}`.",
+    )
+    return (
+        "### Merge conflict resolution\n\n"
+        f"Merging `{upstream}` into `{state.branch}` conflicted only in `{path}`, "
+        "and the planner resolved it "
+        "(`publish.resolve_project_state_conflicts: planner`). The dispatcher "
+        "checked that no conflict markers remain and that no other file "
+        f"changed, then committed the merge as `{short}`. Review the "
+        f"resolution with `git show {short} -- {path}`, which shows the lines "
+        "that differ from both sides.",
+        "",
+    )
+
+
+def _worktree_snapshot(repo_root: Path) -> dict[str, tuple[str, str]] | None:
+    """Map each path ``git status`` lists to its status code and content hash."""
+
+    status = _git(
+        repo_root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+    )
+    if status.returncode != 0:
+        return None
+    snapshot: dict[str, tuple[str, str]] = {}
+    fields = (status.stdout or "").split("\0")
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        names = [entry[3:]]
+        if entry[0] in "RC" and index < len(fields):
+            # With -z, a rename or copy lists its source path next.
+            names.append(fields[index])
+            index += 1
+        for name in names:
+            try:
+                digest = hashlib.sha256((repo_root / name).read_bytes()).hexdigest()
+            except OSError:
+                digest = ""
+            snapshot[name] = (entry[:2], digest)
+    return snapshot
+
+
+def _with_resolution_note(body: str, note: str) -> str:
+    """Put a conflict resolution note in the report, before its footer."""
+
+    head, footer, tail = body.rpartition(_FOOTER)
+    if not footer:
+        return f"{body.rstrip()}\n\n{note}\n"
+    return f"{head.rstrip()}\n\n{note}\n\n{footer}{tail}"
+
+
+def _comment_resolution(
+    gh_command: Sequence[str],
+    repo_root: Path,
+    state: StoryState,
+    note: str,
+    url: str,
+    log: LogFn,
+) -> None:
+    view = _open_pull_request(gh_command, repo_root, state.branch)
+    number = view.get("number") if view else None
+    error = "its number could not be read"
+    if isinstance(number, int):
+        posted, error = _post_issue_comment(
+            gh_command, repo_root, number, _without_mentions(note)
+        )
+        if posted is not None:
+            return
+    log(
+        "WARN",
+        "Could not record the planner's merge conflict resolution on "
+        f"{url or state.branch}: {error}.",
     )
 
 
@@ -1164,6 +1456,7 @@ def resume_paused_publish(
     review: ReviewGate | None = None,
     sleep: Callable[[float], None] | None = None,
     review_prompt: ReviewPromptFn | None = None,
+    state_resolver: StateConflictResolver | None = None,
 ) -> PublishOutcome:
     """Publish again a ``pr`` story that paused on a base-branch merge.
 
@@ -1194,6 +1487,7 @@ def resume_paused_publish(
             review=review,
             sleep=sleep,
             review_prompt=review_prompt,
+            state_resolver=state_resolver,
         )
     if state is None or not state.paused_publish:
         return PublishOutcome()
@@ -1221,6 +1515,7 @@ def resume_paused_publish(
         review=review,
         sleep=sleep,
         review_prompt=review_prompt,
+        state_resolver=state_resolver,
     )
 
 

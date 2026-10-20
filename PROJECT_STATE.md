@@ -6,18 +6,18 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-3b2 in progress; RECOVERY-3b1 approved
-  at `bb4678f`, merged in PR #171; RECOVERY-3a approved
-  at `c29943e`, merged in PR #169; RECOVERY-2d approved at
-  `ee76517`, merged in PR #168; RECOVERY-2c approved at `10bdbee`, merged in
-  PR #167; RECOVERY-2b merged in PR #166; RECOVERY-2a approved at `9831e0b`,
-  merged in PR #165; RECOVERY-1 approved at 14f195b, merged in PR #160).
-  RECOVERY-3 is split into RECOVERY-3a..3e, and RECOVERY-3b into
-  RECOVERY-3b1 (interrupted planner dispatch) and RECOVERY-3b2 (interrupted
-  finalizer dispatch). RECOVERY-3b1 went first because it reuses the
-  RECOVERY-2a in-flight record with the fewest new cases; RECOVERY-3b2 is
-  next because an interrupted finalizer can re-run the ledger update on a
-  ledger it already committed. RECOVERY-3c..3e and RECOVERY-4 follow.
+- **Active Epic:** RECOVERY (RECOVERY-5 (was RECOVERY-3b2) in progress;
+  RECOVERY-3b1 approved at `bb4678f`, merged in PR #171;
+  RECOVERY-3a approved at `c29943e`, merged in PR #169; RECOVERY-2d approved at
+  `ee76517`, merged in PR #168; RECOVERY-2c approved at `10bdbee`, merged in PR
+  #167; RECOVERY-2b merged in PR #166; RECOVERY-2a approved at `9831e0b`, merged
+  in PR #165; RECOVERY-1 approved at 14f195b, merged in PR #160).
+  The remaining stories were renumbered flat on 2026-10-19: RECOVERY-5
+  (interrupted finalizer dispatch, was RECOVERY-3b2), RECOVERY-6 to
+  RECOVERY-8 (were RECOVERY-3c to 3e), and RECOVERY-9 (no-record fallback,
+  was RECOVERY-4), in that order. RECOVERY-5 is active because an
+  interrupted finalizer can re-run the ledger update on a ledger it already
+  committed.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -59,9 +59,20 @@ the operator prompt. Route to `user` only when no open epic has an unblocked
 story.
 
 Each story is one Work Packet; the planner writes its Files in scope,
-Verification command, and acceptance criteria from the code. A story too
-large for one Work Packet may be split. Add, drop, or re-shape epics by
-editing this list.
+Verification command, and acceptance criteria from the code. Add, drop, or
+re-shape epics by editing this list.
+
+Story size and IDs (operator rule, 2026-10-19). A story is one behavior
+change: about four source modules or fewer plus their tests and docs, one
+verification focus, and one role. A story that would edit `.claude/` does
+not mix that edit with code: Claude roles cannot write `.claude/`, so those
+edits go in one operator story that routes to `user`, at the end of the
+epic unless a later story needs those files first.
+Story IDs are flat: `EPIC-N` only. When a story turns out too large, replace
+it with new stories numbered after the epic's highest number and add
+`(was EPIC-3)` to each; never use letter or nested suffixes such as `3a` or
+`3b1`. Merged stories keep their IDs. Stories not started yet may be
+renumbered in execution order.
 
 Epics 6 (CONFIG-CLEANUP), 7 (LINEAR-FOUNDATIONS), and 8 (LINEAR-WORKFLOW) are
 closed; see the Completed Scope Ledger.
@@ -532,7 +543,8 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 Fit: closed. HARD-1 through HARD-6 are merged (HARD-6 in PR #157); the epic
 close was approved at `3949ed2388e6a726012cfbf0c8d3511fba5ea179`. Nothing
-remains. CHAT-4's dependency on the HARD-3 marker is satisfied.
+remains. CHAT-6's (was CHAT-4) dependency on the HARD-3 marker is
+satisfied.
 
 The security-relevant Open Followups, promoted to stories. Each story names
 the followup it closes; all five were confirmed in the code at `d67722e`.
@@ -571,7 +583,8 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   story publishes. Record only the marker, the time, and a SHA-256 digest of
   the message, never its text: an operator may type private context or a
   credential at the console, and `SECURITY.md` keeps secrets out of
-  `HANDOFF.md`, logs, and anything published. CHAT-4 reuses this marker.
+  `HANDOFF.md`, logs, and anything published. CHAT-6 (was CHAT-4) reuses
+  this marker.
   Decided by the planner on 2026-10-18: fan-out path only (the single-agent
   auditor writes its own handoff and stays unmarked); the marker is a
   `## Operator Influence` handoff section, an `operator_influence` key in
@@ -676,10 +689,10 @@ Fit: RECOVERY-1 is merged (PR #160) and removed the Ctrl+C hazard;
 RECOVERY-2a, RECOVERY-2b, RECOVERY-2c, and RECOVERY-2d are merged (PRs #165,
 #166, #167, and #168). RECOVERY-3 is split into RECOVERY-3a..3e; RECOVERY-3a
 (stale Git index lock pause at startup) is merged (PR #169). RECOVERY-3b is
-split into RECOVERY-3b1 and RECOVERY-3b2; RECOVERY-3b1 (interrupted planner
-dispatch) is approved at `bb4678f` and merged (PR #171), and RECOVERY-3b2
-(interrupted finalizer dispatch) is active. RECOVERY-3c..3e and RECOVERY-4
-follow.
+split; RECOVERY-3b1 (interrupted planner dispatch) is approved at `bb4678f`
+and merged (PR #171), and the rest is renumbered flat: RECOVERY-5 (was 3b2,
+interrupted finalizer dispatch) is active, and RECOVERY-6 through RECOVERY-9
+(was RECOVERY-4) follow in order.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
@@ -825,44 +838,52 @@ bounces until the three-fix circuit breaker escalates.
     `GIT_INDEX_FILE` is followed) and the check to run, before the
     publish resume and interrupted-run recovery; it is never deleted
     automatically. Polls until the file is gone; a dry run only warns.
-  - RECOVERY-3b: Split by the planner on 2026-10-19:
+  - RECOVERY-3b: Interrupted planner and finalizer dispatch, split on
+    2026-10-19. The planner half merged as RECOVERY-3b1; the finalizer half
+    is RECOVERY-5 below.
     - RECOVERY-3b1 (approved at `bb4678f`, merged in PR #171): Interrupted
-      planner dispatch. A planner dispatch writes a
-      `planner` in-flight record (dispatch phase only, null story key when
-      the handoff has none, no operator files) and deletes it once
-      `_dispatch_route` returns. At startup an unchanged handoff or a changed
-      handoff that passes planner validation deletes the record and keeps the
-      handoff; a missing, empty, or invalid handoff is restored from the
-      record only after HARD-5 confirmation, and the planner runs again
+      planner dispatch. A planner
+      dispatch writes a `planner` in-flight record (dispatch phase only, null
+      story key when the handoff has none, no operator files) and deletes it
+      once `_dispatch_route` returns. At startup an unchanged handoff or a
+      changed handoff that passes planner validation deletes the record and
+      keeps the handoff; a missing, empty, or invalid handoff is restored from
+      the record only after HARD-5 confirmation, and the planner runs again
       (`interrupted_planner_recovery`) against the recovery's protected-file
-      baseline; an earlier forced instruction is not kept. In dispatcher
-      commit mode, handoff-only commits since the record's untrusted HEAD are
-      undone only after the operator confirms the exact `git reset --soft`.
-    - RECOVERY-3b2: Interrupted finalizer dispatch. A finalizer dispatch
-      writes a `finalizer` in-flight record (same shape as a planner record)
-      right before `_invoke_epic_close` and deletes it once that returns. At
-      startup, after the anchor checks: (a) Git is compared read-only with
-      the record's HEAD and branch in any commit mode, and a branch switch,
-      non-descendant history, or a commit with any file but the project
-      state file (plus the handoff in agent commit mode) stops the run and
-      keeps the record, never resetting Git; (b) an uncommitted project state
-      edit stops the run too (dry run: INFO); (c) a valid changed handoff
-      that no longer routes to `finalizer` deletes the record; (d) no ledger
-      commit and an unchanged handoff deletes it; (e) otherwise the handoff
-      is restored only after HARD-5 confirmation, and with a ledger commit
-      the planner runs with the stale-finalizer instruction
-      (`interrupted_finalizer_recovery`), without one the finalizer runs
-      again, both against the recovery's protected-file baseline.
-  - RECOVERY-3c: Interrupted audit fan-out: restore the handoff and re-run
-    the read-only reviewers.
-  - RECOVERY-3d: Interrupted work-claim gate and scanners: re-run them.
-  - RECOVERY-3e: Publish steps safe to repeat (push again, reuse the open
-    pull request, skip a merge that already happened), using `story.json`.
-- RECOVERY-4: No-record fallback. When there is no in-flight record (a run
-  from before RECOVERY-2, or a lost record) and files are dirty, in scope for
-  the story's Work Packet, and clean at the story's last commit, ask `Treat
-  these as <role>'s interrupted <story> work? [y/N]`; yes carries them over,
-  no leaves them as operator edits. Never decide this without the operator.
+      baseline; an earlier forced instruction is not kept. In dispatcher commit
+      mode, handoff-only commits since the record's untrusted HEAD are undone
+      only after the operator confirms the exact `git reset --soft`.
+- The rest of RECOVERY, renumbered flat on 2026-10-19 (old IDs in brackets;
+  a live handoff's `remaining_stories` may still use them). Order: 5, 6, 7,
+  8, then 9.
+- RECOVERY-5 (was RECOVERY-3b2): Interrupted finalizer dispatch. A finalizer
+  dispatch writes a `finalizer` in-flight record (same shape as a planner
+  record) right before `_invoke_epic_close` and deletes it once that returns.
+  At startup, after the anchor checks: (a) Git is compared read-only with
+  the record's HEAD and branch in any commit mode, and a branch switch,
+  non-descendant history, or a commit with any file but the project
+  state file (plus the handoff in agent commit mode) stops the run and
+  keeps the record, never resetting Git; (b) an uncommitted project state
+  edit stops the run too (dry run: INFO); (c) a valid changed handoff
+  that no longer routes to `finalizer` deletes the record; (d) no ledger
+  commit and an unchanged handoff deletes it; (e) otherwise the handoff
+  is restored only after HARD-5 confirmation, and with a ledger commit
+  the planner runs with the stale-finalizer instruction
+  (`interrupted_finalizer_recovery`), without one the finalizer runs
+  again, both against the recovery's protected-file baseline.
+- RECOVERY-6 (was RECOVERY-3c): Interrupted audit fan-out: restore the
+  handoff and re-run the read-only reviewers.
+- RECOVERY-7 (was RECOVERY-3d): Interrupted work-claim gate and scanners:
+  re-run them.
+- RECOVERY-8 (was RECOVERY-3e): Publish steps safe to repeat (push again,
+  reuse the open pull request, skip a merge that already happened), using
+  `story.json`.
+- RECOVERY-9 (was RECOVERY-4): No-record fallback. When there is no
+  in-flight record (a run from before RECOVERY-2, or a lost record) and files
+  are dirty, in scope for the story's Work Packet, and clean at the story's
+  last commit, ask `Treat these as <role>'s interrupted <story> work? [y/N]`;
+  yes carries them over, no leaves them as operator edits. Never decide this
+  without the operator.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
@@ -891,28 +912,33 @@ dependencies; Windows (`msvcrt`) and POSIX.
   the loop never resumes on its own after a message. Queued messages are saved
   under `logs/dispatch/` and survive `llm-handoff stop`; a saved message found
   at startup holds the loop before the publish resume.
-- CHAT-3: Dispatch record and read-only answers. Save each dispatch in the run
-  (role, story, provider, session id, time) under `logs/dispatch/`. A question
-  resumes that agent's own session and prints the answer; follow-ups stay in
-  the same thread. Each answer runs behind a read-only boundary the provider
-  enforces, not a prompt-level mode: Claude `--resume` with only read tools
-  (Read, Grep, Glob, read-only `git`); Codex `exec resume` in the read-only
-  sandbox. agy plan mode is not a boundary, so agy answers only once the
-  story establishes an enforced boundary for it (for example `--conversation`
-  with an agent whose `tools:` list holds only read tools, as in
-  GEMINI-REMOVAL); until then it says it cannot answer and offers the
-  planner. After each answer the dispatcher also checks that `HANDOFF.md` and
-  the Git state are unchanged and pauses with a warning if not; this check is
-  a second layer, not the boundary.
-- CHAT-4: Router and action path. `@role <message>` targets that role. Otherwise
-  the normalizer model classifies the message against the dispatch record
-  (target, question or action, confidence) and prints its pick before anything
-  runs, for example `-> asking auditor (LIN-9b audit, session <id>)`; a
-  low-confidence pick shows a numbered list instead. Questions about the loop
-  as a whole go to the planner. An action asks `Re-dispatch <role> with this
-  guidance? [y/N]`; yes uses the existing operator role dispatch, and the
-  handoff and pull request record the result as operator-influenced (reuses
-  the HARD-3 operator-influenced marker).
+- CHAT-3: Dispatch record. Save each dispatch in the run (role, story,
+  provider, session id, time) under `logs/dispatch/`, so a question can find
+  the agent it is about. Nothing reads it yet besides tests.
+- CHAT-4 (was part of CHAT-3): Read-only answers from Claude and Codex
+  sessions. A question resumes that agent's own session and prints the
+  answer; follow-ups stay in the same thread. Each answer runs behind a
+  read-only boundary the provider enforces, not a prompt-level mode: Claude
+  `--resume` with only read tools (Read, Grep, Glob, read-only `git`); Codex
+  `exec resume` in the read-only sandbox. After each answer the dispatcher
+  checks that `HANDOFF.md` and the Git state are unchanged and pauses with a
+  warning if not; this check is a second layer, not the boundary. An agy
+  session says it cannot answer yet and offers the planner.
+- CHAT-5 (was part of CHAT-3): Read-only answers from agy. agy plan mode is
+  not a boundary, so agy answers only through an enforced one, for example
+  `--conversation` with an agent whose `tools:` list holds only read tools
+  (as in GEMINI-REMOVAL). Same post-answer state check as CHAT-4.
+- CHAT-6 (was part of CHAT-4): `@role` targeting and the action path.
+  `@role <message>` targets that role. An action asks `Re-dispatch <role>
+  with this guidance? [y/N]`; yes uses the existing operator role dispatch,
+  and the handoff and pull request record the result as operator-influenced
+  (reuses the HARD-3 operator-influenced marker).
+- CHAT-7 (was part of CHAT-4): Untargeted messages. Without `@role`, the
+  normalizer model classifies the message against the dispatch record
+  (target, question or action, confidence) and prints its pick before
+  anything runs, for example `-> asking auditor (LIN-9b audit, session
+  <id>)`; a low-confidence pick shows a numbered list instead. Questions
+  about the loop as a whole go to the planner.
 
 ### 14. WORK-INTAKE - turn a plain request into epics and stories
 
@@ -939,7 +965,7 @@ without a tpm `agy` writes every story's Work Packet and reads
 `remaining_stories` after every pass. This epic moves that per-story work to a
 role on a provider that is strict about exact fields (codex in the example
 mapping) and leaves `agy` the epic-level judgment. Pick it once GEMINI-REMOVAL
-closes; it is independent of that epic apart from TPM-4 not recreating
+closes; it is independent of that epic apart from TPM-6 not recreating
 `.gemini/`. If the default planner moves off `antigravity`, most of the reason
 for this epic goes away; re-check the Fit before starting it.
 
@@ -961,51 +987,57 @@ is generic on purpose: `AGENTS.md` forbids provider names in roles and
 optional so that every existing `dispatch_config.yaml` keeps working: without
 `agents.tpm`, routing is unchanged.
 
-- TPM-1: Role enum and config. Add `tpm` to `DispatchRole`,
-  `CANONICAL_DISPATCH_ROLES`, and `ROLE_DISPLAY_NAMES` (`llm_handoff/roles.py`),
-  `AgentRole` and `LINEAR_ROLE_TOOLS` (`llm_handoff/config.py`), `NextAgent`
-  (`llm_handoff/router.py`), and the normalizer's canonical set.
-  `DEFAULT_AGENT_PROVIDERS` and `REQUIRED_AGENT_ROLES` stay at six roles; a
-  config without `agents.tpm` loads byte-for-byte as before, and `doctor`
-  prints `tpm: not configured (planner picks stories)`. With `agents.tpm`
-  present the role gets the same provider, launch-flag, timeout, fallback, and
-  resume handling as the other roles (`llm_handoff/agent_roles.py`,
-  `llm_handoff/agent_process.py`). `dispatch_config.example.yaml` maps `tpm`
-  to codex with `skill_name: llm-handoff-tpm`, commented out, with a note that
-  the planner picks stories when it is absent. Add `tpm:` patterns to
+Groomed on 2026-10-19 from six stories into twelve, each one Work Packet;
+the `(was ...)` notes give the old IDs. None had started. Order matters: the
+tpm's contract (prompt, helper files, Codex artifacts, Linear rules, and the
+operator's `.claude/` agent) lands in TPM-1 to TPM-9, and routing work to
+the tpm (TPM-10, TPM-11) comes only after it, so a configured tpm is never
+dispatched without its instructions.
+
+- TPM-1 (was part of TPM-1): Role vocabulary. Add `tpm` to `DispatchRole`,
+  `CANONICAL_DISPATCH_ROLES`, and `ROLE_DISPLAY_NAMES`
+  (`llm_handoff/roles.py`), `AgentRole` and `LINEAR_ROLE_TOOLS`
+  (`llm_handoff/config.py`), `NextAgent` (`llm_handoff/router.py`), and the
+  normalizer's canonical set. `DEFAULT_AGENT_PROVIDERS` and
+  `REQUIRED_AGENT_ROLES` stay at six roles; a config without `agents.tpm`
+  loads byte-for-byte as before. Add `tpm:` patterns to
   `llm_handoff/rationalization_patterns.yaml`. `AGENTS.md` and
   `examples/reference-workflow/AGENTS.md` add `tpm` to the public role
   vocabulary (~lines 61-71); both are protected paths, so list them in Files
   in scope.
-- TPM-2: Validator rules for `producer: tpm` (`llm_handoff/validator.py`).
-  `next_agent` must be one of `backend`, `frontend`, `auditor`, `planner`, or
-  `user`; `finalizer` and `validator` are rejected as
-  `frontmatter_routing_rule`.
-  `status` may be omitted (an assignment) or one of `blocked_missing_context`,
-  `blocked_implementation_failure`, or `escalate_to_user`; `ready_for_review`,
-  `verified_pass`, and `verified_fail` are rejected as
-  `frontmatter_status_producer_rule`. `close_type: epic` is rejected: a tpm
-  that reaches the end of its `remaining_stories` routes to `planner` with the
-  reason, never to the auditor with an epic close. A tpm assignment to
-  `backend` or `frontend` must carry a `## Work Packet` exactly as a planner
-  assignment must (`scope_claim_mismatch`, `acceptance_coverage_unclear`).
-  `agent_self_loop` applies. When `next_agent: tpm` is read and `agents.tpm`
-  is not configured, the orchestrator treats the handoff as not dispatchable
-  and schedules the existing planner repair with the instruction `tpm is not
+- TPM-2 (was part of TPM-1): Launching a configured tpm. With `agents.tpm`
+  present the role gets the same provider, launch-flag, timeout, fallback,
+  and resume handling as the other roles (`llm_handoff/agent_roles.py`,
+  `llm_handoff/agent_process.py`). `doctor` prints
+  `tpm: not configured (planner picks stories)` when it is absent.
+  `dispatch_config.example.yaml` maps `tpm` to codex with
+  `skill_name: llm-handoff-tpm`, commented out, with a note that the planner
+  picks stories when it is absent.
+- TPM-3 (was TPM-2): Validator rules for `producer: tpm`
+  (`llm_handoff/validator.py`), and the unconfigured case. `next_agent` must
+  be one of `backend`, `frontend`, `auditor`, `planner`, or `user`;
+  `finalizer` and `validator` are rejected as `frontmatter_routing_rule`.
+  `status` may be omitted (an assignment) or one of
+  `blocked_missing_context`, `blocked_implementation_failure`, or
+  `escalate_to_user`; `ready_for_review`, `verified_pass`, and
+  `verified_fail` are rejected as `frontmatter_status_producer_rule`.
+  `close_type: epic` is rejected: a tpm that reaches the end of its
+  `remaining_stories` routes to `planner` with the reason, never to the
+  auditor with an epic close. A tpm assignment to `backend` or `frontend`
+  must carry a `## Work Packet` exactly as a planner assignment must
+  (`scope_claim_mismatch`, `acceptance_coverage_unclear`). `agent_self_loop`
+  applies. When `next_agent: tpm` is read and `agents.tpm` is not
+  configured, the orchestrator treats the handoff as not dispatchable and
+  schedules the existing planner repair with the instruction `tpm is not
   configured; route to planner or an implementer` instead of pausing.
-- TPM-3: Routing when the role is configured (`llm_handoff/orchestrator.py`;
-  `build_audit_handoff()` in `llm_handoff/audit_review.py` ~line 1147, which
-  hard-codes the non-epic pass route to `planner`, and its routing tests;
-  plus the prompts under `docs/handoff/`, which are protected paths and must
-  be in Files in scope). The auditor's story-level `verified_pass` routes to
-  `tpm`; the epic-level `verified_pass` with `close_type: epic` still routes
-  to `finalizer`; the finalizer routes to `tpm` after an epic close, or to
-  `planner` when `PROJECT_STATE.md` lists no next epic. The planner opens an
-  epic by writing `epic_id` and `remaining_stories`, then routes to `tpm`
-  instead of assigning the first story itself. Pause recovery
-  (`pause_recovery: planner`), the tracker lease rebuild, the planner
-  self-loop path, and operator-prompt planner dispatch stay on the planner;
-  the operator prompt accepts `@tpm <message>` like the other roles. New
+- TPM-4 (was part of TPM-4): Per-role Codex artifacts. Today every Codex
+  role shares `logs/dispatch/codex/last-message.json` and `session.json`
+  (`llm_handoff/agent_providers/codex.py` ~line 410), so a Codex tpm and a
+  Codex backend, or a Codex auditor, would overwrite each other's saved
+  session; use `logs/dispatch/codex-<role>/` for every role other than
+  `backend`, which keeps its current path. `CONFIGURATION.md` lists the
+  paths.
+- TPM-5 (was part of TPM-3): The tpm prompt and the protocol docs. New
   `docs/handoff/TPM_HANDOFF_PROMPT.md`: read the handbook, `AGENTS.md`,
   `PROJECT_STATE.md`, and the handoff; take the next entry of
   `remaining_stories`; write the Work Packet from the code; escalate to
@@ -1016,47 +1048,66 @@ optional so that every existing `dispatch_config.yaml` keeps working: without
   push. Update `docs/handoff/README.md`, `HANDBOOK.md`,
   `PLANNER_HANDOFF_PROMPT.md`, `PLANNER_INITIAL_PROMPT.md`,
   `AUDITOR_HANDOFF_PROMPT.md`, and `FINALIZER_HANDOFF_PROMPT.md` so each
-  describes both configurations (tpm present, tpm absent).
-- TPM-4: Provider adapters and the reference workflow. Add
-  `.codex/skills/llm-handoff-tpm/SKILL.md` with `agents/openai.yaml`,
-  `.claude/agents/tpm.md`, and `.agents/agents/tpm.md` (agy) to the source
-  checkout and to `examples/reference-workflow/`; `init` copies them and
-  `init --tracker linear` renders the tpm section. No `.gemini/agents/`
-  file: GEM-5 deletes both of those trees, and nothing may recreate them.
-  Codex artifacts are keyed per role: today every Codex role shares
-  `logs/dispatch/codex/last-message.json` and `session.json`
-  (`llm_handoff/agent_providers/codex.py` ~line 410), so a Codex tpm and a
-  Codex backend, or a Codex auditor, would overwrite each other's saved
-  session; use `logs/dispatch/codex-<role>/` for every role other than
-  `backend`, which keeps its current path. Claude and agy already run
-  per-role agent files. `docs/INVENTORY.md` lists the new files.
-- TPM-5: Linear mode. The tpm picks Linear issues, as in the source
-  project. Move selection rules 1 to 7 and the user-attention steps from
+  describes both configurations (tpm present, tpm absent). These are
+  protected paths and must be in Files in scope. Docs only.
+- TPM-6 (was part of TPM-4): tpm helper files outside `.claude/`. Add
+  `.codex/skills/llm-handoff-tpm/SKILL.md` with `agents/openai.yaml` and
+  `.agents/agents/tpm.md` (agy) to the source checkout and to
+  `examples/reference-workflow/`; `init` copies them. No `.gemini/agents/`
+  file: GEM-5 deleted both of those trees, and nothing may recreate them.
+  `docs/INVENTORY.md` lists the new files.
+- TPM-7 (was part of TPM-5): Linear prompt templates. The tpm picks Linear
+  issues, as in the source project. Move selection rules 1 to 7 and the
+  user-attention steps from
   `llm_handoff/prompt_templates/linear/roles/planner.md` into a new
   `roles/tpm.md`; the planner section keeps only epic-level duties and a
-  one-line pointer. `LINEAR_PROMPT_ROLES` gains `tpm`;
-  `LINEAR_EVIDENCE_EVENTS` allows `lease_opened`, `user_attention_requested`,
-  and `user_attention_cleared` from `tpm` as well as `planner`; `tpm` gets the
-  planner's Linear tool set. When `agents.tpm` is absent, `init --tracker
-  linear` renders the selection rules into the planner section as today, so
-  a six-role Linear repository is unchanged; a test renders both shapes. Add
-  two hygiene rules to the tpm section: a leased issue already in
-  `tracker.success_state` is stale, so post nothing, release the lease, and
-  route to `planner`; an eligible issue with no priority is reported in the
-  `lease_opened` comment as picked without one (rule 5 already covers the
-  wording). The handoff-validator's `LINEAR-EVIDENCE` check accepts `tpm` as
-  the lease producer. `expected_linear_outcome()` in
-  `llm_handoff/audit_linear_evidence.py` ~line 81 treats `verified_pass`
-  routed to `tpm` as `audit_passed`; today only `planner` and `finalizer`
-  count and every other route is recorded as `audit_failed`, so without this
-  a successful audit would post a failure comment. Add route tests for it.
-- TPM-6: Documentation and changelog. `README.md` role table and loop diagram,
-  `docs/ARCHITECTURE.md` (role list, "planner picks stories unless tpm is
-  configured"), `CONFIGURATION.md` (`agents.tpm` reference and the per-role
-  Codex artifact paths), `docs/TESTING.md` (a tpm scenario in the acceptance
-  run), `docs/SUPERVISED_DISPATCH.md` if the repair role list changes,
-  `CHANGELOG.md`. Each of TPM-1 to TPM-5 updates the docs its code touches;
-  this story is the sweep that checks the set reads as one.
+  one-line pointer. `LINEAR_PROMPT_ROLES` gains `tpm`. When `agents.tpm` is
+  absent, `init --tracker linear` renders the selection rules into the
+  planner section as today, so a six-role Linear repository is unchanged; a
+  test renders both shapes. Add two hygiene rules to the tpm section: a
+  leased issue already in `tracker.success_state` is stale, so post nothing,
+  release the lease, and route to `planner`; an eligible issue with no
+  priority is reported in the `lease_opened` comment as picked without one
+  (rule 5 already covers the wording).
+- TPM-8 (was part of TPM-5): Linear evidence and tools for the tpm.
+  `LINEAR_EVIDENCE_EVENTS` allows `lease_opened`,
+  `user_attention_requested`, and `user_attention_cleared` from `tpm` as
+  well as `planner`; `tpm` gets the planner's Linear tool set. The
+  `LINEAR-EVIDENCE` check accepts `tpm` as the lease producer.
+  `expected_linear_outcome()` in `llm_handoff/audit_linear_evidence.py`
+  ~line 81 treats `verified_pass` routed to `tpm` as `audit_passed`; today
+  only `planner` and `finalizer` count and every other route is recorded as
+  `audit_failed`, so without this a successful audit would post a failure
+  comment. Add route tests for it.
+- TPM-9 (was part of TPM-4): Operator edit of the Claude tpm agent (routes
+  to `user`). Claude roles cannot write `.claude/`, so the planner writes
+  `.claude/agents/tpm.md` (root and `examples/reference-workflow/` copies)
+  into the handoff for the operator to add, as GEM-5c did, plus the Linear
+  section TPM-7 renders into it. It comes before TPM-10 because a Claude
+  tpm needs this file before any route reaches it.
+- TPM-10 (was part of TPM-3): Routing to the tpm when it is configured
+  (`llm_handoff/orchestrator.py`; `build_audit_handoff()` in
+  `llm_handoff/audit_review.py` ~line 1147, which hard-codes the non-epic
+  pass route to `planner`, and its routing tests). The auditor's story-level
+  `verified_pass` routes to `tpm`; the epic-level `verified_pass` with
+  `close_type: epic` still routes to `finalizer`; the finalizer routes to
+  `tpm` after an epic close, or to `planner` when `PROJECT_STATE.md` lists no
+  next epic. The planner opens an epic by writing `epic_id` and
+  `remaining_stories`, then routes to `tpm` instead of assigning the first
+  story itself. Pause recovery (`pause_recovery: planner`), the tracker
+  lease rebuild, the planner self-loop path, and operator-prompt planner
+  dispatch stay on the planner. Without `agents.tpm` every route is
+  unchanged.
+- TPM-11 (was part of TPM-3): Operator prompt `@tpm <message>`, like the
+  other `@role` targets, refused with a clear message when `agents.tpm` is
+  not configured.
+- TPM-12 (was TPM-6): Documentation and changelog sweep. `README.md` role
+  table and loop diagram, `docs/ARCHITECTURE.md` (role list, "planner picks
+  stories unless tpm is configured"), `CONFIGURATION.md` (`agents.tpm`
+  reference), `docs/TESTING.md` (a tpm scenario in the acceptance run),
+  `docs/SUPERVISED_DISPATCH.md` if the repair role list changes,
+  `CHANGELOG.md`. Each earlier story updates the docs its code touches; this
+  story checks the set reads as one.
 
 ### 16. ESCALATION-RECONCILE - a stale user escalation gets one planner pass
 
@@ -1125,34 +1176,43 @@ handbook and the code from drifting.
 - TRANS-2: Auditor and finalizer producers. `verified_pass` and
   `verified_fail` require `producer: auditor`; a `verified_pass` carried
   forward by the finalizer keeps its existing exemption only when
-  `producer: finalizer` and the previous route was `finalizer`. `producer:
-  finalizer` may route only to `planner`, `user`, or `tpm` when configured,
-  and never with `close_type` set. `producer: validator` may route anywhere
-  except `finalizer` and may not emit a completion status, with one
-  exemption: the dispatcher's own publish handoffs,
-  `build_review_bounce_handoff()` and the deferred-decision pass in
-  `llm_handoff/publish.py` (~lines 1387 and 1469), write
+  `producer: finalizer` and the previous route was `finalizer`.
+  `producer: finalizer` may route only to `planner`, `user`, or `tpm` when
+  configured, and never with `close_type` set.
+- TRANS-3 (was part of TRANS-2): Validator producer and dispatcher-authored
+  handoffs. `producer: validator` may route anywhere except `finalizer` and
+  may not emit a completion status, with one exemption: the dispatcher's own
+  publish handoffs, `build_review_bounce_handoff()` and the deferred-decision
+  pass in `llm_handoff/publish.py` (~lines 1387 and 1469), write
   `producer: validator` with `verified_fail` or `verified_pass`. Either the
   orchestrator marks those writes as dispatcher-authored where it validates
   them, or the builders move to a distinct producer value in the same story;
-  the review-bounce fixtures must keep validating. The post-dispatch
-  validation already knows the previous route; a `producer` that names a
-  role other than the one just dispatched is rejected as
+  the review-bounce fixtures must keep validating.
+- TRANS-4 (was part of TRANS-2): Producer matches the dispatched role. The
+  post-dispatch validation already knows the previous route; a `producer`
+  that names a role other than the one just dispatched is rejected as
   `frontmatter_producer_mismatch` unless the handoff is a dispatcher-written
   escalation.
-- TRANS-3: One table, two readers. Write the producer-to-route-and-status
-  table once in `docs/handoff/HANDBOOK.md` under `## Transition Table`, and
-  add a test that parses that table and asserts it matches the validator's
-  rule set, so a prompt edit and a validator edit cannot drift apart. The
-  `handoff-validator` helper prompts and `.codex/skills/llm-handoff-validator`
-  cite the table instead of restating it.
+- TRANS-5 (was TRANS-3): One table, two readers. Write the
+  producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under
+  `## Transition Table`, and add a test that parses that table and asserts it
+  matches the validator's rule set, so a prompt edit and a validator edit
+  cannot drift apart. The `handoff-validator` helper files under
+  `.agents/agents/` and the `.codex/skills/llm-handoff-validator` skill (root
+  and `examples/reference-workflow/` copies) cite the table instead of
+  restating it.
+- TRANS-6: Operator edit of the Claude validator helpers (routes to `user`).
+  The planner writes the exact edit for `.claude/agents/handoff-validator.md`
+  and its `examples/reference-workflow/` copy so they cite the TRANS-5 table,
+  as GEM-5c did.
 
 ### 18. ACTIVE-PLANNER - finish stories without a person at the console
 
 Fit: pick it right after a run has paused on an implementer environment
 refusal (a permission rule, a missing binary) rather than on a question. The
-four stories are independent; ACTIVE-3 and ACTIVE-4 change the planner's own
-protocol, so they go before a feature. Does not overlap ESCALATION-RECONCILE,
+stories run in order; ACTIVE-5 and ACTIVE-7 change the planner's own
+protocol, so the epic goes before a feature. ACTIVE-8 is the operator's
+`.claude/` edit and goes last. Does not overlap ESCALATION-RECONCILE,
 which re-checks a stale `user` route; this epic keeps the loop from reaching
 `user` for a config line it could have named.
 
@@ -1172,104 +1232,101 @@ implementer prompts (`docs/handoff/BACKEND_HANDOFF_PROMPT.md` ~line 61,
 `FRONTEND_HANDOFF_PROMPT.md` ~line 68), and the auditor. Nothing checks,
 before a dispatch, that the role can run the command it was given.
 
-- ACTIVE-1: Gate-verified handback. When an implementer cannot run the Work
-  Packet's Verification command (a permission refusal, a missing tool), it
-  may still hand back `status: ready_for_review` with a `## Verification
-  Evidence` block whose `Commands run` reads `deferred to the work-claim
-  gate: <the refusal, quoted>` and whose `Output summary` names the
-  refusal; the other three fields stay as today. This is legal only when
-  `enforce_work_packet: true`; without the gate the current rule stands.
-  The validator accepts it as it does now (the field is non-empty). The
-  gate runs the command as it does today and, on a pass,
-  `record_passed_verification` (`llm_handoff/work_claim.py` ~line 2390,
-  called at `llm_handoff/orchestrator.py` ~line 3367) writes the `##
-  Dispatcher Verification` section the auditor helper files already tell
-  the auditor to trust (`.claude/agents/auditor.md` ~line 46,
-  `.agents/agents/auditor.md` ~line 40, and the Codex auditor skill); that
-  section is the evidence the auditor reads. Update the handbook's
-  Evidence Block Reference, both implementer prompts, the `llm-handoff`
-  and `llm-handoff-frontend` Codex skills, the `backend.md` and
-  `frontend.md` files under `.claude/agents/` and `.agents/agents/`, and
-  the auditor prompt (a deferred `Commands run` with a PASS section is not
-  a finding). The
-  backend and frontend `verification deferred` patterns in
+Groomed on 2026-10-19 from four stories into eight, each one Work Packet;
+the `(was ...)` notes give the old IDs. None had started.
+
+- ACTIVE-1 (was part of ACTIVE-1): Gate-verified handback. When an
+  implementer cannot run the Work Packet's Verification command (a
+  permission refusal, a missing tool), it may still hand back
+  `status: ready_for_review` with a `## Verification Evidence` block whose
+  `Commands run` reads `deferred to the work-claim gate: <the refusal,
+  quoted>` and whose `Output summary` names the refusal; the other three
+  fields stay as today. This is legal only when `enforce_work_packet: true`;
+  without the gate the current rule stands. The validator accepts it as it
+  does now (the field is non-empty). The gate runs the command as it does
+  today and, on a pass, `record_passed_verification`
+  (`llm_handoff/work_claim.py` ~line 2390, called at
+  `llm_handoff/orchestrator.py` ~line 3367) writes the
+  `## Dispatcher Verification` section the auditor helper files already tell
+  the auditor to trust; that section is the evidence the auditor reads.
+  Update the handbook's Evidence Block Reference, both implementer prompts,
+  and the auditor prompt under `docs/handoff/` (a deferred `Commands run`
+  with a PASS section is not a finding). The backend and frontend
+  `verification deferred` patterns in
   `llm_handoff/rationalization_patterns.yaml` (~lines 10-12 and 20-22) must
   not match the new wording. Tests: the validator accepts the block, the
-  gate still runs the command on such a claim, and an auditor fixture with
-  a deferred `Commands run` plus a PASS section validates.
-- ACTIVE-2: Preflight the Verification command against role grants. In
-  `llm-handoff doctor` and in the dispatcher, both at startup (`run_loop`,
+  gate still runs the command on such a claim, and an auditor fixture with a
+  deferred `Commands run` plus a PASS section validates.
+- ACTIVE-2 (was part of ACTIVE-1): Gate-verified handback in the non-Claude
+  helper files: the `llm-handoff` and `llm-handoff-frontend` Codex skills
+  and `backend.md` and `frontend.md` under `.agents/agents/` (root and
+  `examples/reference-workflow/` copies) describe the ACTIVE-1 wording.
+  Protected paths; list each in Files in scope.
+- ACTIVE-3 (was part of ACTIVE-2): Verification preflight in `doctor`.
+  Parse the live Work Packet when the handoff routes to an implementer
+  (`doctor._check_handoff`, `llm_handoff/doctor.py` ~line 1873, already reads
+  and routes it) and check that each command's leading executable
+  (`command_executable`, `llm_handoff/work_claim.py` ~line 1455) is allowed
+  by that role's launch, fallback included (`_role_launches`,
+  `llm_handoff/doctor.py` ~line 370): for Claude, the `Bash(prefix:*)` rules
+  of `claude_allowed_tools` (`llm_handoff/config.py` ~line 340, built from
+  `claude_default_allowed_tools` ~line 65 and per-role `allowed_tools` ~line
+  300, parsed as `_BASH_RULE_RE` does in
+  `llm_handoff/agent_providers/claude.py` ~line 22); for agy, the grants
+  `antigravity_allowed_commands` builds
+  (`llm_handoff/antigravity_permissions.py` ~line 111); for Codex, which runs
+  in a workspace-write sandbox with no command allowlist
+  (`codex_permission_args`, `llm_handoff/agent_providers/codex.py` ~line
+  294), only that the executable resolves. Also run
+  `verification_command_allowed` (`llm_handoff/work_claim.py` ~line 1833)
+  against the same commands. Report `WARN verification preflight: backend
+  (claude) cannot run python; set interpreter_grants: true or an
+  allowed_tools rule`, never FAIL. Put the check in one function the
+  dispatcher can call in ACTIVE-4. Tests in `tests/test_doctor.py`.
+- ACTIVE-4 (was part of ACTIVE-2): Verification preflight in the
+  dispatcher. Call the ACTIVE-3 check at startup (`run_loop`,
   `llm_handoff/orchestrator.py` ~line 456, next to the pre-launch checks
   there) and in every cycle that dispatches an implementer, next to
   `capture_pre_dispatch_state` (~line 1170), because a Work Packet the
-  planner writes mid-run never passes startup; parse the live Work Packet
-  when the handoff routes to an implementer (`doctor._check_handoff`,
-  `llm_handoff/doctor.py` ~line 1873, already reads and routes it) and
-  check that each command's leading
-  executable (`command_executable`, `llm_handoff/work_claim.py` ~line 1455)
-  is allowed by that role's launch, fallback included (`_role_launches`,
-  `llm_handoff/doctor.py` ~line 370): for Claude, the `Bash(prefix:*)`
-  rules of `claude_allowed_tools` (`llm_handoff/config.py` ~line 340, built
-  from `claude_default_allowed_tools` ~line 65 and per-role `allowed_tools`
-  ~line 300, parsed as `_BASH_RULE_RE` does in
-  `llm_handoff/agent_providers/claude.py` ~line 22); for agy, the grants
-  `antigravity_allowed_commands` builds
-  (`llm_handoff/antigravity_permissions.py` ~line 111); for Codex, which
-  runs in a workspace-write sandbox with no command allowlist
-  (`codex_permission_args`, `llm_handoff/agent_providers/codex.py` ~line
-  294), only that the executable resolves. Report `WARN verification
-  preflight: backend (claude) cannot run python; set interpreter_grants:
-  true or an allowed_tools rule`, never FAIL, so the planner can re-scope.
-  Also run `verification_command_allowed` (`llm_handoff/work_claim.py`
-  ~line 1833) against the same commands, so a prefix mismatch is reported
-  before the gate bounces it. Tests in `tests/test_doctor.py`; startup and
-  per-cycle tests in `tests/ported/test_orchestrator.py` with `--dry-run`.
-- ACTIVE-3: Test scope policy. In `docs/handoff/PLANNER_HANDOFF_PROMPT.md`
-  (the Work Packet section, ~lines 78-150) and the handbook: for a story
-  that changes behaviour, tests that assert the old behaviour are in scope
-  by definition. The planner lists `tests/` (a directory, which
-  `path_matches_entry` in `llm_handoff/work_claim.py` ~line 618 already
-  supports) or the specific test files, and never writes "stop if a test
-  outside Files in scope must change" or a variant. With
-  `interpreter_grants: true` the planner's default allowlist includes
-  `pytest` (`claude_default_allowed_tools`, `llm_handoff/config.py` ~line
-  65), so the prompt tells it to run the relevant tests read-only while
-  scoping, to find which files assert the old behaviour. Add a `planner`
-  pattern for the forbidden phrase in
+  planner writes mid-run never passes startup. It logs the same WARN and
+  never blocks, so the planner can re-scope. Startup and per-cycle tests in
+  `tests/ported/test_orchestrator.py` with `--dry-run`.
+- ACTIVE-5 (was ACTIVE-3): Test scope policy. In
+  `docs/handoff/PLANNER_HANDOFF_PROMPT.md` (the Work Packet section, ~lines
+  78-150) and the handbook: for a story that changes behaviour, tests that
+  assert the old behaviour are in scope by definition. The planner lists
+  `tests/` (a directory, which `path_matches_entry` in
+  `llm_handoff/work_claim.py` ~line 618 already supports) or the specific
+  test files, and never writes "stop if a test outside Files in scope must
+  change" or a variant. With `interpreter_grants: true` the planner's default
+  allowlist includes `pytest` (`claude_default_allowed_tools`,
+  `llm_handoff/config.py` ~line 65), so the prompt tells it to run the
+  relevant tests read-only while scoping, to find which files assert the old
+  behaviour. Add a `planner` pattern for the forbidden phrase in
   `llm_handoff/rationalization_patterns.yaml` (~line 24; the validator
   surfaces it through `_rationalization_warnings`,
   `llm_handoff/validator.py` ~line 747) and mirror the rule in
-  `.claude/agents/planner.md`, `.codex/skills/llm-handoff-planner/SKILL.md`,
-  and `.agents/agents/planner.md` (not `.gemini/agents/`, which GEM-5
-  deletes). Tests: `parse_work_packet` accepts
-  `tests/` as a Files in scope entry and the gate treats a new file under
-  it as in scope (`tests/test_work_claim.py`, next to the parser tests at
-  ~line 301), and `tests/test_rationalization_detector.py` catches the
+  `.codex/skills/llm-handoff-planner/SKILL.md` and `.agents/agents/planner.md`
+  (not `.gemini/agents/`, which GEM-5 deleted). Tests: `parse_work_packet`
+  accepts `tests/` as a Files in scope entry and the gate treats a new file
+  under it as in scope (`tests/test_work_claim.py`, next to the parser tests
+  at ~line 301), and `tests/test_rationalization_detector.py` catches the
   phrase.
-- ACTIVE-4: No pointless re-dispatch. When the planner receives
-  `blocked_implementation_failure` whose handback names an environment
-  refusal (a permission rule, a missing binary, no TTY), it must not
-  re-dispatch the same role with an unchanged Work Packet: it either applies
-  ACTIVE-1 (re-dispatch with an instruction to hand back gate-verified) or
-  routes to `user` with the exact config line to add, such as
-  `interpreter_grants: true`. Encode this in the planner prompt's handback
-  review and the handbook's Escalation Protocol (`docs/handoff/HANDBOOK.md`
-  ~lines 125-142), and in the three planner helper files named in
-  ACTIVE-3. So the validator can see the refusal, an implementer that
-  hands back `blocked_implementation_failure` for an environment reason
-  writes one bullet in the handback body, `- **Environment refusal:**
-  <permission rule | missing binary | no TTY>: <the refusal text,
-  quoted>`; the implementer prompts and helper files named in ACTIVE-1
-  add it, and `_bullet_field_values` (`llm_handoff/validator.py` ~line
-  834) already parses bullets of that shape. The dispatcher's own refusal
-  log lines (`llm_handoff/agent_providers/claude.py` ~lines 203-208,
-  `antigravity.py` ~line 35) are not handoff content and cover only
-  permission rules, so the validator does not key on them. Add a
-  validator warning `planner_redispatch_after_refusal` when a planner
-  handoff routes to the implementer that produced the previous handoff,
-  the Work Packet section (`extract_work_packet_section`,
-  `llm_handoff/work_claim.py` ~line 452) is unchanged, and the previous
-  handoff carries that bullet.
+- ACTIVE-6 (was part of ACTIVE-4): Environment refusal bullet and validator
+  warning. An implementer that hands back `blocked_implementation_failure`
+  for an environment reason writes one bullet in the handback body,
+  `- **Environment refusal:** <permission rule | missing binary | no TTY>:
+  <the refusal text, quoted>`; both implementer prompts under
+  `docs/handoff/` and the ACTIVE-2 helper files add it, and
+  `_bullet_field_values` (`llm_handoff/validator.py` ~line 834) already
+  parses bullets of that shape. The dispatcher's own refusal log lines
+  (`llm_handoff/agent_providers/claude.py` ~lines 203-208, `antigravity.py`
+  ~line 35) are not handoff content and cover only permission rules, so the
+  validator does not key on them. Add a validator warning
+  `planner_redispatch_after_refusal` when a planner handoff routes to the
+  implementer that produced the previous handoff, the Work Packet section
+  (`extract_work_packet_section`, `llm_handoff/work_claim.py` ~line 452) is
+  unchanged, and the previous handoff carries that bullet.
   `validate_handoff_text` already takes `previous_route` and
   `prior_handoff_content` (`llm_handoff/validator.py` ~lines 376-385); the
   orchestrator passes the story baseline there (~line 1468), so the story
@@ -1277,6 +1334,23 @@ before a dispatch, that the role can run the command it was given.
   passes the handback separately. The `agent_self_loop` check (~line 466)
   does not cover this case, since planner to backend is a different role.
   Tests in `tests/ported/test_validator.py`.
+- ACTIVE-7 (was part of ACTIVE-4): No pointless re-dispatch, planner side.
+  When the planner receives `blocked_implementation_failure` whose handback
+  carries the ACTIVE-6 bullet, it must not re-dispatch the same role with an
+  unchanged Work Packet: it either applies ACTIVE-1 (re-dispatch with an
+  instruction to hand back gate-verified) or routes to `user` with the exact
+  config line to add, such as `interpreter_grants: true`. Encode this in the
+  planner prompt's handback review, the handbook's Escalation Protocol
+  (`docs/handoff/HANDBOOK.md` ~lines 125-142), and the ACTIVE-5 planner
+  helper files outside `.claude/`.
+- ACTIVE-8: Operator edit of the Claude helper files (routes to `user`).
+  Claude roles cannot write `.claude/`, so the planner writes the exact
+  edits into the handoff, as GEM-5c did: the ACTIVE-1 and ACTIVE-6 wording in
+  `backend.md` and `frontend.md`, and the ACTIVE-5 and ACTIVE-7 rules in
+  `planner.md`, under `.claude/agents/` (root and
+  `examples/reference-workflow/` copies). The auditor helper already trusts
+  the PASS section (`.claude/agents/auditor.md` ~line 46), so it needs no
+  change unless ACTIVE-1's auditor prompt wording must be mirrored.
 
 ### 19. TIDY - small fixes from epic-close audits
 

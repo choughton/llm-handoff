@@ -17,9 +17,11 @@ from llm_handoff.config import DispatchConfig
 from llm_handoff.pr_review import ReviewGate, parse_review_responses
 from llm_handoff.publish import (
     DISPLACED_HANDOFF_PATH,
+    MESSAGE_PATH,
     RESPONSES_PATH,
     STATE_PATH,
     PublishOutcome,
+    StateConflictResolver,
     StoryState,
     build_review_bounce_handoff,
     defer_blocked_handback,
@@ -1081,6 +1083,412 @@ def test_a_failed_merge_reports_the_git_error_after_warnings() -> None:
     )
     assert _first_line(warning_only) == "Aborting"
     assert _blocking_paths(warning_only) == []
+
+
+STATE_FILE = "PROJECT_STATE.md"
+STATE_BASE = (
+    "# Project State\n\n## Current Status\n\nIdle.\n\n"
+    "## Epic E1\n\n- W9.9 planned\n\n## Epic E2\n\n- X1 planned\n"
+)
+# The story's own status edits.
+STATE_STORY = STATE_BASE.replace("Idle.", "W9.9 in review.").replace(
+    "- W9.9 planned", "- W9.9 done"
+)
+# The operator's backlog edits on the base branch while the story ran.
+STATE_OPERATOR = STATE_BASE.replace("Idle.", "Regroomed E2.").replace(
+    "- X1 planned", "- X1 planned\n- X2 added"
+)
+STATE_RESOLVED = STATE_BASE.replace("Idle.", "W9.9 in review; regroomed E2.").replace(
+    "- W9.9 planned", "- W9.9 done"
+).replace("- X1 planned", "- X1 planned\n- X2 added")
+
+
+def _state_conflict_story(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    base_files: dict[str, str] | None = None,
+    *,
+    state_file: str = STATE_FILE,
+    initial: dict[str, str] | None = None,
+) -> tuple[Path, Path, list[str]]:
+    """A story whose status edit to the state file conflicts with ``main``."""
+
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _commit_all(
+        repo, {state_file: STATE_BASE, **(initial or {})}, "Add the project state"
+    )
+    _git(repo, "push", "-q", "origin", "main")
+    _start_story(repo)
+    _commit_all(repo, {state_file: STATE_STORY}, "W9.9 status")
+    _commit_on_remote(
+        tmp_path,
+        remote,
+        "main",
+        {state_file: STATE_OPERATOR, **(base_files or {})},
+        "Regroom the backlog",
+    )
+    return repo, remote, gh
+
+
+def _planner(
+    repo: Path,
+    *,
+    text: str | None = STATE_RESOLVED,
+    also: dict[str, str] | None = None,
+    finished: bool = True,
+    raises: Exception | None = None,
+    path: str = STATE_FILE,
+) -> tuple[StateConflictResolver, list[str]]:
+    """A fake planner dispatch that writes ``text`` into the state file."""
+
+    prompts: list[str] = []
+
+    def run(prompt: str) -> bool:
+        prompts.append(prompt)
+        if text is not None:
+            (repo / path).write_text(text, encoding="utf-8")
+        for name, content in (also or {}).items():
+            (repo / name).write_text(content, encoding="utf-8")
+        if raises is not None:
+            raise raises
+        return finished
+
+    return StateConflictResolver(path=path, run=run), prompts
+
+
+def _merge_in_progress(repo: Path) -> bool:
+    return (
+        subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def test_the_planner_resolves_a_project_state_conflict_and_publishing_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _state_conflict_story(tmp_path, monkeypatch)
+    resolver, prompts = _planner(repo)
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert outcome == PublishOutcome()
+    assert len(prompts) == 1
+    prompt = prompts[0]
+    assert f"`{STATE_FILE}`" in prompt and "`origin/main`" in prompt
+    assert f"`{BRANCH}`" in prompt and "Do not run `git add`" in prompt
+    assert "epic E1" in prompt
+    # The pull request merged the planner's resolution.
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert (repo / STATE_FILE).read_text(encoding="utf-8") == STATE_RESOLVED
+    merge = _git(repo, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    assert len(merge) == 3
+    # The merge commit holds only the conflict resolution: it differs from
+    # the automatic merge of its parents only in the conflicted file.
+    automatic = subprocess.run(
+        ["git", "-C", str(repo), "merge-tree", "--write-tree", "--no-messages",
+         merge[1], merge[2]],
+        capture_output=True, text=True,
+    ).stdout.split()[0]
+    assert _git(repo, "diff", "--name-only", automatic, merge[0]) == STATE_FILE
+    assert _git(repo, "log", "-1", "--format=%B", merge[0]) == (
+        f"Merge remote-tracking branch 'origin/main' into {BRANCH}"
+    )
+    assert any(
+        level == "AGENT"
+        and f"Planner resolved a {STATE_FILE} merge conflict" in message
+        and merge[0][:12] in message
+        for level, message in entries
+    )
+    report = (repo / MESSAGE_PATH).read_text(encoding="utf-8")
+    assert "### Merge conflict resolution" in report
+    assert f"git show {merge[0][:12]} -- {STATE_FILE}" in report
+    assert report.rstrip().endswith("llm-handoff)")
+    creates = [call for call in _gh_calls(tmp_path) if call[:2] == ["pr", "create"]]
+    assert len(creates) == 1
+
+
+@pytest.mark.parametrize(
+    ("planner", "problem"),
+    [
+        (
+            {"text": STATE_RESOLVED.replace("## Epic E2", "<<<<<<< HEAD\n## Epic E2")},
+            f"`{STATE_FILE}` still has conflict markers",
+        ),
+        ({"text": "\n\n"}, f"`{STATE_FILE}` is empty"),
+        (
+            {"also": {"README.md": "tidied\n"}},
+            "it also changed `README.md`",
+        ),
+        ({"finished": False}, "the planner dispatch failed"),
+        (
+            {"text": None, "raises": RuntimeError("provider crashed")},
+            "the planner dispatch raised RuntimeError: provider crashed",
+        ),
+    ],
+    ids=["markers", "empty", "extra-file", "failed", "raised"],
+)
+def test_a_planner_resolution_that_fails_a_check_pauses_as_before(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    planner: dict[str, object],
+    problem: str,
+) -> None:
+    repo, _remote, gh = _state_conflict_story(tmp_path, monkeypatch)
+    head = _git(repo, "rev-parse", "HEAD")
+    resolver, prompts = _planner(repo, **planner)
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert len(prompts) == 1
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"conflicts in `{STATE_FILE}`, which the planner did not resolve" in (
+        outcome.message
+    )
+    assert problem in outcome.message
+    assert "The merge was aborted" in outcome.message
+    assert "git merge origin/main" in outcome.message
+    assert any(
+        level == "WARN" and "The planner did not resolve" in message
+        for level, message in entries
+    )
+    assert not any(
+        "Planner resolved" in message for _level, message in entries
+    )
+    assert not _merge_in_progress(repo)
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _saved_state(repo)["paused_publish"] == "push"
+    assert _gh_calls(tmp_path) == []
+    assert (repo / STATE_FILE).read_text(encoding="utf-8") == STATE_STORY
+    if "also" in planner:
+        # The dispatcher never discards a file: the planner's stray edit stays.
+        assert _git(repo, "status", "--porcelain") == "M README.md"
+    else:
+        assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_a_conflict_beyond_the_project_state_file_pauses_without_the_planner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path, monkeypatch, base_files={"README.md": "base readme\n"}
+    )
+    _commit_all(repo, {"README.md": "story readme\n"}, "W9.9 readme")
+    resolver, prompts = _planner(repo)
+    entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert prompts == []
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"`{STATE_FILE}`, `README.md`" in outcome.message
+    assert "planner" not in outcome.message
+    assert not _merge_in_progress(repo)
+    assert _saved_state(repo)["paused_publish"] == "push"
+
+
+def test_without_a_resolver_a_project_state_conflict_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _state_conflict_story(tmp_path, monkeypatch)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log)
+
+    assert outcome.stop is True
+    assert f"conflicts in `{STATE_FILE}`, so" in outcome.message
+    assert _saved_state(repo)["paused_publish"] == "push"
+
+
+def test_a_project_state_conflict_at_the_merge_is_resolved_and_commented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _commit_all(repo, {STATE_FILE: STATE_BASE}, "Add the project state")
+    _git(repo, "push", "-q", "origin", "main")
+    _start_story(repo)
+    _commit_all(repo, {STATE_FILE: STATE_STORY}, "W9.9 status")
+    # main moves after the push, while the checks run.
+    _commit_on_remote(
+        tmp_path, remote, "next-main", {STATE_FILE: STATE_OPERATOR}, "Regroom"
+    )
+    _set_gh(tmp_path, move_main_to="refs/heads/next-main")
+    resolver, prompts = _planner(repo)
+    entries, log = _logs()
+
+    outcome = _publish_pr(
+        repo, gh, log, wait_for_checks=True, state_resolver=resolver
+    )
+
+    assert outcome == PublishOutcome()
+    assert len(prompts) == 1
+    merges = [call for call in _gh_calls(tmp_path) if call[:2] == ["pr", "merge"]]
+    assert len(merges) == 2
+    assert (repo / STATE_FILE).read_text(encoding="utf-8") == STATE_RESOLVED
+    # The pull request body was already written, so a comment records it.
+    comments = [post["body"] for post in _gh_state(tmp_path)["posted"]]
+    assert len(comments) == 1
+    assert "### Merge conflict resolution" in comments[0]
+    assert any(
+        f"Planner resolved a {STATE_FILE} merge conflict" in message
+        for _level, message in entries
+    )
+
+
+def test_a_second_project_state_conflict_in_one_publish_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh = _state_conflict_story(tmp_path, monkeypatch)
+    # main moves again during the checks and conflicts with the resolution.
+    _commit_on_remote(
+        tmp_path,
+        remote,
+        "next-main",
+        {STATE_FILE: STATE_OPERATOR.replace("Regroomed E2.", "Regroomed again.")},
+        "Regroom again",
+    )
+    _set_gh(tmp_path, move_main_to="refs/heads/next-main")
+    resolver, prompts = _planner(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(
+        repo, gh, log, wait_for_checks=True, state_resolver=resolver
+    )
+
+    assert len(prompts) == 1
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert f"conflicts in `{STATE_FILE}`, so" in outcome.message
+    assert "left open" in outcome.message
+    assert _saved_state(repo)["paused_publish"] == "merge"
+    assert not _merge_in_progress(repo)
+
+
+def test_the_conflict_resolver_dispatches_the_planner_with_its_own_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff = tmp_path / "docs" / "handoff" / "HANDOFF.md"
+    handoff.parent.mkdir(parents=True)
+    handoff.write_bytes(VERIFIED.encode("utf-8"))
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    rewrite: list[bool] = []
+
+    def fake_support(*args: object, **kwargs: object) -> SubagentResult:
+        calls.append((args, kwargs))
+        if rewrite:
+            handoff.write_text("rewritten\n", encoding="utf-8")
+        return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.0)
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    entries, log = _logs()
+    config = _pr_loop_config(tmp_path)
+
+    resolver = orchestrator._state_conflict_resolver(config, log)
+
+    assert resolver is not None and resolver.path == STATE_FILE
+    assert resolver.run("resolve it") is True
+    (name, prompt), kwargs = calls[0]
+    assert name == "planner" and prompt == "resolve it"
+    assert kwargs["role"] == "planner"
+    assert kwargs["agent_config"] == config.agents["planner"]
+    # A planner that rewrites the handoff fails, and the handoff is restored.
+    rewrite.append(True)
+    assert resolver.run("resolve it") is False
+    assert handoff.read_bytes() == VERIFIED.encode("utf-8")
+    assert any(level == "WARN" and "restored it" in message for level, message in entries)
+    off = _pr_loop_config(
+        tmp_path, publish={"mode": "pr", "resolve_project_state_conflicts": "off"}
+    )
+    assert orchestrator._state_conflict_resolver(off, log) is None
+    dry = _pr_loop_config(tmp_path, dry_run=True)
+    assert orchestrator._state_conflict_resolver(dry, log) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        ("a\n<<<<<<< HEAD\nb\n", True),
+        ("a\r\n=======\r\nb\r\n", True),
+        ("a\n>>>>>>> origin/main\n", True),
+        ("a\n|||||||\n", True),
+        ("a <<<<<<< b\n", False),
+        ("Title\n========\n", False),
+        ("- item\n", False),
+    ],
+)
+def test_conflict_markers_are_found_at_line_starts(text: str, found: bool) -> None:
+    from llm_handoff.publish import _conflict_marker_re
+
+    assert bool(_conflict_marker_re(7).search(text)) is found
+    wide = _conflict_marker_re(12)
+    assert wide.search("a\n<<<<<<<<<<<< HEAD\n")
+    assert wide.search("a\n============\n")
+    assert not wide.search("a\n=======\n")
+
+
+def test_a_marker_of_the_configured_size_left_behind_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path,
+        monkeypatch,
+        initial={".gitattributes": f"{STATE_FILE} conflict-marker-size=12\n"},
+    )
+    resolver, prompts = _planner(
+        repo,
+        text=STATE_RESOLVED.replace(
+            "## Epic E2", ">>>>>>>>>>>> origin/main\n## Epic E2"
+        ),
+    )
+    _entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert len(prompts) == 1
+    assert outcome.stop is True
+    assert f"`{STATE_FILE}` still has conflict markers" in outcome.message
+    assert not _merge_in_progress(repo)
+
+
+def test_the_planner_resolves_a_conflict_in_a_non_ascii_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Git quotes this name in its default output (core.quotePath).
+    state_file = "ÉTAT.md"
+    repo, _remote, gh = _state_conflict_story(
+        tmp_path, monkeypatch, state_file=state_file
+    )
+    resolver, prompts = _planner(repo, path=state_file)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(repo, gh, log, state_resolver=resolver)
+
+    assert outcome == PublishOutcome()
+    assert len(prompts) == 1
+    assert (repo / state_file).read_text(encoding="utf-8") == STATE_RESOLVED
+
+
+def test_resolve_project_state_conflicts_config(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path).publish.resolve_project_state_conflicts == (
+        "planner"
+    )
+    with pytest.raises(ValueError, match="with quotes"):
+        DispatchConfig(
+            repo_root=tmp_path,
+            publish={"mode": "pr", "resolve_project_state_conflicts": False},
+        )
+    with pytest.raises(ValueError):
+        DispatchConfig(
+            repo_root=tmp_path,
+            publish={"mode": "pr", "resolve_project_state_conflicts": "always"},
+        )
 
 
 def test_resume_does_nothing_without_a_paused_publish(tmp_path: Path) -> None:
