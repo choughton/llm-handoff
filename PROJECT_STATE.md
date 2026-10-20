@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-11 in progress; RECOVERY-10 merged in
+- **Active Epic:** RECOVERY (RECOVERY-12 in progress; RECOVERY-11 merged in
+  PR #180 (HEAD `d227641`); RECOVERY-10 merged in
   PR #179 (HEAD `1685281`); RECOVERY-9 approved
   at `1e41789`, merged in PR #178; RECOVERY-8 approved at
   `e9f084a`, merged in PR #177; RECOVERY-7 approved at
@@ -27,13 +28,12 @@ belong in commits, handoffs, and pull requests.
   the RECOVERY-6 audit), then RECOVERY-12 (interrupted merge-commit publish,
   split from RECOVERY-8), then RECOVERY-13 (merge-conflict resolver fails
   closed on unreadable files, from the RECOVERY-10 security review). Epic
-  order: 11, 12, 13.
-  RECOVERY-11 (failed in-flight record deletes stop every recovery path) is
-  active because it is next in the epic's order (11, 12, 13), unblocked
-  (RECOVERY-2 through RECOVERY-10 are merged), and fixes a startup recovery
-  gap where a stale in-flight record can outlive the run that ignored its
-  failed delete. The other open epics' Fit lines are unchanged since
-  RECOVERY-10 was picked.
+  order: 12, 13.
+  RECOVERY-12 (interrupted merge-commit publish) is active because it is
+  next in the epic's order (12, 13), unblocked (RECOVERY-2 through
+  RECOVERY-11 are merged), and closes the `merge-commit` half of the
+  interrupted-publish gap that RECOVERY-8 fixed for `pr` mode. The other open
+  epics' Fit lines are unchanged since RECOVERY-10 was picked.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -715,11 +715,11 @@ at `c39b42a` and merged (PR #176). RECOVERY-8 (publish steps safe to repeat,
 RECOVERY-4, no-record fallback) is approved at `1e41789` and merged
 (PR #178). RECOVERY-10 (merge-conflict resolver sees hidden working-tree
 edits) is merged (PR #179). RECOVERY-11 (failed in-flight record deletes stop
-every recovery path) is active because it is next in the epic's order (11,
-12, 13), unblocked, and fixes a stale-record gap in startup recovery;
-RECOVERY-12 (interrupted merge-commit publish, split from RECOVERY-8) and
-RECOVERY-13 (merge-conflict resolver fails closed on unreadable files)
-follow. The other open epics' Fit lines are unchanged.
+every recovery path) is merged (PR #180). RECOVERY-12 (interrupted
+merge-commit publish, split from RECOVERY-8) is active because it is next in
+the epic's order (12, 13) and unblocked; RECOVERY-13 (merge-conflict resolver
+fails closed on unreadable files) follows. The other open epics' Fit lines
+are unchanged.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
@@ -1032,7 +1032,28 @@ bounces until the three-fix circuit breaker escalates.
   `git merge --no-ff`, and `git branch -d <story>` leaves the checkout on the
   base branch with `story.json` kept. A start should finish the remaining
   steps when the story branch is already merged into the base branch, and
-  pause otherwise.
+  pause otherwise. Decided by the planner on 2026-10-19:
+  `resume_interrupted_merge_commit` in `llm_handoff/publish.py` shares the
+  `pr` resume's entry gate (saved state; handoff is that story's
+  `verified_pass`, `close_type` `story` or `epic`, `scope_sha` resolving to
+  the audited commit) through `_audited_story_commit`. Pauses keep the story
+  state, start `INTERRUPTED PUBLISH:`, and list the manual steps (`git switch
+  <base>`, `git merge --no-ff <branch>`, `git branch -d <branch>`, delete
+  `story.json`, restart). On the story branch: `MERGE_HEAD`, a failed or
+  non-handoff/non-`logs/dispatch/` dirty list, or HEAD not exactly the
+  audited commit pauses; otherwise one INFO line and
+  `Resume merging <story_id> into <base>? [y/N]`, where `y` runs
+  `publish_story(mode="merge-commit")` and anything else (or no terminal)
+  logs one WARN and keeps the state. On the base branch: `MERGE_HEAD` pauses;
+  an existing story branch must have the audited tip and the audited commit
+  must be an ancestor of HEAD (exit 1 pauses as unmerged, other failures
+  pause as Git failures), then `git branch -d`, clear the state, and log one
+  AGENT line; a gone branch with the audited commit merged clears the state
+  with one INFO line, otherwise pauses. Never merges, resets, or asks there.
+  Any other branch or a detached HEAD does nothing. `run_loop` calls it after
+  the index-lock wait in `merge-commit` mode outside dry runs, sharing the
+  hoisted `confirm_publish_resume` with the `pr` path; `outcome.stop` returns
+  its exit code. Regressions in `tests/test_interrupted_merge_commit.py`.
 - RECOVERY-13: Merge-conflict resolver fails closed on unreadable files.
   From the RECOVERY-10 security review (low, below the block threshold):
   `_worktree_snapshot`'s fingerprint (`llm_handoff/publish.py` ~line 1456)

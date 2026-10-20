@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An interrupted `merge-commit` publish now finishes on the next start, or
+  pauses (RECOVERY-12). Before, only `pr` mode had a startup resume, so the
+  planner ran on the story's stale `verified_pass` handoff and the next story
+  branch could overwrite `story.json` while the unmerged story branch was
+  stranded. Now, when the handoff is still the saved story's `verified_pass`
+  with a resolving `scope_sha`: on the story branch at exactly the audited
+  commit with nothing but the handoff and `logs/dispatch/` uncommitted, the
+  dispatcher asks `Resume merging <story_id> into <base>? [y/N]` and `y` runs
+  the normal merge; on the base branch with the audited commit already
+  merged, it deletes the merged story branch and clears the story state
+  without asking. Anything else pauses with an `INTERRUPTED PUBLISH:` message
+  that keeps the story state and lists the manual steps. A dry run is
+  unchanged.
 - A startup recovery path that cannot delete the in-flight record now stops
   the run (RECOVERY-11). Before, most startup discards and deletes ignored a
   failed delete and went on, so a stale record could outlive the run that

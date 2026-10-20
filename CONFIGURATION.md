@@ -1259,7 +1259,25 @@ review or thumbs-up Codex gave while the dispatcher was down still counts. A
 new head, such as a correction round or a new base-branch merge, gets a new
 time.
 
-The `merge-commit` mode does not resume an interrupted publish yet.
+In `merge-commit` mode the publish runs `git switch <base>`,
+`git merge --no-ff <branch>`, and `git branch -d <branch>`, then clears the
+story state. At startup, outside `--dry-run`, the dispatcher applies the same
+entry check (saved story state, and `HANDOFF.md` still that story's
+`verified_pass` with a resolving `scope_sha`, the audited commit), then reads
+the checkout. On the story branch it pauses when a merge is in progress, a
+file other than the handoff and `logs/dispatch/` is uncommitted, or HEAD is
+not exactly the audited commit; otherwise it asks
+`Resume merging <story_id> into <base>? [y/N]`, and `y` runs the normal
+merge-commit publish (any other answer, or no terminal, logs a `WARN` line and
+keeps the story state). On the base branch it never merges, resets, or asks:
+it pauses when a merge is in progress, when the story branch's tip is not the
+audited commit, or when the audited commit is not on HEAD; when the merge
+already went through, it deletes the merged story branch (if it still exists)
+and clears the story state. On any other branch, or a detached HEAD, it does
+nothing. Each pause starts with `INTERRUPTED PUBLISH:`, keeps the story state,
+and lists the manual steps: `git switch <base>`, `git merge --no-ff <branch>`,
+`git branch -d <branch>`, delete `logs/dispatch/publish/story.json`, then
+start the dispatcher again.
 
 #### Waiting For The Codex Pull Request Review
 

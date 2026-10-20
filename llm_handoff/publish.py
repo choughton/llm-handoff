@@ -1857,26 +1857,8 @@ def resume_interrupted_publish(
         return nothing
     if _current_branch(repo_root) != state.branch:
         return nothing
-    try:
-        frontmatter = parse_handoff_frontmatter_text(handoff_content)
-    except HandoffFrontmatterError:
-        return nothing
-    if frontmatter is None:
-        return nothing
-    if (frontmatter.status or "") != "verified_pass":
-        return nothing
-    if (frontmatter.story_id or "").strip() != state.story_id:
-        return nothing
-    if (frontmatter.close_type or "").strip() not in {"story", "epic"}:
-        return nothing
-    scope_sha = (frontmatter.scope_sha or "").strip()
-    if not _SCOPE_SHA_RE.fullmatch(scope_sha):
-        return nothing
-    resolved = _git(
-        repo_root, ["rev-parse", "-q", "--verify", f"{scope_sha}^{{commit}}"]
-    )
-    audited = (resolved.stdout or "").strip()
-    if resolved.returncode != 0 or not _OBJECT_ID_RE.fullmatch(audited):
+    audited = _audited_story_commit(repo_root, state, handoff_content)
+    if audited is None:
         return nothing
 
     def blocked(problem: str) -> PublishOutcome:
@@ -2000,6 +1982,197 @@ def resume_interrupted_publish(
         review_prompt=review_prompt,
         state_resolver=state_resolver,
     )
+
+
+def _audited_story_commit(
+    repo_root: Path, state: StoryState, handoff_content: str
+) -> str | None:
+    """Return the full object id of the saved story's audited commit, or None.
+
+    It is the commit ``HANDOFF.md`` names in ``scope_sha`` when the handoff is
+    still that story's ``verified_pass`` with a ``close_type`` of ``story`` or
+    ``epic``. None otherwise, or when the ``scope_sha`` does not resolve.
+    """
+
+    try:
+        frontmatter = parse_handoff_frontmatter_text(handoff_content)
+    except HandoffFrontmatterError:
+        return None
+    if frontmatter is None:
+        return None
+    if (frontmatter.status or "") != "verified_pass":
+        return None
+    if (frontmatter.story_id or "").strip() != state.story_id:
+        return None
+    if (frontmatter.close_type or "").strip() not in {"story", "epic"}:
+        return None
+    scope_sha = (frontmatter.scope_sha or "").strip()
+    if not _SCOPE_SHA_RE.fullmatch(scope_sha):
+        return None
+    resolved = _git(
+        repo_root, ["rev-parse", "-q", "--verify", f"{scope_sha}^{{commit}}"]
+    )
+    audited = (resolved.stdout or "").strip()
+    if resolved.returncode != 0 or not _OBJECT_ID_RE.fullmatch(audited):
+        return None
+    return audited
+
+
+def resume_interrupted_merge_commit(
+    *,
+    repo_root: Path,
+    handoff_content: str,
+    handoff_path: Path,
+    log: LogFn,
+    confirm: Callable[[str], bool] | None,
+) -> PublishOutcome:
+    """Finish a ``merge-commit`` publish that a previous run left interrupted.
+
+    Runs once when the dispatcher starts. Does nothing unless the saved story
+    state exists and ``HANDOFF.md`` is still that story's ``verified_pass``
+    with a ``close_type`` of ``story`` or ``epic`` and a ``scope_sha`` that
+    resolves (the audited commit). The publish runs ``git switch <base>``,
+    ``git merge --no-ff <branch>``, ``git branch -d <branch>``, then clears
+    the story state; the checkout tells where it was cut. Every pause keeps
+    the story state and gives the manual steps.
+
+    - On the story branch (cut before or during the switch): a merge in
+      progress, a failed ``git status``, an uncommitted file other than the
+      handoff and the dispatcher's logs, or a HEAD that is not exactly the
+      audited commit pauses. Otherwise, once ``confirm`` returns True, the
+      merge is published again with :func:`publish_story`; without
+      ``confirm``, or when it returns False, the story state is kept and
+      nothing is merged.
+    - On the base branch (cut during the merge or after it): a merge in
+      progress pauses. When the story branch still exists, its tip must be
+      the audited commit and the audited commit must be on HEAD, or it
+      pauses; then the merged branch is deleted (a failed delete pauses) and
+      the story state is cleared. When the story branch is gone, the audited
+      commit must be on HEAD: then the story state is cleared, otherwise it
+      pauses. Nothing here merges, resets, or asks.
+    - On any other branch, or a detached HEAD: nothing.
+    """
+
+    nothing = PublishOutcome()
+    state = _load_state(repo_root)
+    if state is None:
+        return nothing
+    audited = _audited_story_commit(repo_root, state, handoff_content)
+    if audited is None:
+        return nothing
+    current = _current_branch(repo_root)
+    if current is None or current not in {state.branch, state.base_branch}:
+        return nothing
+    branch, base = state.branch, state.base_branch
+
+    def blocked(problem: str) -> PublishOutcome:
+        return _pause(
+            repo_root,
+            log,
+            f"INTERRUPTED PUBLISH: Merging `{branch}` for `{state.story_id}` into "
+            f"`{base}` was interrupted, and {problem}, so the dispatcher did not "
+            "resume it. The story state was kept. To finish it yourself, run "
+            f"`git switch {base}`, `git merge --no-ff {branch}`, and "
+            f"`git branch -d {branch}`, delete `{STATE_PATH.as_posix()}`, then "
+            "start the dispatcher again.",
+            keep_state=True,
+        )
+
+    merging = (
+        _git(repo_root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode == 0
+    )
+    if current == branch:
+        if merging:
+            return blocked(f"a merge is in progress on `{branch}`")
+        dirty = git_dirty_files(repo_root)
+        if dirty is None:
+            return blocked(
+                "git status failed, so uncommitted files could not be checked"
+            )
+        handoff = normalize_repo_path(handoff_path.as_posix())
+        uncommitted = [
+            path
+            for path in dirty
+            if path != handoff and not path.startswith("logs/dispatch/")
+        ]
+        if uncommitted:
+            return blocked(
+                "files other than the handoff are uncommitted "
+                f"({_path_list(uncommitted)})"
+            )
+        head = git_head(repo_root) or ""
+        if head != audited:
+            return blocked(
+                f"HEAD {head[:12] or 'unknown'} on `{branch}` is not the audited "
+                f"commit {audited[:12]}"
+            )
+        log(
+            "INFO",
+            f"Merging `{branch}` for `{state.story_id}` into `{base}` was "
+            f"interrupted: HEAD {head[:12]} on `{branch}`. Resuming will merge it "
+            f"into `{base}`.",
+        )
+        question = f"Resume merging {state.story_id} into {base}? [y/N]"
+        if confirm is None or not confirm(question):
+            log(
+                "WARN",
+                f"The interrupted merge of `{branch}` was not resumed; the story "
+                "state was kept.",
+            )
+            return nothing
+        return publish_story(
+            repo_root=repo_root,
+            mode="merge-commit",
+            remote="",
+            auto_merge=False,
+            wait_for_checks=False,
+            handoff_content=handoff_content,
+            log=log,
+        )
+
+    # On the base branch: only finish what the merge already did.
+    if merging:
+        return blocked(f"a merge into `{base}` is in progress")
+    tip = _git(repo_root, ["rev-parse", "-q", "--verify", f"refs/heads/{branch}"])
+    exists = tip.returncode == 0
+    if exists and (tip.stdout or "").strip() != audited:
+        return blocked(
+            f"`{branch}` is at {(tip.stdout or '').strip()[:12]}, not the audited "
+            f"commit {audited[:12]}"
+        )
+    ancestor = _git(repo_root, ["merge-base", "--is-ancestor", audited, "HEAD"])
+    if ancestor.returncode == 1:
+        if exists:
+            return blocked(f"`{branch}` is not merged into `{base}` yet")
+        return blocked(
+            f"`{branch}` no longer exists and the audited commit "
+            f"{audited[:12]} is not on `{base}`"
+        )
+    if ancestor.returncode != 0:
+        return blocked(
+            f"`git merge-base --is-ancestor` failed ({_first_line(ancestor)})"
+        )
+    if not exists:
+        _clear_state(repo_root)
+        log(
+            "INFO",
+            f"The interrupted merge of `{branch}` into `{base}` had finished and "
+            "the branch is gone; cleared the story state.",
+        )
+        return nothing
+    deleted = _git(repo_root, ["branch", "-d", branch])
+    if deleted.returncode != 0:
+        return blocked(
+            f"`{branch}` is merged, but `git branch -d {branch}` failed "
+            f"({_first_line(deleted)})"
+        )
+    _clear_state(repo_root)
+    log(
+        "AGENT",
+        f"Finished the interrupted merge of {branch} into {base}: deleted the "
+        "merged branch and cleared the story state.",
+    )
+    return nothing
 
 
 _RESUME_LISTED_COMMITS = 5
