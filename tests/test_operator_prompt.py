@@ -58,7 +58,7 @@ producer: planner
 Which story should run next?
 """
 OTHER_USER_HANDOFF = USER_HANDOFF.replace("Which story", "Which epic")
-PLANNER_SCHEDULED_PREFIX = "Operator prompt: scheduling a planner dispatch"
+PLANNER_SCHEDULED_PREFIX = "Operator prompt: scheduling the planner dispatch"
 
 
 # --- parse_operator_input -------------------------------------------------
@@ -1006,7 +1006,7 @@ def test_backend_target_on_user_pause_dispatches_backend_once(
     assert instruction.isascii()
     assert (
         "PAUSE",
-        "Operator prompt: scheduling a backend dispatch with the operator's message.",
+        "Operator prompt: scheduling the backend dispatch with the operator's message.",
     ) in harness.logs
     assert ("INFO", "Routing source: operator_role_dispatch") in harness.logs
 
@@ -1027,7 +1027,7 @@ def test_auditor_target_without_message_continues_the_assignment(
     assert "Operator instruction:" not in prompt
     assert (
         "PAUSE",
-        "Operator prompt: scheduling a auditor dispatch with no message.",
+        "Operator prompt: scheduling the auditor dispatch with no message.",
     ) in harness.logs
 
 
@@ -1444,6 +1444,76 @@ def test_targeted_backend_cycle_skips_stale_route_check(
     ) == 2
 
 
+REPEAT_TARGET_WARN_PREFIX = "Operator prompt: the "
+
+
+def _repeat_target_warnings(harness: _Harness) -> list[str]:
+    return [
+        message
+        for level, message in harness.logs
+        if level == "WARN" and message.startswith(REPEAT_TARGET_WARN_PREFIX)
+    ]
+
+
+def test_retargeting_the_same_role_on_an_unchanged_handoff_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, BACKEND_HANDOFF)
+    handoff_sha = content_sha(BACKEND_HANDOFF)
+    # Backend leaves the handoff unchanged, the stale-route check pauses,
+    # and the operator sends backend again on the same handoff.
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@backend fix it", "quit"],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 2
+    assert "Operator instruction: fix it" in (harness.backend_instructions[1] or "")
+    assert _repeat_target_warnings(harness) == [
+        "Operator prompt: the backend role runs again on an unchanged HANDOFF.md "
+        f"(sha {handoff_sha}); the previous backend cycle did not change it."
+    ]
+
+
+def test_targeting_a_different_role_does_not_warn_about_a_repeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, BACKEND_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@frontend fix it", "quit"],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert len(harness.frontend_instructions) == 1
+    assert "Operator instruction: fix it" in (harness.frontend_instructions[0] or "")
+    assert _repeat_target_warnings(harness) == []
+
+
+def test_retargeting_the_same_role_after_a_handoff_change_does_not_warn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    # Backend rewrites the handoff to a user escalation, so the second
+    # @backend target runs on a different handoff than the first.
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["@backend first", "@backend second", "quit"],
+        backend_writes=[OTHER_USER_HANDOFF, None],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 2
+    assert _repeat_target_warnings(harness) == []
+
+
 def test_role_target_text_with_braces_reaches_the_role_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1465,7 +1535,7 @@ def test_discarded_role_dispatch_names_the_route(
 
     def edit_after_scheduling(level: str, message: str) -> None:
         if level == "PAUSE" and message.startswith(
-            "Operator prompt: scheduling a backend dispatch"
+            "Operator prompt: scheduling the backend dispatch"
         ):
             handoff_path.write_text(OTHER_USER_HANDOFF, encoding="utf-8")
 

@@ -617,6 +617,30 @@ def test_doctor_reports_each_scanner_in_config_order_with_the_gate_on(
     assert "executable `pip-audit` was not found on PATH" in lines[2]
     assert "will skip scanner pip-audit" in lines[2]
     assert "doctor could not check the executable" in lines[3]
+    assert "does not start with a plain program name" in lines[3]
+
+
+def test_doctor_names_the_leading_placeholder_of_a_scanner_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(
+        repo,
+        "scanners:\n"
+        "  - name: wrapped\n"
+        "    command: \"{changed_files} --check\"\n",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _scanner_lines(output)
+    assert len(lines) == 1
+    assert lines[0].startswith("WARN scanner wrapped:")
+    assert "starts with a placeholder" in lines[0]
+    assert "(`{changed_files}`)" in lines[0]
+    assert "does not start with a plain program name" not in lines[0]
 
 
 def test_doctor_passes_every_scanner_whose_executable_is_on_path(
