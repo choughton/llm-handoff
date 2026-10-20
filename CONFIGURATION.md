@@ -302,7 +302,11 @@ names the pid recorded in `.dispatch.lock`, and a dispatcher honors only a
 request for its own pid (or one that names no pid, such as a file created by
 hand). A request the run never honored is removed when that run exits. At
 startup the dispatcher removes, with a `WARN` line, any request that does not
-name its pid, so a request accepted for the new lock is kept.
+name its pid, so a request accepted for the new lock is kept. A request that
+names no pid is honored by design: only one dispatcher can hold
+`.dispatch.lock` in a repository, so a hand-made `logs/dispatch/stop-request`
+stops the dispatcher running there, and one written before that dispatcher
+started is removed at startup.
 
 `llm-handoff stop` refuses, and writes nothing, when no `.dispatch.lock`
 exists, when the lock records no pid (after giving a starting dispatcher a
@@ -2172,11 +2176,16 @@ when set) is one of the team's workflow states. Any other result, including a
 launch error, a non-zero exit, unusable output, an unreadable issue, or
 missing state names, is a FAIL and sets exit code 1.
 
-Residual risk: when `tracker.claude_mcp_config` is unset, every MCP server in
-the user's Claude configuration loads. A Linear write tool that the user's
-Claude settings pre-approve under a name not on the deny list above is not
-denied. Set `tracker.claude_mcp_config` to limit the probe to that file's
-servers.
+Residual risk: a Linear write tool that the user's own Claude settings
+pre-approve under a name not on the deny list above is not denied, with or
+without `tracker.claude_mcp_config`; `--strict-mcp-config` limits which MCP
+servers load, not which user-level allow rules apply. The probe cannot deny
+the rest of the tracker server, because Claude Code applies deny rules before
+allow rules, so a server-wide deny would also block the two read tools. When
+`tracker.claude_mcp_config` is unset, every MCP server in the user's Claude
+configuration also loads. Set `tracker.claude_mcp_config`, and do not
+pre-approve tracker write tools (or the whole tracker server) in user-level
+Claude settings.
 
 The Linear-mode prompt text ships inside the package as static Markdown under
 `llm_handoff/prompt_templates/linear/`: a shared `AGENTS.md` section, the
