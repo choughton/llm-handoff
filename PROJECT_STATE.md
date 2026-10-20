@@ -6,6 +6,11 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
+- **Operator direction (2026-10-20):** park CHAT once the CHAT story in
+  flight merges, and start TPM-ROLE with TPM-1 next. CHAT resumes after
+  TPM-ROLE with its remaining stories. The operator moves the self-host
+  planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
+  `Fit:` reason applies here too.
 - **Active Epic:** CHAT, with CHAT-15 (the loop records each dispatch in the
   dispatch record) in progress. CHAT-3 (dispatch record file) was approved at
   `6d387ab` and merged in PR #202. CHAT-14 (Claude and Codex role dispatches report their session id) was
@@ -21,7 +26,7 @@ belong in commits, handoffs, and pull requests.
   merged in PR #195. CHAT-9 (console chat line renderer) was approved at
   `3ac5fcf` and merged in PR #194.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still wait on their triggers,
-  TPM-ROLE matters less while the self-host planner runs on claude,
+  TPM-ROLE is next by the operator direction above,
   TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** TIDY, with TIDY-7 and TIDY-8 remaining. TIDY-7 waits for
   the operator to say they are ready to make the `.claude/agents/*.md`
@@ -1048,8 +1053,10 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: active; CHAT-15 is in progress. Picked after TIDY was parked; HARD-3 is
-merged and RECOVERY is closed, so nothing blocks it.
+Fit: parked by the operator on 2026-10-20 after the CHAT story in flight
+merges; TPM-ROLE goes first. Resume CHAT with its remaining stories once
+TPM-ROLE closes. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+closed.
 
 The operator types at any time; a message holds the loop and is answered by
 the agent it is about, from that agent's own session, read-only. Chat never
@@ -1218,7 +1225,10 @@ role on a provider that is strict about exact fields (codex in the example
 mapping) and leaves `agy` the epic-level judgment. Pick it once GEMINI-REMOVAL
 closes; it is independent of that epic apart from TPM-6 not recreating
 `.gemini/`. If the default planner moves off `antigravity`, most of the reason
-for this epic goes away; re-check the Fit before starting it.
+for this epic goes away; re-check the Fit before starting it. Operator
+direction 2026-10-20: this epic is next, ahead of the rest of CHAT. The
+self-host planner runs on claude only until TPM-ROLE lands; the operator then
+moves it to agy with a codex tpm, so the reason above holds.
 
 The source project's dispatcher separates product and boundary judgment (its
 planner lane) from routine sequencing (a TPM lane that picks the next ready
