@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In `pr` mode, a base-branch merge that conflicts only in
+  `project_state_path` now goes to the planner instead of pausing
+  (`publish.resolve_project_state_conflicts: planner`, the default; `"off"`
+  keeps the pause). The planner gets one bounded prompt to keep both sides and
+  remove every marker in that file only. The dispatcher checks that the
+  planner finished, HEAD and the merge did not move, no other file (or the
+  handoff, or a protected control file) changed, and the file is non-empty
+  with no conflict markers; then it commits the merge, logs `Planner resolved
+  a PROJECT_STATE.md merge conflict`, and records the merge commit under
+  `### Merge conflict resolution` in the pull request body (or a pull request
+  comment when it happens at the retried `gh pr merge`). Any failed check, a
+  conflict in another file, or a second conflict in the same publish aborts
+  the merge and pauses as before, with the reason in the pause message.
 - An interrupted planner dispatch is now recoverable (RECOVERY-3b1). The
   dispatcher writes a `planner` record to `logs/dispatch/in-flight.json` right
   before each planner dispatch (not in a dry run or the Linear lease-rebuild
