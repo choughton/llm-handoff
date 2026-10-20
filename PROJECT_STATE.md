@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-10 in progress; RECOVERY-9 approved
+- **Active Epic:** RECOVERY (RECOVERY-11 in progress; RECOVERY-10 merged in
+  PR #179 (HEAD `1685281`); RECOVERY-9 approved
   at `1e41789`, merged in PR #178; RECOVERY-8 approved at
   `e9f084a`, merged in PR #177; RECOVERY-7 approved at
   `c39b42a`, merged in PR #176; RECOVERY-6 approved at
@@ -24,12 +25,15 @@ belong in commits, handoffs, and pull requests.
   sees hidden working-tree edits, from the RECOVERY-5 security review), then
   RECOVERY-11 (failed in-flight record deletes stop every recovery path, from
   the RECOVERY-6 audit), then RECOVERY-12 (interrupted merge-commit publish,
-  split from RECOVERY-8). Epic order: 9, 10, 11, 12.
-  RECOVERY-10 (merge-conflict resolver sees hidden working-tree edits) is
-  active because it is next in the epic's order (10, 11, 12), unblocked
-  (RECOVERY-2 through RECOVERY-9 are merged), and closes a gap in the
-  planner merge-conflict resolver, a step that commits on its own. The other
-  open epics' Fit lines are unchanged since RECOVERY-9 was picked.
+  split from RECOVERY-8), then RECOVERY-13 (merge-conflict resolver fails
+  closed on unreadable files, from the RECOVERY-10 security review). Epic
+  order: 11, 12, 13.
+  RECOVERY-11 (failed in-flight record deletes stop every recovery path) is
+  active because it is next in the epic's order (11, 12, 13), unblocked
+  (RECOVERY-2 through RECOVERY-10 are merged), and fixes a startup recovery
+  gap where a stale in-flight record can outlive the run that ignored its
+  failed delete. The other open epics' Fit lines are unchanged since
+  RECOVERY-10 was picked.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -710,9 +714,11 @@ at `c39b42a` and merged (PR #176). RECOVERY-8 (publish steps safe to repeat,
 `pr` mode) is approved at `e9f084a` and merged (PR #177). RECOVERY-9 (was
 RECOVERY-4, no-record fallback) is approved at `1e41789` and merged
 (PR #178). RECOVERY-10 (merge-conflict resolver sees hidden working-tree
-edits) is active because it is next in the epic's order (10, 11, 12),
-unblocked, and closes a gap in a step that commits on its own; RECOVERY-11
-and RECOVERY-12 (interrupted merge-commit publish, split from RECOVERY-8)
+edits) is merged (PR #179). RECOVERY-11 (failed in-flight record deletes stop
+every recovery path) is active because it is next in the epic's order (11,
+12, 13), unblocked, and fixes a stale-record gap in startup recovery;
+RECOVERY-12 (interrupted merge-commit publish, split from RECOVERY-8) and
+RECOVERY-13 (merge-conflict resolver fails closed on unreadable files)
 follow. The other open epics' Fit lines are unchanged.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
@@ -1027,6 +1033,13 @@ bounces until the three-fix circuit breaker escalates.
   base branch with `story.json` kept. A start should finish the remaining
   steps when the story branch is already merged into the base branch, and
   pause otherwise.
+- RECOVERY-13: Merge-conflict resolver fails closed on unreadable files.
+  From the RECOVERY-10 security review (low, below the block threshold):
+  `_worktree_snapshot`'s fingerprint (`llm_handoff/publish.py` ~line 1456)
+  records an empty digest when a file cannot be read, so a file unreadable
+  in both snapshots with unchanged status and type hides a content change.
+  A read failure makes the snapshot fail (None), so conflict resolution
+  pauses, with a regression.
 
 ### 13. CHAT - talk to the agents while the loop runs
 

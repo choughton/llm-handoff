@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A startup recovery path that cannot delete the in-flight record now stops
+  the run (RECOVERY-11). Before, most startup discards and deletes ignored a
+  failed delete and went on, so a stale record could outlive the run that
+  ignored it and be offered again at a later start. Now any startup discard
+  or delete that fails logs one `ERROR` line naming the record and the role
+  and story it was read for, keeps the record, and stops before any dispatch.
+  A confirmed implementer recovery saves its carry-over record only after the
+  in-flight record is deleted, so the stop leaves no carry-over list without
+  the protected baseline the in-flight record holds. A dry run is unchanged.
 - The planner merge-conflict resolver now catches a working-tree edit hidden
   behind an index flag (RECOVERY-10). Before, it compared only the paths
   `git status` listed, so a planner could mark a tracked file
