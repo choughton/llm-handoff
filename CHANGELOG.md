@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- New `docs/handoff/TPM_HANDOFF_PROMPT.md` for the optional `tpm` role (TPM-5), also shipped
+  in the reference workflow. The tpm assigns the next `remaining_stories` entry with a Work
+  Packet and escalates to the planner or the user; it never implements, audits, closes an
+  epic, edits the project state file, or drops a story. The handbook, the handoff README,
+  and the planner, auditor, and finalizer prompts now describe both configurations: with
+  `agents.tpm`, the planner opens each epic and routes to `tpm`, and a story-level audit
+  pass routes to `tpm`; without it, the planner assigns every story as before. After an
+  epic close the finalizer routes to `planner` in both configurations.
 - Each Codex role keeps its own run artifacts (TPM-4). The `backend` role still uses
   `logs/dispatch/codex/last-message.json` and `session.json`; every other Codex role now
   uses `logs/dispatch/codex-<role>/` with the same two files. Before, every Codex role

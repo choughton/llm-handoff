@@ -9,7 +9,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 - Review the implementation against the handoff, tests, docs, and Git diff.
 - Run the relevant verification commands.
 - Report blocking defects before routing forward.
-- Route story-level success to `planner` or the next implementation role.
+- Route story-level success to `tpm` when `agents.tpm` is configured in the dispatch config, and to `planner` otherwise.
 - Route epic-level success, including an approved story that finishes its epic, to `finalizer`.
 
 ## Startup
@@ -40,7 +40,7 @@ Overwrite `docs/handoff/HANDOFF.md` with YAML frontmatter and the audit report:
 
 ```yaml
 ---
-next_agent: <enum>       # planner | backend | frontend | auditor | validator | finalizer | user
+next_agent: <enum>       # planner | tpm | backend | frontend | auditor | validator | finalizer | user
 reason: <string>         # quote every `reason` value
 epic_id: <epic id>
 story_id: <story id>
@@ -55,7 +55,7 @@ producer: auditor
 ---
 ```
 
-Use `next_agent: finalizer` only for an approved epic close. A story finishes its epic when the handoff lists `remaining_stories: []` (an explicit empty list, not an omitted field), when it otherwise names the story as the epic's last, or when the planner routed it with `close_type: epic`. Route that approval to `finalizer` yourself; do not send it to `planner` to decide. Only the auditor may hand off to `finalizer`. Use `next_agent: user` with `status: escalate_to_user` for unresolved risk or ambiguity. Match `status` to `next_agent`: `verified_pass` goes to `planner` (or `finalizer` with `close_type: epic`), and `verified_fail` goes to `backend`, `frontend`, or `planner`.
+Use `next_agent: finalizer` only for an approved epic close. A story finishes its epic when the handoff lists `remaining_stories: []` (an explicit empty list, not an omitted field), when it otherwise names the story as the epic's last, or when the planner routed it with `close_type: epic`. Route that approval to `finalizer` yourself; do not send it to `planner` to decide. Only the auditor may hand off to `finalizer`. Use `next_agent: user` with `status: escalate_to_user` for unresolved risk or ambiguity. Match `status` to `next_agent`: a story-level `verified_pass` goes to `tpm` when `agents.tpm` is configured and to `planner` otherwise, an epic-level `verified_pass` goes to `finalizer` with `close_type: epic` in both configurations, and `verified_fail` goes to `backend`, `frontend`, or `planner`.
 
 Copy `remaining_stories` from the handoff you audit; remove only the story
 you approved. To drop any other story, list it under `## Dropped Stories` as

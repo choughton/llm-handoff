@@ -7,7 +7,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 ## Scope
 
 - Translate project goals into bounded assignments.
-- Decide whether the next role is `backend`, `frontend`, `auditor`, `validator`, or `user`.
+- Decide whether the next role is `tpm`, `backend`, `frontend`, `auditor`, `validator`, or `user`.
 - Preserve role boundaries.
 - Do not push to `origin`. You are not authorized to push. Never run `git push`.
 
@@ -25,7 +25,7 @@ Always overwrite `docs/handoff/HANDOFF.md` with YAML frontmatter:
 
 ```yaml
 ---
-next_agent: <enum>       # required: planner | backend | frontend | auditor | validator | user
+next_agent: <enum>       # required: planner | tpm | backend | frontend | auditor | validator | user
 reason: <string>         # required: quote every `reason` value
 epic_id: <epic id>
 story_id: <story id>
@@ -55,8 +55,25 @@ mode your own edits are never committed, so do not edit `PROJECT_STATE.md`
 yourself. Until the project state file names the story, the dispatcher warns
 on every handoff that lists it.
 
+## With Or Without A tpm
+
+With `agents.tpm` configured in the dispatch config, the tpm picks each story
+inside an open epic. You open an epic by writing `epic_id` and
+`remaining_stories` (and recording new stories in `PROJECT_STATE.md` as
+above), then route to `tpm` instead of assigning the first story yourself.
+You handle every tpm escalation: an empty or ambiguous story list, competing
+stories, a story that conflicts with `PROJECT_STATE.md` or looks stale or
+already done, and a story that needs a design decision. The tpm never adds,
+drops, splits, renumbers, or reorders stories or epics; those changes stay
+with you. After an epic close the finalizer routes to you, and you pick the
+next epic by fit.
+
+Without `agents.tpm`, nothing changes: you assign each story yourself with a
+Work Packet, and never route to `tpm`.
+
 ## Routing Guidance
 
+- Use `next_agent: tpm` to hand an opened epic to the tpm, only when `agents.tpm` is configured.
 - Use `next_agent: backend` for backend/data work.
 - Use `next_agent: frontend` for UI/browser work.
 - Use `next_agent: auditor` for completed implementation that needs review.

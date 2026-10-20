@@ -17,6 +17,7 @@ INSTRUCTION_DOCS = [
     "PLANNER_INITIAL_PROMPT.md",
     "README.md",
     "SHARED_REPO_INIT_PROMPT.md",
+    "TPM_HANDOFF_PROMPT.md",
 ]
 AGENT_INSTRUCTION_DOCS = [
     ".claude/agents/backend.md",
@@ -34,6 +35,7 @@ PLANNER_INSTRUCTION_DOCS = [
     ".codex/skills/llm-handoff-planner/SKILL.md",
     "docs/handoff/PLANNER_INITIAL_PROMPT.md",
     "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
+    "docs/handoff/TPM_HANDOFF_PROMPT.md",
 ]
 FRONTEND_INSTRUCTION_DOCS = [
     ".claude/agents/frontend.md",
@@ -47,6 +49,7 @@ ROLE_PROMPTS = [
     "FRONTEND_HANDOFF_PROMPT.md",
     "PLANNER_HANDOFF_PROMPT.md",
     "PLANNER_INITIAL_PROMPT.md",
+    "TPM_HANDOFF_PROMPT.md",
 ]
 CANONICAL_STATUSES = {
     "ready_for_review",
@@ -175,7 +178,11 @@ def test_auditor_agent_matches_phase_ordering() -> None:
 
 @pytest.mark.parametrize(
     "doc_name",
-    ["PLANNER_HANDOFF_PROMPT.md", "PLANNER_INITIAL_PROMPT.md"],
+    [
+        "PLANNER_HANDOFF_PROMPT.md",
+        "PLANNER_INITIAL_PROMPT.md",
+        "TPM_HANDOFF_PROMPT.md",
+    ],
 )
 def test_planner_prompt_work_packet_fields(doc_name: str) -> None:
     content = (HANDOFF_DIR / doc_name).read_text(encoding="utf-8")
@@ -192,7 +199,11 @@ def test_planner_prompt_work_packet_fields(doc_name: str) -> None:
 
 @pytest.mark.parametrize(
     "doc_name",
-    ["PLANNER_HANDOFF_PROMPT.md", "PLANNER_INITIAL_PROMPT.md"],
+    [
+        "PLANNER_HANDOFF_PROMPT.md",
+        "PLANNER_INITIAL_PROMPT.md",
+        "TPM_HANDOFF_PROMPT.md",
+    ],
 )
 def test_planner_prompt_ban_list(doc_name: str) -> None:
     content = (HANDOFF_DIR / doc_name).read_text(encoding="utf-8")
@@ -204,6 +215,18 @@ def test_planner_prompt_ban_list(doc_name: str) -> None:
         "as needed",
     ):
         assert phrase in content
+
+
+def test_tpm_prompt_offers_no_finalizer_or_validator_route() -> None:
+    content = (HANDOFF_DIR / "TPM_HANDOFF_PROMPT.md").read_text(encoding="utf-8")
+    enum_lines = [
+        line for line in content.splitlines() if line.startswith("next_agent: <enum>")
+    ]
+
+    assert len(enum_lines) == 1
+    assert "finalizer" not in enum_lines[0]
+    assert "validator" not in enum_lines[0]
+    assert "producer: tpm" in content
 
 
 def test_backend_frontend_pushback_section_consistent() -> None:

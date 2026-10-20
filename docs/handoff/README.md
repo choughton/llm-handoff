@@ -13,10 +13,18 @@ The handoff file is the mutex and the debugger: every transition is visible as t
 | `SHARED_REPO_INIT_PROMPT.md` | all agents | Common bootstrap instructions for fresh sessions |
 | `PLANNER_INITIAL_PROMPT.md` | planner | First planner session prompt |
 | `PLANNER_HANDOFF_PROMPT.md` | planner | Ongoing planner dispatch prompt |
+| `TPM_HANDOFF_PROMPT.md` | tpm | Optional story picker prompt; used only when `agents.tpm` is configured |
 | `BACKEND_HANDOFF_PROMPT.md` | backend | Backend implementation prompt; Codex is one adapter example |
 | `FRONTEND_HANDOFF_PROMPT.md` | frontend | Frontend implementation prompt; Antigravity is one adapter example |
 | `AUDITOR_HANDOFF_PROMPT.md` | auditor | Audit prompt; Claude is one adapter example |
 | `FINALIZER_HANDOFF_PROMPT.md` | finalizer | Project-state and handoff-close prompt |
+
+The `tpm` role is optional. With `agents.tpm` configured, the planner opens
+each epic and routes to `tpm`, the tpm assigns each story with a Work Packet,
+a story-level audit pass routes back to `tpm`, and the finalizer still routes
+to `planner` after an epic close so the planner picks the next epic. Without
+`agents.tpm`, the planner assigns every story and every story-level audit
+pass routes to `planner`.
 
 ## Required Frontmatter
 
@@ -24,7 +32,7 @@ Every `HANDOFF.md` write must begin with YAML frontmatter. The dispatcher treats
 
 ```yaml
 ---
-next_agent: <enum>       # required: planner | backend | frontend | auditor | validator | finalizer | user
+next_agent: <enum>       # required: planner | tpm | backend | frontend | auditor | validator | finalizer | user
 reason: <string>         # required: quote every `reason` value
 epic_id: <string>        # optional active epic identifier
 story_id: <string>       # optional active story identifier
@@ -37,7 +45,7 @@ evidence_present: true   # optional validator hint for evidence-aware handoffs
 scope_sha: <git SHA>     # required when close_type is story or epic
 close_type: <enum>       # optional: story | epic
 prior_sha: <git SHA>     # optional prior verified SHA
-producer: <string>       # required: planner | backend | frontend | auditor | validator | finalizer | user
+producer: <string>       # required: planner | tpm | backend | frontend | auditor | validator | finalizer | user
 ---
 ```
 
@@ -52,12 +60,13 @@ audit outcome, or blocking state.
 | `verified_pass` | Auditor verified the assignment and quality gates. | auditor |
 | `verified_fail` | Auditor found a defect and routes back to implementation. | auditor |
 | `blocked_missing_context` | The role cannot proceed without more information. | any role |
-| `blocked_implementation_failure` | Implementation was attempted but structurally failed. | backend, frontend |
+| `blocked_implementation_failure` | Implementation was attempted but structurally failed, or the next story needs re-scoping. | backend, frontend, tpm |
 | `escalate_to_user` | Human decision is required. | any role |
 
 Each status implies a route, and `next_agent` must name the same one:
-`ready_for_review` goes to `auditor`; `verified_pass` goes to `planner`, or to
-`finalizer` with `close_type: epic`; `verified_fail` goes to `backend`,
+`ready_for_review` goes to `auditor`; `verified_pass` goes to `planner` (or
+to `tpm` when `agents.tpm` is configured), or to `finalizer` with
+`close_type: epic`; `verified_fail` goes to `backend`,
 `frontend`, or `planner`; `blocked_implementation_failure` goes to `planner`;
 `blocked_missing_context` and `escalate_to_user` go to `user`. When they disagree, the router and the post-dispatch validator reject
 the frontmatter. A handoff whose `next_agent` is not `user` is sent to the
@@ -94,7 +103,7 @@ assumptions, and stale command output do not satisfy the contract.
 
 ## Work Packet
 
-Planner handoffs to `backend` or `frontend` must include a `## Work Packet`
+Planner and tpm handoffs to `backend` or `frontend` must include a `## Work Packet`
 block with these six fields:
 
 ```markdown
@@ -113,10 +122,10 @@ the same path under both fields; the validator rejects that packet as
 `work_packet_unparseable`. To limit edits within a file, keep it in `Files in
 scope` and state the limit in the Objective.
 
-The validator enforces this contract on every planner handoff that is not
-routed to `user`:
+The validator enforces this contract on every planner or tpm handoff that is
+not routed to `user`:
 
-- a planner handoff with no `## Work Packet` section fails with
+- a planner or tpm handoff with no `## Work Packet` section fails with
   `scope_claim_mismatch`;
 - a missing or empty Work Packet field is reported as
   `acceptance_coverage_unclear`;
