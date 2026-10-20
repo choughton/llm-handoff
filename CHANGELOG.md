@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Security: the `PROJECT_STATE.md` merge-conflict resolver now compares every
+  index entry (mode, blob ID, stage, from `git ls-files --stage`) before and
+  after the planner runs, and checks the staged result again before
+  committing, so a staged blob or mode swapped on another file and hidden
+  with `assume-unchanged` or `skip-worktree` aborts the merge instead of
+  landing in the merge commit. A handoff the planner changed is now put back
+  byte for byte through the link-refusing handoff writer; when the handoff or
+  a directory above it is a symlink or junction, nothing is written and one
+  warning names the handoff, where before the restore wrote through the link
+  to a file outside the repository.
 - An interrupted finalizer dispatch is now recoverable (RECOVERY-3b2). The
   dispatcher writes a `finalizer` record to `logs/dispatch/in-flight.json`
   right before the epic-close ledger update (not in a dry run), with the same

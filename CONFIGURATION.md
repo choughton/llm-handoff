@@ -998,16 +998,24 @@ remove every conflict marker, edit only that file, and do not stage or
 commit. The dispatcher then checks the result itself:
 
 - the planner exited with code 0 and left the handoff and every protected
-  control file unchanged (a changed handoff is put back);
+  control file unchanged (a changed handoff is put back byte for byte, but
+  only when no symlink or junction is in its path; otherwise nothing is
+  written and a warning names the handoff);
 - HEAD did not move and the merge is still in progress;
 - no file other than `project_state_path` changed, by `git status` entry and
   content, compared with the state right after the merge stopped;
+- no index entry other than those of `project_state_path` changed: every
+  entry's mode, blob ID, and stage from `git ls-files --stage` is compared,
+  so a staged change hidden by `assume-unchanged` or `skip-worktree` is
+  caught;
 - the file exists, is not empty, and has no conflict marker line: a line
   that starts with a run of `<`, `|`, or `>` at least the marker size long,
   or a line of exactly that many `=`. The marker size is 7 unless the file's
   `conflict-marker-size` attribute in `.gitattributes` sets another.
 
-When every check passes, the dispatcher stages the file and commits the merge
+When every check passes, the dispatcher stages the file, checks that the
+index differs from the one right after the merge stopped only in that file
+(now one regular-file entry at stage 0), and commits the merge
 (`git commit --no-edit`), so the merge commit holds only the conflict
 resolution, logs `Planner resolved a PROJECT_STATE.md merge conflict` with the
 merge commit, and continues publishing. The pull request records it for

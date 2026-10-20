@@ -2356,14 +2356,20 @@ def _state_conflict_resolver(
     if path == config.handoff_path.as_posix():
         return None
 
+    # The literal path under the resolved root: config.handoff_full_path
+    # resolves links, so a planted link would be read and written through.
+    handoff = _handoff_restore_destination(config)
+    handoff_display = config.handoff_path.as_posix()
+
     def handoff_bytes() -> bytes | None:
         try:
-            return config.handoff_full_path.read_bytes()
+            return handoff.read_bytes()
         except OSError:
             return None
 
     def run(prompt: str) -> bool:
         handoff_before = handoff_bytes()
+        linked_before = _carry_over_path_traverses_link(handoff)
         protected_before = _capture_protected_snapshot(config)
         _log(log, "DISPATCH", f"Dispatching planner to resolve a {path} merge conflict.")
         result = _invoke_support_callable(
@@ -2378,16 +2384,50 @@ def _state_conflict_resolver(
         )
         _log(log, "AGENT", f"Planner (merge conflict) exited with code {result.exit_code}")
         succeeded = result.exit_code == 0
-        if handoff_bytes() != handoff_before:
-            _log(
-                log,
-                "WARN",
-                f"The planner changed {config.handoff_path.as_posix()} while "
-                "resolving the merge conflict; restored it.",
-            )
-            if handoff_before is not None:
-                config.handoff_full_path.write_bytes(handoff_before)
+        linked = _carry_over_path_traverses_link(handoff)
+        if handoff_bytes() != handoff_before or linked != linked_before:
             succeeded = False
+            if linked:
+                # Nothing is written through a planted symlink or junction.
+                _log(
+                    log,
+                    "WARN",
+                    f"The planner changed {handoff_display} while resolving the "
+                    "merge conflict, and it was not restored because a symlink "
+                    "or junction is in the way of that path.",
+                )
+            elif handoff_before is None:
+                _log(
+                    log,
+                    "WARN",
+                    f"The planner changed {handoff_display} while resolving the "
+                    "merge conflict.",
+                )
+            else:
+                try:
+                    _restore_handoff_text(config, handoff_before)
+                except _CarryOverLinkError:
+                    _log(
+                        log,
+                        "WARN",
+                        f"The planner changed {handoff_display} while resolving "
+                        "the merge conflict, and it was not restored because a "
+                        "symlink or junction is in the way of that path.",
+                    )
+                except OSError as exc:
+                    _log(
+                        log,
+                        "WARN",
+                        f"The planner changed {handoff_display} while resolving "
+                        f"the merge conflict, and restoring it failed: {exc}.",
+                    )
+                else:
+                    _log(
+                        log,
+                        "WARN",
+                        f"The planner changed {handoff_display} while resolving "
+                        "the merge conflict; restored it.",
+                    )
         if protected_before is not None:
             changed = _protected_file_changes(config, protected_before)
             if changed:
@@ -4868,9 +4908,15 @@ def _write_carry_over_record(repo_root: Path, leftovers: ImplementerLeftovers) -
     _write_carry_over_payload(repo_root, _carry_over_record_payload(leftovers))
 
 
+def _carry_over_payload_bytes(payload: str | bytes) -> bytes:
+    """Text is written as UTF-8 with no newline translation; bytes as is."""
+
+    return payload if isinstance(payload, bytes) else payload.encode("utf-8")
+
+
 def _write_carry_over_payload(
     repo_root: Path,
-    payload: str,
+    payload: str | bytes,
     name: str = CARRY_OVER_STATE_PATH.name,
     *,
     parts: tuple[str, ...] | None = None,
@@ -4881,7 +4927,8 @@ def _write_carry_over_payload(
 
     ``parts`` writes into another directory under the repository root
     instead, walked the same way; ``mode`` is the new file's permission bits
-    where directory descriptors are used.
+    where directory descriptors are used. A ``bytes`` payload is written
+    byte for byte.
     """
 
     pin_options: dict[str, object] = {} if parts is None else {"parts": parts}
@@ -5242,7 +5289,7 @@ def _read_carry_over_file_checked(
 
 def _write_carry_over_record_with_dir_fd(
     repo_root: Path,
-    payload: str,
+    payload: str | bytes,
     name: str = CARRY_OVER_STATE_PATH.name,
     *,
     parts: tuple[str, ...] | None = None,
@@ -5270,8 +5317,8 @@ def _write_carry_over_record_with_dir_fd(
             dir_fd=directory_fd,
         )
         try:
-            with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(payload)
+            with os.fdopen(file_fd, "wb") as handle:
+                handle.write(_carry_over_payload_bytes(payload))
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(
@@ -5300,7 +5347,7 @@ def _carry_over_handle_is_at(path: Path, file_fd: int) -> bool:
 
 
 def _write_carry_over_record_checked(
-    state_path: Path, payload: str, directory_handle: int | None = None
+    state_path: Path, payload: str | bytes, directory_handle: int | None = None
 ) -> None:
     """Write the record inside the pinned carry-over directory.
 
@@ -5334,14 +5381,14 @@ def _write_carry_over_record_checked(
     )
     temporary_path = Path(temporary_name)
     try:
-        with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
+        with os.fdopen(file_fd, "wb") as handle:
             if not _carry_over_handle_is_at(temporary_path, handle.fileno()):
                 raise _CarryOverLinkError(
                     errno.ELOOP,
                     "carry-over temporary file passes through a link",
                     str(temporary_path),
                 )
-            handle.write(payload)
+            handle.write(_carry_over_payload_bytes(payload))
             handle.flush()
             os.fsync(handle.fileno())
         if _carry_over_path_traverses_link(
@@ -5359,7 +5406,7 @@ def _write_carry_over_record_checked(
 
 
 def _write_carry_over_record_by_handle(
-    state_path: Path, payload: str, directory_handle: int
+    state_path: Path, payload: str | bytes, directory_handle: int
 ) -> None:
     """The Windows half of ``_write_carry_over_record_checked``.
 
@@ -5411,7 +5458,7 @@ def _write_carry_over_record_by_handle(
                 "carry-over temporary file passes through a link",
                 str(temporary_path),
             )
-        data = payload.encode("utf-8")
+        data = _carry_over_payload_bytes(payload)
         written = 0
         while written < len(data):
             written += os.write(file_fd, data[written:])
@@ -5728,7 +5775,7 @@ def _handoff_restore_destination(config: DispatchConfig) -> Path:
     return config.repo_root.resolve().joinpath(*parts, name)
 
 
-def _restore_handoff_text(config: DispatchConfig, content: str) -> None:
+def _restore_handoff_text(config: DispatchConfig, content: str | bytes) -> None:
     """Write ``content`` to the handoff without following a link at any step.
 
     Uses the carry-over writer walked over the handoff's own directories:
@@ -5737,7 +5784,8 @@ def _restore_handoff_text(config: DispatchConfig, content: str) -> None:
     temporary file is created exclusively in the handoff's directory, and it
     replaces the handoff by a rename relative to that directory. A link
     anywhere on the path raises ``_CarryOverLinkError`` and nothing outside
-    the repository is written. Text is written as UTF-8 with LF line endings.
+    the repository is written. Text is written as UTF-8 with no newline
+    translation; ``bytes`` content is written byte for byte.
     """
 
     parts, name = _handoff_restore_parts(config)

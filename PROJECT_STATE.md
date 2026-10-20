@@ -870,7 +870,10 @@ bounces until the three-fix circuit breaker escalates.
   is restored only after HARD-5 confirmation, and with a ledger commit
   the planner runs with the stale-finalizer instruction
   (`interrupted_finalizer_recovery`), without one the finalizer runs
-  again, both against the recovery's protected-file baseline.
+  again, both against the recovery's protected-file baseline. The story
+  branch also fixes the two high PR #173 security findings (the
+  merge-conflict resolver did not compare index entries, and its handoff
+  restore followed links) because its audit range includes that code.
 - RECOVERY-6 (was RECOVERY-3c): Interrupted audit fan-out: restore the
   handoff and re-run the read-only reviewers.
 - RECOVERY-7 (was RECOVERY-3d): Interrupted work-claim gate and scanners:
