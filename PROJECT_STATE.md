@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-13 in progress; RECOVERY-12 merged in
+- **Active Epic:** None selected; RECOVERY closed (RECOVERY-13 approved at
+  `ab2f9d3`, merged in PR #182 (HEAD `1722ea6`); RECOVERY-12 merged in
   PR #181 (HEAD `2e5279b`); RECOVERY-11 merged in
   PR #180 (HEAD `d227641`); RECOVERY-10 merged in
   PR #179 (HEAD `1685281`); RECOVERY-9 approved
@@ -32,10 +33,9 @@ belong in commits, handoffs, and pull requests.
   order: 12, 13.
   RECOVERY-12 (interrupted merge-commit publish) is merged in PR #181 (HEAD
   `2e5279b`). RECOVERY-13 (merge-conflict resolver fails closed on
-  unreadable files) is active because it is the last RECOVERY story and
-  unblocked (RECOVERY-2 through RECOVERY-12 are merged); RECOVERY closes
-  after it. The other open epics' Fit lines are unchanged since RECOVERY-10
-  was picked.
+  unreadable files) is merged in PR #182 (HEAD `1722ea6`, audited at
+  `ab2f9d3`); it was the last RECOVERY story, so RECOVERY is closed. The
+  planner picks the next epic by fit from the open epics below.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -720,8 +720,8 @@ edits) is merged (PR #179). RECOVERY-11 (failed in-flight record deletes stop
 every recovery path) is merged (PR #180). RECOVERY-12 (interrupted
 merge-commit publish, split from RECOVERY-8) is merged (PR #181).
 RECOVERY-13 (merge-conflict resolver fails closed on unreadable files) is
-active because it is the last RECOVERY story and unblocked; the epic closes
-after it. The other open epics' Fit lines are unchanged.
+approved at `ab2f9d3` and merged (PR #182, HEAD `1722ea6`); the RECOVERY epic
+is closed. The other open epics' Fit lines are unchanged.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
