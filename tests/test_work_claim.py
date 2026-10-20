@@ -6282,6 +6282,63 @@ def test_a_restart_that_routes_straight_to_the_auditor_audits_the_whole_story(
     assert audit_bases == [base if mode == "pr" else None]
 
 
+def test_audit_range_starts_at_the_merge_base_after_a_base_branch_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reset_story_bounce: None,
+) -> None:
+    from llm_handoff.publish import STATE_PATH, PublishOutcome
+
+    base = _init_repo(tmp_path)
+
+    def backend_work(attempt: int) -> None:
+        _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+
+    config, backend_heads, audit_bases = _audit_range_harness(
+        tmp_path, monkeypatch, backend_work=backend_work, publish={"mode": "pr"}
+    )
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(
+        orchestrator, "publish_story", lambda **_kwargs: PublishOutcome()
+    )
+
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log([]))
+    claim = config.handoff_full_path.read_text(encoding="utf-8")
+    story_head = _git(tmp_path, "rev-parse", "HEAD")
+    assert f"scope_sha: {story_head}" in claim
+
+    # The base branch moves on upstream, and the story branch merges it before
+    # the audit, as publishing does before it pushes.
+    state = json.loads((tmp_path / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["base_sha"] == base
+    _git(tmp_path, "switch", "-q", state["base_branch"])
+    _write(tmp_path / "docs" / "upstream.md", "upstream\n")
+    upstream = _commit_paths(tmp_path, "Upstream change", "docs/upstream.md")
+    _git(tmp_path, "update-ref", f"refs/remotes/origin/{state['base_branch']}", upstream)
+    _git(tmp_path, "switch", "-q", state["branch"])
+    _git(tmp_path, "merge", "-q", "--no-edit", upstream)
+    merged_head = _git(tmp_path, "rev-parse", "HEAD")
+    config.handoff_full_path.write_text(
+        claim.replace(story_head, merged_head), encoding="utf-8"
+    )
+
+    messages: list[tuple[str, str]] = []
+    orchestrator.run_loop(config, max_cycles=1, log=_collecting_log(messages))
+
+    assert backend_heads == [base]
+    assert audit_bases == [upstream]
+    assert upstream == _git(
+        tmp_path, "merge-base", "HEAD", f"refs/remotes/origin/{state['base_branch']}"
+    )
+    assert any(
+        level == "INFO"
+        and "merged its base branch" in message
+        and base[:7] in message
+        and upstream[:7] in message
+        for level, message in messages
+    ), messages
+
+
 def test_audit_range_restarts_after_the_story_is_approved(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

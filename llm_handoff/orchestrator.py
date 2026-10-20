@@ -91,6 +91,7 @@ from llm_handoff.publish import (
     ensure_story_branch,
     keep_review_responses,
     leave_merged_story_branch,
+    merge_aware_review_base,
     StateConflictResolver,
     publish_story,
     recover_orphaned_story,
@@ -1849,7 +1850,13 @@ def _run_loop(
                     audit_context=AuditFanOutContext(
                         cycle_number=cycle_number,
                         handoff_content=handoff_content,
-                        implementer_base_sha=implementer_base_sha,
+                        implementer_base_sha=_audit_fan_out_base(
+                            config,
+                            current_cycle.route,
+                            handoff_content,
+                            implementer_base_sha,
+                            log_fn,
+                        ),
                         operator_influence=(
                             active_operator_influence
                             if current_cycle.route == "auditor"
@@ -3992,6 +3999,49 @@ def _story_start_sha(
         return head
     saved = saved_story_base(config.repo_root, _handoff_story_id(handoff_content))
     return saved or head
+
+
+def _audit_fan_out_base(
+    config: DispatchConfig,
+    route: str,
+    handoff_content: str,
+    implementer_base_sha: str | None,
+    log_fn: LogFn,
+) -> str | None:
+    """Return the base the audit fan-out reviews from.
+
+    When the story branch merged its base branch after the saved story base,
+    ``implementer_base_sha..scope_sha`` also lists the upstream files the
+    merge brought in. Outside ``local`` publish mode the auditor's review then
+    starts at the merge-base with the remote base branch. Every other case
+    returns ``implementer_base_sha`` unchanged.
+    """
+
+    if (
+        route != "auditor"
+        or config.publish.mode == "local"
+        or implementer_base_sha is None
+    ):
+        return implementer_base_sha
+    frontmatter = _parse_frontmatter_or_none(handoff_content)
+    scope_sha = frontmatter.scope_sha if frontmatter is not None else None
+    head = scope_sha.strip() if isinstance(scope_sha, str) and scope_sha.strip() else "HEAD"
+    review_base = merge_aware_review_base(
+        config.repo_root,
+        remote=config.publish.remote,
+        story_id=_handoff_story_id(handoff_content),
+        base_sha=implementer_base_sha,
+        head=head,
+    )
+    if review_base != implementer_base_sha:
+        _log(
+            log_fn,
+            "INFO",
+            "The story branch merged its base branch since the story base "
+            f"{implementer_base_sha[:7]}, so the audit review starts at "
+            f"{review_base[:7]}, the merge-base with the remote base branch.",
+        )
+    return review_base
 
 
 def _claude_protected_scope_pause_reason(

@@ -29,6 +29,7 @@ from llm_handoff.publish import (
     ensure_story_branch,
     keep_review_responses,
     leave_merged_story_branch,
+    merge_aware_review_base,
     publish_story,
     recover_orphaned_story,
     resume_paused_publish,
@@ -486,6 +487,114 @@ def test_saved_story_base_needs_the_same_story_on_its_branch(tmp_path: Path) -> 
     assert saved_story_base(tmp_path, None) is None
     _git(tmp_path, "switch", "-q", "main")
     assert saved_story_base(tmp_path, "W9.9") is None
+
+
+def _advance_remote_main(repo: Path) -> str:
+    """Commit an upstream file on main and point origin/main at it.
+
+    Returns the upstream commit; the story branch is checked out again.
+    """
+
+    _git(repo, "switch", "-q", "main")
+    _commit_all(repo, {"upstream.txt": "upstream\n"}, "Upstream change")
+    upstream = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", upstream)
+    _git(repo, "switch", "-q", BRANCH)
+    return upstream
+
+
+def _review_base(repo: Path, base: str, *, story_id: str = "W9.9", head: str = "HEAD") -> str:
+    return merge_aware_review_base(
+        repo, remote="origin", story_id=story_id, base_sha=base, head=head
+    )
+
+
+def test_merge_aware_review_base_skips_files_a_base_branch_merge_brought_in(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _start_story(tmp_path)
+    _advance_remote_main(tmp_path)
+    _git(tmp_path, "merge", "-q", "--no-edit", "refs/remotes/origin/main")
+
+    result = _review_base(tmp_path, base)
+
+    assert result == _git(tmp_path, "merge-base", "HEAD", "refs/remotes/origin/main")
+    assert result != base
+    changed = _git(tmp_path, "diff", "--name-only", result, "HEAD").splitlines()
+    assert "src/widget.py" in changed
+    assert "upstream.txt" not in changed
+    # The saved base range is what the fix avoids.
+    assert "upstream.txt" in _git(tmp_path, "diff", "--name-only", base, "HEAD")
+
+
+def test_merge_aware_review_base_keeps_the_saved_base_without_a_merge(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _start_story(tmp_path)
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", base)
+
+    assert _review_base(tmp_path, base) == base
+
+    # The remote base branch moved on, but the story branch did not merge it.
+    _advance_remote_main(tmp_path)
+    assert _review_base(tmp_path, base) == base
+
+
+def test_merge_aware_review_base_keeps_the_saved_base_without_a_tracking_ref(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _start_story(tmp_path)
+    _advance_remote_main(tmp_path)
+    _git(tmp_path, "merge", "-q", "--no-edit", "main")
+    _git(tmp_path, "update-ref", "-d", "refs/remotes/origin/main")
+
+    assert _review_base(tmp_path, base) == base
+
+
+def test_merge_aware_review_base_needs_the_same_story_on_its_branch(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _start_story(tmp_path)
+    _advance_remote_main(tmp_path)
+    _git(tmp_path, "merge", "-q", "--no-edit", "refs/remotes/origin/main")
+    story_head = _git(tmp_path, "rev-parse", "HEAD")
+
+    assert _review_base(tmp_path, base, story_id="W1.1") == base
+    assert _review_base(tmp_path, base, story_id="  ") == base
+    _git(tmp_path, "switch", "-q", "main")
+    assert _review_base(tmp_path, base, head=story_head) == base
+
+
+def test_merge_aware_review_base_needs_a_merge_base_after_the_saved_base(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    _start_story(tmp_path)
+    story_commit = _git(tmp_path, "rev-parse", "HEAD")
+    _advance_remote_main(tmp_path)
+    _git(tmp_path, "merge", "-q", "--no-edit", "refs/remotes/origin/main")
+
+    # The merge-base (the upstream commit) does not descend from this base.
+    assert _review_base(tmp_path, story_commit) == story_commit
+
+
+def test_merge_aware_review_base_never_returns_an_empty_range(tmp_path: Path) -> None:
+    _init(tmp_path)
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _start_story(tmp_path)
+    upstream = _advance_remote_main(tmp_path)
+
+    # A head on the remote base branch is its own merge-base with it.
+    assert _review_base(tmp_path, base, head=upstream) == base
+    assert _review_base(tmp_path, base, head="no-such-revision") == base
 
 
 def test_merge_commit_mode_merges_with_a_story_report(tmp_path: Path) -> None:

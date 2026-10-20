@@ -606,6 +606,68 @@ def saved_story_base(repo_root: Path, story_id: str | None) -> str | None:
     return state.base_sha
 
 
+def merge_aware_review_base(
+    repo_root: Path,
+    *,
+    remote: str,
+    story_id: str | None,
+    base_sha: str,
+    head: str,
+) -> str:
+    """Return where the audit review range should start for this story.
+
+    When the story branch merged its base branch after the saved story base,
+    a ``base_sha..head`` diff also lists the upstream files the merge brought
+    in. The merge-base of ``head`` and the remote base branch excludes them,
+    so this returns that merge-base when it descends from ``base_sha`` and
+    still leaves a non-empty range. Every other case, including any git
+    failure, returns ``base_sha`` unchanged. Never raises.
+    """
+
+    try:
+        if not story_id or not story_id.strip():
+            return base_sha
+        state = _load_state(repo_root)
+        if state is None or state.story_id != story_id.strip():
+            return base_sha
+        if _current_branch(repo_root) != state.branch:
+            return base_sha
+        upstream = f"refs/remotes/{remote}/{state.base_branch}"
+        if _git(repo_root, ["rev-parse", "--verify", "--quiet", upstream]).returncode != 0:
+            return base_sha
+        resolved_base = _resolve_commit(repo_root, base_sha)
+        resolved_head = _resolve_commit(repo_root, head)
+        if resolved_base is None or resolved_head is None:
+            return base_sha
+        merge_base_result = _git(repo_root, ["merge-base", resolved_head, upstream])
+        if merge_base_result.returncode != 0:
+            return base_sha
+        merge_base = merge_base_result.stdout.strip()
+        if not merge_base or merge_base == resolved_base:
+            return base_sha
+        is_ancestor = _git(
+            repo_root, ["merge-base", "--is-ancestor", resolved_base, merge_base]
+        )
+        if is_ancestor.returncode != 0:
+            return base_sha
+        if merge_base == resolved_head:
+            return base_sha
+        return merge_base
+    except Exception:  # noqa: BLE001 - the audit range must never fail here
+        return base_sha
+
+
+def _resolve_commit(repo_root: Path, rev: str) -> str | None:
+    """Return the full commit SHA ``rev`` names, or None when it does not resolve."""
+
+    if not rev or not rev.strip():
+        return None
+    result = _git(repo_root, ["rev-parse", "--verify", "--quiet", f"{rev.strip()}^{{commit}}"])
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
 def _refresh_work_packet(repo_root: Path, branch: str, assignment_content: str) -> None:
     """Keep the saved Work Packet in step with the latest assignment.
 
