@@ -37,6 +37,11 @@ from llm_handoff.audit_review import (
     security_reviewer_startup_error,
 )
 from llm_handoff import chat_session, console_interrupt
+from llm_handoff.chat_queue import (
+    chat_queue_path,
+    clear_chat_messages,
+    load_chat_messages,
+)
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
     CARRY_OVER_STATE_PATH,
@@ -613,6 +618,10 @@ def _run_loop(
     # operator removes it.
     if not _wait_for_git_index_lock_removal(config, log_fn, stop_watch):
         return 0
+    # Saved chat messages hold the loop before any publish resume pushes or
+    # merges.
+    if not _hold_for_chat_messages(config, log_fn, operator_prompt, stop_watch):
+        return 0
 
     # A publish the previous run left interrupted finishes, once the operator
     # confirms it at a terminal, instead of the planner running on the story's
@@ -759,6 +768,8 @@ def _run_loop(
             stop_watch.finish(
                 log_fn, dropped_recovery=pending_planner_recovery
             )
+            return 0
+        if not _hold_for_chat_messages(config, log_fn, operator_prompt, stop_watch):
             return 0
         cycle_number += 1
         _log(log_fn, "INFO", f"--- Cycle {cycle_number} ---")
@@ -2438,6 +2449,10 @@ def _run_loop(
                     config.publish.mode != "local"
                     and current_cycle.route == "auditor"
                 ):
+                    if not _hold_for_chat_messages(
+                        config, log_fn, operator_prompt, stop_watch
+                    ):
+                        return 0
                     outcome = publish_story(
                         repo_root=config.repo_root,
                         mode=config.publish.mode,
@@ -2465,6 +2480,10 @@ def _run_loop(
                 if config.publish.mode == "pr" and current_cycle.route == "planner":
                     # The planner may have just decided deferred review
                     # findings that are holding a pull request open.
+                    if not _hold_for_chat_messages(
+                        config, log_fn, operator_prompt, stop_watch
+                    ):
+                        return 0
                     outcome = settle_deferred_findings(
                         repo_root=config.repo_root,
                         remote=config.publish.remote,
@@ -9075,6 +9094,88 @@ def _wait_for_git_index_lock_removal(
         if not os.path.lexists(lock_path):
             _log(log, "PAUSE", "Git index lock removed. Resuming startup.")
             return True
+
+
+def _hold_for_chat_messages(
+    config: DispatchConfig,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
+    stop_watch: _StopRequestWatch,
+) -> bool:
+    """Hold at a safe point while saved chat messages wait; False when the run stops.
+
+    The loop resumes only when the operator presses Enter, which clears the
+    saved queue. EOF on the operator stream or a stop request ends the run and
+    keeps the queue for the next start.
+    """
+
+    queue_path = chat_queue_path(config.repo_root)
+    messages = load_chat_messages(queue_path)
+    if not messages:
+        return True
+    count = len(messages)
+    shown = _escape_control_characters(str(queue_path))
+    if config.dry_run:
+        _log(
+            log,
+            "WARN",
+            f"A real run would hold here for {count} saved chat message(s) "
+            f"in {shown}.",
+        )
+        return True
+    if not (
+        config.interactive_pause
+        and _operator_stdin_is_interactive()
+        and not operator_prompt.reader().console_unavailable
+    ):
+        _log(
+            log,
+            "WARN",
+            f"{count} saved chat message(s) in {shown}; the loop does not hold "
+            "for them without an interactive console.",
+        )
+        return True
+
+    saved_console_role = console_interrupt.CONTROLLER.active_role
+    # A hold is not a role's cycle: a console Ctrl+C stops at once.
+    console_interrupt.set_active_role(None)
+    try:
+        # The operator answers at the console, so chat capture must not read
+        # keys at the same time.
+        with chat_session.suspended():
+            _log(log, "PAUSE", f"Holding for {count} chat message(s):")
+            for message in messages:
+                role = message.role if message.role is not None else "no role"
+                _log(
+                    log,
+                    "PAUSE",
+                    f"[{_escape_control_characters(role)}] "
+                    f"{_escape_control_characters(message.text)}",
+                )
+            reader = operator_prompt.reader()
+            discarded = reader.drain()
+            if discarded:
+                _log(
+                    log,
+                    "PAUSE",
+                    f"Discarded {discarded} operator input line(s) typed before "
+                    "the prompt.",
+                )
+            _log(log, "PAUSE", "Press Enter to continue")
+            timeout = max(config.poll_interval_seconds, 0.1)
+            while True:
+                line = reader.read_line(timeout=timeout)
+                if line is not None:
+                    clear_chat_messages(queue_path)
+                    _log(log, "PAUSE", "Continuing.")
+                    return True
+                if reader.eof_reached:
+                    return False
+                if stop_watch.requested(log):
+                    stop_watch.finish(log)
+                    return False
+    finally:
+        console_interrupt.set_active_role(saved_console_role)
 
 
 def _operator_stdin_is_interactive() -> bool:

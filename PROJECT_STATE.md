@@ -6,9 +6,13 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** CHAT, with CHAT-12 (chat message queue file) in
-  progress, picked because CHAT-2 was too large for one packet and its
-  persistence half is unblocked. CHAT-11 (chat line and keystroke capture
+- **Active Epic:** CHAT, with CHAT-13 (hold the loop on saved chat
+  messages) in progress. CHAT-2 was split again because it was still too
+  large for one packet (hold logic in the orchestrator plus capture-side save
+  and notice); CHAT-13 takes the hold half and works from the CHAT-12 queue
+  file alone, so the loop's push and merge points are safe before any capture
+  writes to that file. CHAT-12 (chat message queue file) was approved at
+  `fb04abf` and merged in PR #197. CHAT-11 (chat line and keystroke capture
   wiring) was approved at `7a6170b` and merged in PR #196. CHAT-10 (chat keystroke capture component) was approved at `9ac6a21` and
   merged in PR #195. CHAT-9 (console chat line renderer) was approved at
   `3ac5fcf` and merged in PR #194.
@@ -1040,7 +1044,7 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: active; CHAT-12 is in progress. Picked after TIDY was parked; HARD-3 is
+Fit: active; CHAT-13 is in progress. Picked after TIDY was parked; HARD-3 is
 merged and RECOVERY is closed, so nothing blocks it.
 
 The operator types at any time; a message holds the loop and is answered by
@@ -1101,18 +1105,28 @@ dependencies; Windows (`msvcrt`) and POSIX.
   `llm_handoff/chat_queue.py` saves `ChatMessage(text, role, received_at)` to
   `logs/dispatch/chat-queue.json` (`CHAT_QUEUE_STATE_PATH`) via temp-file
   replace; a bad file loads `[]`, bad entries are skipped; also clear and the
-  queued-message notice. Not wired in yet; CHAT-2 holds the loop on it.
-- CHAT-2: A sent message holds the loop at the next safe point: after the
-  current dispatch, its dispatcher commit, and its gates, and before the next
-  dispatch. The graceful-stop check at the loop top is not enough, because
-  publishing runs inside the auditor's cycle: add explicit hold checks right
-  before `publish_story` in the cycle and before `resume_paused_publish` at
-  startup, so no push or merge happens while a message is pending or held. A
-  message about the running agent prints `Question queued until after the
-  current <role> run completes.` While held, print `Press Enter to continue`;
-  the loop never resumes on its own after a message. Queued messages are saved
-  through the CHAT-12 queue file; a saved message found
-  at startup holds the loop before the publish resume.
+  queued-message notice. CHAT-13 holds the loop on it.
+- CHAT-13 (was part of CHAT-2): Hold the loop on saved chat messages.
+  `_hold_for_chat_messages` in `llm_handoff/orchestrator.py` reads the
+  CHAT-12 queue file; an empty or missing queue changes nothing. A dry run
+  logs one WARN that a real run would hold for N saved message(s), and a run
+  without an interactive console logs one WARN that the loop does not hold;
+  both leave the file. Otherwise the hold clears the console role (restored
+  in a `finally`) inside `chat_session.suspended()`, lists each message as
+  `[<role>] <text>` (`no role` when unset, control characters escaped),
+  drains type-ahead, and prints `Press Enter to continue`. Any line clears
+  the queue and continues; EOF or a stop request stops the run and keeps the
+  queue; the loop never resumes on its own. The hold runs at startup after
+  the Git index lock wait and before the merge-commit and pr publish resumes,
+  at the loop top after the stop-request check, right before `publish_story`
+  in the auditor branch, and right before `settle_deferred_findings` in the
+  planner branch, so no push or merge happens while a message is saved.
+- CHAT-2: Sent chat messages are saved to the queue and announced. A
+  non-blank `ChatInput` submission is appended to the CHAT-12 queue file with
+  the active role and `received_at`, and the console prints
+  `queued_message_notice(role)` (`Question queued until after the current
+  <role> run completes.`) instead of `CHAT_UNAVAILABLE_MESSAGE`. CHAT-13
+  then holds the loop on the saved message at the next safe point.
 - CHAT-3: Dispatch record. Save each dispatch in the run (role, story,
   provider, session id, time) under `logs/dispatch/`, so a question can find
   the agent it is about. Nothing reads it yet besides tests.
