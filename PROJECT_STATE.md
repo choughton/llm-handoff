@@ -6,12 +6,12 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** CHAT, with CHAT-13 (hold the loop on saved chat
-  messages) in progress. CHAT-2 was split again because it was still too
-  large for one packet (hold logic in the orchestrator plus capture-side save
-  and notice); CHAT-13 takes the hold half and works from the CHAT-12 queue
-  file alone, so the loop's push and merge points are safe before any capture
-  writes to that file. CHAT-12 (chat message queue file) was approved at
+- **Active Epic:** CHAT, with CHAT-2 (sent chat messages are saved to the
+  queue and announced) in progress. CHAT-13 (hold the loop on saved chat
+  messages) was approved at `cd0df4c` and merged in PR #199; it took the hold
+  half of CHAT-2 and works from the CHAT-12 queue file alone, so the loop's
+  push and merge points were safe before capture writes to that file.
+  CHAT-12 (chat message queue file) was approved at
   `fb04abf` and merged in PR #197. CHAT-11 (chat line and keystroke capture
   wiring) was approved at `7a6170b` and merged in PR #196. CHAT-10 (chat keystroke capture component) was approved at `9ac6a21` and
   merged in PR #195. CHAT-9 (console chat line renderer) was approved at
@@ -1044,7 +1044,7 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: active; CHAT-13 is in progress. Picked after TIDY was parked; HARD-3 is
+Fit: active; CHAT-2 is in progress. Picked after TIDY was parked; HARD-3 is
 merged and RECOVERY is closed, so nothing blocks it.
 
 The operator types at any time; a message holds the loop and is answered by
@@ -1078,8 +1078,9 @@ dependencies; Windows (`msvcrt`) and POSIX.
   Backspace/Delete remove the last character, Enter (CR, LF, or CR+LF once)
   submits, Ctrl+C calls `interrupt()` (default `_thread.interrupt_main`),
   and other control or format characters are ignored. A non-blank submit
-  queues the stripped text for `take_pending()` (CHAT-2 consumes it) and
-  notifies `CHAT_UNAVAILABLE_MESSAGE`. `start`/`stop` restart cleanly, `stop`
+  queues the stripped text for `take_pending()` and notifies
+  `CHAT_UNAVAILABLE_MESSAGE` (CHAT-2 adds an `on_submit` callback that
+  receives the text instead and supplies the notice). `start`/`stop` restart cleanly, `stop`
   is idempotent and closes the reader once per start, and EOF or `OSError`
   ends the thread quietly. `WindowsChatKeyReader(msvcrt)` reads without echo
   and drops prefix keys; `PosixChatKeyReader(fd, encoding, termios, select)`
@@ -1107,7 +1108,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   replace; a bad file loads `[]`, bad entries are skipped; also clear and the
   queued-message notice. CHAT-13 holds the loop on it.
 - CHAT-13 (was part of CHAT-2): Hold the loop on saved chat messages.
-  `_hold_for_chat_messages` in `llm_handoff/orchestrator.py` reads the
+  Approved at `cd0df4c` (PR #199). `_hold_for_chat_messages` in `llm_handoff/orchestrator.py` reads the
   CHAT-12 queue file; an empty or missing queue changes nothing. A dry run
   logs one WARN that a real run would hold for N saved message(s), and a run
   without an interactive console logs one WARN that the loop does not hold;

@@ -63,11 +63,14 @@ class ChatSession:
         chat_line, chat_input = self._chat_line, self._chat_input
         if chat_line is None or chat_input is None:
             return
-        self._role = role
         if role is None:
+            # Stop capture first: a save racing this clear still reads the
+            # role that was running.
             chat_input.stop()
+            self._role = None
             chat_line.set_role(None)
             return
+        self._role = role
         chat_line.set_role(role)
         try:
             chat_input.start()

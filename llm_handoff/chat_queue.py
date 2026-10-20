@@ -1,8 +1,10 @@
 """Saved queue of operator chat messages under ``logs/dispatch/``.
 
-Not wired in yet: nothing in the dispatcher reads or writes this queue besides
-tests. CHAT-2 holds the loop on it, so a message sent while a role runs
-survives a dispatcher stop and still holds the loop at the next start.
+Console chat capture writes it (CHAT-2): each line sent while a role runs is
+saved here through ``save_chat_message``. The CHAT-13 hold in the
+orchestrator reads it and stops the loop at the next safe point, so a message
+sent while a role runs survives a dispatcher stop and still holds the loop at
+the next start.
 """
 
 from __future__ import annotations
@@ -11,8 +13,9 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +28,10 @@ __all__ = [
     "clear_chat_messages",
     "load_chat_messages",
     "queued_message_notice",
+    "save_chat_message",
 ]
+
+_NO_ROLE_NOTICE = "Question queued until the loop holds at its next safe point."
 
 _QUEUE_VERSION = 1
 
@@ -123,3 +129,29 @@ def clear_chat_messages(path: Path) -> None:
 
 def queued_message_notice(role: str) -> str:
     return f"Question queued until after the current {role} run completes."
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def save_chat_message(
+    path: Path,
+    text: str,
+    role: str | None,
+    *,
+    now: Callable[[], datetime] | None = None,
+) -> str:
+    """Append one message received now and return the notice to show.
+
+    ``OSError`` from the write propagates, so the caller can keep the text.
+    """
+
+    clock = now if now is not None else _utc_now
+    received_at = clock().astimezone(timezone.utc).isoformat(timespec="seconds")
+    append_chat_messages(
+        path, [ChatMessage(text=text, role=role, received_at=received_at)]
+    )
+    if isinstance(role, str) and role:
+        return queued_message_notice(role)
+    return _NO_ROLE_NOTICE

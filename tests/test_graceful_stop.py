@@ -334,6 +334,7 @@ def _chat_run_dispatch(
     def factory(stdin: object, chat_line: Any, **_kwargs: object) -> ChatInput:
         seen["factory_calls"] += 1
         seen["chat_line"] = chat_line
+        seen["factory_kwargs"] = dict(_kwargs)
         return ChatInput(chat_line, _IdleKeyReader(), poll_interval=0.01)
 
     def fake_run_loop(_config: object, *, log: Any = None) -> int:
@@ -371,6 +372,35 @@ def test_run_dispatch_attaches_the_chat_line_for_an_interactive_run(
     assert seen["session_attached_after_run"] is False
     assert seen["logger"].chat_line is None
     assert seen["logger"].attached == [seen["chat_line"], None]
+
+
+def test_run_dispatch_saves_sent_chat_lines_to_the_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import chat_session
+    from llm_handoff.chat_queue import (
+        ChatMessage,
+        load_chat_messages,
+        queued_message_notice,
+    )
+
+    exit_code, seen = _chat_run_dispatch(tmp_path, monkeypatch, dry_run=False)
+
+    assert exit_code == 0
+    on_submit = seen["factory_kwargs"].get("on_submit")
+    assert callable(on_submit)
+    queue = tmp_path / "logs/dispatch/chat-queue.json"
+    assert not queue.exists()
+
+    monkeypatch.setattr(chat_session.SESSION, "_role", "backend")
+    notice = on_submit("hello")
+
+    assert notice == queued_message_notice("backend")
+    messages = load_chat_messages(queue)
+    assert len(messages) == 1
+    assert isinstance(messages[0], ChatMessage)
+    assert messages[0].text == "hello"
+    assert messages[0].role == "backend"
 
 
 def test_run_dispatch_detaches_the_chat_line_on_keyboard_interrupt(
