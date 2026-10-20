@@ -11,7 +11,7 @@ You are the `handoff-validator` support agent. You inspect `docs/handoff/HANDOFF
 1. `docs/handoff/HANDBOOK.md`
 2. `AGENTS.md`
 3. `docs/handoff/HANDOFF.md`
-4. `PROJECT_STATE.md` if present and needed for close-type validation
+4. The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md` names another path), if present and needed for close-type validation
 
 ## Shell Commands
 

@@ -16,6 +16,23 @@ This project follows a simple pre-release changelog until the first public tag.
   dispatcher cannot tell it reviewed <head>". The failed-review rule applies: one
   automatic `@codex review` request, then the `merge`/`retry`/`quit` prompt. A head-SHA
   review or a +1 reaction still makes the review complete.
+- Agent processes start with stdin closed (CHAT-8). Agent role launches, audit reviewers, and
+  the Claude normalizer now start with stdin set to `DEVNULL`, so they cannot read the
+  operator's console input; a child that reads stdin gets EOF at once. The Codex normalizer
+  still pipes its prompt on stdin, and the supervisor's child dispatcher keeps the console.
+- Linear init covers more Claude subagents (TIDY-11). In Linear mode `init` now also appends
+  the role's Linear MCP tools to the `tools:` line of the copied `.claude/agents/backend.md`,
+  `auditor.md`, and `ledger-updater.md` (finalizer), as it already did for planner, frontend,
+  and handoff-validator. Vanilla init is unchanged.
+- Non-Claude role helper files defer to the configured project state path (TIDY-6). The
+  `.agents/agents/` and `.codex/skills/` helpers, root and reference-workflow copies, now say
+  "The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md`
+  names another path)". The Claude copies follow in TIDY-7.
+- One refusal summary per dispatch (TIDY-5). After a Claude run with permission refusals, the
+  Claude provider logs one WARN line with the refusal count and the distinct refused prefixes
+  (program basename, `git` subcommand, or tool name; `<command>` for unsafe text). The `agy`
+  provider logs one WARN line with the deny-rule hit count and the matched deny rules. Neither
+  line carries raw command arguments or is added to stderr; per-refusal lines are unchanged.
 - Tracker probe and stop-request notes (TIDY-4), no behavior change. `doctor --probe-tracker`
   keeps its per-tool write denylist: Claude Code applies deny rules first, so a server-wide
   deny would also block the two read tools. A code comment, a new test, and a corrected

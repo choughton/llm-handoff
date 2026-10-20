@@ -24,6 +24,15 @@ from llm_handoff.usage_log import format_usage_line, usage_fields_from_claude_re
 _BASH_RULE_RE = re.compile(r"Bash\((.+?)(:\*| \*)?\)")
 # Claude Code's tool_result text when dontAsk mode refuses a tool call.
 _PERMISSION_REFUSAL_MARKERS = ("Permission to use", "has been denied")
+# Refusal summary prefixes: a shell program basename, a git subcommand, or a
+# tool name. Anything outside these character sets is replaced with fixed
+# text so no raw command arguments reach the log.
+_SHELL_TOOL_NAMES = frozenset({"bash", "powershell"})
+_REFUSAL_PROGRAM_RE = re.compile(r"^[A-Za-z0-9._+-]{1,40}$")
+_REFUSAL_GIT_SUBCOMMAND_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
+_REFUSAL_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+_REFUSAL_UNSAFE_PROGRAM = "<command>"
+_REFUSAL_UNKNOWN_TOOL = "Tool"
 
 
 @dataclass
@@ -31,6 +40,10 @@ class _ClaudeStreamJsonMonitor:
     agent_name: str
     log: LogFn | None
     tool_labels_by_id: dict[str, str] = field(default_factory=dict)
+    # Refusal summary prefix per tool id; never holds raw command arguments.
+    tool_refusal_prefixes_by_id: dict[str, str] = field(default_factory=dict)
+    refusal_count: int = 0
+    refused_prefixes: list[str] = field(default_factory=list)
     assistant_chunks: list[str] = field(default_factory=list)
     _assistant_line_buffer: str = ""
     final_result_text: str | None = None
@@ -74,6 +87,15 @@ class _ClaudeStreamJsonMonitor:
         usage = self.usage
         if usage is not None and not any(key != "model" for key in usage):
             usage = None
+        if self.refusal_count > 0 and self.log is not None:
+            # One summary per process run; a fallback launch has its own
+            # monitor and logs its own summary.
+            self.log(
+                "WARN",
+                f"{self.agent_name}: permission rules refused "
+                f"{self.refusal_count} tool call(s) this dispatch "
+                f"({', '.join(self.refused_prefixes)})",
+            )
         return _ProcessResult(
             stdout=final_stdout,
             stderr=result.stderr,
@@ -182,6 +204,9 @@ class _ClaudeStreamJsonMonitor:
         label = _format_claude_tool_use_label(name, input_payload)
         if isinstance(tool_id, str):
             self.tool_labels_by_id[tool_id] = label
+            self.tool_refusal_prefixes_by_id[tool_id] = _refusal_prefix(
+                name, input_payload
+            )
         if self.log is not None:
             self.log("AGENT", f"{self.agent_name}: {label}")
 
@@ -189,18 +214,27 @@ class _ClaudeStreamJsonMonitor:
         tool_use_id = item.get("tool_use_id")
         if isinstance(tool_use_id, str):
             label = self.tool_labels_by_id.pop(tool_use_id, None)
+            prefix = self.tool_refusal_prefixes_by_id.pop(tool_use_id, None)
         else:
             label = None
+            prefix = None
         if label is None:
             label = "Tool"
+        if prefix is None:
+            prefix = _REFUSAL_UNKNOWN_TOOL
 
         content = _extract_claude_tool_result_text(item.get("content"))
         first_line = _first_nonempty_line(content)
         is_error = bool(item.get("is_error"))
+        is_refusal = is_error and is_permission_refusal(content)
+        if is_refusal:
+            self.refusal_count += 1
+            if prefix not in self.refused_prefixes:
+                self.refused_prefixes.append(prefix)
 
         if self.log is None:
             return
-        if is_error and is_permission_refusal(content):
+        if is_refusal:
             # The agent asked for a command its allowlist does not cover. That
             # is the agent's to fix, not a dispatcher error.
             self.log(
@@ -429,6 +463,37 @@ def _join_names(names: list[str], conjunction: str) -> str:
 
 def is_permission_refusal(tool_result_text: str) -> bool:
     return all(marker in tool_result_text for marker in _PERMISSION_REFUSAL_MARKERS)
+
+
+def _refusal_prefix(name: object, input_payload: object) -> str:
+    """Return the refusal summary prefix for one tool call.
+
+    Shell tools give the program basename, plus the subcommand for `git`;
+    other tools give their tool name. Text outside a safe character set is
+    replaced with fixed text, so the prefix never carries raw arguments.
+    """
+    tool_name = name if isinstance(name, str) else ""
+    if tool_name.lower() in _SHELL_TOOL_NAMES:
+        command = (
+            input_payload.get("command") if isinstance(input_payload, dict) else None
+        )
+        tokens = command.split() if isinstance(command, str) else []
+        if not tokens:
+            return tool_name
+        program = tokens[0].strip("\"'")
+        program = re.split(r"[/\\]", program)[-1]
+        if not _REFUSAL_PROGRAM_RE.match(program):
+            return _REFUSAL_UNSAFE_PROGRAM
+        if (
+            program.lower() == "git"
+            and len(tokens) > 1
+            and _REFUSAL_GIT_SUBCOMMAND_RE.match(tokens[1])
+        ):
+            return f"git {tokens[1]}"
+        return program
+    if _REFUSAL_TOOL_NAME_RE.match(tool_name):
+        return tool_name
+    return _REFUSAL_UNKNOWN_TOOL
 
 
 def _shorten(text: str, limit: int = 160) -> str:

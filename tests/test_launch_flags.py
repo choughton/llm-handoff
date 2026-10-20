@@ -623,6 +623,139 @@ def test_a_refused_command_logs_a_short_warning_not_an_error() -> None:
     assert "IMPORTANT" not in warning
 
 
+def _stream_tool_call_with_id(
+    tool_id: str,
+    command: str,
+    result_text: str,
+    *,
+    is_error: bool,
+) -> str:
+    return _stream_tool_call(command, result_text, is_error=is_error).replace(
+        '"toolu_1"', f'"{tool_id}"'
+    )
+
+
+_REFUSAL_TEXT = (
+    "Permission to use Bash has been denied because Claude Code is running "
+    "in don't ask mode."
+)
+
+
+def test_refusals_log_one_summary_per_dispatch_without_arguments() -> None:
+    logs: list[tuple[str, str]] = []
+    monitor = claude._ClaudeStreamJsonMonitor(
+        agent_name="Claude backend",
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    for tool_id, command in (
+        ("toolu_1", "git push origin main"),
+        ("toolu_2", "git push origin main"),
+        ("toolu_3", "cat secret.txt"),
+    ):
+        monitor.consume_stdout(
+            _stream_tool_call_with_id(tool_id, command, _REFUSAL_TEXT, is_error=True)
+        )
+    before = list(logs)
+    result = monitor.finalize(_ProcessResult(stdout="", stderr="err", exit_code=0))
+
+    per_refusal = [
+        message
+        for level, message in before
+        if level == "WARN" and "refused by the permission rules:" in message
+    ]
+    assert len(per_refusal) == 3
+    summaries = [
+        message
+        for level, message in logs[len(before) :]
+        if level == "WARN"
+    ]
+    assert summaries == [
+        "Claude backend: permission rules refused 3 tool call(s) this dispatch "
+        "(git push, cat)"
+    ]
+    assert "origin main" not in summaries[0]
+    assert "secret.txt" not in summaries[0]
+    assert result.stderr == "err"
+    assert result.exit_code == 0
+
+
+def test_refusals_are_counted_without_a_log() -> None:
+    monitor = claude._ClaudeStreamJsonMonitor(agent_name="Claude backend", log=None)
+
+    monitor.consume_stdout(
+        _stream_tool_call("git push origin main", _REFUSAL_TEXT, is_error=True)
+    )
+    monitor.finalize(_ProcessResult(stdout="", stderr="", exit_code=0))
+
+    assert monitor.refusal_count == 1
+    assert monitor.refused_prefixes == ["git push"]
+
+
+def test_unknown_tool_id_refusal_counts_as_tool() -> None:
+    import json
+
+    logs: list[tuple[str, str]] = []
+    monitor = claude._ClaudeStreamJsonMonitor(
+        agent_name="Claude backend",
+        log=lambda level, message: logs.append((level, message)),
+    )
+    result_event = {
+        "type": "user",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_missing",
+                    "is_error": True,
+                    "content": _REFUSAL_TEXT,
+                }
+            ]
+        },
+    }
+
+    monitor.consume_stdout(json.dumps(result_event) + "\n")
+    monitor.finalize(_ProcessResult(stdout="", stderr="", exit_code=0))
+
+    assert logs[-1] == (
+        "WARN",
+        "Claude backend: permission rules refused 1 tool call(s) this dispatch (Tool)",
+    )
+
+
+def test_a_run_without_refusals_logs_no_summary() -> None:
+    logs: list[tuple[str, str]] = []
+    monitor = claude._ClaudeStreamJsonMonitor(
+        agent_name="Claude backend",
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    monitor.consume_stdout(_stream_tool_call("git status", "clean", is_error=False))
+    monitor.finalize(_ProcessResult(stdout="", stderr="", exit_code=0))
+
+    assert not any("permission rules refused" in message for _level, message in logs)
+
+
+@pytest.mark.parametrize(
+    ("name", "input_payload", "expected"),
+    [
+        ("Bash", {"command": "git push origin main"}, "git push"),
+        ("Bash", {"command": "git -C x status"}, "git"),
+        ("PowerShell", {"command": '"C:\\Tools\\rg.exe" foo'}, "rg.exe"),
+        ("bash", {"command": "/usr/bin/cat secret.txt"}, "cat"),
+        ("Bash", {"command": "ca$t secret.txt"}, "<command>"),
+        ("Bash", {"command": "   "}, "Bash"),
+        ("Bash", {}, "Bash"),
+        ("WebFetch", {"url": "https://example.com/secret"}, "WebFetch"),
+        ("mcp__server__tool", {}, "mcp__server__tool"),
+        ("Bad Tool!", {}, "Tool"),
+        (None, None, "Tool"),
+    ],
+)
+def test_refusal_prefix(name: object, input_payload: object, expected: str) -> None:
+    assert claude._refusal_prefix(name, input_payload) == expected
+
+
 def test_other_tool_failures_still_log_errors() -> None:
     logs: list[tuple[str, str]] = []
     monitor = claude._ClaudeStreamJsonMonitor(

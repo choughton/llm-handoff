@@ -294,6 +294,23 @@ class _AntigravityStreamJsonMonitor:
                 line = _deny_rule_refusal_line(step, matched_rule)
                 stderr = _append_line(stderr, line)
                 self._emit("ERROR", f"{self.agent_name}: {line}")
+            # One summary per process run, log only: it is not appended to
+            # stderr and names only the matched rules, never command text.
+            rules: list[str] = []
+            for _step, matched_rule in self.deny_rule_hits:
+                rule = (
+                    matched_rule
+                    if matched_rule is not None
+                    else "user-configured deny rule"
+                )
+                if rule not in rules:
+                    rules.append(rule)
+            self._emit(
+                "WARN",
+                f"{self.agent_name}: deny rules refused "
+                f"{len(self.deny_rule_hits)} command(s) this dispatch "
+                f"({', '.join(rules)})",
+            )
 
         soft_deny = find_permission_soft_deny(result.stderr)
         if soft_deny is not None:

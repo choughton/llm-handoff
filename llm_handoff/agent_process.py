@@ -336,8 +336,11 @@ def _run_command_streaming(
     that long, so a hung CLI is caught before the full timeout.
     """
     resolved_command = _resolve_command_argv(command)
+    # stdin is closed so an agent can never read the operator's console
+    # input; the child sees EOF at once instead of blocking on a keystroke.
     popen_kwargs = {
         "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
@@ -547,8 +550,10 @@ def _run_command(
     env: dict[str, str] | None = None,
 ) -> _ProcessResult:
     resolved_command = _resolve_command_argv(command)
+    # stdin is closed so the child cannot read the operator's console input.
     run_kwargs = {
         "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
         "capture_output": True,
         "text": True,
         "timeout": timeout_ms / 1000,

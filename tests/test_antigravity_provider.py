@@ -719,6 +719,54 @@ def test_two_deny_rule_hits_are_each_reported(
     _assert_not_logged(result, logs, "git push", "origin main")
 
 
+def _deny_summaries(logs: list[tuple[str, str]]) -> list[str]:
+    return [
+        message
+        for level, message in logs
+        if level == "WARN" and "deny rules refused" in message
+    ]
+
+
+def test_deny_rule_hits_log_one_summary_naming_the_rules(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    required_rule = antigravity.ANTIGRAVITY_REQUIRED_DENY[0]
+    matched_message = DENY_RULE_MESSAGE.replace("command(git push)", required_rule)
+    unmatched_message = DENY_RULE_MESSAGE.replace("git push", "git push origin main")
+    stdout = _stream(
+        _tool_step(2, "ERROR", "git push", error_message=matched_message),
+        _tool_step(4, "ERROR", "git push origin main", error_message=unmatched_message),
+        _success_result(),
+    )
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr="", exit_code=0))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert _deny_summaries(logs) == [
+        "Antigravity planner: deny rules refused 2 command(s) this dispatch "
+        f"({required_rule}, user-configured deny rule)"
+    ]
+    assert len(_soft_deny_errors(logs)) == 2
+    assert "deny rules refused" not in result.stderr
+    assert antigravity.ANTIGRAVITY_DENY_RULE_MARKER not in _deny_summaries(logs)[0]
+    _assert_not_logged(result, logs, "git push", "origin main")
+
+
+def test_a_clean_run_logs_no_deny_rule_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(
+        _ProcessResult(stdout=_success_stream(), stderr="", exit_code=0)
+    )
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 0
+    assert _deny_summaries(logs) == []
+
+
 def test_not_allowlisted_tool_error_is_reported_once_as_soft_deny(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
