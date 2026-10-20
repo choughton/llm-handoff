@@ -180,6 +180,9 @@ CARRY_OVER_STATE_PATH = Path("logs") / "dispatch" / "carry-over.json"
 # a dispatcher start can tell an implementer interrupted mid-dispatch from
 # operator edits.
 IN_FLIGHT_STATE_PATH = Path("logs") / "dispatch" / "in-flight.json"
+# Operator chat messages queued while a role runs, so a held loop keeps them
+# across a dispatcher restart.
+CHAT_QUEUE_STATE_PATH = Path("logs") / "dispatch" / "chat-queue.json"
 
 
 def detect_repo_root(start: Path | None = None) -> Path:
