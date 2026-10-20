@@ -1,5 +1,7 @@
-"""TPM-1 and TPM-2: `tpm` is a recognized role name, and a configured tpm
-has a launch path, but the dispatch loop still pauses on a tpm route."""
+"""TPM-1 to TPM-3: `tpm` is a recognized role name, a configured tpm has a
+launch path but the dispatch loop still pauses on its route, an unconfigured
+tpm route gets one planner repair, and the validator has rules for
+`producer: tpm`."""
 
 from __future__ import annotations
 
@@ -151,12 +153,7 @@ def _dispatch_config(repo_root: Path, **overrides: Any):
     return config_module.DispatchConfig(**fields)
 
 
-@pytest.mark.parametrize("configured", [False, True])
-def test_run_loop_pauses_on_tpm_route_without_dispatching(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    configured: bool,
-) -> None:
+def _write_tpm_route_fixture(tmp_path: Path) -> Path:
     handoff_path = tmp_path / "docs" / "handoff" / "HANDOFF.md"
     handoff_path.parent.mkdir(parents=True)
     handoff_path.write_text(
@@ -170,6 +167,14 @@ def test_run_loop_pauses_on_tpm_route_without_dispatching(
     )
     (tmp_path / "PROJECT_STATE.md").write_text("# PROJECT STATE\n", encoding="utf-8")
     (tmp_path / "AGENTS.md").write_text("dispatch test fixture\n", encoding="utf-8")
+    return handoff_path
+
+
+def test_run_loop_pauses_on_configured_tpm_route_without_dispatching(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_tpm_route_fixture(tmp_path)
 
     orchestrator = importlib.import_module("llm_handoff.orchestrator")
     dispatch_calls: list[Any] = []
@@ -194,12 +199,8 @@ def test_run_loop_pauses_on_tpm_route_without_dispatching(
     monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", spy_pause)
     log_messages: list[tuple[str, str]] = []
 
-    config = (
-        _dispatch_config(tmp_path, agents=_agents_with_tpm())
-        if configured
-        else _dispatch_config(tmp_path)
-    )
-    assert ("tpm" in config.agents) is configured
+    config = _dispatch_config(tmp_path, agents=_agents_with_tpm())
+    assert "tpm" in config.agents
     exit_code = orchestrator.run_loop(
         config,
         log=lambda level, message: log_messages.append((level, message)),
@@ -216,6 +217,484 @@ def test_run_loop_pauses_on_tpm_route_without_dispatching(
         "file changes."
     )
     assert any("routes to tpm" in message for _, message in log_messages)
+
+
+# TPM-3 checks 6 and 7: an unconfigured tpm route gets one planner repair.
+
+
+def _run_unconfigured_tpm_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    rewrite: str | None,
+) -> tuple[Any, list[tuple[str, Any]], list[tuple[str, str]], int]:
+    handoff_path = _write_tpm_route_fixture(tmp_path)
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+    events: list[tuple[str, Any]] = []
+    real_pause = orchestrator._pause_at_dispatcher_pause
+
+    def fake_dispatch(route: str, *args: Any, **kwargs: Any) -> Any:
+        events.append(("dispatch", (route, kwargs)))
+        if rewrite is None:
+            return (
+                DispatchResult(stdout="", stderr="", exit_code=1, elapsed_seconds=0.1),
+                route,
+            )
+        handoff_path.write_text(rewrite, encoding="utf-8")
+        return (
+            DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.1),
+            route,
+        )
+
+    def fake_schedule(*args: Any, **kwargs: Any) -> Any:
+        events.append(("schedule_pause_recovery", kwargs))
+        raise AssertionError("pause recovery must not be scheduled for tpm")
+
+    def spy_pause(*args: Any, **kwargs: Any) -> Any:
+        events.append(("pause", kwargs["reason"]))
+        return real_pause(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "_dispatch_route", fake_dispatch)
+    monkeypatch.setattr(orchestrator, "_schedule_pause_recovery", fake_schedule)
+    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", spy_pause)
+    log_messages: list[tuple[str, str]] = []
+
+    config = _dispatch_config(tmp_path)
+    assert "tpm" not in config.agents
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+    return orchestrator, events, log_messages, exit_code
+
+
+def test_run_loop_repairs_unconfigured_tpm_route_with_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator, events, log_messages, _exit_code = _run_unconfigured_tpm_loop(
+        tmp_path, monkeypatch, rewrite=None
+    )
+
+    assert events, "the planner repair must dispatch"
+    kind, payload = events[0]
+    assert kind == "dispatch", "no pause or pause recovery may run before it"
+    route, kwargs = payload
+    assert route == "planner"
+    assert (
+        "tpm is not configured; route to planner or an implementer"
+        in kwargs["additional_instruction"]
+    )
+    assert (
+        kwargs["additional_instruction"]
+        == orchestrator.TPM_NOT_CONFIGURED_PLANNER_INSTRUCTION
+    )
+    assert [event for event in events if event[0] == "dispatch"] == [events[0]]
+    assert not any(kind == "schedule_pause_recovery" for kind, _ in events)
+    assert any(
+        level == "WARN" and "agents.tpm is not configured" in message
+        for level, message in log_messages
+    )
+
+
+def test_run_loop_pauses_when_repaired_handoff_still_routes_to_tpm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    still_tpm = (
+        "---\n"
+        "next_agent: tpm\n"
+        'reason: "Planner kept the tpm route."\n'
+        "producer: planner\n"
+        "---\n\n"
+        "# Handoff\n\n"
+        "## Work Packet\n\n"
+        "- **Objective:** Pick the next story.\n"
+        "- **Files in scope:** `docs/handoff/HANDOFF.md`\n"
+        "- **Files out of bounds:** none\n"
+        "- **Context:** Test fixture.\n"
+        "- **Verification command:**\n"
+        "  - python -m pytest tests -q\n"
+        "- **Expected next route:** tpm\n"
+    )
+    orchestrator, events, _log_messages, exit_code = _run_unconfigured_tpm_loop(
+        tmp_path, monkeypatch, rewrite=still_tpm
+    )
+
+    assert exit_code == 0
+    dispatches = [payload for kind, payload in events if kind == "dispatch"]
+    assert len(dispatches) == 1
+    assert dispatches[0][0] == "planner"
+    assert not any(kind == "schedule_pause_recovery" for kind, _ in events)
+    pauses = [payload for kind, payload in events if kind == "pause"]
+    assert pauses == [orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON]
+    assert events.index(("pause", pauses[0])) > events.index(
+        ("dispatch", dispatches[0])
+    )
+    reason = orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON
+    assert "still routes to tpm" in reason
+    assert "agents.tpm is not configured" in reason
+    assert "resume after the file changes" in reason
+
+
+_TPM_HANDOFF = (
+    "---\n"
+    "next_agent: tpm\n"
+    'reason: "Pick the next story."\n'
+    "producer: planner\n"
+    "---\n\n"
+    "# Handoff\n"
+)
+
+_TPM_HANDOFF_AGAIN = (
+    "---\n"
+    "next_agent: tpm\n"
+    'reason: "Backend finished; pick the next story."\n'
+    "producer: planner\n"
+    "---\n\n"
+    "# Handoff\n"
+)
+
+_USER_HANDOFF = (
+    "---\n"
+    "next_agent: user\n"
+    'reason: "Planner needs an answer."\n'
+    "status: escalate_to_user\n"
+    "producer: planner\n"
+    "---\n\n"
+    "# Handoff\n\n"
+    "Which story comes next?\n"
+)
+
+_BACKEND_HANDOFF = (
+    "---\n"
+    "next_agent: backend\n"
+    'reason: "Implement the story."\n'
+    "producer: planner\n"
+    "---\n\n"
+    "# Handoff\n\n"
+    "## Work Packet\n\n"
+    "- **Objective:** Implement the story.\n"
+    "- **Files in scope:** `src/app.py`\n"
+    "- **Files out of bounds:** none\n"
+    "- **Context:** Test fixture.\n"
+    "- **Verification command:**\n"
+    "  - python -m pytest tests -q\n"
+    "- **Expected next route:** auditor\n"
+)
+
+
+def _run_scripted_unconfigured_tpm_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    dispatch_rewrites: list[str],
+    pause_rewrites: list[str],
+    max_dispatches: int,
+) -> tuple[Any, list[tuple[str, Any]]]:
+    """Run the loop with scripted handoff rewrites at dispatches and pauses.
+
+    Each dispatch writes the next entry of `dispatch_rewrites`; each pause
+    other than the tpm-not-configured pause writes the next entry of
+    `pause_rewrites` and resumes. The tpm-not-configured pause, an exhausted
+    pause script, or reaching `max_dispatches` stops the loop. Pause recovery
+    is off, so the tpm repair is the only planner dispatch the loop adds.
+    """
+
+    handoff_path = _write_tpm_route_fixture(tmp_path)
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+    events: list[tuple[str, Any]] = []
+    dispatch_script = list(dispatch_rewrites)
+    pause_script = list(pause_rewrites)
+
+    def dispatch_count() -> int:
+        return sum(1 for kind, _ in events if kind == "dispatch")
+
+    def fake_dispatch(route: str, *args: Any, **kwargs: Any) -> Any:
+        events.append(("dispatch", (route, kwargs)))
+        if dispatch_script:
+            handoff_path.write_text(dispatch_script.pop(0), encoding="utf-8")
+        return (
+            DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.1),
+            route,
+        )
+
+    def fake_schedule(*args: Any, **kwargs: Any) -> Any:
+        events.append(("schedule_pause_recovery", kwargs))
+        raise AssertionError("pause recovery must not be scheduled for tpm")
+
+    def scripted_pause(*args: Any, **kwargs: Any) -> Any:
+        reason = kwargs["reason"]
+        events.append(("pause", reason))
+        if reason == orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON:
+            return orchestrator.PauseOutcome(kind="stop")
+        if dispatch_count() >= max_dispatches or not pause_script:
+            return orchestrator.PauseOutcome(kind="stop")
+        handoff_path.write_text(pause_script.pop(0), encoding="utf-8")
+        return orchestrator.PauseOutcome(kind="resume")
+
+    monkeypatch.setattr(orchestrator, "_dispatch_route", fake_dispatch)
+    monkeypatch.setattr(orchestrator, "_schedule_pause_recovery", fake_schedule)
+    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", scripted_pause)
+
+    # The fixture handoffs are not full handbacks, so a role's post-dispatch
+    # gates may fail; with pause recovery off they pause through the script.
+    config = _dispatch_config(tmp_path, pause_recovery="off")
+    assert "tpm" not in config.agents
+    orchestrator.run_loop(config, log=lambda level, message: None)
+    return orchestrator, events
+
+
+def test_repair_guard_survives_a_route_that_pauses_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Repair -> planner writes a user route -> the user route pauses before
+    # dispatch -> the operator puts the tpm route back. No role dispatched in
+    # between, so the guard pauses instead of repairing a second time.
+    orchestrator, events = _run_scripted_unconfigured_tpm_loop(
+        tmp_path,
+        monkeypatch,
+        dispatch_rewrites=[_USER_HANDOFF],
+        pause_rewrites=[_TPM_HANDOFF],
+        max_dispatches=2,
+    )
+
+    dispatches = [payload for kind, payload in events if kind == "dispatch"]
+    assert [route for route, _ in dispatches] == ["planner"]
+    pauses = [payload for kind, payload in events if kind == "pause"]
+    assert len(pauses) == 2
+    assert pauses[0].startswith("ESCALATION DETECTED")
+    assert pauses[1] == orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON
+    assert not any(kind == "schedule_pause_recovery" for kind, _ in events)
+
+
+def test_repair_guard_clears_after_another_route_dispatches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Repair -> planner writes a backend route -> backend dispatches and puts
+    # the tpm route back. A role dispatched in between, so the tpm route gets
+    # a fresh planner repair instead of the guard pause.
+    orchestrator, events = _run_scripted_unconfigured_tpm_loop(
+        tmp_path,
+        monkeypatch,
+        # A changed tpm handoff, so the second repair is not a stale route.
+        dispatch_rewrites=[_BACKEND_HANDOFF, _TPM_HANDOFF_AGAIN],
+        pause_rewrites=[_TPM_HANDOFF_AGAIN],
+        max_dispatches=3,
+    )
+
+    dispatches = [payload for kind, payload in events if kind == "dispatch"]
+    assert [route for route, _ in dispatches] == ["planner", "backend", "planner"]
+    instruction = orchestrator.TPM_NOT_CONFIGURED_PLANNER_INSTRUCTION
+    assert dispatches[0][1]["additional_instruction"] == instruction
+    assert dispatches[1][1]["additional_instruction"] != instruction
+    assert dispatches[2][1]["additional_instruction"] == instruction
+    third = events.index(("dispatch", dispatches[2]))
+    assert ("pause", orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON) not in events[
+        :third
+    ]
+
+
+# TPM-3 checks 1 to 5: validator rules for producer: tpm
+
+
+def _frontmatter(**fields: str) -> Any:
+    from llm_handoff.router import parse_handoff_frontmatter_text
+
+    values = {"reason": '"Assign the next story."', "producer": "tpm", **fields}
+    lines = "".join(f"{key}: {value}\n" for key, value in values.items())
+    parsed = parse_handoff_frontmatter_text(f"---\n{lines}---\n\n# Handoff\n")
+    assert parsed is not None
+    return parsed
+
+
+def _frontmatter_errors(**fields: str) -> list[str]:
+    from llm_handoff.validator import validate_handoff_frontmatter
+
+    return validate_handoff_frontmatter(_frontmatter(**fields)).errors
+
+
+@pytest.mark.parametrize("next_agent", ["finalizer", "validator"])
+def test_tpm_producer_rejects_next_agent(next_agent: str) -> None:
+    errors = _frontmatter_errors(next_agent=next_agent)
+
+    matching = [
+        error
+        for error in errors
+        if error.startswith("frontmatter_routing_rule:")
+        and "producer `tpm`" in error
+        and f"`{next_agent}`" in error
+    ]
+    assert len(matching) == 1
+
+
+@pytest.mark.parametrize("next_agent", ["backend", "frontend", "auditor", "planner", "user"])
+def test_tpm_producer_allows_next_agent(next_agent: str) -> None:
+    errors = _frontmatter_errors(next_agent=next_agent)
+
+    assert not [error for error in errors if "producer `tpm`" in error]
+
+
+@pytest.mark.parametrize(
+    "status", ["ready_for_review", "verified_pass", "verified_fail"]
+)
+def test_tpm_producer_rejects_completion_status(status: str) -> None:
+    errors = _frontmatter_errors(next_agent="backend", status=status)
+
+    matching = [
+        error
+        for error in errors
+        if error.startswith("frontmatter_status_producer_rule:")
+        and "producer `tpm`" in error
+        and f"`{status}`" in error
+    ]
+    assert len(matching) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "next_agent"),
+    [
+        (None, "backend"),
+        ("blocked_missing_context", "user"),
+        ("blocked_implementation_failure", "planner"),
+        ("escalate_to_user", "user"),
+    ],
+)
+def test_tpm_producer_allows_blocking_or_omitted_status(
+    status: str | None, next_agent: str
+) -> None:
+    fields = {"next_agent": next_agent}
+    if status is not None:
+        fields["status"] = status
+
+    errors = _frontmatter_errors(**fields)
+
+    assert not [
+        error
+        for error in errors
+        if error.startswith("frontmatter_status_producer_rule:")
+    ]
+    assert errors == []
+
+
+def test_tpm_producer_rejects_epic_close_even_to_auditor() -> None:
+    errors = _frontmatter_errors(
+        next_agent="auditor", close_type="epic", scope_sha="0a040ac"
+    )
+
+    matching = [
+        error
+        for error in errors
+        if error.startswith("frontmatter_routing_rule:")
+        and "tpm never closes an epic" in error
+        and "`planner`" in error
+        and "remaining_stories" in error
+    ]
+    assert len(matching) == 1
+
+
+def test_planner_epic_close_to_auditor_is_unchanged() -> None:
+    errors = _frontmatter_errors(
+        next_agent="auditor",
+        close_type="epic",
+        scope_sha="0a040ac",
+        producer="planner",
+    )
+
+    assert not [error for error in errors if "frontmatter_routing_rule" in error]
+
+
+_TPM_WORK_PACKET = (
+    "## Work Packet\n\n"
+    "- **Objective:** Implement the story.\n"
+    "- **Files in scope:** `llm_handoff/validator.py`\n"
+    "- **Files out of bounds:** `examples/`\n"
+    "- **Context:** Test fixture.\n"
+    "- **Verification command:**\n"
+    "  - python -m pytest tests -q\n"
+    "- **Expected next route:** auditor\n"
+)
+
+
+def _handoff_text(next_agent: str, body: str, producer: str = "tpm") -> str:
+    return (
+        "---\n"
+        f"next_agent: {next_agent}\n"
+        'reason: "Assign the next story."\n'
+        f"producer: {producer}\n"
+        "---\n\n"
+        "# Handoff\n\n"
+        f"{body}"
+    )
+
+
+def _validate(text: str, previous_agent: str = "tpm") -> Any:
+    from llm_handoff.validator import validate_handoff_text
+
+    return validate_handoff_text(text, previous_agent)
+
+
+def test_tpm_to_backend_without_work_packet_fails_scope_claim() -> None:
+    result = _validate(_handoff_text("backend", "Go build it.\n"))
+
+    assert (
+        "scope_claim_mismatch: tpm handoffs must include a ## Work Packet section."
+        in result.errors
+    )
+    assert any(
+        warning.startswith("work_packet_missing: tpm handoffs")
+        for warning in result.warnings
+    )
+
+
+def test_tpm_to_backend_with_complete_work_packet_passes_scope_claim() -> None:
+    result = _validate(_handoff_text("backend", _TPM_WORK_PACKET))
+
+    assert not [error for error in result.errors if error.startswith("scope_claim")]
+    assert not [
+        warning
+        for warning in result.warnings
+        if warning.startswith(("work_packet_missing", "acceptance_coverage_unclear"))
+    ]
+    assert result.errors == []
+
+
+def test_tpm_work_packet_coverage_matches_planner() -> None:
+    incomplete = _TPM_WORK_PACKET.replace("- **Context:** Test fixture.\n", "")
+
+    tpm_result = _validate(_handoff_text("frontend", incomplete))
+    planner_result = _validate(
+        _handoff_text("frontend", incomplete, producer="planner"), "planner"
+    )
+
+    tpm_coverage = [
+        warning
+        for warning in tpm_result.warnings
+        if warning.startswith("acceptance_coverage_unclear")
+    ]
+    assert tpm_coverage
+    assert tpm_coverage == [
+        warning
+        for warning in planner_result.warnings
+        if warning.startswith("acceptance_coverage_unclear")
+    ]
+
+
+def test_tpm_to_user_needs_no_work_packet() -> None:
+    result = _validate(
+        _handoff_text("user", "Which epic should come next?\n")
+    )
+
+    assert not [error for error in result.errors if error.startswith("scope_claim")]
+    assert result.errors == []
+
+
+def test_tpm_self_loop_is_rejected() -> None:
+    result = _validate(_handoff_text("tpm", _TPM_WORK_PACKET))
+
+    assert any(error.startswith("agent_self_loop:") for error in result.errors)
 
 
 # Check 6: rationalization patterns

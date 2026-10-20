@@ -15,7 +15,8 @@ belong in commits, handoffs, and pull requests.
   `Fit:` reason applies here too.
 - **Active Epic:** TPM-ROLE, by the operator direction above. TPM-1 (role
   vocabulary) was approved at `67474dd` and merged in PR #206; TPM-2
-  (launching a configured tpm) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+  (launching a configured tpm) was approved at `16bbc32` and merged in PR
+  #207; TPM-3 (validator rules for `producer: tpm`) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,
@@ -1351,6 +1352,8 @@ dispatched without its instructions.
   configured, the orchestrator treats the handoff as not dispatchable and
   schedules the existing planner repair with the instruction `tpm is not
   configured; route to planner or an implementer` instead of pausing.
+  A configured tpm keeps the interim pause until TPM-10, so it is never
+  dispatched before its prompt (TPM-5) and helper files (TPM-6) land.
 - TPM-4 (was part of TPM-4): Per-role Codex artifacts. Today every Codex
   role shares `logs/dispatch/codex/last-message.json` and `session.json`
   (`llm_handoff/agent_providers/codex.py` ~line 410), so a Codex tpm and a
@@ -1419,7 +1422,9 @@ dispatched without its instructions.
   story itself. Pause recovery (`pause_recovery: planner`), the tracker
   lease rebuild, the planner self-loop path, and operator-prompt planner
   dispatch stay on the planner. Without `agents.tpm` every route is
-  unchanged.
+  unchanged. TPM-10 also removes the interim pause for a configured tpm
+  (`TPM_ROUTE_NOT_LAUNCHED_REASON`), so `next_agent: tpm` dispatches the
+  tpm.
 - TPM-11 (was part of TPM-3): Operator prompt `@tpm <message>`, like the
   other `@role` targets, refused with a clear message when `agents.tpm` is
   not configured.

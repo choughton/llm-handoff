@@ -430,6 +430,21 @@ TPM_ROUTE_NOT_LAUNCHED_REASON = (
     "Route to planner or an implementer; dispatch will resume after the file "
     "changes."
 )
+# Without agents.tpm, a tpm route gets one in-cycle planner repair with this
+# instruction instead of a pause.
+TPM_NOT_CONFIGURED_PLANNER_REPAIR_SOURCE = "tpm_not_configured_planner_repair"
+TPM_NOT_CONFIGURED_PLANNER_INSTRUCTION = (
+    "HANDOFF.md routes to tpm, but this dispatcher has no agents.tpm entry: "
+    "tpm is not configured; route to planner or an implementer. Rewrite "
+    "HANDOFF.md so next_agent names a configured role, and keep the "
+    "assignment otherwise unchanged."
+)
+# The planner repair above ran and the handoff still routes to tpm.
+TPM_NOT_CONFIGURED_PAUSE_REASON = (
+    "HANDOFF.md still routes to tpm after a planner repair, and agents.tpm is "
+    "not configured. Route to planner or an implementer, or configure "
+    "agents.tpm; dispatch will resume after the file changes."
+)
 # Linear mode: a missing or empty HANDOFF.md gets one planner cycle that
 # rebuilds the lease from the tracker pool. The dispatcher never calls the
 # tracker itself; the planner reads and comments through its own tools.
@@ -723,6 +738,9 @@ def _run_loop(
     # One bounded planner recovery per pause streak. Only a cycle dispatched
     # without a forced instruction that passes validation clears it.
     pause_recovery_used = False
+    # Set when an unconfigured tpm route got its one planner repair; cleared
+    # when any other route reaches dispatch.
+    tpm_planner_repair_ran = False
     breaker_planner_seen: set[str] = set()
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
@@ -1264,10 +1282,53 @@ def _run_loop(
                 pending_planner_recovery = pause.pending_planner_recovery
             continue
 
+        if decision.route == "tpm" and "tpm" not in config.agents:
+            if tpm_planner_repair_ran:
+                # The one planner repair already ran and the handoff still
+                # routes to tpm: pause instead of repairing again.
+                pause = _pause_at_dispatcher_pause(
+                    config,
+                    handoff_sha=handoff_sha,
+                    reason=TPM_NOT_CONFIGURED_PAUSE_REASON,
+                    log=log_fn,
+                    operator_prompt=operator_prompt,
+                    stop_watch=stop_watch,
+                )
+                if pause.stop:
+                    return 0
+                if pause.kind == "retry":
+                    previous_cycle = None
+                elif pause.pending_planner_recovery is not None:
+                    pending_planner_recovery = pause.pending_planner_recovery
+                continue
+            # In-cycle repair, like the pre-dispatch frontmatter repair: no
+            # pause and no pause recovery, so pause_recovery_used is unchanged.
+            _log(
+                log_fn,
+                "WARN",
+                "HANDOFF.md routes to tpm, but agents.tpm is not configured; "
+                "dispatching planner once to repair the route.",
+            )
+            decision = RoutingDecision(
+                route="planner",
+                confidence="HIGH",
+                source=TPM_NOT_CONFIGURED_PLANNER_REPAIR_SOURCE,
+                reasoning=(
+                    "HANDOFF.md routes to tpm, which is not configured, so the "
+                    "planner repairs the route."
+                ),
+                warnings=[],
+            )
+            forced_additional_instruction = TPM_NOT_CONFIGURED_PLANNER_INSTRUCTION
+            active_planner_recovery_kind = None
+            active_continue_saved_story = False
+            tpm_planner_repair_ran = True
+
         if decision.route == "tpm":
-            # Interim guard: this dispatcher does not launch a tpm yet, so a
-            # tpm route pauses instead of reaching _dispatch(). No pause
-            # recovery is scheduled; the operator or planner edits the file.
+            # Interim guard: this dispatcher does not launch a configured tpm
+            # yet, so a tpm route pauses instead of reaching _dispatch(). No
+            # pause recovery is scheduled; the operator or planner edits the
+            # file.
             pause = _pause_at_dispatcher_pause(
                 config,
                 handoff_sha=handoff_sha,
@@ -1881,6 +1942,11 @@ def _run_loop(
             )
             # A first Ctrl+C from here to the loop top lets this cycle finish:
             # the dispatch (or audit fan-out), commit, gates, and publish.
+            # The tpm repair guard clears only once another route actually
+            # reaches dispatch here; a route that paused or continued before
+            # this point leaves it set.
+            if decision.source != TPM_NOT_CONFIGURED_PLANNER_REPAIR_SOURCE:
+                tpm_planner_repair_ran = False
             console_interrupt.set_active_role(current_cycle.route)
             chat_session.set_role(current_cycle.route)
             if resumed_handback is not None:
