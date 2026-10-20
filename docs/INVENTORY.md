@@ -78,6 +78,7 @@ The protocol files under `docs/handoff/`. Every role reads `HANDBOOK.md` and
 | [docs/handoff/SHARED_REPO_INIT_PROMPT.md](handoff/SHARED_REPO_INIT_PROMPT.md) | all | Common bootstrap instructions for a fresh session. |
 | [docs/handoff/PLANNER_INITIAL_PROMPT.md](handoff/PLANNER_INITIAL_PROMPT.md) | planner | First planner session for a new workflow. |
 | [docs/handoff/PLANNER_HANDOFF_PROMPT.md](handoff/PLANNER_HANDOFF_PROMPT.md) | planner | Ongoing planner dispatch: scope the next story, write the Work Packet. |
+| [docs/handoff/TPM_HANDOFF_PROMPT.md](handoff/TPM_HANDOFF_PROMPT.md) | tpm | Optional story picker when `agents.tpm` is configured: assign the next `remaining_stories` entry with a Work Packet, escalate to the planner. |
 | [docs/handoff/BACKEND_HANDOFF_PROMPT.md](handoff/BACKEND_HANDOFF_PROMPT.md) | backend | Backend implementation prompt. |
 | [docs/handoff/FRONTEND_HANDOFF_PROMPT.md](handoff/FRONTEND_HANDOFF_PROMPT.md) | frontend | Frontend implementation prompt. |
 | [docs/handoff/AUDITOR_HANDOFF_PROMPT.md](handoff/AUDITOR_HANDOFF_PROMPT.md) | auditor | Adversarial review of a `ready_for_review` claim. |
@@ -173,6 +174,7 @@ guide to that directory.
 | [docs/handoff/SHARED_REPO_INIT_PROMPT.md](../examples/reference-workflow/docs/handoff/SHARED_REPO_INIT_PROMPT.md) | Shared startup prompt. |
 | [docs/handoff/PLANNER_INITIAL_PROMPT.md](../examples/reference-workflow/docs/handoff/PLANNER_INITIAL_PROMPT.md) | First planner prompt. |
 | [docs/handoff/PLANNER_HANDOFF_PROMPT.md](../examples/reference-workflow/docs/handoff/PLANNER_HANDOFF_PROMPT.md) | Ongoing planner prompt. |
+| [docs/handoff/TPM_HANDOFF_PROMPT.md](../examples/reference-workflow/docs/handoff/TPM_HANDOFF_PROMPT.md) | Optional tpm prompt. |
 | [docs/handoff/BACKEND_HANDOFF_PROMPT.md](../examples/reference-workflow/docs/handoff/BACKEND_HANDOFF_PROMPT.md) | Backend prompt. |
 | [docs/handoff/FRONTEND_HANDOFF_PROMPT.md](../examples/reference-workflow/docs/handoff/FRONTEND_HANDOFF_PROMPT.md) | Frontend prompt. |
 | [docs/handoff/AUDITOR_HANDOFF_PROMPT.md](../examples/reference-workflow/docs/handoff/AUDITOR_HANDOFF_PROMPT.md) | Auditor prompt. |

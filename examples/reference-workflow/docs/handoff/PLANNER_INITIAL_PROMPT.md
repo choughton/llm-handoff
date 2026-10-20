@@ -16,6 +16,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 ## Role Boundaries
 
 - `planner`: scoping, sequencing, review, and routing.
+- `tpm`: optional; picks each story inside an open epic and writes its Work Packet, only when `agents.tpm` is configured.
 - `backend`: backend/data implementation.
 - `frontend`: UI/browser implementation.
 - `auditor`: adversarial review and invariant checks.
@@ -33,7 +34,7 @@ Every handoff must start with YAML frontmatter:
 
 ```yaml
 ---
-next_agent: <enum>       # required: planner | backend | frontend | auditor | validator | user
+next_agent: <enum>       # required: planner | tpm | backend | frontend | auditor | validator | user
 reason: <string>         # required: quote every `reason` value
 epic_id: <epic id>
 story_id: <story id>
@@ -49,6 +50,14 @@ producer: planner
 ```
 
 If `close_type` is set, run `git rev-parse HEAD` and write the concrete 7-40 character hex SHA. Do not write `scope_sha: HEAD`.
+
+## First Assignment
+
+With `agents.tpm` configured in the dispatch config, open the first epic:
+write `epic_id` and `remaining_stories`, record new stories in
+`PROJECT_STATE.md` as `PLANNER_HANDOFF_PROMPT.md` describes, and route to
+`tpm`, which assigns the first story. Without
+`agents.tpm`, assign the first story yourself with the Work Packet below.
 
 ## Work Packet
 

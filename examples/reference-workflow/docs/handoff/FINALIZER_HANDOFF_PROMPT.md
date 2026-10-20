@@ -12,6 +12,10 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
   yet, so planned work outlives the handoff.
 - Rewrite `docs/handoff/HANDOFF.md` so the next cycle routes to `planner` or `user`.
 - Do not scope the next epic yourself.
+- After an epic close, route to `planner` in both configurations, with or
+  without `agents.tpm`, because the planner picks the next epic. Never route
+  to `tpm`; the planner opens the next epic and routes to `tpm` itself when
+  one is configured.
 - Do not push unless the consuming repository explicitly authorizes this role to push.
 
 ## Required Machine-Readable Result

@@ -15,6 +15,11 @@ Every handoff has two layers:
 - Markdown body for human-readable context, evidence, findings, and work
   packets.
 
+The `tpm` role exists only when `agents.tpm` is configured in the dispatch
+config. Then the planner opens each epic and routes to `tpm`, and the tpm
+assigns each story with a Work Packet. Without it, the planner assigns every
+story itself and no handoff routes to `tpm`.
+
 ## Frontmatter Schema Reference
 
 Every handoff write starts with YAML frontmatter containing `next_agent`,
@@ -29,7 +34,9 @@ Quote every `reason`. Run `git rev-parse HEAD` for concrete SHAs. Never write
 
 `remaining_stories` is the epic's live story list. Every role that rewrites
 `docs/handoff/HANDOFF.md` copies it forward. Remove an entry only when it is
-the story just closed or the story the planner assigns as `story_id`. To drop
+the story just closed or the story the planner or tpm assigns as `story_id`.
+A tpm removes only the story it assigns; it never drops another story, and
+routes a stale or wrong one to `planner` instead. To drop
 any other story, add a `## Dropped Stories` section with one bullet per story,
 starting with its ID:
 
@@ -136,7 +143,9 @@ match it:
   answer.
 - `blocked_implementation_failure` goes to the planner. Pair it with
   `next_agent: planner`. Use it when the Work Packet cannot be completed as
-  written, a work-claim gate failed, or the assignment needs re-scoping.
+  written, a work-claim gate failed, or the assignment needs re-scoping. A
+  `tpm` also sends it to `planner` when the next story is missing, ambiguous,
+  stale, or needs a design decision.
 
 To ask the planner for a re-scope, use `blocked_implementation_failure`, not
 `blocked_missing_context`.

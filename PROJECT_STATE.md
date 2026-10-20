@@ -17,7 +17,9 @@ belong in commits, handoffs, and pull requests.
   vocabulary) was approved at `67474dd` and merged in PR #206; TPM-2
   (launching a configured tpm) was approved at `16bbc32` and merged in PR
   #207; TPM-3 (validator rules for `producer: tpm`) was approved at `831ff3f`
-  and merged in PR #208; TPM-4 (per-role Codex artifacts) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+  and merged in PR #208; TPM-4 (per-role Codex artifacts) was approved at
+  `8dc1728` and merged in PR #209; TPM-5 (the tpm prompt and the protocol
+  docs) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,
@@ -1417,8 +1419,8 @@ dispatched without its instructions.
   pass route to `planner`, and its routing tests). The auditor's story-level
   `verified_pass` routes to `tpm`; the epic-level `verified_pass` with
   `close_type: epic` still routes to `finalizer`; the finalizer routes to
-  `tpm` after an epic close, or to `planner` when `PROJECT_STATE.md` lists no
-  next epic. The planner opens an epic by writing `epic_id` and
+  `planner` after an epic close in both configurations, because choosing the
+  next epic is planner judgment (picked by fit). The planner opens an epic by writing `epic_id` and
   `remaining_stories`, then routes to `tpm` instead of assigning the first
   story itself. Pause recovery (`pause_recovery: planner`), the tracker
   lease rebuild, the planner self-loop path, and operator-prompt planner
