@@ -220,6 +220,29 @@ def invoke_planner_role(
     )
 
 
+def invoke_tpm_role(
+    handoff_path: Path,
+    *,
+    additional_instruction: str | None = None,
+    log: LogFn | None = None,
+    agent_config: AgentConfig,
+    repo_root: Path | None = None,
+    failover_guard: FailoverGuard | None = None,
+) -> DispatchResult:
+    # There is no default tpm config: the role exists only when configured.
+    return invoke_role(
+        "tpm",
+        handoff_path,
+        agent_config=agent_config,
+        additional_instruction=additional_instruction,
+        # Always fresh: every Codex role shares one session file until TPM-4.
+        use_resume=False,
+        log=log,
+        repo_root=repo_root,
+        failover_guard=failover_guard,
+    )
+
+
 def invoke_frontend_role(
     handoff_path: Path,
     *,

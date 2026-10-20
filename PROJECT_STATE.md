@@ -13,8 +13,9 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** TPM-ROLE, with TPM-1 (role vocabulary) in flight, by the
-  operator direction above. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+- **Active Epic:** TPM-ROLE, by the operator direction above. TPM-1 (role
+  vocabulary) was approved at `67474dd` and merged in PR #206; TPM-2
+  (launching a configured tpm) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,

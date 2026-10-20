@@ -27,6 +27,7 @@ from llm_handoff.agent_roles import (
     invoke_frontend_role,
     invoke_planner_role,
     invoke_support_role,
+    invoke_tpm_role,
 )
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.audit_review import (
@@ -2871,6 +2872,27 @@ def _dispatch_route(
                 **_failover_kwargs(config, "planner"),
             ),
             "planner",
+        )
+
+    if route == "tpm":
+        if "tpm" not in config.agents:
+            raise ValueError("tpm is not configured (agents.tpm is absent).")
+        _log(log, "DISPATCH", "Dispatching tpm.")
+        return (
+            _invoke_dispatch_callable(
+                invoke_tpm_role,
+                handoff_path,
+                additional_instruction=_with_commit_mode_instruction(
+                    config,
+                    additional_instruction,
+                    instruction=PLANNER_COMMIT_MODE_INSTRUCTION,
+                ),
+                log=log,
+                agent_config=config.agents["tpm"],
+                repo_root=config.repo_root,
+                **_failover_kwargs(config, "tpm"),
+            ),
+            "tpm",
         )
 
     if route == "frontend":

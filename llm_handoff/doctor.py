@@ -2,7 +2,8 @@
 
 The doctor command checks a checkout before the dispatcher runs: Git, the
 commit count (audits need a parent commit for the default review base), the
-provider CLI binaries the configured roles launch, whether the configured
+provider CLI binaries the configured roles launch (plus a PASS line saying the
+optional tpm role is not configured when `agents.tpm` is absent), whether the configured
 next-agent normalizer has an API key or CLI to run with, whether the audit runs the
 security reviewer (with the opt-out reason when it does not), whether the
 work-claim gate is on (with the opt-out reason when it is not), each configured
@@ -419,6 +420,10 @@ def _check_role_binaries(
                     "was not found on PATH",
                 )
             )
+    if "tpm" not in dispatch_config.agents:
+        checks.append(
+            DoctorCheck("PASS", "role tpm", "not configured (planner picks stories)")
+        )
 
 
 _ANTIGRAVITY_CHECK_NAME = "antigravity permissions"
