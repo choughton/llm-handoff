@@ -13,7 +13,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 
 1. `docs/handoff/HANDBOOK.md`
 2. `AGENTS.md`
-3. `PROJECT_STATE.md` if present
+3. The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md` names another path), if present
 4. `docs/handoff/HANDOFF.md`
 5. `docs/handoff/README.md`
 6. `README.md`
@@ -25,7 +25,7 @@ The backend role owns backend code, tests, data contracts, persistence, command-
 
 If the task is misrouted, rewrite `docs/handoff/HANDOFF.md` and route to `planner`, `validator`, or `user` instead of expanding scope.
 
-Do not modify `PROJECT_STATE.md` unless the current handoff explicitly assigns state-maintenance work to this role.
+Do not modify the project state file unless the current handoff explicitly assigns state-maintenance work to this role.
 
 ## Required Handoff Frontmatter
 

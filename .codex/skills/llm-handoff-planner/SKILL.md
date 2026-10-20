@@ -13,7 +13,7 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 
 1. `docs/handoff/HANDBOOK.md`
 2. `AGENTS.md`
-3. `PROJECT_STATE.md` if present
+3. The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md` names another path), if present
 4. `docs/handoff/HANDOFF.md`
 5. `docs/handoff/README.md`
 6. `README.md`

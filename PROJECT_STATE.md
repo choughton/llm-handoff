@@ -6,9 +6,11 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** TIDY, with TIDY-5 (one refusal summary per dispatch) in
-  progress, picked because it is fully specified, needs no operator input,
-  and is cheap. TIDY-4 (tracker probe and stop-request hardening) was
+- **Active Epic:** TIDY, with TIDY-6 (non-Claude helper files defer to the
+  configured project state path) in progress, picked because it is fully
+  specified, needs no operator input, and must precede TIDY-7. TIDY-5 (one
+  refusal summary per dispatch) was approved at `80682fd` and merged in PR
+  #190. TIDY-4 (tracker probe and stop-request hardening) was
   approved at `ec81ba8` and merged in PR #188. TIDY-3 (docs and text cleanup) was approved
   at `bf27c64` and merged in PR #187. TIDY-1 (operator-prompt and doctor message fixes) was approved at
   `33a8600` and merged in PR #186. TIDY-2 (scanner
@@ -1497,7 +1499,7 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: active; TIDY-5 is in progress. Independent and cheap; each story is
+Fit: active; TIDY-6 is in progress. Independent and cheap; each story is
 one Work Packet and fills a wait. Nothing here blocks another epic or waits
 on one. TIDY-7 routes to `user`
 (Claude roles cannot write `.claude/`). TIDY-8 needs the operator to confirm
@@ -1595,7 +1597,8 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `finalize` and never appended to stderr; Claude prefixes are the program
   basename (plus the `git` subcommand) or the tool name, with `<command>`
   for anything outside a safe character set; `agy` names the matched deny
-  rules, since it keeps no command text (GEM-0h).
+  rules, since it keeps no command text (GEM-0h). Approved at `80682fd`,
+  merged in PR #190.
 - TIDY-6: Non-Claude helper files defer to the configured project state
   path. The planner, backend, frontend, auditor, validator, router, and
   ledger-updater helper files under `.agents/agents/` and the role skills
@@ -1606,7 +1609,12 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   named in the dispatcher prompt (`PROJECT_STATE.md` by default)"). These are
   protected paths, so list each file under Files in scope. Verification:
   `tests/test_reference_workflow.py` and the full suite. Closes
-  CONFIG-CLEANUP (a) outside `.claude/`.
+  CONFIG-CLEANUP (a) outside `.claude/`. Decided by the planner on
+  2026-10-20: the wording is 'The project state file (`PROJECT_STATE.md`
+  unless the dispatcher prompt or `AGENTS.md` names another path)', because
+  only the finalizer's dispatcher prompt names the configured path; the
+  planner story-recording paragraph keeps the literal name because
+  `tests/test_story_list.py` asserts it across every planner prompt tree.
 - TIDY-7: Operator edit of the Claude helper files (routes to `user`).
   Claude roles cannot write `.claude/`, so the planner writes the exact edits
   into the handoff and routes to `user`, as GEM-5c and LIN-9d did: (a) the
