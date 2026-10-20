@@ -188,14 +188,27 @@ class ChatInput:
         self._after_cr = False
         self._pending: list[str] = []
         self._pending_lock = threading.Lock()
+        # Held for a whole start() or stop(), including the bounded join.
         self._lifecycle_lock = threading.Lock()
+        # Short-held lock shared with the worker; never held across a join,
+        # a reader call, or a callback.
+        self._state_lock = threading.Lock()
+        # The one capture worker. It stays set until the worker itself
+        # commits to exit, even when stop() times out waiting for it.
         self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
+        # True from start() until stop(), or until the input closes.
+        self._active = False
+        # Bumped by every start() and stop(). The worker drops the rest of
+        # a batch as soon as the generation it read under changes.
+        self._generation = 0
+        # True while reader.open() has run without a matching close().
+        self._opened = False
 
     @property
     def running(self) -> bool:
-        thread = self._thread
-        return thread is not None and thread.is_alive()
+        with self._state_lock:
+            thread = self._thread
+            return self._active and thread is not None and thread.is_alive()
 
     @property
     def buffer(self) -> str:
@@ -203,36 +216,48 @@ class ChatInput:
 
     def start(self) -> None:
         with self._lifecycle_lock:
-            if self._thread is not None:
-                if self._thread.is_alive():
+            with self._state_lock:
+                if self._active:
                     return
-                # The thread ended on its own (input closed); finish that
+            if self._opened:
+                # The worker ended on its own (input closed); finish that
                 # start before opening the reader again.
-                self._finish_locked()
+                self._opened = False
+                self._reader.close()
             self._reader.open()
-            self._stop_event = threading.Event()
-            thread = threading.Thread(
-                target=self._run,
-                args=(self._stop_event,),
-                name="llm-handoff-chat-input",
-                daemon=True,
-            )
-            self._thread = thread
+            self._opened = True
+            with self._state_lock:
+                self._generation += 1
+                self._active = True
+                if self._thread is not None:
+                    # A worker from an earlier start outlasted stop()'s
+                    # bounded join (a slow callback or renderer). It has not
+                    # committed to exit, so it is adopted: its stale batch is
+                    # dropped and it resumes reading once the callback
+                    # returns. There is never a second worker.
+                    return
+                thread = threading.Thread(
+                    target=self._run,
+                    name="llm-handoff-chat-input",
+                    daemon=True,
+                )
+                self._thread = thread
             thread.start()
 
     def stop(self) -> None:
         with self._lifecycle_lock:
-            if self._thread is None:
-                return
-            self._finish_locked()
-
-    def _finish_locked(self) -> None:
-        thread = self._thread
-        self._thread = None
-        self._stop_event.set()
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=max(self._poll_interval * 4, 0.2))
-        self._reader.close()
+            with self._state_lock:
+                if not self._opened:
+                    return
+                self._active = False
+                self._generation += 1
+                thread = self._thread
+            if thread is not None and thread is not threading.current_thread():
+                # Bounded: a worker still inside a slow callback after this
+                # keeps ownership (see start) and exits or is adopted later.
+                thread.join(timeout=max(self._poll_interval * 4, 0.2))
+            self._opened = False
+            self._reader.close()
 
     def __enter__(self) -> ChatInput:
         self.start()
@@ -252,14 +277,34 @@ class ChatInput:
         for char in chars:
             self._handle_char(char)
 
-    def _run(self, stop_event: threading.Event) -> None:
-        while not stop_event.is_set():
+    def _run(self) -> None:
+        current = threading.current_thread()
+        while True:
+            with self._state_lock:
+                if not self._active:
+                    # Commit to exit under the lock, so start() either sees
+                    # this worker as gone or adopts it before this check.
+                    if self._thread is current:
+                        self._thread = None
+                    return
+                generation = self._generation
             try:
                 chars = self._reader.read_chars(self._poll_interval)
             except (EOFError, OSError):
+                with self._state_lock:
+                    if self._generation == generation:
+                        self._active = False
+                continue
+            if chars:
+                self._feed_batch(chars, generation)
+
+    def _feed_batch(self, chars: str, generation: int) -> None:
+        # Checked before every character, so a batch read before stop() (or
+        # before a restart) does nothing once its callback returns.
+        for char in chars:
+            if self._generation != generation:
                 return
-            if chars and not stop_event.is_set():
-                self.feed(chars)
+            self._handle_char(char)
 
     def _handle_char(self, char: str) -> None:
         if char == "\n" and self._after_cr:

@@ -297,6 +297,121 @@ def test_oserror_ends_thread_and_start_after_eof_reopens() -> None:
     assert reader.close_count == 2
 
 
+def _blocking_notify_chat(
+    reader: Any,
+) -> tuple[ChatInput, threading.Event, threading.Event, list[str]]:
+    entered = threading.Event()
+    release = threading.Event()
+    notes: list[str] = []
+
+    def notify(text: str) -> None:
+        notes.append(text)
+        entered.set()
+        release.wait(5)
+
+    chat = ChatInput(
+        ChatLine(io.StringIO(), terminal_columns=lambda: 120),
+        reader,
+        notify=notify,
+        interrupt=lambda: None,
+        poll_interval=0.01,
+    )
+    return chat, entered, release, notes
+
+
+def _capture_threads() -> list[threading.Thread]:
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "llm-handoff-chat-input" and thread.is_alive()
+    ]
+
+
+def test_slow_callback_across_stop_and_restart_keeps_one_worker() -> None:
+    reader = _ScriptedReader(["first\rsecond\r"])
+    chat, entered, release, notes = _blocking_notify_chat(reader)
+
+    chat.start()
+    try:
+        assert entered.wait(2)
+        worker = chat._thread
+        assert worker is not None
+        chat.stop()
+        # The worker outlived the bounded join but still belongs to chat.
+        assert not chat.running
+        assert worker.is_alive()
+        assert chat._thread is worker
+        assert reader.close_count == 1
+
+        chat.start()
+        assert chat.running
+        assert reader.open_count == 2
+        assert chat._thread is worker
+        assert _capture_threads() == [worker]
+
+        release.set()
+        reader.add("third\r")
+        assert _wait_until(lambda: len(notes) == 2)
+        # "second" was read before stop and is dropped, not submitted late.
+        assert chat.take_pending() == ["first", "third"]
+        assert _capture_threads() == [worker]
+    finally:
+        release.set()
+        chat.stop()
+    assert _wait_until(lambda: not worker.is_alive())
+    assert reader.close_count == 2
+
+
+def test_slow_callback_after_stop_submits_nothing_more_and_exits() -> None:
+    reader = _ScriptedReader(["first\rsecond\r"])
+    chat, entered, release, notes = _blocking_notify_chat(reader)
+
+    chat.start()
+    assert entered.wait(2)
+    worker = chat._thread
+    assert worker is not None
+    chat.stop()
+    assert worker.is_alive()
+
+    release.set()
+    assert _wait_until(lambda: not worker.is_alive())
+    assert chat._thread is None
+    assert notes == [CHAT_UNAVAILABLE_MESSAGE]
+    assert chat.take_pending() == ["first"]
+    assert reader.close_count == 1
+    chat.stop()
+    assert reader.close_count == 1
+
+
+def test_slow_renderer_across_stop_drops_rest_of_batch() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _SlowChatLine(ChatLine):
+        def set_buffer(self, text: str) -> None:
+            super().set_buffer(text)
+            if text == "a":
+                entered.set()
+                release.wait(5)
+
+    reader = _ScriptedReader(["abc"])
+    chat = ChatInput(
+        _SlowChatLine(io.StringIO(), terminal_columns=lambda: 120),
+        reader,
+        notify=lambda text: None,
+        interrupt=lambda: None,
+        poll_interval=0.01,
+    )
+    chat.start()
+    assert entered.wait(2)
+    worker = chat._thread
+    assert worker is not None
+    chat.stop()
+    release.set()
+    assert _wait_until(lambda: not worker.is_alive())
+    assert chat.buffer == "a"
+
+
 def test_context_manager_starts_and_stops() -> None:
     reader = _ScriptedReader(["x"])
     chat, _, _, _ = _chat(reader)
