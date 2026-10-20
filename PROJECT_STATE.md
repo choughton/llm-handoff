@@ -6,15 +6,20 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Operator direction (2026-10-20):** park CHAT once the CHAT story in
-  flight (CHAT-16, read-only session answer launchers for Claude and Codex)
-  merges, and start TPM-ROLE with TPM-1 next; when CHAT-16 merges, TPM-ROLE
-  becomes the Active Epic and CHAT moves to Parked Epic. CHAT resumes after
-  TPM-ROLE with its remaining stories. The operator moves the self-host
+- **Operator direction (2026-10-20):** CHAT-16 (read-only session answer
+  launchers) is dropped unmerged, and chat is redesigned so it answers right
+  away and can edit files and `HANDOFF.md` with the role's own permissions
+  (see the CHAT intro). CHAT is parked and TPM-ROLE starts with TPM-1. CHAT
+  resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, with CHAT-16 in progress until it merges (see the
-  operator direction above). CHAT-15 (the loop records each dispatch in the
+- **Active Epic:** TPM-ROLE, with TPM-1 (role vocabulary) next, by the
+  operator direction above. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+  wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
+  needs a design check, and LINEAR-SWITCH has low urgency.
+- **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,
+  and CHAT-5 remaining. It waits for TPM-ROLE to close, not for the
+  operator. CHAT-15 (the loop records each dispatch in the
   dispatch record) was merged in PR #203. CHAT-3 (dispatch record file) was approved at
   `6d387ab` and merged in PR #202. CHAT-14 (Claude and Codex role dispatches report their session id) was
   approved at `b61b313` and merged in PR #201. CHAT-2 (sent chat messages are saved
@@ -28,9 +33,6 @@ belong in commits, handoffs, and pull requests.
   wiring) was approved at `7a6170b` and merged in PR #196. CHAT-10 (chat keystroke capture component) was approved at `9ac6a21` and
   merged in PR #195. CHAT-9 (console chat line renderer) was approved at
   `3ac5fcf` and merged in PR #194.
-  ACTIVE-PLANNER and ESCALATION-RECONCILE still wait on their triggers,
-  TPM-ROLE is next by the operator direction above,
-  TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** TIDY, with TIDY-7 and TIDY-8 remaining. TIDY-7 waits for
   the operator to say they are ready to make the `.claude/agents/*.md`
   deferral edits; the planner then writes the edits out and routes to
@@ -569,7 +571,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 Fit: closed. HARD-1 through HARD-6 are merged (HARD-6 in PR #157); the epic
 close was approved at `3949ed2388e6a726012cfbf0c8d3511fba5ea179`. Nothing
-remains. CHAT-6's (was CHAT-4) dependency on the HARD-3 marker is
+remains. CHAT-18's dependency on the HARD-3 marker is
 satisfied.
 
 The security-relevant Open Followups, promoted to stories. Each story names
@@ -609,7 +611,7 @@ the followup it closes; all five were confirmed in the code at `d67722e`.
   story publishes. Record only the marker, the time, and a SHA-256 digest of
   the message, never its text: an operator may type private context or a
   credential at the console, and `SECURITY.md` keeps secrets out of
-  `HANDOFF.md`, logs, and anything published. CHAT-6 (was CHAT-4) reuses
+  `HANDOFF.md`, logs, and anything published. CHAT-18 reuses
   this marker.
   Decided by the planner on 2026-10-18: fan-out path only (the single-agent
   auditor writes its own handoff and stays unmarked); the marker is a
@@ -1056,14 +1058,27 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: parked by the operator on 2026-10-20 after the CHAT story in flight
-merges; TPM-ROLE goes first. Resume CHAT with its remaining stories once
-TPM-ROLE closes. Nothing else blocks it: HARD-3 is merged and RECOVERY is
-closed.
+Fit: parked by the operator on 2026-10-20; TPM-ROLE goes first. Resume CHAT
+with CHAT-17 once TPM-ROLE closes. Nothing else blocks it: HARD-3 is merged
+and RECOVERY is closed.
 
-The operator types at any time; a message holds the loop and is answered by
-the agent it is about, from that agent's own session, read-only. Chat never
-changes routing on its own: only a confirmed action re-dispatches a role.
+Operator redesign (2026-10-20). Chat works like a side coding session the
+operator talks to while the loop runs: it answers right away, while the
+current role keeps running, and it can fix what the operator asks for. It
+edits files, and it changes the run by rewriting `HANDOFF.md`. A chat session
+gets the same tools and permissions as the role whose provider it runs on:
+the role's own launch arguments, `unsafe_bypass` included. Do not add a
+read-only boundary to chat: no tool allowlists narrower than the role's, no
+read-only sandbox, no disabling of MCP servers or hooks, and no pause because
+chat changed `HANDOFF.md` or Git. Write access is the operator's decision,
+so a reviewer finding that only says chat can write is out of scope. The
+dispatcher records what chat changed and makes it pass through the same
+gates as role work: chat file changes are committed with the run and
+audited before anything publishes, and a chat rewrite of `HANDOFF.md` is
+validated before the loop follows it. CHAT-16 (read-only session answer
+launchers) was dropped unmerged; its branch has reusable answer and session
+id parsing, but not its permission arguments.
+
 Console only, TTY only; without a TTY the loop behaves exactly as today. No new
 dependencies; Windows (`msvcrt`) and POSIX.
 
@@ -1176,30 +1191,70 @@ dependencies; Windows (`msvcrt`) and POSIX.
   (entries are appended to a private staging copy, so the repository copy is
   never read); a symlink or junction on the record path logs one WARN and
   disables the record for the rest of the run.
-- CHAT-4 (was part of CHAT-3): Read-only answers from Claude and Codex
-  sessions. A question finds the agent it is about in the CHAT-15 dispatch
-  record, resumes that agent's own session, and prints the answer; follow-ups stay in the same thread. Each answer runs behind a
-  read-only boundary the provider enforces, not a prompt-level mode: Claude
-  `--resume` with only read tools (Read, Grep, Glob, read-only `git`); Codex
-  `exec resume` in the read-only sandbox. After each answer the dispatcher
-  checks that `HANDOFF.md` and the Git state are unchanged and pauses with a
-  warning if not; this check is a second layer, not the boundary. An agy
-  session says it cannot answer yet and offers the planner.
-- CHAT-5 (was part of CHAT-3): Read-only answers from agy. agy plan mode is
-  not a boundary, so agy answers only through an enforced one, for example
-  `--conversation` with an agent whose `tools:` list holds only read tools
-  (as in GEMINI-REMOVAL). Same post-answer state check as CHAT-4.
-- CHAT-6 (was part of CHAT-4): `@role` targeting and the action path.
-  `@role <message>` targets that role. An action asks `Re-dispatch <role>
-  with this guidance? [y/N]`; yes uses the existing operator role dispatch,
-  and the handoff and pull request record the result as operator-influenced
-  (reuses the HARD-3 operator-influenced marker).
-- CHAT-7 (was part of CHAT-4): Untargeted messages. Without `@role`, the
-  normalizer model classifies the message against the dispatch record
-  (target, question or action, confidence) and prints its pick before
-  anything runs, for example `-> asking auditor (LIN-9b audit, session
-  <id>)`; a low-confidence pick shows a numbered list instead. Questions
-  about the loop as a whole go to the planner.
+- CHAT-16 (was part of CHAT-4): Dropped unmerged on 2026-10-20 by the
+  operator redesign above. It built read-only answer launchers; CHAT-17
+  replaces it.
+- CHAT-17 (replaces CHAT-16): Chat side-session launcher. A new module
+  starts one chat session for a message and resumes it for follow-ups,
+  returning the answer text, the session id, the exit code, a short error,
+  and the files the session's own edit events name (Claude `Edit`, `Write`,
+  `MultiEdit`, and `NotebookEdit` tool calls in its stream output; Codex
+  file-change items). It runs in the repository root on the provider of the
+  active role (`claude` or `codex`), with that role's normal launch
+  arguments, `unsafe_bypass` included, so it has the role's tools and
+  permissions. The prompt names the active role, the story, the
+  `HANDOFF.md` path, and the role's log, and says the session may edit files
+  and `HANDOFF.md` to do what the operator asks. Another provider raises
+  before launch. Not wired into the loop.
+- CHAT-18 (was part of CHAT-4): Chat file changes are committed and audited.
+  After a chat answer, the dispatcher records the files the CHAT-17 result
+  names under `logs/dispatch/`, with their fingerprints, the time, and a
+  SHA-256 of the message, never its text. Only those files count as chat
+  changes: a file the role edits while the answer runs, or one chat changed
+  without an edit event (for example through a shell command), stays the
+  role's and goes through the normal scope check. During an implementer
+  role, the work-claim gate commits the recorded files with the role's work
+  even outside the Work Packet's files in scope, and the commit and pull
+  request carry the HARD-3 operator-influenced marker. During any other
+  role, the dispatcher commits them itself after the role's cycle, before
+  the next route, with the same marker. Chat changes committed after an
+  approved audit send the story back to the audit fan-out before it
+  publishes, so nothing unaudited is published. Tested with a faked
+  CHAT-17 result; the loop calls it once CHAT-20 wires chat in.
+- CHAT-19 (was part of CHAT-4): A chat rewrite of `HANDOFF.md` takes over the
+  run. When a chat answer changes `HANDOFF.md` while a role runs, the
+  dispatcher stops that role as an operator interrupt does, keeps the role's
+  partial file changes as carry-over, validates the chat's handoff, and
+  continues from it; an invalid handoff pauses as today. The role is stopped
+  before it can write its own handback, so the chat's handoff is not
+  overwritten. File changes without a `HANDOFF.md` change let the role keep
+  running. `docs/ARCHITECTURE.md` says chat may write `HANDOFF.md` this way.
+  Tested with a faked CHAT-17 result; the loop calls it once CHAT-20 wires
+  chat in.
+- CHAT-20 (was part of CHAT-4): Messages are answered right away. Lands after
+  CHAT-18 and CHAT-19, so writable chat is never wired in without them. A
+  non-blank chat submission goes to the CHAT-17 side session instead of the
+  CHAT-12 queue, and the answer prints above the chat line while the role
+  keeps running; messages typed while an answer runs wait in order, and
+  follow-ups resume the same side session for the rest of the run. After
+  each answer the loop applies CHAT-18 and CHAT-19. New submissions no
+  longer write the CHAT-12 queue, and the CHAT-13 `Press Enter to continue`
+  hold runs only when that file already holds messages (saved before this
+  story, or kept by an earlier stop), so none is stranded. At the points
+  where the hold runs (before the publish and settle steps), and before the
+  work-claim gate commits, the loop also waits for a running chat answer to
+  finish. An agy role prints that chat is not available for agy yet.
+- CHAT-4 (was part of CHAT-3): `@role` asks a finished role's own session.
+  `@role <message>` finds the role's latest entry in the CHAT-15 dispatch
+  record and resumes that session with the role's normal launch arguments,
+  so the role that did the work answers and can fix it; the CHAT-18 and
+  CHAT-19 rules apply to what it changes. `@role` for the running role, or a
+  role with no recorded session, goes to the side session. Untargeted
+  messages always go to the side session (the old CHAT-7 normalizer
+  classification is dropped).
+- CHAT-5 (was part of CHAT-3): Chat on agy. The side session and `@role`
+  answers run on agy with the role's normal agent and grants, as agy role
+  dispatches do.
 
 ### 14. WORK-INTAKE - turn a plain request into epics and stories
 
@@ -1229,7 +1284,7 @@ mapping) and leaves `agy` the epic-level judgment. Pick it once GEMINI-REMOVAL
 closes; it is independent of that epic apart from TPM-6 not recreating
 `.gemini/`. If the default planner moves off `antigravity`, most of the reason
 for this epic goes away; re-check the Fit before starting it. Operator
-direction 2026-10-20: this epic is next, ahead of the rest of CHAT. The
+direction 2026-10-20: this epic is active, ahead of the rest of CHAT. The
 self-host planner runs on claude only until TPM-ROLE lands; the operator then
 moves it to agy with a codex tpm, so the reason above holds.
 
