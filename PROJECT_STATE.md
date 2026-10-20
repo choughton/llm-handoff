@@ -1285,7 +1285,8 @@ dispatched without its instructions.
   `.claude/agents/tpm.md` (root and `examples/reference-workflow/` copies)
   into the handoff for the operator to add, as GEM-5c did, plus the Linear
   section TPM-7 renders into it. It comes before TPM-10 because a Claude
-  tpm needs this file before any route reaches it.
+  tpm needs this file before any route reaches it. If TIDY-7 is still open,
+  list its edits in the same handoff (operator batching, 2026-10-20).
 - TPM-10 (was part of TPM-3): Routing to the tpm when it is configured
   (`llm_handoff/orchestrator.py`; `build_audit_handoff()` in
   `llm_handoff/audit_review.py` ~line 1147, which hard-codes the non-epic
@@ -1405,7 +1406,8 @@ handbook and the code from drifting.
 - TRANS-6: Operator edit of the Claude validator helpers (routes to `user`).
   The planner writes the exact edit for `.claude/agents/handoff-validator.md`
   and its `examples/reference-workflow/` copy so they cite the TRANS-5 table,
-  as GEM-5c did.
+  as GEM-5c did. If TIDY-7 is still open, list its edits in the same handoff
+  (operator batching, 2026-10-20).
 
 ### 18. ACTIVE-PLANNER - finish stories without a person at the console
 
@@ -1551,15 +1553,28 @@ the `(was ...)` notes give the old IDs. None had started.
   `planner.md`, under `.claude/agents/` (root and
   `examples/reference-workflow/` copies). The auditor helper already trusts
   the PASS section (`.claude/agents/auditor.md` ~line 46), so it needs no
-  change unless ACTIVE-1's auditor prompt wording must be mirrored.
+  change unless ACTIVE-1's auditor prompt wording must be mirrored. If
+  TIDY-7 is still open, list its edits in the same handoff (operator
+  batching, 2026-10-20).
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: parked. TIDY-7 waits for the operator to say they are ready to make the
-`.claude/agents/*.md` deferral edits; the planner then writes the edits out
-and routes to `user` (Claude roles cannot write `.claude/`). TIDY-8 waits for
-the operator to confirm they want Linear `epic_closed` and
-`handoff_repaired` evidence events. Nothing here blocks another epic.
+Fit: TIDY-8 is unblocked; TIDY-7 is batched. The operator answered both
+questions on 2026-10-20; this line supersedes the TIDY bullet in Current
+Status until the next Work Packet rewrites it. TIDY-8: the operator wants
+both Linear evidence events (`epic_closed` and `handoff_repaired`), so it is
+a normal backend story the planner may pick by fit. TIDY-7: the operator is
+ready for the `.claude/` edits but wants one pause, not one per story, so do
+not route TIDY-7 to `user` on its own. Take it in the same `user`-routed
+handoff as the next `.claude/` operator story (TPM-9, TRANS-6, or ACTIVE-8),
+listing both stories' exact edits. That companion story's Work Packet adds
+TIDY-7's files to its Files in scope and TIDY-7's wording check to its
+acceptance criteria, so the companion audit covers both edits. When that
+audit passes, the planner's next Work Packet records TIDY-7 as approved at
+the companion audit's SHA (and its pull request), removes it from TIDY's
+remaining stories, and, if TIDY then has none left, routes the TIDY epic
+close to `finalizer` before picking new work. TIDY closes only after TIDY-7.
+Nothing here blocks another epic.
 
 The Open Followups that were still open on 2026-10-19, promoted to stories.
 Line numbers are from `105ea42`; re-check them when writing the Work Packet.
@@ -1680,9 +1695,10 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   TIDY-11 on 2026-10-20: the GEM-3b render is `_LINEAR_AGENT_TOOLS` in
   `llm_handoff/init_workflow.py`, not a `.claude/` edit. Take it after TIDY-6
   so both trees use the same wording. Closes CONFIG-CLEANUP (a) inside
-  `.claude/` only.
+  `.claude/` only. Batched (operator, 2026-10-20): ride along with the next
+  `.claude/` operator story's `user` route, as the Fit line says.
 - TIDY-8: Linear evidence events for epic closes and handoff repairs
-  (confirm with the operator first). (a) In Linear mode the finalizer posts
+  (operator confirmed both events on 2026-10-20). (a) In Linear mode the finalizer posts
   nothing, so an epic close leaves no evidence comment; add an `epic_closed`
   event to `LINEAR_EVIDENCE_EVENTS` and the evidence comment template, posted
   on the last story's issue. (b) A validator or planner repair of a leased
