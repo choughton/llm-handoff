@@ -1567,8 +1567,14 @@ a normal backend story the planner may pick by fit. TIDY-7: the operator is
 ready for the `.claude/` edits but wants one pause, not one per story, so do
 not route TIDY-7 to `user` on its own. Take it in the same `user`-routed
 handoff as the next `.claude/` operator story (TPM-9, TRANS-6, or ACTIVE-8),
-listing both stories' exact edits. TIDY closes only after TIDY-7. Nothing
-here blocks another epic.
+listing both stories' exact edits. That companion story's Work Packet adds
+TIDY-7's files to its Files in scope and TIDY-7's wording check to its
+acceptance criteria, so the companion audit covers both edits. When that
+audit passes, the planner's next Work Packet records TIDY-7 as approved at
+the companion audit's SHA (and its pull request), removes it from TIDY's
+remaining stories, and, if TIDY then has none left, routes the TIDY epic
+close to `finalizer` before picking new work. TIDY closes only after TIDY-7.
+Nothing here blocks another epic.
 
 The Open Followups that were still open on 2026-10-19, promoted to stories.
 Line numbers are from `105ea42`; re-check them when writing the Work Packet.
