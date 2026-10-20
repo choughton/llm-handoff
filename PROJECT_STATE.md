@@ -1160,7 +1160,12 @@ dependencies; Windows (`msvcrt`) and POSIX.
   existing record is left as it was. A clear or write `OSError` logs one
   WARN naming the record path and the run or cycle continues unchanged.
   When Git does not ignore the record path, the run logs one WARN at start
-  and writes no entries, so the record never shows up in a work-claim gate.
+  and neither clears nor writes it, so a tracked record is left untouched
+  and the record never shows up in a work-claim gate. The clear and each
+  write go through the carry-over record's link-resistant unlink and writer
+  (entries are appended to a private staging copy, so the repository copy is
+  never read); a symlink or junction on the record path logs one WARN and
+  disables the record for the rest of the run.
 - CHAT-4 (was part of CHAT-3): Read-only answers from Claude and Codex
   sessions. A question finds the agent it is about in the CHAT-15 dispatch
   record, resumes that agent's own session, and prints the answer; follow-ups stay in the same thread. Each answer runs behind a

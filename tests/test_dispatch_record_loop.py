@@ -13,7 +13,7 @@ import pytest
 
 from llm_handoff import orchestrator
 from llm_handoff.agent_types import DispatchResult, SubagentResult
-from llm_handoff.config import DispatchConfig
+from llm_handoff.config import DISPATCH_RECORD_STATE_PATH, DispatchConfig
 from llm_handoff.dispatch_record import (
     DispatchEntry,
     dispatch_record_path,
@@ -433,10 +433,14 @@ def test_a_clear_oserror_warns_once_and_the_run_continues(
         orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-1", calls)
     )
 
-    def failing_clear(_path: Path) -> None:
-        raise OSError("access denied")
+    real_unlink = orchestrator._unlink_carry_over_record
 
-    monkeypatch.setattr(orchestrator, "clear_dispatch_record", failing_clear)
+    def failing_clear(repo_root: Path, name: str = "carry-over.json") -> None:
+        if name == DISPATCH_RECORD_STATE_PATH.name:
+            raise OSError("access denied")
+        real_unlink(repo_root, name)
+
+    monkeypatch.setattr(orchestrator, "_unlink_carry_over_record", failing_clear)
 
     exit_code, logs = _run(_config(repo))
 
@@ -452,11 +456,14 @@ def test_a_clear_oserror_warns_once_and_the_run_continues(
 
 def test_a_dry_run_does_not_clear(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _init_repo(tmp_path / "repo")
-    monkeypatch.setattr(
-        orchestrator,
-        "clear_dispatch_record",
-        lambda _path: pytest.fail("a dry run must not clear the record"),
-    )
+    real_unlink = orchestrator._unlink_carry_over_record
+
+    def no_clear(repo_root: Path, name: str = "carry-over.json") -> None:
+        if name == DISPATCH_RECORD_STATE_PATH.name:
+            pytest.fail("a dry run must not clear the record")
+        real_unlink(repo_root, name)
+
+    monkeypatch.setattr(orchestrator, "_unlink_carry_over_record", no_clear)
     monkeypatch.setattr(
         orchestrator,
         "record_dispatch",
@@ -538,7 +545,12 @@ def test_the_manual_frontend_records_no_provider(tmp_path: Path) -> None:
     result = DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.0)
 
     orchestrator._record_role_dispatch(
-        config, route="frontend", story_id="S1", dispatch_result=result, log=lambda *_: None
+        config,
+        route="frontend",
+        story_id="S1",
+        dispatch_result=result,
+        log=lambda *_: None,
+        state=orchestrator._DispatchRecordState(enabled=True),
     )
 
     assert _summary(_record(tmp_path)) == [("frontend", "S1", None, None)]
@@ -551,9 +563,208 @@ def test_a_configured_frontend_records_its_provider(tmp_path: Path) -> None:
     )
 
     orchestrator._record_role_dispatch(
-        config, route="frontend", story_id=None, dispatch_result=result, log=lambda *_: None
+        config,
+        route="frontend",
+        story_id=None,
+        dispatch_result=result,
+        log=lambda *_: None,
+        state=orchestrator._DispatchRecordState(enabled=True),
     )
 
     assert _summary(_record(tmp_path)) == [
         ("frontend", None, config.agents["frontend"].provider, "f-1")
     ]
+
+
+def test_a_disabled_record_writes_nothing(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    result = DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.0)
+
+    orchestrator._record_role_dispatch(
+        config,
+        route="backend",
+        story_id="S1",
+        dispatch_result=result,
+        log=lambda *_: None,
+        state=orchestrator._DispatchRecordState(enabled=False),
+    )
+
+    assert not dispatch_record_path(tmp_path).exists()
+
+
+# Review finding 2: decide the ignore status before deleting anything.
+def test_a_tracked_record_git_does_not_ignore_is_left_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    _write(repo / ".gitignore", "")
+    path = dispatch_record_path(repo)
+    record_dispatch(
+        path, role="planner", story_id="OLD-1", provider="codex", session_id="old"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "track the record")
+    before = path.read_bytes()
+    monkeypatch.setattr(
+        orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-1", [])
+    )
+
+    exit_code, logs = _run(_config(repo))
+
+    assert exit_code == 0
+    assert path.read_bytes() == before
+    assert _git(repo, "status", "--porcelain", "--", DISPATCH_RECORD_STATE_PATH.as_posix()) == ""
+    assert any(
+        level == "WARN" and "Git does not ignore" in text for level, text in logs
+    )
+
+
+# Review finding 1: never delete or write through a linked parent directory.
+def _link_directory(link: Path, target: Path) -> None:
+    if sys.platform == "win32":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def _unlink_directory(link: Path) -> None:
+    if sys.platform == "win32":
+        link.rmdir()
+    else:
+        link.unlink()
+
+
+def _link_warnings(logs: list[tuple[str, str]]) -> list[str]:
+    return [
+        text
+        for level, text in logs
+        if level == "WARN"
+        and text.startswith("The dispatch record path")
+        and "symlink or junction" in text
+    ]
+
+
+def test_a_linked_record_directory_at_start_is_neither_cleared_nor_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / DISPATCH_RECORD_STATE_PATH.name
+    victim.write_bytes(b"outside the repository\n")
+    link = repo / DISPATCH_RECORD_STATE_PATH.parent
+    link.parent.mkdir(parents=True)
+    _link_directory(link, outside)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-1", calls)
+    )
+
+    try:
+        _exit_code, logs = _run(_config(repo))
+        assert calls == ["backend"]
+        assert victim.read_bytes() == b"outside the repository\n"
+        assert len(_link_warnings(logs)) == 1
+    finally:
+        _unlink_directory(link)
+
+
+def test_a_link_planted_during_a_dispatch_is_not_written_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / DISPATCH_RECORD_STATE_PATH.name
+    victim.write_bytes(b"outside the repository\n")
+    link = repo / DISPATCH_RECORD_STATE_PATH.parent
+    finish = _finishing_backend(repo, "sess-1", [])
+
+    def planting_backend(path: Path, **kwargs: object) -> DispatchResult:
+        result = finish(path, **kwargs)
+        if link.exists():
+            link.rename(link.parent / "dispatch-moved")
+        else:
+            link.parent.mkdir(parents=True, exist_ok=True)
+        _link_directory(link, outside)
+        return result
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", planting_backend)
+
+    try:
+        _exit_code, logs = _run(_config(repo))
+        assert victim.read_bytes() == b"outside the repository\n"
+        assert sorted(item.name for item in outside.iterdir()) == [victim.name]
+        assert len(_link_warnings(logs)) == 1
+    finally:
+        _unlink_directory(link)
+
+
+def test_a_link_found_mid_write_disables_the_record_for_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    result = DispatchResult(
+        stdout="", stderr="", exit_code=0, elapsed_seconds=0.0, session_id="s-1"
+    )
+    state = orchestrator._DispatchRecordState(enabled=True)
+    attempts: list[str] = []
+
+    def linked_writer(_root: Path, _payload: object, name: str, **_kwargs: object) -> None:
+        attempts.append(name)
+        raise orchestrator._CarryOverLinkError(0, "link", name)
+
+    monkeypatch.setattr(orchestrator, "_write_carry_over_payload", linked_writer)
+    logs: list[tuple[str, str]] = []
+    for _ in range(2):
+        orchestrator._record_role_dispatch(
+            config,
+            route="backend",
+            story_id="S1",
+            dispatch_result=result,
+            log=lambda level, text: logs.append((level, text)),
+            state=state,
+        )
+
+    assert attempts == [DISPATCH_RECORD_STATE_PATH.name]
+    assert state.enabled is False
+    assert len(_link_warnings(logs)) == 1
+    assert not dispatch_record_path(tmp_path).exists()
+
+
+def test_the_repository_copy_is_never_read_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    config = _config(repo)
+    order: list[str] = []
+    monkeypatch.setattr(
+        orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-b", order)
+    )
+
+    def fake_support(subagent_name: str, prompt: str, **_kwargs: object) -> SubagentResult:
+        order.append(subagent_name)
+        # A role rewrites the record between dispatches; the next write
+        # starts from what the dispatcher saved, not from this file.
+        record_dispatch(
+            dispatch_record_path(repo),
+            role="planted",
+            story_id=None,
+            provider=None,
+            session_id="planted",
+        )
+        config.handoff_full_path.write_text(_audit_fail(), encoding="utf-8")
+        return SubagentResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.01, session_id="sess-a"
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+
+    _run(config, max_cycles=2)
+
+    assert order == ["backend", "auditor"]
+    assert [entry.role for entry in _record(repo)] == ["backend", "auditor"]
