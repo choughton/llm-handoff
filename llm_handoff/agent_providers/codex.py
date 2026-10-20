@@ -288,6 +288,9 @@ def invoke_codex(
         stderr=result.result.stderr,
         exit_code=result.result.exit_code,
         elapsed_seconds=time.monotonic() - start_time,
+        # The thread id of the run that produced this result; None when that
+        # run emitted no `thread.started` event.
+        session_id=result.thread_id,
         usage=result.usage,
     )
 

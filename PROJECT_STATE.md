@@ -6,8 +6,10 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** CHAT, with CHAT-2 (sent chat messages are saved to the
-  queue and announced) in progress. CHAT-13 (hold the loop on saved chat
+- **Active Epic:** CHAT, with CHAT-14 (Claude and Codex role dispatches
+  report their session id) in progress. CHAT-2 (sent chat messages are saved
+  to the queue and announced) was approved at `dd26c6a` and merged in PR
+  #200. CHAT-13 (hold the loop on saved chat
   messages) was approved at `cd0df4c` and merged in PR #199; it took the hold
   half of CHAT-2 and works from the CHAT-12 queue file alone, so the loop's
   push and merge points were safe before capture writes to that file.
@@ -1044,7 +1046,7 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: active; CHAT-2 is in progress. Picked after TIDY was parked; HARD-3 is
+Fit: active; CHAT-14 is in progress. Picked after TIDY was parked; HARD-3 is
 merged and RECOVERY is closed, so nothing blocks it.
 
 The operator types at any time; a message holds the loop and is answered by
@@ -1124,15 +1126,24 @@ dependencies; Windows (`msvcrt`) and POSIX.
   planner branch, so no push or merge happens while a message is saved.
   Chat capture is turned off before those last two holds and stays off
   through the publish or settle, so no message is saved after the check.
-- CHAT-2: Sent chat messages are saved to the queue and announced. A
-  non-blank `ChatInput` submission is appended to the CHAT-12 queue file with
+- CHAT-2: Sent chat messages are saved to the queue and announced.
+  Approved at `dd26c6a` (PR #200). A non-blank `ChatInput` submission is appended to the CHAT-12 queue file with
   the active role and `received_at`, and the console prints
   `queued_message_notice(role)` (`Question queued until after the current
   <role> run completes.`) instead of `CHAT_UNAVAILABLE_MESSAGE`. CHAT-13
   then holds the loop on the saved message at the next safe point.
+- CHAT-14 (was part of CHAT-3): Claude and Codex role dispatches report
+  their session id. The Claude stream monitor keeps the `session_id` string
+  from the first `system`/`init` event (with or without a logger) and
+  `SubagentResult.session_id` carries it into `DispatchResult.session_id`;
+  `invoke_codex` returns the `thread.started` `thread_id` of the run that
+  produced the result. A missing id, the Claude buffered text fallback, and a
+  failover result give None. Resume behavior is unchanged: the Claude and
+  Codex role branches still ignore the `session_id` argument.
 - CHAT-3: Dispatch record. Save each dispatch in the run (role, story,
   provider, session id, time) under `logs/dispatch/`, so a question can find
-  the agent it is about. Nothing reads it yet besides tests.
+  the agent it is about. Reads session ids from `DispatchResult.session_id`
+  (CHAT-14). Nothing reads the record yet besides tests.
 - CHAT-4 (was part of CHAT-3): Read-only answers from Claude and Codex
   sessions. A question resumes that agent's own session and prints the
   answer; follow-ups stay in the same thread. Each answer runs behind a

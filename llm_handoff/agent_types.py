@@ -65,6 +65,8 @@ class SubagentResult:
     exit_code: int
     elapsed_seconds: float
     usage: dict[str, object] | None = None
+    # Provider session id (Claude stream-json `system`/`init` event), or None.
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
