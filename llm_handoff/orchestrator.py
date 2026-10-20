@@ -511,8 +511,8 @@ class PendingPlannerRecovery:
     # The assignment the operator was shown and confirmed for that resumed
     # cycle, resolved once; its commit and work-claim gate use exactly it.
     resumed_assignment: str | None = None
-    # A confirmed interrupted-dispatch, interrupted-handback, or
-    # interrupted-planner recovery's
+    # A confirmed interrupted-dispatch, interrupted-handback,
+    # interrupted-planner, or interrupted-finalizer recovery's
     # protected-file baseline: the record's digests with every protected file
     # uncommitted at startup marked unverified, so the recovered cycle's
     # protected-file check never trusts the record for those files.
@@ -836,6 +836,19 @@ def _run_loop(
                     ),
                     warnings=[],
                 )
+            elif pending_planner_recovery.kind == "interrupted_finalizer":
+                decision = RoutingDecision(
+                    route="planner",
+                    confidence="HIGH",
+                    source="interrupted_finalizer_recovery",
+                    reasoning=(
+                        "A previous run's finalizer dispatch was interrupted "
+                        "after it committed the ledger, and the operator "
+                        "confirmed continuing from the committed ledger, so "
+                        "the planner routes the next phase."
+                    ),
+                    warnings=[],
+                )
             elif pending_planner_recovery.route == "planner":
                 decision = RoutingDecision(
                     route="planner",
@@ -900,6 +913,7 @@ def _run_loop(
                 "interrupted_dispatch",
                 "interrupted_handback",
                 "interrupted_planner",
+                "interrupted_finalizer",
             }:
                 recovered_protected_snapshot = (
                     pending_planner_recovery.resumed_protected_snapshot
@@ -1147,6 +1161,7 @@ def _run_loop(
             "interrupted_dispatch_recovery",
             "interrupted_handback_recovery",
             "interrupted_planner_recovery",
+            "interrupted_finalizer_recovery",
         }:
             # Another rule took the recovered cycle over; its dispatch starts
             # from the checkout as it is now.
@@ -1320,9 +1335,41 @@ def _run_loop(
                 if config.commit_mode == "dispatcher"
                 else None
             )
+            # The finalizer's record exists only while it runs, so a later
+            # start can tell a ledger it already committed from one it never
+            # touched, and restore a handoff it half-wrote.
+            finalizer_in_flight_written = (
+                not config.dry_run
+                and handoff_content is not None
+                and _write_planner_in_flight_record(
+                    config,
+                    cycle=cycle_number,
+                    handoff_content=handoff_content,
+                    log=log_fn,
+                    state=in_flight_state,
+                    protected_snapshot=protected_before,
+                    role="finalizer",
+                )
+            )
             # A first Ctrl+C from here to the loop top lets this cycle finish.
             console_interrupt.set_active_role("finalizer")
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
+            # The finalizer returned, whatever its exit code or output: the
+            # ledger and handoff are whatever it left, so its record names
+            # nothing interrupted.
+            if finalizer_in_flight_written and not _delete_in_flight_record(
+                config, log_fn
+            ):
+                _log(
+                    log_fn,
+                    "ERROR",
+                    "Could not clear the in-flight record "
+                    f"{_in_flight_state_path(config)} after the finalizer "
+                    "dispatch returned, so the dispatcher stops before checking "
+                    "the finalizer's result. The next start reconciles the "
+                    "record against the ledger and the handoff.",
+                )
+                return 1
             stop_watch.requested(log_fn)
             if finalizer_git_before is not None:
                 finalizer_check = undo_planner_handoff_commits(
@@ -5570,8 +5617,10 @@ class InterruptedDispatchRecovery:
     the same role again, or ``pause_reason`` pauses the first cycle. With a
     pause, ``protected_snapshot`` is the confirmed recovery's protected-file
     baseline, which the first dispatch after the pause checks against
-    instead of a snapshot of the checkout the interrupted role changed.
-    ``stop`` is True when the recovery logged an ERROR and the run must end
+    instead of a snapshot of the checkout the interrupted role changed. A
+    confirmed interrupted-finalizer recovery without a ledger commit sets
+    ``protected_snapshot`` with neither, so the finalizer that runs again is
+    checked against it. ``stop`` is True when the recovery logged an ERROR and the run must end
     before any dispatch.
     """
 
@@ -5725,6 +5774,11 @@ PLANNER_IN_FLIGHT_CONSEQUENCE = (
     "A planner interrupted mid-dispatch leaves its half-written handoff after "
     "a restart."
 )
+FINALIZER_IN_FLIGHT_CONSEQUENCE = (
+    "A finalizer interrupted mid-dispatch leaves its half-written handoff "
+    "after a restart, and the next start cannot tell whether it committed the "
+    "ledger."
+)
 
 
 def _write_planner_in_flight_record(
@@ -5735,26 +5789,32 @@ def _write_planner_in_flight_record(
     log: LogFn,
     state: _InFlightRecordState,
     protected_snapshot: ProtectedFileSnapshot | None = None,
+    role: Literal["planner", "finalizer"] = "planner",
 ) -> bool:
-    """Write the in-flight record before a planner dispatch.
+    """Write the in-flight record before a planner or finalizer dispatch.
 
-    The record holds the handoff the planner starts from, HEAD, and the
-    pre-dispatch protected-file digests, so a start after an interrupted
-    planner can restore a half-written handoff. It is a ``dispatch`` record
-    only and is deleted as soon as the dispatch returns. Returns True when it
-    was written; writes nothing, with the same one WARN per run, when the
-    record cannot be kept race-safe or Git does not ignore it. HEAD is read
-    only once the record can be kept.
+    The record holds the handoff the role starts from, HEAD, the checked-out
+    branch, and the pre-dispatch protected-file digests, so a start after an
+    interrupted planner or finalizer can restore a half-written handoff. It
+    is a ``dispatch`` record only and is deleted as soon as the dispatch
+    returns. Returns True when it was written; writes nothing, with the same
+    one WARN per run, when the record cannot be kept race-safe or Git does
+    not ignore it. HEAD is read only once the record can be kept.
     """
 
+    consequence = (
+        FINALIZER_IN_FLIGHT_CONSEQUENCE
+        if role == "finalizer"
+        else PLANNER_IN_FLIGHT_CONSEQUENCE
+    )
     if not _in_flight_record_writable(
-        config, log=log, state=state, consequence=PLANNER_IN_FLIGHT_CONSEQUENCE
+        config, log=log, state=state, consequence=consequence
     ):
         return False
     position = git_position(config.repo_root)
     record = InFlightRecord(
         cycle=cycle,
-        role="planner",
+        role=role,
         story_key=carry_over_key(handoff_content),
         phase="dispatch",
         head_sha=position.head,
@@ -5771,7 +5831,7 @@ def _write_planner_in_flight_record(
         record,
         log=log,
         state=state,
-        consequence=PLANNER_IN_FLIGHT_CONSEQUENCE,
+        consequence=consequence,
     )
 
 
@@ -6575,13 +6635,17 @@ def _in_flight_story_display(record: InFlightRecord) -> str:
 
 
 def _interrupted_planner_handoff_errors(
-    config: DispatchConfig, record: InFlightRecord, current: str | None
+    config: DispatchConfig,
+    record: InFlightRecord,
+    current: str | None,
+    previous_agent: str = "planner",
 ) -> list[str]:
-    """Why the handoff an interrupted planner left is not a valid planner handoff.
+    """Why the handoff an interrupted role left is not a valid handoff.
 
     A missing or empty handoff is an error; otherwise the handoff is checked
-    as the post-dispatch planner validation checks it, against the handoff
-    the planner started from. An empty list means it is valid.
+    as the post-dispatch validation of ``previous_agent`` (the planner or the
+    finalizer) checks it, against the handoff the role started from. An
+    empty list means it is valid.
     """
 
     if current is None:
@@ -6590,7 +6654,7 @@ def _interrupted_planner_handoff_errors(
         return ["handoff_empty: the handoff file is empty."]
     result = validate_handoff_text(
         current,
-        "planner",
+        previous_agent,
         prior_handoff_sha=_content_sha(record.handoff_content),
         git_cwd=config.handoff_full_path.parent,
         require_work_packet=config.enforce_work_packet,
@@ -7023,6 +7087,424 @@ def _recover_interrupted_planner(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _InterruptedFinalizerGitState:
+    """What an interrupted finalizer record's HEAD says about the checkout.
+
+    ``error`` names a move the dispatcher never undoes. Otherwise ``commits``
+    are the commits since the record's HEAD (the ledger commit, when there
+    is one) and ``files`` the files they change, all allowed.
+    """
+
+    commits: tuple[str, ...] = ()
+    files: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _interrupted_finalizer_git_state(
+    config: DispatchConfig, record: InFlightRecord
+) -> _InterruptedFinalizerGitState:
+    """Compare the checkout with an interrupted finalizer record, read-only.
+
+    In any commit mode a finalizer may commit only the project state file,
+    plus the handoff in agent commit mode, where it commits both atomically.
+    A branch switch, history that is not a descendant of the record's HEAD,
+    or a commit since that HEAD with any other file is an error. A record
+    HEAD Git cannot resolve to a commit is an error too: the ledger commit
+    cannot be told apart. This never changes HEAD, the index, or the working
+    tree.
+    """
+
+    repo_root = config.repo_root
+    head_sha = record.head_sha
+    if (
+        head_sha is None
+        or _FULL_COMMIT_SHA_RE.fullmatch(head_sha) is None
+        or _run_git_stdout(
+            repo_root, ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"]
+        )
+        is None
+    ):
+        return _InterruptedFinalizerGitState(
+            error=(
+                "the record's HEAD "
+                f"{_escape_control_characters((head_sha or 'none')[:64])} does "
+                "not resolve to a commit, so the dispatcher cannot tell whether "
+                "the finalizer committed the ledger"
+            )
+        )
+    current = git_position(repo_root)
+    before_branch = _escape_control_characters(record.head_branch or "detached HEAD")
+    after_branch = _escape_control_characters(current.branch or "detached HEAD")
+    if current.branch != record.head_branch:
+        return _InterruptedFinalizerGitState(
+            error=(
+                f"the checkout moved from `{before_branch}` to `{after_branch}` "
+                "since the finalizer dispatch started"
+            )
+        )
+    if current.head == head_sha:
+        return _InterruptedFinalizerGitState()
+    rewritten = _InterruptedFinalizerGitState(
+        error=(
+            f"the history on `{after_branch}` is not a descendant of the "
+            f"record's HEAD {head_sha[:12]}"
+        )
+    )
+    if current.head is None or (
+        _run_git_stdout(
+            repo_root,
+            ["git", "merge-base", "--is-ancestor", head_sha, current.head],
+        )
+        is None
+    ):
+        return rewritten
+    listed = _run_git_stdout(
+        repo_root, ["git", "rev-list", "--reverse", f"{head_sha}..{current.head}"]
+    )
+    # Each commit's own files, so a file changed and changed back still counts.
+    changed = _run_git_stdout(
+        repo_root,
+        [
+            "git",
+            "log",
+            "-m",
+            "--no-renames",
+            "--name-only",
+            "--format=",
+            f"{head_sha}..{current.head}",
+        ],
+    )
+    if listed is None or changed is None:
+        return rewritten
+    commits = tuple(listed.split())
+    files = tuple(sorted({line for line in changed.splitlines() if line.strip()}))
+    allowed = {normalize_repo_path(config.project_state_path.as_posix())}
+    if config.commit_mode != "dispatcher":
+        allowed.add(normalize_repo_path(config.handoff_path.as_posix()))
+    others = [path for path in files if normalize_repo_path(path) not in allowed]
+    if others:
+        return _InterruptedFinalizerGitState(
+            commits=commits,
+            files=files,
+            error=(
+                f"commits since the record's HEAD {head_sha[:12]} "
+                f"({', '.join(c[:12] for c in commits)}) change files a "
+                "finalizer may not commit"
+                + (
+                    " in dispatcher commit mode"
+                    if config.commit_mode == "dispatcher"
+                    else ""
+                )
+                + ": "
+                + _escape_control_characters(", ".join(others))
+            ),
+        )
+    return _InterruptedFinalizerGitState(commits=commits, files=files)
+
+
+def _recover_interrupted_finalizer(
+    config: DispatchConfig,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
+    record: InFlightRecord,
+    state_path: Path,
+) -> InterruptedDispatchRecovery:
+    """Reconcile a finalizer that was interrupted during the ledger update.
+
+    After the record's anchor checks, Git is compared with the record's HEAD
+    and branch, read-only in any commit mode: a branch switch, history that
+    is not a descendant of that HEAD, or a commit with a file the finalizer
+    may not commit stops the run and keeps the record. Uncommitted project
+    state edits stop the run too, for the operator to commit or discard.
+    A changed handoff that passes the finalizer's post-dispatch validation
+    and no longer routes to the finalizer means it finished, and nothing
+    done (no ledger commit, unchanged handoff) means the finalizer runs
+    again as it would anyway; both delete the record. Every other case
+    restores the record's handoff, only after the operator confirms at a
+    terminal (HARD-5): with a ledger commit the planner continues from the
+    committed ledger; without one the finalizer runs again. The dispatcher
+    never resets or rewrites Git for a finalizer record.
+    """
+
+    nothing = InterruptedDispatchRecovery()
+    story = _in_flight_story_display(record)
+    if config.protected_paths and record.protected_digests is None:
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record {state_path} for finalizer's "
+            f"interrupted {story} work: it holds no pre-dispatch protected-file "
+            "snapshot, so the protected-file check cannot run on a recovered "
+            "cycle. Nothing is restored; the handoff and the ledger stay as "
+            "they are."
+            + (" Not deleted in dry run." if config.dry_run else ""),
+        )
+        if not config.dry_run:
+            _delete_in_flight_record(config, log)
+        return nothing
+    if _discard_unanchored_in_flight_record(config, log, record, state_path, story):
+        return nothing
+    # The record is untrusted (HARD-5): Git is only inspected, never changed.
+    git_state = _interrupted_finalizer_git_state(config, record)
+    if git_state.error is not None:
+        _log(
+            log,
+            "ERROR",
+            f"Found in-flight record {state_path}: finalizer was interrupted "
+            f"mid-dispatch on {story}, and {git_state.error}. The dispatcher "
+            "never resets or rewrites Git for an interrupted finalizer, so it "
+            "stops before any dispatch and keeps the record. Return the "
+            "checkout to the record's HEAD and branch, or delete the record if "
+            "those changes are yours, then start the dispatcher again.",
+        )
+        return InterruptedDispatchRecovery(stop=True)
+    ledger_committed = bool(git_state.commits)
+    project_state_display = _escape_control_characters(
+        normalize_repo_path(config.project_state_path.as_posix())
+    )
+    dirty_files = git_dirty_files(config.repo_root)
+    if dirty_files is None or normalize_repo_path(
+        config.project_state_path.as_posix()
+    ) in {normalize_repo_path(path) for path in dirty_files}:
+        reason = (
+            "Git could not list uncommitted files, so the dispatcher cannot "
+            f"tell whether {project_state_display} holds a partial ledger edit"
+            if dirty_files is None
+            else f"{project_state_display} has uncommitted changes, which may "
+            "be a partial ledger edit"
+        )
+        if config.dry_run:
+            _log(
+                log,
+                "INFO",
+                f"Found in-flight record {state_path}: finalizer was interrupted "
+                f"mid-dispatch on {story}, and {reason}. Not applied in dry run; "
+                "the record is kept.",
+            )
+            return nothing
+        _log(
+            log,
+            "ERROR",
+            f"Found in-flight record {state_path}: the interrupted finalizer "
+            f"may have left a partial ledger edit ({reason}). Commit or discard "
+            f"the changes to {project_state_display}, then start the dispatcher "
+            "again. The dispatcher stops before any dispatch and keeps the "
+            "record.",
+        )
+        return InterruptedDispatchRecovery(stop=True)
+    current = _read_required_text(config.handoff_full_path)
+    errors = (
+        []
+        if current == record.handoff_content
+        else _interrupted_planner_handoff_errors(
+            config, record, current, previous_agent="finalizer"
+        )
+    )
+    frontmatter = (
+        _parse_frontmatter_or_none(current) if current is not None else None
+    )
+    still_finalizer = (
+        frontmatter is not None
+        and normalize_next_agent_value(frontmatter.next_agent or "") == "finalizer"
+    )
+    if current != record.handoff_content and not errors and not still_finalizer:
+        _log(
+            log,
+            "INFO",
+            f"The in-flight record {state_path} names an interrupted finalizer "
+            "dispatch that finished writing a valid handoff before the "
+            "interrupt; kept the handoff"
+            + (
+                " and did not delete the record in dry run."
+                if config.dry_run
+                else " and deleted the record."
+            ),
+        )
+        if not config.dry_run:
+            _delete_in_flight_record(config, log)
+        return nothing
+    if not ledger_committed and current == record.handoff_content:
+        _log(
+            log,
+            "INFO",
+            f"The in-flight record {state_path} names an interrupted finalizer "
+            "dispatch that left nothing to recover: no ledger commit and an "
+            "unchanged handoff"
+            + ("; not deleted in dry run." if config.dry_run else "; deleted it."),
+        )
+        if not config.dry_run:
+            _delete_in_flight_record(config, log)
+        return nothing
+    handoff_display = _escape_control_characters(
+        normalize_repo_path(config.handoff_path.as_posix())
+    )
+    if current == record.handoff_content:
+        handoff_state = "is unchanged and still routes to finalizer"
+    elif errors:
+        codes = ", ".join(
+            _escape_control_characters(error.split(":", 1)[0].strip())
+            for error in errors
+        )
+        handoff_state = f"is not valid ({codes})"
+    else:
+        handoff_state = "still routes to finalizer"
+    commit_list = ", ".join(sha[:12] for sha in git_state.commits)
+    ledger_state = (
+        f"it committed the ledger ({commit_list})"
+        if ledger_committed
+        else "it made no ledger commit"
+    )
+    summary = (
+        f"Found in-flight record {state_path}: finalizer was interrupted "
+        f"mid-dispatch on {story}; {ledger_state}, and the handoff "
+        f"{handoff_display} it left {handoff_state}."
+    )
+    if config.dry_run:
+        _log(log, "INFO", f"{summary} Not applied in dry run.")
+        return nothing
+    if _carry_over_path_traverses_link(_handoff_restore_destination(config)):
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record read from {state_path} for "
+            f"finalizer's interrupted {story} work: the handoff path "
+            f"{handoff_display} passes through a symlink or junction, so the "
+            "dispatcher does not restore it. The handoff and the ledger stay as "
+            "they are.",
+        )
+        _delete_in_flight_record(config, log)
+        return nothing
+    question = (
+        "Restore the handoff from before finalizer's interrupted dispatch and "
+        "run planner to continue from the committed ledger? [y/N]"
+        if ledger_committed
+        else "Restore the handoff from before finalizer's interrupted dispatch "
+        "and run finalizer again? [y/N]"
+    )
+    confirmed = False
+    disclosed: tuple[str, ...] | None = None
+    if (
+        config.interactive_pause
+        and _operator_stdin_is_interactive()
+        and not operator_prompt.reader().console_unavailable
+    ):
+        _log(
+            log,
+            "INFO",
+            f"{summary} The handoff {handoff_display} will be replaced by the "
+            "handoff text the in-flight record holds.",
+        )
+        _log(
+            log,
+            "INFO",
+            _interrupted_dispatch_assignment_summary(config, record, state_path),
+        )
+        if ledger_committed:
+            _log(
+                log,
+                "INFO",
+                f"Commits since the record's HEAD {(record.head_sha or '')[:12]}: "
+                f"{commit_list}, changing "
+                + _escape_control_characters(", ".join(git_state.files))
+                + ". The record is a file a role can write, so its HEAD is not "
+                "proof that these commits are the finalizer's; confirming "
+                "accepts them as the committed ledger, and the planner "
+                "continues from it.",
+            )
+        if config.protected_paths:
+            disclosed = _uncommitted_protected_files(config)
+            _log(
+                log,
+                "INFO",
+                _protected_baseline_disclosure(config, record, disclosed),
+            )
+        confirmed = _confirm_carry_over_at_terminal(
+            operator_prompt.reader(), question, log
+        )
+    if not confirmed:
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record read from {state_path} for "
+            f"finalizer's interrupted {story} work because it was not confirmed "
+            f"at a terminal; the handoff {handoff_display} and the ledger stay "
+            "as they are.",
+        )
+        _delete_in_flight_record(config, log)
+        return nothing
+    if current != record.handoff_content:
+        failure: str | None = None
+        try:
+            _restore_handoff_text(config, record.handoff_content)
+        except _CarryOverLinkError:
+            failure = "a symlink or junction appeared on its path"
+        except OSError as exc:
+            failure = _escape_control_characters(str(exc))
+        if failure is not None:
+            _log(
+                log,
+                "WARN",
+                f"Could not restore the handoff {handoff_display} ({failure}), "
+                "so nothing is recovered from the in-flight record "
+                f"{state_path}.",
+            )
+            _delete_in_flight_record(config, log)
+            return nothing
+        _log(
+            log,
+            "INFO",
+            f"Restored the handoff {handoff_display} to the operator-approved "
+            "text from the in-flight record of the interrupted finalizer "
+            "dispatch.",
+        )
+    # Built once recovery is confirmed, from the checkout as it is now.
+    protected_snapshot = (
+        _unverified_protected_snapshot(config, record, disclosed)
+        if config.protected_paths
+        else None
+    )
+    if not _delete_in_flight_record(config, log):
+        next_role = "planner" if ledger_committed else "finalizer"
+        _log(
+            log,
+            "ERROR",
+            f"Could not clear the in-flight record {state_path} after the "
+            f"operator confirmed recovering finalizer's interrupted {story} "
+            f"work, so the dispatcher stops before dispatching {next_role}. "
+            "The restored handoff stays; start the dispatcher again once the "
+            "record can be deleted.",
+        )
+        return InterruptedDispatchRecovery(stop=True)
+    if ledger_committed:
+        _log(
+            log,
+            "INFO",
+            "The operator confirmed continuing from the ledger the interrupted "
+            f"finalizer committed on {story}; scheduling planner.",
+        )
+        return InterruptedDispatchRecovery(
+            pending=PendingPlannerRecovery(
+                handoff_sha=_content_sha(record.handoff_content),
+                additional_instruction=stale_finalizer_recovery_instruction(
+                    config.project_state_path
+                ),
+                kind="interrupted_finalizer",
+                route="planner",
+                resumed_protected_snapshot=protected_snapshot,
+            ),
+        )
+    _log(
+        log,
+        "INFO",
+        "The operator confirmed restoring the handoff of finalizer's "
+        f"interrupted {story} work; the finalizer runs again.",
+    )
+    # The next finalizer cycle checks protected files against this baseline
+    # instead of a snapshot of the checkout the interrupted finalizer changed.
+    return InterruptedDispatchRecovery(protected_snapshot=protected_snapshot)
+
+
 def _recover_interrupted_dispatch(
     config: DispatchConfig,
     log: LogFn,
@@ -7036,8 +7518,9 @@ def _recover_interrupted_dispatch(
     assignment it would restore (scope and Verification commands); confirming
     approves that assignment. Otherwise it is discarded and the files stay
     operator edits. A ``handback`` record is handled by
-    ``_recover_interrupted_handback`` and a ``planner`` record by
-    ``_recover_interrupted_planner``.
+    ``_recover_interrupted_handback``, a ``planner`` record by
+    ``_recover_interrupted_planner``, and a ``finalizer`` record by
+    ``_recover_interrupted_finalizer``.
     """
 
     nothing = InterruptedDispatchRecovery()
@@ -7100,6 +7583,10 @@ def _recover_interrupted_dispatch(
         return nothing
     if record.role == "planner":
         return _recover_interrupted_planner(
+            config, log, operator_prompt, record, state_path
+        )
+    if record.role == "finalizer":
+        return _recover_interrupted_finalizer(
             config, log, operator_prompt, record, state_path
         )
     if record.phase == "handback":

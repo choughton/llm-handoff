@@ -360,7 +360,7 @@ What survives a restart, all under `logs/dispatch/`:
   line and its files stay operator edits. See
   [Dispatcher Commits](#dispatcher-commits);
 - the in-flight record (`in-flight.json`), which exists only while an
-  implementer or planner dispatch runs. A record found at startup means that
+  implementer, planner, or finalizer dispatch runs. A record found at startup means that
   role was interrupted mid-dispatch; it applies only after the operator
   confirms it at a terminal. See [Dispatcher Commits](#dispatcher-commits).
 
@@ -621,8 +621,8 @@ also writes `logs/dispatch/in-flight.json` right before each `backend` or
 `frontend` dispatch the work-claim gate applies to. The record names the role,
 the story, HEAD, the pre-dispatch `HANDOFF.md` text, the operator's dirty
 files with their content hashes, and the SHA-256 digests of the protected
-control files (`protected_paths`). Planner dispatches write their own record
-(described below); auditor, finalizer, validator, ungated, and dry-run
+control files (`protected_paths`). Planner and finalizer dispatches write
+their own records (described below); auditor, validator, ungated, and dry-run
 dispatches write none. Once the dispatch returns,
 whatever its exit code, the dispatcher rewrites the record as a `handback`
 record that also holds the `HANDOFF.md` text the implementer left and HEAD at
@@ -779,10 +779,61 @@ reconciled. Then:
   carried, such as an operator `@planner` message or a routing-recovery
   instruction, is not kept.
 
-Re-running an interrupted finalizer dispatch (RECOVERY-3b2), audit fan-out
-(RECOVERY-3c), or work-claim gate and scanners (RECOVERY-3d), making publish
-steps safe to repeat (RECOVERY-3e), and starts with no record (RECOVERY-4) are
-pending.
+A finalizer (epic-close ledger-updater) dispatch writes a `finalizer` record
+to the same path right before it starts. It has the same shape as a `planner`
+record (cycle, HEAD, `head_branch`, the `HANDOFF.md` text the finalizer starts
+from, and the protected-file digests; `dispatch` phase only, no operator
+files, carried-over files, or separate assignment). The dispatcher deletes it
+as soon as the finalizer returns, whatever its exit code or output, before the
+dispatcher-commit-mode handoff check; when that delete fails it logs an
+`ERROR` line naming the record and stops. Dry runs write none. At startup a
+`finalizer` record goes through the same link, read, validity, and
+protected-baseline checks as a `planner` record, then:
+
+- a. Git is compared with the record's HEAD and branch, read-only, in any
+  commit mode. A finalizer may commit only the project state file
+  (`project_state_path`), plus the handoff in agent commit mode, where it
+  commits both atomically. A branch switch, history that is not a descendant
+  of the record's HEAD, a record HEAD that is not a commit, or a commit since
+  that HEAD that changes any other file (in dispatcher commit mode, the
+  handoff included) logs one `ERROR` line naming the commits and files and
+  stops before any dispatch, keeping the record. The dispatcher never resets
+  or rewrites Git for a finalizer record. Otherwise commits since the
+  record's HEAD count as a ledger commit.
+- b. When the project state file differs from HEAD in the working tree or
+  index (or Git cannot tell), the interrupted finalizer may have left a
+  partial ledger edit: the dispatcher logs one `ERROR` line naming the file,
+  keeps the record, and stops; commit or discard the edit and start again. A
+  dry run logs an `INFO` line instead and keeps the record.
+- c. When `HANDOFF.md` changed, passes the finalizer's post-dispatch
+  validation, and no longer routes to `finalizer`, the finalizer finished:
+  one `INFO` line, the handoff is kept, and the record is deleted.
+- d. With no ledger commit and `HANDOFF.md` unchanged, nothing was done: one
+  `INFO` line, the record is deleted, and the loop dispatches the finalizer
+  again from the unchanged handoff.
+- e. Every other case (the handoff missing, empty, invalid, or still routing to
+  `finalizer`, with or without a ledger commit) restores the record's handoff
+  only after the operator confirms. A dry run logs the summary and keeps the
+  record. A handoff path behind a link discards the record before the prompt.
+  The dispatcher logs the summary, the assignment summary, the ledger commits
+  and their files (when there are any), and the protected-file disclosure,
+  then asks, with a ledger commit,
+  `Restore the handoff from before finalizer's interrupted dispatch and run planner to continue from the committed ledger? [y/N]`,
+  and without one
+  `Restore the handoff from before finalizer's interrupted dispatch and run finalizer again? [y/N]`.
+  Any other answer, end of input, no terminal, or `interactive_pause: false`
+  discards the record with a `WARN` line and changes nothing. On `y` the
+  handoff is restored when it differs and the record is deleted (a failed
+  delete stops the run). With a ledger commit the first cycle dispatches the
+  planner (routing source `interrupted_finalizer_recovery`) with the
+  stale-finalizer instruction, so it continues from the committed ledger
+  instead of re-running the ledger update; without one the finalizer runs
+  again. Either way that cycle checks protected files against the baseline
+  described below.
+
+Re-running an interrupted audit fan-out (RECOVERY-3c) or work-claim gate and
+scanners (RECOVERY-3d), making publish steps safe to repeat (RECOVERY-3e), and
+starts with no record (RECOVERY-4) are pending.
 
 A Git process killed mid-write, for example by a second Ctrl+C during a
 dispatcher commit (the dispatcher's own `git` calls share the console's

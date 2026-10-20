@@ -6,6 +6,26 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An interrupted finalizer dispatch is now recoverable (RECOVERY-3b2). The
+  dispatcher writes a `finalizer` record to `logs/dispatch/in-flight.json`
+  right before the epic-close ledger update (not in a dry run), with the same
+  shape as a `planner` record, and deletes it as soon as the finalizer
+  returns, whatever its exit code or output; a failed delete logs an `ERROR`
+  line and stops. At startup, after the usual link, read, validity, and
+  protected-baseline checks, the checkout is compared with the record's HEAD
+  and branch, read-only, in any commit mode: a branch switch, history that is
+  not a descendant of that HEAD, or a commit with any file other than the
+  project state file (plus the handoff in agent commit mode) logs an `ERROR`
+  line and stops, keeping the record; the dispatcher never resets Git for a
+  finalizer record. An uncommitted project state edit stops the run too, so
+  a partial ledger edit is never silently discarded. A finished finalizer
+  (a valid changed handoff that no longer routes to `finalizer`) and one that
+  did nothing (no ledger commit, unchanged handoff) delete the record. Every
+  other case restores the record's handoff only after the operator confirms
+  at a terminal; with a ledger commit the planner then runs with the
+  stale-finalizer instruction (routing source `interrupted_finalizer_recovery`)
+  instead of re-running the ledger update, and without one the finalizer
+  runs again against the recovered protected-file baseline.
 - An interrupted planner dispatch is now recoverable (RECOVERY-3b1). The
   dispatcher writes a `planner` record to `logs/dispatch/in-flight.json` right
   before each planner dispatch (not in a dry run or the Linear lease-rebuild

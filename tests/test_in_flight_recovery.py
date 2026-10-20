@@ -1,4 +1,4 @@
-"""RECOVERY-2a/2b/2c/3b1: the in-flight record and interrupted-dispatch recovery."""
+"""RECOVERY-2a/2b/2c/3b1/3b2: the in-flight record and interrupted-dispatch recovery."""
 
 from __future__ import annotations
 
@@ -3650,3 +3650,728 @@ def test_a_confirmed_planner_record_that_cannot_be_deleted_stops_the_run(
     assert _record_path(tmp_path).exists()
     handoff = tmp_path / HANDOFF_RELATIVE_PATH
     assert handoff.read_text(encoding="utf-8") == _planner_assignment()
+
+
+# ---------------------------------------------------------------------------
+# RECOVERY-3b2: interrupted finalizer dispatch
+# ---------------------------------------------------------------------------
+
+
+FINALIZER_HANDOFF = """---
+next_agent: finalizer
+reason: "Close the epic."
+epic_id: EPIC-1
+producer: auditor
+close_type: epic
+scope_sha: abc1234
+---
+
+# Handoff
+
+Close the epic.
+"""
+
+FINISHED_FINALIZER_HANDOFF = """---
+next_agent: planner
+reason: "EPIC-1 closed; plan the next phase."
+epic_id: EPIC-1
+producer: finalizer
+---
+
+# Handoff
+
+Plan the next phase.
+"""
+
+PARTIAL_LEDGER = "# PROJECT STATE\n\nEPIC-1 closed.\n"
+
+LEDGER_QUESTION = (
+    "Restore the handoff from before finalizer's interrupted dispatch and run "
+    "planner to continue from the committed ledger? [y/N]"
+)
+FINALIZER_AGAIN_QUESTION = (
+    "Restore the handoff from before finalizer's interrupted dispatch and run "
+    "finalizer again? [y/N]"
+)
+_KEEP = object()
+
+
+class _LedgerResult:
+    def __init__(self, exit_code: int = 0, parse_error: str | None = None) -> None:
+        self.subagent_exit_code = exit_code
+        self.parse_error = parse_error
+        self.stdout = ""
+        self.stderr = ""
+
+
+def _finalizer_payload(**changes: Any) -> dict[str, Any]:
+    record = InFlightRecord(
+        cycle=2,
+        role="finalizer",
+        story_key=None,
+        phase="dispatch",
+        head_sha="a" * 40,
+        head_branch="main",
+        handoff_content=FINALIZER_HANDOFF,
+        dirty_fingerprints=(),
+        carried_over=(),
+        protected_digests=(),
+    )
+    payload = json.loads(in_flight_record_payload(record))
+    payload.update(changes)
+    return payload
+
+
+def _interrupt_finalizer(
+    repo_root: Path,
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    leave: Any = HALF_WRITTEN_HANDOFF,
+    ledger: bool = False,
+    commit: tuple[str, ...] = (),
+    other_file: bool = False,
+    new_branch: str | None = None,
+    **config_overrides: Any,
+) -> None:
+    """Run one finalizer dispatch that is interrupted mid-dispatch.
+
+    The finalizer optionally switches to ``new_branch``, writes ``leave`` to
+    the handoff (leaves it alone with ``_KEEP``), writes the ledger with
+    ``ledger`` or ``commit``, changes src/api.py with ``other_file``, commits
+    the paths in ``commit``, and is then interrupted; the record stays.
+    """
+
+    def interrupted_finalizer(*, config: Any, log: Any) -> _LedgerResult:
+        if new_branch is not None:
+            _git(repo_root, "checkout", "-q", "-b", new_branch)
+        if leave is not _KEEP:
+            (repo_root / HANDOFF_RELATIVE_PATH).write_text(leave, encoding="utf-8")
+        if ledger or commit:
+            _write(repo_root / "PROJECT_STATE.md", PARTIAL_LEDGER)
+        if other_file:
+            _write(repo_root / "src" / "api.py", "API = 'finalizer'\n")
+        if commit:
+            _git(repo_root, "add", "--", *commit)
+            _git(repo_root, "commit", "-q", "-m", "finalizer ledger commit")
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "_invoke_epic_close", interrupted_finalizer)
+        _set_terminal(orchestrator, patch, interactive=False, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(
+                _config(repo_root, **config_overrides),
+                max_cycles=1,
+                log=lambda *_: None,
+            )
+    assert _record_path(repo_root).exists()
+
+
+def _recover(
+    orchestrator: Any, repo_root: Path, messages: list[tuple[str, str]], **overrides: Any
+) -> Any:
+    return orchestrator._recover_interrupted_dispatch(
+        _config(repo_root, **overrides),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+
+def test_load_in_flight_record_accepts_a_finalizer_record() -> None:
+    record = load_in_flight_record(json.dumps(_finalizer_payload()))
+
+    assert record is not None
+    assert record.role == "finalizer"
+    assert record.story_key is None
+    assert record.head_branch == "main"
+    assert record.protected_digests == ()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param(
+            {"phase": "handback", "handback_content": FINISHED_FINALIZER_HANDOFF},
+            id="finalizer_handback",
+        ),
+        pytest.param(
+            {"dirty_fingerprints": [["notes.txt", "f" * 64]]},
+            id="finalizer_dirty_fingerprints",
+        ),
+        pytest.param({"carried_over": ["src/app.py"]}, id="finalizer_carried_over"),
+        pytest.param(
+            {"assignment_content": FINALIZER_HANDOFF},
+            id="finalizer_assignment_content",
+        ),
+    ],
+)
+def test_load_in_flight_record_rejects_a_bad_finalizer_record(
+    changes: dict[str, Any],
+) -> None:
+    assert load_in_flight_record(json.dumps(_finalizer_payload(**changes))) is None
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "parse_error"),
+    [
+        pytest.param(0, None, id="exit_0"),
+        pytest.param(1, None, id="exit_1"),
+        pytest.param(0, "Missing COMMIT SHA line.", id="parse_error"),
+    ],
+)
+def test_a_finalizer_record_exists_only_while_the_finalizer_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+    parse_error: str | None,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    orchestrator = _orchestrator()
+    seen: list[dict[str, Any]] = []
+
+    def fake_finalizer(*, config: Any, log: Any) -> _LedgerResult:
+        seen.append(json.loads(_record_path(tmp_path).read_text(encoding="utf-8")))
+        _write(tmp_path / "PROJECT_STATE.md", PARTIAL_LEDGER)
+        _git(tmp_path, "add", "--", "PROJECT_STATE.md")
+        _git(tmp_path, "commit", "-q", "-m", "ledger")
+        (tmp_path / HANDOFF_RELATIVE_PATH).write_text(
+            FINISHED_FINALIZER_HANDOFF, encoding="utf-8"
+        )
+        return _LedgerResult(exit_code, parse_error)
+
+    monkeypatch.setattr(orchestrator, "_invoke_epic_close", fake_finalizer)
+    monkeypatch.setattr(
+        orchestrator, "_run_epic_close_validator", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_pause_at_dispatcher_pause",
+        lambda *_args, **_kwargs: orchestrator.PauseOutcome(kind="stop"),
+    )
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(
+        _config(tmp_path, max_consecutive_failures=1),
+        max_cycles=1,
+        log=_collecting_log(messages),
+    )
+
+    assert len(seen) == 1
+    assert seen[0]["role"] == "finalizer"
+    assert seen[0]["phase"] == "dispatch"
+    assert seen[0]["cycle"] == 1
+    assert seen[0]["story_key"] is None
+    assert seen[0]["handoff_content"] == FINALIZER_HANDOFF
+    assert seen[0]["head_sha"] == head
+    assert seen[0]["head_branch"] == _git(tmp_path, "symbolic-ref", "--short", "HEAD")
+    assert seen[0]["dirty_fingerprints"] == []
+    assert seen[0]["carried_over"] == []
+    assert seen[0]["assignment_content"] is None
+    assert isinstance(seen[0]["protected_digests"], list)
+    assert load_in_flight_record(json.dumps(seen[0])) is not None
+    assert not _record_path(tmp_path).exists()
+    assert not any("in-flight" in message for _level, message in messages)
+
+
+def test_dry_run_writes_no_finalizer_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+
+    def refusing_finalizer(*, config: Any, log: Any) -> _LedgerResult:
+        raise AssertionError("dry run must not dispatch")
+
+    monkeypatch.setattr(orchestrator, "_invoke_epic_close", refusing_finalizer)
+
+    orchestrator.run_loop(
+        _config(tmp_path, dry_run=True), max_cycles=1, log=lambda *_: None
+    )
+
+    assert not _record_path(tmp_path).exists()
+
+
+def test_a_finalizer_record_that_cannot_be_cleared_stops_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+
+    def fake_finalizer(*, config: Any, log: Any) -> _LedgerResult:
+        (tmp_path / HANDOFF_RELATIVE_PATH).write_text(
+            FINISHED_FINALIZER_HANDOFF, encoding="utf-8"
+        )
+        return _LedgerResult()
+
+    monkeypatch.setattr(orchestrator, "_invoke_epic_close", fake_finalizer)
+    monkeypatch.setattr(
+        orchestrator, "_delete_in_flight_record", lambda _config, _log: False
+    )
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(tmp_path), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "after the finalizer dispatch returned" in errors[0]
+    assert str(_record_path(tmp_path).resolve()) in errors[0]
+    assert _record_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    ("interrupt", "recover", "expected"),
+    [
+        pytest.param(
+            {"new_branch": "finalizer-branch", "commit": ("PROJECT_STATE.md",)},
+            {},
+            "moved from",
+            id="branch_switch",
+        ),
+        pytest.param(
+            {"commit": ("PROJECT_STATE.md", "src/api.py"), "other_file": True},
+            {},
+            "src/api.py",
+            id="other_file",
+        ),
+        pytest.param(
+            {"commit": ("PROJECT_STATE.md", HANDOFF_RELATIVE_PATH.as_posix())},
+            {},
+            HANDOFF_RELATIVE_PATH.as_posix(),
+            id="handoff_committed_in_dispatcher_mode",
+        ),
+    ],
+)
+def test_an_interrupted_finalizer_git_move_stops_and_keeps_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt: dict[str, Any],
+    recover: dict[str, Any],
+    expected: str,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch, **interrupt)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, **recover)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery(stop=True)
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert expected in errors[0]
+    assert "never resets or rewrites Git" in errors[0]
+    assert "keeps the record" in errors[0]
+    assert not any("[y/N]" in message for _level, message in messages)
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+
+
+def test_a_finalizer_record_on_rewritten_history_stops_and_keeps_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Without protected paths the anchor check does not run, so the Git rule
+    # itself sees history that is not a descendant of the record's HEAD.
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch, leave=_KEEP)
+    _git(tmp_path, "commit", "--amend", "-q", "-m", "rewritten")
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, protected_paths=[])
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery(stop=True)
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "is not a descendant of the record's HEAD" in errors[0]
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+
+
+def test_an_agent_mode_finalizer_may_commit_the_handoff_with_the_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(
+        tmp_path,
+        orchestrator,
+        monkeypatch,
+        leave=FINISHED_FINALIZER_HANDOFF,
+        commit=("PROJECT_STATE.md", HANDOFF_RELATIVE_PATH.as_posix()),
+        commit_mode="agent",
+    )
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, commit_mode="agent")
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "finished writing a valid handoff" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == FINISHED_FINALIZER_HANDOFF
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_an_uncommitted_ledger_edit_keeps_the_finalizer_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch, ledger=True)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, dry_run=dry_run)
+
+    if dry_run:
+        assert outcome == orchestrator.InterruptedDispatchRecovery()
+        assert [level for level, _message in messages] == ["INFO"]
+        assert "Not applied in dry run" in messages[0][1]
+    else:
+        assert outcome == orchestrator.InterruptedDispatchRecovery(stop=True)
+        assert [level for level, _message in messages] == ["ERROR"]
+        assert "partial ledger edit" in messages[0][1]
+        assert "Commit or discard" in messages[0][1]
+    assert "PROJECT_STATE.md" in messages[0][1]
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    assert (tmp_path / "PROJECT_STATE.md").read_text(encoding="utf-8") == PARTIAL_LEDGER
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_a_finished_finalizer_keeps_the_handoff_and_deletes_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(
+        tmp_path,
+        orchestrator,
+        monkeypatch,
+        leave=FINISHED_FINALIZER_HANDOFF,
+        commit=("PROJECT_STATE.md",),
+    )
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "interrupted finalizer dispatch that finished writing" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == FINISHED_FINALIZER_HANDOFF
+
+
+def test_a_finalizer_that_did_nothing_deletes_the_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch, leave=_KEEP)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "left nothing to recover" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == FINALIZER_HANDOFF
+
+
+def test_a_committed_ledger_schedules_the_planner_with_its_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(
+        tmp_path, orchestrator, monkeypatch, commit=("PROJECT_STATE.md",)
+    )
+    ledger_commit = _git(tmp_path, "rev-parse", "HEAD")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    _disclosure_before(messages, LEDGER_QUESTION)
+    prompt_index = messages.index(("INFO", LEDGER_QUESTION))
+    commits_level, commits_line = messages[prompt_index - 2]
+    assert commits_level == "INFO"
+    assert ledger_commit[:12] in commits_line
+    assert "PROJECT_STATE.md" in commits_line
+    assert "a role can write" in commits_line
+    summary = messages[prompt_index - 4][1]
+    assert summary.startswith(f"Found in-flight record {_record_path(tmp_path)}")
+    assert f"it committed the ledger ({ledger_commit[:12]})" in summary
+    assert outcome.stop is False
+    assert outcome.protected_snapshot is None
+    pending = outcome.pending
+    assert pending is not None
+    assert pending.kind == "interrupted_finalizer"
+    assert pending.route == "planner"
+    assert pending.handoff_sha == orchestrator._content_sha(FINALIZER_HANDOFF)
+    assert pending.additional_instruction == (
+        orchestrator.stale_finalizer_recovery_instruction(Path("PROJECT_STATE.md"))
+    )
+    assert pending.resumed_protected_snapshot is not None
+    assert not _record_path(tmp_path).exists()
+    assert _git(tmp_path, "rev-parse", "HEAD") == ledger_commit
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == FINALIZER_HANDOFF
+
+
+def test_a_committed_ledger_recovery_runs_the_planner_from_the_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(
+        tmp_path, orchestrator, monkeypatch, commit=("PROJECT_STATE.md",)
+    )
+    calls: list[dict[str, Any]] = []
+    snapshots: list[Any] = []
+    baselines: list[Any] = []
+    real_snapshot = orchestrator._unverified_protected_snapshot
+    real_enforce = orchestrator._enforce_protected_files
+
+    def capturing_snapshot(*args: Any, **kwargs: Any) -> Any:
+        snapshots.append(real_snapshot(*args, **kwargs))
+        return snapshots[-1]
+
+    def capturing_enforce(**kwargs: Any) -> Any:
+        baselines.append(kwargs["before"])
+        return real_enforce(**kwargs)
+
+    def finishing_planner(path: Path, **kwargs: object) -> DispatchResult:
+        calls.append({"handoff": path.read_text(encoding="utf-8"), **kwargs})
+        path.write_text(_assignment(), encoding="utf-8")
+        return _result()
+
+    def refusing_finalizer(*, config: Any, log: Any) -> _LedgerResult:
+        raise AssertionError("a committed ledger must not run the finalizer again")
+
+    monkeypatch.setattr(orchestrator, "_unverified_protected_snapshot", capturing_snapshot)
+    monkeypatch.setattr(orchestrator, "_enforce_protected_files", capturing_enforce)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", finishing_planner)
+    monkeypatch.setattr(orchestrator, "_invoke_epic_close", refusing_finalizer)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=_collecting_log(messages))
+
+    assert ("INFO", LEDGER_QUESTION) in messages
+    assert ("INFO", "Routing source: interrupted_finalizer_recovery") in messages
+    assert len(calls) == 1
+    assert calls[0]["handoff"] == FINALIZER_HANDOFF
+    instruction = str(calls[0]["additional_instruction"])
+    assert orchestrator.stale_finalizer_recovery_instruction(
+        Path("PROJECT_STATE.md")
+    ) in instruction
+    assert len(snapshots) == 1
+    assert baselines and baselines[0] is snapshots[0]
+    assert not _record_path(tmp_path).exists()
+
+
+def test_no_ledger_commit_runs_the_finalizer_again_on_the_recovered_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch)
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    seen: list[str] = []
+    snapshots: list[Any] = []
+    baselines: list[Any] = []
+    real_snapshot = orchestrator._unverified_protected_snapshot
+    real_enforce = orchestrator._enforce_protected_files
+
+    def capturing_snapshot(*args: Any, **kwargs: Any) -> Any:
+        snapshots.append(real_snapshot(*args, **kwargs))
+        return snapshots[-1]
+
+    def capturing_enforce(**kwargs: Any) -> Any:
+        baselines.append(kwargs["before"])
+        return real_enforce(**kwargs)
+
+    def finishing_finalizer(*, config: Any, log: Any) -> _LedgerResult:
+        seen.append((tmp_path / HANDOFF_RELATIVE_PATH).read_text(encoding="utf-8"))
+        (tmp_path / HANDOFF_RELATIVE_PATH).write_text(
+            FINISHED_FINALIZER_HANDOFF, encoding="utf-8"
+        )
+        return _LedgerResult()
+
+    def refusing_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        raise AssertionError("no ledger commit must run the finalizer, not planner")
+
+    monkeypatch.setattr(orchestrator, "_unverified_protected_snapshot", capturing_snapshot)
+    monkeypatch.setattr(orchestrator, "_enforce_protected_files", capturing_enforce)
+    monkeypatch.setattr(orchestrator, "_invoke_epic_close", finishing_finalizer)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", refusing_planner)
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    orchestrator.run_loop(_config(tmp_path), max_cycles=1, log=_collecting_log(messages))
+
+    _disclosure_before(messages, FINALIZER_AGAIN_QUESTION)
+    assert ("INFO", LEDGER_QUESTION) not in messages
+    assert any(
+        level == "INFO" and message.startswith("Restored the handoff")
+        for level, message in messages
+    )
+    assert seen == [FINALIZER_HANDOFF]
+    assert len(snapshots) == 1
+    assert len(baselines) == 1
+    assert baselines[0] is snapshots[0]
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert not _record_path(tmp_path).exists()
+
+
+def test_no_ledger_commit_returns_the_baseline_without_a_pending_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch, leave="")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert ("INFO", FINALIZER_AGAIN_QUESTION) in messages
+    assert any(
+        level == "INFO" and "(handoff_empty)" in message for level, message in messages
+    )
+    assert outcome.stop is False
+    assert outcome.pending is None
+    assert outcome.recovered is False
+    assert outcome.protected_snapshot is not None
+    assert not _record_path(tmp_path).exists()
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == FINALIZER_HANDOFF
+
+
+@pytest.mark.parametrize(
+    ("interactive", "operator_input", "interactive_pause"),
+    [
+        pytest.param(False, None, True, id="no_tty"),
+        pytest.param(True, "n\n", True, id="tty_declines"),
+        pytest.param(True, "", True, id="tty_eof"),
+        pytest.param(True, None, False, id="interactive_pause_off"),
+    ],
+)
+def test_an_unconfirmed_finalizer_recovery_changes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interactive: bool,
+    operator_input: str | None,
+    interactive_pause: bool,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(
+        tmp_path, orchestrator, monkeypatch, commit=("PROJECT_STATE.md",)
+    )
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    _set_terminal(
+        orchestrator,
+        monkeypatch,
+        interactive=interactive,
+        operator_input=operator_input,
+    )
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(
+        orchestrator, tmp_path, messages, interactive_pause=interactive_pause
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    asked = ("INFO", LEDGER_QUESTION) in messages
+    assert asked == (interactive and interactive_pause)
+    warnings = [message for level, message in messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Discarded the in-flight record")
+    assert "finalizer's interrupted" in warnings[0]
+    assert "not confirmed at a terminal" in warnings[0]
+    assert not _record_path(tmp_path).exists()
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_dry_run_reports_an_interrupted_finalizer_without_applying_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(tmp_path, orchestrator, monkeypatch)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages, dry_run=True)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "finalizer was interrupted" in messages[0][1]
+    assert messages[0][1].endswith("Not applied in dry run.")
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+    handoff = tmp_path / HANDOFF_RELATIVE_PATH
+    assert handoff.read_text(encoding="utf-8") == HALF_WRITTEN_HANDOFF
+
+
+def test_a_linked_handoff_path_refuses_the_finalizer_restore_before_the_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(repo, orchestrator, monkeypatch, commit=("PROJECT_STATE.md",))
+    config = _config(repo)
+    external = _link_handoff_directory_outside(repo, tmp_path / "outside")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        config, _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert external.read_text(encoding="utf-8") == "external file\n"
+    assert not any("[y/N]" in message for _level, message in messages)
+    warnings = [message for level, message in messages if level == "WARN"]
+    assert len(warnings) == 1
+    assert "finalizer's interrupted" in warnings[0]
+    assert "docs/handoff/HANDOFF.md passes through a symlink or junction" in warnings[0]
+    assert not _record_path(repo).exists()
