@@ -45,12 +45,17 @@ from llm_handoff.chat_queue import (
 from llm_handoff.config import (
     BOUNCE_COUNT_STATE_PATH,
     CARRY_OVER_STATE_PATH,
+    DISPATCH_RECORD_STATE_PATH,
     IN_FLIGHT_STATE_PATH,
     AgentConfig,
     AgentRole,
     DispatchConfig,
     NormalizerConfig,
     claude_default_allowed_tools,
+)
+from llm_handoff.dispatch_record import (
+    dispatch_record_path,
+    record_dispatch,
 )
 from llm_handoff.ledger import (
     bounce_count,
@@ -607,6 +612,12 @@ def _run_loop(
             _log(log_fn, "ERROR", reviewer_launch_error)
             return 1
     _restore_bounce_counts(config, log_fn)
+    # A dry run neither clears nor writes the dispatch record.
+    dispatch_record_state = (
+        _clear_run_dispatch_record(config, log_fn)
+        if not config.dry_run
+        else _DispatchRecordState(enabled=False)
+    )
     mark_startup_complete = getattr(log_fn, "mark_startup_complete", None)
     if callable(mark_startup_complete):
         mark_startup_complete()
@@ -1895,6 +1906,15 @@ def _run_loop(
                         ),
                     ),
                 )
+                # Whatever its exit code, stop request, or session state.
+                _record_role_dispatch(
+                    config,
+                    route=current_cycle.route,
+                    story_id=_handoff_story_id(assignment_content),
+                    dispatch_result=dispatch_result,
+                    log=log_fn,
+                    state=dispatch_record_state,
+                )
             # The planner returned, whatever its exit code: its handoff is
             # whatever it wrote, so its record names nothing interrupted.
             if planner_in_flight_written and not _delete_in_flight_record(
@@ -2624,6 +2644,156 @@ def _state_conflict_resolver(
         return succeeded
 
     return StateConflictResolver(path=path, run=run)
+
+
+@dataclass
+class _DispatchRecordState:
+    """The run's dispatch record: whether it is kept, and its last saved bytes."""
+
+    enabled: bool = False
+    payload: bytes | None = None
+
+
+def _dispatch_record_state_path(config: DispatchConfig) -> Path:
+    """The dispatch record's path inside the repository, links not followed."""
+
+    return config.repo_root.resolve() / DISPATCH_RECORD_STATE_PATH
+
+
+def _dispatch_record_link_warning(state_path: Path) -> str:
+    return (
+        f"The dispatch record path {state_path} passes through a symlink or "
+        "junction, so the dispatcher does not write or delete it; this run "
+        "does not record its role dispatches. Remove the link to restore the "
+        "record."
+    )
+
+
+def _clear_run_dispatch_record(
+    config: DispatchConfig, log: LogFn
+) -> _DispatchRecordState:
+    """Start the run with an empty dispatch record; a failure only warns.
+
+    The record is kept only when Git ignores its path (an untracked record
+    would itself show up as an uncommitted file in the next work-claim gate),
+    the platform can delete and write it without a directory-swap race, and
+    no symlink or junction is on its path. Those checks run before anything
+    is deleted, so a tracked or linked record is left untouched; each refusal
+    logs one WARN and disables the record for the run. The delete goes
+    through the carry-over record's link-resistant unlink. A delete
+    ``OSError`` logs one WARN and the run continues with the record kept: the
+    first write replaces whatever was left.
+    """
+
+    disabled = _DispatchRecordState(enabled=False)
+    record_display = DISPATCH_RECORD_STATE_PATH.as_posix()
+    if not git_path_is_ignored(config.repo_root, record_display):
+        _log(
+            log,
+            "WARN",
+            f"Git does not ignore {record_display}, so this run does not "
+            "record its role dispatches; add /logs/dispatch/ to .gitignore.",
+        )
+        return disabled
+    if not _carry_over_disk_persistence_available():
+        _log(
+            log,
+            "WARN",
+            f"This platform cannot write or delete {record_display} without a "
+            "directory-swap race, so this run does not record its role "
+            "dispatches.",
+        )
+        return disabled
+    state_path = _dispatch_record_state_path(config)
+    if _carry_over_path_traverses_link(state_path):
+        _log(log, "WARN", _dispatch_record_link_warning(state_path))
+        return disabled
+    try:
+        _unlink_carry_over_record(
+            config.repo_root.resolve(), DISPATCH_RECORD_STATE_PATH.name
+        )
+    except _CarryOverLinkError:
+        _log(log, "WARN", _dispatch_record_link_warning(state_path))
+        return disabled
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not clear the dispatch record "
+            f"{dispatch_record_path(config.repo_root)} at run start: {exc}. "
+            "The run continues.",
+        )
+    return _DispatchRecordState(enabled=True)
+
+
+def _record_role_dispatch(
+    config: DispatchConfig,
+    *,
+    route: RouteName,
+    story_id: str | None,
+    dispatch_result: DispatchResult,
+    log: LogFn,
+    state: _DispatchRecordState,
+) -> None:
+    """Append the returned role dispatch to the run's dispatch record.
+
+    ``role`` is the route name. ``provider`` is the configured primary, or
+    None for the manual frontend. Nothing happens when ``state`` disables the
+    record.
+
+    ``record_dispatch`` appends the entry to a private staging copy that
+    starts from the bytes this run last saved, outside the repository, so the
+    repository copy is never read. The result then replaces the repository
+    copy through the carry-over record's link-resistant writer. A symlink or
+    junction on the record's path, found before or during the write, logs one
+    WARN, writes nothing, and disables the record for the rest of the run.
+    Any other write ``OSError`` logs one WARN; the cycle continues either way.
+    """
+
+    if not state.enabled:
+        return
+    if route == "frontend" and config.use_manual_frontend:
+        provider: str | None = None
+    else:
+        agent_config = config.agents.get(cast(AgentRole, route))
+        provider = agent_config.provider if agent_config is not None else None
+    state_path = _dispatch_record_state_path(config)
+    if _carry_over_path_traverses_link(state_path):
+        state.enabled = False
+        _log(log, "WARN", _dispatch_record_link_warning(state_path))
+        return
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="llm-handoff-dispatch-record-", ignore_cleanup_errors=True
+        ) as staging_directory:
+            staging_path = Path(staging_directory) / DISPATCH_RECORD_STATE_PATH.name
+            if state.payload is not None:
+                staging_path.write_bytes(state.payload)
+            record_dispatch(
+                staging_path,
+                role=route,
+                story_id=story_id,
+                provider=provider,
+                session_id=dispatch_result.session_id,
+            )
+            payload = staging_path.read_bytes()
+        _write_carry_over_payload(
+            config.repo_root.resolve(), payload, DISPATCH_RECORD_STATE_PATH.name
+        )
+    except _CarryOverLinkError:
+        state.enabled = False
+        _log(log, "WARN", _dispatch_record_link_warning(state_path))
+        return
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not write the dispatch record "
+            f"{dispatch_record_path(config.repo_root)} after the {route} "
+            f"dispatch: {exc}. The cycle continues.",
+        )
+        return
+    state.payload = payload
 
 
 def _dispatch_route(
