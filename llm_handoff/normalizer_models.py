@@ -11,6 +11,7 @@ ValidAgent = Literal[
     "frontend",
     "planner",
     "validator",
+    "tpm",
     "user",
     "unknown",
 ]

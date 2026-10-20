@@ -17,6 +17,8 @@ This repo uses a file-based dispatch loop:
 Use these public role names in handoffs:
 
 - `planner`: scopes work, sequences stories, and writes assignments.
+- `tpm`: optional; picks the next story inside an approved epic and writes its
+  assignment. When it is not configured, the planner does this.
 - `backend`: implements backend, data, CLI, integration, and test work.
 - `frontend`: implements UI, browser behavior, frontend tests, and visual checks.
 - `auditor`: reviews completed work and routes approved or blocked results.
@@ -41,7 +43,7 @@ Every write to `docs/handoff/HANDOFF.md` must begin with YAML frontmatter:
 
 ```yaml
 ---
-next_agent: <planner | backend | frontend | auditor | validator | finalizer | user>
+next_agent: <planner | tpm | backend | frontend | auditor | validator | finalizer | user>
 reason: "<short routing reason>"
 epic_id: <optional epic id>
 story_id: <optional story id>
@@ -54,7 +56,7 @@ evidence_present: <optional boolean>
 scope_sha: <7-40 hex SHA when close_type is set>
 close_type: <story | epic | omit>
 prior_sha: <optional prior SHA>
-producer: <planner | backend | frontend | auditor | validator | finalizer | user>
+producer: <planner | tpm | backend | frontend | auditor | validator | finalizer | user>
 ---
 ```
 
@@ -84,6 +86,7 @@ Only push when a human or this repository's explicit policy authorizes it.
 ## Boundaries
 
 - `planner` does not implement code.
+- `tpm` does not implement, audit, close epics, or edit `PROJECT_STATE.md`.
 - `backend` does not take frontend-only work.
 - `frontend` does not modify backend routes, persistence, or API contracts.
 - `auditor` reports findings and routes; it does not silently fix defects.
