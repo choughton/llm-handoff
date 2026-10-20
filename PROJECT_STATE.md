@@ -1121,6 +1121,8 @@ dependencies; Windows (`msvcrt`) and POSIX.
   at the loop top after the stop-request check, right before `publish_story`
   in the auditor branch, and right before `settle_deferred_findings` in the
   planner branch, so no push or merge happens while a message is saved.
+  Chat capture is turned off before those last two holds and stays off
+  through the publish or settle, so no message is saved after the check.
 - CHAT-2: Sent chat messages are saved to the queue and announced. A
   non-blank `ChatInput` submission is appended to the CHAT-12 queue file with
   the active role and `received_at`, and the console prints

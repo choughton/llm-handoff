@@ -633,9 +633,20 @@ def test_queue_planted_during_an_auditor_cycle_holds_before_publish(
         _plant(repo)
         return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
 
+    chat_input = _FakeChatInput()
+    chat_session.attach(_FakeChatLine(), chat_input)  # type: ignore[arg-type]
+    capture: list[tuple[str | None, str | None, bool]] = []
+
     def fake_publish(**_kwargs: object) -> PublishOutcome:
         order.append("publish_story")
         assert not queue.exists()
+        capture.append(
+            (
+                console_interrupt.CONTROLLER.active_role,
+                chat_session.SESSION.role,
+                chat_input.running,
+            )
+        )
         return PublishOutcome()
 
     monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
@@ -668,6 +679,9 @@ def test_queue_planted_during_an_auditor_cycle_holds_before_publish(
     assert exit_code == 0
     assert order == ["auditor", "hold", "publish_story"]
     assert not queue.exists()
+    # Chat capture stays off through the publish, so no message is saved
+    # after the hold's check; the auditor's console Ctrl+C behavior stays.
+    assert capture == [("auditor", None, False)]
 
 
 def test_queue_planted_during_a_planner_cycle_holds_before_settling_findings(
@@ -690,9 +704,14 @@ def test_queue_planted_during_a_planner_cycle_holds_before_settling_findings(
         _plant(repo)
         return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
 
+    chat_input = _FakeChatInput()
+    chat_session.attach(_FakeChatLine(), chat_input)  # type: ignore[arg-type]
+    capture: list[tuple[str | None, bool]] = []
+
     def fake_settle(**_kwargs: object) -> PublishOutcome:
         order.append("settle_deferred_findings")
         assert not queue.exists()
+        capture.append((chat_session.SESSION.role, chat_input.running))
         return PublishOutcome(stop=True, exit_code=0, message="paused")
 
     monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
@@ -724,6 +743,8 @@ def test_queue_planted_during_a_planner_cycle_holds_before_settling_findings(
 
     assert exit_code == 0
     assert order == ["planner", "hold", "settle_deferred_findings"]
+    # Chat capture stays off through the settle.
+    assert capture == [(None, False)]
 
 
 def test_eof_at_the_publish_hold_stops_without_publishing(

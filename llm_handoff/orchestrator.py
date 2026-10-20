@@ -2449,6 +2449,11 @@ def _run_loop(
                     config.publish.mode != "local"
                     and current_cycle.route == "auditor"
                 ):
+                    # Chat capture stays off from this hold through the
+                    # publish, so no message is saved after the check and
+                    # missed until the next cycle. The console role stays:
+                    # a first Ctrl+C still lets the publish finish.
+                    chat_session.set_role(None)
                     if not _hold_for_chat_messages(
                         config, log_fn, operator_prompt, stop_watch
                     ):
@@ -2479,7 +2484,9 @@ def _run_loop(
                         return outcome.exit_code
                 if config.publish.mode == "pr" and current_cycle.route == "planner":
                     # The planner may have just decided deferred review
-                    # findings that are holding a pull request open.
+                    # findings that are holding a pull request open. Chat
+                    # capture stays off from the hold through the settle.
+                    chat_session.set_role(None)
                     if not _hold_for_chat_messages(
                         config, log_fn, operator_prompt, stop_watch
                     ):
