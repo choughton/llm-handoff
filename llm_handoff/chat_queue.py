@@ -7,7 +7,10 @@ survives a dispatcher stop and still holds the loop at the next start.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,9 +97,20 @@ def append_chat_messages(path: Path, messages: Sequence[ChatMessage]) -> None:
         ],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f"{path.name}.tmp")
-    temporary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temporary_path.replace(path)
+    # mkstemp creates a new randomly named file with O_CREAT | O_EXCL, so a
+    # link planted at a predictable temporary name is never opened or followed.
+    file_fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(payload, indent=2) + "\n")
+        os.replace(temporary_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+        raise
 
 
 def clear_chat_messages(path: Path) -> None:

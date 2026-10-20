@@ -71,7 +71,58 @@ def test_append_then_load_round_trip(tmp_path: Path) -> None:
             for m in messages
         ],
     }
-    assert not path.with_name("chat-queue.json.tmp").exists()
+    assert sorted(p.name for p in path.parent.iterdir()) == ["chat-queue.json"]
+
+
+def test_append_does_not_follow_link_at_predictable_temporary_name(tmp_path: Path) -> None:
+    path = _queue(tmp_path)
+    path.parent.mkdir(parents=True)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    planted = path.with_name("chat-queue.json.tmp")
+    try:
+        planted.symlink_to(victim)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not available here")
+
+    append_chat_messages(path, [ChatMessage(text="hi", role=None, received_at="t")])
+
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    assert planted.is_symlink()
+    assert load_chat_messages(path) == [ChatMessage(text="hi", role=None, received_at="t")]
+
+
+def test_append_uses_fresh_temporary_name_each_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _queue(tmp_path)
+    seen: list[str] = []
+    real_replace = chat_queue.os.replace
+
+    def recording_replace(source: object, target: object) -> None:
+        seen.append(Path(str(source)).name)
+        real_replace(source, target)
+
+    monkeypatch.setattr(chat_queue.os, "replace", recording_replace)
+
+    append_chat_messages(path, [ChatMessage(text="one", role=None, received_at="t1")])
+    append_chat_messages(path, [ChatMessage(text="two", role=None, received_at="t2")])
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    assert all(name.startswith(".chat-queue.json.") and name.endswith(".tmp") for name in seen)
+
+
+def test_replace_failure_removes_temporary_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _queue(tmp_path)
+
+    def failing_replace(source: object, target: object) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(chat_queue.os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        append_chat_messages(path, [ChatMessage(text="hi", role=None, received_at="t")])
+
+    assert list(path.parent.iterdir()) == []
 
 
 def test_second_append_keeps_earlier_messages_first(tmp_path: Path) -> None:
