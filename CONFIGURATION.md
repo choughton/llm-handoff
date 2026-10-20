@@ -2352,8 +2352,14 @@ provider defaults.
 stories and every route is unchanged. With it, the role uses the same
 provider, launch-flag, timeout, and fallback handling as the other roles and
 always starts a fresh session. `doctor` reports
-`role tpm: not configured (planner picks stories)` when it is absent. Routing
-to the tpm is not wired yet, so a handoff with `next_agent: tpm` still pauses.
+`role tpm: not configured (planner picks stories)` when it is absent.
+Without `agents.tpm`, a handoff with `next_agent: tpm` gets one planner repair
+cycle that asks the planner to route to planner or an implementer; if the
+repaired handoff still routes to tpm, the dispatcher pauses. With
+`agents.tpm`, routing to the tpm is not wired yet, so such a handoff still
+pauses. The validator rejects a `producer: tpm` handoff that routes to
+`finalizer` or `validator`, that uses status `ready_for_review`,
+`verified_pass`, or `verified_fail`, or that sets `close_type: epic`.
 
 The `planner` and `frontend` roles on `antigravity` need the `agy` user
 settings entries described in

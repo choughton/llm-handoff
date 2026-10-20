@@ -68,6 +68,17 @@ _SUBSTANCE_RE = re.compile(
 )
 _ALLOWED_CLOSE_TYPES = {"story", "epic"}
 _IMPLEMENTER_ROUTES = {"backend", "frontend"}
+# Roles that assign Work Packets. A tpm assignment to an implementer is
+# checked exactly as a planner assignment is.
+_PLANNING_ROUTES = {"planner", "tpm"}
+# A tpm picks and assigns stories; it never claims completion, closes an
+# epic, or hands to the finalizer or validator.
+_TPM_ALLOWED_NEXT_AGENTS = ("backend", "frontend", "auditor", "planner", "user")
+_TPM_REJECTED_STATUSES = (
+    HandoffStatus.READY_FOR_REVIEW.value,
+    HandoffStatus.VERIFIED_PASS.value,
+    HandoffStatus.VERIFIED_FAIL.value,
+)
 _REQUIRED_EVIDENCE_FIELDS = {
     "Commands run",
     "Output summary",
@@ -244,6 +255,9 @@ def validate_handoff_frontmatter(
             f"frontmatter_routing_rule: next_agent `{parsed.next_agent}` requires producer `auditor`."
         )
 
+    if normalized_producer == "tpm":
+        errors.extend(_tpm_producer_errors(parsed, normalized_next_agent))
+
     status_conflict = status_next_agent_conflict(parsed)
     if status_conflict is not None:
         errors.append(f"frontmatter_status_route_conflict: {status_conflict}")
@@ -264,6 +278,36 @@ def validate_handoff_frontmatter(
         errors=_dedupe(errors),
         routing_instruction=routing_instruction,
     )
+
+
+def _tpm_producer_errors(
+    parsed: HandoffRouting,
+    normalized_next_agent: str | None,
+) -> list[str]:
+    errors: list[str] = []
+    if (
+        normalized_next_agent is not None
+        and normalized_next_agent not in _TPM_ALLOWED_NEXT_AGENTS
+    ):
+        errors.append(
+            "frontmatter_routing_rule: producer `tpm` cannot route to next_agent "
+            f"`{normalized_next_agent}`; a tpm routes only to "
+            f"{', '.join(f'`{agent}`' for agent in _TPM_ALLOWED_NEXT_AGENTS)}."
+        )
+    if parsed.status in _TPM_REJECTED_STATUSES:
+        errors.append(
+            "frontmatter_status_producer_rule: producer `tpm` cannot emit status "
+            f"`{parsed.status}`; a tpm omits status or uses "
+            "`blocked_missing_context`, `blocked_implementation_failure`, or "
+            "`escalate_to_user`."
+        )
+    if parsed.close_type == "epic":
+        errors.append(
+            "frontmatter_routing_rule: producer `tpm` emitted close_type `epic`; "
+            "a tpm never closes an epic and routes to `planner` when "
+            "remaining_stories is empty."
+        )
+    return errors
 
 
 def _tracker_lease_findings(
@@ -701,7 +745,7 @@ def _work_packet_contract_warnings(
     previous_route: str | None,
     routing_instruction: str | None,
 ) -> list[str]:
-    if previous_route != "planner" or routing_instruction not in {
+    if previous_route not in _PLANNING_ROUTES or routing_instruction not in {
         "backend",
         "frontend",
     }:
@@ -714,7 +758,7 @@ def _work_packet_contract_warnings(
     ):
         return []
     return [
-        "work_packet_missing: planner handoffs to backend or frontend require a ## Work Packet section."
+        f"work_packet_missing: {previous_route} handoffs to backend or frontend require a ## Work Packet section."
     ]
 
 
@@ -966,13 +1010,13 @@ def _scope_claim_errors(
 
     has_task_assignment = _TASK_ASSIGNMENT_RE.search(handoff_content) is not None
 
-    if previous_route == "planner":
+    if previous_route in _PLANNING_ROUTES:
         if routing_instruction == "user":
             return []
         has_work_packet = _WORK_PACKET_RE.search(handoff_content) is not None
         if not has_work_packet and not has_task_assignment:
             return [
-                "scope_claim_mismatch: planner handoffs must include a ## Work Packet section."
+                f"scope_claim_mismatch: {previous_route} handoffs must include a ## Work Packet section."
             ]
         return []
 
@@ -1016,7 +1060,7 @@ def _content_warnings(
 ) -> list[str]:
     warnings: list[str] = []
 
-    if previous_route == "planner":
+    if previous_route in _PLANNING_ROUTES:
         if routing_instruction == "user":
             return warnings
         if _TASK_ASSIGNMENT_RE.search(handoff_content) is not None:
