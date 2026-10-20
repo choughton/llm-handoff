@@ -2040,6 +2040,11 @@ def _run_loop(
                 _persist_implementer_leftovers(
                     config, implementer_leftovers, log_fn
                 )
+            # The commit moved HEAD and stamped scope_sha: the handback record
+            # now describes that state, so an interrupt before the work-claim
+            # gate finishes still resumes the cycle and re-runs the gate.
+            if not _refresh_in_flight_handback(config, log_fn, in_flight_state):
+                return 1
             _log(
                 log_fn,
                 "AGENT",
@@ -2149,6 +2154,12 @@ def _run_loop(
                         if forced_additional_instruction is None:
                             pause_recovery_used = False
                             operator_prompt.planner_tried = False
+                        # The hygiene repair rewrote the handoff the gate
+                        # checks; the record holds that text from here on.
+                        if not _refresh_in_flight_handback(
+                            config, log_fn, in_flight_state
+                        ):
+                            return 1
                         _run_work_claim_gate(
                             config=config,
                             route=current_cycle.route,
@@ -2286,6 +2297,8 @@ def _run_loop(
             ):
                 pause_recovery_used = False
                 operator_prompt.planner_tried = False
+            if not _refresh_in_flight_handback(config, log_fn, in_flight_state):
+                return 1
             if _run_work_claim_gate(
                 config=config,
                 route=current_cycle.route,
@@ -5768,11 +5781,30 @@ class _InFlightRecordState:
 
     ``unavailable_warned`` is whether its WARN was logged; ``handback_on_disk``
     whether this run left a handback record that the loop top deletes.
+    ``handback_inputs`` holds what that record was written from, and
+    ``handback_content`` and ``handback_head_sha`` what it holds now, so the
+    record can be refreshed after the dispatcher commit without reading it
+    back from disk.
     """
 
     def __init__(self) -> None:
         self.unavailable_warned = False
         self.handback_on_disk = False
+        self.handback_inputs: _HandbackRecordInputs | None = None
+        self.handback_content: str | None = None
+        self.handback_head_sha: str | None = None
+
+
+@dataclass(frozen=True)
+class _HandbackRecordInputs:
+    """The values a handback record is written from, apart from its handback."""
+
+    cycle: int
+    role: str
+    handoff_content: str
+    pre_dispatch_state: PreDispatchState
+    assignment_content: str | None
+    protected_snapshot: ProtectedFileSnapshot | None
 
 
 @dataclass(frozen=True)
@@ -6124,6 +6156,7 @@ def _record_in_flight_handback(
     """
 
     handback_content = _read_required_text(config.handoff_full_path)
+    handback_head_sha = _git_head(config.repo_root)
     if handback_content is not None and _write_in_flight_record(
         config,
         cycle=cycle,
@@ -6134,12 +6167,81 @@ def _record_in_flight_handback(
         state=state,
         assignment_content=assignment_content,
         handback_content=handback_content,
-        handback_head_sha=_git_head(config.repo_root),
+        handback_head_sha=handback_head_sha,
         protected_snapshot=protected_snapshot,
     ):
         state.handback_on_disk = True
+        state.handback_inputs = _HandbackRecordInputs(
+            cycle=cycle,
+            role=role,
+            handoff_content=handoff_content,
+            pre_dispatch_state=pre_dispatch_state,
+            assignment_content=assignment_content,
+            protected_snapshot=protected_snapshot,
+        )
+        state.handback_content = handback_content
+        state.handback_head_sha = handback_head_sha
         return True
     return _delete_in_flight_record(config, log)
+
+
+def _refresh_in_flight_handback(
+    config: DispatchConfig, log: LogFn, state: _InFlightRecordState
+) -> bool:
+    """Make this run's handback record describe the checkout as it is now.
+
+    Called once the dispatcher commit step ran and again right before the
+    work-claim gate, so an interrupt from there to the end of the gate
+    leaves a record whose HEAD and handback text match the stamped claim;
+    the next start then offers to resume it and the resumed cycle re-runs
+    validation and the gate. Writes nothing in a dry run, without a handback
+    record on disk, or when HEAD and the handoff are what the record holds.
+    A failed write deletes the record instead. Returns False, after an
+    ERROR, only when that delete failed too, so the run must stop.
+    """
+
+    if config.dry_run or not state.handback_on_disk:
+        return True
+    inputs = state.handback_inputs
+    if inputs is None:
+        return True
+    handback_content = _read_required_text(config.handoff_full_path)
+    handback_head_sha = _git_head(config.repo_root)
+    if (
+        handback_content == state.handback_content
+        and handback_head_sha == state.handback_head_sha
+    ):
+        return True
+    if handback_content is not None and _write_in_flight_record(
+        config,
+        cycle=inputs.cycle,
+        role=inputs.role,
+        handoff_content=inputs.handoff_content,
+        pre_dispatch_state=inputs.pre_dispatch_state,
+        log=log,
+        state=state,
+        assignment_content=inputs.assignment_content,
+        handback_content=handback_content,
+        handback_head_sha=handback_head_sha,
+        protected_snapshot=inputs.protected_snapshot,
+    ):
+        state.handback_content = handback_content
+        state.handback_head_sha = handback_head_sha
+        return True
+    # Tried once: the record on disk no longer describes this cycle.
+    state.handback_on_disk = False
+    if not _delete_in_flight_record(config, log):
+        _log(
+            log,
+            "ERROR",
+            "Could not refresh or delete the in-flight handback record "
+            f"{_in_flight_state_path(config)} after the dispatcher commit, so "
+            "the dispatcher stops before the work-claim gate. The next start "
+            "compares it with HEAD and the handoff and discards it when they "
+            "no longer match.",
+        )
+        return False
+    return True
 
 
 def _clear_handback_record(
@@ -6618,10 +6720,14 @@ def _recover_interrupted_handback(
     """Resume an implementer whose handback was interrupted before its gates.
 
     The implementer returned, but its cycle stopped before it reached the
-    loop top. When HEAD and the handoff are still what they were when the
-    dispatch returned, the confirmed cycle resumes at the dispatcher commit
-    without dispatching the role again. Otherwise the cycle got past its
-    commit, or a gate rewrote the handoff, and the record is discarded.
+    loop top. The record is refreshed after the dispatcher commit and before
+    the work-claim gate, so it can describe a cycle interrupted after that
+    commit. When HEAD and the handoff are still what the record holds, the
+    confirmed cycle resumes at the dispatcher commit without dispatching the
+    role again; after a commit that step finds nothing new to commit, and
+    validation and the work-claim gate (with scanners) run again on the
+    stamped claim. Otherwise the cycle got past the record's state, or a
+    gate rewrote the handoff, and the record is discarded.
     """
 
     nothing = InterruptedDispatchRecovery()
@@ -6684,8 +6790,10 @@ def _recover_interrupted_handback(
     summary = (
         f"Found in-flight record {state_path}: {record.role} handed back on "
         f"{story}, but its cycle was interrupted before the dispatcher commit "
-        f"and gates finished. Agent files: {files}. Changed operator files: "
-        f"{operator_files}."
+        "and gates finished; the record may describe a cycle interrupted "
+        "after the dispatcher commit, and resuming then re-runs validation "
+        "and the work-claim gate (with scanners) on the stamped claim. "
+        f"Agent files: {files}. Changed operator files: {operator_files}."
     )
     if config.dry_run:
         _log(log, "INFO", f"{summary} Not applied in dry run.")
@@ -6714,7 +6822,8 @@ def _recover_interrupted_handback(
             "INFO",
             "The handback to resume is the current handoff (sha256 "
             f"{_content_sha(handback_content)[:12]}); resuming commits the "
-            "agent files and runs validation and the work-claim gate on it.",
+            "agent files, if any are still uncommitted, and runs validation "
+            "and the work-claim gate (with scanners) on it.",
         )
         if config.protected_paths:
             disclosed = _uncommitted_protected_files(config)

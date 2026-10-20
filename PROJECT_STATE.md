@@ -6,7 +6,8 @@ belong in commits, handoffs, and pull requests.
 
 ## Current Status
 
-- **Active Epic:** RECOVERY (RECOVERY-6 in progress; RECOVERY-5 (was
+- **Active Epic:** RECOVERY (RECOVERY-7 in progress; RECOVERY-6 approved at
+  `7dcd6ad`, merged in PR #175; RECOVERY-5 (was
   RECOVERY-3b2) approved at `2e62500`, merged in PR #174;
   RECOVERY-3b1 approved at `bb4678f`, merged in PR #171;
   RECOVERY-3a approved at `c29943e`, merged in PR #169; RECOVERY-2d approved at
@@ -17,10 +18,13 @@ belong in commits, handoffs, and pull requests.
   (interrupted finalizer dispatch, was RECOVERY-3b2), RECOVERY-6 to
   RECOVERY-8 (were RECOVERY-3c to 3e), and RECOVERY-9 (no-record fallback,
   was RECOVERY-4), in that order, then RECOVERY-10 (merge-conflict resolver
-  sees hidden working-tree edits, from the RECOVERY-5 security review).
-  RECOVERY-6 (interrupted audit fan-out) is active because it is next in the
-  epic's order, unblocked, and reuses the planner/finalizer in-flight record
-  machinery just shipped.
+  sees hidden working-tree edits, from the RECOVERY-5 security review), then
+  RECOVERY-11 (failed in-flight record deletes stop every recovery path, from
+  the RECOVERY-6 audit).
+  RECOVERY-7 (interrupted work-claim gate and scanners) is active because it
+  is next in the epic's order, unblocked, and closes a gap where an interrupt
+  after the dispatcher commit sends an ungated `ready_for_review` claim
+  straight to the auditor.
   Picked over the other
   open epics: HARD-5 and HARD-6 are closed, so its dependency is met;
   CHAT is ordered after it. ACTIVE-PLANNER is meant to follow an implementer
@@ -695,10 +699,11 @@ RECOVERY-2a, RECOVERY-2b, RECOVERY-2c, and RECOVERY-2d are merged (PRs #165,
 split; RECOVERY-3b1 (interrupted planner dispatch) is approved at `bb4678f`
 and merged (PR #171), and the rest is renumbered flat: RECOVERY-5 (was 3b2,
 interrupted finalizer dispatch) is approved at `2e62500` and merged (PR #174).
-RECOVERY-6 (interrupted audit fan-out) is active because it is next in the
-epic's order, unblocked, and reuses the planner/finalizer in-flight record
-machinery just shipped; RECOVERY-7 through RECOVERY-9 (was RECOVERY-4)
-follow in order, then RECOVERY-10.
+RECOVERY-6 (interrupted audit fan-out) is approved at `7dcd6ad` and merged
+(PR #175). RECOVERY-7 (interrupted work-claim gate and scanners) is active
+because it is next in the epic's order and unblocked; RECOVERY-8 and
+RECOVERY-9 (was RECOVERY-4) follow in order, then RECOVERY-10, then
+RECOVERY-11.
 HARD-5 and HARD-6 are closed,
 so RECOVERY-2 was unblocked. Its in-flight
 record on disk has the same forgeable-record exposure, so RECOVERY-2 must use
@@ -860,8 +865,8 @@ bounces until the three-fix circuit breaker escalates.
       mode, handoff-only commits since the record's untrusted HEAD are undone
       only after the operator confirms the exact `git reset --soft`.
 - The rest of RECOVERY, renumbered flat on 2026-10-19 (old IDs in brackets;
-  a live handoff's `remaining_stories` may still use them). Order: 6, 7, 8, 9,
-  then 10.
+  a live handoff's `remaining_stories` may still use them).
+  Order: 7, 8, 9, 10, then 11.
 - RECOVERY-5 (was RECOVERY-3b2; approved at `2e62500`, merged in PR #174):
   Interrupted finalizer dispatch. A finalizer
   dispatch writes a `finalizer` in-flight record (same shape as a planner
@@ -881,7 +886,8 @@ bounces until the three-fix circuit breaker escalates.
   branch also fixes the two high PR #173 security findings (the
   merge-conflict resolver did not compare index entries, and its handoff
   restore followed links) because its audit range includes that code.
-- RECOVERY-6 (was RECOVERY-3c): Interrupted audit fan-out: restore the
+- RECOVERY-6 (was RECOVERY-3c; approved at `7dcd6ad`, merged in PR #175):
+  Interrupted audit fan-out: restore the
   handoff and re-run the read-only reviewers. Decided by the planner on
   2026-10-19:
   - Record: `auditor` joins the in-flight roles with the planner/finalizer
@@ -912,7 +918,18 @@ bounces until the three-fix circuit breaker escalates.
     Partial `logs/dispatch/audit/<timestamp>-cycle<N>/` directories are left
     untouched.
 - RECOVERY-7 (was RECOVERY-3d): Interrupted work-claim gate and scanners:
-  re-run them.
+  re-run them. Decided by the planner on 2026-10-19: reuse the RECOVERY-2b
+  handback resume rather than add a new phase. Once the dispatcher commit
+  step has run, and again right before each work-claim gate call, the
+  on-disk handback record is refreshed (`_refresh_in_flight_handback`) so its
+  `handback_content` and `handback_head_sha` describe the post-commit state;
+  the existing startup check then matches and the confirmed resume re-runs
+  the (now no-op) commit, validation, and the work-claim gate with scanners
+  on the stamped claim. No new record field, phase, or loader rule. A failed
+  refresh write deletes the record; a failed delete too logs an ERROR naming
+  the record and stops the run before the gate. An interrupt between
+  `git commit` returning and the refresh write still discards the record
+  (RECOVERY-9's no-record fallback is the follow-up).
 - RECOVERY-8 (was RECOVERY-3e): Publish steps safe to repeat (push again,
   reuse the open pull request, skip a merge that already happened), using
   `story.json`.
@@ -932,6 +949,14 @@ bounces until the three-fix circuit breaker escalates.
   every tracked path independently of `git status` and index flags, reject
   index-flag changes, and add regressions for a hidden edit with an
   unchanged staged blob.
+- RECOVERY-11: Failed in-flight record deletes stop every recovery path.
+  From the RECOVERY-6 audit (non-blocking): the implementer
+  dispatch/handback, planner, and finalizer startup recovery paths call
+  `_delete_in_flight_record` and ignore a False result (for example
+  `_recover_interrupted_handback`'s discard, decline, and confirmed
+  branches), so a run can continue while a stale record stays on disk; make
+  each such call log an ERROR naming the record and stop the run, as
+  RECOVERY-6 did for the auditor path, with a regression per path.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
