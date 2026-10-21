@@ -17,8 +17,10 @@ belong in commits, handoffs, and pull requests.
   stories (splits, reorders, and reshapes them inside the open epic) and the
   planner keeps only epic-level direction. New epic 20 (GROOMING) is next
   after CHAT closes, ahead of TRANSITION-RULES.
-- **Active Epic:** none; the planner picks the next epic (GROOMING is next by
-  the operator direction above). CHAT is closed: CHAT-5 (chat on agy), the
+- **Active Epic:** GROOMING (opened by the planner after CHAT closed at
+  `adf757d`, per the operator direction above). GROOM-1 (tpm grooming
+  contract) is implemented and awaits audit; GROOM-2 through GROOM-5 remain.
+  CHAT is closed: CHAT-5 (chat on agy), the
   epic's last story, was approved at `2407e90` and merged in PR #242. Its `step_update` edit attribution
   (`tool_info.parameters.TargetFile`, `state: "ACTIVE"` to `"DONE"` on
   success, `state: "ERROR"` with `tool_info.error` on failure) was verified
