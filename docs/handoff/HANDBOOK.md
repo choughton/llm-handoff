@@ -17,8 +17,9 @@ Every handoff has two layers:
 
 The `tpm` role exists only when `agents.tpm` is configured in the dispatch
 config. Then the planner opens each epic and routes to `tpm`, and the tpm
-assigns each story with a Work Packet. Without it, the planner assigns every
-story itself and no handoff routes to `tpm`.
+grooms the stories inside that open epic and assigns each story with a Work
+Packet. Epic-level direction stays with the planner. Without it, the planner
+grooms and assigns every story itself and no handoff routes to `tpm`.
 
 ## Frontmatter Schema Reference
 
@@ -35,16 +36,24 @@ Quote every `reason`. Run `git rev-parse HEAD` for concrete SHAs. Never write
 `remaining_stories` is the epic's live story list. Every role that rewrites
 `docs/handoff/HANDOFF.md` copies it forward. Remove an entry only when it is
 the story just closed or the story the planner or tpm assigns as `story_id`.
-A tpm removes only the story it assigns; it never drops another story, and
-routes a stale or wrong one to `planner` instead. To drop
-any other story, add a `## Dropped Stories` section with one bullet per story,
-starting with its ID:
+To drop any other story, add a `## Dropped Stories` section with one bullet
+per story, starting with its ID:
 
 ```markdown
 ## Dropped Stories
 
 - S4: Merged into S3 at the user's request.
 ```
+
+Inside the open epic, a tpm may also remove a story it split or a story
+already done on the default branch. It lists each such removal under
+`## Dropped Stories` with its reason, such as
+`- EPIC-3: Split into EPIC-7, EPIC-8.` or
+`- EPIC-4: Already done on <branch> at <sha>.` Split replacements take new flat
+IDs after the epic's highest story number and carry `(was EPIC-N)`. The tpm
+records new and groomed stories in `PROJECT_STATE.md` through the Work Packet
+it writes. A tpm never drops a story for a scope reason: scope changes, epic
+boundaries, and wrong or competing scope decisions route to `planner`.
 
 The dispatcher matches stories by their leading ID token and fails the
 post-dispatch gate when a rewrite for the same epic drops a story without such
