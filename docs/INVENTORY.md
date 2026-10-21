@@ -96,6 +96,7 @@ dispatcher role writes `HANDOFF.md`; see
 | File | Purpose |
 | --- | --- |
 | [.claude/agents/planner.md](../.claude/agents/planner.md) | Planner subagent (all-Claude mapping). |
+| [.claude/agents/tpm.md](../.claude/agents/tpm.md) | Tpm subagent: picks the next story when `agents.tpm` maps to claude. |
 | [.claude/agents/backend.md](../.claude/agents/backend.md) | Backend subagent (all-Claude mapping). |
 | [.claude/agents/frontend.md](../.claude/agents/frontend.md) | Frontend subagent (all-Claude mapping). |
 | [.claude/agents/auditor.md](../.claude/agents/auditor.md) | Auditor subagent. |
@@ -192,6 +193,7 @@ guide to that directory.
 | File | Purpose |
 | --- | --- |
 | [.claude/agents/planner.md](../examples/reference-workflow/.claude/agents/planner.md) | Claude planner subagent. |
+| [.claude/agents/tpm.md](../examples/reference-workflow/.claude/agents/tpm.md) | Claude tpm subagent. |
 | [.claude/agents/backend.md](../examples/reference-workflow/.claude/agents/backend.md) | Claude backend subagent. |
 | [.claude/agents/frontend.md](../examples/reference-workflow/.claude/agents/frontend.md) | Claude frontend subagent. |
 | [.claude/agents/auditor.md](../examples/reference-workflow/.claude/agents/auditor.md) | Claude auditor subagent. |

@@ -648,6 +648,7 @@ def test_linear_changes_only_config_agents_handbook_and_subagent_tools(
         AGENTS,
         HANDBOOK,
         PLANNER_AGENT,
+        TPM_AGENT,
         FRONTEND_AGENT,
         BACKEND_AGENT,
         AUDITOR_AGENT,
@@ -655,11 +656,12 @@ def test_linear_changes_only_config_agents_handbook_and_subagent_tools(
     }
 
 
-# Claude planner, frontend, backend, auditor, and finalizer subagent tools
+# Claude planner, tpm, frontend, backend, auditor, and finalizer subagent tools
 # lines gain their role's Linear MCP tools, since a subagent's `tools:` list
 # is an allowlist.
 
 PLANNER_AGENT = Path(".claude/agents/planner.md")
+TPM_AGENT = Path(".claude/agents/tpm.md")
 FRONTEND_AGENT = Path(".claude/agents/frontend.md")
 BACKEND_AGENT = Path(".claude/agents/backend.md")
 AUDITOR_AGENT = Path(".claude/agents/auditor.md")
@@ -704,6 +706,22 @@ def test_planner_and_frontend_tools_lines_add_linear_tools(
     assert _single_changed_line(tmp_path, FRONTEND_AGENT) == _WRITER_TOOLS + b"".join(
         b", " + prefix + tool
         for tool in (b"get_issue", b"list_issues", b"list_comments", b"save_comment")
+    )
+
+
+@pytest.mark.parametrize("server", ["linear", "team-linear"])
+def test_tpm_tools_line_adds_linear_tools(tmp_path: Path, server: str) -> None:
+    _linear(tmp_path, tracker_mcp_server=server)
+    prefix = f"mcp__{server}__".encode()
+    assert _single_changed_line(tmp_path, TPM_AGENT) == _WRITER_TOOLS + b"".join(
+        b", " + prefix + tool
+        for tool in (
+            b"get_issue",
+            b"list_issues",
+            b"list_comments",
+            b"save_comment",
+            b"save_issue",
+        )
     )
 
 
@@ -769,7 +787,14 @@ def test_claude_provider_linear_init_adds_planner_linear_tools(
 
 @pytest.mark.parametrize(
     "relative_path",
-    [PLANNER_AGENT, FRONTEND_AGENT, BACKEND_AGENT, AUDITOR_AGENT, FINALIZER_AGENT],
+    [
+        PLANNER_AGENT,
+        TPM_AGENT,
+        FRONTEND_AGENT,
+        BACKEND_AGENT,
+        AUDITOR_AGENT,
+        FINALIZER_AGENT,
+    ],
 )
 def test_vanilla_init_keeps_linear_subagent_templates(
     tmp_path: Path, relative_path: Path
