@@ -992,8 +992,10 @@ def test_validate_handoff_frontmatter_accepts_backend_alias() -> None:
     result = validator.validate_handoff_frontmatter(
         HandoffRouting(
             next_agent="backend",
-            reason="Hand off backend implementation to backend.",
-            producer="frontend",
+            reason="Assign backend implementation work.",
+            # TRANS-1: an implementer may not route to another implementer,
+            # so the alias check uses a planner assignment.
+            producer="planner",
         )
     )
 
