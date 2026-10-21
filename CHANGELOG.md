@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `pr` mode publishes a story the operator committed on the base branch. A story routed
+  to `user` (such as `.claude/` edits) ends with the operator's local, unpushed commit on
+  the base branch, which the planner sends to the auditor. When that story audit passes
+  with no story state, HEAD is the handoff's `scope_sha`, the commits since
+  `<remote>/<base_branch>` hold no merge commit and do not change `HANDOFF.md`, and
+  nothing else is uncommitted, the dispatcher now creates the story branch at HEAD with
+  its story state, moves the local base branch back to `<remote>/<base_branch>`, and
+  publishes as usual (push, pull request, review gate, merge). Before, publish stopped
+  with "the audited work is not on a story branch the dispatcher created" and the operator
+  opened the pull request by hand. Any other shape still stops, with a `WARN` naming why.
+  A Codex review bounce of such a story routes to `user` with `status: escalate_to_user`.
 - Linear evidence and tools for the optional `tpm` role (TPM-8). The evidence-comment
   contract and `LINEAR_EVIDENCE_EVENTS` now let `tpm` post `lease_opened`,
   `user_attention_requested`, and `user_attention_cleared`, so the Linear validator

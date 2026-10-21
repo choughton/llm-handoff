@@ -3466,6 +3466,192 @@ def test_pr_epic_close_on_a_pushed_story_branch_without_state_stops(
     assert _gh_calls(tmp_path) == []
 
 
+HANDOFF_PATH = Path("docs/handoff/HANDOFF.md")
+
+
+def _operator_story_on_main(repo: Path) -> tuple[str, str]:
+    """Commit an operator story on main, unpushed, with the handoff uncommitted.
+
+    Returns the remote main and the operator commit.
+    """
+
+    upstream = _git(repo, "rev-parse", "HEAD")
+    _commit_all(
+        repo, {".claude/agents/widget.md": "operator edit\n"}, "W9.9 Add a widget"
+    )
+    head = _git(repo, "rev-parse", "HEAD")
+    (repo / HANDOFF_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (repo / HANDOFF_PATH).write_text("live handoff\n", encoding="utf-8")
+    return upstream, head
+
+
+def _operator_audit(scope_sha: str) -> str:
+    return VERIFIED.replace(
+        "close_type: story", f"scope_sha: {scope_sha}\nclose_type: story"
+    )
+
+
+def _publish_operator_story(
+    repo: Path, gh: list[str], log, scope_sha: str, **kwargs: object
+) -> PublishOutcome:
+    options: dict[str, object] = {
+        "handoff_content": _operator_audit(scope_sha),
+        "base_branch": "main",
+        "branch_prefix": "llm-handoff/",
+        "handoff_path": HANDOFF_PATH,
+    }
+    options.update(kwargs)
+    return _publish_pr(repo, gh, log, **options)
+
+
+def test_a_story_the_operator_committed_on_main_moves_to_a_story_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    upstream, head = _operator_story_on_main(repo)
+    entries, log = _logs()
+
+    outcome = _publish_operator_story(repo, gh, log, head[:12], auto_merge=False)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _git(repo, "rev-parse", "main") == upstream
+    assert _git(remote, "rev-parse", f"refs/heads/{BRANCH}") == head
+    assert _git(remote, "rev-parse", "refs/heads/main") == upstream
+    assert (repo / HANDOFF_PATH).read_text(encoding="utf-8") == "live handoff\n"
+    calls = _gh_calls(tmp_path)
+    assert [call[:2] for call in calls] == [["pr", "view"], ["pr", "create"]]
+    create = calls[1]
+    assert create[create.index("--base") + 1] == "main"
+    assert create[create.index("--head") + 1] == BRANCH
+    body = Path(create[create.index("--body-file") + 1]).read_text(encoding="utf-8")
+    assert "the operator (a story routed to `user`)" in body
+    assert any(
+        level == "INFO" and f"Created `{BRANCH}`" in message
+        for level, message in entries
+    )
+
+
+def test_an_adopted_operator_story_merges_and_returns_to_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    upstream, head = _operator_story_on_main(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_operator_story(repo, gh, log, head)
+
+    assert outcome == PublishOutcome()
+    assert [call[:2] for call in _gh_calls(tmp_path) if call[0] == "pr"] == [
+        ["pr", "view"],
+        ["pr", "create"],
+        ["pr", "view"],
+        ["pr", "merge"],
+    ]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "HEAD") == head != upstream
+    assert _git(remote, "rev-parse", "refs/heads/main") == head
+    assert _git(repo, "branch", "--list", BRANCH) == ""
+    assert not (repo / STATE_PATH).exists()
+    assert (repo / HANDOFF_PATH).read_text(encoding="utf-8") == "live handoff\n"
+
+
+def _merge_commit_on_main(repo: Path) -> None:
+    _git(repo, "switch", "-q", "-c", "side")
+    _commit_all(repo, {"side.md": "side\n"}, "side work")
+    _git(repo, "switch", "-q", "main")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+
+
+@pytest.mark.parametrize(
+    ("arrange", "scope", "options", "warning"),
+    [
+        (lambda repo: None, "upstream", {}, "is not the handoff's scope_sha"),
+        (
+            lambda repo: (repo / "README.md").write_text("edit\n", encoding="utf-8"),
+            "head",
+            {},
+            "uncommitted files other than",
+        ),
+        (_merge_commit_on_main, "head", {}, "include a merge commit"),
+        (
+            lambda repo: _commit_all(
+                repo, {HANDOFF_PATH.as_posix(): "committed\n"}, "handoff"
+            ),
+            "head",
+            {},
+            "would put live handoff state",
+        ),
+        (
+            lambda repo: _git(repo, "branch", BRANCH, "HEAD~1"),
+            "head",
+            {},
+            "already exists",
+        ),
+        (lambda repo: None, "head", {"handoff_path": None}, None),
+        (
+            lambda repo: None,
+            "head",
+            {"handoff_content": VERIFIED.replace(
+                "close_type: story", "scope_sha: {head}\nclose_type: epic"
+            )},
+            None,
+        ),
+    ],
+    ids=[
+        "scope-is-not-head",
+        "other-dirty-file",
+        "merge-commit",
+        "commit-changes-handoff",
+        "branch-exists",
+        "no-handoff-path",
+        "epic-close",
+    ],
+)
+def test_an_operator_story_on_main_that_does_not_fit_still_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange,
+    scope: str,
+    options: dict[str, object],
+    warning: str | None,
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    upstream, _head = _operator_story_on_main(repo)
+    arrange(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    if "handoff_content" in options:
+        options = {
+            **options,
+            "handoff_content": str(options["handoff_content"]).format(head=head),
+        }
+    entries, log = _logs()
+
+    outcome = _publish_operator_story(
+        repo, gh, log, head if scope == "head" else upstream, **options
+    )
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert "no story state" in outcome.message
+    assert _gh_calls(tmp_path) == []
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "main") == head
+    assert _git(remote, "rev-parse", "refs/heads/main") == upstream
+    assert not (repo / STATE_PATH).exists()
+    warnings = [message for level, message in entries if level == "WARN"]
+    if warning is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1 and warning in warnings[0]
+
+
 def _start_empty_story(repo: Path) -> None:
     """Cut the story branch and its state with no implementer commit."""
 
@@ -4419,6 +4605,29 @@ def test_the_review_bounce_says_a_deferral_is_still_ready_for_review() -> None:
     assert "`pending-dispatcher-commit`" in text
     assert "so no new commit is needed" in text
     assert "Do not hand back a `blocked_*` status to defer a finding" in text
+
+
+def test_a_review_bounce_of_an_operator_story_pauses_for_the_user() -> None:
+    handoff = build_review_bounce_handoff(
+        state=replace(_plain_state(), implementer="user"),
+        findings=(),
+        url="https://github.example/acme/repo/pull/7",
+        head_sha="0" * 40,
+        review_round=1,
+        max_rounds=1,
+    )
+
+    decision = route(handoff)
+    assert decision.route == "user" and not decision.warnings
+    assert "paused for the operator" in handoff
+    assert "status: verified_fail" in build_review_bounce_handoff(
+        state=_plain_state(),
+        findings=(),
+        url="",
+        head_sha="0" * 40,
+        review_round=1,
+        max_rounds=1,
+    )
 
 
 def _deferral_claim() -> str:

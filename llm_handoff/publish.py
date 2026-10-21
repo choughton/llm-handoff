@@ -46,6 +46,10 @@ commit merges the base branch and contains only the conflict resolution: it
 differs from the automatic merge of its parents only in the files that merge
 left conflicted. Otherwise it pauses again and pushes nothing.
 
+A story routed to ``user`` ends with the operator's own commits on the base
+branch and no story branch. In ``pr`` mode a passing story audit of those
+commits moves them to a story branch and publishes it like any other story.
+
 Agents never push, branch, or merge: the dispatcher does all of it, and only
 after the work-claim gate and the audit have passed. Requires
 ``commit_mode: dispatcher``.
@@ -774,12 +778,16 @@ def publish_story(
     branch_prefix: str | None = None,
     review_prompt: ReviewPromptFn | None = None,
     state_resolver: StateConflictResolver | None = None,
+    handoff_path: Path | None = None,
 ) -> PublishOutcome:
     """Merge or open a pull request for an audited story.
 
     ``base_branch`` and ``branch_prefix`` (``publish.base_branch`` and
     ``publish.branch_prefix``) identify the base branch for an epic close
-    that has no story state. ``review_prompt`` asks the operator what to do
+    that has no story state. In ``pr`` mode they, with ``handoff_path``, also
+    let a story the operator committed on the base branch move to a story
+    branch and publish (see :func:`_adopt_base_branch_story`).
+    ``review_prompt`` asks the operator what to do
     when the Codex review fails or times out; without it the loop stops.
     ``state_resolver`` lets the planner resolve one base-branch merge per
     publish that conflicts only in the project state file.
@@ -808,6 +816,29 @@ def publish_story(
             "its stories are already published, so there is nothing to publish.",
         )
         return PublishOutcome()
+    if (
+        state is None
+        and mode == "pr"
+        and frontmatter.close_type == "story"
+        and base_branch
+        and branch_prefix
+        and handoff_path is not None
+        and current == base_branch
+    ):
+        adopted = _adopt_base_branch_story(
+            repo_root=repo_root,
+            remote=remote,
+            base_branch=base_branch,
+            branch_prefix=branch_prefix,
+            handoff_path=handoff_path,
+            handoff_content=handoff_content,
+            frontmatter=frontmatter,
+            log=log,
+        )
+        if isinstance(adopted, PublishOutcome):
+            return adopted
+        if adopted is not None:
+            state, current = adopted, adopted.branch
     if state is None or current != state.branch:
         # Continuing would treat unpublished work as done and leave the
         # checkout on a branch the next story cannot start from.
@@ -2607,7 +2638,10 @@ def build_review_bounce_handoff(
     _add_tracker_fields(frontmatter, state)
     if state.story_title:
         frontmatter["story_title"] = state.story_title
-    frontmatter["status"] = "verified_fail"
+    # An operator story (see _adopt_base_branch_story) goes back to `user`,
+    # and only a pause status may route there.
+    operator = state.implementer == "user"
+    frontmatter["status"] = "escalate_to_user" if operator else "verified_fail"
     frontmatter["producer"] = "validator"
     lines = [
         "---",
@@ -2620,6 +2654,16 @@ def build_review_bounce_handoff(
         "",
         "## Pull Request Review",
         "",
+        *(
+            [
+                "The operator made this story's commits, so the loop paused "
+                "for the operator to fix these findings on "
+                f"`{state.branch}`.",
+                "",
+            ]
+            if operator
+            else []
+        ),
         f"The work-claim gate and the audit passed, and the dispatcher pushed "
         f"`{state.branch}` to {url or 'its pull request'}. The Codex review of "
         f"commit `{head_sha}` reported the findings below, so the pull request "
@@ -4117,13 +4161,25 @@ def _story_lines(state: StoryState) -> list[str]:
     story = f"`{state.story_id}`" + (
         f" in epic `{state.epic_id}`" if state.epic_id else ""
     )
+    if state.implementer == "user":
+        # See _adopt_base_branch_story.
+        implemented = "the operator (a story routed to `user`)"
+        published = (
+            "after the audit passed. The operator committed the work on the "
+            "base branch; the dispatcher moved it to this branch."
+        )
+    else:
+        implemented = f"the `{state.implementer}` role"
+        published = (
+            "after the work-claim gate and the audit passed. The dispatcher "
+            "committed the in-scope files."
+        )
     return [
         "### Story",
         "",
         f"- **Story:** {story}",
-        f"- **Implemented by:** the `{state.implementer}` role",
-        "- **Published:** after the work-claim gate and the audit passed. The "
-        "dispatcher committed the in-scope files.",
+        f"- **Implemented by:** {implemented}",
+        f"- **Published:** {published}",
         "",
     ]
 
@@ -4395,6 +4451,129 @@ def _drop_empty_story_branch(
         f"`{state.base_branch}`; nothing was pushed.",
     )
     return PublishOutcome()
+
+
+def _adopt_base_branch_story(
+    *,
+    repo_root: Path,
+    remote: str,
+    base_branch: str,
+    branch_prefix: str,
+    handoff_path: Path,
+    handoff_content: str,
+    frontmatter: HandoffRouting,
+    log: LogFn,
+) -> StoryState | PublishOutcome | None:
+    """Move a story the operator committed on the base branch to a story branch.
+
+    Edits that no agent role may make (such as files under ``.claude/``) go in
+    a story routed to ``user``: the operator commits the work locally on the
+    base branch without pushing, and the planner sends that commit to the
+    auditor. No story branch or state exists for it. When the audit passed
+    with ``close_type: story``, HEAD is the handoff's ``scope_sha``, HEAD sits
+    on ``remote/base_branch`` with only commits that remote lacks and no merge
+    commits, none of them changes ``handoff_path``, and nothing but
+    ``handoff_path`` is uncommitted, the story branch is created at HEAD with
+    its state, checked out, and the local base branch is moved back to
+    ``remote/base_branch``. The working tree is not touched and nothing is
+    pushed here; the normal publish continues from the story branch.
+
+    Returns the new story state, ``None`` with a warning when the checkout
+    does not have that shape (the caller stops as before), or a stop when a
+    Git step failed after the branch was created.
+    """
+
+    def keep(problem: str) -> None:
+        log(
+            "WARN",
+            f"Did not move the audited commits on `{base_branch}` to a story "
+            f"branch: {problem}.",
+        )
+
+    story_id = (frontmatter.story_id or "").strip()
+    if not story_id:
+        return keep("the handoff has no story_id to name the branch")
+    story_title = (frontmatter.story_title or "").strip()
+    branch = story_branch_name(branch_prefix, story_id, story_title)
+    head = git_head(repo_root)
+    scope = _resolve_commit(repo_root, frontmatter.scope_sha or "")
+    if head is None or scope != head:
+        return keep(
+            f"HEAD ({(head or 'unknown')[:12]}) is not the handoff's scope_sha "
+            f"({frontmatter.scope_sha or 'missing'})"
+        )
+    dirty = git_dirty_files(repo_root)
+    if dirty is None:
+        return keep("git status failed")
+    handoff = normalize_repo_path(handoff_path.as_posix())
+    others = [path for path in dirty if path != handoff]
+    if others:
+        return keep(f"uncommitted files other than {handoff}: {_path_list(others)}")
+    fetched = _fetch_base(repo_root, remote, base_branch)
+    if fetched.returncode != 0:
+        return keep(f"git fetch {remote} {base_branch} failed ({_first_line(fetched)})")
+    upstream = f"refs/remotes/{remote}/{base_branch}"
+    if _git(repo_root, ["merge-base", "--is-ancestor", upstream, "HEAD"]).returncode:
+        return keep(f"HEAD is not on top of {remote}/{base_branch}")
+    listed = _git(repo_root, ["rev-list", "--count", f"{upstream}..HEAD"])
+    merges = _git(repo_root, ["rev-list", "--merges", f"{upstream}..HEAD"])
+    if listed.returncode != 0 or merges.returncode != 0:
+        return keep("git rev-list failed")
+    if listed.stdout.strip() in ("", "0"):
+        return keep(f"HEAD has no commits that {remote}/{base_branch} lacks")
+    if merges.stdout.strip():
+        return keep(f"the commits since {remote}/{base_branch} include a merge commit")
+    handoff_commits = _unpushed_handoff_commits(
+        repo_root, remote, base_branch, handoff_path
+    )
+    if handoff_commits:
+        return keep(
+            f"commit(s) {', '.join(handoff_commits)} change {handoff}, which "
+            "would put live handoff state in the pull request"
+        )
+    if _branch_exists(repo_root, branch):
+        return keep(f"the story branch `{branch}` already exists")
+    upstream_sha = _resolve_commit(repo_root, upstream)
+    if upstream_sha is None:
+        return keep(f"could not resolve {remote}/{base_branch}")
+
+    # A new branch at HEAD changes no files, so the uncommitted handoff stays.
+    created = _git(repo_root, ["switch", "-c", branch])
+    if created.returncode != 0:
+        return keep(f"git switch -c {branch} failed ({_first_line(created)})")
+    state = StoryState(
+        branch=branch,
+        base_branch=base_branch,
+        base_sha=upstream_sha,
+        story_id=story_id,
+        story_title=story_title,
+        epic_id=(frontmatter.epic_id or "").strip(),
+        work_packet=(extract_work_packet_section(handoff_content) or "").strip(),
+        implementer="user",
+        **_tracker_fields(frontmatter),
+    )
+    _save_state(repo_root, state)
+    (repo_root / RESPONSES_PATH).unlink(missing_ok=True)
+    # The base branch is no longer checked out, so this moves only the ref.
+    reset = _git(repo_root, ["branch", "-f", base_branch, upstream_sha])
+    if reset.returncode != 0:
+        return _stop(
+            log,
+            f"moved the audited commits to the story branch `{branch}`, but "
+            f"`git branch -f {base_branch}` failed ({_first_line(reset)}), so "
+            f"`{base_branch}` still has them. Reset `{base_branch}` to "
+            f"{remote}/{base_branch} yourself, then start the dispatcher again",
+        )
+    count = listed.stdout.strip()
+    log(
+        "INFO",
+        f"Story audit passed for {count} commit(s) on `{base_branch}` with no "
+        f"story branch (ending at {_describe_commit(repo_root, 'HEAD')}). "
+        f"Created `{branch}` at that commit with its story state, checked it "
+        f"out, and moved `{base_branch}` back to {remote}/{base_branch} "
+        f"({upstream_sha[:12]}); publishing it as a pull request.",
+    )
+    return state
 
 
 def _stop(log: LogFn, message: str) -> PublishOutcome:

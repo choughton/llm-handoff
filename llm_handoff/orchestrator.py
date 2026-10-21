@@ -2588,6 +2588,7 @@ def _run_loop(
                             config, operator_prompt, stop_watch, log_fn
                         ),
                         state_resolver=_state_conflict_resolver(config, log_fn),
+                        handoff_path=config.handoff_path,
                     )
                     if outcome.handoff is not None:
                         config.handoff_full_path.write_text(
