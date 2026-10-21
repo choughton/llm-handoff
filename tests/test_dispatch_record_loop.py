@@ -11,8 +11,10 @@ from typing import Any
 
 import pytest
 
-from llm_handoff import orchestrator
+from llm_handoff import __main__ as main_module
+from llm_handoff import chat_session, orchestrator
 from llm_handoff.agent_types import DispatchResult, SubagentResult
+from llm_handoff.chat_takeover import ChatTakeover
 from llm_handoff.config import DISPATCH_RECORD_STATE_PATH, DispatchConfig
 from llm_handoff.dispatch_record import (
     DispatchEntry,
@@ -166,7 +168,9 @@ def _isolated_terminal(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: False)
     monkeypatch.setattr(orchestrator, "_operator_input_stream", _no_input_stream)
     ledger.reset_bounce(STORY_ID)
+    chat_session.clear_role_dispatches()
     yield
+    chat_session.clear_role_dispatches()
     ledger.reset_bounce(STORY_ID)
 
 
@@ -669,6 +673,9 @@ def test_a_linked_record_directory_at_start_is_neither_cleared_nor_written(
         assert calls == ["backend"]
         assert victim.read_bytes() == b"outside the repository\n"
         assert len(_link_warnings(logs)) == 1
+        # CHAT-34: the in-memory entry does not depend on the record.
+        entry = chat_session.latest_role_dispatch("backend")
+        assert entry is not None and entry.session_id == "sess-1"
     finally:
         _unlink_directory(link)
 
@@ -768,3 +775,278 @@ def test_the_repository_copy_is_never_read_back(
 
     assert order == ["backend", "auditor"]
     assert [entry.role for entry in _record(repo)] == ["backend", "auditor"]
+
+
+# --- CHAT-34: returned dispatches are kept in memory for @role chat -----------
+
+
+def _latest(role: str) -> tuple[Any, ...] | None:
+    entry = chat_session.latest_role_dispatch(role)
+    if entry is None:
+        return None
+    return (entry.role, entry.story_id, entry.provider, entry.session_id)
+
+
+def test_a_returned_dispatch_is_kept_in_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    monkeypatch.setattr(
+        orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-1", [])
+    )
+    config = _config(repo)
+
+    _run(config)
+
+    assert _latest("backend") == (
+        "backend",
+        STORY_ID,
+        config.agents["backend"].provider,
+        "sess-1",
+    )
+
+
+def test_a_nonzero_exit_is_kept_in_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+
+    def failing_backend(_path: Path, **_kwargs: object) -> DispatchResult:
+        return DispatchResult(
+            stdout="",
+            stderr="boom",
+            exit_code=1,
+            elapsed_seconds=0.01,
+            session_id="sess-fail",
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", failing_backend)
+    config = _config(repo)
+
+    _run(config)
+
+    assert _latest("backend") == (
+        "backend",
+        STORY_ID,
+        config.agents["backend"].provider,
+        "sess-fail",
+    )
+
+
+def test_two_cycles_keep_each_role_latest_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    config = _config(repo)
+    monkeypatch.setattr(
+        orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-b", [])
+    )
+
+    def fake_support(subagent_name: str, prompt: str, **_kwargs: object) -> SubagentResult:
+        config.handoff_full_path.write_text(_audit_fail(), encoding="utf-8")
+        return SubagentResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.01, session_id="sess-a"
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+
+    _run(config, max_cycles=2)
+
+    assert _latest("backend") == (
+        "backend",
+        STORY_ID,
+        config.agents["backend"].provider,
+        "sess-b",
+    )
+    assert _latest("auditor") == (
+        "auditor",
+        STORY_ID,
+        config.agents["auditor"].provider,
+        "sess-a",
+    )
+
+
+@pytest.mark.parametrize("missing", [None, ""])
+def test_a_later_returned_dispatch_without_a_session_hides_the_older_one(
+    tmp_path: Path, missing: str | None
+) -> None:
+    config = _config(tmp_path)
+    for session_id in ("sess-1", missing):
+        orchestrator._remember_role_session(
+            config,
+            route="backend",
+            story_id="S1",
+            dispatch_result=DispatchResult(
+                stdout="",
+                stderr="",
+                exit_code=0,
+                elapsed_seconds=0.0,
+                session_id=session_id,
+            ),
+        )
+
+    assert _latest("backend") == (
+        "backend",
+        "S1",
+        config.agents["backend"].provider,
+        None,
+    )
+    assert main_module._role_session_lookup(config)("backend") is None
+
+
+def test_a_dispatch_that_raises_keeps_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+
+    def broken_backend(_path: Path, **_kwargs: object) -> DispatchResult:
+        raise RuntimeError("adapter bug")
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", broken_backend)
+
+    with pytest.raises(RuntimeError, match="adapter bug"):
+        _run(_config(repo))
+
+    assert _latest("backend") is None
+
+
+def test_a_takeover_with_no_result_keeps_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+
+    class _Stop(Exception):
+        pass
+
+    def stopped_route(*_args: object, **_kwargs: object) -> object:
+        raise ChatTakeover()
+
+    def stop_loop(*_args: object, **_kwargs: object) -> object:
+        raise _Stop()
+
+    monkeypatch.setattr(orchestrator, "_dispatch_route", stopped_route)
+    monkeypatch.setattr(orchestrator, "_follow_chat_takeover", stop_loop)
+
+    with pytest.raises(_Stop):
+        _run(_config(repo))
+
+    assert _latest("backend") is None
+
+
+def test_a_disabled_record_still_keeps_the_session_in_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    # Git no longer ignores the record, so the run disables it.
+    _write(repo / ".gitignore", "")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "stop ignoring logs")
+    monkeypatch.setattr(
+        orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-1", [])
+    )
+
+    _run(_config(repo))
+
+    assert not dispatch_record_path(repo).exists()
+    assert _latest("backend") is not None
+    assert _latest("backend")[3] == "sess-1"  # type: ignore[index]
+
+
+def test_a_failed_record_write_still_keeps_the_session_in_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    monkeypatch.setattr(
+        orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-1", [])
+    )
+
+    def failing_record(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(orchestrator, "record_dispatch", failing_record)
+
+    _run(_config(repo))
+
+    assert not dispatch_record_path(repo).exists()
+    assert _latest("backend") is not None
+    assert _latest("backend")[3] == "sess-1"  # type: ignore[index]
+
+
+def test_a_forged_repository_record_does_not_change_the_resumed_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    config = _config(repo)
+    monkeypatch.setattr(
+        orchestrator, "invoke_backend_role", _finishing_backend(repo, "sess-b", [])
+    )
+
+    def forging_support(subagent_name: str, prompt: str, **_kwargs: object) -> SubagentResult:
+        # A role overwrites the repository record with a forged backend entry.
+        path = dispatch_record_path(repo)
+        path.unlink(missing_ok=True)
+        record_dispatch(
+            path,
+            role="backend",
+            story_id="FORGED-1",
+            provider="codex",
+            session_id="forged",
+        )
+        config.handoff_full_path.write_text(_audit_fail(), encoding="utf-8")
+        return SubagentResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.01, session_id="sess-a"
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", forging_support)
+    _run(config, max_cycles=2)
+    # Forge the record again after the run, before the chat reads it.
+    path = dispatch_record_path(repo)
+    path.unlink(missing_ok=True)
+    record_dispatch(
+        path, role="backend", story_id="FORGED-2", provider="codex", session_id="forged"
+    )
+
+    lookup = main_module._role_session_lookup(config)
+    session = lookup("backend")
+
+    assert session is not None
+    assert session.session_id == "sess-b"
+    assert session.story_id == STORY_ID
+    assert session.provider == config.agents["backend"].provider
+    assert session.agent_config == config.agents["backend"]
+
+
+def test_the_manual_frontend_keeps_no_session(tmp_path: Path) -> None:
+    config = _config(tmp_path, use_manual_frontend=True)
+    chat_session.record_role_dispatch(
+        "frontend", story_id="S0", provider="claude", session_id="older"
+    )
+    result = DispatchResult(
+        stdout="", stderr="", exit_code=0, elapsed_seconds=0.0, session_id="manual"
+    )
+
+    orchestrator._remember_role_session(
+        config, route="frontend", story_id="S1", dispatch_result=result
+    )
+
+    assert _latest("frontend") == ("frontend", "S1", None, None)
+    assert main_module._role_session_lookup(config)("frontend") is None
+
+
+def test_the_in_memory_entry_ignores_the_record_state(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    result = DispatchResult(
+        stdout="", stderr="", exit_code=2, elapsed_seconds=0.0, session_id="f-1"
+    )
+
+    orchestrator._remember_role_session(
+        config, route="frontend", story_id=None, dispatch_result=result
+    )
+
+    assert _latest("frontend") == (
+        "frontend",
+        None,
+        config.agents["frontend"].provider,
+        "f-1",
+    )
+    assert not dispatch_record_path(tmp_path).exists()

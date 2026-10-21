@@ -13,9 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-33
-  (the chat answer worker routes `@role` messages to a finished role's
-  session) in flight and CHAT-34 and CHAT-5 remaining. CHAT-4 was split into
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-34
+  (the loop supplies finished role sessions to `@role` chat) implemented and
+  awaiting audit and CHAT-5 remaining. CHAT-33 (the chat answer worker routes
+  `@role` messages to a finished role's session) was approved at `94e0963`.
+  CHAT-4 was split into
   CHAT-33 and CHAT-34 on 2026-10-21 before it started. CHAT-32 (chat
   messages are answered right away, console wiring) was approved at
   `0bafd00` and merged in PR #235. CHAT-31 (the loop waits for a running chat

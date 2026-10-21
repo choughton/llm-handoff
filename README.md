@@ -165,6 +165,19 @@ press Enter to send the planner back in, type `@backend`, `@frontend`,
 `@auditor`, or `@tpm` (when a tpm is configured) with a message to dispatch
 that role directly, or type `retry` or `quit`. Editing `HANDOFF.md` by hand also resumes it.
 
+While a role runs in an interactive run, a chat line at the bottom of the
+console takes messages. A plain message goes to a side chat session for the
+running role. `@<role> <message>` (for example `@auditor why the bounce?`)
+resumes that role's own session from its latest finished dispatch in this
+run instead; a later dispatch of the role replaces the session it resumes.
+Only Claude and Codex sessions can be resumed. When the target role is the
+one running, has not finished a dispatch in this run, reported no session,
+or ran on another provider, the message goes to the side session with a
+notice that says why. Chat answers keep the role's own permissions, and a
+chat change to `HANDOFF.md` follows the usual audit and takeover handling;
+see [Operator Chat](docs/ARCHITECTURE.md#operator-chat). Chat on agy is not
+available yet.
+
 For the same path with per-platform commands, see [QUICKSTART.md](QUICKSTART.md).
 For the slower explanation, see [WALKTHROUGH.md](WALKTHROUGH.md).
 

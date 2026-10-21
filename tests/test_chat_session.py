@@ -449,3 +449,157 @@ def test_wait_for_answers_without_a_log_still_waits() -> None:
     assert worker.wait_timeouts == [0.5, 0.5, 0.5]
     chat_session.attach_worker(None)
     assert chat_session.SESSION.worker is None
+
+
+# --- role dispatches kept for @role chat (CHAT-34) ------------------------------
+
+
+def _record(
+    role: str,
+    session_id: str | None,
+    *,
+    story_id: str | None = "S1",
+    provider: str | None = "claude",
+) -> None:
+    chat_session.record_role_dispatch(
+        role, story_id=story_id, provider=provider, session_id=session_id
+    )
+
+
+def test_a_recorded_dispatch_is_the_latest_for_its_role() -> None:
+    _record("backend", "b-1", story_id="S1", provider="codex")
+
+    entry = chat_session.latest_role_dispatch("backend")
+
+    assert entry == chat_session.RoleDispatch(
+        role="backend", story_id="S1", provider="codex", session_id="b-1"
+    )
+    assert chat_session.latest_role_dispatch("auditor") is None
+
+
+def test_a_later_dispatch_replaces_the_role_latest_entry() -> None:
+    _record("backend", "b-1", story_id="S1")
+    _record("backend", "b-2", story_id="S2")
+
+    entry = chat_session.latest_role_dispatch("backend")
+
+    assert entry is not None
+    assert (entry.session_id, entry.story_id) == ("b-2", "S2")
+
+
+def test_roles_keep_separate_entries() -> None:
+    _record("backend", "b-1", provider="codex")
+    _record("auditor", "a-1", provider="claude")
+
+    backend = chat_session.latest_role_dispatch("backend")
+    auditor = chat_session.latest_role_dispatch("auditor")
+
+    assert backend is not None and auditor is not None
+    assert (backend.session_id, backend.provider) == ("b-1", "codex")
+    assert (auditor.session_id, auditor.provider) == ("a-1", "claude")
+
+
+@pytest.mark.parametrize("missing", [None, "", "   "])
+def test_a_later_dispatch_without_a_session_hides_the_older_one(
+    missing: str | None,
+) -> None:
+    _record("backend", "b-1")
+    _record("backend", missing, story_id="S2")
+
+    entry = chat_session.latest_role_dispatch("backend")
+
+    assert entry is not None
+    assert entry.session_id is None
+    assert entry.story_id == "S2"
+
+
+def test_entries_survive_role_changes_and_suspension() -> None:
+    _attached()
+    chat_session.set_role("backend", context=_context())
+    _record("backend", "b-1")
+
+    chat_session.set_role("auditor", context=_context("auditor"))
+    with chat_session.suspended():
+        entry = chat_session.latest_role_dispatch("backend")
+        assert entry is not None and entry.session_id == "b-1"
+    chat_session.set_role(None)
+
+    entry = chat_session.latest_role_dispatch("backend")
+    assert entry is not None and entry.session_id == "b-1"
+
+
+def test_clear_drops_every_entry() -> None:
+    _record("backend", "b-1")
+    _record("auditor", "a-1")
+
+    chat_session.clear_role_dispatches()
+
+    assert chat_session.latest_role_dispatch("backend") is None
+    assert chat_session.latest_role_dispatch("auditor") is None
+
+
+@pytest.mark.parametrize("attached", [True, False])
+def test_detach_drops_every_entry(attached: bool) -> None:
+    if attached:
+        _attached()
+    _record("backend", "b-1")
+
+    chat_session.detach()
+
+    assert chat_session.latest_role_dispatch("backend") is None
+
+
+def test_run_loop_start_drops_an_earlier_run_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _record("backend", "old")
+    seen: list[object] = []
+
+    def fake_run(*_args: object, **_kwargs: object) -> int:
+        seen.append(chat_session.latest_role_dispatch("backend"))
+        return 0
+
+    monkeypatch.setattr(orchestrator, "_run_loop", fake_run)
+    monkeypatch.setattr(orchestrator, "_clear_handback_record", lambda *_a: True)
+
+    assert orchestrator.run_loop(object(), log=lambda *_a: None) == 0  # type: ignore[arg-type]
+    assert seen == [None]
+
+
+def test_reads_from_another_thread_see_a_whole_entry() -> None:
+    stop = threading.Event()
+    bad: list[object] = []
+
+    def reader() -> None:
+        while not stop.is_set():
+            entry = chat_session.latest_role_dispatch("backend")
+            if entry is not None and entry.session_id != f"s-{entry.story_id}":
+                bad.append(entry)
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    try:
+        for index in range(2000):
+            _record("backend", f"s-{index}", story_id=str(index))
+    finally:
+        stop.set()
+        thread.join()
+
+    assert bad == []
+
+
+def test_chat_session_imports_no_chat_answers_at_runtime() -> None:
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(chat_session))
+    runtime_imports = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    ]
+    modules = {
+        getattr(node, "module", None) or node.names[0].name
+        for node in runtime_imports
+    }
+    assert "llm_handoff.chat_answers" not in modules

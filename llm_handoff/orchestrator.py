@@ -629,6 +629,10 @@ def run_loop(
 ) -> int:
     log_fn = log or _default_log
     in_flight_state = _InFlightRecordState()
+    # Sessions kept for @role chat belong to one run; an earlier run's in the
+    # same process are never resumed. ``chat_session.detach`` drops them at
+    # teardown.
+    chat_session.clear_role_dispatches()
     exit_code = _run_loop(
         config, max_cycles=max_cycles, log_fn=log_fn, in_flight_state=in_flight_state
     )
@@ -2115,11 +2119,20 @@ def _run_loop(
                 chat_took_over = dispatch_returned is None or takeover_requested()
                 if dispatch_returned is not None:
                     dispatch_result, previous_agent = dispatch_returned
+                    dispatch_story_id = _handoff_story_id(assignment_content)
                     # Whatever its exit code, stop request, or session state.
+                    # The in-memory entry comes first and never depends on
+                    # the record write.
+                    _remember_role_session(
+                        config,
+                        route=current_cycle.route,
+                        story_id=dispatch_story_id,
+                        dispatch_result=dispatch_result,
+                    )
                     _record_role_dispatch(
                         config,
                         route=current_cycle.route,
-                        story_id=_handoff_story_id(assignment_content),
+                        story_id=dispatch_story_id,
                         dispatch_result=dispatch_result,
                         log=log_fn,
                         state=dispatch_record_state,
@@ -3373,6 +3386,38 @@ def _follow_chat_takeover(
     )
 
 
+def _dispatch_provider(config: DispatchConfig, route: RouteName) -> str | None:
+    """The route's configured primary provider; None for the manual frontend."""
+
+    if route == "frontend" and config.use_manual_frontend:
+        return None
+    agent_config = config.agents.get(cast(AgentRole, route))
+    return agent_config.provider if agent_config is not None else None
+
+
+def _remember_role_session(
+    config: DispatchConfig,
+    *,
+    route: RouteName,
+    story_id: str | None,
+    dispatch_result: DispatchResult,
+) -> None:
+    """Keep the returned dispatch in memory for ``@role`` chat (CHAT-34).
+
+    Runs whatever the dispatch record's state, so a disabled, failed, or
+    linked record never stops the update. The manual frontend has no agent
+    session, so its entry carries none; that still replaces an older entry.
+    """
+
+    provider = _dispatch_provider(config, route)
+    chat_session.record_role_dispatch(
+        route,
+        story_id=story_id,
+        provider=provider,
+        session_id=dispatch_result.session_id if provider is not None else None,
+    )
+
+
 def _record_role_dispatch(
     config: DispatchConfig,
     *,
@@ -3399,11 +3444,7 @@ def _record_role_dispatch(
 
     if not state.enabled:
         return
-    if route == "frontend" and config.use_manual_frontend:
-        provider: str | None = None
-    else:
-        agent_config = config.agents.get(cast(AgentRole, route))
-        provider = agent_config.provider if agent_config is not None else None
+    provider = _dispatch_provider(config, route)
     state_path = _dispatch_record_state_path(config)
     if _carry_over_path_traverses_link(state_path):
         state.enabled = False
