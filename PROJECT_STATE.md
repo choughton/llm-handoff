@@ -28,10 +28,12 @@ belong in commits, handoffs, and pull requests.
   review fixes (lease rebuilds groom before leasing, follow-up issue
   priority), at `88883d0`. GROOM-4 (the tpm stays inside its epic: the
   validator rejects a `producer: tpm` rewrite that changes or removes the
-  prior handoff's `epic_id`) is implemented in PR #246; its review fix (the
-  guard keys on the dispatched tpm role, not only the claimed producer)
-  awaits audit. GROOM-5
-  remains.
+  prior handoff's `epic_id`; its review fix keys the guard on the
+  dispatched tpm role, not only the claimed producer) was approved at
+  `5e91536` and merged in PR #246. GROOM-5 (operator edit of the Claude tpm
+  and planner agents, root and reference-workflow copies, plus the epic's
+  CHANGELOG entry) is committed by the operator on the base branch and
+  awaits audit.
   CHAT is closed: CHAT-5 (chat on agy), the
   epic's last story, was approved at `2407e90` and merged in PR #242. Its `step_update` edit attribution
   (`tool_info.parameters.TargetFile`, `state: "ACTIVE"` to `"DONE"` on
