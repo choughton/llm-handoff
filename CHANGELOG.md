@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The loop waits for a running chat answer (CHAT-31). `chat_session` now
+  carries the running role's `ChatContext` (`set_role(role, context=...)`,
+  `SESSION.context`) and an optional answer worker (`attach_worker`), and
+  the new `chat_session.wait_for_answers` logs `Waiting for the chat answer
+  to finish.` and blocks while that worker is busy. The orchestrator passes
+  the context at both role starts and waits after the finalizer returns,
+  after the shared dispatch (before the takeover check, so an answer that
+  rewrites `HANDOFF.md` after the role returned is still followed), before
+  each chat-change commit, the implementer commit, and each work-claim gate,
+  and before the publish and settle holds. No worker is attached yet, so
+  every wait is a no-op until CHAT-32 wires chat in.
 - New `llm_handoff/chat_answers.py` (CHAT-29): `ChatAnswerWorker` answers
   chat messages one at a time on a background thread, in submission order,
   resuming the side session per provider. After each answer it writes the
@@ -13,7 +24,7 @@ This project follows a simple pre-release changelog until the first public tag.
   takeover when `HANDOFF.md` changed. Failures write one `chat error:` line
   and never stop the thread; agy roles get a "not available yet" notice. A
   message submitted while `stop()` waits for the running answer is refused
-  with a notice, so two answers never overlap. Nothing in the loop calls it yet (CHAT-30).
+  with a notice, so two answers never overlap. Nothing in the loop calls it yet (CHAT-32).
 - The loop follows a chat rewrite of `HANDOFF.md` (CHAT-28). A takeover
   request now stops a process only inside an armed window the loop opens
   around the shared role dispatch, so the finalizer, validators, the

@@ -40,6 +40,7 @@ from llm_handoff.audit_review import (
     security_reviewer_startup_error,
 )
 from llm_handoff import chat_session, console_interrupt
+from llm_handoff.chat_answers import ChatContext
 from llm_handoff.chat_changes import (
     chat_changes_path,
     chat_owned_paths as _recorded_chat_paths,
@@ -1582,8 +1583,14 @@ def _run_loop(
             )
             # A first Ctrl+C from here to the loop top lets this cycle finish.
             console_interrupt.set_active_role("finalizer")
-            chat_session.set_role("finalizer")
+            chat_session.set_role(
+                "finalizer",
+                context=_chat_context_for(
+                    config, "finalizer", handoff_content, log_fn
+                ),
+            )
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
+            chat_session.wait_for_answers(log_fn)
             # The finalizer returned, whatever its exit code or output: the
             # ledger and handoff are whatever it left, so its record names
             # nothing interrupted.
@@ -1691,6 +1698,7 @@ def _run_loop(
                     return 1
                 continue
 
+            chat_session.wait_for_answers(log_fn)
             role_chat_marker = _chat_marker_after_role(
                 _commit_chat_changes_after_role(
                     config=config,
@@ -1995,7 +2003,12 @@ def _run_loop(
             if decision.source != TPM_NOT_CONFIGURED_PLANNER_REPAIR_SOURCE:
                 tpm_planner_repair_ran = False
             console_interrupt.set_active_role(current_cycle.route)
-            chat_session.set_role(current_cycle.route)
+            chat_session.set_role(
+                current_cycle.route,
+                context=_chat_context_for(
+                    config, current_cycle.route, assignment_content, log_fn
+                ),
+            )
             if resumed_handback is not None:
                 # The interrupted dispatch already returned; its cycle resumes
                 # at the dispatcher commit as if the role had exited 0.
@@ -2064,6 +2077,9 @@ def _run_loop(
                     pass
                 finally:
                     disarm_takeover()
+                # An answer still running when the role returned may yet
+                # rewrite the handoff and request a takeover.
+                chat_session.wait_for_answers(log_fn)
                 # A role stopped by a chat answer raised; one that returned
                 # before the poll saw the request still yields to the chat.
                 chat_took_over = dispatch_returned is None or takeover_requested()
@@ -2334,6 +2350,7 @@ def _run_loop(
 
             # After the planner-commit undo, so the chat commit is never reset
             # as a planner or tpm commit.
+            chat_session.wait_for_answers(log_fn)
             role_chat_marker = _chat_marker_after_role(
                 _commit_chat_changes_after_role(
                     config=config,
@@ -2390,6 +2407,7 @@ def _run_loop(
                         return 0
                     continue
 
+            chat_session.wait_for_answers(log_fn)
             commit_result = _commit_for_implementer(
                 config=config,
                 route=current_cycle.route,
@@ -2547,6 +2565,7 @@ def _run_loop(
                             config, log_fn, in_flight_state
                         ):
                             return 1
+                        chat_session.wait_for_answers(log_fn)
                         _run_work_claim_gate(
                             config=config,
                             route=current_cycle.route,
@@ -2690,6 +2709,7 @@ def _run_loop(
                 operator_prompt.planner_tried = False
             if not _refresh_in_flight_handback(config, log_fn, in_flight_state):
                 return 1
+            chat_session.wait_for_answers(log_fn)
             if _run_work_claim_gate(
                 config=config,
                 route=current_cycle.route,
@@ -2748,6 +2768,7 @@ def _run_loop(
                     # missed until the next cycle. The console role stays:
                     # a first Ctrl+C still lets the publish finish.
                     chat_session.set_role(None)
+                    chat_session.wait_for_answers(log_fn)
                     if not _hold_for_chat_messages(
                         config, log_fn, operator_prompt, stop_watch
                     ):
@@ -2801,6 +2822,7 @@ def _run_loop(
                     # findings that are holding a pull request open. Chat
                     # capture stays off from the hold through the settle.
                     chat_session.set_role(None)
+                    chat_session.wait_for_answers(log_fn)
                     if not _hold_for_chat_messages(
                         config, log_fn, operator_prompt, stop_watch
                     ):
@@ -4735,6 +4757,28 @@ def _parse_frontmatter_or_none(handoff_content: str):
 def _handoff_story_id(handoff_content: str) -> str | None:
     frontmatter = _parse_frontmatter_or_none(handoff_content)
     return frontmatter.story_id if frontmatter is not None else None
+
+
+def _chat_context_for(
+    config: DispatchConfig,
+    route: str,
+    handoff_content: str | None,
+    log: LogFn,
+) -> ChatContext:
+    """Return the chat context for the role the loop is starting."""
+
+    agent_config = config.agents.get(cast(AgentRole, route))
+    return ChatContext(
+        role=route,
+        provider=agent_config.provider if agent_config is not None else "",
+        story_id=(
+            _handoff_story_id(handoff_content)
+            if handoff_content is not None
+            else None
+        ),
+        log_path=getattr(log, "log_file_path", None),
+        agent_config=agent_config,
+    )
 
 
 def _story_start_sha(

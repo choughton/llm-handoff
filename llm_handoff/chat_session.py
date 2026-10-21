@@ -12,15 +12,36 @@ keys at the same time.
 
 Every function is a no-op when nothing is attached. A ``ChatInput.start()``
 that raises ``OSError`` leaves capture off and raises nothing.
+
+The session also carries the running role's ``ChatContext`` and an optional
+attached chat answer worker. ``wait_for_answers`` blocks the loop while that
+worker is answering, so commits, gates, and publishes see the answer's
+changes. Nothing attaches a worker yet; CHAT-32 wires it in.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from typing import TYPE_CHECKING, Protocol
 
 from llm_handoff.chat_input import ChatInput
 from llm_handoff.chat_line import ChatLine
+
+if TYPE_CHECKING:
+    # Type-only: chat_answers imports chat_side_session, which imports
+    # agent_process, which imports this module.
+    from llm_handoff.chat_answers import ChatContext
+
+CHAT_ANSWER_WAIT_MESSAGE = "Waiting for the chat answer to finish."
+
+
+class ChatAnswerWaiter(Protocol):
+    """The part of a chat answer worker the loop waits on."""
+
+    def busy(self) -> bool: ...
+
+    def wait_idle(self, timeout: float | None) -> bool: ...
 
 
 class ChatSession:
@@ -33,6 +54,8 @@ class ChatSession:
         self._chat_line: ChatLine | None = None
         self._chat_input: ChatInput | None = None
         self._role: str | None = None
+        self._context: ChatContext | None = None
+        self._worker: ChatAnswerWaiter | None = None
 
     @property
     def attached(self) -> bool:
@@ -42,12 +65,24 @@ class ChatSession:
     def role(self) -> str | None:
         return self._role
 
+    @property
+    def context(self) -> ChatContext | None:
+        return self._context
+
+    @property
+    def worker(self) -> ChatAnswerWaiter | None:
+        return self._worker
+
     def attach(self, chat_line: ChatLine, chat_input: ChatInput) -> None:
         if self.attached:
             self.detach()
         self._chat_line = chat_line
         self._chat_input = chat_input
         self._role = None
+        self._context = None
+
+    def attach_worker(self, worker: ChatAnswerWaiter | None) -> None:
+        self._worker = worker
 
     def detach(self) -> None:
         chat_line, chat_input = self._chat_line, self._chat_input
@@ -58,10 +93,15 @@ class ChatSession:
         if chat_input is not None:
             chat_input.stop()
         self._role = None
+        self._context = None
+        # The worker's owner stops it; detach only drops the reference.
+        self._worker = None
         if chat_line is not None:
             chat_line.set_role(None)
 
-    def set_role(self, role: str | None) -> None:
+    def set_role(
+        self, role: str | None, context: ChatContext | None = None
+    ) -> None:
         chat_line, chat_input = self._chat_line, self._chat_input
         if chat_line is None or chat_input is None:
             return
@@ -70,9 +110,11 @@ class ChatSession:
             # role that was running.
             chat_input.stop()
             self._role = None
+            self._context = None
             chat_line.set_role(None)
             return
         self._role = role
+        self._context = context
         chat_line.set_role(role)
         try:
             chat_input.start()
@@ -88,12 +130,31 @@ class ChatSession:
             yield
             return
         role = self._role
+        context = self._context
         self.set_role(None)
         try:
             yield
         finally:
             if role is not None:
-                self.set_role(role)
+                self.set_role(role, context)
+
+    def wait_for_answers(
+        self,
+        log: Callable[[str, str], None] | None = None,
+        *,
+        step: float = 0.5,
+    ) -> bool:
+        """Block while the attached worker answers; True when it waited."""
+
+        worker = self._worker
+        if worker is None or not worker.busy():
+            return False
+        if log is not None:
+            log("INFO", CHAT_ANSWER_WAIT_MESSAGE)
+        # A short timeout per wait lets Ctrl+C through on Windows.
+        while not worker.wait_idle(timeout=step):
+            pass
+        return True
 
 
 SESSION = ChatSession()
@@ -107,8 +168,22 @@ def detach() -> None:
     SESSION.detach()
 
 
-def set_role(role: str | None) -> None:
-    SESSION.set_role(role)
+def set_role(role: str | None, context: ChatContext | None = None) -> None:
+    SESSION.set_role(role, context)
+
+
+def attach_worker(worker: ChatAnswerWaiter | None) -> None:
+    """Attach the chat answer worker the loop waits on, or None to drop it."""
+
+    SESSION.attach_worker(worker)
+
+
+def wait_for_answers(
+    log: Callable[[str, str], None] | None = None, *, step: float = 0.5
+) -> bool:
+    """Wait for a running chat answer; False at once when none is running."""
+
+    return SESSION.wait_for_answers(log, step=step)
 
 
 def suspended() -> AbstractContextManager[None]:
@@ -118,10 +193,14 @@ def suspended() -> AbstractContextManager[None]:
 
 
 __all__ = [
+    "CHAT_ANSWER_WAIT_MESSAGE",
+    "ChatAnswerWaiter",
     "ChatSession",
     "SESSION",
     "attach",
+    "attach_worker",
     "detach",
     "set_role",
     "suspended",
+    "wait_for_answers",
 ]

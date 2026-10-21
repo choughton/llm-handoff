@@ -12,6 +12,7 @@ from typing import Any, Iterator
 import pytest
 
 from llm_handoff import agent_process, chat_session, orchestrator
+from llm_handoff.chat_answers import ChatContext
 from llm_handoff.chat_input import ChatInput
 from llm_handoff.chat_line import ERASE_LINE, ChatLine
 
@@ -295,3 +296,156 @@ def test_manual_continue_waits_with_capture_stopped(
 
     assert seen == [False]
     assert chat_input.running is True
+
+
+# --- chat context and answer worker ------------------------------------------
+
+
+def _context(role: str = "backend") -> ChatContext:
+    return ChatContext(
+        role=role,
+        provider="claude",
+        story_id="S1",
+        log_path=None,
+        agent_config=None,
+    )
+
+
+class _FakeWorker:
+    def __init__(self, *, busy: bool, wait_results: list[bool] | None = None) -> None:
+        self._busy = busy
+        self._wait_results = list(wait_results or [])
+        self.wait_timeouts: list[float | None] = []
+        self.stop_count = 0
+
+    def busy(self) -> bool:
+        return self._busy
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        self.wait_timeouts.append(timeout)
+        return self._wait_results.pop(0) if self._wait_results else True
+
+    def stop(self) -> None:
+        self.stop_count += 1
+
+
+def test_set_role_stores_the_context_and_none_clears_it() -> None:
+    _attached()
+    context = _context()
+
+    chat_session.set_role("backend", context=context)
+
+    assert chat_session.SESSION.context is context
+
+    chat_session.set_role(None)
+
+    assert chat_session.SESSION.context is None
+
+
+def test_set_role_without_a_context_stores_none() -> None:
+    _attached()
+    chat_session.set_role("backend", context=_context())
+
+    chat_session.set_role("auditor")
+
+    assert chat_session.SESSION.role == "auditor"
+    assert chat_session.SESSION.context is None
+
+
+def test_set_role_none_keeps_the_context_readable_while_capture_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _chat_line, chat_input, _stream, _reader = _attached()
+    context = _context()
+    chat_session.set_role("backend", context=context)
+    seen: list[ChatContext | None] = []
+    real_stop = chat_input.stop
+
+    def recording_stop() -> None:
+        seen.append(chat_session.SESSION.context)
+        real_stop()
+        seen.append(chat_session.SESSION.context)
+
+    monkeypatch.setattr(chat_input, "stop", recording_stop)
+
+    chat_session.set_role(None)
+
+    assert seen == [context, context]
+    assert chat_session.SESSION.context is None
+
+
+def test_suspended_restores_the_context_with_the_role() -> None:
+    _attached()
+    context = _context()
+    chat_session.set_role("backend", context=context)
+
+    with chat_session.suspended():
+        assert chat_session.SESSION.context is None
+
+    assert chat_session.SESSION.context is context
+
+
+def test_set_role_stores_no_context_when_nothing_is_attached() -> None:
+    chat_session.set_role("backend", context=_context())
+
+    assert chat_session.SESSION.role is None
+    assert chat_session.SESSION.context is None
+
+
+def test_detach_clears_the_context_and_drops_the_worker_without_stopping_it() -> None:
+    _attached()
+    chat_session.set_role("backend", context=_context())
+    worker = _FakeWorker(busy=True)
+    chat_session.attach_worker(worker)
+
+    chat_session.detach()
+
+    assert chat_session.SESSION.context is None
+    assert chat_session.SESSION.worker is None
+    assert worker.stop_count == 0
+    assert chat_session.wait_for_answers() is False
+
+
+def test_wait_for_answers_returns_false_with_no_worker() -> None:
+    logged: list[tuple[str, str]] = []
+
+    assert chat_session.wait_for_answers(
+        lambda level, message: logged.append((level, message))
+    ) is False
+    assert logged == []
+
+
+def test_wait_for_answers_returns_false_and_logs_nothing_when_idle() -> None:
+    worker = _FakeWorker(busy=False)
+    chat_session.attach_worker(worker)
+    logged: list[tuple[str, str]] = []
+
+    assert chat_session.wait_for_answers(
+        lambda level, message: logged.append((level, message))
+    ) is False
+    assert logged == []
+    assert worker.wait_timeouts == []
+
+
+def test_wait_for_answers_logs_once_and_waits_until_idle() -> None:
+    worker = _FakeWorker(busy=True, wait_results=[False, True])
+    chat_session.attach_worker(worker)
+    logged: list[tuple[str, str]] = []
+
+    waited = chat_session.wait_for_answers(
+        lambda level, message: logged.append((level, message)), step=0.25
+    )
+
+    assert waited is True
+    assert logged == [("INFO", "Waiting for the chat answer to finish.")]
+    assert worker.wait_timeouts == [0.25, 0.25]
+
+
+def test_wait_for_answers_without_a_log_still_waits() -> None:
+    worker = _FakeWorker(busy=True, wait_results=[False, False, True])
+    chat_session.attach_worker(worker)
+
+    assert chat_session.wait_for_answers() is True
+    assert worker.wait_timeouts == [0.5, 0.5, 0.5]
+    chat_session.attach_worker(None)
+    assert chat_session.SESSION.worker is None
