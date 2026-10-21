@@ -938,7 +938,7 @@ def test_deny_rule_report_redacts_shell_quoted_url_with_apostrophe(
         ),
         (
             "unsandboxed(regex:^git( .*)? push( .*)?$)",
-            "matched deny rule unsandboxed(regex:^git( .*)? push( .*)?$)",
+            "matched a user-configured deny rule",
         ),
         ("command(git push)", "matched a user-configured deny rule"),
         ("command(regex:^git push --token .*$)", "matched a user-configured deny rule"),

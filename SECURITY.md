@@ -178,7 +178,9 @@ each CLI in that CLI's own restricted mode: Claude Code with
 `--permission-mode dontAsk` and a tool allowlist, Codex with its
 `workspace-write` sandbox, and Antigravity (`agy`) with no permission flag
 and no sandbox, relying on the `permissions.allow` and `permissions.deny`
-entries in the `agy` user settings for shell commands. Those boundaries are only as strong as the provider's implementation. A role
+entries in the `agy` user settings for shell commands. `agy` 1.4.4 ignores
+`unsandboxed(...)` rules, so only `command(...)` entries take effect there.
+Those boundaries are only as strong as the provider's implementation. A role
 with `unsafe_bypass: true` runs with approvals and sandboxing disabled, which
 is the same as running that CLI directly with full access to the target
 repository and your user account.

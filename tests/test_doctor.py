@@ -1619,9 +1619,7 @@ def test_doctor_antigravity_warns_on_missing_deny_entries(
 ) -> None:
     repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
     settings = _complete_agy_settings()
-    settings["permissions"]["deny"] = [  # type: ignore[index]
-        "command(regex:^git( .*)? push( .*)?$)"
-    ]
+    settings["permissions"]["deny"] = []  # type: ignore[index]
     _write_agy_settings(tmp_path, settings)
 
     exit_code, output = _run(repo, capsys)
@@ -1630,9 +1628,88 @@ def test_doctor_antigravity_warns_on_missing_deny_entries(
     lines = _agy_lines(output)
     assert lines == [
         f"WARN {AGY_CHECK}: ~/.gemini/antigravity-cli/settings.json "
-        "permissions.deny is missing unsandboxed(regex:^git( .*)? push( .*)?$) "
+        "permissions.deny is missing command(regex:^git( .*)? push( .*)?$) "
         "(covers planner)"
     ]
+
+
+def test_doctor_antigravity_does_not_require_an_unsandboxed_deny_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    _write_agy_settings(tmp_path, _complete_agy_settings())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"PASS {AGY_CHECK}:")
+    assert "unsandboxed" not in output
+
+
+def test_doctor_antigravity_warns_on_leftover_unsandboxed_deny_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    settings = _complete_agy_settings()
+    settings["permissions"]["deny"].append(  # type: ignore[index]
+        "unsandboxed(regex:^git( .*)? push( .*)?$)"
+    )
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert lines == [
+        f"WARN {AGY_CHECK}: ~/.gemini/antigravity-cli/settings.json "
+        "permissions.deny has `unsandboxed(regex:^git( .*)? push( .*)?$)` "
+        "(covers planner); agy ignores `unsandboxed(...)` rules, so they allow "
+        "or deny nothing; remove them (the `command(...)` entries are the ones "
+        "agy applies)"
+    ]
+
+
+def test_doctor_antigravity_warns_on_unsandboxed_entries_in_each_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    settings = _complete_agy_settings(
+        extra_allow=("unsandboxed(npm test)", "unsandboxed(regex:(push)")
+    )
+    settings["permissions"]["ask"] = ["unsandboxed(*)"]  # type: ignore[index]
+    _write_agy_settings(tmp_path, settings)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _agy_lines(output)
+    assert len(lines) == 2, output
+    assert all(line.startswith(f"WARN {AGY_CHECK}:") for line in lines)
+    assert (
+        "permissions.allow has `unsandboxed(npm test)`, `unsandboxed(regex:(push)`"
+        in lines[0]
+    )
+    assert "permissions.ask has `unsandboxed(*)`" in lines[1]
+    assert all("agy ignores `unsandboxed(...)` rules" in line for line in lines)
+
+
+def test_doctor_antigravity_does_not_repeat_a_failed_unsandboxed_allow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
+    _write_agy_settings(
+        tmp_path, _complete_agy_settings(extra_allow=("unsandboxed(git push)",))
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1
+    lines = _agy_lines(output)
+    assert len(lines) == 1, output
+    assert lines[0].startswith(f"FAIL {AGY_CHECK}:")
+    assert "agy ignores" not in lines[0]
 
 
 def test_doctor_antigravity_warns_on_legacy_exact_deny_entries(
@@ -1650,11 +1727,13 @@ def test_doctor_antigravity_warns_on_legacy_exact_deny_entries(
 
     assert exit_code == 0, output
     lines = _agy_lines(output)
-    assert lines == [
+    assert len(lines) == 2, output
+    assert "permissions.deny has `unsandboxed(git push)`" in lines[0]
+    assert lines[1] == (
         f"WARN {AGY_CHECK}: ~/.gemini/antigravity-cli/settings.json "
-        "permissions.deny is missing command(regex:^git( .*)? push( .*)?$), "
-        "unsandboxed(regex:^git( .*)? push( .*)?$) (covers planner)"
-    ]
+        "permissions.deny is missing command(regex:^git( .*)? push( .*)?$) "
+        "(covers planner)"
+    )
 
 
 @pytest.mark.parametrize("grant", ["command(regex:push)", "command(regex:.*)"])
@@ -1841,7 +1920,6 @@ def test_doctor_antigravity_push_fail_escapes_control_characters_only(
     "grant",
     [
         "command(regex:[)",
-        "unsandboxed(regex:(push)",
         "command(regex:^git status( .*)?$)",
         "command(regex:^npm publish$)",
         "command(regex:^npm test$)",
@@ -1948,7 +2026,7 @@ def test_doctor_antigravity_shadowing_covers_opt_in_interpreter_grants(
 @pytest.mark.parametrize(
     "ask",
     [
-        ["command(npm publish)", "command(regex:^curl)", "unsandboxed(*)"],
+        ["command(npm publish)", "command(regex:^curl)"],
         ["command(regex:[)"],
         [],
     ],

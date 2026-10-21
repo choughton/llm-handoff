@@ -429,6 +429,8 @@ def _check_role_binaries(
 _ANTIGRAVITY_CHECK_NAME = "antigravity permissions"
 _GIT_PUSH_GRANT_PREFIXES = ("command(git push", "unsandboxed(git push")
 _REGEX_GRANT_PREFIXES = ("command(regex:", "unsandboxed(regex:")
+# agy 1.4.4 ignores rules with this prefix.
+_IGNORED_RULE_PREFIX = "unsandboxed("
 # Push command lines a regex allow entry that does not name `git` must not
 # match. This is a backstop only: a pattern that names `git` is decided by
 # `_regex_grant_push_problem` without these probes.
@@ -645,6 +647,7 @@ def _check_antigravity_permissions(
         return
     allow, deny, ask = result
     found = False
+    failed_allow: set[str] = set()
     generated_commands = dict(zip(allow_required, allowed_commands, strict=True))
     for entry in allow:
         if entry.startswith(_GIT_PUSH_GRANT_PREFIXES):
@@ -654,6 +657,7 @@ def _check_antigravity_permissions(
         if problem is None:
             continue
         found = True
+        failed_allow.add(entry)
         if problem == "unverifiable":
             advice = (
                 "the doctor cannot verify that this regex entry does not allow "
@@ -705,6 +709,29 @@ def _check_antigravity_permissions(
                     "applies Deny > Ask > Allow and headless `agy -p` runs "
                     "deny commands that need approval, so narrow or remove "
                     "these rules",
+                )
+            )
+    # agy 1.4.4 logs that `unsandboxed(...)` rules are ignored and grant
+    # nothing, so a leftover entry is dead weight that looks like a guardrail.
+    # An allow entry that already failed above is not reported twice.
+    for key, rules in (("allow", allow), ("deny", deny), ("ask", ask)):
+        ignored = [
+            rule
+            for rule in rules
+            if rule.startswith(_IGNORED_RULE_PREFIX)
+            and not (key == "allow" and rule in failed_allow)
+        ]
+        if ignored:
+            found = True
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    _ANTIGRAVITY_CHECK_NAME,
+                    f"{ANTIGRAVITY_SETTINGS_PATH} permissions.{key} has "
+                    + ", ".join(f"`{_ascii_entry(rule)}`" for rule in ignored)
+                    + f" {covers}; agy ignores `unsandboxed(...)` rules, so "
+                    "they allow or deny nothing; remove them (the "
+                    "`command(...)` entries are the ones agy applies)",
                 )
             )
     missing_allow = [entry for entry in allow_required if entry not in allow]

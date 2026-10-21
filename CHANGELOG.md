@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The `agy` permission set no longer includes
+  `unsandboxed(regex:^git( .*)? push( .*)?$)`. `agy` 1.4.4 ignores
+  `unsandboxed(...)` rules and logs that they grant nothing; the
+  `command(regex:^git( .*)? push( .*)?$)` deny entry is the one that blocks
+  pushes. `init` no longer prints the entry and `doctor` no longer requires
+  it. `doctor` now warns, without failing, when `permissions.allow`,
+  `permissions.deny`, or `permissions.ask` in the `agy` settings file holds
+  an `unsandboxed(...)` entry, and names the entries to remove. An
+  `unsandboxed(...)` allow entry that can grant `git push` still fails and is
+  not repeated in the warning.
 - The chat answer worker routes `@role` messages to a finished role's
   session (CHAT-33). `ChatAnswerWorker` takes an optional `role_session`
   lookup that returns a `RoleSession`; `@<role> <message>`, where `<role>` is
