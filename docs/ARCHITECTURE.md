@@ -68,6 +68,13 @@ Antigravity (`agy`), backend to Codex, and auditor/validator/finalizer to
 Claude, but that is a template default rather than an execution-layer
 constraint.
 
+The planner picks stories unless `agents.tpm` is configured. With a tpm, the
+planner opens each epic and routes to `tpm`, the tpm assigns each story with a
+Work Packet, and a story-level `verified_pass` routes back to the tpm. Epic
+closes, pause recovery, the tracker lease rebuild, and re-scoping stay on the
+planner in both configurations. See
+[CONFIGURATION.md](../CONFIGURATION.md#agent-roles).
+
 ## Handoff File
 
 Default path:
@@ -91,7 +98,8 @@ The handoff file contains two layers:
 
 The router treats canonical frontmatter as the authority. Supported public
 roles are `planner`, `backend`, `frontend`, `auditor`, `validator`,
-`finalizer`, and `user`.
+`finalizer`, and `user`, plus `tpm`, which launches only when `agents.tpm` is
+configured.
 
 If `next_agent` is not an exact enum match, the dispatcher can invoke an
 internal next-agent normalizer backed by a configured small model. The current
@@ -140,6 +148,8 @@ The dispatcher should name and isolate failure modes rather than guessing:
 - planner self-loop;
 - agent self-loop;
 - missing route after dispatch;
+- a `next_agent: tpm` route when `agents.tpm` is not configured (one planner
+  repair cycle, then a pause);
 - malformed validator output;
 - malformed close/finalizer output;
 - audit fan-out reviewer failure: `review_scope_unavailable`,
@@ -477,7 +487,7 @@ and `escalate_to_user` reset it.
 
 When `bounce_count >= 3` and the next route would send the same story back to an
 implementer, the dispatcher emits `THREE_FIX_CIRCUIT_BREAKER` and routes to the
-planner for re-scoping. If that story has already gone through planner recovery
+planner for re-scoping, also when `agents.tpm` is configured. If that story has already gone through planner recovery
 and still routes back to implementation, the dispatcher emits
 `THREE_FIX_CIRCUIT_BREAKER_ESCALATE` and routes to `user`.
 

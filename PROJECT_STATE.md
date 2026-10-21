@@ -29,7 +29,9 @@ belong in commits, handoffs, and pull requests.
   at `3291e2a` and merged in PR #219; TPM-10 (routing to the tpm when it is
   configured) was approved at `3f75142` and merged in PR #220; TPM-11
   (operator prompt `@tpm <message>`) was approved at `cee95d3` and merged in
-  PR #221; TPM-14 (interrupted tpm dispatch recovery) is in flight.
+  PR #221; TPM-14 (interrupted tpm dispatch recovery) was approved at
+  `b1d129d` and merged in PR #222; TPM-12 (documentation and changelog
+  sweep) is in flight.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
@@ -1479,7 +1481,7 @@ dispatched without its instructions.
   (`_write_planner_in_flight_record` in `llm_handoff/orchestrator.py`), so a
   later start can restore the handoff an interrupted tpm half-wrote and run
   the tpm again after operator confirmation. Without `agents.tpm`, nothing
-  changes.
+  changes. Approved at `b1d129d`, merged in PR #222.
 - TPM-12 (was TPM-6): Documentation and changelog sweep. `README.md` role
   table and loop diagram, `docs/ARCHITECTURE.md` (role list, "planner picks
   stories unless tpm is configured"), `CONFIGURATION.md` (`agents.tpm`
