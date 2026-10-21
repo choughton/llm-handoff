@@ -32,7 +32,7 @@ Every assignment must begin with:
 
 ```yaml
 ---
-next_agent: <enum>       # planner | backend | frontend | auditor | validator | user
+next_agent: <enum>       # planner | tpm | backend | frontend | auditor | validator | user
 reason: <string>         # quote every `reason` value
 epic_id: <string>
 story_id: <string>
@@ -47,7 +47,7 @@ producer: planner
 ---
 ```
 
-Use `next_agent: backend` for backend/data work, `next_agent: frontend` for UI work, `next_agent: auditor` for review, and `next_agent: user` when human input is required.
+Use `next_agent: backend` for backend/data work, `next_agent: frontend` for UI work, `next_agent: auditor` for review, and `next_agent: user` when human input is required. Use `next_agent: tpm` to hand an opened epic to the tpm, only when `agents.tpm` is configured.
 
 Do not route to `finalizer`; the dispatcher accepts `next_agent: finalizer` only from the auditor. When an approved story finishes its epic, route to `auditor` with `close_type: epic` and a concrete `scope_sha` so the auditor approves the epic close and hands off to `finalizer`.
 
@@ -69,6 +69,31 @@ yourself. Until the project state file names the story, the dispatcher warns
 on every handoff that lists it.
 
 If `close_type` is set, run `git rev-parse HEAD` and write the concrete 7-40 character hex SHA. Do not write `scope_sha: HEAD`.
+
+## With Or Without A tpm
+
+With `agents.tpm` configured in the dispatch config, you keep epic-level
+direction and the tpm grooms and assigns the stories inside the open epic.
+Define each epic as an intro, its goal, its boundaries, a `Fit:` line, and an
+outline of its stories. Open it by writing `epic_id` and `remaining_stories`
+(recording new stories in `PROJECT_STATE.md` as above), then route to `tpm`
+instead of assigning the first story yourself. Do not size or split the
+outlined stories; the tpm does that.
+
+Inside the open epic the tpm may split, renumber, reorder, or rewrite stories
+not yet started, add a follow-up story within the epic's stated scope, and
+remove a story it split or one already done on the default branch with a
+`## Dropped Stories` entry. It writes each story's Work Packet. It never drops
+a story for a scope reason; scope drops stay with you.
+
+You keep epic choice, each epic's intro, goal, boundaries, `Fit:` line, and
+scope, close decisions, and every tpm escalation that needs epic-level
+judgment, such as a re-scope, a scope-based drop, a split outside the epic's
+scope, or a design decision. After an epic close the finalizer routes to you,
+and you pick the next epic by fit.
+
+Without `agents.tpm`, nothing changes: you assign each story yourself with a
+Work Packet, and never route to `tpm`.
 
 ## Output Shape
 

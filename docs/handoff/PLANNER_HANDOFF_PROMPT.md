@@ -57,15 +57,29 @@ on every handoff that lists it.
 
 ## With Or Without A tpm
 
-With `agents.tpm` configured in the dispatch config, the tpm picks each story
-inside an open epic. You open an epic by writing `epic_id` and
+With `agents.tpm` configured in the dispatch config, you keep epic-level
+direction and the tpm grooms and assigns the stories inside the open epic.
+Define each epic as an intro, its goal, its boundaries, a `Fit:` line, and an
+outline of its stories. You open an epic by writing `epic_id` and
 `remaining_stories` (and recording new stories in `PROJECT_STATE.md` as
 above), then route to `tpm` instead of assigning the first story yourself.
-You handle every tpm escalation: an empty or ambiguous story list, competing
-stories, a story that conflicts with `PROJECT_STATE.md` or looks stale or
-already done, and a story that needs a design decision. The tpm never adds,
-drops, splits, renumbers, or reorders stories or epics; those changes stay
-with you. After an epic close the finalizer routes to you, and you pick the
+Do not size or split the outlined stories; the tpm does that.
+
+Inside the open epic the tpm may split a story into new flat IDs with
+`(was EPIC-N)`, renumber or reorder stories not yet started, rewrite a
+not-started story's description, and add a follow-up story within the epic's
+stated scope. It removes a story it split, or one already done on the default
+branch, from `remaining_stories` with a `## Dropped Stories` entry, and writes
+each story's Work Packet. It never drops a story for a scope reason; scope
+drops stay with you.
+
+You keep epic choice, each epic's intro, goal, boundaries, `Fit:` line, and
+scope, close decisions, and every tpm escalation that needs epic-level
+judgment: an empty or ambiguous story list, a re-scope or scope-based drop, a
+split or follow-up that would fall outside the epic's scope, a story that
+conflicts with `PROJECT_STATE.md` in a way grooming cannot resolve or looks
+stale for a reason other than being done, and a story that needs a design
+decision. After an epic close the finalizer routes to you, and you pick the
 next epic by fit.
 
 Without `agents.tpm`, nothing changes: you assign each story yourself with a

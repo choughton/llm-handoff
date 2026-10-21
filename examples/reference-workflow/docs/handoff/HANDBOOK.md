@@ -18,8 +18,11 @@ Every handoff has two layers:
 The `tpm` role exists only when `agents.tpm` is configured in the dispatch
 config. Then the planner opens each epic and routes to `tpm`, and the tpm
 grooms the stories inside that open epic and assigns each story with a Work
-Packet. Epic-level direction stays with the planner. Without it, the planner
-grooms and assigns every story itself and no handoff routes to `tpm`.
+Packet. Epic-level direction stays with the planner: it chooses the epic,
+defines its intro, goal, boundaries, `Fit:` line, and story outline, and
+decides scope and the epic close, but does not size or split the stories.
+Without it, the planner grooms and assigns every story itself and no handoff
+routes to `tpm`.
 
 ## Frontmatter Schema Reference
 
