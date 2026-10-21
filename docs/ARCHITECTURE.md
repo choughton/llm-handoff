@@ -355,9 +355,9 @@ subagent names, session-resume behavior, and timeouts.
 The dispatcher does not sandbox these tools itself and does not manage their
 auth. It chooses the launch flags: by default each CLI runs under its own
 permission or sandbox mode (Claude Code `dontAsk` with an allowlist, Codex
-`workspace-write`, and `agy` with no permission flag, which allows workspace
-file reads and writes but runs a shell command only when a `permissions.allow`
-grant in the `agy` user settings covers it), and a role must set
+`workspace-write`, and `agy` with `--mode accept-edits`, which allows file
+edits inside the workspace but runs a shell command only when a
+`permissions.allow` grant in the `agy` user settings covers it), and a role must set
 `unsafe_bypass: true` to launch with approvals and sandboxing disabled. It
 also builds each launch environment from an allowlist. See
 [CONFIGURATION.md](../CONFIGURATION.md#launch-permissions-and-sandboxing).

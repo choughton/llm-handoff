@@ -11692,7 +11692,7 @@ def _log_launch_posture(config: DispatchConfig, log: LogFn) -> None:
             )
         if agent_config.provider == "antigravity" and not agent_config.unsafe_bypass:
             summary = (
-                "(no permission flags; workspace edits allowed, shell commands "
+                f"{summary} (workspace edits allowed, shell commands "
                 "need permissions.allow grants in the agy user settings)"
             )
         _log(log, "INFO", f"Launch {label + ':':<12}{agent_config.provider} {summary}")

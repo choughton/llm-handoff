@@ -17,6 +17,14 @@ This project follows a simple pre-release changelog until the first public tag.
   worker a `role_session` lookup that reads the latest entry at submit time
   and supplies the role's configured agent settings. Chat on agy is still
   not available (CHAT-5).
+- `agy` roles launch with `--mode accept-edits`. In its default agent mode,
+  `agy` print mode auto-denies every file write outside the system temp
+  directory, so an Antigravity planner could not rewrite `HANDOFF.md` and
+  each dispatch failed with a `write_file` soft-deny. Earlier live checks ran
+  in temp-directory clones and missed this. `accept-edits` approves file
+  edits inside the workspace only; writes outside it and shell commands still
+  need `permissions.allow` grants (checked against `agy` 1.4.4). The startup
+  banner's `Launch <role>:` line now shows the flag.
 - The chat answer worker routes `@role` messages to a finished role's
   session (CHAT-33). `ChatAnswerWorker` takes an optional `role_session`
   lookup that returns a `RoleSession`; `@<role> <message>`, where `<role>` is
