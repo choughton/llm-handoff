@@ -16,7 +16,8 @@ This project follows a simple pre-release changelog until the first public tag.
   removed, on every exit path. New submissions no longer write
   `logs/dispatch/chat-queue.json`; messages saved there before this change
   still trigger the existing queued-message hold, so none is stranded. Dry
-  runs and non-terminal runs build no worker. agy roles still get the "not
+  runs, non-terminal runs, and runs with no console key input build no
+  worker. agy roles still get the "not
   available yet" notice.
 - The loop waits for a running chat answer (CHAT-31). `chat_session` now
   carries the running role's `ChatContext` (`set_role(role, context=...)`,

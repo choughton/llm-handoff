@@ -321,6 +321,7 @@ def _chat_run_dispatch(
     run_loop_error: BaseException | None = None,
     during_run: Any = None,
     seen: dict[str, Any] | None = None,
+    console_input: bool = True,
 ) -> tuple[int, dict[str, Any]]:
     from llm_handoff import chat_session
     from llm_handoff.chat_input import ChatInput
@@ -343,10 +344,16 @@ def _chat_run_dispatch(
             super().__init__(**kwargs)
             seen["logger"] = self
 
-    def factory(stdin: object, chat_line: Any, **_kwargs: object) -> ChatInput:
+    def factory(
+        stdin: object, chat_line: Any, **_kwargs: object
+    ) -> ChatInput | None:
         seen["factory_calls"] += 1
         seen["chat_line"] = chat_line
         seen["factory_kwargs"] = dict(_kwargs)
+        seen.setdefault("factory_kwargs_calls", []).append(dict(_kwargs))
+        events.append("factory")
+        if not console_input:
+            return None
         return ChatInput(chat_line, _IdleKeyReader(), poll_interval=0.01)
 
     def fake_run_loop(_config: object, *, log: Any = None) -> int:
@@ -411,6 +418,7 @@ def _patch_fake_worker(
     events: list[str] = seen.setdefault("events", [])
 
     def build(**kwargs: Any) -> _FakeChatWorker:
+        events.append("worker")
         worker = _FakeChatWorker(events, **kwargs)
         instances.append(worker)
         return worker
@@ -425,7 +433,8 @@ def test_run_dispatch_attaches_the_chat_line_for_an_interactive_run(
     exit_code, seen = _chat_run_dispatch(tmp_path, monkeypatch, dry_run=False)
 
     assert exit_code == 0
-    assert seen["factory_calls"] == 1
+    # A probe with no callback, then the real ChatInput on the same line.
+    assert seen["factory_calls"] == 2
     assert seen["chat_line_during_run"] is seen["chat_line"]
     assert seen["session_attached_during_run"] is True
     assert seen["session_attached_after_run"] is False
@@ -449,6 +458,9 @@ def test_run_dispatch_sends_chat_lines_to_the_answer_worker(
     assert exit_code == 0
     assert len(workers) == 1
     worker = workers[0]
+    # The probe call carries no callback; the ChatInput that is attached
+    # submits to the worker.
+    assert seen["factory_kwargs_calls"][0] == {}
     on_submit = seen["factory_kwargs"].get("on_submit")
     assert on_submit == worker.submit
     repo_root = Path(worker.kwargs["repo_root"])
@@ -523,7 +535,7 @@ def test_run_dispatch_stops_the_worker_before_the_session_detaches(
 
     assert len(workers) == 1
     assert workers[0].stop_calls == 1
-    assert seen["events"] == ["stop", "detach"]
+    assert seen["events"] == ["factory", "worker", "factory", "stop", "detach"]
     assert seen["worker_after_run"] is None
     assert seen["session_attached_after_run"] is False
     assert seen["logger"].chat_line is None
@@ -652,6 +664,26 @@ def test_run_dispatch_keeps_the_chat_line_off_without_an_interactive_run(
     assert workers == []
     assert seen["worker_during_run"] is None
     assert seen["events"] == ["detach"]
+
+
+def test_run_dispatch_builds_no_worker_without_console_key_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+    workers = _patch_fake_worker(monkeypatch, seen)
+
+    exit_code, seen = _chat_run_dispatch(
+        tmp_path, monkeypatch, dry_run=False, console_input=False, seen=seen
+    )
+
+    assert exit_code == 0
+    assert seen["factory_calls"] == 1
+    assert workers == []
+    assert seen["chat_line_during_run"] is None
+    assert seen["session_attached_during_run"] is False
+    assert seen["worker_during_run"] is None
+    assert seen["logger"].attached == []
+    assert seen["events"] == ["factory", "detach"]
 
 
 def test_stop_request_for_another_pid_does_not_apply(tmp_path: Path) -> None:

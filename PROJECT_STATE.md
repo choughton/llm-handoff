@@ -1521,8 +1521,10 @@ dependencies; Windows (`msvcrt`) and POSIX.
   `write_line` that logs each line at `AGENT` level, makes `worker.submit`
   the `ChatInput` `on_submit`, attaches the worker with
   `chat_session.attach_worker`, and returns it. It returns `None` and
-  attaches no worker when stdin or stdout is not a terminal or no console
-  key input is available. `_run_dispatch`'s `finally` calls `stop()` then
+  builds or attaches no worker when stdin or stdout is not a terminal or no
+  console key input is available: it first calls `chat_input_for_console`
+  with no callback and builds the worker only when that returns a
+  `ChatInput`, because `ChatInput` takes `on_submit` only when built. `_run_dispatch`'s `finally` calls `stop()` then
   `attach_worker(None)` before `chat_session.detach()` on a normal return,
   `KeyboardInterrupt`, or an exception. An agy role prints that chat is not
   available for agy yet. In flight.

@@ -159,6 +159,13 @@ def _attach_console_chat(
 
     if not (_stream_is_tty(sys.stdin) and _stream_is_tty(sys.stdout)):
         return None
+    chat_line = ChatLine(sys.stdout)
+    # ``ChatInput`` takes its ``on_submit`` only when it is built, and the
+    # worker must not be built when console key input is unavailable. So ask
+    # the factory first with no callback: building a ``ChatInput`` starts no
+    # thread and opens no reader, and the probe is dropped unused.
+    if chat_input_for_console(sys.stdin, chat_line) is None:
+        return None
 
     def write_line(line: str) -> None:
         logger("AGENT", line)
@@ -171,7 +178,6 @@ def _attach_console_chat(
         context=lambda: chat_session.SESSION.context,
         write_line=write_line,
     )
-    chat_line = ChatLine(sys.stdout)
     chat_input = chat_input_for_console(
         sys.stdin, chat_line, on_submit=worker.submit
     )
