@@ -3926,6 +3926,11 @@ def _merge_commit_on_main(repo: Path) -> None:
     _git(repo, "merge", "-q", "--no-ff", "-m", "merge side", "side")
 
 
+def _handoff_in_the_operator_commit(repo: Path) -> None:
+    _git(repo, "add", HANDOFF_PATH.as_posix())
+    _git(repo, "commit", "-q", "--amend", "--no-edit")
+
+
 @pytest.mark.parametrize(
     ("arrange", "scope", "options", "warning"),
     [
@@ -3937,13 +3942,12 @@ def _merge_commit_on_main(repo: Path) -> None:
             "uncommitted files other than",
         ),
         (_merge_commit_on_main, "head", {}, "include a merge commit"),
+        (_handoff_in_the_operator_commit, "head", {}, "would put live handoff state"),
         (
-            lambda repo: _commit_all(
-                repo, {HANDOFF_PATH.as_posix(): "committed\n"}, "handoff"
-            ),
+            lambda repo: _commit_all(repo, {"more.md": "more\n"}, "unaudited"),
             "head",
             {},
-            "would put live handoff state",
+            "commit(s) ahead of origin/main, not one",
         ),
         (
             lambda repo: _git(repo, "branch", BRANCH, "HEAD~1"),
@@ -3966,6 +3970,7 @@ def _merge_commit_on_main(repo: Path) -> None:
         "other-dirty-file",
         "merge-commit",
         "commit-changes-handoff",
+        "two-commits",
         "branch-exists",
         "no-handoff-path",
         "epic-close",

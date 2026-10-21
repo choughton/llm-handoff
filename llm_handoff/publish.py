@@ -4589,9 +4589,9 @@ def _adopt_base_branch_story(
     a story routed to ``user``: the operator commits the work locally on the
     base branch without pushing, and the planner sends that commit to the
     auditor. No story branch or state exists for it. When the audit passed
-    with ``close_type: story``, HEAD is the handoff's ``scope_sha``, HEAD sits
-    on ``remote/base_branch`` with only commits that remote lacks and no merge
-    commits, none of them changes ``handoff_path``, and nothing but
+    with ``close_type: story``, HEAD is the handoff's ``scope_sha``, HEAD is
+    one non-merge commit on top of ``remote/base_branch`` (the range the audit
+    reviewed), that commit does not change ``handoff_path``, and nothing but
     ``handoff_path`` is uncommitted, the story branch is created at HEAD with
     its state, checked out, and the local base branch is moved back to
     ``remote/base_branch``. The working tree is not touched and nothing is
@@ -4638,10 +4638,16 @@ def _adopt_base_branch_story(
     merges = _git(repo_root, ["rev-list", "--merges", f"{upstream}..HEAD"])
     if listed.returncode != 0 or merges.returncode != 0:
         return keep("git rev-list failed")
-    if listed.stdout.strip() in ("", "0"):
-        return keep(f"HEAD has no commits that {remote}/{base_branch} lacks")
     if merges.stdout.strip():
         return keep(f"the commits since {remote}/{base_branch} include a merge commit")
+    # With no story state the audit reviewed HEAD~1..HEAD, so a longer range
+    # would publish commits no one audited.
+    if listed.stdout.strip() != "1":
+        return keep(
+            f"HEAD is {listed.stdout.strip() or 'an unknown number of'} commit(s) "
+            f"ahead of {remote}/{base_branch}, not one, and the audit covered "
+            "only the last"
+        )
     handoff_commits = _unpushed_handoff_commits(
         repo_root, remote, base_branch, handoff_path
     )
@@ -4683,11 +4689,10 @@ def _adopt_base_branch_story(
             f"`{base_branch}` still has them. Reset `{base_branch}` to "
             f"{remote}/{base_branch} yourself, then start the dispatcher again",
         )
-    count = listed.stdout.strip()
     log(
         "INFO",
-        f"Story audit passed for {count} commit(s) on `{base_branch}` with no "
-        f"story branch (ending at {_describe_commit(repo_root, 'HEAD')}). "
+        f"Story audit passed for a commit on `{base_branch}` with no story "
+        f"branch ({_describe_commit(repo_root, 'HEAD')}). "
         f"Created `{branch}` at that commit with its story state, checked it "
         f"out, and moved `{base_branch}` back to {remote}/{base_branch} "
         f"({upstream_sha[:12]}); publishing it as a pull request.",
