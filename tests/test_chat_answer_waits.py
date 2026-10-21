@@ -109,7 +109,7 @@ reason: "The operator redirected the story from chat."
 epic_id: CHAT-W
 story_id: {STORY_ID}
 story_title: Change the value
-producer: planner
+producer: user
 ---
 
 # Operator Redirect

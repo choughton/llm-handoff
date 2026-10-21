@@ -389,6 +389,22 @@ be stopped this way; the finalizer, validators the dispatcher runs on its own,
 the normalizer, and hygiene repairs are never stopped. A chat answer that
 changes other files but not `HANDOFF.md` never stops the role.
 
+A chat answer sees only that `HANDOFF.md` changed while it ran, not who wrote
+it, so a role's own handback that lands during an answer also requests a
+takeover. When the role returned before it was stopped, and the handoff on
+disk still holds the bytes the request recorded with a frontmatter `producer`
+naming the dispatched role, the dispatcher treats it as the role's handback:
+it clears the request, keeps the chat change record, and runs the role's
+normal post-dispatch path (for an implementer, the dispatcher commit with the
+chat's paths riding along, the `scope_sha` stamp, the work-claim gate, and
+post-dispatch validation). Any other producer, missing or unparseable
+frontmatter, a role stopped mid-dispatch, or a rewrite after the role returned
+stays a chat takeover. A chat rewrite that names the running role as
+`producer` is therefore taken as that role's handback. The dispatcher clears
+only the request it inspected: each request carries a generation, and the
+clear is a compare-and-clear on it, so a newer request from another answer
+that finished meanwhile stays pending and is followed as a chat takeover.
+
 ### Messages to a finished role
 
 `@<role> <message>` on the chat line, where `<role>` is an exact agent role

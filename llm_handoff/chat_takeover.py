@@ -4,13 +4,21 @@ A chat answer that rewrites ``HANDOFF.md`` requests a takeover. Role and
 audit reviewer processes launched through ``_run_command_streaming`` poll the
 request and are stopped, process tree included, by raising ``ChatTakeover``,
 but only while the loop has armed the window around a role dispatch. The
-loop then validates and follows the chat's handoff. Nothing outside tests
-requests a takeover yet; the chat wiring calls
-``request_takeover_if_handoff_changed``.
+loop then validates and follows the chat's handoff. The chat answer worker
+calls ``request_takeover_if_handoff_changed`` after each answer.
+
+The request records only that the handoff's bytes changed, not who wrote
+them. When the role returned during the window and the recorded bytes are
+still on disk with a frontmatter ``producer`` naming that role, the loop
+clears the request and treats the handoff as the role's own handback
+(CHAT-35). It clears with ``clear_takeover_if`` keyed to the generation it
+inspected, so a newer request from another answer that finished meanwhile
+stays pending and is followed as a takeover.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import stat
@@ -27,6 +35,18 @@ class ChatTakeover(BaseException):
     """
 
 
+@dataclass(frozen=True)
+class TakeoverRequest:
+    """A pending takeover request as read at one moment.
+
+    ``generation`` increases with every request, so a caller that inspected
+    this request can clear it without dropping a newer one.
+    """
+
+    generation: int
+    handoff_sha: str | None
+
+
 class ChatTakeoverController:
     """Thread-safe record of a pending chat takeover request.
 
@@ -40,12 +60,14 @@ class ChatTakeoverController:
         self._lock = threading.Lock()
         self._requested = False
         self._handoff_sha: str | None = None
+        self._generation = 0
         self._armed = False
 
     def request(self, handoff_sha: str | None) -> None:
         with self._lock:
             self._requested = True
             self._handoff_sha = handoff_sha
+            self._generation += 1
 
     def requested(self) -> bool:
         with self._lock:
@@ -56,11 +78,33 @@ class ChatTakeoverController:
         with self._lock:
             return self._handoff_sha if self._requested else None
 
+    def pending(self) -> TakeoverRequest | None:
+        """Return the pending request with its generation, or None."""
+        with self._lock:
+            if not self._requested:
+                return None
+            return TakeoverRequest(
+                generation=self._generation, handoff_sha=self._handoff_sha
+            )
+
     def clear(self) -> None:
         """Drop the pending request. The armed state is left unchanged."""
         with self._lock:
             self._requested = False
             self._handoff_sha = None
+
+    def clear_if(self, generation: int) -> bool:
+        """Drop the pending request only if it is still ``generation``.
+
+        Returns False, leaving the request in place, when no request is
+        pending or a newer request replaced the one that was inspected.
+        """
+        with self._lock:
+            if not self._requested or self._generation != generation:
+                return False
+            self._requested = False
+            self._handoff_sha = None
+            return True
 
     def arm(self) -> None:
         with self._lock:
@@ -96,8 +140,18 @@ def takeover_handoff_sha() -> str | None:
     return CONTROLLER.handoff_sha()
 
 
+def pending_takeover() -> TakeoverRequest | None:
+    """Return the pending request with its generation, or None."""
+    return CONTROLLER.pending()
+
+
 def clear_takeover() -> None:
     CONTROLLER.clear()
+
+
+def clear_takeover_if(generation: int) -> bool:
+    """Clear the pending request only if it is still ``generation``."""
+    return CONTROLLER.clear_if(generation)
 
 
 def arm_takeover() -> None:
