@@ -51,6 +51,8 @@ from llm_handoff.chat_takeover import (
     arm_takeover,
     clear_takeover,
     disarm_takeover,
+    handoff_content_sha,
+    takeover_handoff_sha,
     takeover_requested,
 )
 from llm_handoff.chat_queue import (
@@ -3023,6 +3025,9 @@ def _clear_run_dispatch_record(
 CHAT_TAKEOVER_INVALID_PAUSE_PREFIX = (
     "A chat answer rewrote HANDOFF.md and the result is not a valid handoff:"
 )
+CHAT_TAKEOVER_MISMATCH_PAUSE_PREFIX = (
+    "A chat answer rewrote HANDOFF.md and the file no longer matches that rewrite:"
+)
 
 _ChatTakeoverOutcomeKind = Literal["followed", "protected", "paused", "retry"]
 
@@ -3068,6 +3073,10 @@ def _follow_chat_takeover(
     completion log, auth-failure stop, failure count, chat or implementer
     commit, work-claim gate, or post-dispatch validation of the role's
     handoff. The chat change record is left for the next role's cycle.
+
+    The handoff is followed only while its bytes still match the SHA the
+    takeover request recorded; a role that wrote it again before it stopped
+    pauses the dispatcher instead of having its handback followed.
     """
 
     _log(
@@ -3077,6 +3086,10 @@ def _follow_chat_takeover(
         f"{role_label} was stopped and the dispatcher follows the chat's "
         "handoff once it validates.",
     )
+    # The request names the handoff bytes the chat answer wrote. Keep it
+    # before clearing: a role that wrote HANDOFF.md again before the poll
+    # stopped it must not have its handback followed as the chat's.
+    requested_handoff_sha = takeover_handoff_sha()
     clear_takeover()
     # The role's in-flight record names nothing interrupted: its work is
     # dropped, and an implementer's record is deleted, not turned into a
@@ -3158,7 +3171,14 @@ def _follow_chat_takeover(
         chat_handoff = _read_required_text(config.handoff_full_path)
     except (OSError, ValueError):
         chat_handoff = None
-    if chat_handoff is None or not chat_handoff.strip():
+    pause_prefix = CHAT_TAKEOVER_INVALID_PAUSE_PREFIX
+    if handoff_content_sha(config.handoff_full_path) != requested_handoff_sha:
+        pause_prefix = CHAT_TAKEOVER_MISMATCH_PAUSE_PREFIX
+        errors = (
+            f"HANDOFF.md changed after the chat answer rewrote it, so the "
+            f"{role_label}'s later write may have replaced the chat's handoff"
+        )
+    elif chat_handoff is None or not chat_handoff.strip():
         errors = "HANDOFF.md is missing or empty"
     else:
         # The operator-directed rewrite plays the planner's part.
@@ -3192,12 +3212,15 @@ def _follow_chat_takeover(
             return outcome
         errors = _format_validation_errors(validation_result)
 
-    _log(log, "ERROR", f"The chat's handoff failed validation: {errors}.")
+    if pause_prefix == CHAT_TAKEOVER_MISMATCH_PAUSE_PREFIX:
+        _log(log, "ERROR", f"The chat's handoff was not followed: {errors}.")
+    else:
+        _log(log, "ERROR", f"The chat's handoff failed validation: {errors}.")
     pause = _pause_at_dispatcher_pause(
         config,
         handoff_sha=_content_sha(chat_handoff or ""),
         reason=(
-            f"{CHAT_TAKEOVER_INVALID_PAUSE_PREFIX} {errors}. Update HANDOFF.md; "
+            f"{pause_prefix} {errors}. Update HANDOFF.md; "
             "dispatch will resume after the file changes."
         ),
         log=log,

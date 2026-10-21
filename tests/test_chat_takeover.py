@@ -17,6 +17,7 @@ from llm_handoff.chat_takeover import (
     handoff_content_sha,
     request_takeover,
     request_takeover_if_handoff_changed,
+    takeover_handoff_sha,
     takeover_requested,
     takeover_stop_requested,
 )
@@ -84,12 +85,15 @@ def test_module_wrappers_use_the_shared_controller(
     shared_controller: ChatTakeoverController,
 ) -> None:
     assert takeover_requested() is False
+    assert takeover_handoff_sha() is None
     request_takeover("cafe")
     assert takeover_requested() is True
     assert shared_controller.handoff_sha() == "cafe"
+    assert takeover_handoff_sha() == "cafe"
     clear_takeover()
     assert takeover_requested() is False
     assert shared_controller.handoff_sha() is None
+    assert takeover_handoff_sha() is None
 
 
 def test_fresh_controller_starts_disarmed() -> None:

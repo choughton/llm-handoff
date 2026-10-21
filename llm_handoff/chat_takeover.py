@@ -91,6 +91,11 @@ def takeover_requested() -> bool:
     return CONTROLLER.requested()
 
 
+def takeover_handoff_sha() -> str | None:
+    """Return the handoff SHA the pending request recorded, or None."""
+    return CONTROLLER.handoff_sha()
+
+
 def clear_takeover() -> None:
     CONTROLLER.clear()
 

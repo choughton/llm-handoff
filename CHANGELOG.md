@@ -13,7 +13,9 @@ This project follows a simple pre-release changelog until the first public tag.
   takes over a role, the loop deletes the role's in-flight record, keeps the
   role's partial edits as carry-over minus chat-owned files, skips the role's
   commit, gates, and validation, then validates the chat's handoff as a
-  planner handoff and follows it, or pauses when it is not valid. An audit
+  planner handoff and follows it, or pauses when it is not valid or no longer
+  matches the SHA the takeover request recorded (the role wrote it again
+  before it stopped). An audit
   fan-out stopped by chat no longer reports `reviewer_wrote_handoff` or
   restores the pre-review handoff. Chat is still not wired in to request a
   takeover (CHAT-20).

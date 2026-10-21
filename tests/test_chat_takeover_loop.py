@@ -233,7 +233,7 @@ def test_backend_stopped_by_chat_follows_the_chat_handoff(
         _write(repo / "src" / "app.py", "VALUE = 2\n")
         _record_chat_file(repo, "docs/notes.md", "chat note\n")
         path.write_text(chat_handoff, encoding="utf-8")
-        chat_takeover.request_takeover(_sha(chat_handoff))
+        chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
         window.active = True
         raise chat_takeover.ChatTakeover
 
@@ -346,7 +346,7 @@ def test_planner_returning_with_a_takeover_requested_follows_the_chat(
         # the planner exits before the poll saw the request.
         path.write_text(_backend_assignment(), encoding="utf-8")
         path.write_text(chat_handoff, encoding="utf-8")
-        chat_takeover.request_takeover(_sha(chat_handoff))
+        chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
         window.active = True
         return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
 
@@ -410,7 +410,7 @@ def test_invalid_chat_handoff_pauses(
             path.unlink()
         else:
             path.write_text(chat_writes, encoding="utf-8")
-        chat_takeover.request_takeover(None)
+        chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
         raise chat_takeover.ChatTakeover
 
     pauses: list[str] = []
@@ -445,6 +445,62 @@ def test_invalid_chat_handoff_pauses(
         assert "frontmatter_missing" in errors[0]
     else:
         assert "missing or empty" in errors[0]
+    assert chat_takeover.CONTROLLER.armed() is False
+
+
+@pytest.mark.parametrize("route", ["backend", "planner"])
+def test_role_write_after_the_chat_rewrite_pauses_instead_of_following(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    repo = tmp_path / "repo"
+    started_from = _backend_assignment() if route == "backend" else _planner_request()
+    _init_repo(repo, started_from)
+    chat_handoff = _chat_handoff("planner")
+    role_handoff = _planner_request() if route == "backend" else _backend_assignment()
+
+    def role(path: Path, **_kwargs: object) -> DispatchResult:
+        # The chat answer rewrites the handoff and requests a takeover, then
+        # the role writes HANDOFF.md again before the poll stops it.
+        path.write_text(chat_handoff, encoding="utf-8")
+        chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
+        path.write_text(role_handoff, encoding="utf-8")
+        if route == "backend":
+            raise chat_takeover.ChatTakeover
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    pauses: list[str] = []
+
+    def recording_pause(_config: DispatchConfig, **kwargs: Any):
+        pauses.append(kwargs["reason"])
+        return orchestrator.PauseOutcome(kind="stop")
+
+    monkeypatch.setattr(orchestrator, f"invoke_{route}_role", role)
+    monkeypatch.setattr(
+        orchestrator, "validate_handoff", _refuse("validating the role's handoff")
+    )
+    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", recording_pause)
+    monkeypatch.setattr(
+        orchestrator, "_schedule_pause_recovery", _refuse("pause recovery")
+    )
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(repo), max_cycles=3, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 1
+    assert len(pauses) == 1
+    assert pauses[0].startswith(orchestrator.CHAT_TAKEOVER_MISMATCH_PAUSE_PREFIX)
+    errors = [
+        message
+        for level, message in messages
+        if level == "ERROR" and "The chat's handoff was not followed" in message
+    ]
+    assert len(errors) == 1
+    assert route in errors[0]
+    # The role's later write stays on disk for the operator; nothing followed it.
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == role_handoff
+    assert chat_takeover.CONTROLLER.requested() is False
     assert chat_takeover.CONTROLLER.armed() is False
 
 

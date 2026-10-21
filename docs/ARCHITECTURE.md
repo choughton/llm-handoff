@@ -380,7 +380,9 @@ An operator chat answer is the one writer of `HANDOFF.md` besides the active
 role. When a chat answer rewrites the file while a role runs, the dispatcher
 stops that role (process tree included), validates the chat's handoff as a
 planner handoff against the handoff the dispatch started from, and then
-follows it or pauses. The stopped role's partial edits stay uncommitted as
+follows it or pauses. It follows the file only while its bytes still match the
+chat's rewrite; if the role wrote `HANDOFF.md` again before it stopped, the
+dispatcher pauses instead. The stopped role's partial edits stay uncommitted as
 carry-over work for its story, minus the files the chat changed. Only the
 shared role dispatch (planner, tpm, backend, frontend, auditor, validator) can
 be stopped this way; the finalizer, validators the dispatcher runs on its own,
