@@ -132,7 +132,7 @@ def _run(provider: str, tmp_path: Path, **kwargs) -> ChatSessionResult:
 
 
 def test_supported_providers_constant() -> None:
-    assert SUPPORTED_CHAT_PROVIDERS == ("claude", "codex")
+    assert SUPPORTED_CHAT_PROVIDERS == ("claude", "codex", "antigravity")
 
 
 def test_result_is_frozen_dataclass() -> None:
@@ -143,13 +143,30 @@ def test_result_is_frozen_dataclass() -> None:
         result.text = "x"  # type: ignore[misc]
 
 
-def test_unsupported_provider_raises_before_launch(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("provider", ["gemini", "agy", "Antigravity", "unknown"])
+def test_unsupported_provider_raises_before_launch(
+    monkeypatch, tmp_path, provider
+) -> None:
     fake = _install(monkeypatch, _FakeRun([]))
     with pytest.raises(ValueError) as excinfo:
-        _run("antigravity", tmp_path)
-    assert "antigravity" in str(excinfo.value)
-    assert "only claude and codex" in str(excinfo.value)
+        _run(provider, tmp_path)
+    assert f"`{provider}`" in str(excinfo.value)
+    assert "only claude, codex, and antigravity" in str(excinfo.value)
     assert fake.calls == []
+
+
+def _agy(name: str, **fields: object) -> dict[str, object]:
+    """One agy stream-json event in its nested ``event`` envelope."""
+
+    return {"event": name, name: fields}
+
+
+def _agy_result(
+    response: str = "Done.", conversation_id: str = "agy-conv-1", status: str = "SUCCESS"
+) -> dict[str, object]:
+    return _agy(
+        "result", conversation_id=conversation_id, status=status, response=response
+    )
 
 
 @pytest.mark.parametrize(
@@ -157,6 +174,7 @@ def test_unsupported_provider_raises_before_launch(monkeypatch, tmp_path) -> Non
     [
         ("claude", _lines(_claude_init(), _claude_result())),
         ("codex", _lines(_codex_thread(), _codex_message())),
+        ("antigravity", _lines(_agy_result())),
     ],
 )
 def test_chat_launch_is_never_stopped_by_a_chat_takeover(
@@ -178,7 +196,7 @@ def test_blank_message_raises_before_launch(monkeypatch, tmp_path, message) -> N
     assert fake.calls == []
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("provider", ["claude", "codex", "antigravity"])
 def test_blank_session_id_raises_before_launch(monkeypatch, tmp_path, provider) -> None:
     fake = _install(monkeypatch, _FakeRun([]))
     with pytest.raises(ValueError):
@@ -289,7 +307,7 @@ def test_resumed_role_prompt_without_story_or_log() -> None:
     assert prompt.endswith("Operator message:\nhi")
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("provider", ["claude", "codex", "antigravity"])
 def test_resumed_role_without_session_id_raises_before_launch(
     monkeypatch, tmp_path, provider
 ) -> None:
@@ -714,3 +732,524 @@ def test_error_detail_is_redacted_and_capped(monkeypatch, tmp_path) -> None:
     prefix = "Codex exited with code 3. "
     assert result.error.startswith(prefix)
     assert len(result.error) - len(prefix) <= 200
+
+
+# --- Antigravity launch ------------------------------------------------------
+
+
+def _agy_step(**fields: object) -> dict[str, object]:
+    fields.setdefault("conversation_id", "agy-conv-1")
+    return _agy("step_update", **fields)
+
+
+def _agy_tool(
+    step_index: int | None,
+    state: str,
+    tool: str = "write_to_file",
+    *,
+    target: str | None = None,
+    error: str | None = None,
+    tool_name: str | None = None,
+) -> dict[str, object]:
+    tool_info: dict[str, object] = {"name": tool}
+    if target is not None:
+        tool_info["parameters"] = {"TargetFile": target, "CodeContent": "x"}
+    if error is not None:
+        tool_info["error"] = {"type": "TOOL_ERROR", "message": error}
+    fields: dict[str, object] = {
+        "state": state,
+        "step_type": "tool",
+        "tool_name": tool if tool_name is None else tool_name,
+        "tool_info": tool_info,
+    }
+    if step_index is not None:
+        fields["step_index"] = step_index
+    return _agy_step(**fields)
+
+
+def _chunks(lines: list[str], size: int) -> list[str]:
+    """Re-split a stream into fixed-size chunks that cut through events."""
+
+    text = "".join(lines)
+    return [text[i : i + size] for i in range(0, len(text), size)]
+
+
+def test_antigravity_fresh_command_uses_role_contract(monkeypatch, tmp_path) -> None:
+    fake = _install(
+        monkeypatch,
+        _FakeRun(
+            _lines(
+                _agy("init", cwd=str(tmp_path), permission_mode="default"),
+                _agy_result("Fixed it.", conversation_id="agy-new"),
+            )
+        ),
+    )
+    result = _run("antigravity", tmp_path)
+
+    command = fake.command
+    assert command[0] == config.ANTIGRAVITY_BINARY
+    assert command[1] == "-p"
+    assert command[3:] == [
+        "--agent",
+        "backend",
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        f"{config.AGENT_TIMEOUT_MS // 1000}s",
+        "--mode",
+        "accept-edits",
+    ]
+    prompt = command[2]
+    assert prompt == build_chat_prompt(
+        "Please fix the typo.",
+        role="backend",
+        story_id="S-1",
+        handoff_path=tmp_path / "docs" / "handoff" / "HANDOFF.md",
+        log_path=None,
+    )
+    assert "Act as the" not in prompt
+    assert "--conversation" not in command
+    call = fake.calls[0]
+    assert call["cwd"] == tmp_path
+    assert call["timeout_ms"] == config.AGENT_TIMEOUT_MS
+    assert call["idle_timeout_ms"] is None
+    assert isinstance(call["env"], dict)
+    assert call["stop_on_chat_takeover"] is False
+    assert result == ChatSessionResult(
+        text="Fixed it.",
+        session_id="agy-new",
+        exit_code=0,
+        error=None,
+        edited_paths=(),
+    )
+
+
+def test_antigravity_custom_config_resume_and_bypass(monkeypatch, tmp_path) -> None:
+    fake = _install(monkeypatch, _FakeRun(_lines(_agy_result("Sure.", "agy-next"))))
+    agent_config = config.AgentConfig(
+        provider="antigravity",
+        binary="agy-beta",
+        model="pro",
+        agent_name="backend-agy",
+        unsafe_bypass=True,
+        timeout_ms=90_500,
+        idle_timeout_ms=5000,
+        env_passthrough=("AGY_TEST_VAR",),
+    )
+    monkeypatch.setenv("AGY_TEST_VAR", "from-env")
+    result = _run(
+        "antigravity", tmp_path, session_id=" agy-prior ", agent_config=agent_config
+    )
+
+    command = fake.command
+    assert command[0] == "agy-beta"
+    assert command[3:] == [
+        "--agent",
+        "backend-agy",
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        "90s",
+        "--model",
+        "pro",
+        "--conversation",
+        "agy-prior",
+        "--dangerously-skip-permissions",
+    ]
+    assert "--mode" not in command
+    call = fake.calls[0]
+    assert call["timeout_ms"] == 90_500
+    assert call["idle_timeout_ms"] == 5000
+    assert call["env"]["AGY_TEST_VAR"] == "from-env"  # type: ignore[index]
+    assert result.session_id == "agy-next"
+    assert result.text == "Sure."
+
+
+def test_antigravity_safe_permissions_on_resume(monkeypatch, tmp_path) -> None:
+    fake = _install(monkeypatch, _FakeRun(_lines(_agy_result())))
+    _run(
+        "antigravity",
+        tmp_path,
+        session_id="agy-prior",
+        agent_config=config.AgentConfig(provider="antigravity", model="flash"),
+    )
+    assert fake.command[-6:] == [
+        "--model",
+        "flash",
+        "--conversation",
+        "agy-prior",
+        "--mode",
+        "accept-edits",
+    ]
+    assert "--dangerously-skip-permissions" not in fake.command
+
+
+def test_antigravity_resume_without_new_id_keeps_the_session(
+    monkeypatch, tmp_path
+) -> None:
+    fake = _install(
+        monkeypatch,
+        _FakeRun(_lines(_agy("result", status="SUCCESS", response="Again."))),
+    )
+    result = _run("antigravity", tmp_path, session_id="agy-prior")
+    assert fake.command[fake.command.index("--conversation") + 1] == "agy-prior"
+    assert result.session_id == "agy-prior"
+    assert result.text == "Again."
+
+
+def test_antigravity_resumed_role_keeps_role_arguments(monkeypatch, tmp_path) -> None:
+    agent_config = config.AgentConfig(
+        provider="antigravity", agent_name="auditor-agy", model="pro"
+    )
+    fake = _install(monkeypatch, _FakeRun(_lines(_agy_result())))
+    _run(
+        "antigravity",
+        tmp_path,
+        role="auditor",
+        session_id="role-conv",
+        agent_config=agent_config,
+        resumed_role=True,
+    )
+    plain = _install(monkeypatch, _FakeRun(_lines(_agy_result())))
+    _run(
+        "antigravity",
+        tmp_path,
+        role="auditor",
+        session_id="role-conv",
+        agent_config=agent_config,
+    )
+
+    command = fake.command
+    assert command[:2] == plain.command[:2]
+    assert command[3:] == plain.command[3:]
+    assert command[command.index("--agent") + 1] == "auditor-agy"
+    assert command[command.index("--conversation") + 1] == "role-conv"
+    assert command[2].startswith("You are the `auditor` role, resumed")
+    assert command[2].endswith("Please fix the typo.")
+    assert "Continue your assigned task" not in command[2]
+
+
+def test_antigravity_text_from_deltas_and_chunked_stream(monkeypatch, tmp_path) -> None:
+    target = tmp_path / "src" / "app.py"
+    lines = _lines(
+        _agy_step(step_type="user_input", text_delta="prompt echo "),
+        _agy_tool(3, "ACTIVE", target=str(target)),
+        _agy_tool(3, "DONE"),
+        _agy_step(step_type="agent_response", text_delta="Hello "),
+        _agy_step(
+            conversation_id="agy-conv-2", step_type="agent_response", text_delta="world"
+        ),
+        _agy("result", status="SUCCESS", response=""),
+    )
+    # The last event has no trailing newline, as a stream cut at exit may.
+    chunks = _chunks(lines, 7)
+    chunks[-1] = chunks[-1].rstrip("\n")
+    _install(monkeypatch, _FakeRun(chunks))
+    result = _run("antigravity", tmp_path)
+
+    assert result.exit_code == 0
+    assert result.error is None
+    assert result.text == "Hello world"
+    assert result.session_id == "agy-conv-2"
+    assert result.edited_paths == ("src/app.py",)
+
+
+def test_antigravity_flat_events_are_accepted(monkeypatch, tmp_path) -> None:
+    flat_tool = {
+        "type": "step_update",
+        "step_index": 1,
+        "state": "DONE",
+        "step_type": "tool",
+        "tool_name": "replace_file_content",
+        "tool_info": {"parameters": {"TargetFile": str(tmp_path / "flat.py")}},
+    }
+    flat_result = {
+        "type": "result",
+        "conversation_id": "flat-1",
+        "status": "SUCCESS",
+        "response": "Flat.",
+    }
+    _install(monkeypatch, _FakeRun(_lines(flat_tool, flat_result)))
+    result = _run("antigravity", tmp_path)
+    assert result.text == "Flat."
+    assert result.session_id == "flat-1"
+    assert result.edited_paths == ("flat.py",)
+
+
+class _CapturedOnlyRun(_FakeRun):
+    """A runner that returns captured stdout without live callbacks."""
+
+    def __call__(self, command, **kwargs):
+        kwargs["on_stdout"] = None
+        return super().__call__(command, **kwargs)
+
+
+def test_antigravity_parses_captured_stdout_without_streaming(
+    monkeypatch, tmp_path
+) -> None:
+    _install(
+        monkeypatch,
+        _CapturedOnlyRun(
+            _lines(
+                _agy_tool(1, "DONE", target="captured.py"),
+                _agy_result("Captured.", "agy-cap"),
+            )
+        ),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.text == "Captured."
+    assert result.session_id == "agy-cap"
+    assert result.edited_paths == ("captured.py",)
+
+
+def test_antigravity_never_touches_role_session_artifacts(
+    monkeypatch, tmp_path
+) -> None:
+    _install(monkeypatch, _FakeRun(_lines(_agy_result())))
+    _run("antigravity", tmp_path, session_id="agy-prior")
+    assert not (tmp_path / "logs").exists()
+
+
+# --- Antigravity edited paths ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool", ["write_to_file", "replace_file_content", "multi_replace_file_content"]
+)
+def test_antigravity_edit_tools_counted(monkeypatch, tmp_path, tool) -> None:
+    target = tmp_path / "src" / "app.py"
+    _install(
+        monkeypatch,
+        _FakeRun(
+            _lines(
+                _agy_tool(2, "ACTIVE", tool, target=str(target)),
+                _agy_tool(2, "DONE", tool, target=str(target)),
+                _agy_result(),
+            )
+        ),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.edited_paths == ("src/app.py",)
+
+
+def test_antigravity_tool_name_from_tool_info(monkeypatch, tmp_path) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun(
+            _lines(
+                _agy_tool(2, "DONE", "write_to_file", target="named.py", tool_name=""),
+                _agy_result(),
+            )
+        ),
+    )
+    assert _run("antigravity", tmp_path).edited_paths == ("named.py",)
+
+
+def test_antigravity_refused_failed_incomplete_and_other_steps_not_counted(
+    monkeypatch, tmp_path
+) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun(
+            _lines(
+                # Refused: the step ends in ERROR.
+                _agy_tool(1, "ACTIVE", target="refused.py"),
+                _agy_tool(
+                    1,
+                    "ERROR",
+                    target="refused.py",
+                    error="permission check failed: user denied permission",
+                ),
+                # A later DONE for the refused step does not revive it.
+                _agy_tool(1, "DONE", target="refused.py"),
+                # Failed: DONE that still carries a tool error.
+                _agy_tool(2, "DONE", target="failed.py", error="write failed"),
+                # Incomplete: never reaches DONE.
+                _agy_tool(3, "ACTIVE", target="pending.py"),
+                # Not an edit tool.
+                _agy_tool(4, "DONE", "run_command", target="shell.py"),
+                _agy_tool(5, "DONE", "view_file", target="read.py"),
+                # DONE without a TargetFile anywhere.
+                _agy_tool(6, "ACTIVE"),
+                _agy_tool(6, "DONE"),
+                # Unknown state.
+                _agy_tool(7, "WAITING", target="waiting.py"),
+                # Counted.
+                _agy_tool(8, "DONE", target="ok.py"),
+                _agy_result(),
+            )
+        ),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.edited_paths == ("ok.py",)
+
+
+def test_antigravity_paths_duplicates_and_escape_dropped(monkeypatch, tmp_path) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun(
+            _lines(
+                _agy_tool(1, "DONE", target=str(tmp_path / "a.py")),
+                _agy_tool(1, "DONE", target=str(tmp_path / "a.py")),
+                _agy_tool(2, "DONE", "replace_file_content", target="a.py"),
+                _agy_tool(None, "DONE", target="no_index.py"),
+                _agy_tool(3, "DONE", target=str(tmp_path.parent / "outside.py")),
+                _agy_tool(4, "DONE", target="../escape.py"),
+                _agy_result(),
+            )
+        ),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.edited_paths == ("a.py", "no_index.py")
+
+
+def test_antigravity_edits_before_failure_are_kept(monkeypatch, tmp_path) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun(
+            _lines(
+                _agy_tool(1, "ACTIVE", target="new.py"),
+                _agy_tool(1, "DONE"),
+                _agy_tool(2, "ACTIVE", target="cut.py"),
+            ),
+            exit_code=2,
+            stderr="agy: crashed",
+        ),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 2
+    assert result.text == ""
+    assert result.error == "Antigravity exited with code 2. agy: crashed"
+    assert result.edited_paths == ("new.py",)
+
+
+# --- Antigravity errors ------------------------------------------------------
+
+
+def test_antigravity_non_success_result_is_an_error(monkeypatch, tmp_path) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun(
+            _lines(
+                _agy_tool(1, "DONE", target="kept.py"),
+                _agy("result", status="ERROR", error="quota exceeded", response=""),
+            )
+        ),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 1
+    assert result.error == (
+        "Antigravity exited with code 1. "
+        "Antigravity result status=ERROR: quota exceeded"
+    )
+    assert result.edited_paths == ("kept.py",)
+
+
+def test_antigravity_missing_result_is_an_error(monkeypatch, tmp_path) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun(_lines(_agy_step(step_type="agent_response", text_delta="partial"))),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 1
+    assert result.text == "partial"
+    assert result.error is not None
+    assert result.error.startswith("Antigravity exited with code 1. ")
+    assert "no result event" in result.error
+
+
+def test_antigravity_no_answer_text_error(monkeypatch, tmp_path) -> None:
+    _install(monkeypatch, _FakeRun(_lines(_agy_result("   "))))
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 0
+    assert result.text == ""
+    assert result.error == "Antigravity produced no answer text."
+
+
+AGY_SOFT_DENY = (
+    'jetski: no output produced - a tool required the "command" permission '
+    "that headless mode cannot prompt for, so it was auto-denied. Add an "
+    "allow-rule under permissions.allow in settings.json (e.g. "
+    "command(<target>))."
+)
+
+
+def test_antigravity_soft_deny_is_an_error(monkeypatch, tmp_path) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun(_lines(_agy_result("I could not run it.")), stderr=AGY_SOFT_DENY),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 1
+    assert result.text == "I could not run it."
+    assert result.error is not None
+    assert result.error.startswith("Antigravity exited with code 1. ")
+    assert "permissions.allow" in result.error
+
+
+def test_antigravity_deny_rule_is_an_error_without_command_text(
+    monkeypatch, tmp_path
+) -> None:
+    secret_command = "git push https://user:s3cr3t-T0KEN@example.com/repo.git"
+    deny = _agy_step(
+        step_index=2,
+        state="ERROR",
+        step_type="tool",
+        tool_name="run_command",
+        tool_info={
+            "name": "run_command",
+            "parameters": {"CommandLine": secret_command},
+            "error": {
+                "type": "TOOL_ERROR",
+                "message": f'permission check failed for command "{secret_command}": '
+                "Matches user-configured deny rule.",
+            },
+        },
+    )
+    _install(monkeypatch, _FakeRun(_lines(deny, _agy_result("Push refused."))))
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 1
+    assert result.error is not None
+    assert "Antigravity deny rule refused a command at step 2" in result.error
+    assert "s3cr3t-T0KEN" not in result.error
+    assert "git push" not in result.error
+
+
+def test_antigravity_sign_in_failure_is_an_error(monkeypatch, tmp_path) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun([], exit_code=1, stderr="Error: authentication required"),
+    )
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 1
+    assert result.error is not None
+    assert "agy is not authenticated" in result.error
+
+
+def test_antigravity_error_detail_is_redacted_and_capped(
+    monkeypatch, tmp_path
+) -> None:
+    _install(
+        monkeypatch,
+        _FakeRun(
+            [],
+            exit_code=3,
+            stderr="token=ghp_abcdefghijklmnopqrstuvwxyz0123456789 " + "x" * 500,
+        ),
+    )
+    result = _run("antigravity", tmp_path)
+    prefix = "Antigravity exited with code 3. "
+    assert result.error is not None
+    assert result.error.startswith(prefix)
+    assert len(result.error) - len(prefix) <= 200
+    assert "ghp_abcdefghij" not in result.error
+
+
+def test_antigravity_failed_resume_is_not_retried_fresh(monkeypatch, tmp_path) -> None:
+    fake = _install(
+        monkeypatch, _FakeRun([], exit_code=1, stderr="conversation not found")
+    )
+    result = _run("antigravity", tmp_path, session_id="agy-gone")
+    assert len(fake.calls) == 1
+    assert result.exit_code == 1
+    assert result.session_id == "agy-gone"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import inspect
 import io
+import json
 import threading
 from pathlib import Path
 
@@ -11,7 +12,9 @@ import pytest
 from llm_handoff import __main__ as main_module
 from llm_handoff import chat_answers
 from llm_handoff import chat_session
+from llm_handoff import chat_side_session
 from llm_handoff import config
+from llm_handoff.agent_types import _ProcessResult
 from llm_handoff.chat_input import ChatInput
 from llm_handoff.chat_answers import (
     CHAT_BLANK_MESSAGE,
@@ -193,13 +196,47 @@ def test_no_running_role_queues_nothing(harness: Harness, worker) -> None:
     assert harness.session_calls == []
 
 
-def test_agy_provider_returns_notice_and_queues_nothing(
-    harness: Harness, worker
+@pytest.mark.parametrize("provider", ["agy", "gemini", "", "Antigravity"])
+def test_unknown_provider_returns_notice_and_queues_nothing(
+    harness: Harness, worker, provider: str
 ) -> None:
-    harness.context_value = _context(provider="agy")
-    assert worker.submit("hello") == "Chat is not available for agy yet."
+    # `agy` is the CLI binary, not a provider name; only `antigravity` routes.
+    harness.context_value = _context(provider=provider)
+    assert worker.submit("hello") == f"Chat is not available for {provider} yet."
     assert worker.busy() is False
     assert harness.session_calls == []
+
+
+def test_antigravity_running_role_gets_a_side_session(
+    harness: Harness, worker
+) -> None:
+    agy_config = config.AgentConfig(provider="antigravity", agent_name="backend-agy")
+    harness.context_value = ChatContext(
+        role="backend",
+        provider="antigravity",
+        story_id="S-1",
+        log_path="logs/dispatch/backend.log",
+        agent_config=agy_config,
+    )
+    harness.results["one"] = _result("a", session_id="agy-conv-1")
+    harness.results["two"] = _result("b", session_id="agy-conv-2")
+    assert worker.submit("one") == "Chat message sent to the chat session."
+    assert worker.wait_idle(timeout=WAIT)
+    worker.submit("two")
+    assert worker.wait_idle(timeout=WAIT)
+    worker.submit("three")
+    assert worker.wait_idle(timeout=WAIT)
+    calls = [
+        (call["provider"], call["session_id"], call["agent_config"])
+        for call in harness.session_calls
+    ]
+    assert calls == [
+        ("antigravity", None, agy_config),
+        ("antigravity", "agy-conv-1", agy_config),
+        ("antigravity", "agy-conv-2", agy_config),
+    ]
+    assert all("resumed_role" not in call for call in harness.session_calls)
+    assert harness.lines == ["chat: a", "chat: b", "chat: answer to three"]
 
 
 def test_blank_text_queues_nothing(harness: Harness, worker) -> None:
@@ -669,11 +706,9 @@ def test_no_lookup_falls_back(harness: Harness) -> None:
 
 
 def test_unsupported_role_provider_falls_back(harness: Harness, worker) -> None:
-    harness.role_sessions["frontend"] = _role_session(
-        "frontend", provider="antigravity"
-    )
+    harness.role_sessions["frontend"] = _role_session("frontend", provider="gemini")
     assert worker.submit("@frontend hi") == (
-        "The frontend session runs on antigravity, which chat does not support "
+        "The frontend session runs on gemini, which chat does not support "
         f"yet, so the side session answers. {SIDE_SENT}"
     )
     assert worker.wait_idle(timeout=WAIT)
@@ -682,12 +717,67 @@ def test_unsupported_role_provider_falls_back(harness: Harness, worker) -> None:
     assert call["message"] == "@frontend hi"
 
 
+def test_antigravity_role_session_is_resumed_with_its_own_config(
+    harness: Harness, worker
+) -> None:
+    frontend_config = config.AgentConfig(
+        provider="antigravity", agent_name="frontend-agy", unsafe_bypass=True
+    )
+    harness.role_sessions["frontend"] = _role_session(
+        "frontend",
+        provider="antigravity",
+        story_id="S-0",
+        session_id="agy-frontend-1",
+        agent_config=frontend_config,
+    )
+    harness.results["why?"] = _result("because", session_id="agy-frontend-2")
+    assert worker.submit("@frontend why?") == (
+        "Chat message sent to the frontend session."
+    )
+    assert worker.wait_idle(timeout=WAIT)
+    worker.submit("@frontend and then?")
+    assert worker.wait_idle(timeout=WAIT)
+    first, second = harness.session_calls
+    assert first == {
+        "provider": "antigravity",
+        "message": "why?",
+        "repo_root": harness.repo_root,
+        "role": "frontend",
+        "story_id": "S-0",
+        "handoff_path": harness.handoff,
+        "log_path": "logs/dispatch/backend.log",
+        "session_id": "agy-frontend-1",
+        "agent_config": frontend_config,
+        "resumed_role": True,
+    }
+    assert second["session_id"] == "agy-frontend-2"
+    assert harness.lines[0] == "chat frontend: because"
+
+
+def test_running_antigravity_target_falls_back_to_side_session(
+    harness: Harness, worker
+) -> None:
+    harness.context_value = _context(provider="antigravity", role="frontend")
+    harness.role_sessions["frontend"] = _role_session(
+        "frontend", provider="antigravity", session_id="agy-frontend-1"
+    )
+    assert worker.submit("@frontend status?") == (
+        f"The frontend role is running, so the side session answers. {SIDE_SENT}"
+    )
+    assert worker.wait_idle(timeout=WAIT)
+    [call] = harness.session_calls
+    assert call["provider"] == "antigravity"
+    assert call["message"] == "@frontend status?"
+    assert call["session_id"] is None
+    assert "resumed_role" not in call
+
+
 def test_fallback_on_unsupported_running_provider_queues_nothing(
     harness: Harness, worker
 ) -> None:
-    harness.context_value = _context(provider="antigravity")
-    assert worker.submit("@backend hi") == "Chat is not available for antigravity yet."
-    assert worker.submit("@auditor hi") == "Chat is not available for antigravity yet."
+    harness.context_value = _context(provider="gemini")
+    assert worker.submit("@backend hi") == "Chat is not available for gemini yet."
+    assert worker.submit("@auditor hi") == "Chat is not available for gemini yet."
     assert worker.busy() is False
     assert harness.session_calls == []
 
@@ -695,7 +785,7 @@ def test_fallback_on_unsupported_running_provider_queues_nothing(
 def test_role_message_runs_while_running_provider_is_unsupported(
     harness: Harness, worker
 ) -> None:
-    harness.context_value = _context(provider="antigravity")
+    harness.context_value = _context(provider="gemini")
     harness.role_sessions["auditor"] = _role_session()
     assert worker.submit("@auditor hi") == AUDITOR_SENT
     assert worker.wait_idle(timeout=WAIT)
@@ -888,6 +978,99 @@ def test_role_record_os_error_uses_role_prefix(harness: Harness, worker) -> None
     assert str(harness.changes) in harness.lines[1]
     assert "disk full" in harness.lines[1]
     assert len(harness.lines) == 2
+
+
+# --- antigravity end to end through the real launcher (CHAT-5) ----------------
+
+
+def _agy_line(name: str, **fields: object) -> str:
+    return json.dumps({"event": name, name: fields}) + "\n"
+
+
+def _agy_edit(step: int, state: str, target: str, error: str | None = None) -> str:
+    tool_info: dict[str, object] = {
+        "name": "write_to_file",
+        "parameters": {"TargetFile": target},
+    }
+    if error is not None:
+        tool_info["error"] = {"type": "TOOL_ERROR", "message": error}
+    return _agy_line(
+        "step_update",
+        conversation_id="agy-conv-1",
+        step_index=step,
+        state=state,
+        step_type="tool",
+        tool_name="write_to_file",
+        tool_info=tool_info,
+    )
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_antigravity_answer_records_edits_before_takeover(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, fails: bool
+) -> None:
+    launches: list[list[str]] = []
+    edited = harness.repo_root / "src" / "a.py"
+
+    def fake_agy(command, *, cwd, on_stdout=None, stop_on_chat_takeover=True, **_kw):
+        launches.append(list(command))
+        assert stop_on_chat_takeover is False
+        edited.parent.mkdir(parents=True, exist_ok=True)
+        edited.write_text("chat edit\n", encoding="utf-8")
+        harness.handoff.write_text("chat rewrite\n", encoding="utf-8")
+        stream = (
+            _agy_edit(1, "ACTIVE", str(edited))
+            + _agy_edit(1, "DONE", str(edited))
+            + _agy_edit(2, "ERROR", "refused.py", error="user denied permission")
+            + _agy_edit(3, "DONE", str(harness.handoff))
+        )
+        if not fails:
+            stream += _agy_line(
+                "result",
+                conversation_id="agy-conv-1",
+                status="SUCCESS",
+                response="Edited src/a.py.",
+            )
+        if on_stdout is not None:
+            for start in range(0, len(stream), 11):
+                on_stdout(stream[start : start + 11])
+        return _ProcessResult(
+            stdout=stream, stderr="agy: crashed" if fails else "", exit_code=2 if fails else 0
+        )
+
+    monkeypatch.setattr(chat_side_session, "_run_command_streaming", fake_agy)
+    harness.context_value = _context(provider="antigravity")
+    sha_before = handoff_content_sha(harness.handoff)
+    worker = ChatAnswerWorker(
+        repo_root=harness.repo_root,
+        handoff_path=harness.handoff,
+        changes_path=harness.changes,
+        context=harness.context,
+        write_line=harness.write_line,
+        record_changes=lambda path, **kwargs: (
+            harness.events.append(("record", kwargs["result"].edited_paths))
+        ),
+        request_takeover=harness.request_takeover,
+    )
+    try:
+        worker.submit("fix a.py")
+        assert worker.wait_idle(timeout=WAIT)
+    finally:
+        worker.stop()
+
+    [command] = launches
+    assert command[0] == config.ANTIGRAVITY_BINARY
+    assert command[command.index("--agent") + 1] == "backend"
+    expected_line = (
+        "chat error: Antigravity exited with code 2. agy: crashed"
+        if fails
+        else "chat: Edited src/a.py."
+    )
+    assert harness.events == [
+        ("write", expected_line),
+        ("record", ("src/a.py", "HANDOFF.md")),
+        ("takeover", sha_before),
+    ]
 
 
 # --- console attachment supplies the role-session lookup (CHAT-34) ------------

@@ -1,8 +1,8 @@
 """Start or resume one chat side session for an operator message.
 
 ``run_chat_session`` launches a side session on the active role's provider
-(``claude`` or ``codex``) in the repository root, with that role's normal
-permission arguments, ``unsafe_bypass`` included. The session gets the
+(``claude``, ``codex``, or ``antigravity``) in the repository root, with that
+role's normal permission arguments, ``unsafe_bypass`` included. The session gets the
 role's tools and permissions: this module adds no narrower tool allowlist,
 no ``--disallowedTools`` of its own, no read-only sandbox, and no MCP or
 hook restriction beyond what the role's own permission arguments carry. It
@@ -18,10 +18,32 @@ The result names the files the session's own edit events reported:
   and a ``status`` other than ``"failed"`` adds each ``changes[].path``. This
   event shape is taken from the Codex JSON event stream as documented; it has
   not been checked against a live Codex CLI.
+- Antigravity (``agy``): a ``step_update`` event with ``step_type: "tool"``
+  for ``write_to_file``, ``replace_file_content``, or
+  ``multi_replace_file_content`` adds ``tool_info.parameters.TargetFile`` once
+  that step reaches ``state: "DONE"`` with no ``tool_info.error``. The path
+  may arrive on an earlier event of the same ``step_index``. A step that
+  ends in ``ERROR`` (a refused or failed edit), or never reaches ``DONE``,
+  does not count. Basis: the ``step_update`` envelope, ``step_index``,
+  ``state`` values, and ``tool_info.parameters`` keyed by the tool's argument
+  names come from a live agy 1.4.2 ``run_command`` capture (see
+  ``tests/test_antigravity_provider.py``); the three edit tool names are the
+  ones the shipped agy agent files grant; and ``TargetFile`` is the argument
+  name the agy binary's schema for those tools declares (``json:"TargetFile"``,
+  "Must be an absolute path"). A live edit step has not been captured.
 
 Codex launches pass no ``--output-schema`` or ``--output-last-message`` and
 this module never reads or writes anything under ``logs/dispatch/codex*/``,
 so a chat never touches a role's saved Codex session.
+
+Antigravity launches use the role dispatch command contract
+(``_build_antigravity_command``): the configured binary, model, print
+timeout, environment, and agent name (the role name when none is
+configured), ``--conversation`` only to resume, and ``--mode accept-edits`` or
+the ``unsafe_bypass`` argument. The answer text, conversation id, and the
+result-status, missing-result, deny-rule, soft-deny, and sign-in failure
+handling come from the role dispatch stream monitor. A chat launch never
+retries a failed resume in a fresh conversation.
 
 With ``resumed_role=True`` the session resumes a finished role's own session
 (``@role`` chat) with a prompt that tells it which role it is and that the
@@ -39,7 +61,12 @@ import json
 from pathlib import Path
 
 from llm_handoff import config
-from llm_handoff.agent_process import _run_command_streaming
+from llm_handoff.agent_process import _run_command_streaming, build_agent_env
+from llm_handoff.agent_providers.antigravity import (
+    _AntigravityStreamJsonMonitor,
+    _build_antigravity_command,
+    _unwrap_stream_event,
+)
 from llm_handoff.agent_providers.claude import (
     _ClaudeStreamJsonMonitor,
     _build_claude_env,
@@ -54,7 +81,16 @@ from llm_handoff.agent_providers.codex import (
 from llm_handoff.redaction import redact_stderr_summary
 
 
-SUPPORTED_CHAT_PROVIDERS: tuple[str, ...] = ("claude", "codex")
+SUPPORTED_CHAT_PROVIDERS: tuple[str, ...] = ("claude", "codex", "antigravity")
+
+# agy edit tools (the write tools the shipped agy agent files grant) and the
+# tool argument that names the edited file.
+ANTIGRAVITY_EDIT_TOOLS: frozenset[str] = frozenset(
+    {"write_to_file", "replace_file_content", "multi_replace_file_content"}
+)
+ANTIGRAVITY_EDIT_PATH_KEY = "TargetFile"
+_ANTIGRAVITY_DONE_STATE = "DONE"
+_ANTIGRAVITY_ERROR_STATE = "ERROR"
 
 # Claude tool name -> the input key that names the edited file.
 CLAUDE_EDIT_TOOL_PATH_KEYS: dict[str, str] = {
@@ -185,6 +221,33 @@ def build_codex_chat_command(
     ]
 
 
+def build_antigravity_chat_command(
+    prompt: str,
+    *,
+    role: str,
+    agent_config: config.AgentConfig,
+    timeout_ms: int,
+    session_id: str | None = None,
+) -> list[str]:
+    """Return the agy side-session command with the role's agent and grants.
+
+    The command is the role dispatch command with the chat prompt: the
+    configured agent name (else the role), model, and print timeout,
+    ``--conversation`` only when resuming, and the role's permission
+    arguments.
+    """
+
+    return _build_antigravity_command(
+        binary=agent_config.binary,
+        prompt=prompt,
+        agent=agent_config.agent_name or str(role),
+        timeout_ms=timeout_ms,
+        model=agent_config.model,
+        resume_session_id=session_id,
+        unsafe_bypass=agent_config.unsafe_bypass,
+    )
+
+
 def run_chat_session(
     provider: str,
     message: str,
@@ -205,14 +268,14 @@ def run_chat_session(
     resumed from ``session_id`` with the resumed-role prompt.
 
     Raises ``ValueError`` before anything launches for a provider other than
-    ``claude`` or ``codex``, a blank ``message``, a blank ``session_id``, or
-    ``resumed_role`` without a ``session_id``.
+    ``claude``, ``codex``, or ``antigravity``, a blank ``message``, a blank
+    ``session_id``, or ``resumed_role`` without a ``session_id``.
     """
 
     if provider not in SUPPORTED_CHAT_PROVIDERS:
         raise ValueError(
             f"Chat is not supported for provider `{provider}`; "
-            "chat supports only claude and codex."
+            "chat supports only claude, codex, and antigravity."
         )
     if not isinstance(message, str) or not message.strip():
         raise ValueError("A chat session needs a non-blank message.")
@@ -239,6 +302,15 @@ def run_chat_session(
         return _run_claude_chat(
             prompt,
             cwd=cwd,
+            agent_config=resolved_config,
+            session_id=resolved_session_id,
+            timeout_ms=resolved_timeout_ms,
+        )
+    if provider == "antigravity":
+        return _run_antigravity_chat(
+            prompt,
+            cwd=cwd,
+            role=role,
             agent_config=resolved_config,
             session_id=resolved_session_id,
             timeout_ms=resolved_timeout_ms,
@@ -326,6 +398,97 @@ class _CodexEditTracker:
                 path = change.get("path")
                 if isinstance(path, str) and path.strip():
                     self.paths.append(path)
+
+
+@dataclass
+class _AntigravityEditTracker:
+    """Collect files named by agy edit tool steps that reached ``DONE``.
+
+    Stdout is buffered by line, so an event split across chunks is parsed
+    once whole. A step's path is remembered by ``step_index`` until the step
+    ends; an ``ERROR`` step drops it.
+    """
+
+    paths: list[str] = field(default_factory=list)
+    received_stdout: bool = False
+    _line_buffer: str = ""
+    _pending_paths_by_step: dict[int, str] = field(default_factory=dict)
+    _finished_steps: set[int] = field(default_factory=set)
+
+    def consume_stdout(self, chunk: str) -> None:
+        if not chunk:
+            return
+        self.received_stdout = True
+        self._line_buffer += chunk
+        while "\n" in self._line_buffer:
+            line, self._line_buffer = self._line_buffer.split("\n", 1)
+            self._consume_line(line)
+
+    def finalize(self) -> None:
+        if self._line_buffer:
+            line, self._line_buffer = self._line_buffer, ""
+            self._consume_line(line)
+
+    def _consume_line(self, raw_line: str) -> None:
+        line = raw_line.strip()
+        if not line:
+            return
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(event, dict):
+            return
+        event_type, payload = _unwrap_stream_event(event)
+        if event_type != "step_update" or payload.get("step_type") != "tool":
+            return
+        tool_info = payload.get("tool_info")
+        if not isinstance(tool_info, dict):
+            tool_info = {}
+        tool_name = payload.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name:
+            tool_name = tool_info.get("name")
+        if tool_name not in ANTIGRAVITY_EDIT_TOOLS:
+            return
+        step_index = payload.get("step_index")
+        step: int | None = (
+            step_index
+            if isinstance(step_index, int) and not isinstance(step_index, bool)
+            else None
+        )
+        if step is not None and step in self._finished_steps:
+            return
+        path = _antigravity_edit_path(tool_info)
+        if step is not None and path is not None:
+            self._pending_paths_by_step[step] = path
+        state = payload.get("state")
+        if state == _ANTIGRAVITY_ERROR_STATE:
+            self._finish(step)
+            return
+        if state != _ANTIGRAVITY_DONE_STATE:
+            return
+        if step is not None:
+            path = self._pending_paths_by_step.get(step, path)
+        self._finish(step)
+        if tool_info.get("error") or path is None:
+            return
+        self.paths.append(path)
+
+    def _finish(self, step: int | None) -> None:
+        if step is None:
+            return
+        self._pending_paths_by_step.pop(step, None)
+        self._finished_steps.add(step)
+
+
+def _antigravity_edit_path(tool_info: dict[str, object]) -> str | None:
+    parameters = tool_info.get("parameters")
+    if not isinstance(parameters, dict):
+        return None
+    path = parameters.get(ANTIGRAVITY_EDIT_PATH_KEY)
+    if isinstance(path, str) and path.strip():
+        return path
+    return None
 
 
 def _json_events(chunk: str) -> list[dict[str, object]]:
@@ -428,6 +591,63 @@ def _run_codex_chat(
         exit_code=result.exit_code,
         error=_chat_error(
             "Codex", exit_code=result.exit_code, text=text, stderr=result.stderr
+        ),
+        edited_paths=normalize_edited_paths(tracker.paths, repo_root=cwd),
+    )
+
+
+def _run_antigravity_chat(
+    prompt: str,
+    *,
+    cwd: Path,
+    role: str,
+    agent_config: config.AgentConfig,
+    session_id: str | None,
+    timeout_ms: int,
+) -> ChatSessionResult:
+    monitor = _AntigravityStreamJsonMonitor(agent_name="Antigravity chat", log=None)
+    tracker = _AntigravityEditTracker()
+
+    def on_stdout(chunk: str) -> None:
+        monitor.consume_stdout(chunk)
+        tracker.consume_stdout(chunk)
+
+    result = _run_command_streaming(
+        build_antigravity_chat_command(
+            prompt,
+            role=role,
+            agent_config=agent_config,
+            timeout_ms=timeout_ms,
+            session_id=session_id,
+        ),
+        cwd=cwd,
+        timeout_ms=timeout_ms,
+        idle_timeout_ms=agent_config.idle_timeout_ms,
+        env=build_agent_env(agent_config),
+        on_stdout=on_stdout,
+        on_stderr=monitor.consume_stderr,
+        # A chat answer is never stopped by a takeover its predecessor asked for.
+        stop_on_chat_takeover=False,
+    )
+    if not monitor.received_stdout and result.stdout:
+        # A runner that did not stream live callbacks still returns stdout.
+        monitor.consume_stdout(result.stdout)
+    if not tracker.received_stdout and result.stdout:
+        tracker.consume_stdout(result.stdout)
+    tracker.finalize()
+    # finalize maps result-status, missing-result, deny-rule, soft-deny, and
+    # sign-in failures onto the exit code and stderr, as for a role dispatch.
+    finalized = monitor.finalize(result)
+    text = monitor.response_text().strip()
+    return ChatSessionResult(
+        text=text,
+        session_id=finalized.session_id or session_id,
+        exit_code=finalized.exit_code,
+        error=_chat_error(
+            "Antigravity",
+            exit_code=finalized.exit_code,
+            text=text,
+            stderr=finalized.stderr,
         ),
         edited_paths=normalize_edited_paths(tracker.paths, repo_root=cwd),
     )

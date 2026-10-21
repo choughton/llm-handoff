@@ -6,6 +6,20 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Chat runs on agy (CHAT-5). `antigravity` joins the chat providers, so a
+  plain message while an `agy` role runs starts a side conversation that
+  later messages resume, and `@role` resumes a finished `agy` role's
+  conversation with that role's configuration. The launch reuses the `agy`
+  role command (binary, model, print timeout, environment, agent name or
+  the role, `--conversation` to resume, `--mode accept-edits` or the
+  `unsafe_bypass` argument) and the role dispatch stream parser, so result
+  status, missing-result, deny-rule, soft-deny, and sign-in failures become
+  chat errors. Chat edits are taken from `write_to_file`,
+  `replace_file_content`, and `multi_replace_file_content` tool steps that
+  reach `DONE` without an error, using `tool_info.parameters.TargetFile`;
+  that field name comes from the `agy` binary's tool schema and has not been
+  seen in a live edit step. New `response_text()` on the Antigravity stream
+  monitor. Tested with mocked streams only.
 - A role's own handback written while a chat answer runs is no longer taken
   for a chat rewrite (CHAT-35). The chat worker requests a takeover whenever
   `HANDOFF.md` changed during an answer, so a backend that wrote its
