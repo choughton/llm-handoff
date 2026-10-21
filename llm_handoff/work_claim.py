@@ -1638,6 +1638,7 @@ def verify_work_claim(
     env_passthrough: tuple[str, ...] = (),
     verification_allowed_prefixes: tuple[str, ...] = (),
     log: Callable[[str, str], None] | None = None,
+    chat_owned_paths: tuple[str, ...] = (),
 ) -> WorkClaimResult:
     """Check an implementer's ``ready_for_review`` claim against the packet.
 
@@ -1660,9 +1661,20 @@ def verify_work_claim(
     rejected command fails ``verification_not_allowed`` and nothing runs.
     ``log``, when given, receives ``(level, message)`` with the exact command
     text before each scanner and Verification command run.
+    ``chat_owned_paths`` are files the dispatcher committed because a chat
+    side session changed them at the operator's request; ``diff_scope`` and
+    ``worktree`` accept them whatever the Work Packet or pre-dispatch state
+    says.
     """
 
     handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
+    chat_paths = tuple(
+        dict.fromkeys(
+            path
+            for path in (normalize_repo_path(item) for item in chat_owned_paths)
+            if path and path != handoff_rel_path
+        )
+    )
     checks: list[WorkClaimCheck] = []
     errors: list[str] = []
     frontmatter = _parse_frontmatter_or_none(claim_content)
@@ -1791,6 +1803,7 @@ def verify_work_claim(
             packet,
             changed_files,
             handoff_rel_path=handoff_rel_path,
+            chat_owned_paths=chat_paths,
         )
         checks.append(diff_check)
         errors.extend(diff_errors)
@@ -1810,6 +1823,7 @@ def verify_work_claim(
         handoff_rel_path=handoff_rel_path,
         packet=packet,
         dispatcher_commit_mode=dispatcher_commit_mode,
+        chat_owned_paths=chat_paths,
     )
     checks.append(worktree_check)
     errors.extend(worktree_errors)
@@ -2138,15 +2152,22 @@ def _diff_scope_check(
     changed_files: tuple[str, ...],
     *,
     handoff_rel_path: str,
+    chat_owned_paths: tuple[str, ...] = (),
 ) -> tuple[WorkClaimCheck, list[str]]:
     candidates = tuple(path for path in changed_files if path != handoff_rel_path)
+    chat_set = set(chat_owned_paths)
+    chat_changed = tuple(path for path in candidates if path in chat_set)
     out_of_bounds_hits = tuple(
-        path for path in candidates if path_is_out_of_bounds(path, packet)
+        path
+        for path in candidates
+        if path not in chat_set and path_is_out_of_bounds(path, packet)
     )
     unlisted = tuple(
         path
         for path in candidates
-        if path not in out_of_bounds_hits and not path_is_in_scope(path, packet)
+        if path not in chat_set
+        and path not in out_of_bounds_hits
+        and not path_is_in_scope(path, packet)
     )
     errors: list[str] = []
     if out_of_bounds_hits:
@@ -2162,12 +2183,20 @@ def _diff_scope_check(
     if errors:
         detail = " ".join(error.split(": ", 1)[1] for error in errors)
         return WorkClaimCheck("diff_scope", "FAIL", detail), errors
+    scoped = tuple(path for path in candidates if path not in chat_set)
     if not candidates:
         detail = "no files other than the handoff changed since dispatch."
-    else:
+    elif not chat_changed:
         detail = (
             f"{len(candidates)} changed file(s) stayed inside Files in scope: "
             f"{', '.join(candidates)}."
+        )
+    else:
+        detail = (
+            f"{len(scoped)} changed file(s) stayed inside Files in scope"
+            + (f": {', '.join(scoped)}." if scoped else ".")
+            + f" {len(chat_changed)} chat change(s) (operator-influenced) "
+            f"accepted: {', '.join(chat_changed)}."
         )
     return WorkClaimCheck("diff_scope", "PASS", detail), []
 
@@ -2180,6 +2209,7 @@ def _worktree_check(
     handoff_rel_path: str,
     packet: WorkPacket | None = None,
     dispatcher_commit_mode: bool = False,
+    chat_owned_paths: tuple[str, ...] = (),
 ) -> tuple[WorkClaimCheck, list[str]]:
     if dirty_now is None:
         detail = "git status failed; uncommitted changes could not be listed."
@@ -2187,6 +2217,7 @@ def _worktree_check(
             WorkClaimCheck("worktree", "FAIL", detail),
             [f"{GIT_STATE_UNAVAILABLE_PREFIX}: {detail}"],
         )
+    chat_set = set(chat_owned_paths)
     new_dirty = tuple(
         path
         for path in dirty_now
@@ -2194,10 +2225,13 @@ def _worktree_check(
     )
     # Committing a file the Work Packet does not allow cannot fix the claim, and
     # the dispatcher never commits one, so those files are a scope problem.
+    # Chat changes count as in scope: the operator asked for them.
     not_allowed = tuple(
         path
         for path in new_dirty
-        if packet is not None and not path_is_in_scope(path, packet)
+        if packet is not None
+        and path not in chat_set
+        and not path_is_in_scope(path, packet)
     )
     uncommitted = tuple(path for path in new_dirty if path not in not_allowed)
     # A file that was already dirty before dispatch is only acceptable if its
@@ -2208,6 +2242,7 @@ def _worktree_check(
         path
         for path in dirty_now
         if path != handoff_rel_path
+        and path not in chat_set
         and path in before
         and working_tree_fingerprint(repo_root, path) != before[path]
     )
@@ -2256,14 +2291,13 @@ def _worktree_check(
         errors.append(f"{UNCOMMITTED_CHANGES_PREFIX}: {detail}")
     if errors:
         return WorkClaimCheck("worktree", "FAIL", " ".join(details)), errors
-    return (
-        WorkClaimCheck(
-            "worktree",
-            "PASS",
-            f"no new uncommitted changes outside {handoff_rel_path}.",
-        ),
-        [],
-    )
+    detail = f"no new uncommitted changes outside {handoff_rel_path}."
+    if chat_owned_paths:
+        detail += (
+            " Chat changes (operator-influenced) accepted: "
+            f"{', '.join(chat_owned_paths)}."
+        )
+    return WorkClaimCheck("worktree", "PASS", detail), []
 
 
 def _verification_check(

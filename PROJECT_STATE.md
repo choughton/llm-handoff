@@ -13,10 +13,12 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-21
-  (chat change record) in flight and CHAT-22, CHAT-23, CHAT-24, CHAT-19,
-  CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-17 (chat side-session
-  launcher) was approved at `d059a25` and merged in PR #224. CHAT-18 was
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-22
+  (chat changes ride the implementer commit) in flight and CHAT-23,
+  CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-21 (chat
+  change record) was approved at `210267b` and merged in PR #225. CHAT-17
+  (chat side-session launcher) was approved at `d059a25` and merged in PR
+  #224. CHAT-18 was
   split into CHAT-21 through CHAT-24 on 2026-10-20. TRANSITION-RULES is unblocked now that
   TPM-ROLE is closed and is next in line by fit. CHAT-15 (the loop records
   each dispatch in the dispatch record) was merged in PR #203. CHAT-3
@@ -1081,8 +1083,8 @@ bounces until the three-fix circuit breaker escalates.
 
 Fit: active again after TPM-ROLE closed, by the operator direction of
 2026-10-20. CHAT-17 was approved at `d059a25` and merged in PR #224;
-CHAT-21 is in flight; CHAT-22, CHAT-23, CHAT-24, CHAT-19, CHAT-20, CHAT-4,
-and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+CHAT-21 was approved at `210267b` and merged in PR #225; CHAT-22 is in
+flight; CHAT-23, CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into
 CHAT-21 through CHAT-24 because it exceeded one packet.
 
@@ -1264,7 +1266,13 @@ dependencies; Windows (`msvcrt`) and POSIX.
   Files in scope, the work-claim gate's diff-scope and worktree checks
   accept them, and the commit body and the handoff's `## Operator
   Influence` section carry the HARD-3 marker (message time and SHA-256), so
-  the pull request body shows it.
+  the pull request body shows it. Decided by the planner on 2026-10-20:
+  chat-owned paths bypass the Files out of bounds and pre-dispatch-dirty
+  rules as well as Files in scope (the handoff path is never staged); the
+  latest contributing influence is the single marker written to the claim
+  handoff and carried to the audit handoff and the pull request, with the
+  `@auditor` operator message keeping priority; and the record is cleared
+  after the commit (a clear failure only warns).
 - CHAT-23 (was part of CHAT-18): The dispatcher commits chat changes after a
   non-implementer role. After any non-implementer role's cycle, before the
   next route, the dispatcher commits the `chat_owned_paths` itself with the
