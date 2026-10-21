@@ -4669,8 +4669,10 @@ def _commit_chat_changes_after_role(
     ride the next implementer commit. The same holds while the story stands
     approved (``verified_pass`` in the handoff the role started from or the
     one it wrote): a commit then would land after the audit and be published
-    under an approval that never reviewed it. Returns None when nothing was
-    attempted.
+    under an approval that never reviewed it. After a commit, a handoff whose
+    ``scope_sha`` names the commit it was made on is moved to the chat
+    commit. When no recorded change is left to commit, the record is
+    cleared. Returns None when nothing was attempted.
     """
 
     if config.commit_mode != "dispatcher" or route in {"backend", "frontend"}:
@@ -4701,6 +4703,7 @@ def _commit_chat_changes_after_role(
         )
         return None
     story_id = _handoff_story_id(handoff_content) if handoff_content else None
+    head_before = _git_head(config.repo_root)
     result = commit_chat_changes(
         repo_root=config.repo_root,
         handoff_path=config.handoff_path,
@@ -4722,7 +4725,23 @@ def _commit_chat_changes_after_role(
             f"Dispatcher commit of chat changes after the {route} role "
             f"skipped: {result.skipped_reason}.",
         )
+        if result.nothing_to_commit:
+            # No recorded path is still dirty with its recorded content, so
+            # the record has nothing left to commit. Keeping it would let a
+            # later role that restores a recorded fingerprint have its own
+            # edit committed as a chat change, past the scope rules.
+            try:
+                clear_chat_changes(record_path)
+            except OSError as exc:
+                _log(
+                    log,
+                    "WARN",
+                    f"Could not clear the chat change record {record_path}: {exc}.",
+                )
     else:
+        _advance_scope_sha_after_chat_commit(
+            config, head_before=head_before, sha=result.sha, log=log
+        )
         _log(
             log,
             "AGENT",
@@ -4739,6 +4758,53 @@ def _commit_chat_changes_after_role(
                 f"Could not clear the chat change record {record_path}: {exc}.",
             )
     return result
+
+
+def _advance_scope_sha_after_chat_commit(
+    config: DispatchConfig,
+    *,
+    head_before: str | None,
+    sha: str,
+    log: LogFn,
+) -> None:
+    """Point the handoff's ``scope_sha`` at the chat commit ``sha``.
+
+    Only when the handoff on disk names the commit the chat commit was made
+    on (``head_before``) as its ``scope_sha``. The audit fan-out reviews up
+    to ``scope_sha`` and publishing requires HEAD to equal it, so a stale
+    value would leave the chat commit out of the review and block the
+    approval. Any other ``scope_sha``, or none, is left as written.
+    """
+
+    if not head_before:
+        return
+    content = _read_required_text(config.handoff_full_path)
+    if content is None:
+        return
+    frontmatter = _parse_frontmatter_or_none(content)
+    if frontmatter is None or not isinstance(frontmatter.scope_sha, str):
+        return
+    scope_sha = frontmatter.scope_sha.strip().lower()
+    if len(scope_sha) < 7 or not head_before.lower().startswith(scope_sha):
+        return
+    try:
+        config.handoff_full_path.write_text(
+            stamp_commit_sha(content, sha), encoding="utf-8"
+        )
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not record the chat commit {sha[:12]} as scope_sha in "
+            f"{config.handoff_full_path}: {exc}.",
+        )
+        return
+    _log(
+        log,
+        "INFO",
+        f"Recorded the chat commit {sha[:12]} as scope_sha (was "
+        f"{scope_sha[:12]}), so the story's audit reviews it.",
+    )
 
 
 def _chat_marker_after_role(

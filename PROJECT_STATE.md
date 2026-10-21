@@ -1313,7 +1313,13 @@ dependencies; Windows (`msvcrt`) and POSIX.
   marker for its story into the stamped handback, so the story's later
   audit fan-out carries it; and both dispatcher commits stage and commit
   with `git --literal-pathspecs`, so a recorded name is never read as a
-  glob.
+  glob. PR #228 review round 1 fixes: when the handoff's `scope_sha` names
+  the commit the chat commit was made on, the dispatcher moves it (and the
+  evidence SHA) to the chat commit, so the story's audit reviews the chat
+  changes and publishing sees HEAD equal to `scope_sha`; and when no
+  recorded path is still dirty with its recorded content, the record is
+  cleared instead of retried, so a later role edit that restores a recorded
+  fingerprint is never committed as a chat change.
 - CHAT-24 (was part of CHAT-18): Chat changes after an approved audit go
   back to the audit fan-out. Chat changes committed after an approved audit
   send the story back to the audit fan-out before it publishes, so nothing

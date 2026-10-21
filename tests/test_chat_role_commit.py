@@ -510,6 +510,88 @@ def test_helper_warns_when_the_clear_fails(
     assert record.exists()
 
 
+def test_helper_clears_a_record_with_nothing_left_to_commit(
+    tmp_path: Path,
+) -> None:
+    # The role rewrote the only recorded path; restoring the recorded content
+    # later must not get a role edit committed as a chat change.
+    repo, base, record = _helper_setup(tmp_path)
+    _write(repo / "docs" / "notes.md", "role rewrote it\n")
+    messages: list[tuple[str, str]] = []
+
+    result = orchestrator._commit_chat_changes_after_role(
+        config=_config(repo),
+        route="planner",
+        handoff_content=_blocked_handoff(),
+        log=_collecting_log(messages),
+    )
+
+    assert result is not None and result.sha is None
+    assert result.nothing_to_commit is True
+    assert _git(repo, "rev-parse", "HEAD") == base
+    assert not record.exists()
+    assert [level for level, _message in messages] == ["INFO"]
+
+    _write(repo / "docs" / "notes.md", "chat note\n")
+    again = orchestrator._commit_chat_changes_after_role(
+        config=_config(repo),
+        route="planner",
+        handoff_content=_blocked_handoff(),
+        log=_collecting_log(messages),
+    )
+
+    assert again is None
+    assert _git(repo, "rev-parse", "HEAD") == base
+
+
+def test_helper_moves_a_stale_scope_sha_to_the_chat_commit(
+    tmp_path: Path,
+) -> None:
+    # A validator keeps an implementer's ready_for_review claim routed to the
+    # auditor; the audit must review the chat commit made on top of it.
+    repo, base, record = _helper_setup(tmp_path)
+    claim = _backend_claim().replace(
+        "scope_sha:\n", f"scope_sha: {base}\n"
+    ).replace("pending-dispatcher-commit", base)
+    _write(repo / HANDOFF, claim)
+    messages: list[tuple[str, str]] = []
+
+    result = orchestrator._commit_chat_changes_after_role(
+        config=_config(repo),
+        route="validator",
+        handoff_content=claim,
+        log=_collecting_log(messages),
+    )
+
+    assert result is not None and result.sha is not None
+    handoff = (repo / HANDOFF).read_text(encoding="utf-8")
+    assert f"scope_sha: {result.sha}\n" in handoff
+    assert f"- **Commit SHA verified:** {result.sha}" in handoff
+    assert base not in handoff
+    assert any(
+        level == "INFO" and "as scope_sha" in message for level, message in messages
+    )
+
+
+@pytest.mark.parametrize("scope_sha", ["", "0123456789abcdef0123456789abcdef01234567"])
+def test_helper_leaves_an_empty_or_unrelated_scope_sha(
+    tmp_path: Path, scope_sha: str
+) -> None:
+    repo, _base, _record_path = _helper_setup(tmp_path)
+    claim = _backend_claim().replace("scope_sha:\n", f"scope_sha: {scope_sha}\n")
+    _write(repo / HANDOFF, claim)
+
+    result = orchestrator._commit_chat_changes_after_role(
+        config=_config(repo),
+        route="validator",
+        handoff_content=claim,
+        log=lambda *_args: None,
+    )
+
+    assert result is not None and result.sha is not None
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == claim
+
+
 @pytest.mark.parametrize("approved_on", ["started_from", "written"])
 def test_helper_commits_nothing_while_the_story_stands_approved(
     tmp_path: Path, approved_on: str

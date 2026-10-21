@@ -25,7 +25,11 @@ This project follows a simple pre-release changelog until the first public tag.
   publish. The marker is written as the `## Operator Influence` section of
   a handoff that stays on the story, and an implementer commit without its
   own chat changes writes the held marker into its handback, so the story's
-  later audit fan-out carries it. Both dispatcher commits now pass
+  later audit fan-out carries it. When the handoff's `scope_sha` names the
+  commit the chat commit was made on, it is moved to the chat commit, so the
+  story's audit reviews it and publishing sees HEAD equal to `scope_sha`.
+  When no recorded path is still dirty with its recorded content, the record
+  is cleared instead of being retried. Both dispatcher commits now pass
   `--literal-pathspecs` to `git add` and `git commit`, so file names are
   never matched as globs. Behavior without chat changes is unchanged.
 - Chat-committed paths survive a resumed handback (CHAT-25). `InFlightRecord`
