@@ -177,7 +177,7 @@ of work and where evidence is recorded.
 | | File mode (default) | Linear mode |
 | --- | --- | --- |
 | Backlog | Epics and stories the planner writes into `HANDOFF.md` frontmatter (`epic_id`, `story_id`, `remaining_stories`), seeded by what you describe in the handoff body and `PROJECT_STATE.md`. | A pool of Linear issues: one team, filtered by one project or one label, in a configured eligible state. |
-| Who picks the next story | The planner, from its own plan. | The planner, by Linear priority, then manual order, then creation date. |
+| Who picks the next story | The tpm when `agents.tpm` is configured, otherwise the planner, from the epic's plan. | The tpm when `agents.tpm` is configured, otherwise the planner, in both cases by Linear priority, then manual order, then creation date. |
 | Durable record | Git commits plus the ledger in `PROJECT_STATE.md`. | Git commits plus YAML evidence comments on the issue and issue-state changes. |
 | Who talks to Linear | Nobody. | The agents, through their own CLI's Linear MCP connector. The dispatcher never calls Linear and holds no Linear credential. |
 | Extra requirements | None. | `enforce_work_packet: true` (the default), a Linear MCP server configured in each provider CLI you use, and Linear-mode prompt text in `AGENTS.md` and `HANDBOOK.md`. |
@@ -368,12 +368,22 @@ agent updates HANDOFF.md
 validator accepts, pauses, or escalates
 ```
 
+With `agents.tpm` configured, the role that writes each story's Work Packet
+is the tpm; the planner still opens each epic.
+
 The roles are generic: `planner`, `backend`, `frontend`, `auditor`,
-`validator`, `finalizer`, and `user`. Which CLI runs each role is a config
-mapping, not part of the protocol. A typical story goes planner (writes the
-Work Packet) to backend or frontend (implements, claims `ready_for_review`)
-to auditor (passes or fails) and back to planner for the next story; the
-finalizer runs only when the auditor closes an epic.
+`validator`, `finalizer`, and `user`, plus the optional `tpm`. Which CLI runs
+each role is a config mapping, not part of the protocol. A typical story goes
+planner (writes the Work Packet) to backend or frontend (implements, claims
+`ready_for_review`) to auditor (passes or fails) and back to planner for the
+next story; the finalizer runs only when the auditor closes an epic.
+
+With `agents.tpm` configured, the planner opens the epic and routes to `tpm`,
+the tpm writes each story's Work Packet, and the auditor's story-level
+`verified_pass` routes to `tpm` for the next story. The epic close still goes
+auditor to finalizer to planner, and the planner opens the next epic. Without
+`agents.tpm`, the flow above is unchanged. See
+[Agent Roles](CONFIGURATION.md#agent-roles).
 
 The handoff file is the mutex and the debugger. There is no hidden queue,
 database, or dashboard required to understand the current state. Git commit

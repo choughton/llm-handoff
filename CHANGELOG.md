@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Documentation sweep for the optional `tpm` role (TPM-12). `README.md` names `tpm` in the
+  role list, describes the story flow with and without `agents.tpm`, and says who picks the
+  next story in file and Linear mode. `docs/ARCHITECTURE.md` lists `tpm` as a supported
+  role and states that the planner picks stories unless `agents.tpm` is configured, while
+  re-scoping, pause recovery, and the lease rebuild stay on the planner.
+  `CONFIGURATION.md` "Agent Roles" links the `@tpm` prompt, the tpm in-flight record, and
+  the `logs/dispatch/codex-tpm/` artifact path, and names the shipped
+  `.claude/agents/tpm.md` agent file. `docs/TESTING.md` adds a configured-tpm
+  scenario (Scenario D) to the Linear mode acceptance run. No code changes.
 - Interrupted tpm dispatch recovery (TPM-14). With `agents.tpm` configured, a tpm
   dispatch writes a `tpm` in-flight record and gets the interrupted-planner startup
   recovery: an unchanged or valid handoff deletes the record, and a missing, empty, or

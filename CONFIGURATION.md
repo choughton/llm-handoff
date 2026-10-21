@@ -2451,8 +2451,14 @@ undone like a planner's. The validator rejects a `producer: tpm` handoff that ro
 `verified_pass`, or `verified_fail`, or that sets `close_type: epic`.
 The shipped tpm helper files are `.codex/skills/llm-handoff-tpm/SKILL.md`
 for `provider: codex` (`skill_name: llm-handoff-tpm`) and
-`.agents/agents/tpm.md` for `agy`; the Claude subagent comes in a later
-operator step.
+`.agents/agents/tpm.md` for `agy`, and `.claude/agents/tpm.md` for
+`claude`.
+With `agents.tpm`, the pause prompt also accepts `@tpm <message>` (see
+[Operator Prompt](#operator-prompt)), a tpm dispatch writes a `tpm` in-flight
+record so an interrupted tpm can be recovered at the next start (see
+[Dispatcher Commits](#dispatcher-commits)), and a Codex tpm keeps its run
+artifacts under `logs/dispatch/codex-tpm/` (see
+[All-Codex Mapping](#all-codex-mapping)).
 
 The `planner` and `frontend` roles on `antigravity` need the `agy` user
 settings entries described in
