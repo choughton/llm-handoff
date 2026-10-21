@@ -1546,8 +1546,12 @@ commit, switches to it, and deletes the story branch and its story state.
 A story no agent role can do, such as edits under `.claude/`, goes to `user`:
 the operator commits the work on the base branch without pushing, and the
 planner sends that commit to the auditor with `close_type: story` and
-`scope_sha` set to it. In `pr` mode, when that audit passes with no story
-state, the dispatcher publishes the commit as a story. It needs
+`scope_sha` set to it. Such a story is usually the epic's last, so the audit
+can pass with `close_type: epic` and `next_agent: finalizer` instead; the
+same handling applies. In `pr` mode, when that audit passes with no story
+state, the dispatcher publishes the commit as a story. (An epic close with
+nothing on the checkout that is not on `<remote>` still publishes nothing.)
+It needs
 `base_branch` and `branch_prefix` set, the checkout on `base_branch`, HEAD
 equal to the handoff's `scope_sha` and exactly one non-merge commit ahead of
 `<remote>/<base_branch>` (the audit without story state reviews only
@@ -1558,8 +1562,9 @@ and moves the local base branch back to `<remote>/<base_branch>` without
 touching the working tree. The publish continues as usual: push, pull
 request, review gate, and merge. The pull request report names the operator
 as the implementer, and a review bounce goes back to `user` with
-`status: escalate_to_user`, so the loop pauses for the operator. When any
-check fails, a `WARN` line names it and the loop stops as before.
+`status: escalate_to_user`, so the loop pauses for the operator. After an
+epic-close merge, the next cycle follows the audit's route to `finalizer`.
+When any check fails, a `WARN` line names it and the loop stops as before.
 
 ### Scanners
 
