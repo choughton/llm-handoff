@@ -89,9 +89,9 @@ What limits it:
   agent's own claims;
 - each CLI launches in its restricted mode by default (Claude Code
   `dontAsk` with a tool allowlist and web tools denied, Codex
-  `workspace-write`, and Antigravity (`agy`) with no permission flag, so its
-  shell commands need `permissions.allow` grants in the `agy` user
-  settings);
+  `workspace-write`, and Antigravity (`agy`) with `--mode accept-edits`, so
+  it edits workspace files but its shell commands need `permissions.allow`
+  grants in the `agy` user settings);
 - the reference workflow ships deny rules and a `PreToolUse` hook for
   `git push`, `curl`, `wget`, `rm -rf`, and `git reset --hard`.
 
@@ -176,12 +176,14 @@ Please include:
 The dispatcher does not sandbox provider CLIs itself. By default it launches
 each CLI in that CLI's own restricted mode: Claude Code with
 `--permission-mode dontAsk` and a tool allowlist, Codex with its
-`workspace-write` sandbox, and Antigravity (`agy`) with no permission flag
-and no sandbox, relying on the `permissions.allow` and `permissions.deny`
-entries in the `agy` user settings for shell commands. `agy` 1.4.4 ignores
-`unsandboxed(...)` rules, so only `command(...)` entries take effect there.
-Those boundaries are only as strong as the provider's implementation. A role
-with `unsafe_bypass: true` runs with approvals and sandboxing disabled, which
+`workspace-write` sandbox, and Antigravity (`agy`) with `--mode accept-edits`
+and no sandbox, which approves file edits inside the workspace and relies on
+the `permissions.allow` and `permissions.deny` entries in the `agy` user
+settings for shell commands and writes outside the workspace. `agy` 1.4.4
+ignores `unsandboxed(...)` rules, so only `command(...)` entries take effect
+there. Those boundaries are only as strong as the provider's implementation.
+A role with `unsafe_bypass: true` runs with approvals and sandboxing
+disabled, which
 is the same as running that CLI directly with full access to the target
 repository and your user account.
 
