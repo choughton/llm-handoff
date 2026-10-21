@@ -526,17 +526,53 @@ def test_handbook_block_content_and_order(tmp_path: Path) -> None:
         linear_evidence_contract().strip("\n"),
         linear_issue_template().strip("\n"),
     ]
-    sections.extend(linear_role_section(role).strip("\n") for role in LINEAR_PROMPT_ROLES)
+    tpm_absent_roles = [role for role in LINEAR_PROMPT_ROLES if role != "tpm"]
+    sections.extend(linear_role_section(role).strip("\n") for role in tpm_absent_roles)
     expected = f"{LINEAR_BEGIN}\n" + "\n\n".join(sections) + f"\n{LINEAR_END}\n"
     assert block == expected
+    assert "## Linear Mode: tpm\n" not in block
     positions = [
         block.index("## Linear Evidence Comment\n"),
         block.index("## Linear Issue Template\n"),
     ]
     positions.extend(
-        block.index(f"## Linear Mode: {role}\n") for role in LINEAR_PROMPT_ROLES
+        block.index(f"## Linear Mode: {role}\n") for role in tpm_absent_roles
     )
     assert positions == sorted(positions)
+
+
+def test_default_handbook_text_pins_the_tpm_absent_block() -> None:
+    text = init_workflow._linear_handbook_text()
+    planner = linear_role_section("planner").strip("\r\n")
+    assert planner in text
+    assert "## Linear Mode: tpm" not in text
+    assert linear_role_section("planner", tpm_configured=True).strip(
+        "\r\n"
+    ) not in text
+
+
+def test_handbook_text_with_tpm_orders_sections() -> None:
+    text = init_workflow._linear_handbook_text(tpm_configured=True)
+    headings = [
+        "## Linear Evidence Comment\n",
+        "## Linear Issue Template\n",
+        "## Linear Mode: planner\n",
+        "## Linear Mode: tpm\n",
+        "## Linear Mode: backend\n",
+        "## Linear Mode: frontend\n",
+        "## Linear Mode: auditor\n",
+        "## Linear Mode: validator\n",
+        "## Linear Mode: finalizer\n",
+    ]
+    for heading in headings:
+        assert text.count(heading) == 1, heading
+    positions = [text.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+    planner_section = text[
+        text.index("## Linear Mode: planner\n") : text.index("## Linear Mode: tpm\n")
+    ]
+    assert "selection_basis: priority" not in planner_section
+    assert linear_role_section("tpm").strip("\r\n") in text
 
 
 def test_handbook_stays_non_managed_for_conflicts(tmp_path: Path) -> None:

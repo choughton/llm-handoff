@@ -20,7 +20,8 @@ belong in commits, handoffs, and pull requests.
   and merged in PR #208; TPM-4 (per-role Codex artifacts) was approved at
   `8dc1728` and merged in PR #209; TPM-5 (the tpm prompt and the protocol
   docs) was approved at `4ed7d69` and merged in PR #211; TPM-6 (tpm helper
-  files) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+  files) was approved at `f3008a3` and merged in PR #212; TPM-7 (Linear
+  prompt templates) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,
@@ -1397,7 +1398,20 @@ dispatched without its instructions.
   leased issue already in `tracker.success_state` is stale, so post nothing,
   release the lease, and route to `planner`; an eligible issue with no
   priority is reported in the `lease_opened` comment as picked without one
-  (rule 5 already covers the wording).
+  (rule 5 already covers the wording). Decided by the planner on
+  2026-10-20: tpm-absent output stays byte-identical, because
+  `init --tracker linear` needs a fresh repository and always renders the
+  tpm-absent shape, while the tpm-present shape is reached only through a
+  `tpm_configured` keyword argument that tests and TPM-9 use, and `init`
+  gains no new flag. `roles/planner.md` stays unchanged as the tpm-absent
+  planner section, a new `roles/planner_with_tpm.md` is the planner section
+  when a tpm is configured, a new `roles/tpm.md` is the tpm section, and a
+  test keeps the shared paragraphs of `planner.md` and `tpm.md` identical
+  instead of a literal move. The planner keeps the user-attention paragraph
+  when a tpm is configured, because it still routes to `user` on a leased
+  issue and still rebuilds a missing lease (TPM-10), so its pointer tells it
+  to apply the tpm section's selection rules itself when it rebuilds a
+  lease.
 - TPM-8 (was part of TPM-5): Linear evidence and tools for the tpm.
   `LINEAR_EVIDENCE_EVENTS` allows `lease_opened`,
   `user_attention_requested`, and `user_attention_cleared` from `tpm` as

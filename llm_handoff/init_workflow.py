@@ -923,9 +923,18 @@ def _linear_block(content: str) -> bytes:
     return begin + b"\n" + content.rstrip("\r\n").encode("utf-8") + b"\n" + end
 
 
-def _linear_handbook_text() -> str:
+def _linear_handbook_text(*, tpm_configured: bool = False) -> str:
+    # `init` always renders the tpm-absent shape: the planner section holds
+    # the selection rules and no tpm section is emitted.
+    roles = [
+        role
+        for role in LINEAR_PROMPT_ROLES
+        if tpm_configured or role != "tpm"
+    ]
     sections = [linear_evidence_contract(), linear_issue_template()]
-    sections.extend(linear_role_section(role) for role in LINEAR_PROMPT_ROLES)
+    sections.extend(
+        linear_role_section(role, tpm_configured=tpm_configured) for role in roles
+    )
     return "\n\n".join(section.strip("\r\n") for section in sections)
 
 

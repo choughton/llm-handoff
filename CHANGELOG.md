@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- New Linear-mode prompt sections for the optional `tpm` role (TPM-7):
+  `roles/tpm.md` carries the issue selection rules, lease steps, user-attention steps, and
+  two lease-hygiene rules, and `roles/planner_with_tpm.md` is the epic-level planner section
+  that points to it. `LINEAR_PROMPT_ROLES` now includes `tpm`. Both render only when a tpm
+  is configured; tpm-absent output, including `llm-handoff init --tracker linear`, is
+  unchanged.
 - New tpm helper files for the optional `tpm` role (TPM-6), also shipped in the reference
   workflow so `llm-handoff init` copies them: `.codex/skills/llm-handoff-tpm/SKILL.md` for
   a tpm on `codex` (`skill_name: llm-handoff-tpm`) and `.agents/agents/tpm.md` for a tpm on
