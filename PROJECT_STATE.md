@@ -17,8 +17,11 @@ belong in commits, handoffs, and pull requests.
   stories (splits, reorders, and reshapes them inside the open epic) and the
   planner keeps only epic-level direction. New epic 20 (GROOMING) is next
   after CHAT closes, ahead of TRANSITION-RULES.
-- **Active Epic:** GROOMING (opened by the planner after CHAT closed at
-  `adf757d`, per the operator direction above). GROOM-1 (tpm grooming
+- **Active Epic:** none. GROOMING is closed: GROOM-5, the epic's last story,
+  was approved at `6e24d98` and merged in PR #247 at `211bbfd`. The planner
+  picks the next epic by fit; TRANSITION-RULES is next in line.
+  GROOMING history (opened by the planner after CHAT closed at
+  `adf757d`, per the operator direction above): GROOM-1 (tpm grooming
   contract) was committed at `a1880e5` and merged in PR #243. GROOM-2
   (planner keeps direction) was approved at `01b174b` and merged in PR #244
   at `15b59b7`. GROOM-3 (Linear templates: the Linear tpm grooms issues
@@ -32,8 +35,7 @@ belong in commits, handoffs, and pull requests.
   dispatched tpm role, not only the claimed producer) was approved at
   `5e91536` and merged in PR #246. GROOM-5 (operator edit of the Claude tpm
   and planner agents, root and reference-workflow copies, plus the epic's
-  CHANGELOG entry) is committed by the operator on the base branch and
-  awaits audit.
+  CHANGELOG entry) was approved at `6e24d98` and merged in PR #247.
   CHAT is closed: CHAT-5 (chat on agy), the
   epic's last story, was approved at `2407e90` and merged in PR #242. Its `step_update` edit attribution
   (`tool_info.parameters.TargetFile`, `state: "ACTIVE"` to `"DONE"` on
@@ -2320,6 +2322,9 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `CHANGELOG.md`.
 
 ### 20. GROOMING - the tpm grooms stories; the planner keeps direction
+
+Status: CLOSED. GROOM-1 through GROOM-5 are done; the last, GROOM-5, was
+approved at `6e24d98` and merged in PR #247 (`211bbfd`).
 
 Fit: operator direction 2026-10-21. It changes the planner's and the tpm's
 own protocol, so by the Backlog rule it goes before a feature: take it when
