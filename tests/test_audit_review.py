@@ -1696,7 +1696,7 @@ def test_fan_out_story_approval_routes_to_configured_tpm(
         ),
     )
 
-    result, _log = _run_fan_out(
+    result, log = _run_fan_out(
         _fan_out_config(repo, agents=_agents_with_tpm()),
         handoff,
         quality_stdout=json.dumps(
@@ -1714,6 +1714,10 @@ def test_fan_out_story_approval_routes_to_configured_tpm(
     assert frontmatter.close_type == "story"
     assert frontmatter.scope_sha == head
     assert route(written).route == "tpm"
+    # The log names the route written to the handoff, not the reviewer's
+    # planner value.
+    assert "Audit fan-out PASSED: routing to tpm with status" in log.text()
+    assert "routing to planner" not in log.text()
 
 
 def _render_approval(tmp_path: Path, *, close_type: str, tpm_configured: bool) -> str:
@@ -1838,7 +1842,7 @@ def test_fan_out_security_fail_below_block_severity_passes_with_notes(
         "- **Unresolved concerns:** security reviewer returned fail with only "
         "findings below high (see Security Notes)"
     ) in written
-    assert "Audit fan-out PASSED" in log.text()
+    assert "Audit fan-out PASSED: routing to planner with status" in log.text()
     assert (
         "Audit fan-out did not block on a fail verdict: security reviewer "
         "returned fail with only findings below high"

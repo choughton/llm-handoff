@@ -787,8 +787,12 @@ def run_audit_fan_out(
             log,
             "AGENT",
             "Audit fan-out PASSED: routing to "
-            f"{quality_verdict.next_agent} as the quality reviewer directed "
-            f"({len(decision.notes)} sub-threshold finding(s) attached).",
+            + approval_route(
+                quality_verdict.close_type,
+                tpm_configured="tpm" in config.agents,
+            )
+            + f" with status verified_pass ({len(decision.notes)} "
+            "sub-threshold finding(s) attached).",
         )
         for non_blocking_fail in decision.non_blocking_fails:
             _log(
@@ -1325,6 +1329,21 @@ def render_pre_audit_failure_handoff(
     return "\n".join(lines)
 
 
+def approval_route(close_type: str | None, *, tpm_configured: bool) -> str:
+    """Return the ``next_agent`` of a passing audit handoff.
+
+    ``verified_pass`` routes to the finalizer for an epic close; a story
+    approval goes to the tpm when one is configured and to the planner
+    otherwise. The router follows the same rule.
+    """
+
+    if close_type == "epic":
+        return "finalizer"
+    if tpm_configured:
+        return "tpm"
+    return "planner"
+
+
 def render_audit_handoff(
     *,
     frontmatter: HandoffRouting | None,
@@ -1365,16 +1384,8 @@ def render_audit_handoff(
         status = "verified_fail"
         close_type: str | None = None
     else:
-        # verified_pass routes to the finalizer for an epic close; a story
-        # approval goes to the tpm when one is configured and to the planner
-        # otherwise. The router follows the same rule.
         close_type = quality.close_type
-        if close_type == "epic":
-            next_agent = "finalizer"
-        elif tpm_configured:
-            next_agent = "tpm"
-        else:
-            next_agent = "planner"
+        next_agent = approval_route(close_type, tpm_configured=tpm_configured)
         reason = _truncate_reason(quality.reason)
         status = "verified_pass"
 
