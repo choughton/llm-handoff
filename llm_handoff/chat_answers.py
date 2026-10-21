@@ -11,6 +11,12 @@ then asks for a takeover when ``HANDOFF.md`` changed (CHAT-27
 the takeover request, so the loop's takeover cleanup already sees the
 chat-owned paths.
 
+``@<role> <message>`` goes to that role's own finished session instead, when
+the ``role_session`` lookup returns one on a supported provider and that role
+is not the one running. Role messages share the one FIFO queue with side
+messages and resume the role's session with ``resumed_role=True``. Otherwise
+the full text goes to the side session with a notice that says why.
+
 Known limit: the takeover check compares the handoff's content digest from
 before the answer with the digest after it. A role's own ``HANDOFF.md`` write
 that lands while an answer runs therefore also counts as a chat change to
@@ -19,7 +25,8 @@ that lands while an answer runs therefore also counts as a chat change to
 Chat keeps the role's own permissions; this module adds no read-only
 boundary.
 
-Nothing in the loop calls this module yet; CHAT-30 wires it in.
+``__main__._attach_console_chat`` wires in this worker (CHAT-32); CHAT-34
+supplies the ``role_session`` lookup.
 """
 
 from __future__ import annotations
@@ -28,8 +35,9 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import threading
-from typing import Any
+from typing import Any, get_args
 
 from llm_handoff import config
 from llm_handoff.chat_changes import record_chat_changes
@@ -50,6 +58,7 @@ __all__ = [
     "CHAT_STOPPING_MESSAGE",
     "ChatAnswerWorker",
     "ChatContext",
+    "RoleSession",
 ]
 
 CHAT_ANSWER_PREFIX = "chat: "
@@ -58,6 +67,9 @@ CHAT_NO_ROLE_MESSAGE = "No role is running, so the chat message was not sent."
 CHAT_BLANK_MESSAGE = "The chat message was blank, so nothing was sent."
 CHAT_SENT_MESSAGE = "Chat message sent to the chat session."
 CHAT_STOPPING_MESSAGE = "Chat is stopping, so the chat message was not sent."
+
+_ROLE_NAMES: frozenset[str] = frozenset(get_args(config.AgentRole))
+_ROLE_MESSAGE_RE = re.compile(r"@(\S+)(?:\s+(.*))?", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -71,12 +83,49 @@ class ChatContext:
     agent_config: config.AgentConfig | None
 
 
+@dataclass(frozen=True)
+class RoleSession:
+    """A finished role dispatch whose session an ``@role`` message resumes."""
+
+    role: str
+    provider: str
+    story_id: str | None
+    session_id: str
+    agent_config: config.AgentConfig | None
+
+
+@dataclass(frozen=True)
+class _Queued:
+    """One queued message; ``role_session`` is set for a role message."""
+
+    message: str
+    context: ChatContext
+    role: str | None = None
+    body: str | None = None
+    role_session: RoleSession | None = None
+
+
 def chat_unavailable_message(provider: str) -> str:
     return f"Chat is not available for {provider} yet."
 
 
 def _plural(count: int) -> str:
     return "message is" if count == 1 else "messages are"
+
+
+def _with_ahead(notice: str, ahead: int) -> str:
+    if ahead:
+        return f"{notice} {ahead} {_plural(ahead)} ahead of it."
+    return notice
+
+
+def _parse_role_message(message: str) -> tuple[str, str] | None:
+    """Return ``(role, body)`` for ``@<role> <body>``, else None."""
+
+    match = _ROLE_MESSAGE_RE.fullmatch(message)
+    if match is None or match.group(1) not in _ROLE_NAMES:
+        return None
+    return match.group(1), (match.group(2) or "").strip()
 
 
 class ChatAnswerWorker:
@@ -93,6 +142,7 @@ class ChatAnswerWorker:
         run_session: Callable[..., ChatSessionResult] = run_chat_session,
         record_changes: Callable[..., Any] = record_chat_changes,
         request_takeover: Callable[..., Any] = request_takeover_if_handoff_changed,
+        role_session: Callable[[str], RoleSession | None] | None = None,
     ) -> None:
         self._repo_root = Path(repo_root)
         self._handoff_path = Path(handoff_path)
@@ -102,14 +152,18 @@ class ChatAnswerWorker:
         self._run_session = run_session
         self._record_changes = record_changes
         self._request_takeover = request_takeover
+        self._role_session = role_session
         self._cond = threading.Condition()
-        self._queue: deque[tuple[str, ChatContext]] = deque()
+        self._queue: deque[_Queued] = deque()
         self._active = 0
         # The worker thread keeps ownership of these until it exits (see
         # ``_run``), so no second thread starts while an answer still runs.
         self._thread: threading.Thread | None = None
         self._stop_event: threading.Event | None = None
+        # Side sessions, keyed by provider.
         self._sessions: dict[str, str] = {}
+        # Role sessions: recorded session id -> latest id an answer returned.
+        self._role_resume_ids: dict[str, str] = {}
 
     # -- submission side -------------------------------------------------
 
@@ -119,11 +173,66 @@ class ChatAnswerWorker:
         message = text.strip() if isinstance(text, str) else ""
         if not message:
             return CHAT_BLANK_MESSAGE
+        parsed = _parse_role_message(message)
+        if parsed is not None and not parsed[1]:
+            return CHAT_BLANK_MESSAGE
         context = self._context()
         if context is None:
             return CHAT_NO_ROLE_MESSAGE
+        fallback_reason: str | None = None
+        if parsed is not None:
+            target, body = parsed
+            if target == context.role:
+                fallback_reason = (
+                    f"The {target} role is running, so the side session answers."
+                )
+            else:
+                session, fallback_reason = self._lookup_role_session(target)
+                if session is not None:
+                    return self._enqueue(
+                        _Queued(
+                            message=message,
+                            context=context,
+                            role=target,
+                            body=body,
+                            role_session=session,
+                        ),
+                        f"Chat message sent to the {target} session.",
+                    )
         if context.provider not in SUPPORTED_CHAT_PROVIDERS:
             return chat_unavailable_message(context.provider)
+        notice = CHAT_SENT_MESSAGE
+        if fallback_reason is not None:
+            notice = f"{fallback_reason} {CHAT_SENT_MESSAGE}"
+        return self._enqueue(_Queued(message=message, context=context), notice)
+
+    def _lookup_role_session(
+        self, target: str
+    ) -> tuple[RoleSession | None, str | None]:
+        """Return the usable session, or None and the fallback sentence."""
+
+        no_session = (
+            f"No finished {target} session is recorded, so the side session answers."
+        )
+        if self._role_session is None:
+            return None, no_session
+        try:
+            session = self._role_session(target)
+        except Exception:  # noqa: BLE001 - a broken lookup means no session
+            return None, no_session
+        if not isinstance(session, RoleSession):
+            return None, no_session
+        session_id = session.session_id
+        if not isinstance(session_id, str) or not session_id.strip():
+            return None, no_session
+        if session.provider not in SUPPORTED_CHAT_PROVIDERS:
+            return None, (
+                f"The {target} session runs on {session.provider}, which chat "
+                "does not support yet, so the side session answers."
+            )
+        return session, None
+
+    def _enqueue(self, item: _Queued, notice: str) -> str:
         with self._cond:
             if self._stop_event is not None and self._stop_event.is_set():
                 # stop() is waiting for the running answer; starting another
@@ -131,12 +240,10 @@ class ChatAnswerWorker:
                 return CHAT_STOPPING_MESSAGE
             # Messages ahead: the ones waiting plus the one being answered.
             ahead = len(self._queue) + self._active
-            self._queue.append((message, context))
+            self._queue.append(item)
             self._ensure_thread_locked()
             self._cond.notify_all()
-        if ahead:
-            return f"{CHAT_SENT_MESSAGE} {ahead} {_plural(ahead)} ahead of it."
-        return CHAT_SENT_MESSAGE
+        return _with_ahead(notice, ahead)
 
     def busy(self) -> bool:
         with self._cond:
@@ -219,28 +326,31 @@ class ChatAnswerWorker:
                     self._cond.wait()
                 if stop_event.is_set():
                     return
-                message, context = self._queue.popleft()
+                item = self._queue.popleft()
                 self._active += 1
             try:
-                self._answer_guarded(message, context)
+                self._answer_guarded(item)
             finally:
                 with self._cond:
                     self._active -= 1
                     self._cond.notify_all()
 
-    def _answer_guarded(self, message: str, context: ChatContext) -> None:
+    def _answer_guarded(self, item: _Queued) -> None:
         try:
-            self._answer(message, context)
+            self._answer(item)
         except Exception as exc:  # noqa: BLE001 - the thread must keep running
-            self._write_error(f"{type(exc).__name__}: {exc}")
+            self._write_error(item, f"{type(exc).__name__}: {exc}")
 
-    def _answer(self, message: str, context: ChatContext) -> None:
+    def _answer(self, item: _Queued) -> None:
         handoff_sha_before = handoff_content_sha(self._handoff_path)
         try:
-            result = self._call_session(message, context)
+            if item.role_session is not None:
+                result = self._call_role_session(item)
+            else:
+                result = self._call_side_session(item)
             if result is not None:
-                self._write_result(result)
-                self._record(message, context, result)
+                self._write_result(item, result)
+                self._record(item, result)
         finally:
             # The session may have rewritten HANDOFF.md even when it failed.
             self._request_takeover(
@@ -248,14 +358,13 @@ class ChatAnswerWorker:
                 handoff_sha_before=handoff_sha_before,
             )
 
-    def _call_session(
-        self, message: str, context: ChatContext
-    ) -> ChatSessionResult | None:
+    def _call_side_session(self, item: _Queued) -> ChatSessionResult | None:
+        context = item.context
         provider = context.provider
         try:
             result = self._run_session(
                 provider,
-                message,
+                item.message,
                 repo_root=self._repo_root,
                 role=context.role,
                 story_id=context.story_id,
@@ -265,41 +374,72 @@ class ChatAnswerWorker:
                 agent_config=context.agent_config,
             )
         except (ValueError, OSError) as exc:
-            self._write_error(str(exc) or type(exc).__name__)
+            self._write_error(item, str(exc) or type(exc).__name__)
             return None
         session_id = getattr(result, "session_id", None)
         if isinstance(session_id, str) and session_id.strip():
             self._sessions[provider] = session_id
         return result
 
-    def _write_result(self, result: ChatSessionResult) -> None:
+    def _call_role_session(self, item: _Queued) -> ChatSessionResult | None:
+        session = item.role_session
+        if session is None:
+            return None
+        recorded_id = session.session_id
+        try:
+            result = self._run_session(
+                session.provider,
+                item.body or "",
+                repo_root=self._repo_root,
+                role=item.role or session.role,
+                story_id=session.story_id,
+                handoff_path=self._handoff_path,
+                log_path=item.context.log_path,
+                session_id=self._role_resume_ids.get(recorded_id, recorded_id),
+                agent_config=session.agent_config,
+                resumed_role=True,
+            )
+        except (ValueError, OSError) as exc:
+            self._write_error(item, str(exc) or type(exc).__name__)
+            return None
+        session_id = getattr(result, "session_id", None)
+        if isinstance(session_id, str) and session_id.strip():
+            self._role_resume_ids[recorded_id] = session_id
+        return result
+
+    def _write_result(self, item: _Queued, result: ChatSessionResult) -> None:
         if result.error:
-            self._write_error(result.error)
+            self._write_error(item, result.error)
             return
+        prefix = (
+            CHAT_ANSWER_PREFIX if item.role is None else f"chat {item.role}: "
+        )
         lines = result.text.splitlines() or [""]
         for line in lines:
-            self._safe_write(f"{CHAT_ANSWER_PREFIX}{line}")
+            self._safe_write(f"{prefix}{line}")
 
-    def _record(
-        self, message: str, context: ChatContext, result: ChatSessionResult
-    ) -> None:
+    def _record(self, item: _Queued, result: ChatSessionResult) -> None:
         try:
             self._record_changes(
                 self._changes_path,
                 repo_root=self._repo_root,
                 result=result,
-                message=message,
-                role=context.role,
-                story_id=context.story_id,
+                message=item.message,
+                role=item.role if item.role is not None else item.context.role,
+                # A role answer is committed by the running dispatch, so its
+                # changes are recorded against the running story.
+                story_id=item.context.story_id,
                 handoff_path=self._handoff_path,
             )
         except OSError as exc:
             self._write_error(
-                f"could not save the chat change record {self._changes_path}: {exc}"
+                item,
+                f"could not save the chat change record {self._changes_path}: {exc}",
             )
 
-    def _write_error(self, detail: str) -> None:
-        self._safe_write(f"{CHAT_ERROR_PREFIX}{detail}")
+    def _write_error(self, item: _Queued, detail: str) -> None:
+        prefix = CHAT_ERROR_PREFIX if item.role is None else f"chat {item.role} error: "
+        self._safe_write(f"{prefix}{detail}")
 
     def _safe_write(self, line: str) -> None:
         # A console write failure must not skip the change record or takeover.

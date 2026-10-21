@@ -23,7 +23,13 @@ Codex launches pass no ``--output-schema`` or ``--output-last-message`` and
 this module never reads or writes anything under ``logs/dispatch/codex*/``,
 so a chat never touches a role's saved Codex session.
 
-Nothing in the loop calls this module yet.
+With ``resumed_role=True`` the session resumes a finished role's own session
+(``@role`` chat) with a prompt that tells it which role it is and that the
+dispatch loop has moved on; the launch arguments are the same.
+
+``__main__._attach_console_chat`` wires in the chat answer worker that calls
+this module (CHAT-32); CHAT-34 supplies the ``role_session`` lookup that
+routes ``@role`` messages to a finished role's session.
 """
 
 from __future__ import annotations
@@ -86,14 +92,32 @@ def build_chat_prompt(
     story_id: str | None,
     handoff_path: Path | str,
     log_path: Path | str | None,
+    resumed_role: bool = False,
 ) -> str:
-    """Return the side-session prompt; the stripped operator message is last."""
+    """Return the chat prompt; the stripped operator message is last.
+
+    With ``resumed_role`` the prompt is for a finished role's own resumed
+    session instead of a side session.
+    """
 
     story_text = story_id if story_id else "none"
     if log_path is None:
         log_text = "No log path is known for that role."
     else:
         log_text = f"The `{role}` role's log: {log_path}"
+    if resumed_role:
+        return (
+            f"You are the `{role}` role, resumed in your own session from the "
+            "finished dispatch for the story below. The dispatch loop has moved "
+            "on, and another role may be running now.\n"
+            f"Role: {role}\n"
+            f"Story id: {story_text}\n"
+            f"HANDOFF.md path: {handoff_path}\n"
+            f"{log_text}\n\n"
+            "You may edit files and HANDOFF.md to do what the operator asks. "
+            "Do not push to any remote. Answer the operator in plain text.\n\n"
+            f"Operator message:\n{message.strip()}"
+        )
     return (
         f"The operator is talking to you in a side session while the `{role}` "
         "role keeps running in the dispatch loop.\n"
@@ -173,11 +197,16 @@ def run_chat_session(
     session_id: str | None = None,
     agent_config: config.AgentConfig | None = None,
     timeout_ms: int | None = None,
+    resumed_role: bool = False,
 ) -> ChatSessionResult:
     """Start a chat side session, or resume ``session_id`` when given.
 
+    With ``resumed_role`` the session is a finished role's own session,
+    resumed from ``session_id`` with the resumed-role prompt.
+
     Raises ``ValueError`` before anything launches for a provider other than
-    ``claude`` or ``codex``, a blank ``message``, or a blank ``session_id``.
+    ``claude`` or ``codex``, a blank ``message``, a blank ``session_id``, or
+    ``resumed_role`` without a ``session_id``.
     """
 
     if provider not in SUPPORTED_CHAT_PROVIDERS:
@@ -192,6 +221,8 @@ def run_chat_session(
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("A chat session resume needs a non-blank session id.")
         resolved_session_id = session_id.strip()
+    if resumed_role and resolved_session_id is None:
+        raise ValueError("A resumed role chat needs the role's session id.")
 
     prompt = build_chat_prompt(
         message,
@@ -199,6 +230,7 @@ def run_chat_session(
         story_id=story_id,
         handoff_path=handoff_path,
         log_path=log_path,
+        resumed_role=resumed_role,
     )
     cwd = Path(repo_root)
     resolved_config = agent_config or config.AgentConfig(provider=provider)

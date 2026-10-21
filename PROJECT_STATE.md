@@ -13,9 +13,12 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-32
-  (chat messages are answered right away, console wiring) in flight and
-  CHAT-4 and CHAT-5 remaining. CHAT-31 (the loop waits for a running chat
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-33
+  (the chat answer worker routes `@role` messages to a finished role's
+  session) in flight and CHAT-34 and CHAT-5 remaining. CHAT-4 was split into
+  CHAT-33 and CHAT-34 on 2026-10-21 before it started. CHAT-32 (chat
+  messages are answered right away, console wiring) was approved at
+  `0bafd00` and merged in PR #235. CHAT-31 (the loop waits for a running chat
   answer) was approved at `948c2fb` and merged in PR #234. CHAT-30 was split
   into CHAT-31 and CHAT-32 on 2026-10-21 before it started. CHAT-29 (the chat answer worker) was approved at
   `48dee6a` and merged in PR #233.
@@ -1112,11 +1115,15 @@ was approved at `5ec213e` and merged in PR #231; CHAT-28 was approved at
 `a5b8ee1` and merged in PR #232; CHAT-20 was split into CHAT-29 and
 CHAT-30; CHAT-29 was approved at `48dee6a` and merged in PR #233; CHAT-30
 was split into CHAT-31 and CHAT-32; CHAT-31 was approved at `948c2fb` and
-merged in PR #234; CHAT-32 is in flight; CHAT-4 and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+merged in PR #234; CHAT-32 was approved at `0bafd00` and merged in PR #235;
+CHAT-4 was split into CHAT-33 and CHAT-34 on 2026-10-21 before it started;
+CHAT-33 is in flight; CHAT-34 and CHAT-5 remain. Nothing else blocks it:
+HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into CHAT-21
 through CHAT-24 because it exceeded one packet. Decided by the planner on
 2026-10-21: CHAT-19 was split into CHAT-27 and CHAT-28, CHAT-20 into CHAT-29
-and CHAT-30, and CHAT-30 into CHAT-31 and CHAT-32, for the same reason.
+and CHAT-30, CHAT-30 into CHAT-31 and CHAT-32, and CHAT-4 into CHAT-33 and
+CHAT-34, for the same reason.
 
 Operator redesign (2026-10-20). Chat works like a side coding session the
 operator talks to while the loop runs: it answers right away, while the
@@ -1527,15 +1534,50 @@ dependencies; Windows (`msvcrt`) and POSIX.
   `ChatInput`, because `ChatInput` takes `on_submit` only when built. `_run_dispatch`'s `finally` calls `stop()` then
   `attach_worker(None)` before `chat_session.detach()` on a normal return,
   `KeyboardInterrupt`, or an exception. An agy role prints that chat is not
-  available for agy yet. In flight.
-- CHAT-4 (was part of CHAT-3): `@role` asks a finished role's own session.
-  `@role <message>` finds the role's latest entry in the CHAT-15 dispatch
-  record and resumes that session with the role's normal launch arguments,
-  so the role that did the work answers and can fix it; the CHAT-21
-  through CHAT-24 and CHAT-28 rules apply to what it changes. `@role` for the running role, or a
-  role with no recorded session, goes to the side session. Untargeted
-  messages always go to the side session (the old CHAT-7 normalizer
-  classification is dropped).
+  available for agy yet. Approved at `0bafd00` and merged in PR #235.
+- CHAT-4 (was part of CHAT-3): Split into CHAT-33 and CHAT-34 on 2026-10-21
+  before it started.
+- CHAT-33 (was part of CHAT-4): The chat answer worker routes `@role`
+  messages to a finished role's session. `build_chat_prompt` and
+  `run_chat_session` gain `resumed_role=False`; when True the prompt tells
+  the session it is that role, resumed in its own session from the finished
+  dispatch, that the loop has moved on and another role may be running, with
+  the same story, `HANDOFF.md`, log, and permission lines and the operator
+  message last, and `run_chat_session` raises `ValueError` before launch
+  without a session id. Launch arguments do not change. `chat_answers`
+  exports a frozen `RoleSession(role, provider, story_id, session_id,
+  agent_config)`, and `ChatAnswerWorker` takes
+  `role_session: Callable[[str], RoleSession | None] | None = None`, called
+  at submit time with the target role. `@<role> <body>` is a role message
+  only when `<role>` is exactly a `config.AgentRole` name; a blank body
+  returns the blank notice, and any other text goes to the side session
+  unchanged. A role message is queued in the one FIFO queue, with notice
+  `Chat message sent to the <role> session.`, when a role is running, the
+  target is not the running role, and the lookup returns a non-blank session
+  id on claude or codex without raising. Otherwise the full text goes to the
+  side session with one of three sentences in front of the normal notice
+  (the target is running; the recorded provider is not supported yet; no
+  finished session is recorded), or the agy notice when the running role's
+  provider is unsupported. A role answer resumes the recorded session with
+  the role's provider, story id, and agent config, the running context's log
+  path, and `resumed_role=True`; prints `chat <role>: ` and
+  `chat <role> error: ` lines; and is recorded with the target role and the
+  running story id before the takeover check. Decided by the planner on
+  2026-10-21: a fallback sends the full original text, `@role` prefix
+  included; the resume id chain is keyed by the recorded session id, so a
+  later dispatch of the same role starts from its own new session; and the
+  change record takes the running context's story id, because the running
+  dispatch commits the change. Nothing in the loop passes the lookup yet;
+  CHAT-34 wires it in. In flight.
+- CHAT-34 (was part of CHAT-4): The loop supplies finished role sessions to
+  @role chat. After each role dispatch returns, the loop keeps that
+  dispatch's role, story id, configured primary provider, and
+  `DispatchResult.session_id` in dispatcher memory through `chat_session`,
+  never reading the repository copy of the dispatch record, which a role can
+  edit. `__main__._attach_console_chat` passes the worker a `role_session`
+  lookup that returns the role's latest kept entry with
+  `config.agents[role]` as its agent config. README and
+  `docs/ARCHITECTURE.md` describe `@role`.
 - CHAT-5 (was part of CHAT-3): Chat on agy. The side session and `@role`
   answers run on agy with the role's normal agent and grants, as agy role
   dispatches do.
