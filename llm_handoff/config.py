@@ -232,6 +232,9 @@ PauseRecoveryMode = Literal["planner", "off"]
 # What `pr` mode does when a base-branch merge conflicts only in the project
 # state file: have the planner resolve it, or pause for the operator.
 ProjectStateConflictMode = Literal["planner", "off"]
+# What `pr` mode does when a retried Codex review stalls or fails again: ask
+# the operator, or merge without the review when the audit passed.
+ReviewStallAction = Literal["prompt", "merge"]
 DEFAULT_CODEX_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 # The security reviewer runs by default. Leaving it out of `audit.reviewers`
 # also needs a non-empty `audit.security_opt_out_reason`.
@@ -549,6 +552,15 @@ class PublishConfig(BaseModel):
     # set to review every push; the dispatcher requests a review only to
     # retry one the reviewer reports as failed.
     max_review_rounds: int = 1
+    # A Codex review the summary shows running this long with no result is
+    # treated like a failed one: one automatic review request, then
+    # review_stall_action.
+    review_stall_seconds: int = 600
+    # What happens when the retried review also stalls, times out, fails, or
+    # names no commit: "prompt" asks the operator (merge / retry / quit);
+    # "merge" merges without a Codex review when the audit passed for the head
+    # commit and every review thread is resolved.
+    review_stall_action: ReviewStallAction = "prompt"
     codex_bot_login: str = DEFAULT_CODEX_BOT_LOGIN
     # pr mode: when merging the base branch into the story branch conflicts
     # only in project_state_path, "planner" has the planner resolve it once;
@@ -579,7 +591,12 @@ class PublishConfig(BaseModel):
             )
         if len(set(self.wait_for_reviewers)) != len(self.wait_for_reviewers):
             raise ValueError("publish.wait_for_reviewers must not repeat a reviewer.")
-        for name in ("review_timeout_seconds", "review_poll_seconds", "max_review_rounds"):
+        for name in (
+            "review_timeout_seconds",
+            "review_poll_seconds",
+            "review_stall_seconds",
+            "max_review_rounds",
+        ):
             if getattr(self, name) < 1:
                 raise ValueError(f"publish.{name} must be at least 1.")
         if not self.codex_bot_login.strip():

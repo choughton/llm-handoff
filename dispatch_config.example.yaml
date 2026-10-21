@@ -49,9 +49,15 @@ commit_mode: agent
 # merged with a report commit), or pr (story branch pushed as a pull request;
 # needs commit_mode: dispatcher and the gh CLI). In pr mode with auto_merge,
 # wait_for_reviewers: [codex] merges only after a Codex review of the pushed
-# commit finishes with no findings. See CONFIGURATION.md.
+# commit finishes with no findings. A review that fails, or shows running for
+# review_stall_seconds with no result, is requested again once; if that one
+# does not finish either, review_stall_action decides: prompt (ask the
+# operator) or merge (merge without the review when the audit passed for the
+# head commit and no review thread is unresolved). See CONFIGURATION.md.
 publish:
   mode: local
+  # review_stall_seconds: 600
+  # review_stall_action: prompt
 work_packet_verification_timeout_seconds: 600
 # The Verification command and scanners get an allowlisted environment (PATH,
 # HOME, TEMP, and other process basics), not the dispatcher's full

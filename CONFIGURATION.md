@@ -1027,6 +1027,8 @@ publish:
   wait_for_reviewers: [] # pr mode + auto_merge: [codex] waits for Codex review
   review_timeout_seconds: 1200
   review_poll_seconds: 30
+  review_stall_seconds: 600 # a review shown running this long is stalled
+  review_stall_action: prompt # prompt | merge, after the retry stalls too
   max_review_rounds: 1 # >1 needs Codex to review every push on its own
   codex_bot_login: chatgpt-codex-connector[bot]
   resolve_project_state_conflicts: planner # pr mode: planner | "off"
@@ -1421,14 +1423,35 @@ The outcomes:
   The comment never goes in the pull request body.
   A failure Codex attributes to its usage limit for code reviews is not
   retried automatically.
+- A stalled review: the summary keeps showing the head commit's review
+  running (often with only an eyes reaction) for `review_stall_seconds`
+  (default 600), counted from the first poll of the current wait that sees it
+  running. That ends the wait early and is handled like a failed review: one
+  `@codex review` comment, recorded the same way. So is a wait that reaches
+  `review_timeout_seconds` with no completed review. A restart at the same
+  head never posts a second automatic request.
 - A completed review that names no commit (the summary's state marker has
   `commit_sha: null` and its `Commit` cell is a dash, with no review or +1
   reaction from Codex): nothing ties that review to the head commit, so it
   is not a pass. When a summary updated after the push or request shows it
   on two polls in a row, the wait ends and is handled like a failed review:
-  one `@codex review` comment, then the operator prompt below.
-- When the retried review fails too, the account hit its usage limit, or no
-  review finishes within `review_timeout_seconds`, the dispatcher pauses at
+  one `@codex review` comment, then `review_stall_action` below.
+- When the retried review also stalls, times out, fails, or names no commit,
+  `review_stall_action` decides:
+  - `prompt` (the default) uses the operator prompt below.
+  - `merge` merges the pull request without a Codex review, but only when
+    `HANDOFF.md` is the story's `verified_pass` with a `scope_sha` that is
+    the head commit (or the head adds only clean base-branch merges to it)
+    and no review thread is unresolved. Before merging, the dispatcher logs
+    a `WARN` and posts a pull request comment that starts with "Merging
+    without a Codex review:" and gives the reason. When a condition fails,
+    it logs a `WARN` with the reason and falls back to `prompt`.
+
+  A completed review with findings still takes the correction round, and a
+  usage-limit failure always goes to the operator prompt, whatever the
+  action.
+- When the stall action is `prompt` or its merge was refused, the account
+  hit its usage limit, or asking Codex again failed, the dispatcher pauses at
   a short operator prompt if `interactive_pause` is on and stdin is a
   terminal:
   - `merge` merges the pull request without the Codex review. The
@@ -1443,7 +1466,8 @@ The outcomes:
   the loop stops and leaves the pull request open, and so does a `gh`
   error. Review it and merge it yourself, run `git switch <base_branch>` and
   `git pull`, then start the dispatcher again. The dispatcher only merges
-  without a finished review when the operator types `merge`.
+  without a finished review when the operator types `merge` or
+  `review_stall_action` is `merge`.
 - A completed review with findings never gets a review request: findings
   always take the correction round above.
 

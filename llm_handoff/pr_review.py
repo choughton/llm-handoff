@@ -27,6 +27,11 @@ is no review or reaction. Nothing ties that review to the head commit, so it
 is not a pass. When a summary updated after the push or request shows it on
 two polls in a row (so a +1 reaction posted just after the summary still
 counts), the wait ends as ``failed`` with ``unattributed`` set.
+
+A review can also stay ``running`` with no result: Codex adds its eyes
+reaction and never finishes. With ``stall_seconds``, a wait that has seen the
+summary show the head commit's review running for that long ends as
+``stalled``, without waiting out the full timeout.
 """
 
 from __future__ import annotations
@@ -75,7 +80,7 @@ _DEFERRED_RE = re.compile(r"(?:\*\*|__)?deferred\s*:", re.IGNORECASE)
 # "Follow-up:" or "**Follow-up:**" at the start of a planner decision.
 _FOLLOW_UP_RE = re.compile(r"(?:\*\*|__)?follow[- ]?up\s*:", re.IGNORECASE)
 
-ReviewOutcome = Literal["clean", "findings", "timeout", "failed"]
+ReviewOutcome = Literal["clean", "findings", "timeout", "failed", "stalled"]
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,11 @@ class ReviewGate:
     poll_seconds: int = 30
     max_rounds: int = 1
     codex_bot_login: str = "chatgpt-codex-connector[bot]"
+    # A review shown running this long with no result counts as stalled.
+    stall_seconds: int = 600
+    # "prompt" or "merge": what happens when the retried review does not
+    # finish either (``publish.review_stall_action``).
+    stall_action: str = "prompt"
 
 
 @dataclass(frozen=True)
@@ -114,6 +124,8 @@ class CodexReviewState:
     usage_limited: bool = False
     # The summary marks a review completed but names no commit.
     unattributed: bool = False
+    # The summary shows a review of the head commit running.
+    running: bool = False
 
 
 @dataclass(frozen=True)
@@ -251,7 +263,10 @@ def read_codex_review(
     else:
         detail = f"waiting for Codex to start reviewing {head[:12]}"
     return CodexReviewState(
-        completed=completed, findings=tuple(findings), detail=detail
+        completed=completed,
+        findings=tuple(findings),
+        detail=detail,
+        running=not completed and summary_status == "running",
     )
 
 
@@ -268,8 +283,14 @@ def wait_for_codex_review(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     stale_before: datetime | None = None,
+    stall_seconds: int | None = None,
 ) -> ReviewResult:
-    """Poll the pull request until Codex finishes reviewing ``head_sha``."""
+    """Poll the pull request until Codex finishes reviewing ``head_sha``.
+
+    With ``stall_seconds``, the wait ends as ``stalled`` once the summary has
+    shown the review running for that long, counted from the first poll of
+    this wait that saw it running.
+    """
 
     base = "repos/{owner}/{repo}"
     endpoints = {
@@ -282,6 +303,7 @@ def wait_for_codex_review(
     last_detail = ""
     state = CodexReviewState(completed=False)
     unattributed_polls = 0
+    running_since: float | None = None
     while True:
         responses: dict[str, list[dict[str, Any]]] = {}
         for key, endpoint in endpoints.items():
@@ -312,6 +334,20 @@ def wait_for_codex_review(
             unattributed_polls = unattributed_polls + 1 if state.unattributed else 0
             if unattributed_polls >= 2:
                 return ReviewResult("failed", detail=state.detail, unattributed=True)
+            if not state.running:
+                running_since = None
+            elif stall_seconds is not None:
+                now = clock()
+                if running_since is None:
+                    running_since = now
+                if now - running_since >= stall_seconds:
+                    return ReviewResult(
+                        "stalled",
+                        detail=(
+                            f"the Codex review of {head_sha[:12]} has shown as "
+                            f"running for at least {stall_seconds}s with no result"
+                        ),
+                    )
         if clock() >= deadline:
             if state.unattributed:
                 return ReviewResult("failed", detail=state.detail, unattributed=True)
