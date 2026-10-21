@@ -79,6 +79,13 @@ _TPM_REJECTED_STATUSES = (
     HandoffStatus.VERIFIED_PASS.value,
     HandoffStatus.VERIFIED_FAIL.value,
 )
+# An implementer hands back for review, asks the planner to re-scope, or
+# pauses for a person; it never approves, fails, or closes an epic.
+_IMPLEMENTER_ALLOWED_NEXT_AGENTS = ("auditor", "planner", "user")
+_IMPLEMENTER_REJECTED_STATUSES = (
+    HandoffStatus.VERIFIED_PASS.value,
+    HandoffStatus.VERIFIED_FAIL.value,
+)
 _REQUIRED_EVIDENCE_FIELDS = {
     "Commands run",
     "Output summary",
@@ -257,6 +264,12 @@ def validate_handoff_frontmatter(
 
     if normalized_producer == "tpm":
         errors.extend(_tpm_producer_errors(parsed, normalized_next_agent))
+    elif normalized_producer in _IMPLEMENTER_ROUTES:
+        errors.extend(
+            _implementer_producer_errors(
+                parsed, normalized_producer, normalized_next_agent
+            )
+        )
 
     status_conflict = status_next_agent_conflict(parsed)
     if status_conflict is not None:
@@ -306,6 +319,41 @@ def _tpm_producer_errors(
             "frontmatter_routing_rule: producer `tpm` emitted close_type `epic`; "
             "a tpm never closes an epic and routes to `planner` when "
             "remaining_stories is empty."
+        )
+    return errors
+
+
+def _implementer_producer_errors(
+    parsed: HandoffRouting,
+    producer: str,
+    normalized_next_agent: str | None,
+) -> list[str]:
+    """Errors for a `producer: backend` or `producer: frontend` handoff.
+
+    An unknown `next_agent` is already reported as
+    `frontmatter_next_agent_invalid`, so only recognized routes are checked.
+    """
+
+    errors: list[str] = []
+    if (
+        normalized_next_agent is not None
+        and normalized_next_agent not in _IMPLEMENTER_ALLOWED_NEXT_AGENTS
+    ):
+        errors.append(
+            f"frontmatter_routing_rule: producer `{producer}` cannot route to "
+            f"next_agent `{normalized_next_agent}`; an implementer routes only to "
+            f"{', '.join(f'`{agent}`' for agent in _IMPLEMENTER_ALLOWED_NEXT_AGENTS)}."
+        )
+    if parsed.status in _IMPLEMENTER_REJECTED_STATUSES:
+        errors.append(
+            f"frontmatter_status_producer_rule: producer `{producer}` cannot emit "
+            f"status `{parsed.status}`; only the auditor approves or fails work."
+        )
+    if parsed.close_type == "epic":
+        errors.append(
+            f"frontmatter_status_producer_rule: producer `{producer}` cannot emit "
+            "close_type `epic`; an implementer hands back with close_type "
+            "`story` and the auditor approves the epic close."
         )
     return errors
 

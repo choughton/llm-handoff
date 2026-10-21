@@ -17,8 +17,16 @@ belong in commits, handoffs, and pull requests.
   stories (splits, reorders, and reshapes them inside the open epic) and the
   planner keeps only epic-level direction. New epic 20 (GROOMING) is next
   after CHAT closes, ahead of TRANSITION-RULES.
-- **Active Epic:** GROOMING (opened by the planner after CHAT closed at
-  `adf757d`, per the operator direction above). GROOM-1 (tpm grooming
+- **Active Epic:** TRANSITION-RULES (epic 17), opened by the planner after
+  GROOMING closed at `d4bdd04`; the tpm groomed it with all six stories kept
+  in order. TRANS-1 (implementer producers: `backend` and `frontend` route
+  only to `auditor`, `planner`, or `user`, and never emit `verified_pass`,
+  `verified_fail`, or `close_type: epic`) is implemented and awaiting audit.
+  TRANS-2 through TRANS-6 remain.
+- **GROOMING (closed):** GROOM-5, the epic's last story,
+  was approved at `6e24d98` and merged in PR #247 at `211bbfd`.
+  GROOMING history (opened by the planner after CHAT closed at
+  `adf757d`, per the operator direction above): GROOM-1 (tpm grooming
   contract) was committed at `a1880e5` and merged in PR #243. GROOM-2
   (planner keeps direction) was approved at `01b174b` and merged in PR #244
   at `15b59b7`. GROOM-3 (Linear templates: the Linear tpm grooms issues
@@ -32,8 +40,7 @@ belong in commits, handoffs, and pull requests.
   dispatched tpm role, not only the claimed producer) was approved at
   `5e91536` and merged in PR #246. GROOM-5 (operator edit of the Claude tpm
   and planner agents, root and reference-workflow copies, plus the epic's
-  CHANGELOG entry) is committed by the operator on the base branch and
-  awaits audit.
+  CHANGELOG entry) was approved at `6e24d98` and merged in PR #247.
   CHAT is closed: CHAT-5 (chat on agy), the
   epic's last story, was approved at `2407e90` and merged in PR #242. Its `step_update` edit attribution
   (`tool_info.parameters.TargetFile`, `state: "ACTIVE"` to `"DONE"` on
@@ -1932,10 +1939,13 @@ handbook and the code from drifting.
   `producer: frontend` may route only to `auditor`, `planner`, or `user`
   (`frontmatter_routing_rule`); `verified_pass`, `verified_fail`, and
   `close_type: epic` from an implementer are rejected
-  (`frontmatter_status_producer_rule`). Check every fixture under
+  (`frontmatter_status_producer_rule`). Inspect every fixture under
   `tests/ported/fixtures/handoffs/` and the reference-workflow starter
-  handoff still validate; a legacy fixture that breaks the rule is updated,
-  not grandfathered.
+  handoff (`producer: user`, which stays accepted). Intentional legacy and
+  negative routing cases (empty, malformed, frontmatter-free inputs) keep
+  their expected router/validator results; a purportedly valid implementer
+  fixture that violates the new rules is updated, not exempted or
+  grandfathered.
 - TRANS-2: Auditor and finalizer producers. `verified_pass` and
   `verified_fail` require `producer: auditor`; a `verified_pass` carried
   forward by the finalizer keeps its existing exemption only when
@@ -2320,6 +2330,9 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `CHANGELOG.md`.
 
 ### 20. GROOMING - the tpm grooms stories; the planner keeps direction
+
+Status: CLOSED. GROOM-1 through GROOM-5 are done; the last, GROOM-5, was
+approved at `6e24d98` and merged in PR #247 (`211bbfd`).
 
 Fit: operator direction 2026-10-21. It changes the planner's and the tpm's
 own protocol, so by the Backlog rule it goes before a feature: take it when
