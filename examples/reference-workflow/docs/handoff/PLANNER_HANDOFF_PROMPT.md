@@ -74,7 +74,7 @@ each story's Work Packet. It never drops a story for a scope reason; scope
 drops stay with you.
 
 You keep epic choice, each epic's intro, goal, boundaries, `Fit:` line, and
-scope, close decisions, and every tpm escalation that needs epic-level
+scope, and every tpm escalation that needs epic-level
 judgment: an empty or ambiguous story list, a re-scope or scope-based drop, a
 split or follow-up that would fall outside the epic's scope, a story that
 conflicts with `PROJECT_STATE.md` in a way grooming cannot resolve or looks

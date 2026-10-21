@@ -87,7 +87,7 @@ remove a story it split or one already done on the default branch with a
 a story for a scope reason; scope drops stay with you.
 
 You keep epic choice, each epic's intro, goal, boundaries, `Fit:` line, and
-scope, close decisions, and every tpm escalation that needs epic-level
+scope, and every tpm escalation that needs epic-level
 judgment, such as a re-scope, a scope-based drop, a split outside the epic's
 scope, or a design decision. After an epic close the finalizer routes to you,
 and you pick the next epic by fit.
