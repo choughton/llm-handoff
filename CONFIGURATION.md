@@ -1509,6 +1509,24 @@ had nothing to change. In `pr` mode, when the branch has no commits beyond
 nothing and opens no pull request. It fast-forwards the base branch to that
 commit, switches to it, and deletes the story branch and its story state.
 
+A story no agent role can do, such as edits under `.claude/`, goes to `user`:
+the operator commits the work on the base branch without pushing, and the
+planner sends that commit to the auditor with `close_type: story` and
+`scope_sha` set to it. In `pr` mode, when that audit passes with no story
+state, the dispatcher publishes the commit as a story. It needs
+`base_branch` and `branch_prefix` set, the checkout on `base_branch`, HEAD
+equal to the handoff's `scope_sha` and exactly one non-merge commit ahead of
+`<remote>/<base_branch>` (the audit without story state reviews only
+`HEAD~1..HEAD`), that commit not changing `HANDOFF.md`, nothing else
+uncommitted, and no existing branch with the story's name. It then creates the story branch at HEAD (named from the
+handoff's `story_id` and `story_title`) with its story state, checks it out,
+and moves the local base branch back to `<remote>/<base_branch>` without
+touching the working tree. The publish continues as usual: push, pull
+request, review gate, and merge. The pull request report names the operator
+as the implementer, and a review bounce goes back to `user` with
+`status: escalate_to_user`, so the loop pauses for the operator. When any
+check fails, a `WARN` line names it and the loop stops as before.
+
 ### Scanners
 
 The gate can also run operator-configured scanners before the verification
