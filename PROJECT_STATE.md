@@ -19,7 +19,9 @@ belong in commits, handoffs, and pull requests.
   after CHAT closes, ahead of TRANSITION-RULES.
 - **Active Epic:** GROOMING (opened by the planner after CHAT closed at
   `adf757d`, per the operator direction above). GROOM-1 (tpm grooming
-  contract) is implemented and awaits audit; GROOM-2 through GROOM-5 remain.
+  contract) was committed at `a1880e5` and merged in PR #243. GROOM-2
+  (planner keeps direction) is implemented and awaits audit; GROOM-3 through
+  GROOM-5 remain.
   CHAT is closed: CHAT-5 (chat on agy), the
   epic's last story, was approved at `2407e90` and merged in PR #242. Its `step_update` edit attribution
   (`tool_info.parameters.TargetFile`, `state: "ACTIVE"` to `"DONE"` on
@@ -150,11 +152,15 @@ parked epic when the operator reports the blocker cleared, in this file or at
 the operator prompt. Route to `user` only when no open epic has an unblocked
 story.
 
-Each story is one Work Packet; the planner writes its Files in scope,
-Verification command, and acceptance criteria from the code. Add, drop, or
-re-shape epics by editing this list.
+Each story is one Work Packet; the role that assigns it writes its Files in
+scope, Verification command, and acceptance criteria from the code. With a
+tpm configured, that is the tpm; without one, it is the planner. Add, drop,
+or re-shape epics by editing this list; that stays with the planner, which
+also writes each epic's intro, `Fit:` line, and story outline.
 
-Story size and IDs (operator rule, 2026-10-19). A story is one behavior
+Story size and IDs (operator rule, 2026-10-19). With a tpm configured, the
+tpm sizes, splits, and renumbers the stories inside the open epic under these
+rules; without one, the planner does. A story is one behavior
 change: about four source modules or fewer plus their tests and docs, one
 verification focus, and one role. A story that would edit `.claude/` does
 not mix that edit with code: Claude roles cannot write `.claude/`, so those
