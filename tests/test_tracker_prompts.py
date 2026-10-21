@@ -363,6 +363,23 @@ def test_planner_with_tpm_points_to_tpm_section() -> None:
     assert "yourself" in text
 
 
+def test_planner_with_tpm_lease_rebuild_grooms_before_leasing() -> None:
+    raw = linear_role_section("planner", tpm_configured=True)
+    rebuild = _paragraph(raw, "When you rebuild a missing lease")
+    for phrase in (
+        "apply the selection rules and lease steps in `## Linear Mode: tpm` "
+        "yourself, as the tpm would",
+        "apply its grooming rules first",
+        "groom the open epic's issues before you lease",
+        "on its first pass",
+        "whenever the issue the selection rules pick is too large for one "
+        "Work Packet",
+        "A lease rebuild is the one pass in which you size, split, or add issues.",
+    ):
+        assert phrase in rebuild, phrase
+    assert "Grooming." not in raw
+
+
 def test_tpm_grooming_follows_lease_hygiene() -> None:
     raw = linear_role_section("tpm")
     text = " ".join(raw.split())
@@ -389,9 +406,19 @@ def test_tpm_grooming_permissions() -> None:
         "rewrite an issue's description from the code it touches",
         "add a follow-up issue that stays within the epic's stated scope",
         "Create every new issue in `tracker.team` and `tracker.eligible_state`, "
-        "with the same `tracker.project` or `tracker.label` and the split "
-        "issue's priority, in execution order",
+        "with the same `tracker.project` or `tracker.label`, in execution order",
         "Follow the story size rule in the project state file",
+    ):
+        assert phrase in text, phrase
+
+
+def test_tpm_grooming_defines_priority_for_splits_and_follow_ups() -> None:
+    text = " ".join(linear_role_section("tpm").split())
+    assert "the split issue's priority" not in text
+    for phrase in (
+        "Give a split part the priority of the issue it was split from",
+        "and a follow-up the priority of the issue it follows",
+        "a follow-up's description with `(follows <identifier>)`",
     ):
         assert phrase in text, phrase
 
@@ -408,9 +435,11 @@ def test_tpm_grooming_is_recorded_through_the_work_packet() -> None:
     for phrase in (
         "list the project state file in `Files in scope`",
         "each new issue identifier",
-        "the issue each split part came from",
+        "the issue each split part or follow-up came from",
         "When `remaining_stories` lists a split issue, keep its entry and add "
         "the new identifiers after it in execution order",
+        "add a follow-up after the issue it follows, or last when that issue "
+        "is not listed",
         "copy every other entry forward",
     ):
         assert phrase in record, phrase

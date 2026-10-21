@@ -7,7 +7,11 @@ route to `tpm`, do not lease an issue: write no `tracker_issue`,
 issue.
 
 When you rebuild a missing lease, apply the selection rules and lease steps
-in `## Linear Mode: tpm` yourself, as the tpm would.
+in `## Linear Mode: tpm` yourself, as the tpm would, and apply its grooming
+rules first: groom the open epic's issues before you lease, as the tpm does
+on its first pass and whenever the issue the selection rules pick is too
+large for one Work Packet. A lease rebuild is the one pass in which you size,
+split, or add issues.
 
 Epic direction. You choose the epic and write its intro, goal, boundaries,
 `Fit:` line, and story outline, and you own its scope. The tpm sizes, splits,

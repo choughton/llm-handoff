@@ -23,8 +23,10 @@ belong in commits, handoffs, and pull requests.
   (planner keeps direction) was approved at `01b174b` and merged in PR #244
   at `15b59b7`. GROOM-3 (Linear templates: the Linear tpm grooms issues
   inside the open epic's project or label, and the Linear planner with a tpm
-  keeps epic direction; tpm-absent rendering pinned byte-identical) is
-  implemented and awaits audit; GROOM-4 and GROOM-5 remain.
+  keeps epic direction; tpm-absent rendering pinned byte-identical) was
+  committed at `e584c1c` in PR #245; its review fixes (lease rebuilds groom
+  before leasing, follow-up issue priority) await audit; GROOM-4 and GROOM-5
+  remain.
   CHAT is closed: CHAT-5 (chat on agy), the
   epic's last story, was approved at `2407e90` and merged in PR #242. Its `step_update` edit attribution
   (`tool_info.parameters.TargetFile`, `state: "ACTIVE"` to `"DONE"` on
