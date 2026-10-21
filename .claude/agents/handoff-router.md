@@ -14,7 +14,7 @@ Your job is to make the routing state deterministic. You do not implement code, 
 1. `docs/handoff/HANDBOOK.md`
 2. `AGENTS.md`
 3. `docs/handoff/HANDOFF.md`
-4. `PROJECT_STATE.md` if present and needed to distinguish story close from epic close
+4. The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md` names another path), if present and needed to distinguish story close from epic close
 
 ## Shell Commands
 

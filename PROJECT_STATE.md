@@ -22,7 +22,10 @@ belong in commits, handoffs, and pull requests.
   docs) was approved at `4ed7d69` and merged in PR #211; TPM-6 (tpm helper
   files) was approved at `f3008a3` and merged in PR #212; TPM-7 (Linear
   prompt templates) was approved at `0e8cd0a` and merged in PR #213; TPM-8
-  (Linear evidence and tools for the tpm) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+  (Linear evidence and tools for the tpm) was approved at `ac573a1` and
+  merged in PR #214; TPM-9 (operator edit of the Claude tpm agent, with
+  TIDY-7 batched in) is in flight, and TPM-13 follows it before TPM-10.
+  ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,
@@ -1422,7 +1425,7 @@ dispatched without its instructions.
   ~line 81 treats `verified_pass` routed to `tpm` as `audit_passed`; today
   only `planner` and `finalizer` count and every other route is recorded as
   `audit_failed`, so without this a successful audit would post a failure
-  comment. Add route tests for it.
+  comment. Add route tests for it. Approved at `ac573a1`, merged in PR #214.
 - TPM-9 (was part of TPM-4): Operator edit of the Claude tpm agent (routes
   to `user`). Claude roles cannot write `.claude/`, so the planner writes
   `.claude/agents/tpm.md` (root and `examples/reference-workflow/` copies)
@@ -1430,6 +1433,22 @@ dispatched without its instructions.
   section TPM-7 renders into it. It comes before TPM-10 because a Claude
   tpm needs this file before any route reaches it. If TIDY-7 is still open,
   list its edits in the same handoff (operator batching, 2026-10-20).
+  Decided by the planner on 2026-10-20: the Claude tpm agent is
+  tracker-neutral, mirrors `.agents/agents/tpm.md` with the Claude
+  frontmatter (`tools: Read, Edit, Write, Grep, Glob, Bash`) and Shell
+  Commands section, and TIDY-7 rides along. The Linear part is an
+  `_LINEAR_AGENT_TOOLS` entry, which is Python, so it moved to TPM-13.
+- TPM-13 (split from TPM-9 on 2026-10-20; runs after TPM-9 and before
+  TPM-10): Tests, Linear tools, and inventory for the Claude tpm agent.
+  Add `.claude/agents/tpm.md` to `REQUIRED_TEMPLATE_FILES` and
+  `COPIED_TEMPLATE_FILES` in `tests/test_reference_workflow.py`, plus a
+  test that the Claude helpers other than `ledger-updater.md` use the
+  TIDY-6 project state deferral wording (locks TIDY-7 in). Add
+  `.claude/agents/tpm.md` to `_LINEAR_AGENT_TOOLS` in
+  `llm_handoff/init_workflow.py` as `("tpm", _WRITER_BASE_TOOLS)`, so
+  `init --tracker linear` appends the tpm's Linear tools, with
+  `tests/test_init_tracker.py` coverage. Add the two `docs/INVENTORY.md`
+  rows and one `CHANGELOG.md` entry covering TPM-9, TIDY-7, and TPM-13.
 - TPM-10 (was part of TPM-3): Routing to the tpm when it is configured
   (`llm_handoff/orchestrator.py`; `build_audit_handoff()` in
   `llm_handoff/audit_review.py` ~line 1147, which hard-codes the non-epic
@@ -1841,7 +1860,8 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `llm_handoff/init_workflow.py`, not a `.claude/` edit. Take it after TIDY-6
   so both trees use the same wording. Closes CONFIG-CLEANUP (a) inside
   `.claude/` only. Batched (operator, 2026-10-20): ride along with the next
-  `.claude/` operator story's `user` route, as the Fit line says.
+  `.claude/` operator story's `user` route, as the Fit line says. Riding
+  with TPM-9 (planner, 2026-10-20).
 - TIDY-8: Linear evidence events for epic closes and handoff repairs
   (operator confirmed both events on 2026-10-20). (a) In Linear mode the finalizer posts
   nothing, so an epic close leaves no evidence comment; add an `epic_closed`
