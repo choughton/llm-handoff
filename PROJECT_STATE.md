@@ -1297,7 +1297,10 @@ dependencies; Windows (`msvcrt`) and POSIX.
   when it has any, else a resumed handback record's paths. Decided by the
   planner on 2026-10-21: the paths are bound to the commit SHA, used only
   when that SHA is HEAD (otherwise they contribute nothing and log one
-  WARN), and filtered to the paths that commit changed.
+  WARN), and filtered to the paths that commit changed. PR #227 review
+  round 1: the in-flight record is role-writable and unauthenticated, so the
+  resume confirmation discloses the record's chat paths (same filter) and
+  their commit, and the operator's confirmation is what accepts them.
 - CHAT-19 (was part of CHAT-4): A chat rewrite of `HANDOFF.md` takes over the
   run. When a chat answer changes `HANDOFF.md` while a role runs, the
   dispatcher stops that role as an operator interrupt does, keeps the role's

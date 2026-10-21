@@ -4789,6 +4789,42 @@ def _gate_chat_owned_paths(
     )
 
 
+def _resumable_chat_paths(
+    config: DispatchConfig, record: InFlightRecord
+) -> tuple[str, ...]:
+    """The record's chat-committed paths a resumed gate could accept.
+
+    The same filter as ``_gate_chat_owned_paths``: the record's
+    ``chat_committed`` when its ``chat_commit_sha`` is HEAD, limited to the
+    paths that commit changed; otherwise ``()``. The in-flight record is not
+    authenticated, so recovery discloses these paths to the operator before
+    the resume confirmation instead of trusting them silently.
+    """
+
+    if not record.chat_committed or record.chat_commit_sha is None:
+        return ()
+    if _git_head(config.repo_root) != record.chat_commit_sha:
+        return ()
+    changed = _git_commit_changed_paths(config.repo_root, record.chat_commit_sha)
+    return tuple(path for path in record.chat_committed if path in changed)
+
+
+def _resumed_chat_paths_disclosure(
+    record: InFlightRecord, chat_paths: tuple[str, ...]
+) -> str:
+    """The pre-confirmation line naming the chat-owned paths a resume accepts."""
+
+    listed = ", ".join(_escape_control_characters(path) for path in chat_paths)
+    return (
+        "The in-flight record claims these paths in commit "
+        f"{_escape_control_characters(str(record.chat_commit_sha))} are chat "
+        f"(operator) changes: {listed}. The record is not authenticated; "
+        "resuming lets the work-claim gate accept them outside the Work "
+        "Packet scope, so confirm only if you made these changes in a chat "
+        "side session."
+    )
+
+
 def _git_commit_changed_paths(repo_root: Path, sha: str) -> frozenset[str]:
     """The paths the single commit ``sha`` changed; empty when Git fails."""
 
@@ -7714,10 +7750,20 @@ def _recover_interrupted_handback(
                 "INFO",
                 _protected_baseline_disclosure(config, record, disclosed),
             )
+        chat_paths = _resumable_chat_paths(config, record)
+        if chat_paths:
+            _log(log, "INFO", _resumed_chat_paths_disclosure(record, chat_paths))
         confirmed = _confirm_carry_over_at_terminal(
             operator_prompt.reader(),
             f"Resume {record.role}'s interrupted {story} handback at the "
-            "dispatcher commit? [y/N]",
+            "dispatcher commit"
+            + (
+                f", accepting {len(chat_paths)} chat-owned path(s) listed above "
+                "as operator changes"
+                if chat_paths
+                else ""
+            )
+            + "? [y/N]",
             log,
         )
     if not confirmed:

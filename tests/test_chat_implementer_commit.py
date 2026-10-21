@@ -757,12 +757,30 @@ def test_resumed_handback_passes_the_recorded_chat_path_to_the_gate(
     monkeypatch.setattr(orchestrator, "invoke_backend_role", refusing_backend)
     monkeypatch.setattr(orchestrator, "verify_work_claim", recording_verify)
     _set_terminal(monkeypatch, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
 
     exit_code = orchestrator.run_loop(
-        _loop_config(repo), max_cycles=1, log=lambda *_: None
+        _loop_config(repo), max_cycles=1, log=_collecting_log(messages)
     )
 
     assert exit_code == 0
+    # The unauthenticated record's chat paths are disclosed before the
+    # operator confirms the resume, and the prompt names them.
+    disclosures = [
+        message
+        for _level, message in messages
+        if message.startswith("The in-flight record claims these paths")
+    ]
+    assert len(disclosures) == 1
+    assert head in disclosures[0] and "src/api.py" in disclosures[0]
+    prompts = [
+        message for _level, message in messages if message.startswith("Resume ")
+    ]
+    assert len(prompts) == 1
+    assert "accepting 1 chat-owned path(s) listed above" in prompts[0]
+    assert messages.index(("INFO", disclosures[0])) < messages.index(
+        ("INFO", prompts[0])
+    )
     assert _git(repo, "rev-parse", "HEAD") == head
     assert len(gate_calls) == 1
     chat_owned, result = gate_calls[0]
@@ -833,6 +851,27 @@ def test_resumed_record_drops_a_path_the_commit_did_not_change(
 
     assert paths == ("src/api.py",)
     assert messages == []
+
+
+def test_resumable_chat_paths_match_the_gate_filter(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    head = _commit_app_and_api(repo)
+    config = _config(repo)
+
+    assert orchestrator._resumable_chat_paths(
+        config, _resumed_record(head, "src/api.py", "PROJECT_STATE.md")
+    ) == ("src/api.py",)
+    assert orchestrator._resumable_chat_paths(
+        config, _resumed_record(base, "src/api.py")
+    ) == ()
+    assert orchestrator._resumable_chat_paths(config, _resumed_record(head)) == ()
+    disclosure = orchestrator._resumed_chat_paths_disclosure(
+        _resumed_record(head, "src/api.py"), ("src/api.py",)
+    )
+    assert head in disclosure
+    assert "src/api.py" in disclosure
+    assert "not authenticated" in disclosure
 
 
 def test_gate_chat_owned_paths_prefers_the_commit_result_and_defaults_empty(
