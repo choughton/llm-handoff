@@ -21,6 +21,8 @@ authenticated ``chat_changes`` record) are the one exception: each one that
 still matches its recorded fingerprint is committed too, even outside the
 Work Packet scope or when it was dirty before dispatch, and the commit body
 carries the operator marker (message time and SHA-256, never the text).
+After a non-implementer role, ``commit_chat_changes`` commits those chat
+paths on their own with the same marker.
 """
 
 from __future__ import annotations
@@ -231,6 +233,82 @@ def commit_implementer_changes(
         committed=to_commit,
         left_uncommitted=left_uncommitted,
         chat_committed=chat_paths,
+        chat_influences=chat_influences,
+    )
+
+
+def commit_chat_changes(
+    *,
+    repo_root: Path,
+    handoff_path: Path,
+    role: str,
+    story_id: str | None,
+    chat_entries: Sequence[ChatChangeEntry],
+) -> DispatcherCommitResult:
+    """Commit the chat-owned paths after a non-implementer role's cycle.
+
+    Only paths in ``chat_owned_paths`` that are dirty now are committed, in
+    record order, and never the handoff. A dirty file that is not chat-owned,
+    or one the role changed after chat recorded it (so its fingerprint no
+    longer matches), is never staged.
+    """
+
+    dirty_now = git_dirty_files(repo_root)
+    if dirty_now is None:
+        return DispatcherCommitResult(
+            sha=None,
+            error="git status failed; the working tree could not be listed",
+        )
+    handoff_rel_path = normalize_repo_path(Path(handoff_path).as_posix())
+    dirty_set = set(dirty_now)
+    owned = tuple(
+        path
+        for path in dict.fromkeys(
+            normalize_repo_path(item)
+            for item in (chat_owned_paths(repo_root, chat_entries) if chat_entries else ())
+        )
+        if path in dirty_set and path != handoff_rel_path
+    )
+    if not owned:
+        return DispatcherCommitResult(
+            sha=None,
+            skipped_reason="no recorded chat change is still in the working tree",
+            nothing_to_commit=True,
+        )
+    chat_influences = _chat_influences(chat_entries, owned)
+
+    label = f"Chat changes after the {role} role"
+    story = (story_id or "").strip()
+    subject = f"{story} {label}" if story else label
+    body = (
+        f"Committed by the llm-handoff dispatcher after the {role} role's "
+        "cycle.\n\nFiles:\n"
+        + "\n".join(f"- {path}" for path in owned)
+        + _chat_body(owned, chat_influences)
+    )
+
+    add = _git(repo_root, ["add", "--", *owned])
+    if add.returncode != 0:
+        return DispatcherCommitResult(
+            sha=None, error=f"git add failed: {_first_line(add)}"
+        )
+    commit = _git(
+        repo_root,
+        ["commit", "--no-verify", "--only", "-m", subject, "-m", body, "--", *owned],
+    )
+    if commit.returncode != 0:
+        return DispatcherCommitResult(
+            sha=None, error=f"git commit failed: {_first_line(commit)}"
+        )
+    sha = git_head(repo_root)
+    if sha is None:
+        return DispatcherCommitResult(
+            sha=None, error="git rev-parse HEAD failed after the commit"
+        )
+    return DispatcherCommitResult(
+        sha=sha,
+        committed=owned,
+        chat_committed=owned,
         chat_influences=chat_influences,
     )
 

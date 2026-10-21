@@ -6,6 +6,20 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The dispatcher commits chat changes after a non-implementer role (CHAT-23).
+  New `dispatcher_commit.commit_chat_changes` commits only the dirty
+  `chat_owned_paths` other than the handoff, with the subject `<story> Chat
+  changes after the <role> role` and the CHAT-22 `Chat changes
+  (operator-influenced):` body block; dirty files that are not chat-owned,
+  or that changed after chat recorded them, are never staged. In dispatcher
+  commit mode, after a planner, tpm, auditor, validator, or finalizer cycle
+  that exits 0, the loop runs it after the planner-commit undo and the
+  protected-file, auth, and exit-code checks, and before post-dispatch
+  validation. It commits only while a saved story branch is checked out;
+  otherwise it logs one INFO line, keeps the record, and the files ride the
+  next implementer commit. A successful commit clears the record and sets
+  the chat commit marker for that story's audit; a commit error logs one
+  ERROR and keeps the record. Behavior without chat changes is unchanged.
 - Chat-committed paths survive a resumed handback (CHAT-25). `InFlightRecord`
   gains `chat_commit_sha` and `chat_committed`, written only on an
   implementer `handback` record and only together; a record without them

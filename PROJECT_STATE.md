@@ -13,9 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-25
-  (chat-committed paths survive a resumed handback) in flight and CHAT-23,
-  CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-22 (chat
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-23 (the
+  dispatcher commits chat changes after a non-implementer role) in flight and
+  CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-25
+  (chat-committed paths survive a resumed handback) was approved at
+  `e900bc5` and merged in PR #227. CHAT-22 (chat
   changes ride the implementer commit) was approved at `a2723e9` and merged
   in PR #226. CHAT-21 (chat
   change record) was approved at `210267b` and merged in PR #225. CHAT-17
@@ -1086,8 +1088,9 @@ bounces until the three-fix circuit breaker escalates.
 Fit: active again after TPM-ROLE closed, by the operator direction of
 2026-10-20. CHAT-17 was approved at `d059a25` and merged in PR #224;
 CHAT-21 was approved at `210267b` and merged in PR #225; CHAT-22 was
-approved at `a2723e9` and merged in PR #226; CHAT-25 is in flight; CHAT-23,
-CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+approved at `a2723e9` and merged in PR #226; CHAT-25 was approved at
+`e900bc5` and merged in PR #227; CHAT-23 is in flight; CHAT-24, CHAT-19,
+CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into
 CHAT-21 through CHAT-24 because it exceeded one packet.
 
@@ -1280,7 +1283,26 @@ dependencies; Windows (`msvcrt`) and POSIX.
 - CHAT-23 (was part of CHAT-18): The dispatcher commits chat changes after a
   non-implementer role. After any non-implementer role's cycle, before the
   next route, the dispatcher commits the `chat_owned_paths` itself with the
-  same marker and clears the record.
+  same marker and clears the record. `dispatcher_commit.commit_chat_changes`
+  commits only the dirty `chat_owned_paths` other than the handoff, with the
+  subject `<story> Chat changes after the <role> role`. Decided by the
+  planner on 2026-10-21: it applies only in dispatcher commit mode, as
+  CHAT-22 does, and not after `backend` or `frontend` (CHAT-22 covers
+  those). The commit runs only while a saved story branch is checked out, so
+  it falls inside that story's audit range; on any other checkout (`local`
+  publish mode, or the base branch between stories) nothing is committed,
+  the record and files stay, one INFO line names the paths, and they ride
+  the next implementer commit, which audits them before anything publishes.
+  The commit runs after a zero exit code and after the planner-commit undo,
+  the protected-file check, the auth-failure stop, and the stop-loop and
+  exit-code checks, and before the tracker lease rebuild and post-dispatch
+  validation in the shared dispatch branch (after the exit-code check in the
+  finalizer branch), so it is never reset as a planner or tpm commit. A
+  successful commit logs one AGENT line, clears the record (a clear failure
+  only warns), and sets the loop's chat commit marker to the story of the
+  handoff the role started from; a commit error logs one ERROR and keeps the
+  record. Tested with faked CHAT-17 results; the record has entries only
+  once CHAT-20 wires chat in.
 - CHAT-24 (was part of CHAT-18): Chat changes after an approved audit go
   back to the audit fan-out. Chat changes committed after an approved audit
   send the story back to the audit fan-out before it publishes, so nothing
@@ -1301,6 +1323,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   round 1: the in-flight record is role-writable and unauthenticated, so the
   resume confirmation discloses the record's chat paths (same filter) and
   their commit, and the operator's confirmation is what accepts them.
+  Approved at `e900bc5` and merged in PR #227.
 - CHAT-19 (was part of CHAT-4): A chat rewrite of `HANDOFF.md` takes over the
   run. When a chat answer changes `HANDOFF.md` while a role runs, the
   dispatcher stops that role as an operator interrupt does, keeps the role's
