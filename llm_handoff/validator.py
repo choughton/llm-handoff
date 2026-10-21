@@ -310,6 +310,44 @@ def _tpm_producer_errors(
     return errors
 
 
+def _tpm_epic_change_errors(
+    current: HandoffRouting,
+    prior_handoff_content: str,
+) -> list[str]:
+    """Errors for a tpm rewrite that leaves the epic its dispatch started in.
+
+    A tpm grooms stories inside the open epic; choosing or renaming an epic
+    is planner work. Renaming the epic would also skip the story-list check,
+    which compares only rewrites of the same epic. Epic IDs compare
+    case-insensitively, as the story-list check does. A prior handoff without
+    an epic ID, or one whose frontmatter does not parse, sets no constraint.
+    """
+
+    if normalize_next_agent_value(current.producer) != "tpm":
+        return []
+    try:
+        prior = parse_handoff_frontmatter_text(prior_handoff_content.lstrip("﻿"))
+    except HandoffFrontmatterError:
+        return []
+    if prior is None:
+        return []
+    prior_epic = (prior.epic_id or "").strip()
+    if not prior_epic:
+        return []
+    current_epic = (current.epic_id or "").strip()
+    if current_epic.casefold() == prior_epic.casefold():
+        return []
+    if current_epic:
+        change = f"changed epic_id from `{prior_epic}` to `{current_epic}`"
+    else:
+        change = f"removed epic_id `{prior_epic}`"
+    return [
+        f"frontmatter_routing_rule: producer `tpm` {change}; a tpm stays "
+        "inside the open epic and routes to `planner` when the work belongs "
+        "to another epic."
+    ]
+
+
 def _tracker_lease_findings(
     parsed: HandoffRouting,
     *,
@@ -485,6 +523,10 @@ def validate_handoff_text(
             routing_instruction = frontmatter_result.routing_instruction
             frontmatter_valid = not frontmatter_result.errors
             frontmatter_producer = frontmatter.producer
+            if prior_handoff_content is not None:
+                errors.extend(
+                    _tpm_epic_change_errors(frontmatter, prior_handoff_content)
+                )
             errors.extend(
                 _implementer_scope_sha_errors(
                     frontmatter,
