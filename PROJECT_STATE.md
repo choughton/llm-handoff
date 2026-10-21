@@ -13,9 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-17
-  (chat side-session launcher) in flight and CHAT-18, CHAT-19, CHAT-20,
-  CHAT-4, and CHAT-5 remaining. TRANSITION-RULES is unblocked now that
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-21
+  (chat change record) in flight and CHAT-22, CHAT-23, CHAT-24, CHAT-19,
+  CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-17 (chat side-session
+  launcher) was approved at `d059a25` and merged in PR #224. CHAT-18 was
+  split into CHAT-21 through CHAT-24 on 2026-10-20. TRANSITION-RULES is unblocked now that
   TPM-ROLE is closed and is next in line by fit. CHAT-15 (the loop records
   each dispatch in the dispatch record) was merged in PR #203. CHAT-3
   (dispatch record file) was approved at `6d387ab` and merged in PR #202.
@@ -590,7 +592,7 @@ itself from 1.3.5 to 1.4.2 during the checks):
 
 Fit: closed. HARD-1 through HARD-6 are merged (HARD-6 in PR #157); the epic
 close was approved at `3949ed2388e6a726012cfbf0c8d3511fba5ea179`. Nothing
-remains. CHAT-18's dependency on the HARD-3 marker is
+remains. CHAT-22's dependency on the HARD-3 marker is
 satisfied.
 
 The security-relevant Open Followups, promoted to stories. Each story names
@@ -1078,8 +1080,11 @@ bounces until the three-fix circuit breaker escalates.
 ### 13. CHAT - talk to the agents while the loop runs
 
 Fit: active again after TPM-ROLE closed, by the operator direction of
-2026-10-20; CHAT-17 is in flight. Nothing else blocks it: HARD-3 is merged
-and RECOVERY is closed.
+2026-10-20. CHAT-17 was approved at `d059a25` and merged in PR #224;
+CHAT-21 is in flight; CHAT-22, CHAT-23, CHAT-24, CHAT-19, CHAT-20, CHAT-4,
+and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+closed. Decided by the planner on 2026-10-20: CHAT-18 was split into
+CHAT-21 through CHAT-24 because it exceeded one packet.
 
 Operator redesign (2026-10-20). Chat works like a side coding session the
 operator talks to while the loop runs: it answers right away, while the
@@ -1231,21 +1236,43 @@ dependencies; Windows (`msvcrt`) and POSIX.
   result or a non-failed Codex `file_change`; paths outside the repository
   are dropped; no Codex output files, so a role's saved Codex session is
   untouched.
-- CHAT-18 (was part of CHAT-4): Chat file changes are committed and audited.
-  After a chat answer, the dispatcher records the files the CHAT-17 result
-  names under `logs/dispatch/`, with their fingerprints, the time, and a
-  SHA-256 of the message, never its text. Only those files count as chat
-  changes: a file the role edits while the answer runs, or one chat changed
-  without an edit event (for example through a shell command), stays the
-  role's and goes through the normal scope check. During an implementer
-  role, the work-claim gate commits the recorded files with the role's work
-  even outside the Work Packet's files in scope, and the commit and pull
-  request carry the HARD-3 operator-influenced marker. During any other
-  role, the dispatcher commits them itself after the role's cycle, before
-  the next route, with the same marker. Chat changes committed after an
-  approved audit send the story back to the audit fan-out before it
-  publishes, so nothing unaudited is published. Tested with a faked
-  CHAT-17 result; the loop calls it once CHAT-20 wires chat in.
+- CHAT-18 (was part of CHAT-4): Split into CHAT-21 through CHAT-24 on
+  2026-10-20 before it started.
+- CHAT-21 (was part of CHAT-18): Chat change record. New
+  `llm_handoff/chat_changes.py` saves
+  `ChatChangeEntry(role, story_id, recorded_at, message_sha256, changes)`,
+  each change a `ChatChange(path, fingerprint)`, to
+  `logs/dispatch/chat-changes.json` (`CHAT_CHANGES_STATE_PATH`) via
+  temp-file replace. `record_chat_changes` takes a CHAT-17 result (failed
+  runs too), normalizes its edited paths, drops the `HANDOFF.md` path
+  (CHAT-19 owns it) and duplicates, writes nothing when none is left, and
+  stores each path's fingerprint (file type, Git executable mode, and
+  content or symlink target), the UTC time, and the SHA-256 of the
+  message, never its text. Each entry carries a chained HMAC tag keyed by a
+  per-process secret held only in dispatcher memory, so role-forged or
+  edited entries, and entries from an earlier dispatcher process, are
+  skipped on load. A bad file loads `[]` and bad
+  entries are skipped; also clear. `chat_owned_paths` returns the recorded
+  paths whose file still matches the latest recorded fingerprint, so a file
+  the role edits after the chat recorded it, or one chat changed without an
+  edit event (for example through a shell command), stays the role's and
+  goes through the normal scope check. Not wired into the loop.
+- CHAT-22 (was part of CHAT-18): Chat changes ride the implementer commit
+  with the operator marker. During an implementer role,
+  `dispatcher_commit.commit_implementer_changes` stages the
+  `chat_owned_paths` with the in-scope files even outside the Work Packet's
+  Files in scope, the work-claim gate's diff-scope and worktree checks
+  accept them, and the commit body and the handoff's `## Operator
+  Influence` section carry the HARD-3 marker (message time and SHA-256), so
+  the pull request body shows it.
+- CHAT-23 (was part of CHAT-18): The dispatcher commits chat changes after a
+  non-implementer role. After any non-implementer role's cycle, before the
+  next route, the dispatcher commits the `chat_owned_paths` itself with the
+  same marker and clears the record.
+- CHAT-24 (was part of CHAT-18): Chat changes after an approved audit go
+  back to the audit fan-out. Chat changes committed after an approved audit
+  send the story back to the audit fan-out before it publishes, so nothing
+  unaudited is published.
 - CHAT-19 (was part of CHAT-4): A chat rewrite of `HANDOFF.md` takes over the
   run. When a chat answer changes `HANDOFF.md` while a role runs, the
   dispatcher stops that role as an operator interrupt does, keeps the role's
@@ -1257,12 +1284,14 @@ dependencies; Windows (`msvcrt`) and POSIX.
   Tested with a faked CHAT-17 result; the loop calls it once CHAT-20 wires
   chat in.
 - CHAT-20 (was part of CHAT-4): Messages are answered right away. Lands after
-  CHAT-18 and CHAT-19, so writable chat is never wired in without them. A
+  CHAT-19 and CHAT-21 through CHAT-24, so writable chat is never wired in
+  without them. A
   non-blank chat submission goes to the CHAT-17 side session instead of the
   CHAT-12 queue, and the answer prints above the chat line while the role
   keeps running; messages typed while an answer runs wait in order, and
   follow-ups resume the same side session for the rest of the run. After
-  each answer the loop applies CHAT-18 and CHAT-19. New submissions no
+  each answer the loop applies CHAT-21 through CHAT-24 and CHAT-19. New
+  submissions no
   longer write the CHAT-12 queue, and the CHAT-13 `Press Enter to continue`
   hold runs only when that file already holds messages (saved before this
   story, or kept by an earlier stop), so none is stranded. At the points
@@ -1272,8 +1301,8 @@ dependencies; Windows (`msvcrt`) and POSIX.
 - CHAT-4 (was part of CHAT-3): `@role` asks a finished role's own session.
   `@role <message>` finds the role's latest entry in the CHAT-15 dispatch
   record and resumes that session with the role's normal launch arguments,
-  so the role that did the work answers and can fix it; the CHAT-18 and
-  CHAT-19 rules apply to what it changes. `@role` for the running role, or a
+  so the role that did the work answers and can fix it; the CHAT-21
+  through CHAT-24 and CHAT-19 rules apply to what it changes. `@role` for the running role, or a
   role with no recorded session, goes to the side session. Untargeted
   messages always go to the side session (the old CHAT-7 normalizer
   classification is dropped).

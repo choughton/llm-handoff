@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Chat change record (CHAT-21). New `llm_handoff/chat_changes.py` saves
+  `ChatChangeEntry(role, story_id, recorded_at, message_sha256, changes)` to
+  `logs/dispatch/chat-changes.json` (`CHAT_CHANGES_STATE_PATH`) via temp-file replace.
+  `record_chat_changes(...)` takes a `ChatSessionResult` (a failed one too), normalizes its
+  `edited_paths`, drops the handoff path and duplicates, and records each remaining file's
+  fingerprint (file type, Git executable mode, and content bytes or symlink target;
+  `<absent>` for a deleted file), the UTC time, and the SHA-256 of the operator message;
+  the message text is never written. Nothing is written when no path is left. Each saved
+  entry carries a chained HMAC-SHA256 tag keyed by a per-process secret held only in
+  dispatcher memory, so an entry a role forged or edited, or one from an earlier dispatcher
+  process, is skipped on load. A bad file loads `[]` and bad entries are skipped;
+  `clear_chat_changes` deletes the file. `chat_owned_paths(...)` returns the recorded files
+  that still match their latest recorded fingerprint. Not wired into the loop yet.
 - Chat side-session launcher (CHAT-17). New `llm_handoff/chat_side_session.py` defines
   `run_chat_session(...)`, which starts one chat side session for an operator message on
   the active role's provider (`claude` or `codex`) and resumes it for follow-ups, with the

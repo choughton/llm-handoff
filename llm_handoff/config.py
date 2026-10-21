@@ -185,6 +185,8 @@ IN_FLIGHT_STATE_PATH = Path("logs") / "dispatch" / "in-flight.json"
 CHAT_QUEUE_STATE_PATH = Path("logs") / "dispatch" / "chat-queue.json"
 # Each role dispatch in the current run, with the session id the role reported.
 DISPATCH_RECORD_STATE_PATH = Path("logs") / "dispatch" / "dispatch-record.json"
+# Files a chat side-session changed, with their fingerprints and the message digest.
+CHAT_CHANGES_STATE_PATH = Path("logs") / "dispatch" / "chat-changes.json"
 
 
 def detect_repo_root(start: Path | None = None) -> Path:
