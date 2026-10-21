@@ -11,21 +11,26 @@ from llm_handoff import chat_takeover
 from llm_handoff.chat_takeover import (
     ChatTakeover,
     ChatTakeoverController,
+    arm_takeover,
     clear_takeover,
+    disarm_takeover,
     handoff_content_sha,
     request_takeover,
     request_takeover_if_handoff_changed,
     takeover_requested,
+    takeover_stop_requested,
 )
 
 
 @pytest.fixture
 def shared_controller() -> Iterator[ChatTakeoverController]:
     chat_takeover.CONTROLLER.clear()
+    chat_takeover.CONTROLLER.disarm()
     try:
         yield chat_takeover.CONTROLLER
     finally:
         chat_takeover.CONTROLLER.clear()
+        chat_takeover.CONTROLLER.disarm()
 
 
 def _sha(data: bytes) -> str:
@@ -85,6 +90,103 @@ def test_module_wrappers_use_the_shared_controller(
     clear_takeover()
     assert takeover_requested() is False
     assert shared_controller.handoff_sha() is None
+
+
+def test_fresh_controller_starts_disarmed() -> None:
+    controller = ChatTakeoverController()
+    assert controller.armed() is False
+    assert controller.stop_requested() is False
+
+
+def test_request_while_disarmed_is_recorded_but_does_not_stop() -> None:
+    controller = ChatTakeoverController()
+    controller.request("abc123")
+    assert controller.requested() is True
+    assert controller.handoff_sha() == "abc123"
+    assert controller.stop_requested() is False
+
+    controller.arm()
+    assert controller.armed() is True
+    assert controller.stop_requested() is True
+
+
+def test_arm_without_a_request_does_not_stop() -> None:
+    controller = ChatTakeoverController()
+    controller.arm()
+    assert controller.armed() is True
+    assert controller.stop_requested() is False
+
+    controller.request(None)
+    assert controller.stop_requested() is True
+
+
+def test_disarm_keeps_the_request_pending() -> None:
+    controller = ChatTakeoverController()
+    controller.arm()
+    controller.request("abc123")
+    controller.disarm()
+    assert controller.armed() is False
+    assert controller.stop_requested() is False
+    assert controller.requested() is True
+    assert controller.handoff_sha() == "abc123"
+
+
+def test_clear_does_not_change_the_armed_state() -> None:
+    controller = ChatTakeoverController()
+    controller.arm()
+    controller.request("abc123")
+    controller.clear()
+    assert controller.armed() is True
+    assert controller.requested() is False
+    assert controller.stop_requested() is False
+
+    controller.disarm()
+    controller.request("def456")
+    controller.clear()
+    assert controller.armed() is False
+
+
+def test_armed_window_methods_hold_the_lock() -> None:
+    controller = ChatTakeoverController()
+    results: list[object] = []
+    calls = (
+        controller.arm,
+        controller.disarm,
+        controller.armed,
+        controller.stop_requested,
+    )
+    with controller._lock:
+        workers = [
+            threading.Thread(target=lambda call=call: results.append(call()))
+            for call in calls
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=0.2)
+        # Every call blocks on the held lock.
+        assert all(worker.is_alive() for worker in workers)
+        assert results == []
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+    assert len(results) == len(calls)
+
+
+def test_armed_window_module_wrappers_use_the_shared_controller(
+    shared_controller: ChatTakeoverController,
+) -> None:
+    assert shared_controller.armed() is False
+    request_takeover("cafe")
+    assert takeover_stop_requested() is False
+    arm_takeover()
+    assert shared_controller.armed() is True
+    assert takeover_stop_requested() is True
+    clear_takeover()
+    assert shared_controller.armed() is True
+    assert takeover_stop_requested() is False
+    disarm_takeover()
+    assert shared_controller.armed() is False
 
 
 def test_handoff_content_sha_of_a_file(tmp_path: Path) -> None:

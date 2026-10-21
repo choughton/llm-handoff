@@ -374,6 +374,19 @@ must not independently rewrite `HANDOFF.md`, update project-state files, or
 create competing routing state. This keeps the handoff file as the mutex and
 preserves the serial dispatch contract.
 
+## Operator Chat
+
+An operator chat answer is the one writer of `HANDOFF.md` besides the active
+role. When a chat answer rewrites the file while a role runs, the dispatcher
+stops that role (process tree included), validates the chat's handoff as a
+planner handoff against the handoff the dispatch started from, and then
+follows it or pauses. The stopped role's partial edits stay uncommitted as
+carry-over work for its story, minus the files the chat changed. Only the
+shared role dispatch (planner, tpm, backend, frontend, auditor, validator) can
+be stopped this way; the finalizer, validators the dispatcher runs on its own,
+the normalizer, and hygiene repairs are never stopped. A chat answer that
+changes other files but not `HANDOFF.md` never stops the role.
+
 ## Audit Fan-Out
 
 By default the auditor route runs one reviewer that both judges the work and

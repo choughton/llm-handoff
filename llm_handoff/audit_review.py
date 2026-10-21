@@ -56,6 +56,7 @@ from llm_handoff.agent_providers.claude import (
 )
 from llm_handoff.agent_providers.codex import _build_codex_env, _run_codex_json_command
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
+from llm_handoff.chat_takeover import ChatTakeover, takeover_requested
 from llm_handoff.config import AgentConfig, AgentRole, DispatchConfig
 from llm_handoff.failover import classify_fatal_failure
 from llm_handoff.redaction import redact_stderr_summary
@@ -683,6 +684,12 @@ def run_audit_fan_out(
         )
         quality_outcome = quality_future.result()
         security_outcome = security_future.result()
+
+    if takeover_requested():
+        # A chat answer rewrote the handoff during the review. It is not a
+        # reviewer write, and the pre-review handoff must not be restored
+        # over the chat's rewrite; the loop follows the chat's handoff.
+        raise ChatTakeover
 
     runs: dict[str, ReviewerRun] = {}
     for outcome in (quality_outcome, security_outcome):

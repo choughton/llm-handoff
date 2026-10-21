@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The loop follows a chat rewrite of `HANDOFF.md` (CHAT-28). A takeover
+  request now stops a process only inside an armed window the loop opens
+  around the shared role dispatch, so the finalizer, validators, the
+  normalizer, and hygiene repairs are never stopped. When a chat answer
+  takes over a role, the loop deletes the role's in-flight record, keeps the
+  role's partial edits as carry-over minus chat-owned files, skips the role's
+  commit, gates, and validation, then validates the chat's handoff as a
+  planner handoff and follows it, or pauses when it is not valid. An audit
+  fan-out stopped by chat no longer reports `reviewer_wrote_handoff` or
+  restores the pre-review handoff. Chat is still not wired in to request a
+  takeover (CHAT-20).
 - Role and audit reviewer processes can now be stopped by a chat takeover
   request (CHAT-27): `_run_command_streaming` kills the process tree and
   raises `ChatTakeover` when one is pending, and chat answers opt out. The
