@@ -17,9 +17,11 @@ belong in commits, handoffs, and pull requests.
   stories (splits, reorders, and reshapes them inside the open epic) and the
   planner keeps only epic-level direction. New epic 20 (GROOMING) is next
   after CHAT closes, ahead of TRANSITION-RULES.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-5
-  (chat on agy) implemented by backend and awaiting audit; it is the last
-  assigned story. Its `step_update` edit attribution
+- **Active Epic:** GROOMING (opened by the planner after CHAT closed at
+  `adf757d`, per the operator direction above). GROOM-1 (tpm grooming
+  contract) is implemented and awaits audit; GROOM-2 through GROOM-5 remain.
+  CHAT is closed: CHAT-5 (chat on agy), the
+  epic's last story, was approved at `2407e90` and merged in PR #242. Its `step_update` edit attribution
   (`tool_info.parameters.TargetFile`, `state: "ACTIVE"` to `"DONE"` on
   success, `state: "ERROR"` with `tool_info.error` on failure) was verified
   against a live `agy` 1.4.2 capture of `write_to_file` and
@@ -1134,10 +1136,10 @@ CHAT-30; CHAT-29 was approved at `48dee6a` and merged in PR #233; CHAT-30
 was split into CHAT-31 and CHAT-32; CHAT-31 was approved at `948c2fb` and
 merged in PR #234; CHAT-32 was approved at `0bafd00` and merged in PR #235;
 CHAT-4 was split into CHAT-33 and CHAT-34 on 2026-10-21 before it started;
-CHAT-33 is in flight; CHAT-34, CHAT-35 (added by the operator 2026-10-21,
-before CHAT-5), and CHAT-5 remain. Nothing else blocks it:
-HARD-3 is merged and RECOVERY is
-closed. Decided by the planner on 2026-10-20: CHAT-18 was split into CHAT-21
+CHAT-33 was approved at `94e0963`; CHAT-34 was merged in PR #238; CHAT-35
+was accepted at `04ec10b` and merged in PR #241; CHAT-5 was approved at
+`2407e90` and merged in PR #242. The CHAT epic is closed. HARD-3 is merged
+and RECOVERY is closed. Decided by the planner on 2026-10-20: CHAT-18 was split into CHAT-21
 through CHAT-24 because it exceeded one packet. Decided by the planner on
 2026-10-21: CHAT-19 was split into CHAT-27 and CHAT-28, CHAT-20 into CHAT-29
 and CHAT-30, CHAT-30 into CHAT-31 and CHAT-32, and CHAT-4 into CHAT-33 and
@@ -1586,7 +1588,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   later dispatch of the same role starts from its own new session; and the
   change record takes the running context's story id, because the running
   dispatch commits the change. Nothing in the loop passes the lookup yet;
-  CHAT-34 wires it in. In flight.
+  CHAT-34 wires it in. Approved at `94e0963`.
 - CHAT-34 (was part of CHAT-4): The loop supplies finished role sessions to
   @role chat. After each role dispatch returns, the loop keeps that
   dispatch's role, story id, configured primary provider, and
@@ -1629,7 +1631,10 @@ dependencies; Windows (`msvcrt`) and POSIX.
   only CHAT-5 routes to `planner` to add it.
 - CHAT-5 (was part of CHAT-3): Chat on agy. The side session and `@role`
   answers run on agy with the role's normal agent and grants, as agy role
-  dispatches do.
+  dispatches do. Approved at `2407e90` (PR #242); closes the CHAT epic.
+  Edit attribution was checked against a recorded live `agy` 1.4.2 capture;
+  native POSIX runs and end-to-end interactive chat on live agy were not
+  performed, and CHANGELOG.md and README.md say so.
 
 ### 14. WORK-INTAKE - turn a plain request into epics and stories
 

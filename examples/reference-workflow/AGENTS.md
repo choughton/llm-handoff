@@ -17,8 +17,9 @@ This repo uses a file-based dispatch loop:
 Use these public role names in handoffs:
 
 - `planner`: scopes work, sequences stories, and writes assignments.
-- `tpm`: optional; picks the next story inside an approved epic and writes its
-  assignment. When it is not configured, the planner does this.
+- `tpm`: optional; grooms the stories inside an approved epic (splits,
+  reorders, and reshapes them), picks the next one, and writes its assignment.
+  When it is not configured, the planner does this.
 - `backend`: implements backend, data, CLI, integration, and test work.
 - `frontend`: implements UI, browser behavior, frontend tests, and visual checks.
 - `auditor`: reviews completed work and routes approved or blocked results.
@@ -86,7 +87,10 @@ Only push when a human or this repository's explicit policy authorizes it.
 ## Boundaries
 
 - `planner` does not implement code.
-- `tpm` does not implement, audit, close epics, or edit `PROJECT_STATE.md`.
+- `tpm` grooms stories only inside the open epic. It does not implement,
+  audit, pick, open, close, or re-scope epics, edit an epic's intro or `Fit:`
+  line, drop stories for scope reasons, or edit `PROJECT_STATE.md` itself; it
+  records grooming changes through the Work Packet it writes.
 - `backend` does not take frontend-only work.
 - `frontend` does not modify backend routes, persistence, or API contracts.
 - `auditor` reports findings and routes; it does not silently fix defects.
