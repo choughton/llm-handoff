@@ -352,13 +352,19 @@ class _AntigravityStreamJsonMonitor:
             usage=dict(usage_fields) if usage_fields else None,
         )
 
-    def _final_stdout(self, raw_stdout: str) -> str:
+    def response_text(self) -> str:
+        """Return the result's ``response``, else the joined reply deltas.
+
+        Returns ``""`` when the run produced neither.
+        """
         if self.result_event is not None:
             response = self.result_event.get("response")
             if isinstance(response, str) and response.strip():
                 return response
-        joined = "".join(self.text_deltas).strip()
-        return joined or raw_stdout
+        return "".join(self.text_deltas).strip()
+
+    def _final_stdout(self, raw_stdout: str) -> str:
+        return self.response_text() or raw_stdout
 
     def _consume_line(self, raw_line: str) -> None:
         line = raw_line.strip()

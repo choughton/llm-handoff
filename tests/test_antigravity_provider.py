@@ -315,6 +315,36 @@ def test_raw_stdout_is_returned_without_response_or_deltas(
     assert result.session_id == "c3"
 
 
+def _monitor_for(*lines: str) -> antigravity._AntigravityStreamJsonMonitor:
+    monitor = antigravity._AntigravityStreamJsonMonitor(agent_name="chat", log=None)
+    monitor.consume_stdout(_stream(*lines))
+    return monitor
+
+
+def test_response_text_prefers_result_response() -> None:
+    monitor = _monitor_for(
+        _event(type="step_update", step_type="agent_response", text_delta="delta"),
+        _event(type="result", status="SUCCESS", response="Final."),
+    )
+    assert monitor.response_text() == "Final."
+
+
+def test_response_text_falls_back_to_reply_deltas() -> None:
+    monitor = _monitor_for(
+        _event(type="step_update", step_type="user_input", text_delta="echo "),
+        _event(type="step_update", step_type="agent_response", text_delta=" Hi "),
+        _event(type="step_update", step_type="agent_response", text_delta="there "),
+        _event(type="result", status="SUCCESS", response="  "),
+    )
+    assert monitor.response_text() == "Hi there"
+
+
+def test_response_text_is_empty_without_response_or_deltas() -> None:
+    monitor = _monitor_for(_event(type="result", status="SUCCESS"))
+    assert monitor.response_text() == ""
+    assert monitor.finalize(_ProcessResult(stdout="raw", stderr="", exit_code=0)).stdout == "raw"
+
+
 def test_documented_nested_envelope_is_unwrapped(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

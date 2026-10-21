@@ -425,14 +425,47 @@ cannot resume an earlier run's sessions.
 
 The console's chat answer worker looks the target up when the message is
 sent and resumes the session with the role's configured agent settings, the
-recorded provider, and the recorded story id. Only Claude and Codex sessions
-are resumed. When the target is the running role, has no kept session, or
-its recorded provider is not supported, the full message goes to the side
-session with a notice that says why. Role messages share the one FIFO queue
+recorded provider, and the recorded story id. Claude, Codex, and Antigravity
+sessions are resumed. When the target is the running role, has no kept
+session, or its recorded provider is not supported, the full message goes to
+the side session with a notice that says why. Role messages share the one FIFO queue
 with side messages, keep the target role's own permissions, and are recorded
 against the running story; a resulting `HANDOFF.md` change goes through the
-same takeover and audit handling as any chat change. Chat on agy is not
-available yet.
+same takeover and audit handling as any chat change.
+
+### Chat on agy
+
+An Antigravity (`antigravity` provider, `agy` CLI) chat answer launches like
+an `agy` role dispatch: the configured binary, model, print timeout, idle
+timeout, environment, and agent name (the role name when none is set), with
+`--mode accept-edits` or, under `unsafe_bypass`, the bypass argument. It
+passes `--conversation` only to resume a side session or a finished role's
+conversation, and uses the chat prompt, not the dispatch-assignment prompt.
+The answer text and conversation id come from the role dispatch stream
+parser, which also turns a non-`SUCCESS` result, a missing result, a
+deny-rule refusal, a permission soft-deny, or a sign-in failure into a chat
+error. A failed resume is reported, not retried in a fresh conversation.
+
+The chat change record takes an agy edit from a `step_update` tool step for
+`write_to_file`, `replace_file_content`, or `multi_replace_file_content`
+whose step reaches `state: "DONE"` with no `tool_info.error`; the path is the
+step's `tool_info.parameters.TargetFile`, which may arrive on an earlier event
+of the same `step_index`. A step that ends in `ERROR` or never reaches `DONE`
+does not count, and paths outside the repository are dropped. Edits that
+finished before a later failure still count.
+
+This contract was verified against a live `agy` 1.4.2 stream-json capture of
+`write_to_file` and `replace_file_content` steps, which
+`tests/test_chat_side_session.py` replays. Each edit step names its file in
+`tool_info.parameters.TargetFile` as an absolute path and moves from
+`state: "ACTIVE"` to `state: "DONE"` with no `tool_info.error` on success,
+or to `state: "ERROR"` with `tool_info.error` (`type: "TOOL_ERROR"`) on
+failure. `agy` 1.4.2 did multi-chunk replacement through
+`replace_file_content`; `multi_replace_file_content` was not seen live and
+stays in the edit tool list for compatibility with agent files that list it.
+A change made through a shell command, or by an `agy` version that reports
+edits some other way, is not recorded as a chat change and stays with the
+role.
 
 ## Audit Fan-Out
 

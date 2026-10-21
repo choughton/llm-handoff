@@ -6,6 +6,24 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Chat runs on agy (CHAT-5). `antigravity` joins the chat providers, so a
+  plain message while an `agy` role runs starts a side conversation that
+  later messages resume, and `@role` resumes a finished `agy` role's
+  conversation with that role's configuration. The launch reuses the `agy`
+  role command (binary, model, print timeout, environment, agent name or
+  the role, `--conversation` to resume, `--mode accept-edits` or the
+  `unsafe_bypass` argument) and the role dispatch stream parser, so result
+  status, missing-result, deny-rule, soft-deny, and sign-in failures become
+  chat errors. Chat edits are taken from `write_to_file`,
+  `replace_file_content`, and `multi_replace_file_content` tool steps that
+  reach `DONE` without an error, using `tool_info.parameters.TargetFile`.
+  The `write_to_file` and `replace_file_content` edit steps (`TargetFile`,
+  `ACTIVE` -> `DONE`, and `ERROR` with `tool_info.error`) were checked
+  against a recorded live `agy` 1.4.2 stream-json capture;
+  `multi_replace_file_content` is kept for agent-file compatibility. New
+  `response_text()` on the Antigravity stream monitor. Chat session tests
+  replay the captured events and use mocked streams; no end-to-end
+  interactive console chat against a live `agy` was run.
 - The `agy` permission set no longer includes
   `unsandboxed(regex:^git( .*)? push( .*)?$)`. `agy` 1.4.4 ignores
   `unsandboxed(...)` rules and logs that they grant nothing; the
