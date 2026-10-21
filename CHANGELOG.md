@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Chat side-session launcher (CHAT-17). New `llm_handoff/chat_side_session.py` defines
+  `run_chat_session(...)`, which starts one chat side session for an operator message on
+  the active role's provider (`claude` or `codex`) and resumes it for follow-ups, with the
+  role's normal permission arguments, `unsafe_bypass` included. It returns
+  `ChatSessionResult(text, session_id, exit_code, error, edited_paths)`; `edited_paths`
+  lists the repo-relative files named by Claude edit tool calls that did not fail, or by
+  Codex `file_change` items that did not fail (that Codex event shape is not checked
+  against a live CLI). Codex chat names no output files, so a role's saved Codex session
+  is untouched. Another provider raises before launch. Not wired into the loop yet.
 - Documentation sweep for the optional `tpm` role (TPM-12). `README.md` names `tpm` in the
   role list, describes the story flow with and without `agents.tpm`, and says who picks the
   next story in file and Linear mode. `docs/ARCHITECTURE.md` lists `tpm` as a supported
