@@ -6,6 +6,8 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The re-audit handoff write after a chat commit now replaces `HANDOFF.md`
+  atomically (CHAT-26), so a failed write leaves the previous handoff in place.
 - Chat changes after an approved audit go back to the audit fan-out
   (CHAT-24). Outside `local` publish mode and in dispatcher commit mode,
   when the auditor's accepted handoff approves the story, the loop checks

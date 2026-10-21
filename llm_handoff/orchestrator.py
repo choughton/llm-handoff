@@ -4801,12 +4801,30 @@ CHAT_REAUDIT_UNMARKED: Literal["unmarked"] = "unmarked"
 
 
 def _write_handoff_durably(path: Path, content: str) -> None:
-    """Write ``content`` to ``path`` and flush it to disk before returning."""
+    """Replace ``path`` with ``content`` atomically, flushed to disk first.
 
-    with path.open("w", encoding="utf-8") as handle:
-        handle.write(content)
-        handle.flush()
-        os.fsync(handle.fileno())
+    The content is written and fsynced to a temporary file in the same
+    directory, which then replaces ``path``. When the write fails before the
+    replace, the previous handoff survives unchanged and the temporary file
+    is removed.
+    """
+
+    # mkstemp creates a new randomly named file with O_CREAT | O_EXCL, so a
+    # link planted at a predictable temporary name is never opened or followed.
+    file_fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+        raise
 
 
 def _send_chat_changes_back_to_audit(

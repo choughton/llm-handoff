@@ -13,9 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-24 (chat
-  changes after an approved audit go back to the audit fan-out) in flight and
-  CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-23 (the dispatcher
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-26 (the
+  re-audit handoff write replaces `HANDOFF.md` atomically) in flight and
+  CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-24 (chat changes
+  after an approved audit go back to the audit fan-out) was approved at
+  `39d3c90` and merged in PR #229. CHAT-23 (the dispatcher
   commits chat changes after a non-implementer role) was approved at
   `9c44ff0` and merged in PR #228. CHAT-25
   (chat-committed paths survive a resumed handback) was approved at
@@ -1092,8 +1094,9 @@ Fit: active again after TPM-ROLE closed, by the operator direction of
 CHAT-21 was approved at `210267b` and merged in PR #225; CHAT-22 was
 approved at `a2723e9` and merged in PR #226; CHAT-25 was approved at
 `e900bc5` and merged in PR #227; CHAT-23 was approved at `9c44ff0` and
-merged in PR #228; CHAT-24 is in flight; CHAT-19, CHAT-20, CHAT-4, and
-CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+merged in PR #228; CHAT-24 was approved at `39d3c90` and merged in PR
+#229; CHAT-26 (follow-up from the CHAT-24 audit) is in flight; CHAT-19,
+CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into
 CHAT-21 through CHAT-24 because it exceeded one packet.
 
@@ -1349,7 +1352,16 @@ dependencies; Windows (`msvcrt`) and POSIX.
   the record (a clear failure only warns) and publishes as before. The
   CHAT-23 approved-story INFO line says, for the auditor route outside
   `local` mode, that the changes are committed and sent back to the audit
-  fan-out before the story publishes.
+  fan-out before the story publishes. Approved at `39d3c90` and merged in
+  PR #229.
+- CHAT-26 (follow-up from the CHAT-24 audit): The re-audit handoff write
+  replaces `HANDOFF.md` atomically. `_write_handoff_durably` writes and
+  fsyncs the re-audit handoff to a temporary file next to `HANDOFF.md`
+  (`tempfile.mkstemp`, as `chat_queue.save_chat_messages` does) and then
+  `os.replace`s it, so a disk-full error or interruption before the replace
+  leaves the previous handoff unchanged and the temporary file removed; the
+  chat change record is still kept and the story still does not publish.
+  No other handoff write changes.
 - CHAT-25 (follow-up from the CHAT-22 review): Chat-committed paths survive
   a resumed handback. The in-flight `handback` record gains
   `chat_commit_sha` and `chat_committed` (a missing pair loads as None and

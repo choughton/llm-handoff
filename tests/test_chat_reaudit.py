@@ -383,6 +383,80 @@ def test_helper_keeps_the_record_when_the_handoff_write_fails(
     assert [level for level, _message in messages] == ["ERROR"]
 
 
+def test_helper_keeps_the_handoff_when_the_real_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _base, implemented, assignment, record = _story_repo(tmp_path)
+    handoff_path = repo / HANDOFF
+    before = handoff_path.read_bytes()
+    messages: list[tuple[str, str]] = []
+
+    def failing_fsync(_fd: int) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(orchestrator.os, "fsync", failing_fsync)
+
+    result = orchestrator._send_chat_changes_back_to_audit(
+        _config(repo), assignment, _collecting_log(messages)
+    )
+
+    assert result == orchestrator.CHAT_REAUDIT_FAILED
+    assert handoff_path.read_bytes() == before
+    assert record.exists()
+    assert load_chat_changes(record)
+    assert _git(repo, "rev-parse", "HEAD~1") == implemented
+    assert _leftover_temporaries(handoff_path) == []
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "disk full" in errors[0] and "record is kept" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# _write_handoff_durably
+# ---------------------------------------------------------------------------
+
+
+def _leftover_temporaries(path: Path) -> list[Path]:
+    return sorted(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+def _existing_handoff(tmp_path: Path) -> tuple[Path, bytes]:
+    path = tmp_path / "HANDOFF.md"
+    original = b"---\nnext_agent: auditor\n---\n\n# Original handoff\n"
+    path.write_bytes(original)
+    return path, original
+
+
+@pytest.mark.parametrize("failing", ["fsync", "replace"])
+def test_durable_write_failure_keeps_the_previous_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    path, original = _existing_handoff(tmp_path)
+
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError(f"{failing} failed")
+
+    monkeypatch.setattr(orchestrator.os, failing, fail)
+
+    with pytest.raises(OSError, match=f"{failing} failed"):
+        orchestrator._write_handoff_durably(path, "# New handoff\n")
+
+    assert path.read_bytes() == original
+    assert _leftover_temporaries(path) == []
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["HANDOFF.md"]
+
+
+def test_durable_write_replaces_the_handoff(tmp_path: Path) -> None:
+    path, _original = _existing_handoff(tmp_path)
+    content = "---\nnext_agent: auditor\n---\n\n# New handoff\n"
+
+    orchestrator._write_handoff_durably(path, content)
+
+    assert path.read_text(encoding="utf-8") == content
+    assert _leftover_temporaries(path) == []
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["HANDOFF.md"]
+
+
 def test_helper_keeps_the_record_when_the_commit_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
