@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- New `llm_handoff/chat_answers.py` (CHAT-29): `ChatAnswerWorker` answers
+  chat messages one at a time on a background thread, in submission order,
+  resuming the side session per provider. After each answer it writes the
+  answer lines, records the files the answer changed, and then requests a
+  takeover when `HANDOFF.md` changed. Failures write one `chat error:` line
+  and never stop the thread; agy roles get a "not available yet" notice. A
+  message submitted while `stop()` waits for the running answer is refused
+  with a notice, so two answers never overlap. Nothing in the loop calls it yet (CHAT-30).
 - The loop follows a chat rewrite of `HANDOFF.md` (CHAT-28). A takeover
   request now stops a process only inside an armed window the loop opens
   around the shared role dispatch, so the finalizer, validators, the
