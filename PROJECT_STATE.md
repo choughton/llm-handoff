@@ -78,7 +78,9 @@ belong in commits, handoffs, and pull requests.
   waiting on it. ACTIVE-PLANNER and ESCALATION-RECONCILE still wait on their
   triggers, WORK-INTAKE needs a design check, and LINEAR-SWITCH has low
   urgency.
-- **Parked Epic:** TIDY, with TIDY-8 remaining. TIDY-7 (Claude helper
+- **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
+  (TIDY-12 and TIDY-13 are wording nits filed by the operator on
+  2026-10-21). TIDY-7 (Claude helper
   files defer to the configured project state path) was approved at
   `4a8f9fc` and merged in PR #216, batched with TPM-9. TIDY-8 is a backend
   story the planner picks by fit (the operator confirmed both events on
@@ -2048,11 +2050,13 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: TIDY-7 is approved at `4a8f9fc` (PR #216, batched with TPM-9). TIDY-8
-is the only remaining story, and it is unblocked: the operator wants both
+Fit: TIDY-7 is approved at `4a8f9fc` (PR #216, batched with TPM-9). TIDY-8,
+TIDY-12, and TIDY-13 remain, all unblocked. TIDY-8: the operator wants both
 Linear evidence events (`epic_closed` and `handoff_repaired`), so it is a
-normal backend story the planner may pick by fit. TIDY closes after TIDY-8.
-Nothing here blocks another epic.
+normal backend story. TIDY-12 and TIDY-13 are one-file wording nits the
+operator filed on 2026-10-21 after switching the self-host planner to agy and
+adding a codex tpm; each fills a wait. TIDY closes after all three. Nothing
+here blocks another epic.
 
 The Open Followups that were still open on 2026-10-19, promoted to stories.
 Line numbers are from `105ea42`; re-check them when writing the Work Packet.
@@ -2223,6 +2227,27 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   planner and frontend. Files: `llm_handoff/init_workflow.py`,
   `tests/test_init_tracker.py`, `CHANGELOG.md`. Closes the GEM-3b audit
   followup (was TIDY-7 (b)). Approved at `f81ed5b`, merged in PR #192.
+- TIDY-12: Doctor's agy interpreter-grant line says what it found. For an
+  `antigravity` role with `interpreter_grants: true`, `doctor` warns
+  "<role> (provider antigravity) needs the agy allow entries
+  `command(regex:^python( .*)?$)`, ..." (`llm_handoff/doctor.py` ~line 902)
+  even when `~/.gemini/antigravity-cli/settings.json` already holds those
+  entries, which read as a missing grant to the operator on 2026-10-21. When
+  every entry is present in the agy user settings, word it like the Claude
+  line ("uses the agy allow entries ..."), keeping the bypass-risk and
+  user-wide text; when one is missing, say which are missing and point to the
+  `antigravity permissions` check. Severity stays WARN. Files:
+  `llm_handoff/doctor.py`, `tests/test_doctor.py`, `CHANGELOG.md`.
+- TIDY-13: The example config's tpm comment matches TPM-10. The commented
+  `tpm:` block in `dispatch_config.example.yaml` (~line 180) still says "The
+  dispatcher does not route to it yet: a handoff with next_agent: tpm still
+  pauses", which TPM-10 made wrong. Say instead that, when configured, the
+  auditor's story-level passes and the planner's epic opens route to the tpm,
+  the planner keeps epic choice, pause recovery, and repairs, and without it
+  the planner picks every story. Check `CONFIGURATION.md` and the reference
+  workflow's `dispatch_config.yaml` for the same stale sentence. Protected
+  path; list it in Files in scope. Files: `dispatch_config.example.yaml`,
+  `CHANGELOG.md`.
 
 ## Open Followups
 
