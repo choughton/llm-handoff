@@ -145,12 +145,12 @@ values and never paste a real token into a file you commit.
   `dispatch_config.yaml` if your sandbox team uses other names.
 - A Linear project or a label in that team that defines the pool for this
   repository. Use exactly one of them.
-- At least four issues in `eligible_state` in that pool, each written from
+- At least five issues in `eligible_state` in that pool, each written from
   the issue template in
   `llm_handoff/prompt_templates/linear/ISSUE_TEMPLATE.md` (`init` also
   renders it into the target's `docs/handoff/HANDBOOK.md`). One is for
-  Scenario A, one for Scenario B, one for Scenario C, and one for
-  Scenario D.
+  Scenario A, one for Scenario B, one for Scenario C, and two for
+  Scenario D, whose epic needs a second story.
 - A disposable target repository with at least one commit and a test command
   the repository already defines, so a Verification command can run it.
 - `enforce_work_packet: true` in the target's `dispatch_config.yaml`. Linear
@@ -305,7 +305,11 @@ markers: replace the `## Linear Mode: planner` section with the contents of
 `llm_handoff/prompt_templates/linear/roles/planner_with_tpm.md`, and add the
 contents of `llm_handoff/prompt_templates/linear/roles/tpm.md` as a new
 section inside the markers. Then write a fresh planner handoff that asks
-for a new epic and start the loop with `llm-handoff --repo-root <target>`.
+for a new epic of at least two stories, one per Scenario D issue, and start
+the loop with `llm-handoff --repo-root <target>`. The second story must stay
+in `remaining_stories` after the tpm assigns the first: with
+`remaining_stories: []` the audit treats the pass as an epic close and routes
+to `finalizer`, not `tpm`.
 Do not empty `HANDOFF.md` for this scenario: a missing lease goes to the
 planner's lease rebuild (Scenario C), which leases an issue itself. Check by
 hand:
@@ -314,7 +318,9 @@ hand:
   its handoff has `next_agent: tpm` and no `tracker_issue`.
 - The tpm leases the eligible issue its selection rules rank first: it posts a `lease_opened` comment, moves
   the issue to `in_progress_state`, and writes the `## Work Packet` in
-  `HANDOFF.md` with `producer: tpm`.
+  `HANDOFF.md` with `producer: tpm` and the other story still listed in
+  `remaining_stories`. If `remaining_stories` is empty, the route check
+  below does not apply; record that as a deviation.
 - After the implementer and the audit, `HANDOFF.md` routes to `tpm` with
   `status: verified_pass`, not to `planner`, and the issue has an
   `audit_passed` comment that carries the concrete `scope_sha` as
