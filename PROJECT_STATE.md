@@ -13,9 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-27 (chat
-  can stop the running role when it rewrites `HANDOFF.md`) in flight and
-  CHAT-28, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-26 (the re-audit
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-28 (the
+  loop follows a chat rewrite of `HANDOFF.md`) in flight and CHAT-20,
+  CHAT-4, and CHAT-5 remaining. CHAT-27 (chat can stop the running role when
+  it rewrites `HANDOFF.md`) was approved at `5ec213e` and merged in PR #231.
+  CHAT-26 (the re-audit
   handoff write replaces `HANDOFF.md` atomically) was approved at `661dc5a`
   and merged in PR #230. CHAT-19 was split into CHAT-27 and CHAT-28 on
   2026-10-21 before it started. CHAT-24 (chat changes
@@ -1100,7 +1102,8 @@ approved at `a2723e9` and merged in PR #226; CHAT-25 was approved at
 merged in PR #228; CHAT-24 was approved at `39d3c90` and merged in PR
 #229; CHAT-26 (follow-up from the CHAT-24 audit) was approved at `661dc5a`
 and merged in PR #230; CHAT-19 was split into CHAT-27 and CHAT-28; CHAT-27
-is in flight; CHAT-28, CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else
+was approved at `5ec213e` and merged in PR #231; CHAT-28 is in flight;
+CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else
 blocks it: HARD-3 is merged and RECOVERY is closed. Decided by the planner
 on 2026-10-20: CHAT-18 was split into CHAT-21 through CHAT-24 because it
 exceeded one packet. Decided by the planner on 2026-10-21: CHAT-19 was
@@ -1411,6 +1414,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   provider and audit reviewer is stoppable. Both CHAT-17 chat launches pass
   `stop_on_chat_takeover=False`. Nothing outside tests requests a takeover
   and `llm_handoff/orchestrator.py` is unchanged; CHAT-28 wires it in.
+  Approved at `5ec213e` and merged in PR #231.
 - CHAT-28 (was part of CHAT-19): The loop follows a chat rewrite of
   `HANDOFF.md`. When a role dispatch raises `ChatTakeover`, or a takeover
   is requested by the time the dispatch returns, the loop clears the
@@ -1423,7 +1427,21 @@ dependencies; Windows (`msvcrt`) and POSIX.
   does not report `reviewer_wrote_handoff`. File changes without a
   `HANDOFF.md` change let the role keep running. `docs/ARCHITECTURE.md`
   says chat may write `HANDOFF.md` this way. Tested with a faked CHAT-17
-  result; the loop calls it once CHAT-20 wires chat in.
+  result; the loop calls it once CHAT-20 wires chat in. Decided by the
+  planner on 2026-10-21: (1) Armed window: a takeover request stops a
+  process only while the controller is armed (`arm()`, `disarm()`,
+  `armed()`, `stop_requested()`, with the `arm_takeover`,
+  `disarm_takeover`, and `takeover_stop_requested` wrappers; `clear()` does
+  not change the armed state), the `_run_command_streaming` poll checks
+  `takeover_stop_requested()`, and the loop arms only around the
+  shared-branch role dispatch, so the finalizer, validators, the
+  normalizer, and hygiene repairs are never stopped. (2) The chat's handoff
+  is validated with `validate_handoff` as a `planner` handoff, against the
+  handoff the dispatch started from. (3) An invalid chat handoff pauses
+  through `_pause_at_dispatcher_pause` with no automatic planner pause
+  recovery, so the operator sees exactly what the chat wrote. (4) The
+  finalizer branch is not armed and is unchanged; a request during the
+  finalizer stays pending and is cleared before the next shared dispatch.
 - CHAT-20 (was part of CHAT-4): Messages are answered right away. Lands after
   CHAT-21 through CHAT-28, so writable chat is never wired in
   without them. A

@@ -17,7 +17,7 @@ from typing import Callable, Mapping, TextIO
 from llm_handoff import chat_session
 from llm_handoff.agent_streams import StderrMode, _LiveAgentOutputMonitor
 from llm_handoff.agent_types import LogFn, _ProcessResult
-from llm_handoff.chat_takeover import ChatTakeover, takeover_requested
+from llm_handoff.chat_takeover import ChatTakeover, takeover_stop_requested
 from llm_handoff.config import VENDOR_API_KEY_ENV_NAMES, AgentConfig
 from llm_handoff.console_interrupt import (
     deferred_interrupts,
@@ -398,7 +398,7 @@ def _run_command_streaming(
                 # on the main thread, so a run on a worker thread (the audit
                 # fan-out) stops here instead.
                 raise KeyboardInterrupt
-            if stop_on_chat_takeover and takeover_requested():
+            if stop_on_chat_takeover and takeover_stop_requested():
                 # A chat answer rewrote HANDOFF.md; the except block below
                 # kills the tree before the exception propagates.
                 raise ChatTakeover

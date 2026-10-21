@@ -2,9 +2,11 @@
 
 A chat answer that rewrites ``HANDOFF.md`` requests a takeover. Role and
 audit reviewer processes launched through ``_run_command_streaming`` poll the
-request and are stopped, process tree included, by raising ``ChatTakeover``.
-Nothing in the loop requests or clears a takeover yet; that wiring belongs to
-the loop change that follows the chat's handoff.
+request and are stopped, process tree included, by raising ``ChatTakeover``,
+but only while the loop has armed the window around a role dispatch. The
+loop then validates and follows the chat's handoff. Nothing outside tests
+requests a takeover yet; the chat wiring calls
+``request_takeover_if_handoff_changed``.
 """
 
 from __future__ import annotations
@@ -26,12 +28,19 @@ class ChatTakeover(BaseException):
 
 
 class ChatTakeoverController:
-    """Thread-safe record of a pending chat takeover request."""
+    """Thread-safe record of a pending chat takeover request.
+
+    A request only stops a process while the controller is armed. The loop
+    arms it around the shared-branch role dispatch, so a request that lands
+    while a validator, the normalizer, a hygiene repair, or the finalizer
+    runs stays pending instead of stopping that process.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._requested = False
         self._handoff_sha: str | None = None
+        self._armed = False
 
     def request(self, handoff_sha: str | None) -> None:
         with self._lock:
@@ -48,9 +57,27 @@ class ChatTakeoverController:
             return self._handoff_sha if self._requested else None
 
     def clear(self) -> None:
+        """Drop the pending request. The armed state is left unchanged."""
         with self._lock:
             self._requested = False
             self._handoff_sha = None
+
+    def arm(self) -> None:
+        with self._lock:
+            self._armed = True
+
+    def disarm(self) -> None:
+        with self._lock:
+            self._armed = False
+
+    def armed(self) -> bool:
+        with self._lock:
+            return self._armed
+
+    def stop_requested(self) -> bool:
+        """Return True only while a request is pending and the window is armed."""
+        with self._lock:
+            return self._requested and self._armed
 
 
 CONTROLLER = ChatTakeoverController()
@@ -64,8 +91,25 @@ def takeover_requested() -> bool:
     return CONTROLLER.requested()
 
 
+def takeover_handoff_sha() -> str | None:
+    """Return the handoff SHA the pending request recorded, or None."""
+    return CONTROLLER.handoff_sha()
+
+
 def clear_takeover() -> None:
     CONTROLLER.clear()
+
+
+def arm_takeover() -> None:
+    CONTROLLER.arm()
+
+
+def disarm_takeover() -> None:
+    CONTROLLER.disarm()
+
+
+def takeover_stop_requested() -> bool:
+    return CONTROLLER.stop_requested()
 
 
 def handoff_content_sha(handoff_path: Path) -> str | None:

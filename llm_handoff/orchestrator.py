@@ -46,6 +46,15 @@ from llm_handoff.chat_changes import (
     clear_chat_changes,
     load_chat_changes,
 )
+from llm_handoff.chat_takeover import (
+    ChatTakeover,
+    arm_takeover,
+    clear_takeover,
+    disarm_takeover,
+    handoff_content_sha,
+    takeover_handoff_sha,
+    takeover_requested,
+)
 from llm_handoff.chat_queue import (
     chat_queue_path,
     clear_chat_messages,
@@ -2000,55 +2009,120 @@ def _run_loop(
                     stdout="", stderr="", exit_code=0, elapsed_seconds=0.0
                 )
                 previous_agent = current_cycle.route
+                chat_took_over = False
             else:
-                dispatch_result, previous_agent = _dispatch_route(
-                    current_cycle.route,
-                    config,
-                    log_fn,
-                    planner_session_id=planner_session_id,
-                    planner_previous_handoff_sha=planner_previous_handoff_sha,
-                    current_handoff_sha=current_cycle.handoff_sha,
-                    additional_instruction=(
-                        forced_additional_instruction
-                        if forced_additional_instruction is not None
-                        else (
-                            stale_finalizer_recovery_instruction(
-                                config.project_state_path
-                            )
-                            if decision.source == "stale_epic_close_recovery"
-                            else None
+                dispatch_instruction = (
+                    forced_additional_instruction
+                    if forced_additional_instruction is not None
+                    else (
+                        stale_finalizer_recovery_instruction(
+                            config.project_state_path
                         )
+                        if decision.source == "stale_epic_close_recovery"
+                        else None
+                    )
+                )
+                dispatch_audit_context = AuditFanOutContext(
+                    cycle_number=cycle_number,
+                    handoff_content=handoff_content,
+                    implementer_base_sha=_audit_fan_out_base(
+                        config,
+                        current_cycle.route,
+                        handoff_content,
+                        implementer_base_sha,
+                        log_fn,
                     ),
-                    audit_context=AuditFanOutContext(
-                        cycle_number=cycle_number,
+                    operator_influence=_audit_operator_influence(
+                        route=current_cycle.route,
+                        recovery_kind=active_planner_recovery_kind,
+                        active_operator_influence=active_operator_influence,
                         handoff_content=handoff_content,
-                        implementer_base_sha=_audit_fan_out_base(
-                            config,
-                            current_cycle.route,
-                            handoff_content,
-                            implementer_base_sha,
-                            log_fn,
-                        ),
-                        operator_influence=_audit_operator_influence(
-                            route=current_cycle.route,
-                            recovery_kind=active_planner_recovery_kind,
-                            active_operator_influence=active_operator_influence,
-                            handoff_content=handoff_content,
-                            chat_commit_influence=_chat_commit_influence_for(
-                                chat_commit_marker, handoff_content
-                            ),
+                        chat_commit_influence=_chat_commit_influence_for(
+                            chat_commit_marker, handoff_content
                         ),
                     ),
                 )
-                # Whatever its exit code, stop request, or session state.
-                _record_role_dispatch(
+                # A takeover request left from before this dispatch (one that
+                # landed while a validator or the finalizer ran) is stale.
+                # Only this dispatch is stoppable, so the window is armed
+                # around it alone.
+                clear_takeover()
+                arm_takeover()
+                dispatch_returned: tuple[DispatchResult, str] | None = None
+                try:
+                    dispatch_returned = _dispatch_route(
+                        current_cycle.route,
+                        config,
+                        log_fn,
+                        planner_session_id=planner_session_id,
+                        planner_previous_handoff_sha=planner_previous_handoff_sha,
+                        current_handoff_sha=current_cycle.handoff_sha,
+                        additional_instruction=dispatch_instruction,
+                        audit_context=dispatch_audit_context,
+                    )
+                except ChatTakeover:
+                    pass
+                finally:
+                    disarm_takeover()
+                # A role stopped by a chat answer raised; one that returned
+                # before the poll saw the request still yields to the chat.
+                chat_took_over = dispatch_returned is None or takeover_requested()
+                if dispatch_returned is not None:
+                    dispatch_result, previous_agent = dispatch_returned
+                    # Whatever its exit code, stop request, or session state.
+                    _record_role_dispatch(
+                        config,
+                        route=current_cycle.route,
+                        story_id=_handoff_story_id(assignment_content),
+                        dispatch_result=dispatch_result,
+                        log=log_fn,
+                        state=dispatch_record_state,
+                    )
+                else:
+                    previous_agent = current_cycle.route
+            if chat_took_over:
+                takeover = _follow_chat_takeover(
                     config,
                     route=current_cycle.route,
-                    story_id=_handoff_story_id(assignment_content),
-                    dispatch_result=dispatch_result,
+                    role_label=previous_agent,
                     log=log_fn,
-                    state=dispatch_record_state,
+                    record_written=(
+                        planner_in_flight_written
+                        or tpm_in_flight_written
+                        or auditor_in_flight_written
+                        or in_flight_written
+                    ),
+                    pre_dispatch_state=pre_dispatch_state,
+                    story_key=story_key,
+                    planner_git_before=planner_git_before,
+                    protected_before=protected_before,
+                    assignment_content=assignment_content,
+                    prior_handoff_sha=current_cycle.handoff_sha,
+                    story_check_baseline=story_check_baseline,
+                    stop_watch=stop_watch,
+                    operator_prompt=operator_prompt,
                 )
+                if takeover.leftovers_captured:
+                    implementer_leftovers = takeover.leftovers
+                if takeover.exit_code is not None:
+                    return takeover.exit_code
+                if takeover.story_baseline_known:
+                    story_baseline = takeover.story_baseline
+                if takeover.kind == "followed":
+                    previous_cycle = current_cycle
+                    consecutive_failures = 0
+                    if max_cycles is not None and cycle_number >= max_cycles:
+                        return 0
+                    _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
+                    _log(log_fn, "INFO", "")
+                elif takeover.kind == "protected":
+                    previous_cycle = current_cycle
+                    consecutive_failures = 0
+                elif takeover.kind == "retry":
+                    previous_cycle = None
+                elif takeover.pending_planner_recovery is not None:
+                    pending_planner_recovery = takeover.pending_planner_recovery
+                continue
             # The planner returned, whatever its exit code: its handoff is
             # whatever it wrote, so its record names nothing interrupted.
             if planner_in_flight_written and not _delete_in_flight_record(
@@ -2946,6 +3020,224 @@ def _clear_run_dispatch_record(
             "The run continues.",
         )
     return _DispatchRecordState(enabled=True)
+
+
+CHAT_TAKEOVER_INVALID_PAUSE_PREFIX = (
+    "A chat answer rewrote HANDOFF.md and the result is not a valid handoff:"
+)
+CHAT_TAKEOVER_MISMATCH_PAUSE_PREFIX = (
+    "A chat answer rewrote HANDOFF.md and the file no longer matches that rewrite:"
+)
+
+_ChatTakeoverOutcomeKind = Literal["followed", "protected", "paused", "retry"]
+
+
+@dataclass(frozen=True, slots=True)
+class _ChatTakeoverOutcome:
+    """What the loop does after a chat answer took over a role dispatch.
+
+    ``exit_code`` set means the run ends with it. ``followed`` continues to
+    the loop top on the chat's handoff; ``protected`` means the protected-file
+    check rerouted the handoff; ``retry`` and ``paused`` come from the pause.
+    """
+
+    kind: _ChatTakeoverOutcomeKind
+    exit_code: int | None = None
+    leftovers_captured: bool = False
+    leftovers: ImplementerLeftovers | None = None
+    story_baseline_known: bool = False
+    story_baseline: StoryListBaseline | None = None
+    pending_planner_recovery: PendingPlannerRecovery | None = None
+
+
+def _follow_chat_takeover(
+    config: DispatchConfig,
+    *,
+    route: RouteName,
+    role_label: str,
+    log: LogFn,
+    record_written: bool,
+    pre_dispatch_state: PreDispatchState | None,
+    story_key: str | None,
+    planner_git_before: GitPosition | None,
+    protected_before: ProtectedFileSnapshot | None,
+    assignment_content: str,
+    prior_handoff_sha: str,
+    story_check_baseline: str,
+    stop_watch: _StopRequestWatch,
+    operator_prompt: _OperatorPromptState,
+) -> _ChatTakeoverOutcome:
+    """Wind down a role a chat answer stopped, then validate the chat's handoff.
+
+    The role's own result is dropped: no frontmatter repair, normalizer,
+    completion log, auth-failure stop, failure count, chat or implementer
+    commit, work-claim gate, or post-dispatch validation of the role's
+    handoff. The chat change record is left for the next role's cycle.
+
+    The handoff is followed only while its bytes still match the SHA the
+    takeover request recorded; a role that wrote it again before it stopped
+    pauses the dispatcher instead of having its handback followed.
+    """
+
+    _log(
+        log,
+        "AGENT",
+        f"A chat answer rewrote HANDOFF.md while the {role_label} ran; the "
+        f"{role_label} was stopped and the dispatcher follows the chat's "
+        "handoff once it validates.",
+    )
+    # The request names the handoff bytes the chat answer wrote. Keep it
+    # before clearing: a role that wrote HANDOFF.md again before the poll
+    # stopped it must not have its handback followed as the chat's.
+    requested_handoff_sha = takeover_handoff_sha()
+    clear_takeover()
+    # The role's in-flight record names nothing interrupted: its work is
+    # dropped, and an implementer's record is deleted, not turned into a
+    # handback record, since there is no handback to resume.
+    if record_written and not _delete_in_flight_record(config, log):
+        _log(
+            log,
+            "ERROR",
+            "Could not clear the in-flight record "
+            f"{_in_flight_state_path(config)} after a chat answer stopped the "
+            f"{role_label} dispatch, so the dispatcher stops before following "
+            "the chat's handoff. The next start offers this dispatch's work "
+            "for interrupted-dispatch recovery.",
+        )
+        return _ChatTakeoverOutcome(kind="paused", exit_code=1)
+    stop_watch.requested(log)
+    outcome = _ChatTakeoverOutcome(kind="followed")
+    if pre_dispatch_state is not None and route in {"backend", "frontend"}:
+        # The stopped implementer's partial edits stay carry-over work for
+        # its story; files the chat answer changed are the chat's, not the
+        # implementer's.
+        captured = capture_implementer_leftovers(
+            config.repo_root,
+            handoff_path=config.handoff_path,
+            pre_dispatch_state=pre_dispatch_state,
+            story_key=story_key,
+        )
+        chat_paths = set(
+            _recorded_chat_paths(
+                config.repo_root,
+                load_chat_changes(chat_changes_path(config.repo_root)),
+            )
+        )
+        leftovers = ImplementerLeftovers(
+            story_key=captured.story_key,
+            fingerprints=tuple(
+                (path, fingerprint)
+                for path, fingerprint in captured.fingerprints
+                if path not in chat_paths
+            ),
+        )
+        _persist_implementer_leftovers(config, leftovers, log)
+        outcome = replace(outcome, leftovers_captured=True, leftovers=leftovers)
+    if planner_git_before is not None:
+        planner_check = undo_planner_handoff_commits(
+            config.repo_root,
+            config.handoff_path,
+            planner_git_before,
+            role=route,
+        )
+        if planner_check.error is not None:
+            _log(
+                log,
+                "ERROR",
+                "Dispatcher commit mode: "
+                f"{planner_check.error}. Fix the checkout, then start "
+                "the dispatcher again.",
+            )
+            return replace(outcome, kind="paused", exit_code=1)
+        if planner_check.undone:
+            _log(
+                log,
+                "WARN",
+                f"The {route} committed the handoff ("
+                + ", ".join(sha[:12] for sha in planner_check.undone)
+                + ") despite dispatcher commit mode; undid it with "
+                "`git reset --soft`. The handoff stays uncommitted.",
+            )
+    if _enforce_protected_files(
+        config=config,
+        before=protected_before,
+        role_label=role_label,
+        handoff_content=assignment_content,
+        log=log,
+    ):
+        return replace(outcome, kind="protected")
+
+    try:
+        chat_handoff = _read_required_text(config.handoff_full_path)
+    except (OSError, ValueError):
+        chat_handoff = None
+    pause_prefix = CHAT_TAKEOVER_INVALID_PAUSE_PREFIX
+    if handoff_content_sha(config.handoff_full_path) != requested_handoff_sha:
+        pause_prefix = CHAT_TAKEOVER_MISMATCH_PAUSE_PREFIX
+        errors = (
+            f"HANDOFF.md changed after the chat answer rewrote it, so the "
+            f"{role_label}'s later write may have replaced the chat's handoff"
+        )
+    elif chat_handoff is None or not chat_handoff.strip():
+        errors = "HANDOFF.md is missing or empty"
+    else:
+        # The operator-directed rewrite plays the planner's part.
+        validation_result = validate_handoff(
+            config.handoff_full_path,
+            "planner",
+            prior_handoff_sha=prior_handoff_sha,
+            require_work_packet=config.enforce_work_packet,
+            dispatcher_commit_mode=config.commit_mode == "dispatcher",
+            tracker_provider=config.tracker.provider,
+            prior_handoff_content=story_check_baseline,
+            project_state_path=config.project_state_full_path,
+        )
+        story_baseline = _next_story_baseline(
+            config, validation_result, story_check_baseline
+        )
+        outcome = replace(
+            outcome, story_baseline_known=True, story_baseline=story_baseline
+        )
+        if validation_result.verdict != "NO":
+            _log(
+                log,
+                "AGENT",
+                "The chat's handoff is valid; the next cycle routes on it"
+                + (
+                    f" to {validation_result.routing_instruction}."
+                    if validation_result.routing_instruction
+                    else "."
+                ),
+            )
+            return outcome
+        errors = _format_validation_errors(validation_result)
+
+    if pause_prefix == CHAT_TAKEOVER_MISMATCH_PAUSE_PREFIX:
+        _log(log, "ERROR", f"The chat's handoff was not followed: {errors}.")
+    else:
+        _log(log, "ERROR", f"The chat's handoff failed validation: {errors}.")
+    pause = _pause_at_dispatcher_pause(
+        config,
+        handoff_sha=_content_sha(chat_handoff or ""),
+        reason=(
+            f"{pause_prefix} {errors}. Update HANDOFF.md; "
+            "dispatch will resume after the file changes."
+        ),
+        log=log,
+        operator_prompt=operator_prompt,
+        stop_watch=stop_watch,
+    )
+    if pause.stop:
+        return replace(
+            outcome, kind="paused", exit_code=1 if pause.kind == "stop" else 0
+        )
+    if pause.kind == "retry":
+        return replace(outcome, kind="retry")
+    return replace(
+        outcome,
+        kind="paused",
+        pending_planner_recovery=pause.pending_planner_recovery,
+    )
 
 
 def _record_role_dispatch(

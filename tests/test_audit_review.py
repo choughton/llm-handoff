@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from llm_handoff import audit_review
+from llm_handoff import chat_takeover
 from llm_handoff import config as config_module
 from llm_handoff import ledger
 from llm_handoff import orchestrator
@@ -2508,6 +2509,62 @@ def test_fan_out_rejects_reviewer_that_writes_handoff(
     assert any(
         level == "ERROR" and "reviewer_wrote_handoff:" in msg
         for level, msg in log.messages
+    )
+
+
+@pytest.mark.parametrize("writer", ["quality", "security"])
+def test_fan_out_stopped_by_a_chat_takeover_keeps_the_chats_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer: str,
+) -> None:
+    # A chat answer rewrites the handoff while a reviewer runs and requests a
+    # takeover; the fan-out yields to it instead of blaming the reviewer and
+    # restoring the pre-review handoff.
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    chat_handoff = '---\nnext_agent: planner\nreason: "chat"\n---\n'
+    messages: list[tuple[str, str]] = []
+
+    def chat_rewrite() -> None:
+        handoff_path.write_text(chat_handoff, encoding="utf-8")
+        chat_takeover.request_takeover("chat-sha")
+
+    def quality_invoker(_prompt: str, _agent_config: Any) -> SubagentResult:
+        if writer == "quality":
+            chat_rewrite()
+        return _subagent(json.dumps(_quality_payload()), 0, None)
+
+    def fake_security(
+        _name: str, _command: list[str], **_kwargs: Any
+    ) -> _ProcessResult:
+        if writer == "security":
+            chat_rewrite()
+        return _process(_claude_envelope(_security_payload()))
+
+    monkeypatch.setattr(audit_review, "_run_logged_agent_command", fake_security)
+    chat_takeover.CONTROLLER.clear()
+    try:
+        with pytest.raises(chat_takeover.ChatTakeover):
+            audit_review.run_audit_fan_out(
+                _fan_out_config(repo),
+                context=AuditFanOutContext(
+                    cycle_number=2,
+                    handoff_content=handoff,
+                    implementer_base_sha=base,
+                ),
+                frontmatter=parse_handoff_frontmatter_text(handoff),
+                quality_invoker=quality_invoker,
+                log=lambda level, message: messages.append((level, message)),
+            )
+    finally:
+        chat_takeover.CONTROLLER.clear()
+        chat_takeover.CONTROLLER.disarm()
+
+    assert handoff_path.read_text(encoding="utf-8") == chat_handoff
+    assert not any("reviewer_wrote_handoff" in message for _level, message in messages)
+    assert not any(
+        "to its pre-review content" in message for _level, message in messages
     )
 
 

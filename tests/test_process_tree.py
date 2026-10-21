@@ -189,8 +189,22 @@ class _ExitsAfterPollsProcess(_FakeProcess):
         return self.returncode
 
 
-def test_run_command_streaming_stops_on_a_chat_takeover(
+@pytest.fixture
+def pending_takeover() -> Any:
+    """Leave a takeover request pending on the shared controller, disarmed."""
+    chat_takeover.CONTROLLER.clear()
+    chat_takeover.CONTROLLER.disarm()
+    chat_takeover.request_takeover("chat-sha")
+    try:
+        yield chat_takeover.CONTROLLER
+    finally:
+        chat_takeover.CONTROLLER.clear()
+        chat_takeover.CONTROLLER.disarm()
+
+
+def test_run_command_streaming_stops_on_an_armed_chat_takeover(
     monkeypatch: pytest.MonkeyPatch,
+    pending_takeover: chat_takeover.ChatTakeoverController,
 ) -> None:
     process = _FakeProcess()
     tree_kills: list[Any] = []
@@ -206,7 +220,7 @@ def test_run_command_streaming_stops_on_a_chat_takeover(
     )
     monkeypatch.setattr(agent_process, "_kill_process_tree", fake_kill_tree)
     monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: False)
-    monkeypatch.setattr(agent_process, "takeover_requested", lambda: True)
+    pending_takeover.arm()
 
     with pytest.raises(chat_takeover.ChatTakeover):
         agent_process._run_command_streaming(
@@ -218,8 +232,36 @@ def test_run_command_streaming_stops_on_a_chat_takeover(
     assert tree_kills == [process]
 
 
+def test_run_command_streaming_lets_a_disarmed_chat_takeover_finish(
+    monkeypatch: pytest.MonkeyPatch,
+    pending_takeover: chat_takeover.ChatTakeoverController,
+) -> None:
+    # A request outside the armed window (a validator, the normalizer, the
+    # finalizer) stays pending and the process runs to its own exit.
+    process = _ExitsAfterPollsProcess(running_polls=3)
+    tree_kills: list[Any] = []
+    monkeypatch.setattr(
+        agent_process.subprocess,
+        "Popen",
+        lambda _command, **_kwargs: process,
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+    monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: False)
+
+    result = agent_process._run_command_streaming(
+        ["agent.cmd"],
+        cwd=Path.cwd(),
+        timeout_ms=60_000,
+    )
+
+    assert result.exit_code == 0
+    assert tree_kills == []
+    assert pending_takeover.requested() is True
+
+
 def test_run_command_streaming_ignores_a_chat_takeover_when_not_stoppable(
     monkeypatch: pytest.MonkeyPatch,
+    pending_takeover: chat_takeover.ChatTakeoverController,
 ) -> None:
     process = _ExitsAfterPollsProcess(running_polls=3)
     tree_kills: list[Any] = []
@@ -230,7 +272,7 @@ def test_run_command_streaming_ignores_a_chat_takeover_when_not_stoppable(
     )
     monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
     monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: False)
-    monkeypatch.setattr(agent_process, "takeover_requested", lambda: True)
+    pending_takeover.arm()
 
     result = agent_process._run_command_streaming(
         ["agent.cmd"],
@@ -245,6 +287,7 @@ def test_run_command_streaming_ignores_a_chat_takeover_when_not_stoppable(
 
 def test_run_command_streaming_second_ctrl_c_wins_over_a_chat_takeover(
     monkeypatch: pytest.MonkeyPatch,
+    pending_takeover: chat_takeover.ChatTakeoverController,
 ) -> None:
     process = _FakeProcess()
     tree_kills: list[Any] = []
@@ -260,7 +303,7 @@ def test_run_command_streaming_second_ctrl_c_wins_over_a_chat_takeover(
     )
     monkeypatch.setattr(agent_process, "_kill_process_tree", fake_kill_tree)
     monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: True)
-    monkeypatch.setattr(agent_process, "takeover_requested", lambda: True)
+    pending_takeover.arm()
 
     with pytest.raises(KeyboardInterrupt):
         agent_process._run_command_streaming(
