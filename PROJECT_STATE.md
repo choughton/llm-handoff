@@ -19,7 +19,9 @@ belong in commits, handoffs, and pull requests.
   after CHAT closes, ahead of TRANSITION-RULES.
 - **Active Epic:** CHAT, by the operator direction above, with CHAT-35
   (a role's handback written during a chat answer is not taken for a chat
-  rewrite; operator, 2026-10-21) implemented and awaiting audit, then CHAT-5
+  rewrite; operator, 2026-10-21) implemented in PR #241, with its one Codex
+  review finding (compare-and-clear of the inspected takeover request) fixed
+  and awaiting audit, then CHAT-5
   remaining. CHAT-34 (the loop supplies finished role sessions to `@role`
   chat) was implemented at `fb8d40f` and merged in PR #238. CHAT-33 (the chat answer worker routes
   `@role` messages to a finished role's session) was approved at `94e0963`.

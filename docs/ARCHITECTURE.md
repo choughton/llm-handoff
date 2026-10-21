@@ -400,7 +400,10 @@ chat's paths riding along, the `scope_sha` stamp, the work-claim gate, and
 post-dispatch validation). Any other producer, missing or unparseable
 frontmatter, a role stopped mid-dispatch, or a rewrite after the role returned
 stays a chat takeover. A chat rewrite that names the running role as
-`producer` is therefore taken as that role's handback.
+`producer` is therefore taken as that role's handback. The dispatcher clears
+only the request it inspected: each request carries a generation, and the
+clear is a compare-and-clear on it, so a newer request from another answer
+that finished meanwhile stays pending and is followed as a chat takeover.
 
 ### Messages to a finished role
 

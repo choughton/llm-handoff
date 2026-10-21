@@ -785,25 +785,107 @@ def test_role_handback_check_requires_matching_bytes_and_producer(
     config = _config(repo)
     path = repo / HANDOFF
 
+    def is_role_handback(route: str) -> bool:
+        return orchestrator._takeover_is_role_handback(
+            config, route, chat_takeover.takeover_handoff_sha()
+        )
+
     # No request pending.
-    assert orchestrator._takeover_is_role_handback(config, "backend") is False
+    assert is_role_handback("backend") is False
 
     _write(path, _backend_claim())
     chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
-    assert orchestrator._takeover_is_role_handback(config, "backend") is True
+    assert is_role_handback("backend") is True
     # Another route is not the producer.
-    assert orchestrator._takeover_is_role_handback(config, "frontend") is False
+    assert is_role_handback("frontend") is False
 
     # The bytes changed since the request.
     _write(path, _backend_claim() + "\nlater edit\n")
-    assert orchestrator._takeover_is_role_handback(config, "backend") is False
+    assert is_role_handback("backend") is False
 
     # Missing frontmatter.
     _write(path, "not a handoff\n")
     chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
-    assert orchestrator._takeover_is_role_handback(config, "backend") is False
+    assert is_role_handback("backend") is False
 
     # A deleted handoff.
     path.unlink()
     chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
-    assert orchestrator._takeover_is_role_handback(config, "backend") is False
+    assert is_role_handback("backend") is False
+
+
+def test_newer_chat_request_after_the_handback_check_is_still_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    base = _init_repo(repo, _backend_assignment())
+    chat_handoff = _chat_handoff("planner", producer="user")
+
+    def backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(repo / "src" / "app.py", "VALUE = 2\n")
+        _answer_around(
+            repo,
+            path,
+            lambda: path.write_text(_backend_claim(), encoding="utf-8"),
+        )
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    real_check = orchestrator._takeover_is_role_handback
+
+    def check_then_race(config: DispatchConfig, route: str, requested_sha):
+        result = real_check(config, route, requested_sha)
+        assert result is True
+        # Another chat answer finishes between the check and the clear and
+        # rewrites the handoff.
+        path = config.handoff_full_path
+        before = chat_takeover.handoff_content_sha(path)
+        path.write_text(chat_handoff, encoding="utf-8")
+        assert chat_takeover.request_takeover_if_handoff_changed(
+            handoff_path=path, handoff_sha_before=before
+        )
+        return result
+
+    followed: list[dict[str, Any]] = []
+    real_follow = orchestrator._follow_chat_takeover
+
+    def recording_follow(config: DispatchConfig, **kwargs: Any):
+        followed.append(kwargs)
+        return real_follow(config, **kwargs)
+
+    pauses: list[str] = []
+
+    def recording_pause(_config: DispatchConfig, **kwargs: Any):
+        pauses.append(kwargs["reason"])
+        return orchestrator.PauseOutcome(kind="stop")
+
+    validate = _ValidateRecorder(repo, "planner")
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", backend)
+    monkeypatch.setattr(orchestrator, "_takeover_is_role_handback", check_then_race)
+    monkeypatch.setattr(orchestrator, "_follow_chat_takeover", recording_follow)
+    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", recording_pause)
+    monkeypatch.setattr(
+        orchestrator, "_schedule_pause_recovery", _refuse("pause recovery")
+    )
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+    for name in ("_commit_for_implementer", "_run_work_claim_gate"):
+        monkeypatch.setattr(orchestrator, name, _refuse(name))
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(repo), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0, messages
+    assert pauses == []
+    assert len(followed) == 1
+    assert followed[0]["route"] == "backend"
+    assert _git(repo, "rev-parse", "HEAD") == base
+    assert len(validate.calls) == 1
+    assert validate.calls[0]["content"] == chat_handoff
+    assert not any("not a chat rewrite" in message for _level, message in messages)
+    assert any(
+        "Another chat answer rewrote HANDOFF.md after the backend's handback"
+        in message
+        for _level, message in messages
+    )
+    assert chat_takeover.CONTROLLER.requested() is False
