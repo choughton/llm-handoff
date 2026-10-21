@@ -3627,11 +3627,327 @@ def test_dry_run_reports_an_interrupted_planner_commit_without_undoing_it(
 
     assert outcome == orchestrator.InterruptedDispatchRecovery()
     assert any(
-        level == "INFO" and message.endswith("Not reconciled in dry run.")
+        level == "INFO"
+        and "a real start asks to undo its handoff commits" in message
+        and message.endswith("Not reconciled in dry run.")
         for level, message in messages
     )
     assert _git(tmp_path, "rev-parse", "HEAD") == head
     assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+
+
+def test_dry_run_names_the_stop_a_real_start_makes_for_a_planner_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=_planner_assignment())
+    orchestrator = _orchestrator()
+    _interrupt_committing_planner(tmp_path, orchestrator, monkeypatch, other_file=True)
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _config(tmp_path, dry_run=True),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert any(
+        level == "INFO"
+        and "a real start stops: the planner committed" in message
+        and "files other than the handoff: src/api.py" in message
+        for level, message in messages
+    )
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+
+
+def _publish_pull_request(remote: Path, workspace: Path, name: str) -> None:
+    """Merge a one-commit pull request into ``main`` on ``remote``.
+
+    Works in its own clone, as GitHub would, so the dispatcher's checkout
+    sees the merge only after it fetches.
+    """
+
+    publisher = workspace / "publisher"
+    if not publisher.exists():
+        subprocess.run(
+            ["git", "clone", "-q", str(remote), str(publisher)],
+            check=True,
+            capture_output=True,
+        )
+        _git(publisher, "config", "user.name", "llm-handoff tests")
+        _git(publisher, "config", "user.email", "tests@example.invalid")
+        _git(publisher, "config", "core.autocrlf", "false")
+    _git(publisher, "checkout", "-q", "main")
+    _git(publisher, "pull", "-q", "--ff-only", "origin", "main")
+    _git(publisher, "checkout", "-q", "-b", name)
+    _write(publisher / "src" / f"{name}.py", f"NAME = {name!r}\n")
+    _git(publisher, "add", "-A")
+    _git(publisher, "commit", "-q", "-m", f"{name} work")
+    _git(publisher, "checkout", "-q", "main")
+    _git(publisher, "merge", "-q", "--no-ff", "-m", f"Merge pull request {name}", name)
+    _git(publisher, "push", "-q", "origin", "main")
+
+
+def _checkout_with_remote(tmp_path: Path) -> tuple[Path, Path]:
+    """A checkout on ``main`` whose ``origin`` is a bare repository."""
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", str(remote)], check=True, capture_output=True
+    )
+    repo = tmp_path / "repo"
+    _init_repo(repo, handoff=_planner_assignment())
+    _git(repo, "branch", "-M", "main")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "main")
+    return repo, remote
+
+
+def _published_config(repo: Path, **overrides: Any) -> DispatchConfig:
+    return _config(
+        repo,
+        publish={"mode": "pr", "base_branch": "main", "remote": "origin"},
+        **overrides,
+    )
+
+
+PUBLISHED_QUESTION = (
+    "Skip the 4 commit(s) on origin/main as published, not the interrupted "
+    "planner's? [y/N]"
+)
+
+
+def _fast_forward_past_interrupted_planner(
+    tmp_path: Path, orchestrator: Any, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """The planner is interrupted at HEAD; the operator then fast-forwards
+    main to origin/main, which merged two pull requests (four commits)."""
+
+    repo, remote = _checkout_with_remote(tmp_path)
+    _interrupt_planner(repo, orchestrator, monkeypatch, keep=True)
+    _publish_pull_request(remote, tmp_path, "first")
+    _publish_pull_request(remote, tmp_path, "second")
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "merge", "-q", "--ff-only", "origin/main")
+    return repo
+
+
+def test_published_commits_are_skipped_once_the_operator_confirms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator()
+    repo = _fast_forward_past_interrupted_planner(tmp_path, orchestrator, monkeypatch)
+    head = _git(repo, "rev-parse", "HEAD")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, [True])
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert questions == [PUBLISHED_QUESTION]
+    assert [level for level, _message in messages] == ["INFO"] * 4
+    disclosure = messages[0][1]
+    assert "now has 4 commit(s) since the record's HEAD" in disclosure
+    assert f"with HEAD {head[:12]} on origin/main" in disclosure
+    assert "are not proof that these commits were published" in disclosure
+    assert messages[2][1].startswith("Skipped 4 published commit(s)")
+    assert "as the operator confirmed" in messages[2][1]
+    assert "left nothing to recover" in messages[3][1]
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _staged_paths(repo) == ""
+    assert not _record_path(repo).exists()
+
+
+@pytest.mark.parametrize(
+    ("interactive", "answers", "expected_questions"),
+    [
+        pytest.param(True, [False], [PUBLISHED_QUESTION], id="declined"),
+        pytest.param(False, [], [], id="no_terminal"),
+    ],
+)
+def test_unconfirmed_published_commits_keep_the_interrupted_planner_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interactive: bool,
+    answers: list[bool],
+    expected_questions: list[str],
+) -> None:
+    # origin/main is a ref a role can write, so it alone never skips commits.
+    orchestrator = _orchestrator()
+    repo = _fast_forward_past_interrupted_planner(tmp_path, orchestrator, monkeypatch)
+    head = _git(repo, "rev-parse", "HEAD")
+    original = _record_path(repo).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=interactive, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, answers)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome.stop is True
+    assert questions == expected_questions
+    assert not any("Skipped" in message for _level, message in messages)
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "files other than the handoff: src/first.py, src/second.py" in errors[0]
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _record_path(repo).read_text(encoding="utf-8") == original
+
+
+def test_a_checkout_that_moves_before_the_published_answer_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator()
+    repo = _fast_forward_past_interrupted_planner(tmp_path, orchestrator, monkeypatch)
+    original = _record_path(repo).read_text(encoding="utf-8")
+
+    def local_commit(_question: str) -> None:
+        _write(repo / "src" / "api.py", "API = 'moved'\n")
+        _git(repo, "commit", "-q", "-am", "local commit")
+
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(
+        orchestrator, monkeypatch, [True], before_answer=local_commit
+    )
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome.stop is True
+    assert questions == [PUBLISHED_QUESTION]
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "checkout moved while the operator was asked to skip" in errors[0]
+    assert not any("Skipped" in message for _level, message in messages)
+    assert _record_path(repo).read_text(encoding="utf-8") == original
+
+
+def test_dry_run_names_the_published_question_and_the_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator()
+    repo = _fast_forward_past_interrupted_planner(tmp_path, orchestrator, monkeypatch)
+    original = _record_path(repo).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    questions = _script_answers(orchestrator, monkeypatch, [])
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo, dry_run=True),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert questions == []
+    assert any(
+        level == "INFO"
+        and "a real start asks to skip the 4 commit(s) on origin/main as "
+        "published; unless the operator confirms, stops: the planner committed"
+        in message
+        and message.endswith("Not reconciled in dry run.")
+        for level, message in messages
+    )
+    assert _record_path(repo).read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    ("local_files", "expected"),
+    [
+        pytest.param(
+            {"src/api.py": "API = 'local'\n"},
+            "files other than the handoff: src/api.py",
+            id="other_file",
+        ),
+        pytest.param(
+            {HANDOFF_RELATIVE_PATH.as_posix(): HALF_WRITTEN_HANDOFF},
+            "files other than the handoff: src/first.py",
+            id="handoff_only",
+        ),
+    ],
+)
+def test_a_commit_not_on_the_remote_base_keeps_the_interrupted_planner_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    local_files: dict[str, str],
+    expected: str,
+) -> None:
+    # A published pull request plus one local commit that origin/main lacks:
+    # HEAD is not on origin/main, so the whole range is checked as today.
+    repo, remote = _checkout_with_remote(tmp_path)
+    orchestrator = _orchestrator()
+    _interrupt_planner(repo, orchestrator, monkeypatch, keep=True)
+    _publish_pull_request(remote, tmp_path, "first")
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "merge", "-q", "--ff-only", "origin/main")
+    for relative, content in local_files.items():
+        _write(repo / relative, content)
+        _git(repo, "add", "--", relative)
+    _git(repo, "commit", "-q", "-m", "local commit")
+    head = _git(repo, "rev-parse", "HEAD")
+    original = _record_path(repo).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, [])
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome.stop is True
+    assert questions == []
+    assert not any("published commit" in message for _level, message in messages)
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert expected in errors[0]
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _record_path(repo).read_text(encoding="utf-8") == original
+
+
+def test_an_unfetched_remote_base_keeps_the_interrupted_planner_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The operator pulled the pull request without updating origin/main (a
+    # direct `git pull <url> main`), so the fetched ref does not vouch for it.
+    repo, remote = _checkout_with_remote(tmp_path)
+    orchestrator = _orchestrator()
+    _interrupt_planner(repo, orchestrator, monkeypatch, keep=True)
+    _publish_pull_request(remote, tmp_path, "first")
+    _git(repo, "pull", "-q", "--ff-only", str(remote), "main")
+    original = _record_path(repo).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, [])
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo), _collecting_log(messages), orchestrator._OperatorPromptState()
+    )
+
+    assert outcome.stop is True
+    assert questions == []
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "files other than the handoff: src/first.py" in errors[0]
+    assert _record_path(repo).read_text(encoding="utf-8") == original
 
 
 def test_a_confirmed_planner_record_that_cannot_be_deleted_stops_the_run(

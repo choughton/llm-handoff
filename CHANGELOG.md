@@ -13,6 +13,17 @@ This project follows a simple pre-release changelog until the first public tag.
   no `## Work Packet`. In dispatcher commit mode, a tpm commit of `HANDOFF.md` is undone
   like a planner's, and `--dry-run` prints `Would dispatch tpm`. Without `agents.tpm`,
   every route is unchanged.
+- Interrupted-planner recovery lets the operator skip published commits. In dispatcher
+  commit mode, when HEAD has moved past an interrupted planner record's HEAD on the same
+  branch and HEAD is on the fetched `<remote>/<base_branch>` (the checked-out branch when
+  `base_branch` is null; nothing is fetched), the dispatcher lists those commits and asks
+  whether to skip them as published. On `y` one `INFO` line names how many were skipped,
+  nothing is undone, and the handoff checks run as before. The remote-tracking ref is
+  role-writable like the record, so any other answer or no terminal keeps the old check.
+  Before, an operator who fast-forwarded `main` to `origin/main` after the interrupt got
+  "the planner committed ... with files other than the handoff" and had to move the
+  record aside. Any commit not on the remote ref keeps the stop. A dry run now also
+  names what a real start would do with the planner's commits.
 - `pr` mode publishes a story the operator committed on the base branch. A story routed
   to `user` (such as `.claude/` edits) ends with the operator's local, unpushed commit on
   the base branch, which the planner sends to the auditor. When that story audit passes
