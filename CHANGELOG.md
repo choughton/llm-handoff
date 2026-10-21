@@ -24,6 +24,16 @@ This project follows a simple pre-release changelog until the first public tag.
   `response_text()` on the Antigravity stream monitor. Chat session tests
   replay the captured events and use mocked streams; no end-to-end
   interactive console chat against a live `agy` was run.
+- The `agy` permission set no longer includes
+  `unsandboxed(regex:^git( .*)? push( .*)?$)`. `agy` 1.4.4 ignores
+  `unsandboxed(...)` rules and logs that they grant nothing; the
+  `command(regex:^git( .*)? push( .*)?$)` deny entry is the one that blocks
+  pushes. `init` no longer prints the entry and `doctor` no longer requires
+  it. `doctor` now warns, without failing, when `permissions.allow`,
+  `permissions.deny`, or `permissions.ask` in the `agy` settings file holds
+  an `unsandboxed(...)` entry, and names the entries to remove. An
+  `unsandboxed(git push)` or `unsandboxed(regex:...)` allow entry no longer
+  fails as a push grant; it gets the same warning.
 - A role's own handback written while a chat answer runs is no longer taken
   for a chat rewrite (CHAT-35). The chat worker requests a takeover whenever
   `HANDOFF.md` changed during an answer, so a backend that wrote its

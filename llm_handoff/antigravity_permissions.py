@@ -17,10 +17,11 @@ the dispatcher's work-claim gate still runs it. Each entry is an anchored
 regex grant,
 ``command(regex:^<cmd>( .*)?$)``, so it covers the command with any
 arguments (``git rev-parse HEAD``, ``git commit -m ...``) but not a longer
-command name (``git statusx``). `git push` is denied in both the plain and the
-unsandboxed form by a regex that also blocks option-prefixed pushes such as
-``git -C . push``; that deny also refuses any other `git` command line that
-contains `` push``.
+command name (``git statusx``). `git push` is denied by a ``command(...)``
+regex that also blocks option-prefixed pushes such as ``git -C . push``; that
+deny also refuses any other `git` command line that contains `` push``. No
+``unsandboxed(...)`` entry is listed: `agy` 1.4.4 ignores those rules and logs
+a warning saying they grant nothing.
 
 It also holds the `tools:` list that every shipped `agy` agent file under
 `.agents/agents/` declares. A file without that list gets only read tools and
@@ -76,7 +77,6 @@ ANTIGRAVITY_REQUIRED_ALLOW: tuple[str, ...] = tuple(
 )
 ANTIGRAVITY_REQUIRED_DENY: tuple[str, ...] = (
     "command(regex:^git( .*)? push( .*)?$)",
-    "unsandboxed(regex:^git( .*)? push( .*)?$)",
 )
 
 # The `tools:` list in each shipped `.agents/agents/*.md` file. A tool name

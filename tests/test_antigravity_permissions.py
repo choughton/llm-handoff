@@ -80,7 +80,6 @@ def test_opt_in_allow_entries_mirror_claude_interpreter_rules() -> None:
 def test_required_deny_entries_are_exact() -> None:
     assert perms.ANTIGRAVITY_REQUIRED_DENY == (
         "command(regex:^git( .*)? push( .*)?$)",
-        "unsandboxed(regex:^git( .*)? push( .*)?$)",
     )
 
 
@@ -190,7 +189,6 @@ def test_python_verification_prefix_is_skipped_with_the_flag_off() -> None:
     # git push deny entries do not depend on the flag.
     assert perms.ANTIGRAVITY_REQUIRED_DENY == (
         "command(regex:^git( .*)? push( .*)?$)",
-        "unsandboxed(regex:^git( .*)? push( .*)?$)",
     )
 
 
@@ -318,10 +316,11 @@ def test_format_lists_every_entry_and_the_guardrail_note() -> None:
     allow_index = lines.index("  permissions.allow:")
     deny_index = lines.index("  permissions.deny:")
     assert lines[allow_index + 1 : deny_index] == [f"    - {entry}" for entry in allow]
-    assert lines[deny_index + 1 : deny_index + 3] == [
+    assert lines[deny_index + 1 : deny_index + 2] == [
         "    - command(regex:^git( .*)? push( .*)?$)",
-        "    - unsandboxed(regex:^git( .*)? push( .*)?$)",
     ]
+    # agy ignores `unsandboxed(...)` rules, so none is printed.
+    assert not any("unsandboxed(" in line for line in lines)
     note = lines[-1]
     assert "every agy run for this user" in note
     assert "--sandbox" in note
