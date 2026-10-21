@@ -2658,7 +2658,8 @@ def _run_loop(
             else:
                 previous_cycle = current_cycle
                 consecutive_failures = 0
-                if _accepted_approval(config):
+                approved_this_cycle = _accepted_approval(config)
+                if approved_this_cycle:
                     # The story is approved; its next implementer dispatch
                     # starts a new audit range from where its story starts.
                     implementer_base_sha = None
@@ -2677,31 +2678,50 @@ def _run_loop(
                         config, log_fn, operator_prompt, stop_watch
                     ):
                         return 0
-                    outcome = publish_story(
-                        repo_root=config.repo_root,
-                        mode=config.publish.mode,
-                        remote=config.publish.remote,
-                        auto_merge=config.publish.auto_merge,
-                        wait_for_checks=config.publish.wait_for_checks,
-                        handoff_content=(
-                            _read_required_text(config.handoff_full_path) or ""
-                        ),
-                        log=log_fn,
-                        review=_review_gate(config),
-                        base_branch=config.publish.base_branch,
-                        branch_prefix=config.publish.branch_prefix,
-                        review_prompt=_review_prompt(
-                            config, operator_prompt, stop_watch, log_fn
-                        ),
-                        state_resolver=_state_conflict_resolver(config, log_fn),
-                        handoff_path=config.handoff_path,
-                    )
-                    if outcome.handoff is not None:
-                        config.handoff_full_path.write_text(
-                            outcome.handoff, encoding="utf-8"
+                    # Chat changes made during the approving audit cycle are
+                    # committed on the story branch and re-audited before
+                    # anything publishes. The marker is set after the
+                    # approval reset above, so the re-audit accepts it.
+                    reaudit = (
+                        _send_chat_changes_back_to_audit(
+                            config, handoff_content or "", log_fn
                         )
-                    if outcome.stop:
-                        return outcome.exit_code
+                        if approved_this_cycle
+                        else None
+                    )
+                    if reaudit == CHAT_REAUDIT_FAILED:
+                        return 1
+                    if isinstance(reaudit, tuple):
+                        chat_commit_marker = reaudit
+                    if reaudit is None:
+                        outcome = publish_story(
+                            repo_root=config.repo_root,
+                            mode=config.publish.mode,
+                            remote=config.publish.remote,
+                            auto_merge=config.publish.auto_merge,
+                            wait_for_checks=config.publish.wait_for_checks,
+                            handoff_content=(
+                                _read_required_text(config.handoff_full_path)
+                                or ""
+                            ),
+                            log=log_fn,
+                            review=_review_gate(config),
+                            base_branch=config.publish.base_branch,
+                            branch_prefix=config.publish.branch_prefix,
+                            review_prompt=_review_prompt(
+                                config, operator_prompt, stop_watch, log_fn
+                            ),
+                            state_resolver=_state_conflict_resolver(
+                                config, log_fn
+                            ),
+                            handoff_path=config.handoff_path,
+                        )
+                        if outcome.handoff is not None:
+                            config.handoff_full_path.write_text(
+                                outcome.handoff, encoding="utf-8"
+                            )
+                        if outcome.stop:
+                            return outcome.exit_code
                 if config.publish.mode == "pr" and current_cycle.route == "planner":
                     # The planner may have just decided deferred review
                     # findings that are holding a pull request open. Chat
@@ -4693,13 +4713,25 @@ def _commit_chat_changes_after_role(
         return None
     if _handoff_is_approval(handoff_content) or _accepted_approval(config):
         paths = _recorded_chat_paths(config.repo_root, chat_entries)
+        listed = ", ".join(paths) if paths else "none still recorded"
+        if route == "auditor" and config.publish.mode != "local":
+            # CHAT-24: the publish block commits them and sends the story
+            # back to the audit fan-out instead of publishing.
+            _log(
+                log,
+                "INFO",
+                f"Chat changes after the {route} role were not committed yet "
+                "because the story stands approved (verified_pass); they are "
+                "committed and sent back to the audit fan-out before the story "
+                f"publishes: {listed}.",
+            )
+            return None
         _log(
             log,
             "INFO",
             f"Chat changes after the {route} role were not committed because the "
             "story stands approved (verified_pass) and a commit now would skip "
-            "its audit; they ride the next implementer commit: "
-            f"{', '.join(paths) if paths else 'none still recorded'}.",
+            f"its audit; they ride the next implementer commit: {listed}.",
         )
         return None
     story_id = _handoff_story_id(handoff_content) if handoff_content else None
@@ -4758,6 +4790,118 @@ def _commit_chat_changes_after_role(
                 f"Could not clear the chat change record {record_path}: {exc}.",
             )
     return result
+
+
+# What ``_send_chat_changes_back_to_audit`` returns when the chat commit failed
+# or the re-audit handoff could not be written: the story must not publish.
+CHAT_REAUDIT_FAILED: Literal["failed"] = "failed"
+# Returned when the chat commit landed but carried no usable operator marker:
+# the story still goes back to the audit fan-out, without one.
+CHAT_REAUDIT_UNMARKED: Literal["unmarked"] = "unmarked"
+
+
+def _write_handoff_durably(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` and flush it to disk before returning."""
+
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _send_chat_changes_back_to_audit(
+    config: DispatchConfig,
+    audit_assignment: str,
+    log: LogFn,
+) -> tuple[str | None, OperatorInfluence] | Literal["failed", "unmarked"] | None:
+    """Commit chat changes recorded during an approving audit and re-audit.
+
+    Runs in the auditor branch before ``publish_story`` (every publish mode
+    other than ``local``), after the approval was accepted. ``audit_assignment`` is
+    the handoff the audit cycle started from. Returns None when nothing
+    changes the publish: agent commit mode, an empty chat change record, no
+    saved story branch, or no recorded change left to commit (the record is
+    then cleared). After a chat commit, ``HANDOFF.md`` is rewritten as
+    ``audit_assignment`` with ``scope_sha`` and the evidence SHA on the chat
+    commit and its marker as the Operator Influence section, and the new
+    chat commit marker ``(story_id, influence)`` is returned, so the next
+    cycle dispatches the audit fan-out on it. Returns
+    ``CHAT_REAUDIT_FAILED`` when the commit or the rewrite failed, and
+    ``CHAT_REAUDIT_UNMARKED`` when the commit carried no usable marker.
+    """
+
+    if config.commit_mode != "dispatcher":
+        return None
+    record_path = chat_changes_path(config.repo_root)
+    chat_entries = tuple(load_chat_changes(record_path))
+    if not chat_entries:
+        return None
+    if saved_story_assignment(config.repo_root) is None:
+        return None
+    story_id = _handoff_story_id(audit_assignment)
+    result = commit_chat_changes(
+        repo_root=config.repo_root,
+        handoff_path=config.handoff_path,
+        role="auditor",
+        story_id=story_id,
+        chat_entries=chat_entries,
+    )
+
+    def clear_record() -> None:
+        try:
+            clear_chat_changes(record_path)
+        except OSError as exc:
+            _log(
+                log,
+                "WARN",
+                f"Could not clear the chat change record {record_path}: {exc}.",
+            )
+
+    if result.error is not None:
+        paths = _recorded_chat_paths(config.repo_root, chat_entries)
+        _log(
+            log,
+            "ERROR",
+            "Dispatcher commit of chat changes after the approving audit "
+            f"failed: {result.error}. The story is not published; the chat "
+            "change record is kept for "
+            f"{', '.join(paths) if paths else 'no path still recorded'}.",
+        )
+        return CHAT_REAUDIT_FAILED
+    if result.sha is None:
+        if result.nothing_to_commit:
+            clear_record()
+        return None
+    stamped = stamp_commit_sha(audit_assignment, result.sha)
+    influence = result.chat_influences[-1] if result.chat_influences else None
+    if influence is not None:
+        stamped = _replace_operator_influence_section(stamped, influence)
+    # The record is the only trace of the intended re-audit until the
+    # rewritten handoff is on disk, so it is cleared only after a flushed
+    # write; a crash or write error before that keeps it.
+    try:
+        _write_handoff_durably(config.handoff_full_path, stamped)
+    except OSError as exc:
+        _log(
+            log,
+            "ERROR",
+            f"Could not write the re-audit handoff for the chat commit "
+            f"{result.sha[:12]} to {config.handoff_full_path}: {exc}. The "
+            "story is not published; the chat change record is kept.",
+        )
+        return CHAT_REAUDIT_FAILED
+    clear_record()
+    _log(
+        log,
+        "AGENT",
+        f"Dispatcher committed {len(result.chat_committed)} chat change(s) "
+        f"after the approving audit as {result.sha[:12]} (operator-influenced): "
+        f"{', '.join(result.chat_committed)}. The story goes back to the audit "
+        "fan-out instead of publishing.",
+    )
+    if influence is None:
+        return CHAT_REAUDIT_UNMARKED
+    return story_id, influence
 
 
 def _advance_scope_sha_after_chat_commit(

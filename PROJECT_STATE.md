@@ -13,9 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-23 (the
-  dispatcher commits chat changes after a non-implementer role) in flight and
-  CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-25
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-24 (chat
+  changes after an approved audit go back to the audit fan-out) in flight and
+  CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-23 (the dispatcher
+  commits chat changes after a non-implementer role) was approved at
+  `9c44ff0` and merged in PR #228. CHAT-25
   (chat-committed paths survive a resumed handback) was approved at
   `e900bc5` and merged in PR #227. CHAT-22 (chat
   changes ride the implementer commit) was approved at `a2723e9` and merged
@@ -1089,8 +1091,9 @@ Fit: active again after TPM-ROLE closed, by the operator direction of
 2026-10-20. CHAT-17 was approved at `d059a25` and merged in PR #224;
 CHAT-21 was approved at `210267b` and merged in PR #225; CHAT-22 was
 approved at `a2723e9` and merged in PR #226; CHAT-25 was approved at
-`e900bc5` and merged in PR #227; CHAT-23 is in flight; CHAT-24, CHAT-19,
-CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+`e900bc5` and merged in PR #227; CHAT-23 was approved at `9c44ff0` and
+merged in PR #228; CHAT-24 is in flight; CHAT-19, CHAT-20, CHAT-4, and
+CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into
 CHAT-21 through CHAT-24 because it exceeded one packet.
 
@@ -1319,11 +1322,34 @@ dependencies; Windows (`msvcrt`) and POSIX.
   changes and publishing sees HEAD equal to `scope_sha`; and when no
   recorded path is still dirty with its recorded content, the record is
   cleared instead of retried, so a later role edit that restores a recorded
-  fingerprint is never committed as a chat change.
+  fingerprint is never committed as a chat change. Approved at `9c44ff0`
+  and merged in PR #228.
 - CHAT-24 (was part of CHAT-18): Chat changes after an approved audit go
   back to the audit fan-out. Chat changes committed after an approved audit
   send the story back to the audit fan-out before it publishes, so nothing
-  unaudited is published.
+  unaudited is published. Decided by the planner on 2026-10-21: the check
+  runs only in the auditor branch, only when the accepted handoff is an
+  approval, only outside `local` publish mode, and only in dispatcher commit
+  mode, after `_hold_for_chat_messages` returns and before `publish_story`,
+  so a chat answer that finishes during that hold is included (CHAT-20 makes
+  the hold wait for a running answer). `local` publish mode, the finalizer
+  branch, and every non-auditor route stay as CHAT-23 left them. Sending the
+  story back means the dispatcher commits the recorded chat changes with
+  `commit_chat_changes` (role `auditor`) and rewrites `HANDOFF.md` as the
+  handoff the audit cycle started from, with `scope_sha` and the evidence
+  SHA on the chat commit and the chat marker as its `## Operator Influence`
+  section; the loop's chat commit marker is set after the approval reset,
+  so the next cycle's audit fan-out accepts the section, and with the
+  implementer base already reset the restart path takes the review base
+  from the saved story base, so the re-audit covers the whole story branch
+  including the chat commit. A failed commit does not publish: one ERROR
+  names the error and the recorded paths, the record is kept, and the run
+  ends with exit code 1 (a later start's publish resume already refuses
+  uncommitted files other than the handoff). Nothing left to commit clears
+  the record (a clear failure only warns) and publishes as before. The
+  CHAT-23 approved-story INFO line says, for the auditor route outside
+  `local` mode, that the changes are committed and sent back to the audit
+  fan-out before the story publishes.
 - CHAT-25 (follow-up from the CHAT-22 review): Chat-committed paths survive
   a resumed handback. The in-flight `handback` record gains
   `chat_commit_sha` and `chat_committed` (a missing pair loads as None and
