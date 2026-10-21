@@ -40,6 +40,7 @@ REQUIRED_TEMPLATE_FILES = (
     ".codex/skills/llm-handoff-auditor/SKILL.md",
     ".codex/skills/llm-handoff-validator/SKILL.md",
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
+    ".codex/skills/llm-handoff-tpm/SKILL.md",
     ".codex/rules/llm-handoff.rules",
     ".claude/agents/auditor.md",
     ".claude/agents/handoff-router.md",
@@ -51,6 +52,7 @@ REQUIRED_TEMPLATE_FILES = (
     ".claude/settings.json",
     ".claude/hooks/block_dangerous_commands.py",
     ".agents/agents/planner.md",
+    ".agents/agents/tpm.md",
     ".agents/agents/backend.md",
     ".agents/agents/frontend.md",
     ".agents/agents/auditor.md",
@@ -78,6 +80,7 @@ COPIED_TEMPLATE_FILES = (
     ".codex/skills/llm-handoff-auditor/SKILL.md",
     ".codex/skills/llm-handoff-validator/SKILL.md",
     ".codex/skills/llm-handoff-finalizer/SKILL.md",
+    ".codex/skills/llm-handoff-tpm/SKILL.md",
     ".codex/rules/llm-handoff.rules",
     ".claude/agents/auditor.md",
     ".claude/agents/handoff-router.md",
@@ -87,6 +90,7 @@ COPIED_TEMPLATE_FILES = (
     ".claude/agents/backend.md",
     ".claude/agents/frontend.md",
     ".agents/agents/planner.md",
+    ".agents/agents/tpm.md",
     ".agents/agents/backend.md",
     ".agents/agents/frontend.md",
     ".agents/agents/auditor.md",
@@ -105,6 +109,7 @@ REMOVED_GEMINI_PATHS = (".gemini", ".geminiignore")
 # or `supervisor-repair` for a supervised repair launch.
 ANTIGRAVITY_AGENT_FILES = (
     ".agents/agents/planner.md",
+    ".agents/agents/tpm.md",
     ".agents/agents/backend.md",
     ".agents/agents/frontend.md",
     ".agents/agents/auditor.md",
@@ -136,6 +141,10 @@ CODEX_ROLE_SKILLS = {
 NEW_CODEX_ROLE_SKILLS = {
     role: skill for role, skill in CODEX_ROLE_SKILLS.items() if role != "backend"
 }
+# The optional `tpm` role is not in the reference config, so its skill is
+# checked beside the configured roles rather than in CODEX_ROLE_SKILLS.
+CODEX_TPM_SKILL = "llm-handoff-tpm"
+NEW_CODEX_ROLE_SKILLS_WITH_TPM = {**NEW_CODEX_ROLE_SKILLS, "tpm": CODEX_TPM_SKILL}
 
 
 def test_reference_workflow_contains_required_template_files() -> None:
@@ -192,6 +201,7 @@ def test_finalizer_helpers_defer_to_the_configured_project_state_path() -> None:
 
 NON_CLAUDE_ROLE_HELPER_FILES = (
     ".agents/agents/planner.md",
+    ".agents/agents/tpm.md",
     ".agents/agents/backend.md",
     ".agents/agents/frontend.md",
     ".agents/agents/auditor.md",
@@ -199,6 +209,7 @@ NON_CLAUDE_ROLE_HELPER_FILES = (
     ".agents/agents/handoff-router.md",
     ".codex/skills/llm-handoff/SKILL.md",
     ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".codex/skills/llm-handoff-tpm/SKILL.md",
     ".codex/skills/llm-handoff-frontend/SKILL.md",
     ".codex/skills/llm-handoff-auditor/SKILL.md",
     ".codex/skills/llm-handoff-validator/SKILL.md",
@@ -371,15 +382,46 @@ def test_reference_workflow_ships_a_codex_skill_for_every_role() -> None:
         assert "never run `git push`" in content.lower(), relative_path
 
 
+def test_reference_workflow_ships_a_codex_tpm_skill() -> None:
+    relative_path = Path(".codex") / "skills" / CODEX_TPM_SKILL / "SKILL.md"
+    template_path = REFERENCE_WORKFLOW / relative_path
+    assert template_path.is_file(), relative_path
+    assert template_path.read_bytes() == (REPO_ROOT / relative_path).read_bytes()
+    content = template_path.read_text(encoding="utf-8")
+    assert content.startswith("---\n"), relative_path
+    frontmatter = content.split("---\n", 2)[1]
+    assert f'name: "{CODEX_TPM_SKILL}"\n' in frontmatter, relative_path
+    assert re.search(r'(?m)^description: ".+"$', frontmatter), relative_path
+    assert "`tpm` role" in content, relative_path
+    for field in (
+        "next_agent",
+        "producer",
+        "epic_id",
+        "story_id",
+        "story_title",
+        "remaining_stories",
+    ):
+        assert field in content, (relative_path, field)
+    assert "never run `git push`" in content.lower(), relative_path
+    assert "producer: tpm" in content, relative_path
+    enum_lines = [
+        line for line in content.splitlines() if line.startswith("next_agent: <enum>")
+    ]
+    assert enum_lines, relative_path
+    for line in enum_lines:
+        assert "finalizer" not in line, relative_path
+        assert "validator" not in line, relative_path
+
+
 def test_new_codex_role_skills_have_no_openai_yaml() -> None:
-    for skill_name in NEW_CODEX_ROLE_SKILLS.values():
+    for skill_name in NEW_CODEX_ROLE_SKILLS_WITH_TPM.values():
         for root in (REFERENCE_WORKFLOW, REPO_ROOT):
             agents_dir = root / ".codex" / "skills" / skill_name / "agents"
             assert not agents_dir.exists(), agents_dir
 
 
 def test_codex_role_skills_do_not_point_at_dispatcher_docs() -> None:
-    for skill_name in NEW_CODEX_ROLE_SKILLS.values():
+    for skill_name in NEW_CODEX_ROLE_SKILLS_WITH_TPM.values():
         content = (
             REFERENCE_WORKFLOW / ".codex" / "skills" / skill_name / "SKILL.md"
         ).read_text(encoding="utf-8")

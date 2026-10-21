@@ -19,7 +19,8 @@ belong in commits, handoffs, and pull requests.
   #207; TPM-3 (validator rules for `producer: tpm`) was approved at `831ff3f`
   and merged in PR #208; TPM-4 (per-role Codex artifacts) was approved at
   `8dc1728` and merged in PR #209; TPM-5 (the tpm prompt and the protocol
-  docs) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+  docs) was approved at `4ed7d69` and merged in PR #211; TPM-6 (tpm helper
+  files) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,
@@ -1378,7 +1379,8 @@ dispatched without its instructions.
   describes both configurations (tpm present, tpm absent). These are
   protected paths and must be in Files in scope. Docs only.
 - TPM-6 (was part of TPM-4): tpm helper files outside `.claude/`. Add
-  `.codex/skills/llm-handoff-tpm/SKILL.md` with `agents/openai.yaml` and
+  `.codex/skills/llm-handoff-tpm/SKILL.md` (Decided by the planner on
+  2026-10-20: no `agents/openai.yaml`; only the backend skill ships one) and
   `.agents/agents/tpm.md` (agy) to the source checkout and to
   `examples/reference-workflow/`; `init` copies them. No `.gemini/agents/`
   file: GEM-5 deleted both of those trees, and nothing may recreate them.

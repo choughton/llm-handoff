@@ -38,12 +38,14 @@ docs/handoff/FINALIZER_HANDOFF_PROMPT.md
 .codex/skills/llm-handoff/SKILL.md
 .codex/skills/llm-handoff/agents/openai.yaml
 .codex/skills/llm-handoff-planner/SKILL.md
+.codex/skills/llm-handoff-tpm/SKILL.md
 .codex/skills/llm-handoff-frontend/SKILL.md
 .codex/skills/llm-handoff-auditor/SKILL.md
 .codex/skills/llm-handoff-validator/SKILL.md
 .codex/skills/llm-handoff-finalizer/SKILL.md
 .codex/rules/llm-handoff.rules
 .agents/agents/planner.md
+.agents/agents/tpm.md
 .agents/agents/backend.md
 .agents/agents/frontend.md
 .agents/agents/auditor.md

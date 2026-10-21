@@ -2360,6 +2360,10 @@ repaired handoff still routes to tpm, the dispatcher pauses. With
 pauses. The validator rejects a `producer: tpm` handoff that routes to
 `finalizer` or `validator`, that uses status `ready_for_review`,
 `verified_pass`, or `verified_fail`, or that sets `close_type: epic`.
+The shipped tpm helper files are `.codex/skills/llm-handoff-tpm/SKILL.md`
+for `provider: codex` (`skill_name: llm-handoff-tpm`) and
+`.agents/agents/tpm.md` for `agy`; the Claude subagent comes in a later
+operator step.
 
 The `planner` and `frontend` roles on `antigravity` need the `agy` user
 settings entries described in

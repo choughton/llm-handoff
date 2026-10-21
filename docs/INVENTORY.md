@@ -110,6 +110,7 @@ dispatcher role writes `HANDOFF.md`; see
 | [.codex/skills/llm-handoff/SKILL.md](../.codex/skills/llm-handoff/SKILL.md) | Backend skill (the reference mapping's Codex role). |
 | [.codex/skills/llm-handoff/agents/openai.yaml](../.codex/skills/llm-handoff/agents/openai.yaml) | Codex agent metadata for the backend skill. |
 | [.codex/skills/llm-handoff-planner/SKILL.md](../.codex/skills/llm-handoff-planner/SKILL.md) | Planner skill (all-Codex mapping). |
+| [.codex/skills/llm-handoff-tpm/SKILL.md](../.codex/skills/llm-handoff-tpm/SKILL.md) | Optional tpm skill (`skill_name: llm-handoff-tpm`). |
 | [.codex/skills/llm-handoff-frontend/SKILL.md](../.codex/skills/llm-handoff-frontend/SKILL.md) | Frontend skill (all-Codex mapping). |
 | [.codex/skills/llm-handoff-auditor/SKILL.md](../.codex/skills/llm-handoff-auditor/SKILL.md) | Auditor skill (all-Codex mapping). |
 | [.codex/skills/llm-handoff-validator/SKILL.md](../.codex/skills/llm-handoff-validator/SKILL.md) | Validator and router skill (all-Codex mapping). |
@@ -121,6 +122,7 @@ dispatcher role writes `HANDOFF.md`; see
 | File | Purpose |
 | --- | --- |
 | [.agents/agents/planner.md](../.agents/agents/planner.md) | Planner agent template. |
+| [.agents/agents/tpm.md](../.agents/agents/tpm.md) | Optional tpm agent template (`agy --agent tpm`). |
 | [.agents/agents/backend.md](../.agents/agents/backend.md) | Backend agent template. |
 | [.agents/agents/frontend.md](../.agents/agents/frontend.md) | Frontend agent template. |
 | [.agents/agents/auditor.md](../.agents/agents/auditor.md) | Auditor agent template. |
@@ -199,12 +201,14 @@ guide to that directory.
 | [.codex/skills/llm-handoff/SKILL.md](../examples/reference-workflow/.codex/skills/llm-handoff/SKILL.md) | Codex backend skill. |
 | [.codex/skills/llm-handoff/agents/openai.yaml](../examples/reference-workflow/.codex/skills/llm-handoff/agents/openai.yaml) | Codex agent metadata. |
 | [.codex/skills/llm-handoff-planner/SKILL.md](../examples/reference-workflow/.codex/skills/llm-handoff-planner/SKILL.md) | Codex planner skill. |
+| [.codex/skills/llm-handoff-tpm/SKILL.md](../examples/reference-workflow/.codex/skills/llm-handoff-tpm/SKILL.md) | Codex tpm skill (optional role). |
 | [.codex/skills/llm-handoff-frontend/SKILL.md](../examples/reference-workflow/.codex/skills/llm-handoff-frontend/SKILL.md) | Codex frontend skill. |
 | [.codex/skills/llm-handoff-auditor/SKILL.md](../examples/reference-workflow/.codex/skills/llm-handoff-auditor/SKILL.md) | Codex auditor skill. |
 | [.codex/skills/llm-handoff-validator/SKILL.md](../examples/reference-workflow/.codex/skills/llm-handoff-validator/SKILL.md) | Codex validator and router skill. |
 | [.codex/skills/llm-handoff-finalizer/SKILL.md](../examples/reference-workflow/.codex/skills/llm-handoff-finalizer/SKILL.md) | Codex finalizer skill. |
 | [.codex/rules/llm-handoff.rules](../examples/reference-workflow/.codex/rules/llm-handoff.rules) | Codex rules file. |
 | [.agents/agents/planner.md](../examples/reference-workflow/.agents/agents/planner.md) | Antigravity planner agent. |
+| [.agents/agents/tpm.md](../examples/reference-workflow/.agents/agents/tpm.md) | Antigravity tpm agent (optional role). |
 | [.agents/agents/backend.md](../examples/reference-workflow/.agents/agents/backend.md) | Antigravity backend agent. |
 | [.agents/agents/frontend.md](../examples/reference-workflow/.agents/agents/frontend.md) | Antigravity frontend agent. |
 | [.agents/agents/auditor.md](../examples/reference-workflow/.agents/agents/auditor.md) | Antigravity auditor agent. |
