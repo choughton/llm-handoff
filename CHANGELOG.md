@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Interrupted tpm dispatch recovery (TPM-14). With `agents.tpm` configured, a tpm
+  dispatch writes a `tpm` in-flight record and gets the interrupted-planner startup
+  recovery: an unchanged or valid handoff deletes the record, and a missing, empty, or
+  invalid one is restored and the tpm runs again (routing source
+  `interrupted_tpm_recovery`) only after the operator confirms
+  `Restore the handoff from before tpm's interrupted dispatch and run tpm again? [y/N]`.
+  In dispatcher commit mode, the tpm's handoff-only commits are undone only after a
+  tpm-worded confirmation. A `tpm` record found without `agents.tpm` is discarded with
+  one `WARN` line and never prompts. Without `agents.tpm`, behavior and log text are
+  unchanged.
 - Operator prompt `@tpm <message>` (TPM-11). With `agents.tpm` configured, `@tpm` at a
   pause prompt dispatches the tpm directly on the current `HANDOFF.md`, like `@backend`,
   `@frontend`, and `@auditor`, with the operator's message as `Operator instruction: ...`.

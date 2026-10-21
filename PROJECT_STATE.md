@@ -28,7 +28,8 @@ belong in commits, handoffs, and pull requests.
   (tests, Linear tools, and inventory for the Claude tpm agent) was approved
   at `3291e2a` and merged in PR #219; TPM-10 (routing to the tpm when it is
   configured) was approved at `3f75142` and merged in PR #220; TPM-11
-  (operator prompt `@tpm <message>`) is in flight.
+  (operator prompt `@tpm <message>`) was approved at `cee95d3` and merged in
+  PR #221; TPM-14 (interrupted tpm dispatch recovery) is in flight.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
@@ -1472,7 +1473,7 @@ dispatched without its instructions.
   tpm. Approved at `3f75142`, merged in PR #220.
 - TPM-11 (was part of TPM-3): Operator prompt `@tpm <message>`, like the
   other `@role` targets, refused with a clear message when `agents.tpm` is
-  not configured.
+  not configured. Approved at `cee95d3`, merged in PR #221.
 - TPM-14 (added 2026-10-20; runs after TPM-11): Interrupted tpm dispatch
   recovery. A tpm dispatch writes an in-flight record like the planner's
   (`_write_planner_in_flight_record` in `llm_handoff/orchestrator.py`), so a

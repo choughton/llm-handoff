@@ -375,7 +375,7 @@ What survives a restart, all under `logs/dispatch/`:
   line and its files stay operator edits. See
   [Dispatcher Commits](#dispatcher-commits);
 - the in-flight record (`in-flight.json`), which exists only while an
-  implementer, planner, finalizer, or audit fan-out dispatch runs. A record found at startup means that
+  implementer, planner, configured `tpm`, finalizer, or audit fan-out dispatch runs. A record found at startup means that
   role was interrupted mid-dispatch; it applies only after the operator
   confirms it at a terminal. See [Dispatcher Commits](#dispatcher-commits).
 
@@ -819,6 +819,22 @@ reconciled. Then:
   the baseline described below. A forced instruction the interrupted cycle
   carried, such as an operator `@planner` message or a routing-recovery
   instruction, is not kept.
+
+When `agents.tpm` is configured, a tpm dispatch writes a `tpm` record under
+the same rules as a `planner` record: written right before the tpm starts
+(never in a dry run), deleted as soon as it returns whatever its exit code,
+and an `ERROR` line and a stop when that delete fails. At startup it goes
+through the same checks and Git reconcile, with the handoff validated as the
+tpm's (`producer: tpm`) and every prompt and log line naming `tpm` instead of
+`planner`, for example
+``Undo the interrupted tpm's handoff commits with `git reset --soft <sha>`? [y/N]``
+and `Restore the handoff from before tpm's interrupted dispatch and run tpm again? [y/N]`.
+On `y` the first cycle dispatches the tpm (routing source
+`interrupted_tpm_recovery`) with a note that its previous run was interrupted
+and the handoff was restored. A `tpm` record found when `agents.tpm` is not
+configured is discarded with one `WARN` line saying the tpm is not
+configured (a dry run keeps it); nothing is restored, the handoff stays as it
+is, and the dispatcher neither asks nor dispatches the tpm.
 
 A finalizer (epic-close ledger-updater) dispatch writes a `finalizer` record
 to the same path right before it starts. It has the same shape as a `planner`

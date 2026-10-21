@@ -1,11 +1,13 @@
-"""TPM-1 to TPM-3, TPM-10, and TPM-11: `tpm` is a recognized role name, a
-configured tpm route is dispatched, an unconfigured tpm route gets one planner
-repair, the validator has rules for `producer: tpm`, and `@tpm` at the
-operator prompt dispatches a configured tpm."""
+"""TPM-1 to TPM-3, TPM-10, TPM-11, and TPM-14: `tpm` is a recognized role
+name, a configured tpm route is dispatched, an unconfigured tpm route gets one
+planner repair, the validator has rules for `producer: tpm`, `@tpm` at the
+operator prompt dispatches a configured tpm, and the in-flight record accepts
+a `tpm` dispatch record."""
 
 from __future__ import annotations
 
 import importlib
+import json
 import subprocess
 import threading
 import time
@@ -20,6 +22,11 @@ from llm_handoff import config as config_module
 from llm_handoff import doctor
 from llm_handoff import rationalization_detector
 from llm_handoff.agent_types import DispatchResult, SubagentResult
+from llm_handoff.in_flight import (
+    InFlightRecord,
+    in_flight_record_payload,
+    load_in_flight_record,
+)
 from llm_handoff.normalizer_models import ValidAgent, normalizer_prompt
 from llm_handoff.roles import (
     CANONICAL_DISPATCH_ROLES,
@@ -125,6 +132,33 @@ def test_handoff_normalizer_canonical_set_includes_tpm() -> None:
     handoff_normalizer = importlib.import_module("llm_handoff.handoff_normalizer")
 
     assert "tpm" in handoff_normalizer.CANONICAL_NEXT_AGENT_SET
+
+
+# TPM-14: in_flight.py accepts a tpm dispatch record
+
+
+def test_load_in_flight_record_round_trips_a_tpm_record_and_rejects_a_handback() -> None:
+    record = InFlightRecord(
+        cycle=4,
+        role="tpm",
+        story_key=None,
+        phase="dispatch",
+        head_sha="a" * 40,
+        head_branch="main",
+        handoff_content=(
+            "---\nnext_agent: tpm\nreason: \"Assign.\"\nproducer: planner\n---\n"
+        ),
+        dirty_fingerprints=(),
+        carried_over=(),
+        protected_digests=(("AGENTS.md", "b" * 64),),
+    )
+    text = in_flight_record_payload(record)
+
+    assert load_in_flight_record(text) == record
+    payload = json.loads(text)
+    payload["phase"] = "handback"
+    payload["handback_content"] = payload["handoff_content"]
+    assert load_in_flight_record(json.dumps(payload)) is None
 
 
 # Check 5: orchestrator dispatch of a configured tpm (TPM-10)

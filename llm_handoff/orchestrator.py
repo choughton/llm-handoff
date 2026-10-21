@@ -480,6 +480,14 @@ INTERRUPTED_PLANNER_INSTRUCTION = (
     "started from. Do that assignment again from the start and write a "
     "complete handoff."
 )
+# Sent to a configured tpm whose interrupted dispatch the operator chose to
+# recover at startup, after the half-written handoff was restored.
+INTERRUPTED_TPM_INSTRUCTION = (
+    "Your previous tpm run was interrupted before it finished rewriting "
+    "the handoff. The dispatcher restored the handoff to the text that run "
+    "started from. Do that assignment again from the start and write a "
+    "complete handoff."
+)
 
 LogFn = Callable[[str, str], None]
 _COMMIT_SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
@@ -946,6 +954,18 @@ def _run_loop(
                     ),
                     warnings=[],
                 )
+            elif pending_planner_recovery.kind == "interrupted_tpm":
+                decision = RoutingDecision(
+                    route="tpm",
+                    confidence="HIGH",
+                    source="interrupted_tpm_recovery",
+                    reasoning=(
+                        "The operator confirmed restoring the handoff a "
+                        "previous run's interrupted tpm dispatch started "
+                        "from, so the tpm runs that assignment again."
+                    ),
+                    warnings=[],
+                )
             elif pending_planner_recovery.kind == "interrupted_finalizer":
                 decision = RoutingDecision(
                     route="planner",
@@ -1039,6 +1059,7 @@ def _run_loop(
                 "interrupted_dispatch",
                 "interrupted_handback",
                 "interrupted_planner",
+                "interrupted_tpm",
                 "interrupted_finalizer",
                 "interrupted_audit",
             }:
@@ -1330,6 +1351,7 @@ def _run_loop(
             "interrupted_dispatch_recovery",
             "interrupted_handback_recovery",
             "interrupted_planner_recovery",
+            "interrupted_tpm_recovery",
             "interrupted_finalizer_recovery",
             "interrupted_audit_recovery",
         }:
@@ -1895,6 +1917,24 @@ def _run_loop(
                     protected_snapshot=protected_before,
                 )
             )
+            # A configured tpm's record follows the planner's rules: it exists
+            # only while the tpm runs, so a later start can restore a handoff
+            # an interrupted tpm half-wrote.
+            tpm_in_flight_written = (
+                current_cycle.route == "tpm"
+                and "tpm" in config.agents
+                and resumed_handback is None
+                and not config.dry_run
+                and _write_planner_in_flight_record(
+                    config,
+                    cycle=cycle_number,
+                    handoff_content=handoff_content,
+                    log=log_fn,
+                    state=in_flight_state,
+                    protected_snapshot=protected_before,
+                    role="tpm",
+                )
+            )
             # An audit fan-out's record exists only while it runs, so a later
             # start can restore the handoff the audit started from and run the
             # audit again. The single-agent auditor writes none.
@@ -1994,6 +2034,22 @@ def _run_loop(
                     "returned, so the dispatcher stops before validating the "
                     "planner's handoff. The next start keeps a valid handoff "
                     "and offers to restore the one the planner dispatch "
+                    "started from only when it is not valid.",
+                )
+                return 1
+            # The tpm returned, whatever its exit code: its handoff is
+            # whatever it wrote, so its record names nothing interrupted.
+            if tpm_in_flight_written and not _delete_in_flight_record(
+                config, log_fn
+            ):
+                _log(
+                    log_fn,
+                    "ERROR",
+                    "Could not clear the in-flight record "
+                    f"{_in_flight_state_path(config)} after the tpm dispatch "
+                    "returned, so the dispatcher stops before validating the "
+                    "tpm's handoff. The next start keeps a valid handoff "
+                    "and offers to restore the one the tpm dispatch "
                     "started from only when it is not valid.",
                 )
                 return 1
@@ -6493,6 +6549,10 @@ PLANNER_IN_FLIGHT_CONSEQUENCE = (
     "A planner interrupted mid-dispatch leaves its half-written handoff after "
     "a restart."
 )
+TPM_IN_FLIGHT_CONSEQUENCE = (
+    "A tpm interrupted mid-dispatch leaves its half-written handoff after a "
+    "restart."
+)
 FINALIZER_IN_FLIGHT_CONSEQUENCE = (
     "A finalizer interrupted mid-dispatch leaves its half-written handoff "
     "after a restart, and the next start cannot tell whether it committed the "
@@ -6512,13 +6572,13 @@ def _write_planner_in_flight_record(
     log: LogFn,
     state: _InFlightRecordState,
     protected_snapshot: ProtectedFileSnapshot | None = None,
-    role: Literal["planner", "finalizer", "auditor"] = "planner",
+    role: Literal["planner", "tpm", "finalizer", "auditor"] = "planner",
 ) -> bool:
-    """Write the in-flight record before a planner, finalizer, or audit fan-out.
+    """Write the in-flight record before a planner, tpm, finalizer, or audit fan-out.
 
     The record holds the handoff the role starts from, HEAD, the checked-out
     branch, and the pre-dispatch protected-file digests, so a start after an
-    interrupted planner, finalizer, or audit fan-out can restore a
+    interrupted planner, tpm, finalizer, or audit fan-out can restore a
     half-written handoff. It is a ``dispatch`` record only and is deleted as
     soon as the dispatch returns. Returns True when it was written; writes
     nothing, with the same one WARN per run, when the record cannot be kept
@@ -6527,6 +6587,7 @@ def _write_planner_in_flight_record(
     """
 
     consequence = {
+        "tpm": TPM_IN_FLIGHT_CONSEQUENCE,
         "finalizer": FINALIZER_IN_FLIGHT_CONSEQUENCE,
         "auditor": AUDITOR_IN_FLIGHT_CONSEQUENCE,
     }.get(role, PLANNER_IN_FLIGHT_CONSEQUENCE)
@@ -7547,9 +7608,11 @@ def _interrupted_planner_git_drift(
     None when there is nothing to reconcile: outside dispatcher commit mode,
     when the record's ``head_sha`` does not resolve to a commit (left to the
     anchor checks), or when HEAD and the branch still match the record. This
-    never changes HEAD, the index, or the working tree.
+    never changes HEAD, the index, or the working tree. The error text names
+    the record's role (the planner or a configured tpm).
     """
 
+    role = record.role
     head_sha = record.head_sha
     repo_root = config.repo_root
     if (
@@ -7571,14 +7634,14 @@ def _interrupted_planner_git_drift(
         return _InterruptedPlannerGitDrift(
             current=current,
             error=(
-                f"the planner moved the checkout from `{before_branch}` to "
+                f"the {role} moved the checkout from `{before_branch}` to "
                 f"`{after_branch}`"
             ),
         )
     rewritten = _InterruptedPlannerGitDrift(
         current=current,
         error=(
-            f"the planner rewrote history on `{after_branch}` (HEAD was "
+            f"the {role} rewrote history on `{after_branch}` (HEAD was "
             f"{head_sha[:12]})"
         ),
     )
@@ -7625,7 +7688,7 @@ def _interrupted_planner_git_drift(
             current=current,
             commits=commits,
             error=(
-                f"the planner committed {', '.join(c[:12] for c in commits)} "
+                f"the {role} committed {', '.join(c[:12] for c in commits)} "
                 "with files other than the handoff: "
                 + _escape_control_characters(", ".join(others))
             ),
@@ -7670,12 +7733,15 @@ def _reconcile_interrupted_planner_git(
     record's HEAD are disclosed first and, on ``y``, skipped as published
     (one INFO line, ``"continue"``); that ref is role-writable too, so any
     other answer checks them as above. Dry run only reports, naming what a
-    real start would do. Runs after the record's anchor checks.
+    real start would do. Runs after the record's anchor checks. A configured
+    tpm's record gets the same rule, with prompts and log lines naming
+    ``tpm`` instead of ``planner``.
     """
 
     drift = _interrupted_planner_git_drift(config, record)
     if drift is None:
         return "continue"
+    role = record.role
     head_sha = record.head_sha or ""
     current = drift.current
     before_branch = _escape_control_characters(record.head_branch or "detached HEAD")
@@ -7690,20 +7756,20 @@ def _reconcile_interrupted_planner_git(
             _log(
                 log,
                 "INFO",
-                f"Found in-flight record {state_path}: planner was interrupted "
+                f"Found in-flight record {state_path}: {role} was interrupted "
                 f"mid-dispatch on {story}, and `{after_branch}` now has "
                 f"{drift.published} commit(s) since the record's HEAD {head_sha} "
                 f"({', '.join(sha[:12] for sha in drift.commits)}), with HEAD "
                 f"{(current.head or '')[:12]} on {drift.published_ref}. The record "
                 "and the remote-tracking ref are files a role can write, so they "
                 "are not proof that these commits were published rather than "
-                "made by the planner. Confirming skips them: nothing is undone, "
+                f"made by the {role}. Confirming skips them: nothing is undone, "
                 "and the handoff checks run as usual.",
             )
             confirmed = _confirm_carry_over_at_terminal(
                 operator_prompt.reader(),
                 f"Skip the {drift.published} commit(s) on {drift.published_ref} "
-                "as published, not the interrupted planner's? [y/N]",
+                f"as published, not the interrupted {role}'s? [y/N]",
                 log,
             )
         if confirmed:
@@ -7741,7 +7807,7 @@ def _reconcile_interrupted_planner_git(
         _log(
             log,
             "INFO",
-            f"The in-flight record {state_path} names an interrupted planner "
+            f"The in-flight record {state_path} names an interrupted {role} "
             f"dispatch that started at {head_sha[:12]} on `{before_branch}`; the "
             f"checkout is now at {(current.head or 'no commit')[:12]} on "
             f"`{after_branch}`, and {decision}. Not reconciled in dry run.",
@@ -7751,7 +7817,7 @@ def _reconcile_interrupted_planner_git(
     if error is None:
         commit_list = ", ".join(sha[:12] for sha in drift.commits)
         question = (
-            "Undo the interrupted planner's handoff commits with "
+            f"Undo the interrupted {role}'s handoff commits with "
             f"`git reset --soft {head_sha[:12]}`? [y/N]"
         )
         confirmed = False
@@ -7763,12 +7829,12 @@ def _reconcile_interrupted_planner_git(
             _log(
                 log,
                 "INFO",
-                f"Found in-flight record {state_path}: planner was interrupted "
+                f"Found in-flight record {state_path}: {role} was interrupted "
                 f"mid-dispatch on {story}, and `{after_branch}` now has commits "
                 f"since the record's HEAD {head_sha} that change only the "
                 f"handoff ({commit_list}), which dispatcher commit mode does not "
                 "allow. The record is a file a role can write, so its HEAD is "
-                f"not proof that these commits are the planner's. Confirming "
+                f"not proof that these commits are the {role}'s. Confirming "
                 f"moves `{after_branch}` from {(current.head or '')[:12]} back to "
                 f"{head_sha[:12]} with `git reset --soft` and unstages the "
                 "handoff; the working tree keeps every file as it is.",
@@ -7781,7 +7847,7 @@ def _reconcile_interrupted_planner_git(
                 log,
                 "WARN",
                 f"Discarded the in-flight record read from {state_path} for "
-                f"planner's interrupted {story} work because undoing the "
+                f"{role}'s interrupted {story} work because undoing the "
                 f"handoff commits ({commit_list}) was not confirmed at a "
                 "terminal; HEAD, the index, and the handoff stay as they are.",
             )
@@ -7796,7 +7862,7 @@ def _reconcile_interrupted_planner_git(
                 log,
                 "ERROR",
                 f"The checkout moved while the operator was asked to undo the "
-                f"interrupted planner's handoff commits (in-flight record "
+                f"interrupted {role}'s handoff commits (in-flight record "
                 f"{state_path}), so nothing was undone. The dispatcher stops "
                 "before any dispatch and keeps the record, so the next start "
                 "checks the checkout again.",
@@ -7806,12 +7872,13 @@ def _reconcile_interrupted_planner_git(
             config.repo_root,
             config.handoff_path,
             GitPosition(head=head_sha, branch=record.head_branch),
+            role=role,
         )
         if check.error is None:
             _log(
                 log,
                 "WARN",
-                "The interrupted planner committed the handoff ("
+                f"The interrupted {role} committed the handoff ("
                 + ", ".join(sha[:12] for sha in check.undone)
                 + ") despite dispatcher commit mode; undid it with "
                 "`git reset --soft` as the operator confirmed. The handoff "
@@ -7851,17 +7918,36 @@ def _recover_interrupted_planner(
     anchor checks, and Git is changed only after the operator confirms the
     exact reset; a checkout that cannot be reconciled, or a confirmed record
     that cannot be deleted, stops the run.
+
+    A configured tpm's record takes the same path: its handoff is validated
+    as the tpm's, its prompts and log lines name ``tpm``, and a confirmed
+    recovery schedules the tpm with ``INTERRUPTED_TPM_INSTRUCTION``. A tpm
+    record found when ``agents.tpm`` is not configured is discarded with one
+    WARN, without a prompt.
     """
 
     nothing = InterruptedDispatchRecovery()
     story = _in_flight_story_display(record)
+    role = record.role
+    if role == "tpm" and "tpm" not in config.agents:
+        _log(
+            log,
+            "WARN",
+            f"Discarded the in-flight record {state_path} for tpm's "
+            f"interrupted {story} work: the tpm is not configured "
+            "(agents.tpm), so nothing is restored and the handoff stays as it "
+            "is." + (" Not deleted in dry run." if config.dry_run else ""),
+        )
+        return _delete_recovered_in_flight_record(
+            config, log, state_path, record, story
+        )
     if config.protected_paths and record.protected_digests is None:
-        # The re-dispatched planner's protected-file check needs the record's
+        # The re-dispatched role's protected-file check needs the record's
         # pre-dispatch digests; without them nothing is restored.
         _log(
             log,
             "WARN",
-            f"Discarded the in-flight record {state_path} for planner's "
+            f"Discarded the in-flight record {state_path} for {role}'s "
             f"interrupted {story} work: it holds no pre-dispatch protected-file "
             "snapshot, so the protected-file check cannot run on a recovered "
             "cycle. Nothing is restored; the handoff stays as it is."
@@ -7894,12 +7980,14 @@ def _recover_interrupted_planner(
         _log(
             log,
             "INFO",
-            f"The in-flight record {state_path} names an interrupted planner "
+            f"The in-flight record {state_path} names an interrupted {role} "
             "dispatch that left nothing to recover"
             + ("; not deleted in dry run." if config.dry_run else "; deleted it."),
         )
         return nothing
-    errors = _interrupted_planner_handoff_errors(config, record, current)
+    errors = _interrupted_planner_handoff_errors(
+        config, record, current, previous_agent=role
+    )
     if not errors:
         deleted = _delete_recovered_in_flight_record(
             config, log, state_path, record, story
@@ -7909,7 +7997,7 @@ def _recover_interrupted_planner(
         _log(
             log,
             "INFO",
-            f"The in-flight record {state_path} names an interrupted planner "
+            f"The in-flight record {state_path} names an interrupted {role} "
             "dispatch that finished writing a valid handoff before the "
             "interrupt; kept the handoff"
             + (
@@ -7926,7 +8014,7 @@ def _recover_interrupted_planner(
         _escape_control_characters(error.split(":", 1)[0].strip()) for error in errors
     )
     summary = (
-        f"Found in-flight record {state_path}: planner was interrupted "
+        f"Found in-flight record {state_path}: {role} was interrupted "
         f"mid-dispatch on {story}, and the handoff {handoff_display} it left "
         f"is not valid ({codes})."
     )
@@ -7940,7 +8028,7 @@ def _recover_interrupted_planner(
             log,
             "WARN",
             f"Discarded the in-flight record read from {state_path} for "
-            f"planner's interrupted {story} work: the handoff path "
+            f"{role}'s interrupted {story} work: the handoff path "
             f"{handoff_display} passes through a symlink or junction, so the "
             "dispatcher does not restore it. The handoff stays as it is.",
         )
@@ -7974,8 +8062,8 @@ def _recover_interrupted_planner(
             )
         confirmed = _confirm_carry_over_at_terminal(
             operator_prompt.reader(),
-            "Restore the handoff from before planner's interrupted dispatch and "
-            "run planner again? [y/N]",
+            f"Restore the handoff from before {role}'s interrupted dispatch and "
+            f"run {role} again? [y/N]",
             log,
         )
     if not confirmed:
@@ -7983,7 +8071,7 @@ def _recover_interrupted_planner(
             log,
             "WARN",
             f"Discarded the in-flight record read from {state_path} for "
-            f"planner's interrupted {story} work because it was not confirmed "
+            f"{role}'s interrupted {story} work because it was not confirmed "
             f"at a terminal; the handoff {handoff_display} stays as it is.",
         )
         return _delete_recovered_in_flight_record(
@@ -8012,7 +8100,7 @@ def _recover_interrupted_planner(
         "INFO",
         f"Restored the half-written handoff {handoff_display} to the "
         "operator-approved text from the in-flight record of the interrupted "
-        "planner dispatch.",
+        f"{role} dispatch.",
     )
     # Built once recovery is confirmed, from the checkout as it is now.
     protected_snapshot = (
@@ -8021,14 +8109,14 @@ def _recover_interrupted_planner(
         else None
     )
     if not _delete_in_flight_record(config, log):
-        # The planner's own record write would likely fail the same way, so a
+        # The role's own record write would likely fail the same way, so a
         # second interrupt would leave only this stale record behind.
         _log(
             log,
             "ERROR",
             f"Could not clear the in-flight record {state_path} after restoring "
-            f"the handoff of planner's interrupted {story} work, so the "
-            "dispatcher stops before dispatching planner again. The restored "
+            f"the handoff of {role}'s interrupted {story} work, so the "
+            f"dispatcher stops before dispatching {role} again. The restored "
             "handoff stays; the next start finds it unchanged from the record "
             "and deletes the record.",
         )
@@ -8036,18 +8124,26 @@ def _recover_interrupted_planner(
     _log(
         log,
         "INFO",
-        "The operator confirmed restoring the handoff of planner's interrupted "
-        f"{story} work; scheduling planner again.",
+        f"The operator confirmed restoring the handoff of {role}'s interrupted "
+        f"{story} work; scheduling {role} again.",
     )
-    return InterruptedDispatchRecovery(
-        pending=PendingPlannerRecovery(
+    if role == "tpm":
+        pending = PendingPlannerRecovery(
+            handoff_sha=_content_sha(record.handoff_content),
+            additional_instruction=INTERRUPTED_TPM_INSTRUCTION,
+            kind="interrupted_tpm",
+            route="tpm",
+            resumed_protected_snapshot=protected_snapshot,
+        )
+    else:
+        pending = PendingPlannerRecovery(
             handoff_sha=_content_sha(record.handoff_content),
             additional_instruction=INTERRUPTED_PLANNER_INSTRUCTION,
             kind="interrupted_planner",
             route="planner",
             resumed_protected_snapshot=protected_snapshot,
-        ),
-    )
+        )
+    return InterruptedDispatchRecovery(pending=pending)
 
 
 @dataclass(frozen=True, slots=True)
@@ -8819,7 +8915,7 @@ def _recover_interrupted_dispatch(
     assignment it would restore (scope and Verification commands); confirming
     approves that assignment. Otherwise it is discarded and the files stay
     operator edits. A ``handback`` record is handled by
-    ``_recover_interrupted_handback``, a ``planner`` record by
+    ``_recover_interrupted_handback``, a ``planner`` or ``tpm`` record by
     ``_recover_interrupted_planner``, a ``finalizer`` record by
     ``_recover_interrupted_finalizer``, and an ``auditor`` record by
     ``_recover_interrupted_auditor``.
@@ -8881,7 +8977,9 @@ def _recover_interrupted_dispatch(
             + (" Not deleted in dry run." if config.dry_run else ""),
         )
         return _delete_recovered_in_flight_record(config, log, state_path, None)
-    if record.role == "planner":
+    if record.role in {"planner", "tpm"}:
+        # A configured tpm's record follows the planner's rules; the
+        # recovery names the record's role in its prompts and log lines.
         return _recover_interrupted_planner(
             config, log, operator_prompt, record, state_path
         )

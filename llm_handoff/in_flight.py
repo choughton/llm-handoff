@@ -1,4 +1,4 @@
-"""The in-flight record for an implementer, planner, or finalizer dispatch.
+"""The in-flight record for an implementer, planner, tpm, or finalizer dispatch.
 
 The dispatcher writes this record right before it launches an implementer
 (``backend`` or ``frontend``) under the work-claim gate. Once the dispatch
@@ -19,6 +19,10 @@ and restore a half-written handoff. It has no
 operator dirty-file fingerprints, no carried-over files, and no
 ``assignment_content``, and its ``story_key`` is None when that handoff
 names no story.
+
+A ``tpm`` record follows the same rules as a ``planner`` record. The
+dispatcher writes it right before a configured tpm's dispatch and deletes it
+as soon as that dispatch returns.
 
 A ``finalizer`` record follows the same rules as a ``planner`` record. The
 dispatcher writes it right before the epic-close ledger update and deletes
@@ -46,9 +50,13 @@ from typing import Literal
 from llm_handoff.work_claim import carry_over_key
 
 IN_FLIGHT_RECORD_VERSION = 1
-InFlightRole = Literal["backend", "frontend", "planner", "finalizer", "auditor"]
+InFlightRole = Literal[
+    "backend", "frontend", "planner", "tpm", "finalizer", "auditor"
+]
 InFlightPhase = Literal["dispatch", "handback"]
-_ROLES = frozenset({"backend", "frontend", "planner", "finalizer", "auditor"})
+_ROLES = frozenset(
+    {"backend", "frontend", "planner", "tpm", "finalizer", "auditor"}
+)
 _IMPLEMENTER_ROLES = frozenset({"backend", "frontend"})
 _PHASES = frozenset({"dispatch", "handback"})
 
@@ -147,11 +155,11 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     """Parse a record; None when it is malformed or does not hold together.
 
     Rejects invalid JSON, another ``version``, a ``role`` other than
-    ``backend``, ``frontend``, ``planner``, ``finalizer``, or ``auditor``, a
-    ``phase`` other than ``dispatch`` or ``handback``, a field of the wrong
-    type, and a ``story_key`` that is not the ``carry_over_key`` of
-    ``assignment_content`` (when set) or ``handoff_content``. A ``planner``,
-    ``finalizer``, or ``auditor`` record must be a ``dispatch`` record with empty ``dirty_fingerprints``
+    ``backend``, ``frontend``, ``planner``, ``tpm``, ``finalizer``, or
+    ``auditor``, a ``phase`` other than ``dispatch`` or ``handback``, a field
+    of the wrong type, and a ``story_key`` that is not the ``carry_over_key``
+    of ``assignment_content`` (when set) or ``handoff_content``. A
+    ``planner``, ``tpm``, ``finalizer``, or ``auditor`` record must be a ``dispatch`` record with empty ``dirty_fingerprints``
     and ``carried_over`` and a null ``assignment_content``; its ``story_key``
     may be JSON null, but only when ``handoff_content`` has no
     ``carry_over_key``. An implementer record always needs a non-empty string
