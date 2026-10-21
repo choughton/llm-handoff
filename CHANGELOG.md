@@ -20,7 +20,10 @@ This project follows a simple pre-release changelog until the first public tag.
   failure only warns). `verify_work_claim(..., chat_owned_paths=...)` accepts
   those paths in `diff_scope` and `worktree`, and the audit fan-out reads the
   marker from the auditor assignment when no `@auditor` operator message
-  applies, so the audit handoff and pull request body carry it.
+  applies, so the audit handoff and pull request body carry it. The audit
+  accepts that handoff marker only when it matches the marker the same
+  dispatcher process committed for the story's chat changes; a role-written
+  or unmatched marker is ignored.
 - Chat change record (CHAT-21). New `llm_handoff/chat_changes.py` saves
   `ChatChangeEntry(role, story_id, recorded_at, message_sha256, changes)` to
   `logs/dispatch/chat-changes.json` (`CHAT_CHANGES_STATE_PATH`) via temp-file replace.

@@ -755,6 +755,9 @@ def _run_loop(
     planner_previous_handoff_sha: str | None = None
     implementer_base_sha: str | None = None
     implementer_base_story_key: str | None = None
+    # (story id, marker) for the latest dispatcher commit of chat changes; the
+    # audit accepts a handoff Operator Influence marker only when it matches.
+    chat_commit_marker: tuple[str | None, OperatorInfluence] | None = None
     # (story key, HEAD before that story's first gated dispatch).
     gate_story_base: tuple[str | None, str] | None = None
     # Whether either record was on disk before recovery read or deleted it:
@@ -2016,6 +2019,9 @@ def _run_loop(
                             recovery_kind=active_planner_recovery_kind,
                             active_operator_influence=active_operator_influence,
                             handoff_content=handoff_content,
+                            chat_commit_influence=_chat_commit_influence_for(
+                                chat_commit_marker, handoff_content
+                            ),
                         ),
                     ),
                 )
@@ -2286,6 +2292,16 @@ def _run_loop(
                 log=log_fn,
                 story_base_sha=story_base_sha,
             )
+            if (
+                commit_result is not None
+                and commit_result.sha is not None
+                and commit_result.chat_committed
+                and commit_result.chat_influences
+            ):
+                chat_commit_marker = (
+                    _handoff_story_id(assignment_content),
+                    commit_result.chat_influences[-1],
+                )
             if commit_result is not None and commit_result.sha is not None:
                 # Committed files are no longer carry-over work.
                 implementer_leftovers = prune_implementer_leftovers(
@@ -2431,6 +2447,7 @@ def _run_loop(
                         if _accepted_approval(config):
                             implementer_base_sha = None
                             implementer_base_story_key = None
+                            chat_commit_marker = None
                         previous_cycle = current_cycle
                         consecutive_failures = 0
                         if max_cycles is not None and cycle_number >= max_cycles:
@@ -2605,6 +2622,7 @@ def _run_loop(
                     # starts a new audit range from where its story starts.
                     implementer_base_sha = None
                     implementer_base_story_key = None
+                    chat_commit_marker = None
                 if (
                     config.publish.mode != "local"
                     and current_cycle.route == "auditor"
@@ -4651,15 +4669,38 @@ def _audit_operator_influence(
     recovery_kind: str | None,
     active_operator_influence: OperatorInfluence | None,
     handoff_content: str,
+    chat_commit_influence: OperatorInfluence | None = None,
 ) -> OperatorInfluence | None:
     """The marker the audit fan-out records: an ``@auditor`` operator message
-    first, else the marker a chat commit wrote into the auditor assignment."""
+    first, else the marker a chat commit wrote into the auditor assignment.
+
+    The handoff is role-written, so its marker counts only when it matches
+    ``chat_commit_influence``, the marker this dispatcher process put into its
+    own commit of the story's chat changes. Without that, it is ignored.
+    """
 
     if route != "auditor":
         return None
     if recovery_kind == "operator_role" and active_operator_influence is not None:
         return active_operator_influence
-    return _handoff_operator_influence(handoff_content)
+    if chat_commit_influence is None:
+        return None
+    marker = _handoff_operator_influence(handoff_content)
+    return marker if marker == chat_commit_influence else None
+
+
+def _chat_commit_influence_for(
+    chat_commit_marker: tuple[str | None, OperatorInfluence] | None,
+    handoff_content: str,
+) -> OperatorInfluence | None:
+    """The dispatcher-held chat marker when it belongs to the handoff's story."""
+
+    if chat_commit_marker is None:
+        return None
+    story_id, influence = chat_commit_marker
+    if story_id is None or story_id != _handoff_story_id(handoff_content):
+        return None
+    return influence
 
 
 def _story_committed_work(

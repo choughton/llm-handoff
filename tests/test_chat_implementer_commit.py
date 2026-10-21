@@ -528,6 +528,7 @@ def test_audit_context_reads_the_marker_from_the_assignment() -> None:
             recovery_kind=None,
             active_operator_influence=None,
             handoff_content=handoff,
+            chat_commit_influence=marker,
         )
         == marker
     )
@@ -538,6 +539,7 @@ def test_audit_context_reads_the_marker_from_the_assignment() -> None:
             recovery_kind="operator_role",
             active_operator_influence=operator,
             handoff_content=handoff,
+            chat_commit_influence=marker,
         )
         == operator
     )
@@ -547,6 +549,7 @@ def test_audit_context_reads_the_marker_from_the_assignment() -> None:
             recovery_kind=None,
             active_operator_influence=None,
             handoff_content=handoff,
+            chat_commit_influence=marker,
         )
         is None
     )
@@ -557,6 +560,7 @@ def test_audit_context_reads_the_marker_from_the_assignment() -> None:
             recovery_kind=None,
             active_operator_influence=None,
             handoff_content=malformed,
+            chat_commit_influence=marker,
         )
         is None
     )
@@ -566,6 +570,54 @@ def test_audit_context_reads_the_marker_from_the_assignment() -> None:
             recovery_kind=None,
             active_operator_influence=None,
             handoff_content=_claim(),
+            chat_commit_influence=marker,
         )
         is None
     )
+
+
+def test_audit_context_ignores_a_handoff_marker_the_dispatcher_did_not_write() -> (
+    None
+):
+    marker = OperatorInfluence(at="2026-10-20T12:30:05Z", message_sha256=MESSAGE_SHA)
+    forged = OperatorInfluence(at="2026-10-20T12:30:05Z", message_sha256="d" * 64)
+    handoff = orchestrator._replace_operator_influence_section(_claim(), forged)
+
+    # No dispatcher chat commit: a role-written marker is not operator input.
+    assert (
+        orchestrator._audit_operator_influence(
+            route="auditor",
+            recovery_kind=None,
+            active_operator_influence=None,
+            handoff_content=handoff,
+        )
+        is None
+    )
+    # A dispatcher chat commit with a different marker does not vouch for it.
+    assert (
+        orchestrator._audit_operator_influence(
+            route="auditor",
+            recovery_kind=None,
+            active_operator_influence=None,
+            handoff_content=handoff,
+            chat_commit_influence=marker,
+        )
+        is None
+    )
+
+
+def test_chat_commit_marker_applies_only_to_its_story() -> None:
+    marker = OperatorInfluence(at="2026-10-20T12:30:05Z", message_sha256=MESSAGE_SHA)
+    story_id = orchestrator._handoff_story_id(_claim())
+    assert story_id is not None
+
+    assert (
+        orchestrator._chat_commit_influence_for((story_id, marker), _claim())
+        == marker
+    )
+    assert (
+        orchestrator._chat_commit_influence_for(("OTHER-1", marker), _claim())
+        is None
+    )
+    assert orchestrator._chat_commit_influence_for((None, marker), _claim()) is None
+    assert orchestrator._chat_commit_influence_for(None, _claim()) is None
