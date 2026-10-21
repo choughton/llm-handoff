@@ -17,6 +17,21 @@ This project follows a simple pre-release changelog until the first public tag.
   with "the audited work is not on a story branch the dispatcher created" and the operator
   opened the pull request by hand. Any other shape still stops, with a `WARN` naming why.
   A Codex review bounce of such a story routes to `user` with `status: escalate_to_user`.
+- The Codex review gate now retries a stalled review. A review the summary shows running
+  for the head commit for `publish.review_stall_seconds` (default 600) with no result,
+  or a wait that reaches `review_timeout_seconds` with no completed review, is handled
+  like a failed review: one automatic `@codex review` comment, recorded in `story.json`
+  so a restart at the same head never posts another. Before, a review stuck at running
+  waited the whole timeout and went straight to the operator prompt.
+- New `publish.review_stall_action` (`prompt` by default). When the retried review also
+  stalls, times out, fails, or names no commit, `prompt` keeps the merge / retry / quit
+  prompt (or the pause without a terminal), and `merge` merges without a Codex review
+  when `HANDOFF.md` is the story's `verified_pass` for the head commit and no review
+  thread is unresolved. That merge logs a `WARN` and posts a "Merging without a Codex
+  review:" pull request comment with the reason; when a condition fails, it falls back
+  to `prompt`. Findings still take the correction round, and a usage-limit failure
+  still goes to the prompt.
+
 - Linear evidence and tools for the optional `tpm` role (TPM-8). The evidence-comment
   contract and `LINEAR_EVIDENCE_EVENTS` now let `tpm` post `lease_opened`,
   `user_attention_requested`, and `user_attention_cleared`, so the Linear validator

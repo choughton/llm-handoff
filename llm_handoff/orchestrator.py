@@ -2633,6 +2633,8 @@ def _review_gate(config: DispatchConfig) -> ReviewGate | None:
         poll_seconds=publish.review_poll_seconds,
         max_rounds=publish.max_review_rounds,
         codex_bot_login=publish.codex_bot_login,
+        stall_seconds=publish.review_stall_seconds,
+        stall_action=publish.review_stall_action,
     )
 
 
@@ -10142,7 +10144,9 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
                     "; waits for the "
                     + ", ".join(publish.wait_for_reviewers)
                     + f" review (up to {publish.review_timeout_seconds}s, "
-                    f"{publish.max_review_rounds} correction round(s))"
+                    f"{publish.review_stall_seconds}s stall limit, "
+                    f"{publish.max_review_rounds} correction round(s), "
+                    f"stall action: {publish.review_stall_action})"
                     if publish.wait_for_reviewers
                     else ""
                 )
