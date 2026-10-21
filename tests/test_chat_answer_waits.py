@@ -376,6 +376,223 @@ def test_answer_that_finishes_after_the_role_returned_is_followed_as_a_takeover(
     assert chat_takeover.CONTROLLER.armed() is False
 
 
+def _refuse(*_args: object, **_kwargs: object) -> Any:
+    raise AssertionError("must not run after a chat takeover")
+
+
+def _rewriting_answer(repo: Path, chat_handoff: str) -> Callable[[], None]:
+    def answer() -> None:
+        path = repo / HANDOFF
+        path.write_text(chat_handoff, encoding="utf-8")
+        chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
+
+    return answer
+
+
+def _recording_validate(
+    order: list[str], validated: list[str], route: str
+) -> Callable[..., ValidationResult]:
+    def validate(path: Path, previous_agent: str, **_kwargs: Any) -> ValidationResult:
+        order.append(f"validate:{previous_agent}")
+        validated.append(path.read_text(encoding="utf-8"))
+        return ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction=route
+        )
+
+    return validate
+
+
+LATE_TAKEOVER_LINE = (
+    "AGENT",
+    "A chat answer rewrote HANDOFF.md after the backend returned; the "
+    "dispatcher drops the rest of the backend's cycle and follows the chat's "
+    "handoff once it validates.",
+)
+
+
+def test_answer_started_after_the_role_returned_is_followed_before_the_chat_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    base = _init_repo(repo, _backend_assignment())
+    chat_handoff = _chat_handoff()
+    order: list[str] = []
+    worker = _FakeWorker(order)
+    chat_session.attach_worker(worker)
+
+    def backend(path: Path, **_kwargs: object) -> DispatchResult:
+        order.append("backend")
+        path.write_text(
+            _claim(status="ready_for_review", producer="backend", next_agent="auditor"),
+            encoding="utf-8",
+        )
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    validated: list[str] = []
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", backend)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        _recording_validate(order, validated, "backend"),
+    )
+
+    # The answer starts while the post-dispatch normalization runs, after the
+    # takeover check that follows the role's return.
+    def start_after_the_role() -> None:
+        if "backend" in order:
+            worker.start("late", _rewriting_answer(repo, chat_handoff))
+
+    _wrap(
+        monkeypatch,
+        "_normalize_handoff_next_agent_file",
+        lambda: order.append("normalize"),
+        after=start_after_the_role,
+    )
+    for name in (
+        "_commit_chat_changes_after_role",
+        "_commit_for_implementer",
+        "_run_work_claim_gate",
+    ):
+        monkeypatch.setattr(orchestrator, name, _refuse)
+    log = _FileLog(tmp_path / "dispatch.log")
+
+    exit_code = orchestrator.run_loop(_config(repo), max_cycles=1, log=log)
+
+    assert exit_code == 0
+    # Only the chat's handoff was validated, as the planner's part.
+    assert order == [
+        "normalize",
+        "backend",
+        "normalize",
+        "answered:late",
+        "validate:planner",
+    ]
+    assert validated == [chat_handoff]
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == chat_handoff
+    assert _git(repo, "rev-parse", "HEAD") == base
+    assert LATE_TAKEOVER_LINE in log.messages
+    assert log.messages.count(WAIT_LINE) == 1
+    assert chat_takeover.CONTROLLER.requested() is False
+    assert not orchestrator._in_flight_state_path(_config(repo)).exists()
+
+
+def test_answer_started_after_the_implementer_commit_is_followed_before_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo, _backend_assignment())
+    chat_handoff = _chat_handoff()
+    order: list[str] = []
+    worker = _FakeWorker(order)
+    chat_session.attach_worker(worker)
+
+    def backend(path: Path, **_kwargs: object) -> DispatchResult:
+        order.append("backend")
+        path.write_text(
+            _claim(status="ready_for_review", producer="backend", next_agent="auditor"),
+            encoding="utf-8",
+        )
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    validated: list[str] = []
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", backend)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        _recording_validate(order, validated, "auditor"),
+    )
+    _wrap(
+        monkeypatch,
+        "_commit_for_implementer",
+        lambda: order.append("commit_for_implementer"),
+        after=lambda: worker.start("late", _rewriting_answer(repo, chat_handoff)),
+        replacement=lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(orchestrator, "_run_work_claim_gate", _refuse)
+    log = _FileLog(tmp_path / "dispatch.log")
+
+    exit_code = orchestrator.run_loop(_config(repo), max_cycles=1, log=log)
+
+    assert exit_code == 0
+    assert order == [
+        "backend",
+        "commit_for_implementer",
+        "validate:backend",
+        "answered:late",
+        "validate:planner",
+    ]
+    assert validated[-1] == chat_handoff
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == chat_handoff
+    assert LATE_TAKEOVER_LINE in log.messages
+    assert chat_takeover.CONTROLLER.requested() is False
+
+
+def test_answer_finished_at_the_publish_wait_is_followed_instead_of_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(
+        repo,
+        _claim(status="ready_for_review", producer="backend", next_agent="auditor"),
+    )
+    config = _config(repo, publish={"mode": "pr"})
+    chat_handoff = _chat_handoff()
+    order: list[str] = []
+    worker = _FakeWorker(order)
+    chat_session.attach_worker(worker)
+
+    def fake_support(subagent_name: str, prompt: str, **_kwargs: object):
+        order.append(subagent_name)
+        config.handoff_full_path.write_text(
+            _claim(status="verified_pass", producer="auditor", next_agent="planner"),
+            encoding="utf-8",
+        )
+        return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def gate(**_kwargs: Any) -> bool:
+        order.append("work_claim_gate")
+        worker.start("late", _rewriting_answer(repo, chat_handoff))
+        return False
+
+    validated: list[str] = []
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_support)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        _recording_validate(order, validated, "backend"),
+    )
+    monkeypatch.setattr(orchestrator, "_run_work_claim_gate", gate)
+    monkeypatch.setattr(orchestrator, "publish_story", _refuse)
+    monkeypatch.setattr(
+        orchestrator, "leave_merged_story_branch", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        orchestrator, "resume_paused_publish", lambda **_kwargs: PublishOutcome()
+    )
+    monkeypatch.setattr(
+        orchestrator, "resume_interrupted_publish", lambda **_kwargs: PublishOutcome()
+    )
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert order == [
+        "auditor",
+        "validate:auditor (audit)",
+        "work_claim_gate",
+        "answered:late",
+        "validate:planner",
+    ]
+    assert validated[-1] == chat_handoff
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == chat_handoff
+    assert chat_takeover.CONTROLLER.requested() is False
+
+
 def test_auditor_publish_waits_for_the_answer_before_publishing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

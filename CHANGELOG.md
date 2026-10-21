@@ -15,8 +15,11 @@ This project follows a simple pre-release changelog until the first public tag.
   after the shared dispatch (before the takeover check, so an answer that
   rewrites `HANDOFF.md` after the role returned is still followed), before
   each chat-change commit, the implementer commit, and each work-claim gate,
-  and before the publish and settle holds. No worker is attached yet, so
-  every wait is a no-op until CHAT-32 wires chat in.
+  and before the publish and settle holds. Each wait after the takeover
+  check also checks for a takeover an answer requested after the role
+  returned and follows the chat's handoff before the next commit, gate, or
+  publish step, instead of treating it as the role's handoff. No worker is
+  attached yet, so every wait is a no-op until CHAT-32 wires chat in.
 - New `llm_handoff/chat_answers.py` (CHAT-29): `ChatAnswerWorker` answers
   chat messages one at a time on a background thread, in submission order,
   resuming the side session per provider. After each answer it writes the

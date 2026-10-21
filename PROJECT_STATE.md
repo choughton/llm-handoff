@@ -1496,8 +1496,11 @@ dependencies; Windows (`msvcrt`) and POSIX.
   by an answer that finishes after the role returned is still followed),
   before each chat-change commit, before `_commit_for_implementer`, before
   each work-claim gate, and after capture stops at the auditor publish and
-  planner settle sites. No worker is attached anywhere yet, so every wait is
-  a no-op in a real run.
+  planner settle sites. Each of those later waits also checks for a takeover
+  an answer requested after the role returned and follows the chat's
+  handoff through the CHAT-28 path (without the planner-commit undo, which
+  already ran) before the next commit, gate, or publish step. No worker is
+  attached anywhere yet, so every wait is a no-op in a real run.
 - CHAT-32 (was part of CHAT-30): Chat messages are answered right away
   (console wiring). Lands after CHAT-21 through CHAT-29 and CHAT-31, so
   writable chat is never wired in without them. A non-blank chat submission
