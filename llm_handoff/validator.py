@@ -310,21 +310,51 @@ def _tpm_producer_errors(
     return errors
 
 
+def _tpm_dispatch_producer_errors(
+    current: HandoffRouting,
+    *,
+    previous_route: str | None,
+) -> list[str]:
+    """Errors for a tpm dispatch whose handoff claims another producer.
+
+    The dispatcher knows which role it ran, so a tpm cannot opt out of the
+    tpm rules by writing `producer: planner`. A missing producer is already
+    reported as `frontmatter_producer_missing`.
+    """
+
+    if previous_route != "tpm" or not current.producer:
+        return []
+    if normalize_next_agent_value(current.producer) == "tpm":
+        return []
+    return [
+        "frontmatter_producer_mismatch: the dispatched role is `tpm`, but the "
+        f"handoff names producer `{current.producer}`; a tpm handoff sets "
+        "`producer: tpm`."
+    ]
+
+
 def _tpm_epic_change_errors(
     current: HandoffRouting,
     prior_handoff_content: str,
+    *,
+    previous_route: str | None = None,
 ) -> list[str]:
     """Errors for a tpm rewrite that leaves the epic its dispatch started in.
 
     A tpm grooms stories inside the open epic; choosing or renaming an epic
     is planner work. Renaming the epic would also skip the story-list check,
-    which compares only rewrites of the same epic. Epic IDs compare
-    case-insensitively, as the story-list check does. A prior handoff without
-    an epic ID, or one whose frontmatter does not parse, sets no constraint.
+    which compares only rewrites of the same epic. The guard applies when the
+    dispatcher ran the tpm (`previous_route`) or the handoff names producer
+    `tpm`, so a tpm cannot bypass it by claiming another producer. Epic IDs
+    compare case-insensitively, as the story-list check does. A prior handoff
+    without an epic ID, or one whose frontmatter does not parse, sets no
+    constraint.
     """
 
-    if normalize_next_agent_value(current.producer) != "tpm":
+    producer_is_tpm = normalize_next_agent_value(current.producer) == "tpm"
+    if not producer_is_tpm and previous_route != "tpm":
         return []
+    actor = "producer `tpm`" if producer_is_tpm else "dispatched role `tpm`"
     try:
         prior = parse_handoff_frontmatter_text(prior_handoff_content.lstrip("﻿"))
     except HandoffFrontmatterError:
@@ -342,7 +372,7 @@ def _tpm_epic_change_errors(
     else:
         change = f"removed epic_id `{prior_epic}`"
     return [
-        f"frontmatter_routing_rule: producer `tpm` {change}; a tpm stays "
+        f"frontmatter_routing_rule: {actor} {change}; a tpm stays "
         "inside the open epic and routes to `planner` when the work belongs "
         "to another epic."
     ]
@@ -523,9 +553,18 @@ def validate_handoff_text(
             routing_instruction = frontmatter_result.routing_instruction
             frontmatter_valid = not frontmatter_result.errors
             frontmatter_producer = frontmatter.producer
+            errors.extend(
+                _tpm_dispatch_producer_errors(
+                    frontmatter, previous_route=previous_route
+                )
+            )
             if prior_handoff_content is not None:
                 errors.extend(
-                    _tpm_epic_change_errors(frontmatter, prior_handoff_content)
+                    _tpm_epic_change_errors(
+                        frontmatter,
+                        prior_handoff_content,
+                        previous_route=previous_route,
+                    )
                 )
             errors.extend(
                 _implementer_scope_sha_errors(

@@ -28,7 +28,9 @@ belong in commits, handoffs, and pull requests.
   review fixes (lease rebuilds groom before leasing, follow-up issue
   priority), at `88883d0`. GROOM-4 (the tpm stays inside its epic: the
   validator rejects a `producer: tpm` rewrite that changes or removes the
-  prior handoff's `epic_id`) is implemented and awaits audit. GROOM-5
+  prior handoff's `epic_id`) is implemented in PR #246; its review fix (the
+  guard keys on the dispatched tpm role, not only the claimed producer)
+  awaits audit. GROOM-5
   remains.
   CHAT is closed: CHAT-5 (chat on agy), the
   epic's last story, was approved at `2407e90` and merged in PR #242. Its `step_update` edit attribution
@@ -2375,7 +2377,9 @@ opens it, and again whenever the next story turns out too large.
   from (`frontmatter_routing_rule`), because `story_list_errors` skips its
   drop check across epics and a tpm could otherwise drop stories silently by
   renaming the epic. A planner-to-tpm route with no prior `epic_id` is
-  allowed.
+  allowed. The guard also keys on the dispatched role, so a tpm dispatch
+  that writes `producer: planner` is still checked, and it fails
+  `frontmatter_producer_mismatch` (PR #246 review fix).
 - GROOM-5: Operator edit of the Claude tpm and planner agents (routes to
   `user`). The exact edits for `.claude/agents/tpm.md` and
   `.claude/agents/planner.md` (root and `examples/reference-workflow/`
