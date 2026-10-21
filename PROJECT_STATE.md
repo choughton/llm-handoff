@@ -21,8 +21,10 @@ belong in commits, handoffs, and pull requests.
   GROOMING closed at `d4bdd04`; the tpm groomed it with all six stories kept
   in order. TRANS-1 (implementer producers: `backend` and `frontend` route
   only to `auditor`, `planner`, or `user`, and never emit `verified_pass`,
-  `verified_fail`, or `close_type: epic`) is implemented and awaiting audit.
-  TRANS-2 through TRANS-6 remain.
+  `verified_fail`, or `close_type: epic`) was merged in PR #249 at
+  `7e061a2`. TRANS-2 (auditor and finalizer producers, per the planner's
+  2026-10-21 TRANS-2/TRANS-3 boundary decision recorded in epic 17) is
+  implemented and awaiting audit. TRANS-3 through TRANS-6 remain.
 - **GROOMING (closed):** GROOM-5, the epic's last story,
   was approved at `6e24d98` and merged in PR #247 at `211bbfd`.
   GROOMING history (opened by the planner after CHAT closed at
@@ -1947,25 +1949,41 @@ handbook and the code from drifting.
   fixture that violates the new rules is updated, not exempted or
   grandfathered.
 - TRANS-2: Auditor and finalizer producers. `verified_pass` and
-  `verified_fail` require `producer: auditor`; a `verified_pass` carried
-  forward by the finalizer keeps its existing exemption only when
-  `producer: finalizer` and the previous route was `finalizer`.
-  `producer: finalizer` may route only to `planner`, `user`, or `tpm` when
-  configured, and never with `close_type` set.
+  `verified_fail` require `producer: auditor` (`frontmatter_status_producer_rule`
+  for planner, user, implementer, tpm, and unrecognized producers);
+  `producer: validator` keeps its existing behavior until TRANS-3.
+  `producer: auditor` never emits `ready_for_review` and never routes to
+  `auditor`. `producer: finalizer` routes only to `planner`, `tpm`, or
+  `user` (when `agents.tpm` is unset, the existing TPM-3 check intercepts
+  `next_agent: tpm`), never sets `close_type` (`story` or `epic`), and emits
+  only `verified_pass`, `blocked_missing_context`, `escalate_to_user`, or no
+  status. A finalizer `verified_pass` after a known non-finalizer dispatch
+  is rejected, and the evidence exemption applies only when both the
+  previous route and the normalized producer are `finalizer` (doctor and
+  supervisor preflight pass the producer as the previous agent).
 - TRANS-3 (was part of TRANS-2): Validator producer and dispatcher-authored
-  handoffs. `producer: validator` may route anywhere except `finalizer` and
-  may not emit a completion status, with one exemption: the dispatcher's own
-  publish handoffs, `build_review_bounce_handoff()` and the deferred-decision
-  pass in `llm_handoff/publish.py` (~lines 1387 and 1469), write
-  `producer: validator` with `verified_fail` or `verified_pass`. Either the
-  orchestrator marks those writes as dispatcher-authored where it validates
-  them, or the builders move to a distinct producer value in the same story;
-  the review-bounce fixtures must keep validating.
+  handoffs. Decided 2026-10-21: the dispatcher's own builders
+  (`build_review_bounce_handoff()` and `build_deferred_findings_handoff()`
+  in `llm_handoff/publish.py`, `build_bounce_handoff()` in
+  `llm_handoff/work_claim.py`, and `_write_protected_file_escalation()` in
+  `llm_handoff/orchestrator.py`) keep `producer: validator`; no new
+  `dispatcher` producer string is added. Instead `validate_handoff_frontmatter()`,
+  `validate_handoff()`, and `validate_handoff_text()` gain a keyword-only
+  `dispatcher_authored: bool = False`. By default `producer: validator` may
+  route anywhere except `finalizer`, may not set `close_type: epic`, and may
+  not emit `ready_for_review`, `verified_pass`, or `verified_fail`. With
+  `dispatcher_authored=True` it may also emit `verified_fail` or
+  `verified_pass`; `ready_for_review`, `next_agent: finalizer`, and
+  `close_type: epic` stay rejected. The validator-producer regression cases
+  are updated in this story, and the review-bounce fixtures must keep
+  validating.
 - TRANS-4 (was part of TRANS-2): Producer matches the dispatched role. The
   post-dispatch validation already knows the previous route; a `producer`
   that names a role other than the one just dispatched is rejected as
   `frontmatter_producer_mismatch` unless the handoff is a dispatcher-written
-  escalation.
+  escalation. Decided 2026-10-21: generalize
+  `_tpm_dispatch_producer_errors()` in `validate_handoff_text()` to every
+  role when `not dispatcher_authored`.
 - TRANS-5 (was TRANS-3): One table, two readers. Write the
   producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under
   `## Transition Table`, and add a test that parses that table and asserts it

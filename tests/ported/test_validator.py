@@ -348,6 +348,25 @@ def test_finalizer_producer_label_does_not_exempt_another_role(
     result = validate_handoff(handoff_path, "auditor", prior_handoff_sha="0" * 64)
 
     assert any("EVIDENCE_MISSING" in error for error in result.errors)
+    assert any(
+        error.startswith("frontmatter_status_producer_rule:")
+        and "dispatched role is `auditor`" in error
+        for error in result.errors
+    )
+
+
+def test_finalizer_dispatch_does_not_exempt_another_producer(
+    tmp_path: Path,
+) -> None:
+    # The exemption needs both the finalizer dispatch and producer: finalizer.
+    handoff_path = _write_handoff(
+        tmp_path,
+        _finalizer_epic_close().replace("producer: finalizer", "producer: auditor"),
+    )
+
+    result = validate_handoff(handoff_path, "finalizer", prior_handoff_sha="0" * 64)
+
+    assert any("EVIDENCE_MISSING" in error for error in result.errors)
 
 
 def _evidence_errors(tmp_path: Path, evidence: str) -> list[str]:

@@ -86,6 +86,22 @@ _IMPLEMENTER_REJECTED_STATUSES = (
     HandoffStatus.VERIFIED_PASS.value,
     HandoffStatus.VERIFIED_FAIL.value,
 )
+# A finalizer records the closed epic and hands to whoever picks the next
+# one. It carries the auditor's epic-close verified_pass forward, or pauses;
+# it never claims, fails, or closes work itself.
+_FINALIZER_ALLOWED_NEXT_AGENTS = ("planner", "tpm", "user")
+_FINALIZER_REJECTED_STATUSES = (
+    HandoffStatus.READY_FOR_REVIEW.value,
+    HandoffStatus.VERIFIED_FAIL.value,
+    HandoffStatus.BLOCKED_IMPLEMENTATION_FAILURE.value,
+)
+# The auditor approves or fails work; it never claims work for review or
+# routes back to itself.
+_AUDITOR_REJECTED_STATUSES = (HandoffStatus.READY_FOR_REVIEW.value,)
+_VERIFIED_STATUSES = (
+    HandoffStatus.VERIFIED_PASS.value,
+    HandoffStatus.VERIFIED_FAIL.value,
+)
 _REQUIRED_EVIDENCE_FIELDS = {
     "Commands run",
     "Output summary",
@@ -270,6 +286,15 @@ def validate_handoff_frontmatter(
                 parsed, normalized_producer, normalized_next_agent
             )
         )
+    elif normalized_producer == "finalizer":
+        errors.extend(_finalizer_producer_errors(parsed, normalized_next_agent))
+    elif normalized_producer == "auditor":
+        errors.extend(_auditor_producer_errors(parsed, normalized_next_agent))
+    elif normalized_producer != "validator" and parsed.producer:
+        # Validator-produced handoffs keep their behavior until TRANS-3 adds
+        # the dispatcher_authored flag. A missing producer is already
+        # reported as frontmatter_producer_missing.
+        errors.extend(_verified_status_producer_errors(parsed))
 
     status_conflict = status_next_agent_conflict(parsed)
     if status_conflict is not None:
@@ -356,6 +381,105 @@ def _implementer_producer_errors(
             "`story` and the auditor approves the epic close."
         )
     return errors
+
+
+def _finalizer_producer_errors(
+    parsed: HandoffRouting,
+    normalized_next_agent: str | None,
+) -> list[str]:
+    """Errors for a `producer: finalizer` handoff.
+
+    An unknown `next_agent` or `close_type` is already reported by the
+    generic checks, so only recognized values are checked here.
+    """
+
+    errors: list[str] = []
+    if (
+        normalized_next_agent is not None
+        and normalized_next_agent not in _FINALIZER_ALLOWED_NEXT_AGENTS
+    ):
+        errors.append(
+            "frontmatter_routing_rule: producer `finalizer` cannot route to "
+            f"next_agent `{normalized_next_agent}`; a finalizer routes only to "
+            f"{', '.join(f'`{agent}`' for agent in _FINALIZER_ALLOWED_NEXT_AGENTS)}."
+        )
+    if parsed.close_type in _ALLOWED_CLOSE_TYPES:
+        errors.append(
+            "frontmatter_routing_rule: producer `finalizer` emitted close_type "
+            f"`{parsed.close_type}`; a finalizer records a closed epic and "
+            "omits close_type."
+        )
+    if parsed.status in _FINALIZER_REJECTED_STATUSES:
+        errors.append(
+            "frontmatter_status_producer_rule: producer `finalizer` cannot emit "
+            f"status `{parsed.status}`; a finalizer omits status or uses "
+            "`verified_pass`, `blocked_missing_context`, or `escalate_to_user`."
+        )
+    return errors
+
+
+def _auditor_producer_errors(
+    parsed: HandoffRouting,
+    normalized_next_agent: str | None,
+) -> list[str]:
+    errors: list[str] = []
+    if normalized_next_agent == "auditor":
+        errors.append(
+            "frontmatter_routing_rule: producer `auditor` cannot route to "
+            "next_agent `auditor`; an auditor approves, fails, or escalates "
+            "the work it reviewed."
+        )
+    if parsed.status in _AUDITOR_REJECTED_STATUSES:
+        errors.append(
+            "frontmatter_status_producer_rule: producer `auditor` cannot emit "
+            f"status `{parsed.status}`; an auditor approves or fails work with "
+            "`verified_pass` or `verified_fail`."
+        )
+    return errors
+
+
+def _verified_status_producer_errors(parsed: HandoffRouting) -> list[str]:
+    """Errors for a verdict status from a producer that gives no verdicts.
+
+    Covers planner, user, and unrecognized producers. Implementer, tpm,
+    finalizer, and auditor producers have their own rules, and validator
+    producers stay exempt until TRANS-3.
+    """
+
+    if parsed.status not in _VERIFIED_STATUSES:
+        return []
+    producer = normalize_next_agent_value(parsed.producer) or parsed.producer
+    return [
+        f"frontmatter_status_producer_rule: producer `{producer}` cannot emit "
+        f"status `{parsed.status}`; only the auditor approves or fails work, "
+        "and only the finalizer carries an epic-close `verified_pass` forward."
+    ]
+
+
+def _finalizer_dispatch_status_errors(
+    current: HandoffRouting,
+    *,
+    previous_route: str | None,
+) -> list[str]:
+    """Errors for a finalizer verified_pass claim after another role's dispatch.
+
+    The finalizer's `verified_pass` carries the auditor's approval forward
+    without evidence, so a non-finalizer turn cannot borrow that claim by
+    writing `producer: finalizer`. An unknown previous role sets no
+    constraint here; it also grants no evidence exemption.
+    """
+
+    if previous_route is None or previous_route == "finalizer":
+        return []
+    if normalize_next_agent_value(current.producer) != "finalizer":
+        return []
+    if current.status != HandoffStatus.VERIFIED_PASS.value:
+        return []
+    return [
+        "frontmatter_status_producer_rule: producer `finalizer` emitted status "
+        f"`verified_pass`, but the dispatched role is `{previous_route}`; only "
+        "a finalizer dispatch carries the epic-close approval forward."
+    ]
 
 
 def _tpm_dispatch_producer_errors(
@@ -606,6 +730,11 @@ def validate_handoff_text(
                     frontmatter, previous_route=previous_route
                 )
             )
+            errors.extend(
+                _finalizer_dispatch_status_errors(
+                    frontmatter, previous_route=previous_route
+                )
+            )
             if prior_handoff_content is not None:
                 errors.extend(
                     _tpm_epic_change_errors(
@@ -809,11 +938,18 @@ def _evidence_contract_errors(
     status = _frontmatter_status(frontmatter)
     if status not in COMPLETION_STATUSES:
         return []
-    if previous_route == "finalizer" and status == HandoffStatus.VERIFIED_PASS:
+    if (
+        status == HandoffStatus.VERIFIED_PASS
+        and previous_route == "finalizer"
+        and frontmatter is not None
+        and normalize_next_agent_value(frontmatter.producer) == "finalizer"
+    ):
         # The finalizer's epic-close handoff carries the auditor's approval
         # forward; it verifies no commit itself. The auditor handoff it
         # replaces held the evidence, and the dispatch loop does not run
-        # post-dispatch validation on finalizer output.
+        # post-dispatch validation on finalizer output. Both the dispatched
+        # role and the producer must be the finalizer; doctor and the
+        # supervisor preflight pass the producer as the previous role.
         return []
 
     block = _verification_evidence_block(handoff_content)
