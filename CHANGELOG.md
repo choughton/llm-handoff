@@ -19,7 +19,15 @@ This project follows a simple pre-release changelog until the first public tag.
   otherwise it logs one INFO line, keeps the record, and the files ride the
   next implementer commit. A successful commit clears the record and sets
   the chat commit marker for that story's audit; a commit error logs one
-  ERROR and keeps the record. Behavior without chat changes is unchanged.
+  ERROR and keeps the record. While the story stands approved
+  (`verified_pass` in the handoff the role started from or wrote) it commits
+  nothing, so no chat commit lands between an approving audit and the
+  publish. The marker is written as the `## Operator Influence` section of
+  a handoff that stays on the story, and an implementer commit without its
+  own chat changes writes the held marker into its handback, so the story's
+  later audit fan-out carries it. Both dispatcher commits now pass
+  `--literal-pathspecs` to `git add` and `git commit`, so file names are
+  never matched as globs. Behavior without chat changes is unchanged.
 - Chat-committed paths survive a resumed handback (CHAT-25). `InFlightRecord`
   gains `chat_commit_sha` and `chat_committed`, written only on an
   implementer `handback` record and only together; a record without them

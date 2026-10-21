@@ -26,6 +26,7 @@ from llm_handoff.chat_side_session import ChatSessionResult
 from llm_handoff.config import DispatchConfig
 from llm_handoff.dispatcher_commit import DispatcherCommitResult, commit_chat_changes
 from llm_handoff.validator import ValidationResult
+from llm_handoff.work_claim import capture_pre_dispatch_state
 
 
 HANDOFF = Path("docs/handoff/HANDOFF.md")
@@ -87,6 +88,47 @@ producer: planner
 - **Context:** Keep the module import-free.
 - **Verification command:** python -c "import sys; sys.exit(0)"
 - **Expected next route:** auditor
+"""
+
+
+def _approved_handoff() -> str:
+    return f"""---
+next_agent: finalizer
+reason: "Story approved."
+epic_id: EPIC-1
+story_id: {STORY_ID}
+story_title: Change the value
+status: verified_pass
+producer: auditor
+---
+
+# Audit Report
+
+Approved.
+"""
+
+
+def _backend_claim() -> str:
+    return f"""---
+next_agent: auditor
+reason: "Backend work complete; audit requested."
+epic_id: EPIC-1
+story_id: {STORY_ID}
+story_title: Change the value
+status: ready_for_review
+scope_sha:
+producer: backend
+---
+
+# Backend Handback
+
+## Verification Evidence
+
+- **Commands run:** python -c "import sys; sys.exit(0)"
+- **Output summary:** exit 0
+- **Commit SHA verified:** pending-dispatcher-commit
+- **Files changed or reviewed:** src/app.py
+- **Unresolved concerns:** none
 """
 
 
@@ -272,6 +314,34 @@ def test_commit_chat_changes_with_nothing_owned_commits_nothing(
     assert _git(repo, "rev-parse", "HEAD") == base
 
 
+def test_commit_chat_changes_treats_recorded_names_as_literal_paths(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    # A recorded name that is also a glob must not select the files it
+    # would match as a pattern.
+    _write(repo / "docs" / "[ab].md", "chat note\n")
+    entry = _record(tmp_path / "record.json", repo, "docs/[ab].md")
+    _write(repo / "docs" / "a.md", "not from chat\n")
+    _write(repo / "docs" / "b.md", "not from chat\n")
+
+    result = commit_chat_changes(
+        repo_root=repo,
+        handoff_path=HANDOFF,
+        role="planner",
+        story_id=STORY_ID,
+        chat_entries=(entry,),
+    )
+
+    assert result.error is None and result.sha is not None
+    assert result.committed == ("docs/[ab].md",)
+    assert _commit_files(repo, result.sha) == ["docs/[ab].md"]
+    status = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    assert "docs/a.md" in status
+    assert "docs/b.md" in status
+
+
 # ---------------------------------------------------------------------------
 # _commit_chat_changes_after_role
 # ---------------------------------------------------------------------------
@@ -440,6 +510,138 @@ def test_helper_warns_when_the_clear_fails(
     assert record.exists()
 
 
+@pytest.mark.parametrize("approved_on", ["started_from", "written"])
+def test_helper_commits_nothing_while_the_story_stands_approved(
+    tmp_path: Path, approved_on: str
+) -> None:
+    # A commit after an approving audit would be published under an approval
+    # that never reviewed it.
+    repo, base, record = _helper_setup(tmp_path)
+    if approved_on == "written":
+        _write(repo / HANDOFF, _approved_handoff())
+        started_from = _backend_claim()
+    else:
+        started_from = _approved_handoff()
+    messages: list[tuple[str, str]] = []
+
+    result = orchestrator._commit_chat_changes_after_role(
+        config=_config(repo),
+        route="auditor" if approved_on == "written" else "finalizer",
+        handoff_content=started_from,
+        log=_collecting_log(messages),
+    )
+
+    assert result is None
+    assert _git(repo, "rev-parse", "HEAD") == base
+    assert record.exists()
+    assert "docs/notes.md" in _git(repo, "status", "--porcelain")
+    assert len(messages) == 1
+    level, message = messages[0]
+    assert level == "INFO"
+    assert "verified_pass" in message and "docs/notes.md" in message
+    assert "ride the next implementer commit" in message
+
+
+# ---------------------------------------------------------------------------
+# The chat marker reaches the story's later audit
+# ---------------------------------------------------------------------------
+
+
+def _audit_influence(handoff: str, marker) -> OperatorInfluence | None:
+    return orchestrator._audit_operator_influence(
+        route="auditor",
+        recovery_kind=None,
+        active_operator_influence=None,
+        handoff_content=handoff,
+        chat_commit_influence=orchestrator._chat_commit_influence_for(
+            marker, handoff
+        ),
+    )
+
+
+def test_carry_marker_writes_the_section_for_the_same_story(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _write(repo / HANDOFF, _backend_claim())
+    marker = (STORY_ID, MARKER)
+
+    orchestrator._carry_chat_marker_into_handoff(
+        _config(repo), marker, lambda *_args: None
+    )
+
+    handoff = (repo / HANDOFF).read_text(encoding="utf-8")
+    assert handoff.count("## Operator Influence") == 1
+    assert _audit_influence(handoff, marker) == MARKER
+
+
+def test_carry_marker_leaves_another_story_alone(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    other = _backend_claim().replace(STORY_ID, "EPIC-1-S2")
+    _write(repo / HANDOFF, other)
+
+    orchestrator._carry_chat_marker_into_handoff(
+        _config(repo), (STORY_ID, MARKER), lambda *_args: None
+    )
+
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == other
+
+
+def test_implementer_commit_carries_a_held_marker_to_the_audit(
+    tmp_path: Path,
+) -> None:
+    # A planner-cycle chat commit, then a backend handback without new chat
+    # entries that dropped the section: the story's audit still sees it.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    state = capture_pre_dispatch_state(repo)
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    _write(repo / HANDOFF, _backend_claim())
+    marker = (STORY_ID, MARKER)
+
+    result = orchestrator._commit_for_implementer(
+        config=_config(repo),
+        route="backend",
+        assignment_content=_planner_assignment(),
+        pre_dispatch_state=state,
+        log=lambda *_args: None,
+        chat_commit_marker=marker,
+    )
+
+    assert result is not None and result.sha is not None
+    assert result.chat_committed == ()
+    handoff = (repo / HANDOFF).read_text(encoding="utf-8")
+    assert f"scope_sha: {result.sha}" in handoff
+    assert handoff.count("## Operator Influence") == 1
+    assert _audit_influence(handoff, marker) == MARKER
+
+
+def test_implementer_commit_ignores_a_marker_for_another_story(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    state = capture_pre_dispatch_state(repo)
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    _write(repo / HANDOFF, _backend_claim())
+
+    result = orchestrator._commit_for_implementer(
+        config=_config(repo),
+        route="backend",
+        assignment_content=_planner_assignment(),
+        pre_dispatch_state=state,
+        log=lambda *_args: None,
+        chat_commit_marker=("EPIC-1-S9", MARKER),
+    )
+
+    assert result is not None and result.sha is not None
+    assert "## Operator Influence" not in (repo / HANDOFF).read_text(
+        encoding="utf-8"
+    )
+
+
 # ---------------------------------------------------------------------------
 # _run_loop
 # ---------------------------------------------------------------------------
@@ -516,9 +718,12 @@ def test_run_loop_commits_chat_changes_after_the_planner(
     assert f"- Message SHA-256: {MESSAGE_SHA}" in _body(repo)
     assert _git(repo, "symbolic-ref", "--short", "HEAD") == BRANCH
     assert _git(repo, "status", "--porcelain") == f"M {HANDOFF.as_posix()}"
-    assert "next_agent: backend" in config.handoff_full_path.read_text(
-        encoding="utf-8"
-    )
+    handoff = config.handoff_full_path.read_text(encoding="utf-8")
+    assert "next_agent: backend" in handoff
+    # The planner's assignment stays on the story, so it carries the marker
+    # a later audit of the story matches against the dispatcher-held one.
+    assert handoff.count("## Operator Influence") == 1
+    assert _audit_influence(handoff, (STORY_ID, MARKER)) == MARKER
     assert not record.exists()
     assert any(
         level == "WARN" and "undid it with `git reset --soft`" in message

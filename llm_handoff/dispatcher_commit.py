@@ -74,6 +74,9 @@ PLANNER_COMMIT_MODE_INSTRUCTION = (
 )
 PENDING_COMMIT_SHA = "pending-dispatcher-commit"
 _GIT_TIMEOUT_SECONDS = 60
+# Staged and committed paths are file names, never patterns: without this a
+# recorded name such as `docs/[ab].md` would also select `docs/a.md`.
+_LITERAL_PATHSPECS = ("--literal-pathspecs",)
 _FRONTMATTER_SCOPE_SHA_RE = re.compile(r"(?m)^scope_sha:[^\n]*$")
 _FRONTMATTER_PRODUCER_RE = re.compile(r"(?m)^producer:[^\n]*$")
 _EVIDENCE_SHA_RE = re.compile(
@@ -194,7 +197,7 @@ def commit_implementer_changes(
     if chat_paths:
         body += _chat_body(chat_paths, chat_influences)
 
-    add = _git(repo_root, ["add", "--", *to_commit])
+    add = _git(repo_root, [*_LITERAL_PATHSPECS, "add", "--", *to_commit])
     if add.returncode != 0:
         return DispatcherCommitResult(
             sha=None,
@@ -204,6 +207,7 @@ def commit_implementer_changes(
     commit = _git(
         repo_root,
         [
+            *_LITERAL_PATHSPECS,
             "commit",
             "--no-verify",
             "--only",
@@ -287,14 +291,25 @@ def commit_chat_changes(
         + _chat_body(owned, chat_influences)
     )
 
-    add = _git(repo_root, ["add", "--", *owned])
+    add = _git(repo_root, [*_LITERAL_PATHSPECS, "add", "--", *owned])
     if add.returncode != 0:
         return DispatcherCommitResult(
             sha=None, error=f"git add failed: {_first_line(add)}"
         )
     commit = _git(
         repo_root,
-        ["commit", "--no-verify", "--only", "-m", subject, "-m", body, "--", *owned],
+        [
+            *_LITERAL_PATHSPECS,
+            "commit",
+            "--no-verify",
+            "--only",
+            "-m",
+            subject,
+            "-m",
+            body,
+            "--",
+            *owned,
+        ],
     )
     if commit.returncode != 0:
         return DispatcherCommitResult(

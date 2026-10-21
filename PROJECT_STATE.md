@@ -1302,7 +1302,18 @@ dependencies; Windows (`msvcrt`) and POSIX.
   only warns), and sets the loop's chat commit marker to the story of the
   handoff the role started from; a commit error logs one ERROR and keeps the
   record. Tested with faked CHAT-17 results; the record has entries only
-  once CHAT-20 wires chat in.
+  once CHAT-20 wires chat in. Audit round 1 fixes: the commit is also
+  skipped (record and files kept, one INFO line) while the story stands
+  approved, that is, when the handoff the role started from or the one it
+  wrote is `verified_pass`, so no chat commit lands after an approving audit
+  and before the publish (re-audit of such changes stays CHAT-24); after a
+  chat commit the dispatcher writes the marker as the `## Operator
+  Influence` section of the role's handoff when it stays on the story, and
+  an implementer commit without chat changes of its own writes the held
+  marker for its story into the stamped handback, so the story's later
+  audit fan-out carries it; and both dispatcher commits stage and commit
+  with `git --literal-pathspecs`, so a recorded name is never read as a
+  glob.
 - CHAT-24 (was part of CHAT-18): Chat changes after an approved audit go
   back to the audit fan-out. Chat changes committed after an approved audit
   send the story back to the audit fan-out before it publishes, so nothing
