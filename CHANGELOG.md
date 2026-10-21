@@ -13,9 +13,10 @@ This project follows a simple pre-release changelog until the first public tag.
   ahead of `<remote>/<base_branch>` (the range the audit reviewed), it does not change
   `HANDOFF.md`, and nothing else is uncommitted, the dispatcher now creates the story
   branch at HEAD with its story state, moves the local base branch back to
-  `<remote>/<base_branch>`, and publishes as usual (push, pull request, review gate, merge). Before, publish stopped
-  with "the audited work is not on a story branch the dispatcher created" and the operator
-  opened the pull request by hand. Any other shape still stops, with a `WARN` naming why.
+  `<remote>/<base_branch>`, and publishes as usual (push, pull request, review gate,
+  merge). Before, publish stopped with "the audited work is not on a story branch the
+  dispatcher created" and the operator opened the pull request by hand. Any other shape
+  still stops, with a `WARN` naming why.
   A Codex review bounce of such a story routes to `user` with `status: escalate_to_user`.
 - The Codex review gate now retries a stalled review. A review the summary shows running
   for the head commit for `publish.review_stall_seconds` (default 600) with no result,
