@@ -221,6 +221,143 @@ def test_prompt_without_story_or_log() -> None:
     assert prompt.endswith("hi")
 
 
+def test_default_prompt_is_unchanged_byte_for_byte() -> None:
+    prompt = build_chat_prompt(
+        " hi there \n",
+        role="backend",
+        story_id="S-1",
+        handoff_path="docs/handoff/HANDOFF.md",
+        log_path="logs/dispatch/run.log",
+    )
+    assert prompt == (
+        "The operator is talking to you in a side session while the `backend` "
+        "role keeps running in the dispatch loop.\n"
+        "Active role: backend\n"
+        "Story id: S-1\n"
+        "HANDOFF.md path: docs/handoff/HANDOFF.md\n"
+        "The `backend` role's log: logs/dispatch/run.log\n\n"
+        "You may edit files and HANDOFF.md to do what the operator asks. "
+        "Do not push to any remote. Answer the operator in plain text.\n\n"
+        "Operator message:\nhi there"
+    )
+    assert prompt == build_chat_prompt(
+        " hi there \n",
+        role="backend",
+        story_id="S-1",
+        handoff_path="docs/handoff/HANDOFF.md",
+        log_path="logs/dispatch/run.log",
+        resumed_role=False,
+    )
+
+
+def test_resumed_role_prompt() -> None:
+    prompt = build_chat_prompt(
+        "  Why did you skip the test?  \n",
+        role="auditor",
+        story_id="CHAT-33",
+        handoff_path="docs/handoff/HANDOFF.md",
+        log_path="logs/dispatch/run.log",
+        resumed_role=True,
+    )
+    assert prompt.startswith(
+        "You are the `auditor` role, resumed in your own session from the "
+        "finished dispatch for the story below. The dispatch loop has moved on, "
+        "and another role may be running now.\n"
+    )
+    assert "side session" not in prompt
+    assert "Story id: CHAT-33\n" in prompt
+    assert "HANDOFF.md path: docs/handoff/HANDOFF.md\n" in prompt
+    assert "The `auditor` role's log: logs/dispatch/run.log\n" in prompt
+    assert (
+        "You may edit files and HANDOFF.md to do what the operator asks. "
+        "Do not push to any remote. Answer the operator in plain text."
+    ) in prompt
+    assert prompt.endswith("\n\nOperator message:\nWhy did you skip the test?")
+
+
+def test_resumed_role_prompt_without_story_or_log() -> None:
+    prompt = build_chat_prompt(
+        "hi",
+        role="planner",
+        story_id=None,
+        handoff_path="HANDOFF.md",
+        log_path=None,
+        resumed_role=True,
+    )
+    assert "Story id: none\n" in prompt
+    assert "No log path is known for that role.\n" in prompt
+    assert prompt.endswith("Operator message:\nhi")
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_resumed_role_without_session_id_raises_before_launch(
+    monkeypatch, tmp_path, provider
+) -> None:
+    fake = _install(monkeypatch, _FakeRun([]))
+    with pytest.raises(ValueError):
+        _run(provider, tmp_path, resumed_role=True)
+    assert fake.calls == []
+
+
+def test_resumed_role_claude_command_keeps_role_arguments(
+    monkeypatch, tmp_path
+) -> None:
+    agent_config = config.AgentConfig(
+        provider="claude", model="role-model", allowed_tools=("Read", "Edit")
+    )
+    fake = _install(monkeypatch, _FakeRun(_lines(_claude_result())))
+    _run(
+        "claude",
+        tmp_path,
+        session_id="role-sess",
+        agent_config=agent_config,
+        resumed_role=True,
+    )
+    plain = _install(monkeypatch, _FakeRun(_lines(_claude_result())))
+    _run("claude", tmp_path, session_id="role-sess", agent_config=agent_config)
+
+    command = fake.command
+    assert command[:-1] == plain.command[:-1]
+    assert command[:3] == [config.CLAUDE_BINARY, "--resume", "role-sess"]
+    expected_permissions = claude_permission_args(agent_config)
+    assert command[3 : 3 + len(expected_permissions)] == expected_permissions
+    assert command[command.index("--model") + 1] == "role-model"
+    assert command[-1].startswith("You are the `backend` role, resumed")
+    assert command[-1].endswith("Please fix the typo.")
+
+
+def test_resumed_role_codex_command_keeps_role_arguments(
+    monkeypatch, tmp_path
+) -> None:
+    fake = _install(monkeypatch, _FakeRun(_lines(_codex_message("Sure."))))
+    _run("codex", tmp_path, session_id="thread-7", resumed_role=True)
+
+    command = fake.command
+    sandbox = list(config.CODEX_SANDBOX_ARGS)
+    assert command[:-1] == [
+        config.CODEX_BINARY,
+        *sandbox,
+        "exec",
+        "resume",
+        "--json",
+        "-c",
+        f'web_search="{config.CODEX_WEB_SEARCH_MODE}"',
+        "thread-7",
+    ]
+    assert "--output-schema" not in command
+    assert "--output-last-message" not in command
+    assert command[-1].startswith("You are the `backend` role, resumed")
+
+
+def test_module_docstring_names_the_wiring() -> None:
+    doc = chat_side_session.__doc__ or ""
+    assert "Nothing in the loop calls this module yet" not in doc
+    assert "__main__._attach_console_chat" in doc
+    assert "CHAT-32" in doc
+    assert "CHAT-34" in doc
+    assert "role_session" in doc
+
+
 # --- Claude launch -----------------------------------------------------------
 
 

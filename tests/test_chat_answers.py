@@ -7,11 +7,14 @@ from pathlib import Path
 import pytest
 
 from llm_handoff import chat_answers
+from llm_handoff import config
 from llm_handoff.chat_answers import (
+    CHAT_BLANK_MESSAGE,
     CHAT_NO_ROLE_MESSAGE,
     CHAT_STOPPING_MESSAGE,
     ChatAnswerWorker,
     ChatContext,
+    RoleSession,
 )
 from llm_handoff.chat_changes import record_chat_changes
 from llm_handoff.chat_side_session import ChatSessionResult, run_chat_session
@@ -66,6 +69,16 @@ class Harness:
         self.started: dict[str, threading.Event] = {}
         self.record_error: BaseException | None = None
         self.on_write = None
+        self.role_sessions: dict[str, object] = {}
+        self.lookups: list[str] = []
+        self.use_lookup = True
+
+    def role_session(self, role: str):
+        self.lookups.append(role)
+        outcome = self.role_sessions.get(role)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
     def context(self) -> ChatContext | None:
         return self.context_value
@@ -121,6 +134,7 @@ class Harness:
             run_session=self.run_session,
             record_changes=self.record_changes,
             request_takeover=self.request_takeover,
+            role_session=self.role_session if self.use_lookup else None,
         )
 
 
@@ -141,6 +155,7 @@ def test_defaults_are_the_chat_17_21_27_functions() -> None:
     assert params["run_session"].default is run_chat_session
     assert params["record_changes"].default is record_chat_changes
     assert params["request_takeover"].default is request_takeover_if_handoff_changed
+    assert params["role_session"].default is None
     assert all(
         param.kind is inspect.Parameter.KEYWORD_ONLY for param in params.values()
     )
@@ -152,9 +167,13 @@ def test_context_is_frozen() -> None:
         context.role = "frontend"  # type: ignore[misc]
 
 
-def test_module_docstring_states_the_limit_and_is_not_wired() -> None:
+def test_module_docstring_states_the_limit_and_the_wiring() -> None:
     doc = chat_answers.__doc__ or ""
-    assert "Nothing in the loop calls this module yet" in doc
+    assert "Nothing in the loop calls this module yet" not in doc
+    assert "__main__._attach_console_chat" in doc
+    assert "CHAT-32" in doc
+    assert "CHAT-34" in doc
+    assert "role_session" in doc
     assert "role's own ``HANDOFF.md`` write" in doc
 
 
@@ -458,3 +477,406 @@ def test_stop_with_nothing_queued_writes_nothing(harness: Harness, worker) -> No
     worker.stop()
     worker.stop()
     assert harness.lines == lines
+
+
+# --- @role messages ----------------------------------------------------------
+
+AUDITOR_CONFIG = config.AgentConfig(provider="claude", model="auditor-model")
+SIDE_SENT = "Chat message sent to the chat session."
+AUDITOR_SENT = "Chat message sent to the auditor session."
+
+
+def _role_session(
+    role: str = "auditor",
+    *,
+    provider: str = "claude",
+    story_id: str | None = "S-0",
+    session_id: str = "auditor-sess-1",
+    agent_config: config.AgentConfig | None = AUDITOR_CONFIG,
+) -> RoleSession:
+    return RoleSession(
+        role=role,
+        provider=provider,
+        story_id=story_id,
+        session_id=session_id,
+        agent_config=agent_config,
+    )
+
+
+def test_role_session_is_frozen_and_exported() -> None:
+    assert "RoleSession" in chat_answers.__all__
+    session = _role_session()
+    with pytest.raises(Exception):
+        session.role = "backend"  # type: ignore[misc]
+
+
+def test_role_message_runs_in_the_role_session(harness: Harness, worker) -> None:
+    harness.role_sessions["auditor"] = _role_session()
+    harness.results["why the bounce?"] = _result("line one\nline two")
+    assert worker.submit("  @auditor   why the bounce?  ") == AUDITOR_SENT
+    assert harness.lookups == ["auditor"]
+    assert worker.wait_idle(timeout=WAIT)
+    [call] = harness.session_calls
+    assert call == {
+        "provider": "claude",
+        "message": "why the bounce?",
+        "repo_root": harness.repo_root,
+        "role": "auditor",
+        "story_id": "S-0",
+        "handoff_path": harness.handoff,
+        "log_path": "logs/dispatch/backend.log",
+        "session_id": "auditor-sess-1",
+        "agent_config": AUDITOR_CONFIG,
+        "resumed_role": True,
+    }
+    assert harness.lines == ["chat auditor: line one", "chat auditor: line two"]
+
+
+def test_role_message_body_keeps_inner_newlines(harness: Harness, worker) -> None:
+    harness.role_sessions["planner"] = _role_session("planner")
+    assert worker.submit("@planner\nfirst\nsecond") == (
+        "Chat message sent to the planner session."
+    )
+    assert worker.wait_idle(timeout=WAIT)
+    assert harness.session_calls[0]["message"] == "first\nsecond"
+    assert harness.session_calls[0]["role"] == "planner"
+
+
+@pytest.mark.parametrize("text", ["@auditor", "  @auditor   ", "@auditor \n\t "])
+def test_role_message_with_blank_body_queues_nothing(
+    harness: Harness, worker, text: str
+) -> None:
+    harness.role_sessions["auditor"] = _role_session()
+    assert worker.submit(text) == CHAT_BLANK_MESSAGE
+    assert worker.busy() is False
+    assert harness.session_calls == []
+    assert harness.lookups == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["@foo hi", "@Backend hi", "@AUDITOR hi", "hi @auditor there", "@auditor:hi"],
+)
+def test_unknown_names_go_to_side_session_unchanged(
+    harness: Harness, worker, text: str
+) -> None:
+    harness.role_sessions["auditor"] = _role_session()
+    assert worker.submit(text) == SIDE_SENT
+    assert worker.wait_idle(timeout=WAIT)
+    assert harness.lookups == []
+    [call] = harness.session_calls
+    assert call["message"] == text
+    assert call["role"] == "backend"
+    assert "resumed_role" not in call
+    assert harness.lines == [f"chat: answer to {text}"]
+
+
+def test_every_agent_role_name_is_accepted(harness: Harness, worker) -> None:
+    roles = [role for role in config.AgentRole.__args__ if role != "backend"]
+    for role in roles:
+        harness.role_sessions[role] = _role_session(role, session_id=f"{role}-1")
+        assert worker.submit(f"@{role} hi") == (
+            f"Chat message sent to the {role} session."
+        )
+        assert worker.wait_idle(timeout=WAIT)
+    assert [call["role"] for call in harness.session_calls] == roles
+
+
+def test_role_message_with_no_running_role(harness: Harness, worker) -> None:
+    harness.context_value = None
+    harness.role_sessions["auditor"] = _role_session()
+    assert worker.submit("@auditor hi") == CHAT_NO_ROLE_MESSAGE
+    assert worker.busy() is False
+    assert harness.session_calls == []
+
+
+def test_role_message_while_stopping(harness: Harness, worker) -> None:
+    harness.role_sessions["auditor"] = _role_session()
+    started, gate = harness.block("first")
+    worker.submit("first")
+    assert started.wait(WAIT)
+    dropped = threading.Event()
+    harness.on_write = lambda line: (
+        dropped.set() if line.startswith("Chat stopped") else None
+    )
+    worker.submit("queued")
+    stopper = threading.Thread(target=worker.stop)
+    stopper.start()
+    assert dropped.wait(WAIT)
+    assert worker.submit("@auditor hi") == CHAT_STOPPING_MESSAGE
+    gate.set()
+    stopper.join(WAIT)
+    assert not stopper.is_alive()
+    assert [call["message"] for call in harness.session_calls] == ["first"]
+
+
+def test_target_is_running_role_falls_back(harness: Harness, worker) -> None:
+    harness.role_sessions["backend"] = _role_session("backend")
+    assert worker.submit("@backend status?") == (
+        f"The backend role is running, so the side session answers. {SIDE_SENT}"
+    )
+    assert worker.wait_idle(timeout=WAIT)
+    [call] = harness.session_calls
+    assert call["message"] == "@backend status?"
+    assert call["provider"] == "claude"
+    assert call["role"] == "backend"
+    assert "resumed_role" not in call
+    assert harness.lines == ["chat: answer to @backend status?"]
+
+
+NO_AUDITOR = "No finished auditor session is recorded, so the side session answers."
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        None,
+        RuntimeError("lookup broke"),
+        KeyError("auditor"),
+        "not a role session",
+        _role_session(session_id=""),
+        _role_session(session_id="   "),
+    ],
+)
+def test_no_session_cases_fall_back(harness: Harness, worker, outcome) -> None:
+    harness.role_sessions["auditor"] = outcome
+    assert worker.submit("@auditor hi") == f"{NO_AUDITOR} {SIDE_SENT}"
+    assert worker.wait_idle(timeout=WAIT)
+    [call] = harness.session_calls
+    assert call["message"] == "@auditor hi"
+    assert call["session_id"] is None
+    assert "resumed_role" not in call
+    assert harness.lines == ["chat: answer to @auditor hi"]
+
+
+def test_no_lookup_falls_back(harness: Harness) -> None:
+    harness.use_lookup = False
+    worker = harness.worker()
+    try:
+        assert worker.submit("@auditor hi") == f"{NO_AUDITOR} {SIDE_SENT}"
+        assert worker.wait_idle(timeout=WAIT)
+        assert harness.session_calls[0]["message"] == "@auditor hi"
+    finally:
+        worker.stop()
+
+
+def test_unsupported_role_provider_falls_back(harness: Harness, worker) -> None:
+    harness.role_sessions["frontend"] = _role_session(
+        "frontend", provider="antigravity"
+    )
+    assert worker.submit("@frontend hi") == (
+        "The frontend session runs on antigravity, which chat does not support "
+        f"yet, so the side session answers. {SIDE_SENT}"
+    )
+    assert worker.wait_idle(timeout=WAIT)
+    [call] = harness.session_calls
+    assert call["provider"] == "claude"
+    assert call["message"] == "@frontend hi"
+
+
+def test_fallback_on_unsupported_running_provider_queues_nothing(
+    harness: Harness, worker
+) -> None:
+    harness.context_value = _context(provider="antigravity")
+    assert worker.submit("@backend hi") == "Chat is not available for antigravity yet."
+    assert worker.submit("@auditor hi") == "Chat is not available for antigravity yet."
+    assert worker.busy() is False
+    assert harness.session_calls == []
+
+
+def test_role_message_runs_while_running_provider_is_unsupported(
+    harness: Harness, worker
+) -> None:
+    harness.context_value = _context(provider="antigravity")
+    harness.role_sessions["auditor"] = _role_session()
+    assert worker.submit("@auditor hi") == AUDITOR_SENT
+    assert worker.wait_idle(timeout=WAIT)
+    assert harness.session_calls[0]["provider"] == "claude"
+    assert harness.session_calls[0]["resumed_role"] is True
+
+
+def test_fallback_notice_counts_messages_ahead(harness: Harness, worker) -> None:
+    started, gate = harness.block("first")
+    worker.submit("first")
+    assert started.wait(WAIT)
+    assert worker.submit("@auditor hi") == (
+        f"{NO_AUDITOR} {SIDE_SENT} 1 message is ahead of it."
+    )
+    harness.role_sessions["auditor"] = _role_session()
+    assert worker.submit("@auditor again") == (
+        f"{AUDITOR_SENT} 2 messages are ahead of it."
+    )
+    gate.set()
+    assert worker.wait_idle(timeout=WAIT)
+
+
+def test_mixed_side_and_role_messages_keep_fifo_order(
+    harness: Harness, worker
+) -> None:
+    harness.role_sessions["auditor"] = _role_session()
+    harness.role_sessions["planner"] = _role_session(
+        "planner", provider="codex", session_id="planner-thread"
+    )
+    started, gate = harness.block("first")
+    worker.submit("first")
+    assert started.wait(WAIT)
+    worker.submit("@auditor a1")
+    worker.submit("side two")
+    worker.submit("@planner p1")
+    worker.submit("@auditor a2")
+    gate.set()
+    assert worker.wait_idle(timeout=WAIT)
+    order = [
+        (call["message"], call["role"], call["provider"])
+        for call in harness.session_calls
+    ]
+    assert order == [
+        ("first", "backend", "claude"),
+        ("a1", "auditor", "claude"),
+        ("side two", "backend", "claude"),
+        ("p1", "planner", "codex"),
+        ("a2", "auditor", "claude"),
+    ]
+
+
+def test_role_resume_chain_is_keyed_by_recorded_session(
+    harness: Harness, worker
+) -> None:
+    harness.role_sessions["auditor"] = _role_session(session_id="rec-1")
+    harness.results["q1"] = _result("a", session_id="rec-1-next")
+    harness.results["q2"] = _result("b", session_id="  ")
+    harness.results["q3"] = _result("c", session_id="rec-1-later")
+    for message in ("q1", "q2", "q3", "q4"):
+        worker.submit(f"@auditor {message}")
+        assert worker.wait_idle(timeout=WAIT)
+    # A later auditor dispatch records a new session id: start from it.
+    harness.role_sessions["auditor"] = _role_session(session_id="rec-2")
+    harness.results["r1"] = _result("d", session_id="rec-2-next")
+    worker.submit("@auditor r1")
+    assert worker.wait_idle(timeout=WAIT)
+    worker.submit("@auditor r2")
+    assert worker.wait_idle(timeout=WAIT)
+    # A side message neither reads nor writes the role chain.
+    worker.submit("side")
+    assert worker.wait_idle(timeout=WAIT)
+    resumed = [(call["message"], call["session_id"]) for call in harness.session_calls]
+    assert resumed == [
+        ("q1", "rec-1"),
+        ("q2", "rec-1-next"),
+        ("q3", "rec-1-next"),
+        ("q4", "rec-1-later"),
+        ("r1", "rec-2"),
+        ("r2", "rec-2-next"),
+        ("side", None),
+    ]
+
+
+def test_side_session_map_is_not_touched_by_role_messages(
+    harness: Harness, worker
+) -> None:
+    harness.role_sessions["auditor"] = _role_session(provider="claude")
+    harness.results["s1"] = _result("x", session_id="side-claude")
+    harness.results["r1"] = _result("y", session_id="role-claude")
+    worker.submit("s1")
+    assert worker.wait_idle(timeout=WAIT)
+    worker.submit("@auditor r1")
+    assert worker.wait_idle(timeout=WAIT)
+    worker.submit("s2")
+    assert worker.wait_idle(timeout=WAIT)
+    resumed = [(call["message"], call["session_id"]) for call in harness.session_calls]
+    assert resumed == [
+        ("s1", None),
+        ("r1", "auditor-sess-1"),
+        ("s2", "side-claude"),
+    ]
+
+
+def test_role_answer_records_then_takes_over(harness: Harness, worker) -> None:
+    harness.role_sessions["auditor"] = _role_session(story_id="OLD-1")
+    sha_before = handoff_content_sha(harness.handoff)
+
+    def rewrite_handoff() -> ChatSessionResult:
+        harness.handoff.write_text("after\n", encoding="utf-8")
+        return _result("done", edited_paths=("src/a.py",))
+
+    harness.results["fix it"] = rewrite_handoff
+    worker.submit("@auditor fix it")
+    assert worker.wait_idle(timeout=WAIT)
+    assert harness.events == [
+        ("session", "fix it"),
+        ("write", "chat auditor: done"),
+        ("record", "@auditor fix it"),
+        ("takeover", sha_before),
+    ]
+    assert harness.record_kwargs["role"] == "auditor"
+    assert harness.record_kwargs["story_id"] == "S-1"
+    assert harness.record_kwargs["path"] == harness.changes
+    assert harness.record_kwargs["repo_root"] == harness.repo_root
+    assert harness.record_kwargs["handoff_path"] == harness.handoff
+    assert harness.takeover_kwargs == {
+        "handoff_path": harness.handoff,
+        "handoff_sha_before": sha_before,
+    }
+
+
+def test_failed_role_result_writes_role_error_and_is_recorded(
+    harness: Harness, worker
+) -> None:
+    harness.role_sessions["auditor"] = _role_session()
+    harness.results["m"] = _result("", error="Claude exited with code 1.")
+    worker.submit("@auditor m")
+    assert worker.wait_idle(timeout=WAIT)
+    assert harness.events == [
+        ("session", "m"),
+        ("write", "chat auditor error: Claude exited with code 1."),
+        ("record", "@auditor m"),
+        ("takeover", handoff_content_sha(harness.handoff)),
+    ]
+    assert harness.record_kwargs["role"] == "auditor"
+
+
+@pytest.mark.parametrize(
+    ("error", "line", "kinds"),
+    [
+        (
+            ValueError("bad id"),
+            "chat auditor error: bad id",
+            ["session", "write", "takeover"],
+        ),
+        (
+            OSError("no binary"),
+            "chat auditor error: no binary",
+            ["session", "write", "takeover"],
+        ),
+        # Any other exception is written once the takeover check has run.
+        (
+            RuntimeError("unexpected"),
+            "chat auditor error: RuntimeError: unexpected",
+            ["session", "takeover", "write"],
+        ),
+    ],
+)
+def test_role_session_errors_write_one_role_line(
+    harness: Harness, worker, error: Exception, line: str, kinds: list[str]
+) -> None:
+    harness.role_sessions["auditor"] = _role_session()
+    harness.results["boom"] = error
+    worker.submit("@auditor boom")
+    assert worker.wait_idle(timeout=WAIT)
+    assert harness.lines == [line]
+    assert [event[0] for event in harness.events] == kinds
+    worker.submit("next")
+    assert worker.wait_idle(timeout=WAIT)
+    assert harness.lines[-1] == "chat: answer to next"
+
+
+def test_role_record_os_error_uses_role_prefix(harness: Harness, worker) -> None:
+    harness.role_sessions["auditor"] = _role_session()
+    harness.record_error = OSError("disk full")
+    worker.submit("@auditor m")
+    assert worker.wait_idle(timeout=WAIT)
+    assert harness.lines[0] == "chat auditor: answer to m"
+    assert harness.lines[1].startswith("chat auditor error: ")
+    assert str(harness.changes) in harness.lines[1]
+    assert "disk full" in harness.lines[1]
+    assert len(harness.lines) == 2

@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The chat answer worker routes `@role` messages to a finished role's
+  session (CHAT-33). `ChatAnswerWorker` takes an optional `role_session`
+  lookup that returns a `RoleSession`; `@<role> <message>`, where `<role>` is
+  an exact agent role name, resumes that role's recorded claude or codex
+  session with `run_chat_session(..., resumed_role=True)`, whose prompt tells
+  the session it is that role and that the loop has moved on. Role messages
+  share the one FIFO queue with side messages, print as `chat <role>:` and
+  `chat <role> error:` lines, and are recorded against the running story.
+  When the target is the running role, has no usable session, or runs on an
+  unsupported provider, the full text goes to the side session with a notice
+  that says why. Nothing in the loop passes the lookup yet; CHAT-34 wires it
+  in.
 - Chat messages are answered right away (CHAT-32). In an interactive run, a
   sent chat line now goes to a `ChatAnswerWorker` instead of the chat queue:
   the answer prints as `chat:` lines above the chat line while the role keeps
