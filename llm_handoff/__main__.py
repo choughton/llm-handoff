@@ -252,13 +252,20 @@ def _run_dispatch(
                 with console_interrupt.installed():
                     return run_loop(config, log=logger)
             finally:
-                # Finish the running chat answer and drop the worker while
-                # the chat line still exists, then stop key capture and erase
-                # the chat line before any later console line, on every exit
-                # path.
+                # Stop key capture first: ChatInput.stop() returns only after
+                # any on_submit call in progress, and clearing the role makes
+                # a late submit queue nothing. Only then is the worker's
+                # restartable stop() safe, since no new submission can start
+                # an answer after it returns. Finish the running chat answer
+                # and drop the worker while the chat line still exists for
+                # its final lines, then detach and erase the chat line before
+                # any later console line, on every exit path.
                 try:
                     if chat_worker is not None:
-                        chat_worker.stop()
+                        try:
+                            chat_session.set_role(None)
+                        finally:
+                            chat_worker.stop()
                 finally:
                     if chat_worker is not None:
                         chat_session.attach_worker(None)

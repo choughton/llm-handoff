@@ -541,6 +541,134 @@ def test_run_dispatch_stops_the_worker_before_the_session_detaches(
     assert seen["logger"].chat_line is None
 
 
+@pytest.mark.parametrize(
+    "run_loop_error", [None, KeyboardInterrupt(), RuntimeError("x")]
+)
+def test_run_dispatch_stops_key_capture_before_stopping_the_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    run_loop_error: BaseException | None,
+) -> None:
+    """An early exit with a role still running takes no submission after stop.
+
+    ``ChatAnswerWorker.stop()`` is restartable once its thread exits, so a
+    submission accepted after it returns would start an answer nothing stops.
+    Key capture is stopped and the role cleared before ``stop()`` runs.
+    """
+
+    from llm_handoff import chat_session
+    from llm_handoff.chat_answers import ChatContext
+
+    seen: dict[str, Any] = {}
+    workers = _patch_fake_worker(monkeypatch, seen)
+    at_stop: dict[str, Any] = {}
+
+    def during_run(seen: dict[str, Any]) -> None:
+        # The role is still running when run_loop exits.
+        chat_session.set_role(
+            "backend",
+            ChatContext(
+                role="backend",
+                provider="claude",
+                story_id="S1",
+                log_path=None,
+                agent_config=None,
+            ),
+        )
+        seen["capture_running_during_run"] = chat_session.SESSION._chat_input.running
+        worker = workers[0]
+        real_stop = worker.stop
+
+        def recording_stop() -> None:
+            at_stop["capture_running"] = chat_session.SESSION._chat_input.running
+            at_stop["context"] = chat_session.SESSION.context
+            at_stop["chat_line"] = seen["logger"].chat_line
+            real_stop()
+
+        monkeypatch.setattr(worker, "stop", recording_stop)
+
+    try:
+        _chat_run_dispatch(
+            tmp_path,
+            monkeypatch,
+            dry_run=False,
+            run_loop_error=run_loop_error,
+            during_run=during_run,
+            seen=seen,
+        )
+    except RuntimeError:
+        assert isinstance(run_loop_error, RuntimeError)
+
+    assert seen["capture_running_during_run"] is True
+    assert workers[0].stop_calls == 1
+    # Capture is off and no role is set when stop() runs; the chat line is
+    # still attached for the worker's final lines.
+    assert at_stop["capture_running"] is False
+    assert at_stop["context"] is None
+    assert at_stop["chat_line"] is seen["chat_line"]
+    assert seen["events"][-2:] == ["stop", "detach"]
+
+
+def test_run_dispatch_late_submission_after_capture_stops_starts_no_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import chat_session
+    from llm_handoff.chat_answers import (
+        CHAT_NO_ROLE_MESSAGE,
+        ChatAnswerWorker,
+        ChatContext,
+    )
+
+    calls: list[str] = []
+    built: list[ChatAnswerWorker] = []
+
+    def fake_run_session(provider: str, message: str, **_kwargs: Any) -> Any:
+        calls.append(message)
+        raise AssertionError("no answer may start during shutdown")
+
+    def build(**kwargs: Any) -> ChatAnswerWorker:
+        worker = ChatAnswerWorker(
+            **kwargs,
+            run_session=fake_run_session,
+            record_changes=lambda *_a, **_k: None,
+            request_takeover=lambda **_k: None,
+        )
+        real_stop = worker.stop
+
+        def stop_then_late_submit() -> None:
+            real_stop()
+            # A submission that reaches the worker after its stop() returns.
+            seen_late.append(worker.submit("late"))
+
+        worker.stop = stop_then_late_submit  # type: ignore[method-assign]
+        built.append(worker)
+        return worker
+
+    seen_late: list[str] = []
+    monkeypatch.setattr(main_module, "ChatAnswerWorker", build)
+
+    def during_run(_seen: dict[str, Any]) -> None:
+        chat_session.set_role(
+            "backend",
+            ChatContext(
+                role="backend",
+                provider="claude",
+                story_id="S1",
+                log_path=None,
+                agent_config=None,
+            ),
+        )
+
+    exit_code, _seen = _chat_run_dispatch(
+        tmp_path, monkeypatch, dry_run=False, during_run=during_run
+    )
+
+    assert exit_code == 0
+    assert seen_late == [CHAT_NO_ROLE_MESSAGE]
+    assert calls == []
+    assert built[0].busy() is False
+
+
 def test_run_dispatch_writes_chat_answers_through_the_logger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
