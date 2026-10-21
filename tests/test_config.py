@@ -1322,13 +1322,16 @@ def test_linear_role_tool_table() -> None:
     read = ("get_issue", "list_issues", "list_comments")
     assert config_module.LINEAR_ROLE_TOOLS == {
         "planner": (*read, "save_comment", "save_issue"),
+        "tpm": (*read, "save_comment", "save_issue"),
         "backend": (*read, "save_comment"),
         "frontend": (*read, "save_comment"),
         "auditor": (*read, "save_comment", "save_issue"),
         "validator": read,
         "finalizer": read,
     }
-    assert set(config_module.LINEAR_ROLE_TOOLS) == config_module.REQUIRED_AGENT_ROLES
+    assert set(config_module.LINEAR_ROLE_TOOLS) == (
+        config_module.REQUIRED_AGENT_ROLES | {"tpm"}
+    )
 
 
 def test_linear_tools_for_role_prefixes_in_table_order() -> None:
@@ -1494,6 +1497,34 @@ def test_linear_mode_load_derives_claude_allowed_tools(tmp_path: Path) -> None:
     assert loaded.agents["frontend"].allowed_tools is None
     # The config file itself is never rewritten.
     assert "mcp__" not in config_path.read_text(encoding="utf-8")
+
+
+def test_linear_mode_claude_tpm_gets_planner_linear_tools(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        _LINEAR_YAML
+        + "agents:\n"
+        + _linear_roles_yaml()
+        + """  tpm:
+    provider: claude
+""",
+    )
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    tpm_tools = loaded.agents["tpm"].claude_allowed_tools
+    planner_tools = (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    )
+    assert tpm_tools[-len(planner_tools) :] == planner_tools
+    assert config_module.linear_tools_for_role("tpm", "linear") == planner_tools
+    assert config_module.REQUIRED_AGENT_ROLES == set(
+        config_module.DEFAULT_AGENT_PROVIDERS
+    )
+    assert len(config_module.REQUIRED_AGENT_ROLES) == 6
 
 
 def test_linear_mode_model_validate_derives_claude_allowed_tools(

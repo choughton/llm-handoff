@@ -822,6 +822,13 @@ LINEAR_ROLE_TOOLS: dict[AgentRole, tuple[str, ...]] = {
         "save_comment",
         "save_issue",
     ),
+    "tpm": (
+        "get_issue",
+        "list_issues",
+        "list_comments",
+        "save_comment",
+        "save_issue",
+    ),
     "backend": ("get_issue", "list_issues", "list_comments", "save_comment"),
     "frontend": ("get_issue", "list_issues", "list_comments", "save_comment"),
     "auditor": (

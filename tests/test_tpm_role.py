@@ -72,7 +72,10 @@ def test_agent_role_includes_tpm_without_changing_required_roles() -> None:
     assert "tpm" not in config_module.DEFAULT_AGENT_PROVIDERS
     assert config_module.REQUIRED_AGENT_ROLES == SIX_ROLES
     assert set(config_module._default_agent_configs()) == SIX_ROLES
-    assert "tpm" not in config_module.LINEAR_ROLE_TOOLS
+    assert (
+        config_module.LINEAR_ROLE_TOOLS["tpm"]
+        == config_module.LINEAR_ROLE_TOOLS["planner"]
+    )
 
 
 def test_config_without_agents_tpm_loads_six_default_agents(tmp_path: Path) -> None:

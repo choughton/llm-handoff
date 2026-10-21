@@ -25,12 +25,12 @@ Events and the roles that may post them:
 
 | Event | Posted by |
 |---|---|
-| `lease_opened` | `planner` |
+| `lease_opened` | `planner`, `tpm` |
 | `implementation_handoff` | `backend`, `frontend` |
 | `audit_passed` | `auditor` |
 | `audit_failed` | `auditor` |
-| `user_attention_requested` | `planner`, `auditor` |
-| `user_attention_cleared` | `planner`, `auditor` |
+| `user_attention_requested` | `planner`, `tpm`, `auditor` |
+| `user_attention_cleared` | `planner`, `tpm`, `auditor` |
 
 The events `implementation_handoff`, `audit_passed`, and `audit_failed`
 require `commit_sha`, `commands_run`, `output_summary`, and

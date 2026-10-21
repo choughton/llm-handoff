@@ -514,6 +514,8 @@ def test_prompt_is_ascii() -> None:
     ("next_agent", "status", "event"),
     [
         ("planner", "verified_pass", "audit_passed"),
+        ("tpm", "verified_pass", "audit_passed"),
+        ("tpm", "verified_fail", "audit_failed"),
         ("finalizer", "verified_pass", "audit_passed"),
         ("backend", "verified_fail", "audit_failed"),
         ("frontend", "verified_fail", "audit_failed"),

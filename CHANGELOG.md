@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Linear evidence and tools for the optional `tpm` role (TPM-8). The evidence-comment
+  contract and `LINEAR_EVIDENCE_EVENTS` now let `tpm` post `lease_opened`,
+  `user_attention_requested`, and `user_attention_cleared`, so the Linear validator
+  accepts `tpm` as the lease producer. `LINEAR_ROLE_TOOLS` gains a `tpm` entry equal to
+  the planner's, so a Claude tpm in Linear mode gets the planner's Linear tools; configs
+  without `agents.tpm` derive the same tool lists as before. The audit evidence step
+  treats `verified_pass` routed to `tpm` as `audit_passed`. Routing is unchanged: a story
+  audit pass still routes to `planner`.
 - New Linear-mode prompt sections for the optional `tpm` role (TPM-7):
   `roles/tpm.md` carries the issue selection rules, lease steps, user-attention steps, and
   two lease-hygiene rules, and `roles/planner_with_tpm.md` is the epic-level planner section
