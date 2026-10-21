@@ -15,15 +15,25 @@ dispatcher then:
 Anything left unstaged stays in the working tree, where the work-claim gate's
 worktree check fails it. Sandboxed agents therefore never need write access
 to ``.git``, and no agent can widen what gets committed.
+
+Files a chat side session changed at the operator's request (the
+authenticated ``chat_changes`` record) are the one exception: each one that
+still matches its recorded fingerprint is committed too, even outside the
+Work Packet scope or when it was dirty before dispatch, and the commit body
+carries the operator marker (message time and SHA-256, never the text).
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
+from typing import TYPE_CHECKING
 
+from llm_handoff.chat_changes import ChatChangeEntry, chat_owned_paths
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.work_claim import (
     EVIDENCE_LABEL_NOTE,
@@ -35,6 +45,9 @@ from llm_handoff.work_claim import (
     parse_work_packet,
     path_is_in_scope,
 )
+
+if TYPE_CHECKING:
+    from llm_handoff.audit_review import OperatorInfluence
 
 
 COMMIT_MODE_INSTRUCTION = (
@@ -78,6 +91,10 @@ class DispatcherCommitResult:
     error: str | None = None
     # True when a ready_for_review claim changed no in-scope file this dispatch.
     nothing_to_commit: bool = False
+    # Chat-owned paths committed alongside the in-scope files, and the
+    # operator marker of each chat entry that contributed one, in record order.
+    chat_committed: tuple[str, ...] = ()
+    chat_influences: tuple[OperatorInfluence, ...] = ()
 
 
 def commit_implementer_changes(
@@ -88,11 +105,15 @@ def commit_implementer_changes(
     claim_content: str,
     pre_dispatch_state: PreDispatchState,
     role: str,
+    chat_entries: Sequence[ChatChangeEntry] = (),
 ) -> DispatcherCommitResult:
     """Commit an implementer's in-scope changes on its behalf.
 
     ``assignment_content`` is the handoff the implementer received, so the
     scope comes from the planner's Work Packet, not from the handback.
+    ``chat_entries`` are authenticated chat change entries; each dirty path
+    in ``chat_owned_paths`` other than the handoff is committed as well, after
+    the in-scope files, whatever the Work Packet or pre-dispatch state says.
     """
 
     try:
@@ -131,7 +152,22 @@ def commit_implementer_changes(
     # A file that was dirty before dispatch holds edits the implementer did not
     # make, so it is never staged; if the implementer changed it further, the
     # gate's worktree check reports it.
-    to_commit = tuple(path for path in candidates if path_is_in_scope(path, packet))
+    in_scope = tuple(path for path in candidates if path_is_in_scope(path, packet))
+    # The operator asked chat to change these, so they bypass the scope and
+    # pre-dispatch-dirty rules. A path the role changed after chat recorded it
+    # no longer matches its fingerprint and is not in this list.
+    dirty_set = set(dirty_now)
+    owned = tuple(
+        path
+        for path in dict.fromkeys(
+            normalize_repo_path(item)
+            for item in (chat_owned_paths(repo_root, chat_entries) if chat_entries else ())
+        )
+        if path in dirty_set and path != handoff_rel_path
+    )
+    to_commit = in_scope + tuple(path for path in owned if path not in in_scope)
+    owned_set = set(owned)
+    chat_paths = tuple(path for path in to_commit if path in owned_set)
     left_uncommitted = tuple(path for path in candidates if path not in to_commit)
     if not to_commit:
         return DispatcherCommitResult(
@@ -140,6 +176,7 @@ def commit_implementer_changes(
             skipped_reason="no in-scope files changed since dispatch",
             nothing_to_commit=True,
         )
+    chat_influences = _chat_influences(chat_entries, chat_paths)
 
     story_id = frontmatter.story_id if frontmatter is not None else None
     story_title = frontmatter.story_title if frontmatter is not None else None
@@ -152,6 +189,8 @@ def commit_implementer_changes(
         "ready_for_review handback.\n\nFiles:\n"
         + "\n".join(f"- {path}" for path in to_commit)
     )
+    if chat_paths:
+        body += _chat_body(chat_paths, chat_influences)
 
     add = _git(repo_root, ["add", "--", *to_commit])
     if add.returncode != 0:
@@ -191,7 +230,66 @@ def commit_implementer_changes(
         sha=sha,
         committed=to_commit,
         left_uncommitted=left_uncommitted,
+        chat_committed=chat_paths,
+        chat_influences=chat_influences,
     )
+
+
+def _utc_marker_time(recorded_at: str) -> str | None:
+    """``recorded_at`` as UTC ``YYYY-MM-DDTHH:MM:SSZ``; None when unparseable."""
+
+    text = recorded_at.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _chat_influences(
+    entries: Sequence[ChatChangeEntry], chat_paths: tuple[str, ...]
+) -> tuple[OperatorInfluence, ...]:
+    """The marker of each entry whose recorded state of a path was committed.
+
+    ``chat_owned_paths`` matches a path against its latest recorded
+    fingerprint, so that latest entry is the one that contributed the path.
+    """
+
+    if not chat_paths:
+        return ()
+    from llm_handoff.audit_review import OperatorInfluence
+
+    latest: dict[str, int] = {}
+    for index, entry in enumerate(entries):
+        for change in entry.changes:
+            latest[normalize_repo_path(change.path)] = index
+    committed = set(chat_paths)
+    contributing = sorted(
+        {index for path, index in latest.items() if path in committed}
+    )
+    influences: list[OperatorInfluence] = []
+    for index in contributing:
+        entry = entries[index]
+        at = _utc_marker_time(entry.recorded_at)
+        if at is None:
+            continue
+        influences.append(OperatorInfluence(at=at, message_sha256=entry.message_sha256))
+    return tuple(influences)
+
+
+def _chat_body(
+    chat_paths: tuple[str, ...], influences: tuple[OperatorInfluence, ...]
+) -> str:
+    lines = ["", "", "Chat changes (operator-influenced):"]
+    lines.extend(f"- {path}" for path in chat_paths)
+    for influence in influences:
+        lines.append(f"- Message time: {influence.at}")
+        lines.append(f"- Message SHA-256: {influence.message_sha256}")
+    return "\n".join(lines)
 
 
 def stamp_commit_sha(handoff_content: str, sha: str) -> str:

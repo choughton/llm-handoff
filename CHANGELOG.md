@@ -6,6 +6,24 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Chat changes ride the implementer commit (CHAT-22). In dispatcher commit
+  mode, `commit_implementer_changes(..., chat_entries=...)` also commits each
+  dirty `chat_owned_paths` file other than the handoff, after the in-scope
+  files, even when it is outside Files in scope, out of bounds, or was dirty
+  before dispatch. `DispatcherCommitResult` gains `chat_committed` and
+  `chat_influences` (UTC `YYYY-MM-DDTHH:MM:SSZ` time and message SHA-256 per
+  contributing entry), and the commit body adds a `Chat changes
+  (operator-influenced):` block; message text is never written. The
+  orchestrator loads the chat change record before the implementer commit,
+  writes the latest marker as the claim handoff's `## Operator Influence`
+  section, logs the chat-committed paths, and clears the record (a clear
+  failure only warns). `verify_work_claim(..., chat_owned_paths=...)` accepts
+  those paths in `diff_scope` and `worktree`, and the audit fan-out reads the
+  marker from the auditor assignment when no `@auditor` operator message
+  applies, so the audit handoff and pull request body carry it. The audit
+  accepts that handoff marker only when it matches the marker the same
+  dispatcher process committed for the story's chat changes; a role-written
+  or unmatched marker is ignored.
 - Chat change record (CHAT-21). New `llm_handoff/chat_changes.py` saves
   `ChatChangeEntry(role, story_id, recorded_at, message_sha256, changes)` to
   `logs/dispatch/chat-changes.json` (`CHAT_CHANGES_STATE_PATH`) via temp-file replace.

@@ -31,13 +31,20 @@ from llm_handoff.agent_roles import (
 )
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.audit_review import (
+    OPERATOR_INFLUENCE_HEADING,
     AuditFanOutContext,
     OperatorInfluence,
     describe_security_reviewer_model,
+    operator_influence_bullets,
     run_audit_fan_out,
     security_reviewer_startup_error,
 )
 from llm_handoff import chat_session, console_interrupt
+from llm_handoff.chat_changes import (
+    chat_changes_path,
+    clear_chat_changes,
+    load_chat_changes,
+)
 from llm_handoff.chat_queue import (
     chat_queue_path,
     clear_chat_messages,
@@ -748,6 +755,9 @@ def _run_loop(
     planner_previous_handoff_sha: str | None = None
     implementer_base_sha: str | None = None
     implementer_base_story_key: str | None = None
+    # (story id, marker) for the latest dispatcher commit of chat changes; the
+    # audit accepts a handoff Operator Influence marker only when it matches.
+    chat_commit_marker: tuple[str | None, OperatorInfluence] | None = None
     # (story key, HEAD before that story's first gated dispatch).
     gate_story_base: tuple[str | None, str] | None = None
     # Whether either record was on disk before recovery read or deleted it:
@@ -2004,11 +2014,14 @@ def _run_loop(
                             implementer_base_sha,
                             log_fn,
                         ),
-                        operator_influence=(
-                            active_operator_influence
-                            if current_cycle.route == "auditor"
-                            and active_planner_recovery_kind == "operator_role"
-                            else None
+                        operator_influence=_audit_operator_influence(
+                            route=current_cycle.route,
+                            recovery_kind=active_planner_recovery_kind,
+                            active_operator_influence=active_operator_influence,
+                            handoff_content=handoff_content,
+                            chat_commit_influence=_chat_commit_influence_for(
+                                chat_commit_marker, handoff_content
+                            ),
                         ),
                     ),
                 )
@@ -2279,6 +2292,16 @@ def _run_loop(
                 log=log_fn,
                 story_base_sha=story_base_sha,
             )
+            if (
+                commit_result is not None
+                and commit_result.sha is not None
+                and commit_result.chat_committed
+                and commit_result.chat_influences
+            ):
+                chat_commit_marker = (
+                    _handoff_story_id(assignment_content),
+                    commit_result.chat_influences[-1],
+                )
             if commit_result is not None and commit_result.sha is not None:
                 # Committed files are no longer carry-over work.
                 implementer_leftovers = prune_implementer_leftovers(
@@ -2415,10 +2438,16 @@ def _run_loop(
                             pre_dispatch_state=pre_dispatch_state,
                             log=log_fn,
                             story_base_sha=story_base_sha,
+                            chat_owned_paths=(
+                                commit_result.chat_committed
+                                if commit_result is not None
+                                else ()
+                            ),
                         )
                         if _accepted_approval(config):
                             implementer_base_sha = None
                             implementer_base_story_key = None
+                            chat_commit_marker = None
                         previous_cycle = current_cycle
                         consecutive_failures = 0
                         if max_cycles is not None and cycle_number >= max_cycles:
@@ -2558,6 +2587,9 @@ def _run_loop(
                 pre_dispatch_state=pre_dispatch_state,
                 log=log_fn,
                 story_base_sha=story_base_sha,
+                chat_owned_paths=(
+                    commit_result.chat_committed if commit_result is not None else ()
+                ),
             ):
                 previous_cycle = current_cycle
                 consecutive_failures = 0
@@ -2590,6 +2622,7 @@ def _run_loop(
                     # starts a new audit range from where its story starts.
                     implementer_base_sha = None
                     implementer_base_story_key = None
+                    chat_commit_marker = None
                 if (
                     config.publish.mode != "local"
                     and current_cycle.route == "auditor"
@@ -4494,6 +4527,8 @@ def _commit_for_implementer(
     claim_content = _read_required_text(config.handoff_full_path)
     if claim_content is None:
         return None
+    record_path = chat_changes_path(config.repo_root)
+    chat_entries = tuple(load_chat_changes(record_path))
     result = commit_implementer_changes(
         repo_root=config.repo_root,
         handoff_path=config.handoff_path,
@@ -4501,6 +4536,7 @@ def _commit_for_implementer(
         claim_content=claim_content,
         pre_dispatch_state=pre_dispatch_state,
         role=route,
+        chat_entries=chat_entries,
     )
     head = _git_head(config.repo_root) if result.nothing_to_commit else None
     if result.error is not None:
@@ -4528,16 +4564,34 @@ def _commit_for_implementer(
             f"Dispatcher commit for {route} skipped: {result.skipped_reason}.",
         )
     else:
-        config.handoff_full_path.write_text(
-            stamp_commit_sha(claim_content, result.sha),
-            encoding="utf-8",
-        )
+        stamped = stamp_commit_sha(claim_content, result.sha)
+        if result.chat_committed and result.chat_influences:
+            stamped = _replace_operator_influence_section(
+                stamped, result.chat_influences[-1]
+            )
+        config.handoff_full_path.write_text(stamped, encoding="utf-8")
         _log(
             log,
             "AGENT",
             f"Dispatcher committed {len(result.committed)} in-scope file(s) for "
             f"{route} as {result.sha[:12]}: {', '.join(result.committed)}.",
         )
+        if result.chat_committed:
+            _log(
+                log,
+                "AGENT",
+                f"Dispatcher commit {result.sha[:12]} for {route} includes "
+                f"{len(result.chat_committed)} chat change(s) (operator-"
+                f"influenced): {', '.join(result.chat_committed)}.",
+            )
+            try:
+                clear_chat_changes(record_path)
+            except OSError as exc:
+                _log(
+                    log,
+                    "WARN",
+                    f"Could not clear the chat change record {record_path}: {exc}.",
+                )
     if result.left_uncommitted:
         _log(
             log,
@@ -4547,6 +4601,106 @@ def _commit_for_implementer(
             "report them.",
         )
     return result
+
+
+_INFLUENCE_TIME_RE = re.compile(
+    r"(?m)^- Message time: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)[ \t]*$"
+)
+_INFLUENCE_DIGEST_RE = re.compile(r"(?m)^- Message SHA-256: ([0-9a-f]{64})[ \t]*$")
+
+
+def _operator_influence_section_span(content: str) -> tuple[int, int] | None:
+    """Start and end of the ``## Operator Influence`` section in ``content``.
+
+    The section runs to the next ``## `` heading or the end of the text.
+    """
+
+    match = re.search(
+        rf"(?m)^{re.escape(OPERATOR_INFLUENCE_HEADING)}[ \t]*$", content
+    )
+    if match is None:
+        return None
+    following = re.compile(r"(?m)^## ").search(content, match.end())
+    return match.start(), following.start() if following else len(content)
+
+
+def _replace_operator_influence_section(
+    content: str, influence: OperatorInfluence
+) -> str:
+    """Write ``influence`` as the handoff's ``## Operator Influence`` section,
+    replacing an existing section of that name."""
+
+    normalized = content.replace("\r\n", "\n")
+    section = "\n".join(
+        [OPERATOR_INFLUENCE_HEADING, "", *operator_influence_bullets(influence)]
+    )
+    span = _operator_influence_section_span(normalized)
+    if span is not None:
+        start, end = span
+        rest = normalized[end:]
+        return normalized[:start] + section + ("\n\n" + rest if rest else "\n")
+    return normalized.rstrip("\n") + "\n\n" + section + "\n"
+
+
+def _handoff_operator_influence(content: str) -> OperatorInfluence | None:
+    """The marker in the handoff's ``## Operator Influence`` section.
+
+    Time and digest are matched with the patterns publish uses for the pull
+    request body; a missing or malformed section gives None.
+    """
+
+    normalized = content.replace("\r\n", "\n")
+    span = _operator_influence_section_span(normalized)
+    if span is None:
+        return None
+    section = normalized[span[0] : span[1]]
+    time_match = _INFLUENCE_TIME_RE.search(section)
+    digest_match = _INFLUENCE_DIGEST_RE.search(section)
+    if time_match is None or digest_match is None:
+        return None
+    return OperatorInfluence(
+        at=time_match.group(1), message_sha256=digest_match.group(1)
+    )
+
+
+def _audit_operator_influence(
+    *,
+    route: str,
+    recovery_kind: str | None,
+    active_operator_influence: OperatorInfluence | None,
+    handoff_content: str,
+    chat_commit_influence: OperatorInfluence | None = None,
+) -> OperatorInfluence | None:
+    """The marker the audit fan-out records: an ``@auditor`` operator message
+    first, else the marker a chat commit wrote into the auditor assignment.
+
+    The handoff is role-written, so its marker counts only when it matches
+    ``chat_commit_influence``, the marker this dispatcher process put into its
+    own commit of the story's chat changes. Without that, it is ignored.
+    """
+
+    if route != "auditor":
+        return None
+    if recovery_kind == "operator_role" and active_operator_influence is not None:
+        return active_operator_influence
+    if chat_commit_influence is None:
+        return None
+    marker = _handoff_operator_influence(handoff_content)
+    return marker if marker == chat_commit_influence else None
+
+
+def _chat_commit_influence_for(
+    chat_commit_marker: tuple[str | None, OperatorInfluence] | None,
+    handoff_content: str,
+) -> OperatorInfluence | None:
+    """The dispatcher-held chat marker when it belongs to the handoff's story."""
+
+    if chat_commit_marker is None:
+        return None
+    story_id, influence = chat_commit_marker
+    if story_id is None or story_id != _handoff_story_id(handoff_content):
+        return None
+    return influence
 
 
 def _story_committed_work(
@@ -4599,11 +4753,13 @@ def _run_work_claim_gate(
     pre_dispatch_state: PreDispatchState | None,
     log: LogFn,
     story_base_sha: str | None = None,
+    chat_owned_paths: tuple[str, ...] = (),
 ) -> bool:
     """Verify a ``ready_for_review`` claim deterministically before audit.
 
     Returns True when the claim failed and the handoff was rewritten into a
-    bounce, False when the gate passed or did not apply.
+    bounce, False when the gate passed or did not apply. ``chat_owned_paths``
+    are the chat changes the dispatcher commit included; the gate accepts them.
     """
 
     if not _work_claim_gate_applies(config, route) or pre_dispatch_state is None:
@@ -4633,6 +4789,7 @@ def _run_work_claim_gate(
         env_passthrough=config.work_claim_env_passthrough,
         verification_allowed_prefixes=config.verification_allowed_prefixes,
         log=log,
+        chat_owned_paths=chat_owned_paths,
     )
     _log_work_claim_result(result, log)
     if result.passed:
