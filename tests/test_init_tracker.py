@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -549,6 +550,35 @@ def test_default_handbook_text_pins_the_tpm_absent_block() -> None:
     assert linear_role_section("planner", tpm_configured=True).strip(
         "\r\n"
     ) not in text
+
+
+# SHA-256 of the tpm-absent Linear handbook text. GROOMING changes only the
+# tpm-configured templates, so this rendering must stay byte-identical.
+TPM_ABSENT_HANDBOOK_SHA256 = (
+    "59980cf6137cfbf7b1069e67842b5b8280e4732293e2837d470d9a1a3e76b292"
+)
+
+
+def test_tpm_absent_handbook_text_is_byte_identical() -> None:
+    text = init_workflow._linear_handbook_text()
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert digest == TPM_ABSENT_HANDBOOK_SHA256
+    for phrase in ("Grooming.", "Epic direction.", "grooming rules"):
+        assert phrase not in text, phrase
+
+
+def test_handbook_text_with_tpm_carries_grooming_rules() -> None:
+    text = init_workflow._linear_handbook_text(tpm_configured=True)
+    planner_section = text[
+        text.index("## Linear Mode: planner\n") : text.index("## Linear Mode: tpm\n")
+    ]
+    tpm_section = text[
+        text.index("## Linear Mode: tpm\n") : text.index("## Linear Mode: backend\n")
+    ]
+    assert "Epic direction." in planner_section
+    assert "Grooming." not in planner_section
+    assert "Grooming." in tpm_section
+    assert "Grooming never changes an epic." in tpm_section
 
 
 def test_handbook_text_with_tpm_orders_sections() -> None:
