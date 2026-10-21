@@ -25,6 +25,8 @@ EXPECTED_FILES = {
     "EVIDENCE_COMMENT.md",
     "ISSUE_TEMPLATE.md",
     "roles/planner.md",
+    "roles/planner_with_tpm.md",
+    "roles/tpm.md",
     "roles/backend.md",
     "roles/frontend.md",
     "roles/auditor.md",
@@ -47,6 +49,9 @@ def _all_sections() -> dict[str, str]:
     }
     for role in LINEAR_PROMPT_ROLES:
         sections[f"roles/{role}.md"] = linear_role_section(role)
+    sections["roles/planner_with_tpm.md"] = linear_role_section(
+        "planner", tpm_configured=True
+    )
     return sections
 
 
@@ -59,9 +64,10 @@ def _issue_template_example() -> str:
     return text[start:end]
 
 
-def test_prompt_roles_are_the_six_workflow_roles_in_order() -> None:
+def test_prompt_roles_are_the_seven_workflow_roles_in_order() -> None:
     assert LINEAR_PROMPT_ROLES == (
         "planner",
+        "tpm",
         "backend",
         "frontend",
         "auditor",
@@ -228,7 +234,12 @@ def test_validator_compares_commit_sha_only_for_required_events() -> None:
 def test_validator_exempts_roles_that_post_no_evidence_comments() -> None:
     text = " ".join(linear_role_section("validator").split())
     posters = {role for roles in LINEAR_EVIDENCE_EVENTS.values() for role in roles}
-    non_posters = [role for role in LINEAR_PROMPT_ROLES if role not in posters]
+    # The tpm posts evidence comments; TPM-8 adds tpm to LINEAR_EVIDENCE_EVENTS.
+    non_posters = [
+        role
+        for role in LINEAR_PROMPT_ROLES
+        if role not in posters and role != "tpm"
+    ]
     assert non_posters == ["validator", "finalizer"]
     for role in non_posters:
         assert f"`{role}`" in text, role
@@ -270,6 +281,103 @@ def test_planner_user_attention_follows_closing_paragraph() -> None:
     closing = text.index("Issue text decides what the work is")
     assert closing < text.index("`user_attention_requested`")
     assert closing < text.index("`tracker.user_attention_label`")
+
+
+def _paragraph(text: str, prefix: str) -> str:
+    matches = [
+        " ".join(block.split())
+        for block in text.split("\n\n")
+        if block.startswith(prefix)
+    ]
+    assert len(matches) == 1, prefix
+    return matches[0]
+
+
+SHARED_PLANNER_TPM_PARAGRAPHS = (
+    "Selection rules.",
+    "1. Pick the issue with the highest Linear priority",
+    "Issue text decides what the work is",
+    "User attention.",
+)
+
+
+@pytest.mark.parametrize("prefix", SHARED_PLANNER_TPM_PARAGRAPHS)
+def test_tpm_section_shares_planner_selection_paragraphs(prefix: str) -> None:
+    planner = linear_role_section("planner")
+    tpm = linear_role_section("tpm")
+    assert _paragraph(planner, prefix) == _paragraph(tpm, prefix)
+
+
+def test_tpm_section_keeps_planner_lease_bullets() -> None:
+    planner = linear_role_section("planner")
+    tpm = linear_role_section("tpm")
+    assert _paragraph(planner, "- Read the issue pool") == _paragraph(
+        tpm, "- Read the issue pool"
+    )
+
+
+def test_planner_with_tpm_shares_user_attention_paragraph() -> None:
+    planner = linear_role_section("planner")
+    with_tpm = linear_role_section("planner", tpm_configured=True)
+    assert _paragraph(planner, "User attention.") == _paragraph(
+        with_tpm, "User attention."
+    )
+
+
+def test_tpm_section_heading_and_lease_hygiene() -> None:
+    raw = linear_role_section("tpm")
+    assert raw.startswith("## Linear Mode: tpm\n")
+    text = " ".join(raw.split())
+    hygiene = _paragraph(raw, "Lease hygiene.")
+    assert text.index("User attention.") < text.index("Lease hygiene.")
+    for phrase in (
+        "`tracker.success_state`",
+        "the lease is stale",
+        "post no evidence comment",
+        "change no issue",
+        "remove `tracker_issue`, `tracker_url`, and `selection_basis`",
+        "route to `planner`",
+        "`status: blocked_implementation_failure`",
+        "a reason that names the issue",
+        "picked without a priority",
+        "`output_summary` of the `lease_opened` comment",
+        "as rule 5 states",
+    ):
+        assert phrase in hygiene, phrase
+
+
+def test_planner_with_tpm_has_no_selection_rules() -> None:
+    raw = linear_role_section("planner", tpm_configured=True)
+    assert raw.startswith("## Linear Mode: planner\n")
+    for phrase in (
+        "selection_basis: priority",
+        "selection_basis: manual_order",
+        "selection_basis: created_at",
+        "Post a `lease_opened`",
+        "Urgent, then High",
+    ):
+        assert phrase not in raw, phrase
+
+
+def test_planner_with_tpm_points_to_tpm_section() -> None:
+    text = " ".join(linear_role_section("planner", tpm_configured=True).split())
+    assert "the tpm selects, leases, and moves eligible issues" in text
+    assert "`## Linear Mode: tpm`" in text
+    assert "When you route to `tpm`, do not lease an issue" in text
+    assert "When you rebuild a missing lease, apply the selection rules" in text
+    assert "yourself" in text
+
+
+def test_planner_section_differs_when_tpm_configured() -> None:
+    assert linear_role_section("planner", tpm_configured=True) != (
+        linear_role_section("planner")
+    )
+    for role in LINEAR_PROMPT_ROLES:
+        if role == "planner":
+            continue
+        assert linear_role_section(role, tpm_configured=True) == (
+            linear_role_section(role)
+        ), role
 
 
 def test_auditor_section_states_pass_and_fail_transitions() -> None:
@@ -473,3 +581,6 @@ def test_templates_load_from_source_tree() -> None:
             encoding="utf-8"
         )
         assert linear_role_section(role) == on_disk
+    assert linear_role_section("planner", tpm_configured=True) == (
+        template_dir / "roles" / "planner_with_tpm.md"
+    ).read_text(encoding="utf-8")

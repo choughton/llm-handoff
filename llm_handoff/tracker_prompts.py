@@ -17,6 +17,7 @@ from llm_handoff.config import AgentRole
 
 LINEAR_PROMPT_ROLES: tuple[AgentRole, ...] = (
     "planner",
+    "tpm",
     "backend",
     "frontend",
     "auditor",
@@ -59,14 +60,21 @@ def linear_agents_section() -> str:
     return _read_template("AGENTS.md")
 
 
-def linear_role_section(role: str) -> str:
-    """Linear-mode section for one role prompt."""
+def linear_role_section(role: str, *, tpm_configured: bool = False) -> str:
+    """Linear-mode section for one role prompt.
+
+    With ``tpm_configured`` the planner section is the epic-level one from
+    ``roles/planner_with_tpm.md``: the tpm section holds the selection rules.
+    Every other role returns the same text either way.
+    """
 
     if role not in LINEAR_PROMPT_ROLES:
         raise ValueError(
             f"Unknown Linear prompt role {role!r}; expected one of "
             f"{', '.join(LINEAR_PROMPT_ROLES)}."
         )
+    if role == "planner" and tpm_configured:
+        return _read_template("roles", "planner_with_tpm.md")
     return _read_template("roles", f"{role}.md")
 
 
