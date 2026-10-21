@@ -42,6 +42,7 @@ from llm_handoff.audit_review import (
 from llm_handoff import chat_session, console_interrupt
 from llm_handoff.chat_changes import (
     chat_changes_path,
+    chat_owned_paths as _recorded_chat_paths,
     clear_chat_changes,
     load_chat_changes,
 )
@@ -81,6 +82,7 @@ from llm_handoff.dispatcher_commit import (
     DispatcherCommitResult,
     GitPosition,
     PLANNER_COMMIT_MODE_INSTRUCTION,
+    commit_chat_changes,
     commit_implementer_changes,
     git_position,
     undo_planner_handoff_commits,
@@ -1680,6 +1682,19 @@ def _run_loop(
                     return 1
                 continue
 
+            role_chat_marker = _chat_marker_after_role(
+                _commit_chat_changes_after_role(
+                    config=config,
+                    route="finalizer",
+                    handoff_content=handoff_content,
+                    log=log_fn,
+                ),
+                handoff_content,
+            )
+            if role_chat_marker is not None:
+                chat_commit_marker = role_chat_marker
+                _carry_chat_marker_into_handoff(config, chat_commit_marker, log_fn)
+
             previous_cycle = current_cycle
             consecutive_failures = 0
             if forced_additional_instruction is None:
@@ -2243,6 +2258,23 @@ def _run_loop(
                     return 1
                 continue
 
+            # After the planner-commit undo, so the chat commit is never reset
+            # as a planner or tpm commit.
+            role_chat_marker = _chat_marker_after_role(
+                _commit_chat_changes_after_role(
+                    config=config,
+                    route=current_cycle.route,
+                    handoff_content=handoff_content,
+                    log=log_fn,
+                ),
+                handoff_content,
+            )
+            if role_chat_marker is not None:
+                chat_commit_marker = role_chat_marker
+                # When the role's handoff stays on the story, a later audit
+                # of it then finds the matching Operator Influence section.
+                _carry_chat_marker_into_handoff(config, chat_commit_marker, log_fn)
+
             if tracker_lease_rebuild:
                 rebuilt_content = _read_required_text(config.handoff_full_path)
                 if rebuilt_content is None or not rebuilt_content.strip():
@@ -2291,6 +2323,7 @@ def _run_loop(
                 pre_dispatch_state=pre_dispatch_state,
                 log=log_fn,
                 story_base_sha=story_base_sha,
+                chat_commit_marker=chat_commit_marker,
             )
             if (
                 commit_result is not None
@@ -4515,6 +4548,7 @@ def _commit_for_implementer(
     pre_dispatch_state: PreDispatchState | None,
     log: LogFn,
     story_base_sha: str | None = None,
+    chat_commit_marker: tuple[str | None, OperatorInfluence] | None = None,
 ) -> DispatcherCommitResult | None:
     """Commit an implementer's in-scope changes in ``dispatcher`` commit mode.
 
@@ -4523,6 +4557,10 @@ def _commit_for_implementer(
     When a retry changes no in-scope file, for example because it only reverted
     a forbidden one, but an earlier dispatch of the story already committed
     work since ``story_base_sha``, HEAD is recorded as the claim.
+    ``chat_commit_marker`` is the dispatcher-held marker of an earlier chat
+    commit; when it belongs to the assignment's story and this commit carries
+    no chat change of its own, the stamped handback gets its Operator
+    Influence section, so the story's next audit still sees it.
     Returns None when the commit step does not apply.
     """
 
@@ -4547,6 +4585,7 @@ def _commit_for_implementer(
         chat_entries=chat_entries,
     )
     head = _git_head(config.repo_root) if result.nothing_to_commit else None
+    held_influence = _chat_commit_influence_for(chat_commit_marker, assignment_content)
     if result.error is not None:
         _log(log, "ERROR", f"Dispatcher commit for {route} failed: {result.error}.")
     elif (
@@ -4555,10 +4594,10 @@ def _commit_for_implementer(
         and head != story_base_sha
         and _story_committed_work(config, story_base_sha, head)
     ):
-        config.handoff_full_path.write_text(
-            stamp_commit_sha(claim_content, head),
-            encoding="utf-8",
-        )
+        stamped = stamp_commit_sha(claim_content, head)
+        if held_influence is not None:
+            stamped = _replace_operator_influence_section(stamped, held_influence)
+        config.handoff_full_path.write_text(stamped, encoding="utf-8")
         _log(
             log,
             "AGENT",
@@ -4577,6 +4616,8 @@ def _commit_for_implementer(
             stamped = _replace_operator_influence_section(
                 stamped, result.chat_influences[-1]
             )
+        elif held_influence is not None:
+            stamped = _replace_operator_influence_section(stamped, held_influence)
         config.handoff_full_path.write_text(stamped, encoding="utf-8")
         _log(
             log,
@@ -4609,6 +4650,218 @@ def _commit_for_implementer(
             "report them.",
         )
     return result
+
+
+def _commit_chat_changes_after_role(
+    *,
+    config: DispatchConfig,
+    route: RouteName,
+    handoff_content: str | None,
+    log: LogFn,
+) -> DispatcherCommitResult | None:
+    """Commit the chat-owned paths after a non-implementer role's cycle.
+
+    Applies only in ``dispatcher`` commit mode, for routes other than
+    ``backend`` and ``frontend`` (their own commit carries chat changes), and
+    when the chat change record has entries. The commit runs only while a
+    saved story branch is checked out, so it falls inside that story's audit
+    range. On any other checkout the record and files stay as they are and
+    ride the next implementer commit. The same holds while the story stands
+    approved (``verified_pass`` in the handoff the role started from or the
+    one it wrote): a commit then would land after the audit and be published
+    under an approval that never reviewed it. After a commit, a handoff whose
+    ``scope_sha`` names the commit it was made on is moved to the chat
+    commit. When no recorded change is left to commit, the record is
+    cleared. Returns None when nothing was attempted.
+    """
+
+    if config.commit_mode != "dispatcher" or route in {"backend", "frontend"}:
+        return None
+    record_path = chat_changes_path(config.repo_root)
+    chat_entries = tuple(load_chat_changes(record_path))
+    if not chat_entries:
+        return None
+    if saved_story_assignment(config.repo_root) is None:
+        paths = _recorded_chat_paths(config.repo_root, chat_entries)
+        _log(
+            log,
+            "INFO",
+            f"Chat changes after the {route} role were not committed because no "
+            "saved story branch is checked out; they ride the next implementer "
+            f"commit: {', '.join(paths) if paths else 'none still recorded'}.",
+        )
+        return None
+    if _handoff_is_approval(handoff_content) or _accepted_approval(config):
+        paths = _recorded_chat_paths(config.repo_root, chat_entries)
+        _log(
+            log,
+            "INFO",
+            f"Chat changes after the {route} role were not committed because the "
+            "story stands approved (verified_pass) and a commit now would skip "
+            "its audit; they ride the next implementer commit: "
+            f"{', '.join(paths) if paths else 'none still recorded'}.",
+        )
+        return None
+    story_id = _handoff_story_id(handoff_content) if handoff_content else None
+    head_before = _git_head(config.repo_root)
+    result = commit_chat_changes(
+        repo_root=config.repo_root,
+        handoff_path=config.handoff_path,
+        role=route,
+        story_id=story_id,
+        chat_entries=chat_entries,
+    )
+    if result.error is not None:
+        _log(
+            log,
+            "ERROR",
+            f"Dispatcher commit of chat changes after the {route} role failed: "
+            f"{result.error}. The chat change record is kept.",
+        )
+    elif result.sha is None:
+        _log(
+            log,
+            "INFO",
+            f"Dispatcher commit of chat changes after the {route} role "
+            f"skipped: {result.skipped_reason}.",
+        )
+        if result.nothing_to_commit:
+            # No recorded path is still dirty with its recorded content, so
+            # the record has nothing left to commit. Keeping it would let a
+            # later role that restores a recorded fingerprint have its own
+            # edit committed as a chat change, past the scope rules.
+            try:
+                clear_chat_changes(record_path)
+            except OSError as exc:
+                _log(
+                    log,
+                    "WARN",
+                    f"Could not clear the chat change record {record_path}: {exc}.",
+                )
+    else:
+        _advance_scope_sha_after_chat_commit(
+            config, head_before=head_before, sha=result.sha, log=log
+        )
+        _log(
+            log,
+            "AGENT",
+            f"Dispatcher committed {len(result.chat_committed)} chat change(s) "
+            f"after the {route} role as {result.sha[:12]} (operator-influenced): "
+            f"{', '.join(result.chat_committed)}.",
+        )
+        try:
+            clear_chat_changes(record_path)
+        except OSError as exc:
+            _log(
+                log,
+                "WARN",
+                f"Could not clear the chat change record {record_path}: {exc}.",
+            )
+    return result
+
+
+def _advance_scope_sha_after_chat_commit(
+    config: DispatchConfig,
+    *,
+    head_before: str | None,
+    sha: str,
+    log: LogFn,
+) -> None:
+    """Point the handoff's ``scope_sha`` at the chat commit ``sha``.
+
+    Only when the handoff on disk names the commit the chat commit was made
+    on (``head_before``) as its ``scope_sha``. The audit fan-out reviews up
+    to ``scope_sha`` and publishing requires HEAD to equal it, so a stale
+    value would leave the chat commit out of the review and block the
+    approval. Any other ``scope_sha``, or none, is left as written.
+    """
+
+    if not head_before:
+        return
+    content = _read_required_text(config.handoff_full_path)
+    if content is None:
+        return
+    frontmatter = _parse_frontmatter_or_none(content)
+    if frontmatter is None or not isinstance(frontmatter.scope_sha, str):
+        return
+    scope_sha = frontmatter.scope_sha.strip().lower()
+    if len(scope_sha) < 7 or not head_before.lower().startswith(scope_sha):
+        return
+    try:
+        config.handoff_full_path.write_text(
+            stamp_commit_sha(content, sha), encoding="utf-8"
+        )
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            f"Could not record the chat commit {sha[:12]} as scope_sha in "
+            f"{config.handoff_full_path}: {exc}.",
+        )
+        return
+    _log(
+        log,
+        "INFO",
+        f"Recorded the chat commit {sha[:12]} as scope_sha (was "
+        f"{scope_sha[:12]}), so the story's audit reviews it.",
+    )
+
+
+def _chat_marker_after_role(
+    result: DispatcherCommitResult | None, handoff_content: str | None
+) -> tuple[str | None, OperatorInfluence] | None:
+    """The loop's chat commit marker for a committed chat result, else None."""
+
+    if result is None or result.sha is None or not result.chat_influences:
+        return None
+    story_id = _handoff_story_id(handoff_content) if handoff_content else None
+    return story_id, result.chat_influences[-1]
+
+
+def _handoff_is_approval(handoff_content: str | None) -> bool:
+    """Whether ``handoff_content`` carries ``status: verified_pass``."""
+
+    if not handoff_content:
+        return False
+    frontmatter = _parse_frontmatter_or_none(handoff_content)
+    return (
+        frontmatter is not None
+        and _handoff_status(frontmatter.status) == HandoffStatus.VERIFIED_PASS
+    )
+
+
+def _carry_chat_marker_into_handoff(
+    config: DispatchConfig,
+    chat_commit_marker: tuple[str | None, OperatorInfluence] | None,
+    log: LogFn,
+) -> None:
+    """Write the held chat marker as the handoff's Operator Influence section.
+
+    Only when the handoff on disk belongs to the marker's story, so a later
+    audit of that story finds the section that matches the dispatcher-held
+    marker. A handoff for another story is left alone.
+    """
+
+    if chat_commit_marker is None:
+        return
+    content = _read_required_text(config.handoff_full_path)
+    if content is None:
+        return
+    influence = _chat_commit_influence_for(chat_commit_marker, content)
+    if influence is None or _handoff_operator_influence(content) == influence:
+        return
+    try:
+        config.handoff_full_path.write_text(
+            _replace_operator_influence_section(content, influence),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        _log(
+            log,
+            "WARN",
+            "Could not write the chat commit's Operator Influence section into "
+            f"{config.handoff_full_path}: {exc}.",
+        )
 
 
 _INFLUENCE_TIME_RE = re.compile(
