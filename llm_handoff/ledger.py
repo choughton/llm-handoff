@@ -123,6 +123,9 @@ class EpicCloseResult:
     push_status: PushStatus = "UNKNOWN"
     push_detail: str | None = None
     changes_made: tuple[str, ...] = ()
+    # The finalizer's provider session id, or None; kept on every returned
+    # result so ``@finalizer`` chat can resume the finished session.
+    session_id: str | None = None
 
     def __post_init__(self) -> None:
         state_updated = self.project_state_updated or bool(self.ledger_updated)
@@ -303,6 +306,7 @@ def run_epic_close(
             subagent_exit_code=subagent_result.exit_code,
             stdout=subagent_result.stdout,
             stderr=subagent_result.stderr,
+            session_id=subagent_result.session_id,
         )
 
     try:
@@ -333,6 +337,7 @@ def run_epic_close(
             stdout=subagent_result.stdout,
             stderr=subagent_result.stderr,
             parse_error=parse_error,
+            session_id=subagent_result.session_id,
         )
 
     if parsed_output.push_status == "FAILED":
@@ -363,6 +368,7 @@ def run_epic_close(
         push_status=parsed_output.push_status,
         push_detail=parsed_output.push_detail,
         changes_made=parsed_output.changes_made,
+        session_id=subagent_result.session_id,
     )
 
 

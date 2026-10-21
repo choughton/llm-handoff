@@ -1033,6 +1033,114 @@ def test_the_manual_frontend_keeps_no_session(tmp_path: Path) -> None:
     assert main_module._role_session_lookup(config)("frontend") is None
 
 
+def _finalizer_route() -> str:
+    return f"""---
+next_agent: finalizer
+reason: "Close the epic."
+epic_id: REC
+story_id: {STORY_ID}
+story_title: Change the value
+producer: auditor
+close_type: epic
+scope_sha: abc1234
+---
+
+# Handoff
+"""
+
+
+_FINALIZER_SUCCESS_OUTPUT = """PROJECT STATE UPDATED: YES
+HANDOFF.MD REWRITTEN: YES
+SCOPE CLOSED: REC
+NEXT ROUTE: planner
+AUDIT SHA: abc1234
+COMMIT SHA: abc1234
+PUSH RESULT: SKIPPED
+CHANGES MADE:
+  - PROJECT_STATE.md: closed REC
+"""
+
+
+@pytest.mark.parametrize(
+    ("stdout", "exit_code"),
+    [
+        (_FINALIZER_SUCCESS_OUTPUT, 0),
+        ("prose instead of structured fields", 0),
+        ("", 3),
+    ],
+    ids=["success", "parse-error", "nonzero-exit"],
+)
+def test_a_returned_finalizer_dispatch_is_kept_in_memory_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str, exit_code: int
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    _write(repo / HANDOFF_RELATIVE_PATH, _finalizer_route())
+    _git(repo, "commit", "-q", "-am", "route to finalizer")
+    config = _config(repo)
+    calls: list[str] = []
+
+    def fake_finalizer(subagent_name: str, prompt: str, **_kwargs: object) -> SubagentResult:
+        calls.append(subagent_name)
+        return SubagentResult(
+            stdout=stdout,
+            stderr="",
+            exit_code=exit_code,
+            elapsed_seconds=0.01,
+            session_id=f"sess-fin-{calls.count('ledger-updater')}",
+        )
+
+    def fake_validator(subagent_name: str, prompt: str, **_kwargs: object) -> SubagentResult:
+        # A failed close dispatches the validator; it changes nothing here.
+        calls.append(subagent_name)
+        return SubagentResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.01, session_id="val"
+        )
+
+    monkeypatch.setattr(ledger, "invoke_support_role", fake_finalizer)
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_validator)
+
+    _run(config)
+
+    assert calls[0] == "ledger-updater"
+    # The latest returned finalizer session is the one kept.
+    assert _latest("finalizer") == (
+        "finalizer",
+        STORY_ID,
+        config.agents["finalizer"].provider,
+        f"sess-fin-{calls.count('ledger-updater')}",
+    )
+    session = main_module._role_session_lookup(config)("finalizer")
+    assert session is not None
+    assert session.session_id == _latest("finalizer")[3]  # type: ignore[index]
+    # CHAT-15: the epic-close ledger stays out of the persisted record.
+    assert "finalizer" not in [entry.role for entry in _record(repo)]
+
+
+def test_a_finalizer_result_without_a_session_hides_the_older_one(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    chat_session.record_role_dispatch(
+        "finalizer", story_id="S0", provider="claude", session_id="older"
+    )
+
+    class _Result:
+        parse_error = None
+        subagent_exit_code = 0
+
+    orchestrator._remember_finalizer_session(
+        config, story_id="S1", ledger_result=_Result()
+    )
+
+    assert _latest("finalizer") == (
+        "finalizer",
+        "S1",
+        config.agents["finalizer"].provider,
+        None,
+    )
+    assert main_module._role_session_lookup(config)("finalizer") is None
+
+
 def test_the_in_memory_entry_ignores_the_record_state(tmp_path: Path) -> None:
     config = _config(tmp_path)
     result = DispatchResult(

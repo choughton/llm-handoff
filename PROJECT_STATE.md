@@ -19,7 +19,9 @@ belong in commits, handoffs, and pull requests.
   after CHAT closes, ahead of TRANSITION-RULES.
 - **Active Epic:** CHAT, by the operator direction above, with CHAT-34
   (the loop supplies finished role sessions to `@role` chat) implemented and
-  awaiting audit and CHAT-5 remaining. CHAT-33 (the chat answer worker routes
+  awaiting audit, then CHAT-35 (a role's handback written during a chat
+  answer is not taken for a chat rewrite; operator, 2026-10-21) and CHAT-5
+  remaining. CHAT-33 (the chat answer worker routes
   `@role` messages to a finished role's session) was approved at `94e0963`.
   CHAT-4 was split into
   CHAT-33 and CHAT-34 on 2026-10-21 before it started. CHAT-32 (chat
@@ -1123,7 +1125,8 @@ CHAT-30; CHAT-29 was approved at `48dee6a` and merged in PR #233; CHAT-30
 was split into CHAT-31 and CHAT-32; CHAT-31 was approved at `948c2fb` and
 merged in PR #234; CHAT-32 was approved at `0bafd00` and merged in PR #235;
 CHAT-4 was split into CHAT-33 and CHAT-34 on 2026-10-21 before it started;
-CHAT-33 is in flight; CHAT-34 and CHAT-5 remain. Nothing else blocks it:
+CHAT-33 is in flight; CHAT-34, CHAT-35 (added by the operator 2026-10-21,
+before CHAT-5), and CHAT-5 remain. Nothing else blocks it:
 HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into CHAT-21
 through CHAT-24 because it exceeded one packet. Decided by the planner on
@@ -1588,6 +1591,33 @@ dependencies; Windows (`msvcrt`) and POSIX.
   lookup that returns the role's latest kept entry with
   `config.agents[role]` as its agent config. README and
   `docs/ARCHITECTURE.md` describe `@role`.
+- CHAT-35 (added 2026-10-21 by the operator; runs before CHAT-5): A role's
+  own handback is not taken for a chat rewrite. Found live during CHAT-34:
+  a chat answer that only edited `PROJECT_STATE.md` was still running when
+  the backend wrote its `ready_for_review` handback (`close_type: story`,
+  `scope_sha` empty until the dispatcher commit). The worker compares the
+  handoff SHA before and after each answer (`chat_answers.py` `_answer`,
+  `chat_takeover.request_takeover_if_handoff_changed`), so the backend's
+  write requested a takeover; `_follow_chat_takeover` (`orchestrator.py`)
+  dropped the backend's commit, `scope_sha` stamp, and work-claim gate and
+  validated the raw handback, which failed `frontmatter_scope_sha_missing`
+  and paused the loop. Because the backend's cycle was dropped, its
+  `PROJECT_STATE.md` edit was then committed as chat's after the next
+  planner role (`718c363`) instead of riding the implementer commit
+  (CHAT-22). Fix: when the role returned during the chat window and the
+  changed handoff's `producer` names the dispatched role, it is the role's
+  handback: clear the takeover request, keep the chat change record, and
+  run the role's normal post-dispatch path (implementer commit with chat
+  paths riding along, stamp, gate, validation). A changed handoff with any
+  other producer, or one written while the role is still running, stays a
+  takeover as today. Tests in `tests/test_chat_takeover_loop.py`: a backend
+  handback written while an answer runs is committed, stamped, and audited,
+  with no pause and no chat commit of the backend's files; a chat rewrite
+  with `producer: planner` still takes over. Files: `llm_handoff/chat_takeover.py`,
+  `llm_handoff/chat_answers.py`, `llm_handoff/orchestrator.py`, their tests,
+  `docs/ARCHITECTURE.md`, `CHANGELOG.md`. When CHAT-34 closes,
+  `remaining_stories` must list CHAT-35 ahead of CHAT-5; a tpm that sees
+  only CHAT-5 routes to `planner` to add it.
 - CHAT-5 (was part of CHAT-3): Chat on agy. The side session and `@role`
   answers run on agy with the role's normal agent and grants, as agy role
   dispatches do.

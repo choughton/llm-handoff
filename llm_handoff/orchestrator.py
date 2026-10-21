@@ -1622,6 +1622,18 @@ def _run_loop(
             )
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
             chat_session.wait_for_answers(log_fn)
+            # CHAT-34: keep the returned finalizer session for @finalizer
+            # chat, whatever its exit code or output. In memory only: the
+            # epic-close ledger is not in the dispatch record (CHAT-15).
+            _remember_finalizer_session(
+                config,
+                story_id=(
+                    _handoff_story_id(handoff_content)
+                    if handoff_content is not None
+                    else None
+                ),
+                ledger_result=ledger_result,
+            )
             # The finalizer returned, whatever its exit code or output: the
             # ledger and handoff are whatever it left, so its record names
             # nothing interrupted.
@@ -3415,6 +3427,30 @@ def _remember_role_session(
         story_id=story_id,
         provider=provider,
         session_id=dispatch_result.session_id if provider is not None else None,
+    )
+
+
+def _remember_finalizer_session(
+    config: DispatchConfig,
+    *,
+    story_id: str | None,
+    ledger_result: object,
+) -> None:
+    """Keep the returned finalizer dispatch in memory for ``@finalizer`` chat.
+
+    The finalizer runs through the epic-close ledger rather than the shared
+    dispatch branch, so its session arrives on the ledger result. A result
+    without a ``session_id`` keeps an entry with none, which still replaces
+    an older finalizer entry.
+    """
+
+    session_id = getattr(ledger_result, "session_id", None)
+    provider = _dispatch_provider(config, "finalizer")
+    chat_session.record_role_dispatch(
+        "finalizer",
+        story_id=story_id,
+        provider=provider,
+        session_id=session_id if provider is not None else None,
     )
 
 
