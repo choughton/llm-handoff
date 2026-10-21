@@ -31,6 +31,10 @@ from llm_handoff.usage_log import format_usage_line
 
 ANTIGRAVITY_SUCCESS_STATUS = "SUCCESS"
 ANTIGRAVITY_UNSAFE_BYPASS_ARGS: tuple[str, ...] = ("--dangerously-skip-permissions",)
+# Print mode in the default agent mode soft-denies every file write outside
+# the temp directory. accept-edits approves edits inside the workspace only;
+# writes elsewhere and shell commands still need permissions.allow grants.
+ANTIGRAVITY_SAFE_DEFAULT_ARGS: tuple[str, ...] = ("--mode", "accept-edits")
 # Marker on the stderr and log line written for each deny-rule refusal.
 ANTIGRAVITY_DENY_RULE_MARKER = "Antigravity deny rule refused a command"
 # Fixed text agy puts in a tool error when a permissions.deny entry matched.
@@ -46,13 +50,14 @@ _NON_RESPONSE_STEP_TYPES = frozenset({"user_input", "tool", "checkpoint"})
 def antigravity_permission_args(*, unsafe_bypass: bool = False) -> list[str]:
     """Return the agy permission arguments for one role launch.
 
-    The default passes no permission flag: workspace reads and writes are
-    allowed in print mode, and shell commands need ``permissions.allow``
-    grants in the agy user settings. ``unsafe_bypass`` approves everything.
+    The default passes ``--mode accept-edits`` so print mode approves file
+    edits inside the workspace; writes outside it and shell commands need
+    ``permissions.allow`` grants in the agy user settings. ``unsafe_bypass``
+    approves everything.
     """
     if unsafe_bypass:
         return list(ANTIGRAVITY_UNSAFE_BYPASS_ARGS)
-    return []
+    return list(ANTIGRAVITY_SAFE_DEFAULT_ARGS)
 
 
 def invoke_antigravity(

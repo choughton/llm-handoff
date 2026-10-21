@@ -123,6 +123,8 @@ def test_fresh_launch_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         "stream-json",
         "--print-timeout",
         f"{config.AGENT_TIMEOUT_MS // 1000}s",
+        "--mode",
+        "accept-edits",
     ]
     prompt = command[2]
     assert "backend role" in prompt
@@ -232,7 +234,10 @@ def test_support_prompt_is_the_prompt_and_subagent_names_the_agent(
 
 
 def test_permission_args() -> None:
-    assert antigravity.antigravity_permission_args(unsafe_bypass=False) == []
+    assert antigravity.antigravity_permission_args(unsafe_bypass=False) == [
+        "--mode",
+        "accept-edits",
+    ]
     assert antigravity.antigravity_permission_args(unsafe_bypass=True) == [
         "--dangerously-skip-permissions"
     ]
@@ -1040,7 +1045,7 @@ def test_failed_resume_reruns_once_fresh(
     )
 
     assert len(runner.commands) == 2
-    assert runner.commands[0][-2:] == ["--conversation", "conv-old"]
+    assert runner.commands[0][-4:-2] == ["--conversation", "conv-old"]
     assert "--conversation" not in runner.commands[1]
     assert runner.commands[1][2].startswith("Act as the planner role")
     assert result.exit_code == 0

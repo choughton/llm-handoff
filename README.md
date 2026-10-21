@@ -404,7 +404,7 @@ Provider CLIs launch with these protections on by default:
   [Agent Environment](CONFIGURATION.md#agent-environment).
 - **Permission checks on.** Claude Code runs in `dontAsk` mode with a tool
   allowlist, and Codex in its `workspace-write` sandbox. Antigravity (`agy`)
-  launches with no permission flag and no sandbox: it can read and write
+  launches with `--mode accept-edits` and no sandbox: it can read and write
   workspace files, and runs a shell command only when a `permissions.allow`
   grant in the `agy` user settings covers it. See
   [Launch Permissions And Sandboxing](CONFIGURATION.md#launch-permissions-and-sandboxing).

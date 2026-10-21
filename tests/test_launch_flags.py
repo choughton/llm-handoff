@@ -513,7 +513,10 @@ def test_codex_unsafe_bypass_from_role_config_restores_yolo(
 
 
 def test_antigravity_launch_args_follow_unsafe_bypass() -> None:
-    assert orchestrator._launch_args_for_agent(AgentConfig(provider="antigravity")) == []
+    assert orchestrator._launch_args_for_agent(AgentConfig(provider="antigravity")) == [
+        "--mode",
+        "accept-edits",
+    ]
     assert orchestrator._launch_args_for_agent(
         AgentConfig(provider="antigravity", unsafe_bypass=True)
     ) == ["--dangerously-skip-permissions"]
@@ -534,6 +537,7 @@ def test_startup_banner_describes_antigravity_safe_default(tmp_path: Path) -> No
         m for level, m in logs if level == "INFO" and m.startswith("Launch planner:")
     ]
     assert "antigravity" in planner_line
+    assert "--mode accept-edits" in planner_line
     assert "permissions.allow" in planner_line
     assert "agy user settings" in planner_line
     assert not any(level == "WARN" for level, _m in logs)
