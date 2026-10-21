@@ -1246,8 +1246,12 @@ dependencies; Windows (`msvcrt`) and POSIX.
   temp-file replace. `record_chat_changes` takes a CHAT-17 result (failed
   runs too), normalizes its edited paths, drops the `HANDOFF.md` path
   (CHAT-19 owns it) and duplicates, writes nothing when none is left, and
-  stores each path's working-tree fingerprint, the UTC time, and the
-  SHA-256 of the message, never its text. A bad file loads `[]` and bad
+  stores each path's fingerprint (file type, Git executable mode, and
+  content or symlink target), the UTC time, and the SHA-256 of the
+  message, never its text. Each entry carries a chained HMAC tag keyed by a
+  per-process secret held only in dispatcher memory, so role-forged or
+  edited entries, and entries from an earlier dispatcher process, are
+  skipped on load. A bad file loads `[]` and bad
   entries are skipped; also clear. `chat_owned_paths` returns the recorded
   paths whose file still matches the latest recorded fingerprint, so a file
   the role edits after the chat recorded it, or one chat changed without an

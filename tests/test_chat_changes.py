@@ -62,6 +62,16 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _fp(text: str) -> str:
+    return f"file:100644:{_sha(text)}"
+
+
+def _sign(raw: dict, previous: str = "") -> dict:
+    entry = chat_changes._parse_entry(raw)
+    assert entry is not None
+    return {**raw, "mac": chat_changes._entry_mac(entry, previous)}
+
+
 def test_path_helper_uses_config_constant(tmp_path: Path) -> None:
     assert chat_changes_path(tmp_path) == tmp_path / CHAT_CHANGES_STATE_PATH
     assert CHAT_CHANGES_STATE_PATH == Path("logs") / "dispatch" / "chat-changes.json"
@@ -83,7 +93,7 @@ def test_round_trip_two_entries(tmp_path: Path) -> None:
         story_id="S1",
         recorded_at="2026-10-20T12:00:01+00:00",
         message_sha256=_sha("one"),
-        changes=(ChatChange(path="src/a.py", fingerprint=_sha("a")),),
+        changes=(ChatChange(path="src/a.py", fingerprint=_fp("a")),),
     )
     assert second.story_id is None
     assert second.role == "auditor"
@@ -236,7 +246,7 @@ def test_load_unreadable_file(tmp_path: Path) -> None:
 )
 def test_load_skips_malformed_entry(tmp_path: Path, bad) -> None:
     path = chat_changes_path(tmp_path)
-    good = _valid_entry(role="frontend")
+    good = _sign(_valid_entry(role="frontend"))
     _save(path, json.dumps({"version": 1, "entries": [bad, good]}))
 
     loaded = load_chat_changes(path)
@@ -323,3 +333,147 @@ def test_write_failure_on_first_write_leaves_nothing(
         _record(tmp_path, "src/a.py")
 
     assert list(chat_changes_path(tmp_path).parent.iterdir()) == []
+
+
+def _forged(path: str, fingerprint: str) -> dict:
+    return _valid_entry(changes=[{"path": path, "fingerprint": fingerprint}])
+
+
+def test_saved_entries_carry_a_tag(tmp_path: Path) -> None:
+    _write(tmp_path, "src/a.py", "a")
+    _record(tmp_path, "src/a.py")
+
+    payload = json.loads(chat_changes_path(tmp_path).read_text(encoding="utf-8"))
+
+    mac = payload["entries"][0]["mac"]
+    assert isinstance(mac, str) and len(mac) == 64
+
+
+def test_role_written_entry_is_not_chat_owned(tmp_path: Path) -> None:
+    _write(tmp_path, "src/a.py", "a")
+    genuine = _record(tmp_path, "src/a.py")
+    _write(tmp_path, "src/out_of_scope.py", "role edit")
+    path = chat_changes_path(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    forged = _forged("src/out_of_scope.py", _fp("role edit"))
+    payload["entries"].append(forged)
+    payload["entries"].append({**forged, "mac": "0" * 64})
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    entries = load_chat_changes(path)
+
+    assert entries == [genuine]
+    assert chat_owned_paths(tmp_path, entries) == ("src/a.py",)
+
+
+def test_edited_entry_fails_authentication(tmp_path: Path) -> None:
+    _write(tmp_path, "src/a.py", "a")
+    _record(tmp_path, "src/a.py")
+    _write(tmp_path, "src/b.py", "role edit")
+    path = chat_changes_path(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["entries"][0]["changes"].append(
+        {"path": "src/b.py", "fingerprint": _fp("role edit")}
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert load_chat_changes(path) == []
+
+
+def test_entry_from_earlier_process_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write(tmp_path, "src/a.py", "a")
+    _record(tmp_path, "src/a.py")
+
+    monkeypatch.setattr(chat_changes, "_PROCESS_KEY", b"\x01" * 32)
+
+    assert load_chat_changes(chat_changes_path(tmp_path)) == []
+
+
+def test_inserted_entry_keeps_genuine_chain(tmp_path: Path) -> None:
+    _write(tmp_path, "src/a.py", "a")
+    _write(tmp_path, "src/b.py", "b")
+    first = _record(tmp_path, "src/a.py", now=_clock(1))
+    second = _record(tmp_path, "src/b.py", now=_clock(2))
+    path = chat_changes_path(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["entries"].insert(1, _forged("src/c.py", "<absent>"))
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert load_chat_changes(path) == [first, second]
+
+
+def test_reordered_entries_drop_out_of_order_entry(tmp_path: Path) -> None:
+    _write(tmp_path, "src/a.py", "a")
+    _write(tmp_path, "src/b.py", "b")
+    first = _record(tmp_path, "src/a.py", now=_clock(1))
+    _record(tmp_path, "src/b.py", now=_clock(2))
+    path = chat_changes_path(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["entries"].reverse()
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert load_chat_changes(path) == [first]
+
+
+def test_record_drops_unauthenticated_entries(tmp_path: Path) -> None:
+    _write(tmp_path, "src/a.py", "a")
+    _write(tmp_path, "src/b.py", "b")
+    path = chat_changes_path(tmp_path)
+    _save(path, json.dumps({"version": 1, "entries": [_forged("src/x.py", "<absent>")]}))
+
+    entry = _record(tmp_path, "src/a.py")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert [item["changes"][0]["path"] for item in payload["entries"]] == ["src/a.py"]
+    assert load_chat_changes(path) == [entry]
+
+
+def test_executable_bit_change_is_not_chat_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write(tmp_path, "src/run.sh", "echo hi")
+    _record(tmp_path, "src/run.sh")
+    entries = load_chat_changes(chat_changes_path(tmp_path))
+    assert chat_owned_paths(tmp_path, entries) == ("src/run.sh",)
+
+    real_lstat = os.lstat
+
+    def _executable_lstat(target, *args, **kwargs):
+        info = real_lstat(target, *args, **kwargs)
+        if Path(target).name == "run.sh":
+            return os.stat_result((info.st_mode | 0o111, *tuple(info)[1:]))
+        return info
+
+    monkeypatch.setattr(chat_changes.os, "lstat", _executable_lstat)
+
+    assert chat_changes._fingerprint(tmp_path, "src/run.sh") == (
+        f"file:100755:{_sha('echo hi')}"
+    )
+    assert chat_owned_paths(tmp_path, entries) == ()
+
+
+def test_symlink_with_identical_bytes_is_not_chat_owned(tmp_path: Path) -> None:
+    _write(tmp_path, "src/a.py", "same")
+    _write(tmp_path, "src/other.py", "same")
+    _record(tmp_path, "src/a.py")
+    entries = load_chat_changes(chat_changes_path(tmp_path))
+    link = tmp_path / "src" / "a.py"
+    link.unlink()
+    try:
+        os.symlink("other.py", link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+
+    assert chat_changes._fingerprint(tmp_path, "src/a.py") == (
+        "symlink:" + hashlib.sha256(b"other.py").hexdigest()
+    )
+    assert chat_owned_paths(tmp_path, entries) == ()
+
+
+def test_directory_and_absent_markers(tmp_path: Path) -> None:
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+
+    assert chat_changes._fingerprint(tmp_path, "src/pkg") == "<directory>"
+    assert chat_changes._fingerprint(tmp_path, "src/missing.py") == "<absent>"

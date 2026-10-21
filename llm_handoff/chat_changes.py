@@ -7,7 +7,18 @@ events named with that file's working-tree fingerprint at record time.
 
 ``chat_owned_paths`` returns the recorded files that still match their most
 recent recorded fingerprint, so a file a role changed again after the chat
-recorded it stays the role's and goes through the normal scope check.
+recorded it stays the role's and goes through the normal scope check. A
+fingerprint covers what Git tracks: the file type, the executable bit, and the
+content bytes or, for a symlink, the link target.
+
+The record file is writable by the active role, so it is not trusted. Each
+saved entry carries an HMAC-SHA256 tag keyed by a secret that lives only in
+the dispatcher process's memory and chained to the previous accepted entry's
+tag. ``load_chat_changes`` skips an entry whose tag does not verify, so an
+entry a role forged or edited, or one saved by an earlier dispatcher process,
+is never returned and its paths stay the role's. Dropping or reordering
+entries can only hide chat changes or bring back an earlier state the chat
+itself recorded.
 
 ``HANDOFF.md`` changes are not recorded here; CHAT-19 owns them.
 
@@ -18,9 +29,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
+import stat
 import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -46,6 +60,9 @@ __all__ = [
 
 _RECORD_VERSION = 1
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+# Generated per dispatcher process and never written anywhere, so a role
+# process cannot compute a valid tag for an entry it writes itself.
+_PROCESS_KEY = secrets.token_bytes(32)
 
 
 @dataclass(frozen=True)
@@ -71,8 +88,31 @@ def chat_changes_path(repo_root: Path) -> Path:
     return repo_root / CHAT_CHANGES_STATE_PATH
 
 
+def _entry_mac(entry: ChatChangeEntry, previous_mac: str) -> str:
+    """HMAC tag over one entry's fields, chained to the previous entry's tag."""
+    canonical = json.dumps(
+        {
+            "role": entry.role,
+            "story_id": entry.story_id,
+            "recorded_at": entry.recorded_at,
+            "message_sha256": entry.message_sha256,
+            "changes": [[change.path, change.fingerprint] for change in entry.changes],
+            "previous": previous_mac,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hmac.new(
+        _PROCESS_KEY, canonical.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
 def load_chat_changes(path: Path) -> list[ChatChangeEntry]:
-    """Return the saved entries in saved order; [] when the file is unusable."""
+    """Return the saved entries in saved order; [] when the file is unusable.
+
+    Malformed entries and entries whose HMAC tag does not verify are skipped.
+    """
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -86,10 +126,18 @@ def load_chat_changes(path: Path) -> list[ChatChangeEntry]:
     if not isinstance(raw_entries, list):
         return []
     entries: list[ChatChangeEntry] = []
+    previous_mac = ""
     for raw in raw_entries:
         entry = _parse_entry(raw)
-        if entry is not None:
-            entries.append(entry)
+        if entry is None:
+            continue
+        mac = raw.get("mac")
+        if not isinstance(mac, str) or not hmac.compare_digest(
+            mac.encode("utf-8"), _entry_mac(entry, previous_mac).encode("utf-8")
+        ):
+            continue
+        entries.append(entry)
+        previous_mac = mac
     return entries
 
 
@@ -141,9 +189,11 @@ def _parse_entry(raw: Any) -> ChatChangeEntry | None:
 
 
 def _write_entries(path: Path, entries: list[ChatChangeEntry]) -> None:
-    payload = {
-        "version": _RECORD_VERSION,
-        "entries": [
+    saved: list[dict[str, Any]] = []
+    previous_mac = ""
+    for item in entries:
+        mac = _entry_mac(item, previous_mac)
+        saved.append(
             {
                 "role": item.role,
                 "story_id": item.story_id,
@@ -153,10 +203,11 @@ def _write_entries(path: Path, entries: list[ChatChangeEntry]) -> None:
                     {"path": change.path, "fingerprint": change.fingerprint}
                     for change in item.changes
                 ],
+                "mac": mac,
             }
-            for item in entries
-        ],
-    }
+        )
+        previous_mac = mac
+    payload = {"version": _RECORD_VERSION, "entries": saved}
     path.parent.mkdir(parents=True, exist_ok=True)
     # mkstemp creates a new randomly named file with O_CREAT | O_EXCL, so a
     # link planted at a predictable temporary name is never opened or followed.
@@ -192,6 +243,39 @@ def _repo_relative_handoff(repo_root: Path, handoff_path: Path | str) -> str:
         with contextlib.suppress(ValueError):
             candidate = candidate.relative_to(repo_root)
     return normalize_repo_path(candidate.as_posix())
+
+
+def _fingerprint(repo_root: Path, path: str) -> str:
+    """Fingerprint what Git tracks for a path: type, executable bit, content.
+
+    A regular file is ``file:<mode>:<work_claim.working_tree_fingerprint>``
+    with Git's ``100644`` or ``100755`` mode, and a symlink is
+    ``symlink:<SHA-256 of its target>`` (the link is not followed). Absent,
+    directory, and unreadable paths keep the ``work_claim`` markers.
+    """
+
+    full_path = repo_root / path
+    try:
+        info = os.lstat(full_path)
+    except FileNotFoundError:
+        return "<absent>"
+    except OSError:
+        return "<unreadable>"
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            target = os.readlink(full_path)
+        except OSError:
+            return "<unreadable>"
+        return "symlink:" + hashlib.sha256(os.fsencode(target)).hexdigest()
+    if stat.S_ISDIR(info.st_mode):
+        return "<directory>"
+    if not stat.S_ISREG(info.st_mode):
+        return "<special>"
+    content = working_tree_fingerprint(repo_root, path)
+    if not _SHA256_HEX.fullmatch(content):
+        return content
+    mode = "100755" if info.st_mode & 0o111 else "100644"
+    return f"file:{mode}:{content}"
 
 
 def record_chat_changes(
@@ -230,7 +314,7 @@ def record_chat_changes(
         recorded_at=recorded_at,
         message_sha256=hashlib.sha256(message.encode("utf-8")).hexdigest(),
         changes=tuple(
-            ChatChange(path=item, fingerprint=working_tree_fingerprint(repo_root, item))
+            ChatChange(path=item, fingerprint=_fingerprint(repo_root, item))
             for item in paths
         ),
     )
@@ -244,7 +328,8 @@ def chat_owned_paths(
     """Return recorded paths whose file still matches the latest recorded state.
 
     Paths keep first-recorded order. A later entry for the same path replaces
-    the earlier fingerprint.
+    the earlier fingerprint. Pass entries from ``load_chat_changes`` so only
+    authenticated entries are considered.
     """
 
     latest: dict[str, str] = {}
@@ -254,5 +339,5 @@ def chat_owned_paths(
     return tuple(
         item
         for item, fingerprint in latest.items()
-        if working_tree_fingerprint(repo_root, item) == fingerprint
+        if _fingerprint(repo_root, item) == fingerprint
     )
