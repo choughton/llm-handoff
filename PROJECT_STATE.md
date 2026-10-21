@@ -21,7 +21,8 @@ belong in commits, handoffs, and pull requests.
   `8dc1728` and merged in PR #209; TPM-5 (the tpm prompt and the protocol
   docs) was approved at `4ed7d69` and merged in PR #211; TPM-6 (tpm helper
   files) was approved at `f3008a3` and merged in PR #212; TPM-7 (Linear
-  prompt templates) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
+  prompt templates) was approved at `0e8cd0a` and merged in PR #213; TPM-8
+  (Linear evidence and tools for the tpm) is in flight. ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,

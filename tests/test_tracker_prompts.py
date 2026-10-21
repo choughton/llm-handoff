@@ -234,12 +234,7 @@ def test_validator_compares_commit_sha_only_for_required_events() -> None:
 def test_validator_exempts_roles_that_post_no_evidence_comments() -> None:
     text = " ".join(linear_role_section("validator").split())
     posters = {role for roles in LINEAR_EVIDENCE_EVENTS.values() for role in roles}
-    # The tpm posts evidence comments; TPM-8 adds tpm to LINEAR_EVIDENCE_EVENTS.
-    non_posters = [
-        role
-        for role in LINEAR_PROMPT_ROLES
-        if role not in posters and role != "tpm"
-    ]
+    non_posters = [role for role in LINEAR_PROMPT_ROLES if role not in posters]
     assert non_posters == ["validator", "finalizer"]
     for role in non_posters:
         assert f"`{role}`" in text, role
@@ -475,12 +470,12 @@ def test_evidence_posters_have_save_comment() -> None:
 
 def test_evidence_event_role_mapping() -> None:
     assert LINEAR_EVIDENCE_EVENTS == {
-        "lease_opened": ("planner",),
+        "lease_opened": ("planner", "tpm"),
         "implementation_handoff": ("backend", "frontend"),
         "audit_passed": ("auditor",),
         "audit_failed": ("auditor",),
-        "user_attention_requested": ("planner", "auditor"),
-        "user_attention_cleared": ("planner", "auditor"),
+        "user_attention_requested": ("planner", "tpm", "auditor"),
+        "user_attention_cleared": ("planner", "tpm", "auditor"),
     }
     assert LINEAR_EVIDENCE_REQUIRED_EVENTS == (
         "implementation_handoff",

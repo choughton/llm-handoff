@@ -2071,11 +2071,15 @@ is computed in memory and never written to the config file.
 | Role | Linear tools |
 |---|---|
 | `planner` | `get_issue`, `list_issues`, `list_comments`, `save_comment`, `save_issue` |
+| `tpm` | `get_issue`, `list_issues`, `list_comments`, `save_comment`, `save_issue` |
 | `backend` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
 | `frontend` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
 | `auditor` | `get_issue`, `list_issues`, `list_comments`, `save_comment`, `save_issue` |
 | `validator` | `get_issue`, `list_issues`, `list_comments` |
 | `finalizer` | `get_issue`, `list_issues`, `list_comments` |
+
+The `tpm` row applies only when `agents.tpm` is configured; without it, no
+role gets those tools under the `tpm` name.
 
 When `claude_mcp_config` is set, those Claude launches also pass
 `--mcp-config <resolved path> --strict-mcp-config`, so they load only the MCP

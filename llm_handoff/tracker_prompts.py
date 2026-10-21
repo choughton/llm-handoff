@@ -28,12 +28,12 @@ LINEAR_PROMPT_ROLES: tuple[AgentRole, ...] = (
 # Evidence-comment events and the roles allowed to post each one. Must match
 # ``EVIDENCE_COMMENT.md``.
 LINEAR_EVIDENCE_EVENTS: dict[str, tuple[AgentRole, ...]] = {
-    "lease_opened": ("planner",),
+    "lease_opened": ("planner", "tpm"),
     "implementation_handoff": ("backend", "frontend"),
     "audit_passed": ("auditor",),
     "audit_failed": ("auditor",),
-    "user_attention_requested": ("planner", "auditor"),
-    "user_attention_cleared": ("planner", "auditor"),
+    "user_attention_requested": ("planner", "tpm", "auditor"),
+    "user_attention_cleared": ("planner", "tpm", "auditor"),
 }
 
 # Events whose comment must carry commit_sha, commands_run, output_summary,

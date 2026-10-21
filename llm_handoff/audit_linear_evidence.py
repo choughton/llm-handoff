@@ -70,15 +70,16 @@ def expected_linear_outcome(rendered: HandoffRouting) -> LinearEvidenceOutcome:
     """Return the outcome event for a rendered audit handoff.
 
     A ``user`` route posts ``user_attention_requested``; ``verified_pass``
-    routed to ``planner`` or ``finalizer`` posts ``audit_passed``; anything
-    else (``verified_fail`` routed to the implementer) posts ``audit_failed``.
+    routed to ``planner``, ``tpm``, or ``finalizer`` posts ``audit_passed``;
+    anything else (``verified_fail`` routed to the implementer) posts
+    ``audit_failed``.
     """
 
     next_agent = (rendered.next_agent or "").strip()
     status = (rendered.status or "").strip()
     if next_agent == "user":
         return LinearEvidenceOutcome("user_attention_requested", next_agent, status)
-    if status == "verified_pass" and next_agent in ("planner", "finalizer"):
+    if status == "verified_pass" and next_agent in ("planner", "tpm", "finalizer"):
         return LinearEvidenceOutcome("audit_passed", next_agent, status)
     return LinearEvidenceOutcome("audit_failed", next_agent, status)
 
