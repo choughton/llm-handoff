@@ -47,6 +47,7 @@ REQUIRED_TEMPLATE_FILES = (
     ".claude/agents/handoff-validator.md",
     ".claude/agents/ledger-updater.md",
     ".claude/agents/planner.md",
+    ".claude/agents/tpm.md",
     ".claude/agents/backend.md",
     ".claude/agents/frontend.md",
     ".claude/settings.json",
@@ -87,6 +88,7 @@ COPIED_TEMPLATE_FILES = (
     ".claude/agents/handoff-validator.md",
     ".claude/agents/ledger-updater.md",
     ".claude/agents/planner.md",
+    ".claude/agents/tpm.md",
     ".claude/agents/backend.md",
     ".claude/agents/frontend.md",
     ".agents/agents/planner.md",
@@ -235,6 +237,33 @@ def test_non_claude_role_helpers_defer_to_the_configured_project_state_path() ->
                 path.name == "planner.md" or "llm-handoff-planner" in relative_path
             )
             if not is_planner:
+                assert content.count("PROJECT_STATE.md") == 1, path
+
+
+# Claude subagent files for the dispatcher roles. The ledger-updater is
+# checked by the finalizer test above.
+CLAUDE_ROLE_HELPER_FILES = (
+    ".claude/agents/planner.md",
+    ".claude/agents/tpm.md",
+    ".claude/agents/backend.md",
+    ".claude/agents/frontend.md",
+    ".claude/agents/auditor.md",
+    ".claude/agents/handoff-validator.md",
+    ".claude/agents/handoff-router.md",
+)
+
+
+def test_claude_role_helpers_defer_to_the_configured_project_state_path() -> None:
+    for root in (REPO_ROOT, REFERENCE_WORKFLOW):
+        for relative_path in CLAUDE_ROLE_HELPER_FILES:
+            path = root / relative_path
+            content = path.read_text(encoding="utf-8")
+
+            assert PROJECT_STATE_DEFERRAL in content, path
+            assert "`PROJECT_STATE.md` if present" not in content, path
+            assert "Do not modify `PROJECT_STATE.md`" not in content, path
+            assert "Do not edit `PROJECT_STATE.md`" not in content, path
+            if path.name != "planner.md":
                 assert content.count("PROJECT_STATE.md") == 1, path
 
 

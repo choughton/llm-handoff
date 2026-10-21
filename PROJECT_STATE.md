@@ -24,7 +24,9 @@ belong in commits, handoffs, and pull requests.
   prompt templates) was approved at `0e8cd0a` and merged in PR #213; TPM-8
   (Linear evidence and tools for the tpm) was approved at `ac573a1` and
   merged in PR #214; TPM-9 (operator edit of the Claude tpm agent, with
-  TIDY-7 batched in) is in flight, and TPM-13 follows it before TPM-10.
+  TIDY-7 batched in) was approved at `4a8f9fc` and merged in PR #216; TPM-13
+  (tests, Linear tools, and inventory for the Claude tpm agent) is in flight
+  before TPM-10.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
@@ -44,11 +46,11 @@ belong in commits, handoffs, and pull requests.
   wiring) was approved at `7a6170b` and merged in PR #196. CHAT-10 (chat keystroke capture component) was approved at `9ac6a21` and
   merged in PR #195. CHAT-9 (console chat line renderer) was approved at
   `3ac5fcf` and merged in PR #194.
-- **Parked Epic:** TIDY, with TIDY-7 and TIDY-8 remaining. TIDY-7 waits for
-  the operator to say they are ready to make the `.claude/agents/*.md`
-  deferral edits; the planner then writes the edits out and routes to
-  `user`. TIDY-8 waits for the operator to confirm they want Linear
-  `epic_closed` and `handoff_repaired` evidence events. TIDY-11 (Linear init
+- **Parked Epic:** TIDY, with TIDY-8 remaining. TIDY-7 (Claude helper
+  files defer to the configured project state path) was approved at
+  `4a8f9fc` and merged in PR #216, batched with TPM-9. TIDY-8 is a backend
+  story the planner picks by fit (the operator confirmed both events on
+  2026-10-20). TIDY-11 (Linear init
   renders Linear MCP tools into the Claude backend, auditor, and finalizer
   subagents) was approved at `f81ed5b` and merged in PR #192. TIDY-6 (non-Claude helper
   files defer to the configured project state path) was approved at
@@ -1438,6 +1440,7 @@ dispatched without its instructions.
   frontmatter (`tools: Read, Edit, Write, Grep, Glob, Bash`) and Shell
   Commands section, and TIDY-7 rides along. The Linear part is an
   `_LINEAR_AGENT_TOOLS` entry, which is Python, so it moved to TPM-13.
+  Approved at `4a8f9fc`, merged in PR #216.
 - TPM-13 (split from TPM-9 on 2026-10-20; runs after TPM-9 and before
   TPM-10): Tests, Linear tools, and inventory for the Claude tpm agent.
   Add `.claude/agents/tpm.md` to `REQUIRED_TEMPLATE_FILES` and
@@ -1723,21 +1726,10 @@ the `(was ...)` notes give the old IDs. None had started.
 
 ### 19. TIDY - small fixes from epic-close audits
 
-Fit: TIDY-8 is unblocked; TIDY-7 is batched. The operator answered both
-questions on 2026-10-20; this line supersedes the TIDY bullet in Current
-Status until the next Work Packet rewrites it. TIDY-8: the operator wants
-both Linear evidence events (`epic_closed` and `handoff_repaired`), so it is
-a normal backend story the planner may pick by fit. TIDY-7: the operator is
-ready for the `.claude/` edits but wants one pause, not one per story, so do
-not route TIDY-7 to `user` on its own. Take it in the same `user`-routed
-handoff as the next `.claude/` operator story (TPM-9, TRANS-6, or ACTIVE-8),
-listing both stories' exact edits. That companion story's Work Packet adds
-TIDY-7's files to its Files in scope and TIDY-7's wording check to its
-acceptance criteria, so the companion audit covers both edits. When that
-audit passes, the planner's next Work Packet records TIDY-7 as approved at
-the companion audit's SHA (and its pull request), removes it from TIDY's
-remaining stories, and, if TIDY then has none left, routes the TIDY epic
-close to `finalizer` before picking new work. TIDY closes only after TIDY-7.
+Fit: TIDY-7 is approved at `4a8f9fc` (PR #216, batched with TPM-9). TIDY-8
+is the only remaining story, and it is unblocked: the operator wants both
+Linear evidence events (`epic_closed` and `handoff_repaired`), so it is a
+normal backend story the planner may pick by fit. TIDY closes after TIDY-8.
 Nothing here blocks another epic.
 
 The Open Followups that were still open on 2026-10-19, promoted to stories.
@@ -1861,7 +1853,7 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   so both trees use the same wording. Closes CONFIG-CLEANUP (a) inside
   `.claude/` only. Batched (operator, 2026-10-20): ride along with the next
   `.claude/` operator story's `user` route, as the Fit line says. Riding
-  with TPM-9 (planner, 2026-10-20).
+  with TPM-9 (planner, 2026-10-20). Approved at `4a8f9fc`, merged in PR #216.
 - TIDY-8: Linear evidence events for epic closes and handoff repairs
   (operator confirmed both events on 2026-10-20). (a) In Linear mode the finalizer posts
   nothing, so an epic close leaves no evidence comment; add an `epic_closed`

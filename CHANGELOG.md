@@ -33,6 +33,13 @@ This project follows a simple pre-release changelog until the first public tag.
   to `prompt`. Findings still take the correction round, and a usage-limit failure
   still goes to the prompt.
 
+- Claude subagent for the optional `tpm` role (TPM-9, TIDY-7, TPM-13). A new
+  `.claude/agents/tpm.md` ships in the checkout and the reference workflow, so a Claude tpm
+  has its own subagent. The Claude helper files now defer to the configured project state
+  path (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md` names another path)
+  instead of naming `PROJECT_STATE.md` directly. `init --tracker linear` appends the tpm's
+  Linear tools to the `tools:` line of `.claude/agents/tpm.md`, and tests lock the tpm
+  templates and the project state wording.
 - Linear evidence and tools for the optional `tpm` role (TPM-8). The evidence-comment
   contract and `LINEAR_EVIDENCE_EVENTS` now let `tpm` post `lease_opened`,
   `user_attention_requested`, and `user_attention_cleared`, so the Linear validator
