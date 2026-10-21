@@ -132,8 +132,13 @@ def load_chat_changes(path: Path) -> list[ChatChangeEntry]:
         if entry is None:
             continue
         mac = raw.get("mac")
-        if not isinstance(mac, str) or not hmac.compare_digest(
-            mac.encode("utf-8"), _entry_mac(entry, previous_mac).encode("utf-8")
+        # Check the format first: a JSON string can hold an unpaired
+        # surrogate, which cannot be encoded, so only a validated ASCII hex
+        # tag reaches the comparison.
+        if not isinstance(mac, str) or not _SHA256_HEX.fullmatch(mac):
+            continue
+        if not hmac.compare_digest(
+            mac.encode("ascii"), _entry_mac(entry, previous_mac).encode("ascii")
         ):
             continue
         entries.append(entry)

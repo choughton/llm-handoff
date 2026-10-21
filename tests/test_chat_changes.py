@@ -366,6 +366,25 @@ def test_role_written_entry_is_not_chat_owned(tmp_path: Path) -> None:
     assert chat_owned_paths(tmp_path, entries) == ("src/a.py",)
 
 
+@pytest.mark.parametrize(
+    "bad_mac",
+    [chr(0xD800), "é" * 64, "A" * 64, "a" * 63, "", None, 5],
+)
+def test_malformed_mac_is_skipped_and_later_entry_loads(
+    tmp_path: Path, bad_mac
+) -> None:
+    path = chat_changes_path(tmp_path)
+    bad = {**_valid_entry(role="backend"), "mac": bad_mac}
+    good = _sign(_valid_entry(role="frontend"))
+    # json.dumps escapes an unpaired surrogate as "\ud800", which json.loads
+    # accepts back as a str that cannot be UTF-8 encoded.
+    _save(path, json.dumps({"version": 1, "entries": [bad, good]}))
+
+    loaded = load_chat_changes(path)
+
+    assert [entry.role for entry in loaded] == ["frontend"]
+
+
 def test_edited_entry_fails_authentication(tmp_path: Path) -> None:
     _write(tmp_path, "src/a.py", "a")
     _record(tmp_path, "src/a.py")
