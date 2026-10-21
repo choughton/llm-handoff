@@ -13,9 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-22
-  (chat changes ride the implementer commit) in flight and CHAT-23,
-  CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-21 (chat
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-25
+  (chat-committed paths survive a resumed handback) in flight and CHAT-23,
+  CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-22 (chat
+  changes ride the implementer commit) was approved at `a2723e9` and merged
+  in PR #226. CHAT-21 (chat
   change record) was approved at `210267b` and merged in PR #225. CHAT-17
   (chat side-session launcher) was approved at `d059a25` and merged in PR
   #224. CHAT-18 was
@@ -1083,8 +1085,9 @@ bounces until the three-fix circuit breaker escalates.
 
 Fit: active again after TPM-ROLE closed, by the operator direction of
 2026-10-20. CHAT-17 was approved at `d059a25` and merged in PR #224;
-CHAT-21 was approved at `210267b` and merged in PR #225; CHAT-22 is in
-flight; CHAT-23, CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+CHAT-21 was approved at `210267b` and merged in PR #225; CHAT-22 was
+approved at `a2723e9` and merged in PR #226; CHAT-25 is in flight; CHAT-23,
+CHAT-24, CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into
 CHAT-21 through CHAT-24 because it exceeded one packet.
 
@@ -1272,7 +1275,8 @@ dependencies; Windows (`msvcrt`) and POSIX.
   latest contributing influence is the single marker written to the claim
   handoff and carried to the audit handoff and the pull request, with the
   `@auditor` operator message keeping priority; and the record is cleared
-  after the commit (a clear failure only warns).
+  after the commit (a clear failure only warns). Approved at `a2723e9` and
+  merged in PR #226.
 - CHAT-23 (was part of CHAT-18): The dispatcher commits chat changes after a
   non-implementer role. After any non-implementer role's cycle, before the
   next route, the dispatcher commits the `chat_owned_paths` itself with the
@@ -1281,6 +1285,19 @@ dependencies; Windows (`msvcrt`) and POSIX.
   back to the audit fan-out. Chat changes committed after an approved audit
   send the story back to the audit fan-out before it publishes, so nothing
   unaudited is published.
+- CHAT-25 (follow-up from the CHAT-22 review): Chat-committed paths survive
+  a resumed handback. The in-flight `handback` record gains
+  `chat_commit_sha` and `chat_committed` (a missing pair loads as None and
+  `()`, so version-1 records still load; they are set together, and only on
+  an implementer `handback` record). After an implementer commit that
+  included chat-owned paths, the loop stores that commit's SHA and paths on
+  the handback record, and a new implementer dispatch record resets them.
+  Both work-claim gate calls in the implementer branch take
+  `chat_owned_paths` from one helper: the commit's own `chat_committed`
+  when it has any, else a resumed handback record's paths. Decided by the
+  planner on 2026-10-21: the paths are bound to the commit SHA, used only
+  when that SHA is HEAD (otherwise they contribute nothing and log one
+  WARN), and filtered to the paths that commit changed.
 - CHAT-19 (was part of CHAT-4): A chat rewrite of `HANDOFF.md` takes over the
   run. When a chat answer changes `HANDOFF.md` while a role runs, the
   dispatcher stops that role as an operator interrupt does, keeps the role's
@@ -1292,7 +1309,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   Tested with a faked CHAT-17 result; the loop calls it once CHAT-20 wires
   chat in.
 - CHAT-20 (was part of CHAT-4): Messages are answered right away. Lands after
-  CHAT-19 and CHAT-21 through CHAT-24, so writable chat is never wired in
+  CHAT-19 and CHAT-21 through CHAT-25, so writable chat is never wired in
   without them. A
   non-blank chat submission goes to the CHAT-17 side session instead of the
   CHAT-12 queue, and the answer prints above the chat line while the role
