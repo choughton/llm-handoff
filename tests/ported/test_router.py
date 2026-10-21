@@ -11,6 +11,7 @@ from llm_handoff.router import (
     parse_handoff_frontmatter_text,
     repair_handoff_frontmatter_text,
     route,
+    status_next_agent_conflict,
 )
 
 
@@ -331,6 +332,76 @@ producer: backend
         f"status `{status}` routes to {status_route}, but next_agent is `{next_agent}`"
         in decision.warnings[0]
     )
+
+
+@pytest.mark.parametrize(
+    ("next_agent", "close_fields", "expected_route"),
+    [
+        ("tpm", "scope_sha: 82ce839\nclose_type: story\n", "tpm"),
+        ("tpm", "", "tpm"),
+        ("planner", "scope_sha: 82ce839\nclose_type: story\n", "planner"),
+        ("finalizer", "scope_sha: 82ce839\nclose_type: epic\n", "finalizer"),
+    ],
+)
+def test_router_verified_pass_routes_story_approval_to_tpm_or_planner(
+    next_agent: str,
+    close_fields: str,
+    expected_route: str,
+) -> None:
+    handoff_content = f"""---
+next_agent: {next_agent}
+reason: Audit approved.
+status: verified_pass
+{close_fields}producer: auditor
+---
+
+# Handoff
+"""
+
+    decision = route(handoff_content)
+
+    assert decision.route == expected_route
+    assert decision.confidence == "HIGH"
+    assert decision.source == "frontmatter.status.verified_pass"
+    assert decision.warnings == []
+
+
+@pytest.mark.parametrize(
+    ("next_agent", "close_type", "expected_conflict"),
+    [
+        ("tpm", "story", None),
+        ("planner", "story", None),
+        ("backend", "story", "routes to planner, but next_agent is `backend`"),
+        ("tpm", "epic", "routes to finalizer, but next_agent is `tpm`"),
+    ],
+)
+def test_status_next_agent_conflict_for_verified_pass(
+    next_agent: str,
+    close_type: str,
+    expected_conflict: str | None,
+) -> None:
+    frontmatter = parse_handoff_frontmatter_text(
+        f"""---
+next_agent: {next_agent}
+reason: Audit approved.
+status: verified_pass
+scope_sha: 82ce839
+close_type: {close_type}
+producer: auditor
+---
+
+# Handoff
+"""
+    )
+    assert frontmatter is not None
+
+    conflict = status_next_agent_conflict(frontmatter)
+
+    if expected_conflict is None:
+        assert conflict is None
+    else:
+        assert conflict is not None
+        assert expected_conflict in conflict
 
 
 def test_route_normalizes_frontend_frontmatter_alias() -> None:

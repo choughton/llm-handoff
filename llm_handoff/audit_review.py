@@ -754,6 +754,7 @@ def run_audit_fan_out(
         source_handoff=context.handoff_content,
         dispatcher_verification=pre_audit,
         operator_influence=context.operator_influence,
+        tpm_configured="tpm" in config.agents,
     )
     if linear_mode:
         # The Linear evidence step runs only after both verdicts merged and
@@ -1336,12 +1337,16 @@ def render_audit_handoff(
     source_handoff: str = "",
     dispatcher_verification: PreAuditVerification | None = None,
     operator_influence: OperatorInfluence | None = None,
+    tpm_configured: bool = False,
 ) -> str:
     """Render the dispatcher-written audit handoff.
 
     ``dispatcher_verification`` is a passing pre-audit run; its section and
     commands are kept in the final handoff, because the quality reviewer was
     told not to re-run them.
+
+    ``tpm_configured`` (``agents.tpm`` is set) routes a story approval to the
+    tpm instead of the planner. An epic close still goes to the finalizer.
 
     ``operator_influence`` adds a ``## Operator Influence`` section after the
     merge decision; it records only the message time and digest.
@@ -1360,10 +1365,16 @@ def render_audit_handoff(
         status = "verified_fail"
         close_type: str | None = None
     else:
-        # verified_pass routes to the finalizer for an epic close and to the
-        # planner otherwise, so next_agent must name that same route.
+        # verified_pass routes to the finalizer for an epic close; a story
+        # approval goes to the tpm when one is configured and to the planner
+        # otherwise. The router follows the same rule.
         close_type = quality.close_type
-        next_agent = "finalizer" if close_type == "epic" else "planner"
+        if close_type == "epic":
+            next_agent = "finalizer"
+        elif tpm_configured:
+            next_agent = "tpm"
+        else:
+            next_agent = "planner"
         reason = _truncate_reason(quality.reason)
         status = "verified_pass"
 

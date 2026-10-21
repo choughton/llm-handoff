@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Routing to a configured `tpm` (TPM-10). With `agents.tpm`, a `next_agent: tpm` route now
+  launches the tpm instead of pausing. The audit fan-out routes a story approval to `tpm`,
+  and the router accepts `verified_pass` with `next_agent: tpm`; an epic close still goes
+  to the finalizer. A planner handoff to the tpm and a tpm escalation to the planner need
+  no `## Work Packet`. In dispatcher commit mode, a tpm commit of `HANDOFF.md` is undone
+  like a planner's, and `--dry-run` prints `Would dispatch tpm`. Without `agents.tpm`,
+  every route is unchanged.
 - `pr` mode publishes a story the operator committed on the base branch. A story routed
   to `user` (such as `.claude/` edits) ends with the operator's local, unpushed commit on
   the base branch, which the planner sends to the auditor. When that story audit passes

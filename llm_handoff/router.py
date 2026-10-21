@@ -578,7 +578,12 @@ def _status_route(status: HandoffStatus, frontmatter: HandoffRouting) -> RouteNa
     if status == HandoffStatus.READY_FOR_REVIEW:
         route_name = "auditor"
     elif status == HandoffStatus.VERIFIED_PASS:
-        route_name = "finalizer" if frontmatter.close_type == "epic" else "planner"
+        if frontmatter.close_type == "epic":
+            route_name = "finalizer"
+        elif normalize_next_agent_value(frontmatter.next_agent) == "tpm":
+            route_name = "tpm"
+        else:
+            route_name = "planner"
     elif status == HandoffStatus.VERIFIED_FAIL:
         next_route = normalize_next_agent_value(frontmatter.next_agent)
         route_name = next_route if next_route in {"backend", "frontend"} else "planner"

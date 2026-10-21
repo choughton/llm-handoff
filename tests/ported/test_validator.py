@@ -1416,6 +1416,76 @@ def test_validate_handoff_rejects_planner_output_without_work_packet(
     )
 
 
+@pytest.mark.parametrize(
+    ("producer", "next_agent", "body"),
+    [
+        (
+            "planner",
+            "tpm",
+            "## Next Step\n\n- **tpm:** Epic EPIC-2 is open; assign its first story.\n",
+        ),
+        (
+            "tpm",
+            "planner",
+            "## Next Step\n\n- **planner:** The next story is stale; re-scope it.\n",
+        ),
+    ],
+)
+def test_validate_handoff_planning_handoff_between_planner_and_tpm_needs_no_work_packet(
+    tmp_path: Path,
+    producer: str,
+    next_agent: str,
+    body: str,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            body,
+            next_agent=next_agent,
+            reason="Hand the epic over.",
+            producer=producer,
+        ),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        producer,
+        prior_handoff_sha="5" * 64,
+    )
+
+    assert not [error for error in result.errors if error.startswith("scope_claim")]
+    assert not [
+        warning
+        for warning in result.warnings
+        if warning.startswith(("acceptance_coverage_unclear", "work_packet_missing"))
+    ]
+
+
+def test_validate_handoff_planner_to_backend_without_work_packet_still_fails(
+    tmp_path: Path,
+) -> None:
+    handoff_path = _write_handoff(
+        tmp_path,
+        _with_frontmatter(
+            "## Next Step\n\n- **backend:** Implement Story 7.\n",
+            next_agent="backend",
+            reason="Implement Story 7.",
+            producer="planner",
+        ),
+    )
+
+    result = validate_handoff(
+        handoff_path,
+        "planner",
+        prior_handoff_sha="5" * 64,
+    )
+
+    assert (
+        "scope_claim_mismatch: planner handoffs must include a ## Work Packet section."
+        in result.errors
+    )
+
+
 def test_validate_handoff_accepts_frontmatter_producer_for_completed_work(
     tmp_path: Path,
 ) -> None:

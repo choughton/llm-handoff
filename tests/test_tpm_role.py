@@ -1,11 +1,11 @@
-"""TPM-1 to TPM-3: `tpm` is a recognized role name, a configured tpm has a
-launch path but the dispatch loop still pauses on its route, an unconfigured
-tpm route gets one planner repair, and the validator has rules for
-`producer: tpm`."""
+"""TPM-1 to TPM-3 and TPM-10: `tpm` is a recognized role name, a configured
+tpm route is dispatched, an unconfigured tpm route gets one planner repair,
+and the validator has rules for `producer: tpm`."""
 
 from __future__ import annotations
 
 import importlib
+import subprocess
 from pathlib import Path
 from typing import Any, get_args
 from unittest.mock import Mock
@@ -124,7 +124,7 @@ def test_handoff_normalizer_canonical_set_includes_tpm() -> None:
     assert "tpm" in handoff_normalizer.CANONICAL_NEXT_AGENT_SET
 
 
-# Check 5: orchestrator interim guard
+# Check 5: orchestrator dispatch of a configured tpm (TPM-10)
 
 
 def _tpm_agent(**overrides: Any) -> config_module.AgentConfig:
@@ -173,53 +173,179 @@ def _write_tpm_route_fixture(tmp_path: Path) -> Path:
     return handoff_path
 
 
-def test_run_loop_pauses_on_configured_tpm_route_without_dispatching(
+_TPM_ESCALATION_HANDOFF = (
+    "---\n"
+    "next_agent: user\n"
+    'reason: "The tpm needs an answer."\n'
+    "status: escalate_to_user\n"
+    "producer: tpm\n"
+    "---\n\n"
+    "# Handoff\n\n"
+    "Which story comes next?\n"
+)
+
+
+def _stub_support_role(orchestrator: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_support_role",
+        lambda *_args, **_kwargs: SubagentResult(
+            stdout="", stderr="", exit_code=0, elapsed_seconds=0.01
+        ),
+    )
+
+
+def test_run_loop_dispatches_configured_tpm_route_without_pausing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _write_tpm_route_fixture(tmp_path)
+    handoff_path = _write_tpm_route_fixture(tmp_path)
 
     orchestrator = importlib.import_module("llm_handoff.orchestrator")
-    dispatch_calls: list[Any] = []
-    recovery_calls: list[Any] = []
+    assert not hasattr(orchestrator, "TPM_ROUTE_NOT_LAUNCHED_REASON")
+    dispatched: list[str] = []
     pause_reasons: list[str] = []
-    real_pause = orchestrator._pause_at_dispatcher_pause
 
-    def fake_dispatch(*args: Any, **kwargs: Any) -> Any:
-        dispatch_calls.append((args, kwargs))
-        raise AssertionError("_dispatch_route must not run for a tpm route")
+    def fake_dispatch(route: str, *args: Any, **kwargs: Any) -> Any:
+        dispatched.append(route)
+        handoff_path.write_text(_TPM_ESCALATION_HANDOFF, encoding="utf-8")
+        return (
+            DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.1),
+            route,
+        )
 
     def fake_schedule(*args: Any, **kwargs: Any) -> Any:
-        recovery_calls.append((args, kwargs))
         raise AssertionError("pause recovery must not be scheduled for tpm")
 
-    def spy_pause(*args: Any, **kwargs: Any) -> Any:
+    def stop_pause(*args: Any, **kwargs: Any) -> Any:
         pause_reasons.append(kwargs["reason"])
-        return real_pause(*args, **kwargs)
+        return orchestrator.PauseOutcome(kind="stop")
 
     monkeypatch.setattr(orchestrator, "_dispatch_route", fake_dispatch)
     monkeypatch.setattr(orchestrator, "_schedule_pause_recovery", fake_schedule)
-    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", spy_pause)
+    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", stop_pause)
+    _stub_support_role(orchestrator, monkeypatch)
     log_messages: list[tuple[str, str]] = []
 
     config = _dispatch_config(tmp_path, agents=_agents_with_tpm())
     assert "tpm" in config.agents
-    exit_code = orchestrator.run_loop(
+    orchestrator.run_loop(
         config,
+        max_cycles=1,
         log=lambda level, message: log_messages.append((level, message)),
     )
 
-    assert exit_code == 0
-    assert dispatch_calls == []
-    assert recovery_calls == []
-    assert pause_reasons == [orchestrator.TPM_ROUTE_NOT_LAUNCHED_REASON]
-    assert "tpm" in pause_reasons[0]
-    assert pause_reasons[0] == (
-        "HANDOFF.md routes to tpm, which this dispatcher does not launch yet. "
-        "Route to planner or an implementer; dispatch will resume after the "
-        "file changes."
+    assert dispatched == ["tpm"]
+    assert not [reason for reason in pause_reasons if "tpm" in reason]
+
+
+def test_dry_run_logs_tpm_dispatch(tmp_path: Path) -> None:
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+    config = _dispatch_config(tmp_path, agents=_agents_with_tpm())
+    logs: list[tuple[str, str]] = []
+
+    orchestrator._log_dry_run(
+        config, "tpm", lambda level, message: logs.append((level, message))
     )
-    assert any("routes to tpm" in message for _, message in log_messages)
+
+    assert logs == [("DISPATCH", "[DRY RUN] Would dispatch tpm")]
+
+
+def test_dry_run_loop_reports_tpm_route_without_dispatching(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_tpm_route_fixture(tmp_path)
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+    monkeypatch.setattr(
+        orchestrator,
+        "_dispatch_route",
+        Mock(side_effect=AssertionError("dry run must not dispatch")),
+    )
+    logs: list[tuple[str, str]] = []
+
+    config = _dispatch_config(tmp_path, agents=_agents_with_tpm(), dry_run=True)
+    orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert ("DISPATCH", "[DRY RUN] Would dispatch tpm") in logs
+
+
+def _git(repo_root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return completed.stdout.strip()
+
+
+def test_dispatcher_mode_tpm_handoff_commit_is_undone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_tpm_route_fixture(tmp_path)
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.name", "llm-handoff tests")
+    _git(tmp_path, "config", "user.email", "tests@example.invalid")
+    _git(tmp_path, "config", "core.autocrlf", "false")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "initial")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+
+    from llm_handoff.validator import ValidationResult
+
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+
+    def fake_tpm(path: Path, **_kwargs: Any) -> DispatchResult:
+        path.write_text(
+            _BACKEND_HANDOFF.replace("producer: planner", "producer: tpm"),
+            encoding="utf-8",
+        )
+        _git(tmp_path, "add", "--", "docs/handoff/HANDOFF.md")
+        _git(tmp_path, "commit", "-q", "-m", "tpm committed the handoff")
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.1)
+
+    monkeypatch.setattr(orchestrator, "invoke_tpm_role", fake_tpm)
+    _stub_support_role(orchestrator, monkeypatch)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_args, **_kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[], routing_instruction="backend"
+        ),
+    )
+    messages: list[tuple[str, str]] = []
+
+    config = _dispatch_config(
+        tmp_path,
+        agents=_agents_with_tpm(),
+        commit_mode="dispatcher",
+        enforce_work_packet=True,
+        work_packet_opt_out_reason=None,
+        pause_recovery="off",
+    )
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=1,
+        log=lambda level, message: messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert _git(tmp_path, "rev-parse", "HEAD") == base
+    assert _git(tmp_path, "status", "--porcelain") == "M docs/handoff/HANDOFF.md"
+    assert "producer: tpm" in handoff_path.read_text(encoding="utf-8")
+    assert any(
+        level == "WARN"
+        and "The tpm committed the handoff" in message
+        and "undid it with `git reset --soft`" in message
+        for level, message in messages
+    )
 
 
 # TPM-3 checks 6 and 7: an unconfigured tpm route gets one planner repair.
