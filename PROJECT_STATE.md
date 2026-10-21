@@ -31,9 +31,11 @@ belong in commits, handoffs, and pull requests.
   (operator prompt `@tpm <message>`) was approved at `cee95d3` and merged in
   PR #221; TPM-14 (interrupted tpm dispatch recovery) was approved at
   `b1d129d` and merged in PR #222; TPM-12 (documentation and changelog
-  sweep) is in flight.
+  sweep) was approved at `1f578c0` and merged in PR #223 (merge `412fad6`).
+  TPM-ROLE is closed: no stories remain. The planner picks the next epic by
+  fit; CHAT (resumes with CHAT-17) and TRANSITION-RULES were waiting on it.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still
-  wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
+  wait on their triggers, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
 - **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,
   and CHAT-5 remaining. It waits for TPM-ROLE to close, not for the
@@ -1488,7 +1490,8 @@ dispatched without its instructions.
   reference), `docs/TESTING.md` (a tpm scenario in the acceptance run),
   `docs/SUPERVISED_DISPATCH.md` if the repair role list changes,
   `CHANGELOG.md`. Each earlier story updates the docs its code touches; this
-  story checks the set reads as one.
+  story checks the set reads as one. Approved at `1f578c0`, merged in PR
+  #223. This closed the TPM-ROLE epic.
 
 ### 16. ESCALATION-RECONCILE - a stale user escalation gets one planner pass
 
