@@ -6,6 +6,22 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Chat changes after an approved audit go back to the audit fan-out
+  (CHAT-24). Outside `local` publish mode and in dispatcher commit mode,
+  when the auditor's accepted handoff approves the story, the loop checks
+  the chat change record after the publish hold and before `publish_story`.
+  Recorded chat changes are committed on the story branch (subject
+  `<story> Chat changes after the auditor role`), `HANDOFF.md` is rewritten
+  as the handoff the audit cycle started from with `scope_sha` and the
+  evidence SHA on the chat commit and the chat marker as its `## Operator
+  Influence` section, the record is cleared, and the next cycle runs the
+  audit fan-out again over the whole story branch instead of publishing. A
+  commit error logs one ERROR, keeps the record, skips the publish, and ends
+  the run with exit code 1; nothing left to commit clears the record and
+  publishes as before. The CHAT-23 approved-story INFO line now says, for
+  the auditor route outside `local` mode, that the changes are committed and
+  re-audited before the story publishes. `local` mode, the finalizer, and
+  every other route are unchanged.
 - The dispatcher commits chat changes after a non-implementer role (CHAT-23).
   New `dispatcher_commit.commit_chat_changes` commits only the dirty
   `chat_owned_paths` other than the handoff, with the subject `<story> Chat
