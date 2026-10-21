@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Interrupted-planner recovery no longer blames the planner for published commits. In
+  dispatcher commit mode, when HEAD has moved past an interrupted planner record's HEAD
+  on the same branch and HEAD is on the fetched `<remote>/<base_branch>` (the checked-out
+  branch when `base_branch` is null; nothing is fetched), every commit in between was
+  published there, so there is nothing to undo: one `INFO` line names how many published
+  commits were skipped, and the handoff checks run as before. Before, an operator who
+  fast-forwarded `main` to `origin/main` after the interrupt got "the planner committed
+  ... with files other than the handoff" and had to move the record aside. Any commit
+  not on the remote ref keeps the stop. A dry run now also names what a real start would
+  do with the planner's commits (stop, with the reason, or ask to undo them).
 - `pr` mode publishes a story the operator committed on the base branch. A story routed
   to `user` (such as `.claude/` edits) ends with the operator's local, unpushed commit on
   the base branch, which the planner sends to the auditor. When that story audit passes

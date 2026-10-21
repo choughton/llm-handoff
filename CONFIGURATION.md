@@ -760,8 +760,14 @@ discarded with a `WARN` line (a dry run keeps it), and Git is not touched.
 In dispatcher commit mode, the checkout is then compared with the record's
 HEAD and branch, as the check after a planner dispatch that returned would,
 but without changing anything: the record's HEAD comes from a file a role can
-write, so it proves nothing. A branch switch, rewritten history, or a commit
-with other files logs an `ERROR` line and stops the run before any dispatch,
+write, so it proves nothing. When the branch is unchanged and HEAD is on the
+fetched `<remote>/<base_branch>` (the checked-out branch when `base_branch` is
+null; nothing is fetched), every commit since the record was published there,
+for example by an operator who fast-forwarded `main` to `origin/main`: one
+`INFO` line names how many published commits were skipped, nothing is undone,
+and the checks below run as usual. Otherwise a branch switch, rewritten
+history, or a commit with other files logs an `ERROR` line and stops the run
+before any dispatch,
 keeping the record and the checkout so the next start checks again. Commits
 since the record that change only the handoff are undone only after the
 operator confirms the exact reset: with `interactive_pause` and a terminal,
@@ -773,7 +779,7 @@ uncommitted); a checkout that moved again before the answer logs an `ERROR`
 line and stops with nothing undone. Any other answer, end of input, no
 terminal, or `interactive_pause: false` discards the record with a `WARN`
 line and leaves HEAD, the index, and the handoff as they are. A dry run only
-reports a moved checkout. A record HEAD that is not a commit is not
+reports a moved checkout and what a real start would do with it. A record HEAD that is not a commit is not
 reconciled. Then:
 
 - When `HANDOFF.md` still equals the record's text, the dispatcher logs one

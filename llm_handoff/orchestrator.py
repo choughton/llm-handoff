@@ -7549,14 +7549,19 @@ def _interrupted_planner_handoff_errors(
 class _InterruptedPlannerGitDrift:
     """How the checkout moved since an interrupted planner record's HEAD.
 
-    ``current`` is the checkout as inspected. ``error`` names a move the
-    dispatcher never undoes; otherwise ``commits`` lists the handoff-only
-    commits since the record's HEAD that ``git reset --soft`` would undo.
+    ``current`` is the checkout as inspected. ``published`` counts the
+    commits since the record's HEAD when HEAD is on the remote base branch:
+    they were published, not made by the planner, so nothing is undone.
+    Otherwise ``error`` names a move the dispatcher never undoes, or
+    ``commits`` lists the handoff-only commits since the record's HEAD that
+    ``git reset --soft`` would undo.
     """
 
     current: GitPosition
     commits: tuple[str, ...] = ()
     error: str | None = None
+    published: int = 0
+    published_ref: str = ""
 
 
 def _interrupted_planner_git_drift(
@@ -7610,6 +7615,32 @@ def _interrupted_planner_git_drift(
         is None
     ):
         return rewritten
+    # An operator who fast-forwards the base branch to the remote between
+    # runs brings in commits merged through pull requests. When HEAD is on the
+    # fetched remote base branch (nothing is fetched here), every commit since
+    # the record's HEAD is already published there and is not the planner's.
+    base = config.publish.base_branch or current.branch
+    if base:
+        published_ref = f"{config.publish.remote}/{base}"
+        on_remote = _run_git_stdout(
+            repo_root,
+            [
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                current.head,
+                f"refs/remotes/{published_ref}",
+            ],
+        )
+        count = _run_git_stdout(
+            repo_root, ["git", "rev-list", "--count", f"{head_sha}..{current.head}"]
+        )
+        if on_remote is not None and count is not None and count.isdigit():
+            return _InterruptedPlannerGitDrift(
+                current=current,
+                published=int(count),
+                published_ref=_escape_control_characters(published_ref),
+            )
     listed = _run_git_stdout(
         repo_root, ["git", "rev-list", "--reverse", f"{head_sha}..{current.head}"]
     )
@@ -7658,8 +7689,11 @@ def _reconcile_interrupted_planner_git(
     ``interactive_pause: false`` discards the record with one WARN and
     returns ``"discarded"``, leaving HEAD, the index, and the handoff as they
     are; a record that cannot be deleted then returns ``"stop"`` after one
-    ERROR. A checkout that moved again before the answer stops the run. Dry
-    run only reports. Runs after the record's anchor checks.
+    ERROR. A checkout that moved again before the answer stops the run.
+    Commits since the record's HEAD that are all on the fetched remote base
+    branch, with HEAD on it, were published there and are not the planner's:
+    one INFO line and ``"continue"``. Dry run only reports, naming what a
+    real start would do. Runs after the record's anchor checks.
     """
 
     drift = _interrupted_planner_git_drift(config, record)
@@ -7669,14 +7703,29 @@ def _reconcile_interrupted_planner_git(
     current = drift.current
     before_branch = _escape_control_characters(record.head_branch or "detached HEAD")
     after_branch = _escape_control_characters(current.branch or "detached HEAD")
+    if drift.published:
+        _log(
+            log,
+            "INFO",
+            f"Skipped {drift.published} published commit(s) since the in-flight "
+            f"record's HEAD {head_sha[:12]}: `{after_branch}` is at "
+            f"{(current.head or '')[:12]}, which is on {drift.published_ref}, so "
+            "they are not the interrupted planner's and there is nothing to undo.",
+        )
+        return "continue"
     if config.dry_run:
+        decision = (
+            f"a real start stops: {drift.error}"
+            if drift.error is not None
+            else "a real start asks to undo its handoff commits"
+        )
         _log(
             log,
             "INFO",
             f"The in-flight record {state_path} names an interrupted planner "
             f"dispatch that started at {head_sha[:12]} on `{before_branch}`; the "
             f"checkout is now at {(current.head or 'no commit')[:12]} on "
-            f"`{after_branch}`. Not reconciled in dry run.",
+            f"`{after_branch}`, and {decision}. Not reconciled in dry run.",
         )
         return "continue"
     error = drift.error
