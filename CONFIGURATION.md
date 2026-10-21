@@ -762,12 +762,17 @@ HEAD and branch, as the check after a planner dispatch that returned would,
 but without changing anything: the record's HEAD comes from a file a role can
 write, so it proves nothing. When the branch is unchanged and HEAD is on the
 fetched `<remote>/<base_branch>` (the checked-out branch when `base_branch` is
-null; nothing is fetched), every commit since the record was published there,
-for example by an operator who fast-forwarded `main` to `origin/main`: one
-`INFO` line names how many published commits were skipped, nothing is undone,
-and the checks below run as usual. Otherwise a branch switch, rewritten
-history, or a commit with other files logs an `ERROR` line and stops the run
-before any dispatch,
+null; nothing is fetched), the commits since the record may have been
+published there, for example by an operator who fast-forwarded `main` to
+`origin/main`. A role can write that ref too, so with `interactive_pause` and
+a terminal the dispatcher lists the commits and asks
+``Skip the <n> commit(s) on <remote>/<base_branch> as published, not the interrupted planner's? [y/N]``.
+On `y` one `INFO` line names how many published commits were skipped, nothing
+is undone, and the checks below run as usual; a checkout that moved before the
+answer logs an `ERROR` line and stops. Any other answer, or no terminal,
+checks the commits as described next. A branch switch, rewritten history, or
+a commit with other files logs an `ERROR` line and stops the run before any
+dispatch,
 keeping the record and the checkout so the next start checks again. Commits
 since the record that change only the handoff are undone only after the
 operator confirms the exact reset: with `interactive_pause` and a terminal,

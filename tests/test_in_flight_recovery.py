@@ -3714,43 +3714,159 @@ def _published_config(repo: Path, **overrides: Any) -> DispatchConfig:
     )
 
 
-@pytest.mark.parametrize("dry_run", [False, True], ids=["start", "dry_run"])
-def test_published_commits_since_an_interrupted_planner_are_not_its_own(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    dry_run: bool,
-) -> None:
-    # The planner is interrupted at HEAD; the operator then fast-forwards
-    # main to origin/main, which merged two pull requests meanwhile.
+PUBLISHED_QUESTION = (
+    "Skip the 4 commit(s) on origin/main as published, not the interrupted "
+    "planner's? [y/N]"
+)
+
+
+def _fast_forward_past_interrupted_planner(
+    tmp_path: Path, orchestrator: Any, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """The planner is interrupted at HEAD; the operator then fast-forwards
+    main to origin/main, which merged two pull requests (four commits)."""
+
     repo, remote = _checkout_with_remote(tmp_path)
-    orchestrator = _orchestrator()
     _interrupt_planner(repo, orchestrator, monkeypatch, keep=True)
     _publish_pull_request(remote, tmp_path, "first")
     _publish_pull_request(remote, tmp_path, "second")
     _git(repo, "fetch", "-q", "origin")
     _git(repo, "merge", "-q", "--ff-only", "origin/main")
+    return repo
+
+
+def test_published_commits_are_skipped_once_the_operator_confirms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator()
+    repo = _fast_forward_past_interrupted_planner(tmp_path, orchestrator, monkeypatch)
     head = _git(repo, "rev-parse", "HEAD")
     _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, [True])
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert questions == [PUBLISHED_QUESTION]
+    assert [level for level, _message in messages] == ["INFO"] * 4
+    disclosure = messages[0][1]
+    assert "now has 4 commit(s) since the record's HEAD" in disclosure
+    assert f"with HEAD {head[:12]} on origin/main" in disclosure
+    assert "are not proof that these commits were published" in disclosure
+    assert messages[2][1].startswith("Skipped 4 published commit(s)")
+    assert "as the operator confirmed" in messages[2][1]
+    assert "left nothing to recover" in messages[3][1]
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _staged_paths(repo) == ""
+    assert not _record_path(repo).exists()
+
+
+@pytest.mark.parametrize(
+    ("interactive", "answers", "expected_questions"),
+    [
+        pytest.param(True, [False], [PUBLISHED_QUESTION], id="declined"),
+        pytest.param(False, [], [], id="no_terminal"),
+    ],
+)
+def test_unconfirmed_published_commits_keep_the_interrupted_planner_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interactive: bool,
+    answers: list[bool],
+    expected_questions: list[str],
+) -> None:
+    # origin/main is a ref a role can write, so it alone never skips commits.
+    orchestrator = _orchestrator()
+    repo = _fast_forward_past_interrupted_planner(tmp_path, orchestrator, monkeypatch)
+    head = _git(repo, "rev-parse", "HEAD")
+    original = _record_path(repo).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=interactive, operator_input="")
+    questions = _script_answers(orchestrator, monkeypatch, answers)
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome.stop is True
+    assert questions == expected_questions
+    assert not any("Skipped" in message for _level, message in messages)
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "files other than the handoff: src/first.py, src/second.py" in errors[0]
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _record_path(repo).read_text(encoding="utf-8") == original
+
+
+def test_a_checkout_that_moves_before_the_published_answer_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator()
+    repo = _fast_forward_past_interrupted_planner(tmp_path, orchestrator, monkeypatch)
+    original = _record_path(repo).read_text(encoding="utf-8")
+
+    def local_commit(_question: str) -> None:
+        _write(repo / "src" / "api.py", "API = 'moved'\n")
+        _git(repo, "commit", "-q", "-am", "local commit")
+
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="")
+    questions = _script_answers(
+        orchestrator, monkeypatch, [True], before_answer=local_commit
+    )
+    messages: list[tuple[str, str]] = []
+
+    outcome = orchestrator._recover_interrupted_dispatch(
+        _published_config(repo),
+        _collecting_log(messages),
+        orchestrator._OperatorPromptState(),
+    )
+
+    assert outcome.stop is True
+    assert questions == [PUBLISHED_QUESTION]
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "checkout moved while the operator was asked to skip" in errors[0]
+    assert not any("Skipped" in message for _level, message in messages)
+    assert _record_path(repo).read_text(encoding="utf-8") == original
+
+
+def test_dry_run_names_the_published_question_and_the_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator()
+    repo = _fast_forward_past_interrupted_planner(tmp_path, orchestrator, monkeypatch)
+    original = _record_path(repo).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
     questions = _script_answers(orchestrator, monkeypatch, [])
     messages: list[tuple[str, str]] = []
 
     outcome = orchestrator._recover_interrupted_dispatch(
-        _published_config(repo, dry_run=dry_run),
+        _published_config(repo, dry_run=True),
         _collecting_log(messages),
         orchestrator._OperatorPromptState(),
     )
 
     assert outcome == orchestrator.InterruptedDispatchRecovery()
     assert questions == []
-    assert [level for level, _message in messages] == ["INFO", "INFO"]
-    assert messages[0][1].startswith(
-        "Skipped 4 published commit(s) since the in-flight record's HEAD"
+    assert any(
+        level == "INFO"
+        and "a real start asks to skip the 4 commit(s) on origin/main as "
+        "published; unless the operator confirms, stops: the planner committed"
+        in message
+        and message.endswith("Not reconciled in dry run.")
+        for level, message in messages
     )
-    assert f"`main` is at {head[:12]}, which is on origin/main" in messages[0][1]
-    assert "left nothing to recover" in messages[1][1]
-    assert _git(repo, "rev-parse", "HEAD") == head
-    assert _staged_paths(repo) == ""
-    assert _record_path(repo).exists() is dry_run
+    assert _record_path(repo).read_text(encoding="utf-8") == original
 
 
 @pytest.mark.parametrize(
