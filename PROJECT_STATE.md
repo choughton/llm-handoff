@@ -13,7 +13,23 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** TPM-ROLE, by the operator direction above. TPM-1 (role
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-17
+  (chat side-session launcher) in flight and CHAT-18, CHAT-19, CHAT-20,
+  CHAT-4, and CHAT-5 remaining. TRANSITION-RULES is unblocked now that
+  TPM-ROLE is closed and is next in line by fit. CHAT-15 (the loop records
+  each dispatch in the dispatch record) was merged in PR #203. CHAT-3
+  (dispatch record file) was approved at `6d387ab` and merged in PR #202.
+  CHAT-14 (Claude and Codex role dispatches report their session id) was
+  approved at `b61b313` and merged in PR #201. CHAT-2 (sent chat messages
+  are saved to the queue and announced) was approved at `dd26c6a` and
+  merged in PR #200. CHAT-13 (hold the loop on saved chat messages) was
+  approved at `cd0df4c` and merged in PR #199. CHAT-12 (chat message queue
+  file) was approved at `fb04abf` and merged in PR #197. CHAT-11 (chat line
+  and keystroke capture wiring) was approved at `7a6170b` and merged in PR
+  #196. CHAT-10 (chat keystroke capture component) was approved at
+  `9ac6a21` and merged in PR #195. CHAT-9 (console chat line renderer) was
+  approved at `3ac5fcf` and merged in PR #194.
+- **Closed Epic:** TPM-ROLE. TPM-1 (role
   vocabulary) was approved at `67474dd` and merged in PR #206; TPM-2
   (launching a configured tpm) was approved at `16bbc32` and merged in PR
   #207; TPM-3 (validator rules for `producer: tpm`) was approved at `831ff3f`
@@ -31,26 +47,11 @@ belong in commits, handoffs, and pull requests.
   (operator prompt `@tpm <message>`) was approved at `cee95d3` and merged in
   PR #221; TPM-14 (interrupted tpm dispatch recovery) was approved at
   `b1d129d` and merged in PR #222; TPM-12 (documentation and changelog
-  sweep) is in flight.
-  ACTIVE-PLANNER and ESCALATION-RECONCILE still
-  wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
-  needs a design check, and LINEAR-SWITCH has low urgency.
-- **Parked Epic:** CHAT, with CHAT-17, CHAT-18, CHAT-19, CHAT-20, CHAT-4,
-  and CHAT-5 remaining. It waits for TPM-ROLE to close, not for the
-  operator. CHAT-15 (the loop records each dispatch in the
-  dispatch record) was merged in PR #203. CHAT-3 (dispatch record file) was approved at
-  `6d387ab` and merged in PR #202. CHAT-14 (Claude and Codex role dispatches report their session id) was
-  approved at `b61b313` and merged in PR #201. CHAT-2 (sent chat messages are saved
-  to the queue and announced) was approved at `dd26c6a` and merged in PR
-  #200. CHAT-13 (hold the loop on saved chat
-  messages) was approved at `cd0df4c` and merged in PR #199; it took the hold
-  half of CHAT-2 and works from the CHAT-12 queue file alone, so the loop's
-  push and merge points were safe before capture writes to that file.
-  CHAT-12 (chat message queue file) was approved at
-  `fb04abf` and merged in PR #197. CHAT-11 (chat line and keystroke capture
-  wiring) was approved at `7a6170b` and merged in PR #196. CHAT-10 (chat keystroke capture component) was approved at `9ac6a21` and
-  merged in PR #195. CHAT-9 (console chat line renderer) was approved at
-  `3ac5fcf` and merged in PR #194.
+  sweep) was approved at `1f578c0` and merged in PR #223 (merge `412fad6`).
+  TPM-ROLE is closed: no stories remain. CHAT and TRANSITION-RULES were
+  waiting on it. ACTIVE-PLANNER and ESCALATION-RECONCILE still wait on their
+  triggers, WORK-INTAKE needs a design check, and LINEAR-SWITCH has low
+  urgency.
 - **Parked Epic:** TIDY, with TIDY-8 remaining. TIDY-7 (Claude helper
   files defer to the configured project state path) was approved at
   `4a8f9fc` and merged in PR #216, batched with TPM-9. TIDY-8 is a backend
@@ -1076,8 +1077,8 @@ bounces until the three-fix circuit breaker escalates.
 
 ### 13. CHAT - talk to the agents while the loop runs
 
-Fit: parked by the operator on 2026-10-20; TPM-ROLE goes first. Resume CHAT
-with CHAT-17 once TPM-ROLE closes. Nothing else blocks it: HARD-3 is merged
+Fit: active again after TPM-ROLE closed, by the operator direction of
+2026-10-20; CHAT-17 is in flight. Nothing else blocks it: HARD-3 is merged
 and RECOVERY is closed.
 
 Operator redesign (2026-10-20). Chat works like a side coding session the
@@ -1223,7 +1224,13 @@ dependencies; Windows (`msvcrt`) and POSIX.
   permissions. The prompt names the active role, the story, the
   `HANDOFF.md` path, and the role's log, and says the session may edit files
   and `HANDOFF.md` to do what the operator asks. Another provider raises
-  before launch. Not wired into the loop.
+  before launch. Not wired into the loop. Decided by the planner on
+  2026-10-20: module `llm_handoff/chat_side_session.py`,
+  `run_chat_session(...)` returning `ChatSessionResult(text, session_id,
+  exit_code, error, edited_paths)`; an edit counts only on a non-error tool
+  result or a non-failed Codex `file_change`; paths outside the repository
+  are dropped; no Codex output files, so a role's saved Codex session is
+  untouched.
 - CHAT-18 (was part of CHAT-4): Chat file changes are committed and audited.
   After a chat answer, the dispatcher records the files the CHAT-17 result
   names under `logs/dispatch/`, with their fingerprints, the time, and a
@@ -1488,7 +1495,8 @@ dispatched without its instructions.
   reference), `docs/TESTING.md` (a tpm scenario in the acceptance run),
   `docs/SUPERVISED_DISPATCH.md` if the repair role list changes,
   `CHANGELOG.md`. Each earlier story updates the docs its code touches; this
-  story checks the set reads as one.
+  story checks the set reads as one. Approved at `1f578c0`, merged in PR
+  #223. This closed the TPM-ROLE epic.
 
 ### 16. ESCALATION-RECONCILE - a stale user escalation gets one planner pass
 
@@ -1534,8 +1542,9 @@ normally with no second pass.
 
 ### 17. TRANSITION-RULES - per-producer legality in the validator
 
-Fit: after TPM-ROLE, because TRANS-2 names `tpm`; otherwise independent,
-and each story is small enough to fill a wait.
+Fit: unblocked; TPM-ROLE is closed, so TRANS-2's `tpm` dependency is met.
+Next in line after CHAT by fit; otherwise independent, and each story is
+small enough to fill a wait.
 
 The validator checks that `status` implies `next_agent` and that `finalizer`
 is reached only from the auditor with `close_type: epic`
