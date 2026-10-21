@@ -17,6 +17,7 @@ from typing import Callable, Mapping, TextIO
 from llm_handoff import chat_session
 from llm_handoff.agent_streams import StderrMode, _LiveAgentOutputMonitor
 from llm_handoff.agent_types import LogFn, _ProcessResult
+from llm_handoff.chat_takeover import ChatTakeover, takeover_requested
 from llm_handoff.config import VENDOR_API_KEY_ENV_NAMES, AgentConfig
 from llm_handoff.console_interrupt import (
     deferred_interrupts,
@@ -329,12 +330,17 @@ def _run_command_streaming(
     env: dict[str, str] | None = None,
     on_stdout: Callable[[str], None] | None = None,
     on_stderr: Callable[[str], None] | None = None,
+    stop_on_chat_takeover: bool = True,
 ) -> _ProcessResult:
     """Run ``command``, streaming its output, and kill it on a timeout.
 
     ``timeout_ms`` bounds the whole run. ``idle_timeout_ms``, when set, also
     kills the process once it has written nothing to stdout or stderr for
     that long, so a hung CLI is caught before the full timeout.
+
+    When ``stop_on_chat_takeover`` is True, a pending chat takeover request
+    kills the process tree and raises ``ChatTakeover``. A chat answer's own
+    launch passes False so it is never stopped by such a request.
     """
     resolved_command = _resolve_command_argv(command)
     # stdin is closed so an agent can never read the operator's console
@@ -392,6 +398,10 @@ def _run_command_streaming(
                 # on the main thread, so a run on a worker thread (the audit
                 # fan-out) stops here instead.
                 raise KeyboardInterrupt
+            if stop_on_chat_takeover and takeover_requested():
+                # A chat answer rewrote HANDOFF.md; the except block below
+                # kills the tree before the exception propagates.
+                raise ChatTakeover
             if _drain_stream_queue(
                 stream_queue,
                 stdout_parts=stdout_parts,

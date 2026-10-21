@@ -13,9 +13,12 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-26 (the
-  re-audit handoff write replaces `HANDOFF.md` atomically) in flight and
-  CHAT-19, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-24 (chat changes
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-27 (chat
+  can stop the running role when it rewrites `HANDOFF.md`) in flight and
+  CHAT-28, CHAT-20, CHAT-4, and CHAT-5 remaining. CHAT-26 (the re-audit
+  handoff write replaces `HANDOFF.md` atomically) was approved at `661dc5a`
+  and merged in PR #230. CHAT-19 was split into CHAT-27 and CHAT-28 on
+  2026-10-21 before it started. CHAT-24 (chat changes
   after an approved audit go back to the audit fan-out) was approved at
   `39d3c90` and merged in PR #229. CHAT-23 (the dispatcher
   commits chat changes after a non-implementer role) was approved at
@@ -1095,10 +1098,13 @@ CHAT-21 was approved at `210267b` and merged in PR #225; CHAT-22 was
 approved at `a2723e9` and merged in PR #226; CHAT-25 was approved at
 `e900bc5` and merged in PR #227; CHAT-23 was approved at `9c44ff0` and
 merged in PR #228; CHAT-24 was approved at `39d3c90` and merged in PR
-#229; CHAT-26 (follow-up from the CHAT-24 audit) is in flight; CHAT-19,
-CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
-closed. Decided by the planner on 2026-10-20: CHAT-18 was split into
-CHAT-21 through CHAT-24 because it exceeded one packet.
+#229; CHAT-26 (follow-up from the CHAT-24 audit) was approved at `661dc5a`
+and merged in PR #230; CHAT-19 was split into CHAT-27 and CHAT-28; CHAT-27
+is in flight; CHAT-28, CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else
+blocks it: HARD-3 is merged and RECOVERY is closed. Decided by the planner
+on 2026-10-20: CHAT-18 was split into CHAT-21 through CHAT-24 because it
+exceeded one packet. Decided by the planner on 2026-10-21: CHAT-19 was
+split into CHAT-27 and CHAT-28 for the same reason.
 
 Operator redesign (2026-10-20). Chat works like a side coding session the
 operator talks to while the loop runs: it answers right away, while the
@@ -1259,7 +1265,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   `logs/dispatch/chat-changes.json` (`CHAT_CHANGES_STATE_PATH`) via
   temp-file replace. `record_chat_changes` takes a CHAT-17 result (failed
   runs too), normalizes its edited paths, drops the `HANDOFF.md` path
-  (CHAT-19 owns it) and duplicates, writes nothing when none is left, and
+  (CHAT-28 owns it) and duplicates, writes nothing when none is left, and
   stores each path's fingerprint (file type, Git executable mode, and
   content or symlink target), the UTC time, and the SHA-256 of the
   message, never its text. Each entry carries a chained HMAC tag keyed by a
@@ -1384,24 +1390,49 @@ dependencies; Windows (`msvcrt`) and POSIX.
   resume confirmation discloses the record's chat paths (same filter) and
   their commit, and the operator's confirmation is what accepts them.
   Approved at `e900bc5` and merged in PR #227.
-- CHAT-19 (was part of CHAT-4): A chat rewrite of `HANDOFF.md` takes over the
-  run. When a chat answer changes `HANDOFF.md` while a role runs, the
-  dispatcher stops that role as an operator interrupt does, keeps the role's
-  partial file changes as carry-over, validates the chat's handoff, and
-  continues from it; an invalid handoff pauses as today. The role is stopped
-  before it can write its own handback, so the chat's handoff is not
-  overwritten. File changes without a `HANDOFF.md` change let the role keep
-  running. `docs/ARCHITECTURE.md` says chat may write `HANDOFF.md` this way.
-  Tested with a faked CHAT-17 result; the loop calls it once CHAT-20 wires
-  chat in.
+- CHAT-19 (was part of CHAT-4): Split into CHAT-27 and CHAT-28 on
+  2026-10-21 before it started.
+- CHAT-27 (was part of CHAT-19): Chat can stop the running role when it
+  rewrites `HANDOFF.md`. New `llm_handoff/chat_takeover.py` defines
+  `ChatTakeover(BaseException)` (so the fail-closed `except Exception`
+  handlers in the audit fan-out and evidence dispatch let it through, as
+  they do for `KeyboardInterrupt`), a thread-safe `ChatTakeoverController`
+  (`request(handoff_sha)`, `requested()`, `handoff_sha()`, `clear()`), the
+  process-wide `CONTROLLER` with the `request_takeover`,
+  `takeover_requested`, and `clear_takeover` wrappers,
+  `handoff_content_sha` (SHA-256 of the file's raw bytes, None for a
+  missing, non-regular, or unreadable path; never raises), and
+  `request_takeover_if_handoff_changed`, which requests a takeover with the
+  new SHA only when the handoff's content changed (a deleted or unreadable
+  handoff counts as changed). `_run_command_streaming` gains
+  `stop_on_chat_takeover: bool = True`; when set, its poll loop raises
+  `ChatTakeover` after the second-Ctrl+C check, and the existing
+  kill-on-exception block takes the process tree down first, so every role
+  provider and audit reviewer is stoppable. Both CHAT-17 chat launches pass
+  `stop_on_chat_takeover=False`. Nothing outside tests requests a takeover
+  and `llm_handoff/orchestrator.py` is unchanged; CHAT-28 wires it in.
+- CHAT-28 (was part of CHAT-19): The loop follows a chat rewrite of
+  `HANDOFF.md`. When a role dispatch raises `ChatTakeover`, or a takeover
+  is requested by the time the dispatch returns, the loop clears the
+  flag, keeps an implementer's partial file changes as carry-over (chat-
+  owned paths excluded), clears the role's in-flight record, skips the
+  role's dispatcher commit, gates, and handback validation, and validates
+  the chat's handoff before following it; an invalid handoff pauses as
+  today. The flag is also cleared before each dispatch starts, so a stale
+  request never stops the next role. An audit fan-out stopped this way
+  does not report `reviewer_wrote_handoff`. File changes without a
+  `HANDOFF.md` change let the role keep running. `docs/ARCHITECTURE.md`
+  says chat may write `HANDOFF.md` this way. Tested with a faked CHAT-17
+  result; the loop calls it once CHAT-20 wires chat in.
 - CHAT-20 (was part of CHAT-4): Messages are answered right away. Lands after
-  CHAT-19 and CHAT-21 through CHAT-25, so writable chat is never wired in
+  CHAT-21 through CHAT-28, so writable chat is never wired in
   without them. A
   non-blank chat submission goes to the CHAT-17 side session instead of the
   CHAT-12 queue, and the answer prints above the chat line while the role
   keeps running; messages typed while an answer runs wait in order, and
   follow-ups resume the same side session for the rest of the run. After
-  each answer the loop applies CHAT-21 through CHAT-24 and CHAT-19. New
+  each answer the loop applies CHAT-21 through CHAT-24, CHAT-27, and
+  CHAT-28. New
   submissions no
   longer write the CHAT-12 queue, and the CHAT-13 `Press Enter to continue`
   hold runs only when that file already holds messages (saved before this
@@ -1413,7 +1444,7 @@ dependencies; Windows (`msvcrt`) and POSIX.
   `@role <message>` finds the role's latest entry in the CHAT-15 dispatch
   record and resumes that session with the role's normal launch arguments,
   so the role that did the work answers and can fix it; the CHAT-21
-  through CHAT-24 and CHAT-19 rules apply to what it changes. `@role` for the running role, or a
+  through CHAT-24 and CHAT-28 rules apply to what it changes. `@role` for the running role, or a
   role with no recorded session, goes to the side session. Untargeted
   messages always go to the side session (the old CHAT-7 normalizer
   classification is dropped).
@@ -2088,6 +2119,12 @@ notes below; the remaining letters are unchanged.
     hierarchy (initiative, project, issue) with project-open and project-close
     gates. This repo has epic and story in `remaining_stories` plus this file;
     the TPM-ROLE epic scopes the picker to one epic for that reason.
+
+- From the CHAT-26 audit (medium, security reviewer): on Windows
+  `_write_handoff_durably` replaces `HANDOFF.md` with a temporary file that
+  takes the directory's inherited ACL, so an explicit DACL on the old
+  handoff is not kept. Fixing it means copying the security descriptor
+  before the replace and failing closed when it cannot be copied.
 
 ## Completed Scope Ledger
 
