@@ -4,6 +4,7 @@ import contextlib
 from dataclasses import dataclass, replace
 import errno
 from fnmatch import fnmatchcase
+from functools import partial
 from hashlib import sha1, sha256
 import inspect
 import json
@@ -40,6 +41,7 @@ from llm_handoff.audit_review import (
     security_reviewer_startup_error,
 )
 from llm_handoff import chat_session, console_interrupt
+from llm_handoff.chat_answers import ChatContext
 from llm_handoff.chat_changes import (
     chat_changes_path,
     chat_owned_paths as _recorded_chat_paths,
@@ -811,8 +813,34 @@ def _run_loop(
     # Linear mode: one planner lease-rebuild cycle per missing-handoff streak.
     # A cycle that reads non-empty handoff content clears it.
     tracker_lease_rebuild_used = False
+    # A followed chat takeover and the cycle it ended, applied at the loop top
+    # so every point that follows one ends its cycle the same way.
+    pending_chat_takeover: tuple[_ChatTakeoverOutcome, Cycle] | None = None
 
     while True:
+        if pending_chat_takeover is not None:
+            takeover, takeover_cycle = pending_chat_takeover
+            pending_chat_takeover = None
+            if takeover.leftovers_captured:
+                implementer_leftovers = takeover.leftovers
+            if takeover.exit_code is not None:
+                return takeover.exit_code
+            if takeover.story_baseline_known:
+                story_baseline = takeover.story_baseline
+            if takeover.kind == "followed":
+                previous_cycle = takeover_cycle
+                consecutive_failures = 0
+                if max_cycles is not None and cycle_number >= max_cycles:
+                    return 0
+                _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
+                _log(log_fn, "INFO", "")
+            elif takeover.kind == "protected":
+                previous_cycle = takeover_cycle
+                consecutive_failures = 0
+            elif takeover.kind == "retry":
+                previous_cycle = None
+            elif takeover.pending_planner_recovery is not None:
+                pending_planner_recovery = takeover.pending_planner_recovery
         # Every path back to the top of the loop has finished its cycle: the
         # dispatch, the dispatcher commit, validation, and the work-claim gate.
         # The cycle that wrote a handback record is finished, so the record
@@ -1582,8 +1610,14 @@ def _run_loop(
             )
             # A first Ctrl+C from here to the loop top lets this cycle finish.
             console_interrupt.set_active_role("finalizer")
-            chat_session.set_role("finalizer")
+            chat_session.set_role(
+                "finalizer",
+                context=_chat_context_for(
+                    config, "finalizer", handoff_content, log_fn
+                ),
+            )
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
+            chat_session.wait_for_answers(log_fn)
             # The finalizer returned, whatever its exit code or output: the
             # ledger and handoff are whatever it left, so its record names
             # nothing interrupted.
@@ -1691,6 +1725,7 @@ def _run_loop(
                     return 1
                 continue
 
+            chat_session.wait_for_answers(log_fn)
             role_chat_marker = _chat_marker_after_role(
                 _commit_chat_changes_after_role(
                     config=config,
@@ -1995,7 +2030,12 @@ def _run_loop(
             if decision.source != TPM_NOT_CONFIGURED_PLANNER_REPAIR_SOURCE:
                 tpm_planner_repair_ran = False
             console_interrupt.set_active_role(current_cycle.route)
-            chat_session.set_role(current_cycle.route)
+            chat_session.set_role(
+                current_cycle.route,
+                context=_chat_context_for(
+                    config, current_cycle.route, assignment_content, log_fn
+                ),
+            )
             if resumed_handback is not None:
                 # The interrupted dispatch already returned; its cycle resumes
                 # at the dispatcher commit as if the role had exited 0.
@@ -2010,6 +2050,9 @@ def _run_loop(
                 )
                 previous_agent = current_cycle.route
                 chat_took_over = False
+                # As before a dispatch: a request left from an earlier cycle
+                # is stale, so only one made from here on is followed below.
+                clear_takeover()
             else:
                 dispatch_instruction = (
                     forced_additional_instruction
@@ -2064,6 +2107,9 @@ def _run_loop(
                     pass
                 finally:
                     disarm_takeover()
+                # An answer still running when the role returned may yet
+                # rewrite the handoff and request a takeover.
+                chat_session.wait_for_answers(log_fn)
                 # A role stopped by a chat answer raised; one that returned
                 # before the poll saw the request still yields to the chat.
                 chat_took_over = dispatch_returned is None or takeover_requested()
@@ -2102,26 +2148,8 @@ def _run_loop(
                     stop_watch=stop_watch,
                     operator_prompt=operator_prompt,
                 )
-                if takeover.leftovers_captured:
-                    implementer_leftovers = takeover.leftovers
-                if takeover.exit_code is not None:
-                    return takeover.exit_code
-                if takeover.story_baseline_known:
-                    story_baseline = takeover.story_baseline
-                if takeover.kind == "followed":
-                    previous_cycle = current_cycle
-                    consecutive_failures = 0
-                    if max_cycles is not None and cycle_number >= max_cycles:
-                        return 0
-                    _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
-                    _log(log_fn, "INFO", "")
-                elif takeover.kind == "protected":
-                    previous_cycle = current_cycle
-                    consecutive_failures = 0
-                elif takeover.kind == "retry":
-                    previous_cycle = None
-                elif takeover.pending_planner_recovery is not None:
-                    pending_planner_recovery = takeover.pending_planner_recovery
+                # Applied at the loop top, as for a takeover found later.
+                pending_chat_takeover = (takeover, current_cycle)
                 continue
             # The planner returned, whatever its exit code: its handoff is
             # whatever it wrote, so its record names nothing interrupted.
@@ -2212,6 +2240,25 @@ def _run_loop(
                 _content_sha(handoff_content)
                 if resumed_handback is not None
                 else current_cycle.handoff_sha
+            )
+            # Each later chat-answer wait checks for a takeover an answer
+            # requested after the role returned, and follows it before the
+            # next commit, gate, or publish step.
+            late_chat_takeover = partial(
+                _late_chat_takeover,
+                config,
+                route=current_cycle.route,
+                role_label=previous_agent,
+                log=log_fn,
+                in_flight_state=in_flight_state,
+                pre_dispatch_state=pre_dispatch_state,
+                story_key=story_key,
+                protected_before=protected_before,
+                assignment_content=assignment_content,
+                prior_handoff_sha=prior_handoff_sha,
+                story_check_baseline=story_check_baseline,
+                stop_watch=stop_watch,
+                operator_prompt=operator_prompt,
             )
             # Only logs that a stop request was seen; the loop honors it at
             # the top, after this cycle's commit, validation, and gate.
@@ -2334,6 +2381,10 @@ def _run_loop(
 
             # After the planner-commit undo, so the chat commit is never reset
             # as a planner or tpm commit.
+            late_takeover = late_chat_takeover()
+            if late_takeover is not None:
+                pending_chat_takeover = (late_takeover, current_cycle)
+                continue
             role_chat_marker = _chat_marker_after_role(
                 _commit_chat_changes_after_role(
                     config=config,
@@ -2390,6 +2441,10 @@ def _run_loop(
                         return 0
                     continue
 
+            late_takeover = late_chat_takeover()
+            if late_takeover is not None:
+                pending_chat_takeover = (late_takeover, current_cycle)
+                continue
             commit_result = _commit_for_implementer(
                 config=config,
                 route=current_cycle.route,
@@ -2547,6 +2602,10 @@ def _run_loop(
                             config, log_fn, in_flight_state
                         ):
                             return 1
+                        late_takeover = late_chat_takeover()
+                        if late_takeover is not None:
+                            pending_chat_takeover = (late_takeover, current_cycle)
+                            continue
                         _run_work_claim_gate(
                             config=config,
                             route=current_cycle.route,
@@ -2690,6 +2749,10 @@ def _run_loop(
                 operator_prompt.planner_tried = False
             if not _refresh_in_flight_handback(config, log_fn, in_flight_state):
                 return 1
+            late_takeover = late_chat_takeover()
+            if late_takeover is not None:
+                pending_chat_takeover = (late_takeover, current_cycle)
+                continue
             if _run_work_claim_gate(
                 config=config,
                 route=current_cycle.route,
@@ -2748,6 +2811,10 @@ def _run_loop(
                     # missed until the next cycle. The console role stays:
                     # a first Ctrl+C still lets the publish finish.
                     chat_session.set_role(None)
+                    late_takeover = late_chat_takeover()
+                    if late_takeover is not None:
+                        pending_chat_takeover = (late_takeover, current_cycle)
+                        continue
                     if not _hold_for_chat_messages(
                         config, log_fn, operator_prompt, stop_watch
                     ):
@@ -2801,6 +2868,10 @@ def _run_loop(
                     # findings that are holding a pull request open. Chat
                     # capture stays off from the hold through the settle.
                     chat_session.set_role(None)
+                    late_takeover = late_chat_takeover()
+                    if late_takeover is not None:
+                        pending_chat_takeover = (late_takeover, current_cycle)
+                        continue
                     if not _hold_for_chat_messages(
                         config, log_fn, operator_prompt, stop_watch
                     ):
@@ -3050,6 +3121,58 @@ class _ChatTakeoverOutcome:
     pending_planner_recovery: PendingPlannerRecovery | None = None
 
 
+def _late_chat_takeover(
+    config: DispatchConfig,
+    *,
+    route: RouteName,
+    role_label: str,
+    log: LogFn,
+    in_flight_state: _InFlightRecordState,
+    pre_dispatch_state: PreDispatchState | None,
+    story_key: str | None,
+    protected_before: ProtectedFileSnapshot | None,
+    assignment_content: str,
+    prior_handoff_sha: str,
+    story_check_baseline: str,
+    stop_watch: _StopRequestWatch,
+    operator_prompt: _OperatorPromptState,
+) -> _ChatTakeoverOutcome | None:
+    """Wait for a running chat answer, then follow a takeover it requested.
+
+    The takeover window is armed only around the role dispatch, so an answer
+    that rewrites ``HANDOFF.md`` after the role returned leaves its request
+    pending. Each post-dispatch wait calls this before its next commit, gate,
+    or publish step, so the chat's handoff is followed instead of being
+    committed, gated, or published as the role's. Returns None when no
+    takeover is pending.
+
+    The planner-commit undo already ran, so it is not run again: a chat
+    commit made since must not be reset as a planner or tpm commit. The
+    handback record, when one is on disk, is deleted like a dispatch record.
+    """
+
+    chat_session.wait_for_answers(log)
+    if not takeover_requested():
+        return None
+    return _follow_chat_takeover(
+        config,
+        route=route,
+        role_label=role_label,
+        log=log,
+        record_written=in_flight_state.handback_on_disk,
+        pre_dispatch_state=pre_dispatch_state,
+        story_key=story_key,
+        planner_git_before=None,
+        protected_before=protected_before,
+        assignment_content=assignment_content,
+        prior_handoff_sha=prior_handoff_sha,
+        story_check_baseline=story_check_baseline,
+        stop_watch=stop_watch,
+        operator_prompt=operator_prompt,
+        role_returned=True,
+    )
+
+
 def _follow_chat_takeover(
     config: DispatchConfig,
     *,
@@ -3066,6 +3189,7 @@ def _follow_chat_takeover(
     story_check_baseline: str,
     stop_watch: _StopRequestWatch,
     operator_prompt: _OperatorPromptState,
+    role_returned: bool = False,
 ) -> _ChatTakeoverOutcome:
     """Wind down a role a chat answer stopped, then validate the chat's handoff.
 
@@ -3079,13 +3203,22 @@ def _follow_chat_takeover(
     pauses the dispatcher instead of having its handback followed.
     """
 
-    _log(
-        log,
-        "AGENT",
-        f"A chat answer rewrote HANDOFF.md while the {role_label} ran; the "
-        f"{role_label} was stopped and the dispatcher follows the chat's "
-        "handoff once it validates.",
-    )
+    if role_returned:
+        _log(
+            log,
+            "AGENT",
+            f"A chat answer rewrote HANDOFF.md after the {role_label} returned; "
+            f"the dispatcher drops the rest of the {role_label}'s cycle and "
+            "follows the chat's handoff once it validates.",
+        )
+    else:
+        _log(
+            log,
+            "AGENT",
+            f"A chat answer rewrote HANDOFF.md while the {role_label} ran; the "
+            f"{role_label} was stopped and the dispatcher follows the chat's "
+            "handoff once it validates.",
+        )
     # The request names the handoff bytes the chat answer wrote. Keep it
     # before clearing: a role that wrote HANDOFF.md again before the poll
     # stopped it must not have its handback followed as the chat's.
@@ -4735,6 +4868,28 @@ def _parse_frontmatter_or_none(handoff_content: str):
 def _handoff_story_id(handoff_content: str) -> str | None:
     frontmatter = _parse_frontmatter_or_none(handoff_content)
     return frontmatter.story_id if frontmatter is not None else None
+
+
+def _chat_context_for(
+    config: DispatchConfig,
+    route: str,
+    handoff_content: str | None,
+    log: LogFn,
+) -> ChatContext:
+    """Return the chat context for the role the loop is starting."""
+
+    agent_config = config.agents.get(cast(AgentRole, route))
+    return ChatContext(
+        role=route,
+        provider=agent_config.provider if agent_config is not None else "",
+        story_id=(
+            _handoff_story_id(handoff_content)
+            if handoff_content is not None
+            else None
+        ),
+        log_path=getattr(log, "log_file_path", None),
+        agent_config=agent_config,
+    )
 
 
 def _story_start_sha(
