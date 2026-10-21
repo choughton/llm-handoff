@@ -9721,6 +9721,7 @@ def _pause_at_dispatcher_pause(
             (lambda: stop_watch.requested(log)) if stop_watch is not None else None
         ),
         planner_tried=operator_prompt.planner_tried,
+        tpm_configured="tpm" in config.agents,
     )
     if isinstance(result, StopRequested):
         return stop_or("stop")

@@ -161,9 +161,9 @@ and under supervised dispatch, Ctrl+C stops at once; see
 [Stopping The Dispatcher](CONFIGURATION.md#stopping-the-dispatcher).
 
 When the loop pauses and you are at a terminal, an operator prompt lets you
-press Enter to send the planner back in, type `@backend`, `@frontend`, or
-`@auditor` with a message to dispatch that role directly, or type `retry` or
-`quit`. Editing `HANDOFF.md` by hand also resumes it.
+press Enter to send the planner back in, type `@backend`, `@frontend`,
+`@auditor`, or `@tpm` (when a tpm is configured) with a message to dispatch
+that role directly, or type `retry` or `quit`. Editing `HANDOFF.md` by hand also resumes it.
 
 For the same path with per-platform commands, see [QUICKSTART.md](QUICKSTART.md).
 For the slower explanation, see [WALKTHROUGH.md](WALKTHROUGH.md).

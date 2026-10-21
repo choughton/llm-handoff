@@ -208,7 +208,7 @@ it. Reasons that end with specific steps, such as a story branch or a publish
 merge to finish, keep them. The planner and role instructions always get the
 full reason.
 
-The prompt accepts five actions. Only the first two are printed; the rest
+The prompt accepts six actions. Only the first two are printed; the rest
 are listed here:
 
 - Enter: dispatch the planner with an instruction to resolve the pause with
@@ -217,6 +217,9 @@ are listed here:
 - `@backend`, `@frontend`, or `@auditor`, optionally followed by a message:
   dispatch that role directly on the current `HANDOFF.md`, bypassing the
   handoff's route. See "Role targeting" below.
+- `@tpm`, optionally followed by a message: dispatch the tpm the same way.
+  It works only when `agents.tpm` is configured; otherwise it is refused and
+  the prompt keeps waiting.
 - `retry`: re-run the cycle. On a `user` route this re-reads `HANDOFF.md`,
   which still routes to `user`, so the dispatcher pauses again.
 - `quit`: stop the dispatcher with exit code 0.
@@ -256,11 +259,15 @@ scope and to write its normal handback. When `audit.reviewers` includes
 `security`, `@auditor` runs the read-only audit fan-out instead, so its
 instruction keeps the operator's message but tells the reviewer not to edit
 `HANDOFF.md` and to return only the structured JSON the review requests.
+`@tpm` works the same way as `@backend` and `@frontend`, but only when
+`agents.tpm` is configured. Without it, `@tpm` is refused with a message that
+`agents.tpm` is not configured, so the planner picks stories, and points to
+`@planner <message>`; the prompt keeps waiting.
 `@planner <message>` is the same as
 typing the message as planner guidance, and `@planner` alone is the same as
 pressing Enter. Any other target, such as `@user`, `@finalizer`, or
-`@validator`, is rejected with a message that lists the accepted targets, and
-the prompt keeps waiting.
+`@validator`, is rejected with a message that lists the accepted targets
+(including `@tpm` when a tpm is configured), and the prompt keeps waiting.
 
 A targeted dispatch skips the stale-route check, so it runs even when the
 same route already ran on an unchanged handoff. Everything else applies as

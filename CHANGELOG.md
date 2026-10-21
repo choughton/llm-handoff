@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Operator prompt `@tpm <message>` (TPM-11). With `agents.tpm` configured, `@tpm` at a
+  pause prompt dispatches the tpm directly on the current `HANDOFF.md`, like `@backend`,
+  `@frontend`, and `@auditor`, with the operator's message as `Operator instruction: ...`.
+  Without `agents.tpm`, `@tpm` is refused with a message that the planner picks stories and
+  a pointer to `@planner <message>`, and the prompt keeps waiting. When a tpm is
+  configured, the unknown-target message also lists `@tpm`.
 - Routing to a configured `tpm` (TPM-10). With `agents.tpm`, a `next_agent: tpm` route now
   launches the tpm instead of pausing. The audit fan-out routes a story approval to `tpm`,
   and the router accepts `verified_pass` with `next_agent: tpm`; an epic close still goes

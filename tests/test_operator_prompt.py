@@ -23,6 +23,9 @@ from llm_handoff.operator_prompt import (
     REVIEW_CHOICES,
     REVIEW_PROMPT_HELP_LINES,
     ROLE_TARGET_INVALID,
+    ROLE_TARGET_INVALID_WITH_TPM,
+    TARGETABLE_ROLES,
+    TPM_TARGET_NOT_CONFIGURED,
     HandoffChanged,
     OperatorAction,
     OperatorInputReader,
@@ -109,6 +112,55 @@ def test_unknown_role_targets_are_invalid(line: str) -> None:
     assert action == OperatorAction(kind="invalid", text=ROLE_TARGET_INVALID)
     for target in ("@backend", "@frontend", "@auditor", "@planner"):
         assert target in ROLE_TARGET_INVALID
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("@tpm", OperatorAction(kind="role", role="tpm", text=None)),
+        ("@TPM", OperatorAction(kind="role", role="tpm", text=None)),
+        (
+            "@tpm pick the next story",
+            OperatorAction(kind="role", role="tpm", text="pick the next story"),
+        ),
+        ("  @Tpm   \n", OperatorAction(kind="role", role="tpm", text=None)),
+    ],
+)
+def test_tpm_target_parses_when_tpm_is_configured(
+    line: str, expected: OperatorAction
+) -> None:
+    assert parse_operator_input(line, tpm_configured=True) == expected
+
+
+@pytest.mark.parametrize("line", ["@tpm", "@TPM", "@tpm pick the next story"])
+@pytest.mark.parametrize("explicit", [True, False])
+def test_tpm_target_is_refused_when_tpm_is_not_configured(
+    line: str, explicit: bool
+) -> None:
+    action = (
+        parse_operator_input(line, tpm_configured=False)
+        if explicit
+        else parse_operator_input(line)
+    )
+    assert action == OperatorAction(kind="invalid", text=TPM_TARGET_NOT_CONFIGURED)
+    assert "agents.tpm is not configured" in TPM_TARGET_NOT_CONFIGURED
+    assert "planner picks stories" in TPM_TARGET_NOT_CONFIGURED
+    assert "@planner <message>" in TPM_TARGET_NOT_CONFIGURED
+
+
+def test_targetable_roles_do_not_include_tpm() -> None:
+    assert TARGETABLE_ROLES == frozenset({"backend", "frontend", "auditor"})
+
+
+@pytest.mark.parametrize(
+    "line", ["@user x", "@finalizer", "@validator check", "@foo bar", "@"]
+)
+def test_unknown_role_targets_name_tpm_when_tpm_is_configured(line: str) -> None:
+    action = parse_operator_input(line, tpm_configured=True)
+    assert action == OperatorAction(kind="invalid", text=ROLE_TARGET_INVALID_WITH_TPM)
+    for target in ("@tpm", "@backend", "@frontend", "@auditor", "@planner"):
+        assert target in ROLE_TARGET_INVALID_WITH_TPM
+    assert "@tpm" not in ROLE_TARGET_INVALID
 
 
 def test_prompt_is_one_sentence_offering_the_planner() -> None:
@@ -478,6 +530,44 @@ def test_wait_logs_and_skips_invalid_actions(tmp_path: Path) -> None:
 
     assert result == OperatorAction(kind="quit")
     assert ("PAUSE", ROLE_TARGET_INVALID) in logs
+
+
+def test_wait_refuses_tpm_target_without_tpm_and_keeps_waiting(
+    tmp_path: Path,
+) -> None:
+    path = _handoff(tmp_path)
+    logs, log = _logs()
+
+    result = wait_for_operator_or_handoff_change(
+        OperatorInputReader(io.StringIO("@tpm x\n@backend fix it\n")),
+        path,
+        content_sha(USER_HANDOFF),
+        0.01,
+        log,
+        tpm_configured=False,
+    )
+
+    assert result == OperatorAction(kind="role", role="backend", text="fix it")
+    assert ("PAUSE", TPM_TARGET_NOT_CONFIGURED) in logs
+
+
+def test_wait_returns_tpm_target_when_tpm_is_configured(tmp_path: Path) -> None:
+    path = _handoff(tmp_path)
+    logs, log = _logs()
+
+    result = wait_for_operator_or_handoff_change(
+        OperatorInputReader(io.StringIO("@foo\n@tpm pick the next story\n")),
+        path,
+        content_sha(USER_HANDOFF),
+        0.01,
+        log,
+        tpm_configured=True,
+    )
+
+    assert result == OperatorAction(
+        kind="role", role="tpm", text="pick the next story"
+    )
+    assert ("PAUSE", ROLE_TARGET_INVALID_WITH_TPM) in logs
 
 
 def test_wait_keeps_polling_the_file_after_eof(tmp_path: Path) -> None:

@@ -36,6 +36,18 @@ ROLE_TARGET_INVALID = (
     "optional message to dispatch that role, or @planner <message> to send the "
     "planner guidance."
 )
+# `@tpm` is a target only when `agents.tpm` is configured; the parser is told
+# so with `tpm_configured`, and these messages cover the two cases.
+TPM_TARGET_NOT_CONFIGURED = (
+    "@tpm is not available: agents.tpm is not configured in the dispatch "
+    "config, so the planner picks stories. Use @planner <message> to send the "
+    "planner guidance."
+)
+ROLE_TARGET_INVALID_WITH_TPM = (
+    "Unknown @<role> target. Use @backend, @frontend, @auditor, or @tpm with "
+    "an optional message to dispatch that role, or @planner <message> to send "
+    "the planner guidance."
+)
 # The one line shown at every operator prompt. `retry`, `quit`, and
 # `@<role>` still work but are documented rather than printed, so a new
 # operator sees only the action that fits most pauses.
@@ -68,7 +80,15 @@ class StopRequested:
     """A stop request arrived (``llm-handoff stop``) while the prompt waited."""
 
 
-def parse_operator_input(line: str) -> OperatorAction:
+def parse_operator_input(
+    line: str, *, tpm_configured: bool = False
+) -> OperatorAction:
+    """Parse one operator line.
+
+    ``tpm_configured`` makes ``@tpm`` a role target; without it ``@tpm`` is
+    refused with ``TPM_TARGET_NOT_CONFIGURED``.
+    """
+
     stripped = line.strip()
     if not stripped:
         return OperatorAction(kind="planner", text=None)
@@ -78,11 +98,11 @@ def parse_operator_input(line: str) -> OperatorAction:
     if lowered == "quit":
         return OperatorAction(kind="quit")
     if stripped.startswith("@"):
-        return _parse_role_target(stripped)
+        return _parse_role_target(stripped, tpm_configured=tpm_configured)
     return OperatorAction(kind="planner", text=stripped)
 
 
-def _parse_role_target(stripped: str) -> OperatorAction:
+def _parse_role_target(stripped: str, *, tpm_configured: bool) -> OperatorAction:
     """Parse `@<role> <message>`; the role name ends at the first whitespace."""
 
     match = _ROLE_TARGET_RE.fullmatch(stripped)
@@ -92,7 +112,14 @@ def _parse_role_target(stripped: str) -> OperatorAction:
         return OperatorAction(kind="role", role=name, text=message or None)
     if name == "planner":
         return OperatorAction(kind="planner", text=message or None)
-    return OperatorAction(kind="invalid", text=ROLE_TARGET_INVALID)
+    if name == "tpm":
+        if tpm_configured:
+            return OperatorAction(kind="role", role="tpm", text=message or None)
+        return OperatorAction(kind="invalid", text=TPM_TARGET_NOT_CONFIGURED)
+    return OperatorAction(
+        kind="invalid",
+        text=ROLE_TARGET_INVALID_WITH_TPM if tpm_configured else ROLE_TARGET_INVALID,
+    )
 
 
 _EOF = object()
@@ -464,11 +491,13 @@ def wait_for_operator_or_handoff_change(
     hash_content: Callable[[str], str] = content_sha,
     stop_requested: Callable[[], bool] | None = None,
     planner_tried: bool = False,
+    tpm_configured: bool = False,
 ) -> HandoffChanged | StopRequested | OperatorAction:
     """Wait for an operator action, a HANDOFF.md change, or a stop request.
 
     ``planner_tried`` adds the edit-HANDOFF.md line under the prompt, for a
-    pause the planner has already tried to resolve.
+    pause the planner has already tried to resolve. ``tpm_configured`` is
+    passed to ``parse_operator_input`` and makes ``@tpm`` a role target.
 
     Never returns an ``invalid`` action: those are logged and the wait goes on.
     After EOF on the operator stream it keeps polling the handoff file only.
@@ -500,7 +529,7 @@ def wait_for_operator_or_handoff_change(
             time.sleep(poll_interval_seconds)
 
         if line is not None:
-            action = parse_operator_input(line)
+            action = parse_operator_input(line, tpm_configured=tpm_configured)
             if action.kind == "invalid":
                 log("PAUSE", action.text or ROLE_TARGET_INVALID)
                 continue
