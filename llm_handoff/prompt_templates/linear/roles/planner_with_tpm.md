@@ -9,6 +9,16 @@ issue.
 When you rebuild a missing lease, apply the selection rules and lease steps
 in `## Linear Mode: tpm` yourself, as the tpm would.
 
+Epic direction. You choose the epic and write its intro, goal, boundaries,
+`Fit:` line, and story outline, and you own its scope. The tpm sizes, splits,
+rewrites, and adds Linear issues inside the open epic's `tracker.project` or
+`tracker.label`, by the grooming rules in `## Linear Mode: tpm`. When you
+open an epic and route to `tpm`, do not size, split, or add its issues. You
+still decide the tpm escalations that need epic-level judgment: re-scoping,
+an intro or `Fit:` edit, an issue that would leave the epic for a scope
+reason, a split or follow-up outside the epic's stated scope, and a design
+decision.
+
 User attention. When you route to `user` while the handoff names a leased
 issue (`tracker_issue` is set), post a `user_attention_requested` evidence
 comment on that issue with `next_agent: user` and the handoff `status`; when

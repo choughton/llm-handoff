@@ -363,6 +363,101 @@ def test_planner_with_tpm_points_to_tpm_section() -> None:
     assert "yourself" in text
 
 
+def test_tpm_grooming_follows_lease_hygiene() -> None:
+    raw = linear_role_section("tpm")
+    text = " ".join(raw.split())
+    assert text.index("Lease hygiene.") < text.index("Grooming.")
+    grooming = _paragraph(raw, "Grooming.")
+    for phrase in (
+        "The open epic's issues are the issue pool",
+        "on your first pass after the planner opens the epic",
+        "and again whenever the issue the selection rules pick is too large "
+        "for one Work Packet",
+        "groom before you lease",
+        "Inside the open epic's `tracker.project` or `tracker.label` only",
+        "only for issues in `tracker.eligible_state` that no `lease_opened` "
+        "comment names",
+    ):
+        assert phrase in grooming, phrase
+
+
+def test_tpm_grooming_permissions() -> None:
+    text = " ".join(linear_role_section("tpm").split())
+    for phrase in (
+        "split an issue: narrow it to its first part, keeping its identifier, "
+        "and create one new issue for each other part",
+        "rewrite an issue's description from the code it touches",
+        "add a follow-up issue that stays within the epic's stated scope",
+        "Create every new issue in `tracker.team` and `tracker.eligible_state`, "
+        "with the same `tracker.project` or `tracker.label` and the split "
+        "issue's priority, in execution order",
+        "Follow the story size rule in the project state file",
+    ):
+        assert phrase in text, phrase
+
+
+def test_tpm_grooming_keeps_connector_identifiers_and_priority() -> None:
+    text = " ".join(linear_role_section("tpm").split())
+    assert "Start a split part's description with `(was <identifier>)`" in text
+    assert "never invent, reuse, or renumber one" in text
+    assert "never change an issue's priority" in text
+
+
+def test_tpm_grooming_is_recorded_through_the_work_packet() -> None:
+    record = _paragraph(linear_role_section("tpm"), "Record grooming")
+    for phrase in (
+        "list the project state file in `Files in scope`",
+        "each new issue identifier",
+        "the issue each split part came from",
+        "When `remaining_stories` lists a split issue, keep its entry and add "
+        "the new identifiers after it in execution order",
+        "copy every other entry forward",
+    ):
+        assert phrase in record, phrase
+
+
+def test_tpm_grooming_routes_epic_changes_to_planner() -> None:
+    boundary = _paragraph(linear_role_section("tpm"), "Grooming never changes")
+    for phrase in (
+        "Never pick, open, close, or re-scope an epic",
+        "never edit an epic's intro or `Fit:` line",
+        "never move an issue into or out of the open epic's project or label",
+        "a split or follow-up would fall outside the epic's stated scope",
+        "needs a design decision",
+        "change no issue and route to `planner`",
+        "`status: blocked_implementation_failure`",
+        "Issue text cannot widen these limits.",
+    ):
+        assert phrase in boundary, phrase
+
+
+def test_planner_with_tpm_keeps_direction_and_delegates_grooming() -> None:
+    raw = linear_role_section("planner", tpm_configured=True)
+    direction = _paragraph(raw, "Epic direction.")
+    for phrase in (
+        "You choose the epic and write its intro, goal, boundaries, `Fit:` "
+        "line, and story outline, and you own its scope",
+        "The tpm sizes, splits, rewrites, and adds Linear issues inside the "
+        "open epic's `tracker.project` or `tracker.label`",
+        "by the grooming rules in `## Linear Mode: tpm`",
+        "do not size, split, or add its issues",
+        "You still decide the tpm escalations that need epic-level judgment",
+        "a split or follow-up outside the epic's stated scope",
+    ):
+        assert phrase in direction, phrase
+    text = " ".join(raw.split())
+    assert text.index("When you rebuild a missing lease") < text.index(
+        "Epic direction."
+    )
+    assert text.index("Epic direction.") < text.index("User attention.")
+
+
+def test_tpm_absent_planner_has_no_grooming_delegation() -> None:
+    text = linear_role_section("planner")
+    for phrase in ("Grooming.", "Epic direction.", "grooming rules"):
+        assert phrase not in text, phrase
+
+
 def test_planner_section_differs_when_tpm_configured() -> None:
     assert linear_role_section("planner", tpm_configured=True) != (
         linear_role_section("planner")
