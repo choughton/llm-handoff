@@ -1103,6 +1103,92 @@ def test_antigravity_paths_duplicates_and_escape_dropped(monkeypatch, tmp_path) 
     assert result.edited_paths == ("a.py", "no_index.py")
 
 
+# Live agy 1.4.2 capture (``agy -p ... --agent backend --output-format
+# stream-json --print-timeout 90s --mode accept-edits``, 2026-10-21) of one
+# ``write_to_file`` step, three ``replace_file_content`` steps, and one failed
+# ``replace_file_content`` step. The lines are verbatim except that the
+# capture's temporary directory is replaced by ``{root}``.
+AGY_142_EDIT_CAPTURE: tuple[str, ...] = (
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"write_to_file","tool_info":{"name":"write_to_file","parameters":{"TargetFile":"{root}\\created.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":2,"state":"DONE","step_type":"tool","tool_name":"write_to_file","duration_seconds":0.9608998,"tool_info":{"name":"write_to_file","parameters":{"TargetFile":"{root}\\created.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":4,"state":"ACTIVE","step_type":"tool","tool_name":"replace_file_content","tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"{root}\\sample.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":4,"state":"DONE","step_type":"tool","tool_name":"replace_file_content","duration_seconds":1.0240573,"tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"{root}\\sample.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":6,"state":"ACTIVE","step_type":"tool","tool_name":"replace_file_content","tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"{root}\\sample.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":6,"state":"DONE","step_type":"tool","tool_name":"replace_file_content","duration_seconds":1.1206883,"tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"{root}\\sample.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":8,"state":"ACTIVE","step_type":"tool","tool_name":"replace_file_content","tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"{root}\\sample.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":8,"state":"DONE","step_type":"tool","tool_name":"replace_file_content","duration_seconds":1.932653,"tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"{root}\\sample.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":10,"state":"ACTIVE","step_type":"tool","tool_name":"replace_file_content","tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"{root}\\sample.txt"}}}}',
+    r'{"event":"step_update","step_update":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","step_index":10,"state":"ERROR","step_type":"tool","tool_name":"replace_file_content","duration_seconds":1.2514718,"tool_info":{"name":"replace_file_content","parameters":{"TargetFile":"{root}\\sample.txt"},"error":{"type":"TOOL_ERROR","message":"Could not successfully apply any edits. Please review the file and try smaller edits that you are more confident about.: chunk 0: target content not found in file"}}}}',
+    r'{"event":"result","result":{"conversation_id":"a9d52ef1-f742-47bc-a4cc-6b2305f0611a","status":"SUCCESS","response":"done\n","duration_seconds":43.9724056,"num_turns":1,"usage":{"input_tokens":20184,"output_tokens":1155,"thinking_tokens":553,"cache_read_tokens":34795,"total_tokens":21339}}}',
+)
+
+
+def _agy_142_capture(root: Path, lines: tuple[str, ...] = AGY_142_EDIT_CAPTURE) -> list[str]:
+    """Return capture lines with ``{root}`` set to ``root`` as a JSON string body."""
+
+    escaped_root = json.dumps(str(root))[1:-1]
+    return [line.replace("{root}", escaped_root) + "\n" for line in lines]
+
+
+def test_antigravity_live_142_capture_records_done_edits_in_order(
+    monkeypatch, tmp_path
+) -> None:
+    lines = _agy_142_capture(tmp_path)
+    # The capture parses as the documented contract before the tracker sees it.
+    events = [json.loads(line) for line in lines]
+    done = [e["step_update"] for e in events[:-1] if e["step_update"]["state"] == "DONE"]
+    assert [step["tool_name"] for step in done] == [
+        "write_to_file",
+        "replace_file_content",
+        "replace_file_content",
+        "replace_file_content",
+    ]
+    assert all("error" not in step["tool_info"] for step in done)
+    failed = events[-2]["step_update"]
+    assert failed["state"] == "ERROR"
+    assert failed["tool_info"]["error"]["type"] == "TOOL_ERROR"
+
+    _install(monkeypatch, _FakeRun(lines))
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 0
+    assert result.error is None
+    assert result.text == "done"
+    assert result.session_id == "a9d52ef1-f742-47bc-a4cc-6b2305f0611a"
+    assert result.edited_paths == ("created.txt", "sample.txt")
+
+
+def test_antigravity_live_142_capture_chunked_stream(monkeypatch, tmp_path) -> None:
+    _install(monkeypatch, _FakeRun(_chunks(_agy_142_capture(tmp_path), 53)))
+    result = _run("antigravity", tmp_path)
+    assert result.edited_paths == ("created.txt", "sample.txt")
+
+
+def test_antigravity_live_142_capture_error_only_file_not_counted(
+    monkeypatch, tmp_path
+) -> None:
+    # The step 10 ACTIVE + ERROR pair names a file no successful step touched.
+    lines = list(AGY_142_EDIT_CAPTURE)
+    for index in (8, 9):
+        assert '"step_index":10' in lines[index]
+        lines[index] = lines[index].replace(r"{root}\\sample.txt", r"{root}\\rejected.txt")
+    _install(monkeypatch, _FakeRun(_agy_142_capture(tmp_path, tuple(lines))))
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 0
+    assert result.edited_paths == ("created.txt", "sample.txt")
+
+
+def test_antigravity_live_142_capture_error_step_alone_records_nothing(
+    monkeypatch, tmp_path
+) -> None:
+    # Only the failed step 10 pair and the result: no edit is recorded.
+    lines = AGY_142_EDIT_CAPTURE[8:]
+    _install(monkeypatch, _FakeRun(_agy_142_capture(tmp_path, lines)))
+    result = _run("antigravity", tmp_path)
+    assert result.exit_code == 0
+    assert result.text == "done"
+    assert result.edited_paths == ()
+
+
 def test_antigravity_edits_before_failure_are_kept(monkeypatch, tmp_path) -> None:
     _install(
         monkeypatch,

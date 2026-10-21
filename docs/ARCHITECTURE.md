@@ -452,13 +452,20 @@ whose step reaches `state: "DONE"` with no `tool_info.error`; the path is the
 step's `tool_info.parameters.TargetFile`, which may arrive on an earlier event
 of the same `step_index`. A step that ends in `ERROR` or never reaches `DONE`
 does not count, and paths outside the repository are dropped. Edits that
-finished before a later failure still count. The envelope, step states, and
-`tool_info.parameters` layout come from a live `agy` 1.4.2 `run_command`
-capture; `TargetFile` is the argument name the `agy` binary's schema
-declares for those edit tools. No live `agy` edit step has been captured, so
-that path field is an unverified assumption; an `agy` edit that reports
-its path some other way, or a change made through a shell command, is not
-recorded as a chat change and stays with the role.
+finished before a later failure still count.
+
+This contract was verified against a live `agy` 1.4.2 stream-json capture of
+`write_to_file` and `replace_file_content` steps, which
+`tests/test_chat_side_session.py` replays. Each edit step names its file in
+`tool_info.parameters.TargetFile` as an absolute path and moves from
+`state: "ACTIVE"` to `state: "DONE"` with no `tool_info.error` on success,
+or to `state: "ERROR"` with `tool_info.error` (`type: "TOOL_ERROR"`) on
+failure. `agy` 1.4.2 did multi-chunk replacement through
+`replace_file_content`; `multi_replace_file_content` was not seen live and
+stays in the edit tool list for compatibility with agent files that list it.
+A change made through a shell command, or by an `agy` version that reports
+edits some other way, is not recorded as a chat change and stays with the
+role.
 
 ## Audit Fan-Out
 

@@ -19,7 +19,13 @@ belong in commits, handoffs, and pull requests.
   after CHAT closes, ahead of TRANSITION-RULES.
 - **Active Epic:** CHAT, by the operator direction above, with CHAT-5
   (chat on agy) implemented by backend and awaiting audit; it is the last
-  assigned story. CHAT-35 (a role's handback written during a chat answer is
+  assigned story. Its `step_update` edit attribution
+  (`tool_info.parameters.TargetFile`, `state: "ACTIVE"` to `"DONE"` on
+  success, `state: "ERROR"` with `tool_info.error` on failure) was verified
+  against a live `agy` 1.4.2 capture of `write_to_file` and
+  `replace_file_content` (2026-10-21), now replayed in tests;
+  `multi_replace_file_content` stays in the edit tool list for compatibility
+  with agent files that list it. CHAT-35 (a role's handback written during a chat answer is
   not taken for a chat rewrite; operator, 2026-10-21) was accepted at
   `04ec10b` and merged in PR #241. CHAT-34 (the loop supplies finished role sessions to `@role`
   chat) was implemented at `fb8d40f` and merged in PR #238. CHAT-33 (the chat answer worker routes

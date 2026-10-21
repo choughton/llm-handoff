@@ -24,13 +24,16 @@ The result names the files the session's own edit events reported:
   that step reaches ``state: "DONE"`` with no ``tool_info.error``. The path
   may arrive on an earlier event of the same ``step_index``. A step that
   ends in ``ERROR`` (a refused or failed edit), or never reaches ``DONE``,
-  does not count. Basis: the ``step_update`` envelope, ``step_index``,
-  ``state`` values, and ``tool_info.parameters`` keyed by the tool's argument
-  names come from a live agy 1.4.2 ``run_command`` capture (see
-  ``tests/test_antigravity_provider.py``); the three edit tool names are the
-  ones the shipped agy agent files grant; and ``TargetFile`` is the argument
-  name the agy binary's schema for those tools declares (``json:"TargetFile"``,
-  "Must be an absolute path"). A live edit step has not been captured.
+  does not count. Basis: a live agy 1.4.2 stream-json capture of
+  ``write_to_file`` and ``replace_file_content`` steps (replayed in
+  ``tests/test_chat_side_session.py``). Each edit step emits
+  ``tool_info.parameters.TargetFile`` as an absolute path and moves from
+  ``state: "ACTIVE"`` to ``state: "DONE"`` with no ``tool_info.error`` on
+  success, or to ``state: "ERROR"`` with ``tool_info.error`` (``type:
+  "TOOL_ERROR"``) on failure. agy 1.4.2 did multi-chunk replacement through
+  ``replace_file_content``; ``multi_replace_file_content`` was not seen live
+  and stays in ``ANTIGRAVITY_EDIT_TOOLS`` for compatibility with agent files
+  that list it.
 
 Codex launches pass no ``--output-schema`` or ``--output-last-message`` and
 this module never reads or writes anything under ``logs/dispatch/codex*/``,
@@ -84,7 +87,9 @@ from llm_handoff.redaction import redact_stderr_summary
 SUPPORTED_CHAT_PROVIDERS: tuple[str, ...] = ("claude", "codex", "antigravity")
 
 # agy edit tools (the write tools the shipped agy agent files grant) and the
-# tool argument that names the edited file.
+# tool argument that names the edited file. write_to_file and
+# replace_file_content were verified against a live agy 1.4.2 capture;
+# multi_replace_file_content is kept for agent files that list it.
 ANTIGRAVITY_EDIT_TOOLS: frozenset[str] = frozenset(
     {"write_to_file", "replace_file_content", "multi_replace_file_content"}
 )
