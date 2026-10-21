@@ -2417,8 +2417,13 @@ always starts a fresh session. `doctor` reports
 Without `agents.tpm`, a handoff with `next_agent: tpm` gets one planner repair
 cycle that asks the planner to route to planner or an implementer; if the
 repaired handoff still routes to tpm, the dispatcher pauses. With
-`agents.tpm`, routing to the tpm is not wired yet, so such a handoff still
-pauses. The validator rejects a `producer: tpm` handoff that routes to
+`agents.tpm`, the dispatcher launches the tpm on a `next_agent: tpm` route.
+A story approval (`verified_pass` that is not an epic close) goes to the tpm,
+which assigns the next story. An epic close still goes to the finalizer and
+then the planner, and the planner opens the next epic and routes to the tpm.
+A planner handoff to the tpm, and a tpm escalation to the planner, need no
+`## Work Packet`. In dispatcher commit mode, a tpm commit of the handoff is
+undone like a planner's. The validator rejects a `producer: tpm` handoff that routes to
 `finalizer` or `validator`, that uses status `ready_for_review`,
 `verified_pass`, or `verified_fail`, or that sets `close_type: epic`.
 The shipped tpm helper files are `.codex/skills/llm-handoff-tpm/SKILL.md`

@@ -1674,6 +1674,127 @@ def test_fan_out_passes_and_attaches_sub_threshold_notes(
     assert "## Security Findings" not in written
 
 
+def _agents_with_tpm() -> dict[str, Any]:
+    return {
+        **config_module._default_agent_configs(),
+        "tpm": config_module.AgentConfig(
+            provider="codex", skill_name="llm-handoff-tpm"
+        ),
+    }
+
+
+def test_fan_out_story_approval_routes_to_configured_tpm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base, head, handoff = _fan_out_repo(tmp_path)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(_security_payload())
+        ),
+    )
+
+    result, log = _run_fan_out(
+        _fan_out_config(repo, agents=_agents_with_tpm()),
+        handoff,
+        quality_stdout=json.dumps(
+            _quality_payload(next_agent="planner", close_type="story")
+        ),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "tpm"
+    assert frontmatter.status == "verified_pass"
+    assert frontmatter.close_type == "story"
+    assert frontmatter.scope_sha == head
+    assert route(written).route == "tpm"
+    # The log names the route written to the handoff, not the reviewer's
+    # planner value.
+    assert "Audit fan-out PASSED: routing to tpm with status" in log.text()
+    assert "routing to planner" not in log.text()
+
+
+def _render_approval(tmp_path: Path, *, close_type: str, tpm_configured: bool) -> str:
+    next_agent = "finalizer" if close_type == "epic" else "planner"
+    quality = audit_review.parse_quality_verdict(
+        json.dumps(_quality_payload(next_agent=next_agent, close_type=close_type))
+    )
+    runs = {
+        "quality": _run_with("quality", quality),
+        "security": _run_with("security", ReviewVerdict(verdict="pass")),
+    }
+    decision = audit_review.merge_review_verdicts(runs, block_severity="high")
+    assert decision.blocked is False
+    return audit_review.render_audit_handoff(
+        frontmatter=parse_handoff_frontmatter_text(_backend_handoff("b" * 40)),
+        scope=_scope(tmp_path),
+        runs=runs,
+        quality=quality,
+        decision=decision,
+        implementer_role="backend",
+        block_severity="high",
+        tpm_configured=tpm_configured,
+    )
+
+
+@pytest.mark.parametrize(
+    ("close_type", "tpm_configured", "expected"),
+    [
+        ("story", True, "tpm"),
+        ("story", False, "planner"),
+        ("epic", True, "finalizer"),
+        ("epic", False, "finalizer"),
+    ],
+)
+def test_render_audit_handoff_routes_approval_by_tpm_config(
+    tmp_path: Path,
+    close_type: str,
+    tpm_configured: bool,
+    expected: str,
+) -> None:
+    written = _render_approval(
+        tmp_path, close_type=close_type, tpm_configured=tpm_configured
+    )
+
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == expected
+    assert frontmatter.status == "verified_pass"
+    assert frontmatter.close_type == close_type
+    next_step = written.split("## Next Step", 1)[1]
+    assert f"- **{expected}:**" in next_step
+
+
+def test_render_audit_handoff_defaults_story_approval_to_planner(
+    tmp_path: Path,
+) -> None:
+    quality = audit_review.parse_quality_verdict(json.dumps(_quality_payload()))
+    runs = {
+        "quality": _run_with("quality", quality),
+        "security": _run_with("security", ReviewVerdict(verdict="pass")),
+    }
+
+    written = audit_review.render_audit_handoff(
+        frontmatter=parse_handoff_frontmatter_text(_backend_handoff("b" * 40)),
+        scope=_scope(tmp_path),
+        runs=runs,
+        quality=quality,
+        decision=audit_review.merge_review_verdicts(runs, block_severity="high"),
+        implementer_role="backend",
+        block_severity="high",
+    )
+
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.next_agent == "planner"
+
+
 def test_fan_out_security_fail_below_block_severity_passes_with_notes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1721,7 +1842,7 @@ def test_fan_out_security_fail_below_block_severity_passes_with_notes(
         "- **Unresolved concerns:** security reviewer returned fail with only "
         "findings below high (see Security Notes)"
     ) in written
-    assert "Audit fan-out PASSED" in log.text()
+    assert "Audit fan-out PASSED: routing to planner with status" in log.text()
     assert (
         "Audit fan-out did not block on a fail verdict: security reviewer "
         "returned fail with only findings below high"

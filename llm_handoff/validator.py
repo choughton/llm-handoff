@@ -1011,7 +1011,7 @@ def _scope_claim_errors(
     has_task_assignment = _TASK_ASSIGNMENT_RE.search(handoff_content) is not None
 
     if previous_route in _PLANNING_ROUTES:
-        if routing_instruction == "user":
+        if _planning_route_skips_work_packet(previous_route, routing_instruction):
             return []
         has_work_packet = _WORK_PACKET_RE.search(handoff_content) is not None
         if not has_work_packet and not has_task_assignment:
@@ -1041,6 +1041,23 @@ def _scope_claim_errors(
     return []
 
 
+def _planning_route_skips_work_packet(
+    previous_route: str, routing_instruction: str | None
+) -> bool:
+    """Return whether a planner or tpm handoff on this route needs no Work Packet.
+
+    A route to the user pauses for a person. A planner opening an epic for
+    the tpm, and a tpm escalating to the planner, assign no implementation
+    work either. Routes to an implementer or the auditor still need one.
+    """
+
+    if routing_instruction == "user":
+        return True
+    if previous_route == "planner" and routing_instruction == "tpm":
+        return True
+    return previous_route == "tpm" and routing_instruction == "planner"
+
+
 def _ownership_agent_line_match(handoff_content: str) -> re.Match[str] | None:
     task_assignment_match = _TASK_ASSIGNMENT_RE.search(handoff_content)
     task_assignment_start = (
@@ -1061,7 +1078,7 @@ def _content_warnings(
     warnings: list[str] = []
 
     if previous_route in _PLANNING_ROUTES:
-        if routing_instruction == "user":
+        if _planning_route_skips_work_packet(previous_route, routing_instruction):
             return warnings
         if _TASK_ASSIGNMENT_RE.search(handoff_content) is not None:
             warnings.append(_TASK_ASSIGNMENT_DEPRECATION_WARNING)

@@ -424,12 +424,6 @@ THREE_FIX_CIRCUIT_BREAKER_INSTRUCTION_TEMPLATE = (
     "is unsafe, or route to the correct next role with explicit acceptance "
     "criteria and verification evidence requirements."
 )
-# Interim pause reason until the dispatcher can launch a configured tpm.
-TPM_ROUTE_NOT_LAUNCHED_REASON = (
-    "HANDOFF.md routes to tpm, which this dispatcher does not launch yet. "
-    "Route to planner or an implementer; dispatch will resume after the file "
-    "changes."
-)
 # Without agents.tpm, a tpm route gets one in-cycle planner repair with this
 # instruction instead of a pause.
 TPM_NOT_CONFIGURED_PLANNER_REPAIR_SOURCE = "tpm_not_configured_planner_repair"
@@ -1324,27 +1318,6 @@ def _run_loop(
             active_continue_saved_story = False
             tpm_planner_repair_ran = True
 
-        if decision.route == "tpm":
-            # Interim guard: this dispatcher does not launch a configured tpm
-            # yet, so a tpm route pauses instead of reaching _dispatch(). No
-            # pause recovery is scheduled; the operator or planner edits the
-            # file.
-            pause = _pause_at_dispatcher_pause(
-                config,
-                handoff_sha=handoff_sha,
-                reason=TPM_ROUTE_NOT_LAUNCHED_REASON,
-                log=log_fn,
-                operator_prompt=operator_prompt,
-                stop_watch=stop_watch,
-            )
-            if pause.stop:
-                return 0
-            if pause.kind == "retry":
-                previous_cycle = None
-            elif pause.pending_planner_recovery is not None:
-                pending_planner_recovery = pause.pending_planner_recovery
-            continue
-
         if resumed_handback is not None:
             if decision.source == "interrupted_handback_recovery":
                 # The resumed cycle works from the handoff the interrupted
@@ -1853,7 +1826,7 @@ def _run_loop(
             )
             planner_git_before = (
                 git_position(config.repo_root)
-                if current_cycle.route == "planner"
+                if current_cycle.route in {"planner", "tpm"}
                 and config.commit_mode == "dispatcher"
                 else None
             )
@@ -2100,7 +2073,10 @@ def _run_loop(
                 )
             if planner_git_before is not None:
                 planner_check = undo_planner_handoff_commits(
-                    config.repo_root, config.handoff_path, planner_git_before
+                    config.repo_root,
+                    config.handoff_path,
+                    planner_git_before,
+                    role=current_cycle.route,
                 )
                 if planner_check.error is not None:
                     _log(
@@ -2115,7 +2091,7 @@ def _run_loop(
                     _log(
                         log_fn,
                         "WARN",
-                        "The planner committed the handoff ("
+                        f"The {current_cycle.route} committed the handoff ("
                         + ", ".join(sha[:12] for sha in planner_check.undone)
                         + ") despite dispatcher commit mode; undid it with "
                         "`git reset --soft`. The handoff stays uncommitted.",
@@ -10069,6 +10045,10 @@ def _log_dry_run(config: DispatchConfig, route: RouteName, log: LogFn) -> None:
 
     if route == "planner":
         _log(log, "DISPATCH", "[DRY RUN] Would dispatch planner")
+        return
+
+    if route == "tpm":
+        _log(log, "DISPATCH", "[DRY RUN] Would dispatch tpm")
         return
 
     if route == "frontend":

@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Routing to a configured `tpm` (TPM-10). With `agents.tpm`, a `next_agent: tpm` route now
+  launches the tpm instead of pausing. The audit fan-out routes a story approval to `tpm`,
+  and the router accepts `verified_pass` with `next_agent: tpm`; an epic close still goes
+  to the finalizer. A planner handoff to the tpm and a tpm escalation to the planner need
+  no `## Work Packet`. In dispatcher commit mode, a tpm commit of `HANDOFF.md` is undone
+  like a planner's, and `--dry-run` prints `Would dispatch tpm`. Without `agents.tpm`,
+  every route is unchanged.
 - Interrupted-planner recovery lets the operator skip published commits. In dispatcher
   commit mode, when HEAD has moved past an interrupted planner record's HEAD on the same
   branch and HEAD is on the fetched `<remote>/<base_branch>` (the checked-out branch when

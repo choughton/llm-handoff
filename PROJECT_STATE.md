@@ -25,8 +25,9 @@ belong in commits, handoffs, and pull requests.
   (Linear evidence and tools for the tpm) was approved at `ac573a1` and
   merged in PR #214; TPM-9 (operator edit of the Claude tpm agent, with
   TIDY-7 batched in) was approved at `4a8f9fc` and merged in PR #216; TPM-13
-  (tests, Linear tools, and inventory for the Claude tpm agent) is in flight
-  before TPM-10.
+  (tests, Linear tools, and inventory for the Claude tpm agent) was approved
+  at `3291e2a` and merged in PR #219; TPM-10 (routing to the tpm when it is
+  configured) is in flight.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
@@ -1363,8 +1364,8 @@ dispatched without its instructions.
   configured, the orchestrator treats the handoff as not dispatchable and
   schedules the existing planner repair with the instruction `tpm is not
   configured; route to planner or an implementer` instead of pausing.
-  A configured tpm keeps the interim pause until TPM-10, so it is never
-  dispatched before its prompt (TPM-5) and helper files (TPM-6) land.
+  A configured tpm kept an interim pause, so it was never dispatched before
+  its prompt (TPM-5) and helper files (TPM-6) landed; TPM-10 removed it.
 - TPM-4 (was part of TPM-4): Per-role Codex artifacts. Today every Codex
   role shares `logs/dispatch/codex/last-message.json` and `session.json`
   (`llm_handoff/agent_providers/codex.py` ~line 410), so a Codex tpm and a
@@ -1452,6 +1453,7 @@ dispatched without its instructions.
   `init --tracker linear` appends the tpm's Linear tools, with
   `tests/test_init_tracker.py` coverage. Add the two `docs/INVENTORY.md`
   rows and one `CHANGELOG.md` entry covering TPM-9, TIDY-7, and TPM-13.
+  Approved at `3291e2a`, merged in PR #219.
 - TPM-10 (was part of TPM-3): Routing to the tpm when it is configured
   (`llm_handoff/orchestrator.py`; `build_audit_handoff()` in
   `llm_handoff/audit_review.py` ~line 1147, which hard-codes the non-epic
@@ -1470,6 +1472,12 @@ dispatched without its instructions.
 - TPM-11 (was part of TPM-3): Operator prompt `@tpm <message>`, like the
   other `@role` targets, refused with a clear message when `agents.tpm` is
   not configured.
+- TPM-14 (added 2026-10-20; runs after TPM-11): Interrupted tpm dispatch
+  recovery. A tpm dispatch writes an in-flight record like the planner's
+  (`_write_planner_in_flight_record` in `llm_handoff/orchestrator.py`), so a
+  later start can restore the handoff an interrupted tpm half-wrote and run
+  the tpm again after operator confirmation. Without `agents.tpm`, nothing
+  changes.
 - TPM-12 (was TPM-6): Documentation and changelog sweep. `README.md` role
   table and loop diagram, `docs/ARCHITECTURE.md` (role list, "planner picks
   stories unless tpm is configured"), `CONFIGURATION.md` (`agents.tpm`
