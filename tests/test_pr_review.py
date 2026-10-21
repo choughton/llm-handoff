@@ -571,3 +571,78 @@ def test_wait_reports_a_review_that_names_no_commit_at_the_deadline() -> None:
     assert result.outcome == "failed"
     assert result.unattributed is True
     assert now[0] == 0
+
+
+def _running_pages() -> dict:
+    return {
+        "issue_comments": [summary(OLD[:7], marker=state_marker(HEAD, "running"))],
+        "reviews": [],
+        "review_comments": [],
+        "reactions": [],
+    }
+
+
+def test_a_running_review_reports_running() -> None:
+    state = read(issue_comments=_running_pages()["issue_comments"])
+
+    assert state.running is True
+    assert read(issue_comments=[summary(HEAD[:7])]).running is False
+
+
+def test_wait_ends_as_stalled_when_the_review_runs_past_the_stall_limit() -> None:
+    now = [0.0]
+    common, logs = _waiter(_running_pages(), now)
+
+    result = wait_for_codex_review(timeout_seconds=1200, stall_seconds=600, **common)
+
+    assert result.outcome == "stalled"
+    assert result.detail == (
+        f"the Codex review of {HEAD[:12]} has shown as running for at least "
+        "600s with no result"
+    )
+    assert now[0] == 600
+    assert logs == [("INFO", f"PR review: Codex is reviewing {HEAD[:12]}.")]
+
+
+def test_the_stall_limit_counts_from_when_the_wait_first_sees_it_running() -> None:
+    now = [0.0]
+    pages = _running_pages()
+    running = pages["issue_comments"]
+    pages["issue_comments"] = []
+
+    def start_at_120() -> None:
+        if now[0] >= 120:
+            pages["issue_comments"] = running
+
+    common, _logs = _waiter(pages, now, on_sleep=start_at_120)
+
+    result = wait_for_codex_review(timeout_seconds=1200, stall_seconds=300, **common)
+
+    assert result.outcome == "stalled"
+    assert now[0] == 420
+
+
+def test_wait_without_a_stall_limit_waits_out_the_timeout() -> None:
+    now = [0.0]
+    common, _logs = _waiter(_running_pages(), now)
+
+    result = wait_for_codex_review(timeout_seconds=900, **common)
+
+    assert result.outcome == "timeout"
+    assert now[0] == 900
+
+
+def test_a_review_that_finishes_before_the_stall_limit_is_clean() -> None:
+    now = [0.0]
+    pages = _running_pages()
+
+    def finish_at_90() -> None:
+        if now[0] >= 90:
+            pages["issue_comments"] = [summary(HEAD[:7])]
+
+    common, _logs = _waiter(pages, now, on_sleep=finish_at_90)
+
+    result = wait_for_codex_review(timeout_seconds=1200, stall_seconds=600, **common)
+
+    assert result.outcome == "clean"
+    assert now[0] == 90

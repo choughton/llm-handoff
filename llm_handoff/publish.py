@@ -979,6 +979,7 @@ def publish_story(
                 f"pull request checks did not pass for {url or state.branch}: "
                 f"{_first_line(checks)}; it was left open",
             )
+    stall_merge = False
     if review is not None and review.reviewers:
         verdict = _wait_for_reviewers(
             repo_root=repo_root,
@@ -990,8 +991,11 @@ def publish_story(
             log=log,
             sleep=sleep,
             review_prompt=review_prompt,
+            remote=remote,
+            handoff_content=handoff_content,
         )
-        if verdict is not None:
+        stall_merge = verdict is _STALL_MERGE
+        if verdict is not None and not stall_merge:
             return verdict
     view = _open_pull_request(gh_command, repo_root, state.branch)
     number = view.get("number") if view else None
@@ -1021,8 +1025,10 @@ def publish_story(
         state=state,
         url=url,
         log=log,
-        # One planner resolution per publish: a second conflict pauses.
-        resolver=None if resolution else state_resolver,
+        # One planner resolution per publish: a second conflict pauses. A
+        # merge without a Codex review gets none: it must stay the audited
+        # commit plus clean base-branch merges.
+        resolver=None if resolution or stall_merge else state_resolver,
     )
 
 
@@ -3514,6 +3520,11 @@ def _handoff_route(handoff_content: str) -> tuple[str | None, str | None]:
     return normalize_next_agent_value(frontmatter.next_agent), story_id
 
 
+# What _wait_for_reviewers returns to merge without a Codex review under
+# ``review_stall_action: merge``.
+_STALL_MERGE = PublishOutcome(message="merge without a Codex review")
+
+
 def _wait_for_reviewers(
     *,
     repo_root: Path,
@@ -3525,12 +3536,20 @@ def _wait_for_reviewers(
     log: LogFn,
     sleep: Callable[[float], None] | None,
     review_prompt: ReviewPromptFn | None = None,
+    remote: str = "origin",
+    handoff_content: str = "",
 ) -> PublishOutcome | None:
-    """Return ``None`` to merge, or the outcome that replaces the merge.
+    """Return ``None`` to merge, ``_STALL_MERGE`` to merge with no planner
+    conflict resolution, or the outcome that replaces the merge.
 
-    A review Codex reports as failed is requested again once per head commit.
-    When that one fails too, or no review finishes in time, ``review_prompt``
-    lets the operator merge without the review, retry, or quit.
+    A review Codex reports as failed, completes without naming a commit,
+    shows running past ``review.stall_seconds``, or does not finish in time
+    is requested again once per head commit. When that one does not finish
+    either, ``review.stall_action`` ``merge`` merges without the review if
+    the audit in ``handoff_content`` passed for the head commit and every
+    review thread is resolved. Otherwise ``review_prompt`` lets the operator
+    merge without the review, retry, or quit. A usage-limit failure is never
+    retried or merged automatically.
     """
 
     head_sha = git_head(repo_root)
@@ -3583,7 +3602,14 @@ def _wait_for_reviewers(
             poll_seconds=review.poll_seconds,
             log=log,
             stale_before=since,
+            stall_seconds=review.stall_seconds,
             **({"sleep": sleep} if sleep is not None else {}),
+        )
+
+    def unfinished(result: ReviewResult) -> bool:
+        return (
+            result.outcome in ("failed", "timeout", "stalled")
+            and not result.usage_limited
         )
 
     def request_again() -> tuple[datetime | None, str]:
@@ -3605,13 +3631,13 @@ def _wait_for_reviewers(
     )
     result = wait(retry_at)
     problem = ""
-    if result.outcome == "failed" and not result.usage_limited and retry_at is None:
+    if unfinished(result) and retry_at is None:
         retry_at, problem = request_again()
         if retry_at is not None:
             cause = (
-                result.detail
-                if result.unattributed
-                else f"Codex reported the review of {head_sha[:12]} as failed"
+                f"Codex reported the review of {head_sha[:12]} as failed"
+                if result.outcome == "failed" and not result.unattributed
+                else result.detail
             )
             log(
                 "AGENT",
@@ -3620,13 +3646,59 @@ def _wait_for_reviewers(
             )
             result = wait(retry_at)
 
+    refused = ""
+    if review.stall_action == "merge" and retry_at is not None and unfinished(result):
+        # The retry for this head is on record, so its review did not finish
+        # either: merge without it when the audit covers the head commit.
+        refused = _unreviewed_merge_blocker(
+            repo_root=repo_root,
+            remote=remote,
+            state=state,
+            handoff_content=handoff_content,
+            gh_command=gh_command,
+            pr_number=number,
+            head_sha=head_sha,
+        )
+        if not refused:
+            _note_unreviewed_merge(
+                gh_command,
+                repo_root,
+                number,
+                head_sha,
+                result.detail,
+                log,
+                automatic=True,
+            )
+            log(
+                "WARN",
+                f"Merging {url} WITHOUT a Codex review of {head_sha[:12]}: the "
+                f"retried review did not finish ({result.detail}) and "
+                "publish.review_stall_action is `merge`. The audit passed for "
+                "this commit and no review thread is unresolved.",
+            )
+            return _STALL_MERGE
+        log(
+            "WARN",
+            f"publish.review_stall_action is `merge`, but {url} was not merged "
+            f"without a Codex review: {refused}.",
+        )
+
     def left_open() -> str:
         reason = f"The pull request {url} was left open because {result.detail}."
         if problem:
             reason += f" Asking Codex to review it again failed: {problem}."
+        if refused:
+            reason += (
+                " publish.review_stall_action is `merge`, but the dispatcher "
+                f"did not merge it without a Codex review: {refused}."
+            )
         return reason
 
-    while review_prompt is not None and result.outcome in ("failed", "timeout"):
+    while review_prompt is not None and result.outcome in (
+        "failed",
+        "timeout",
+        "stalled",
+    ):
         choice = review_prompt(
             f"{left_open()} Type `merge` to merge it without a Codex review, "
             "`retry` to ask Codex to review it again, or `quit` to leave it "
@@ -3719,6 +3791,42 @@ def _request_codex_review(
     return _parse_timestamp(str(posted.get("created_at") or "")) or utc_now(), ""
 
 
+def _unreviewed_merge_blocker(
+    *,
+    repo_root: Path,
+    remote: str,
+    state: StoryState,
+    handoff_content: str,
+    gh_command: Sequence[str],
+    pr_number: int,
+    head_sha: str,
+) -> str:
+    """Why ``review_stall_action: merge`` may not merge; empty when it may.
+
+    The audit must have passed for the head commit (``HANDOFF.md`` is the
+    story's ``verified_pass`` and its ``scope_sha`` is the head, or the head
+    adds only clean base-branch merges to it), and every review thread must
+    be resolved.
+    """
+
+    audited = _audited_story_commit(repo_root, state, handoff_content)
+    if audited is None:
+        return (
+            "HANDOFF.md does not record a passed audit of this story with a "
+            "scope_sha that resolves"
+        )
+    problem = _clean_merges_problem(repo_root, remote, state, audited, head_sha)
+    if problem is not None:
+        return f"the audit does not cover the head commit {head_sha[:12]}: {problem}"
+    threads = _review_threads(gh_command, repo_root, pr_number)
+    if threads is None:
+        return "the review threads could not be read"
+    unresolved = sum(1 for thread in threads if not thread["resolved"])
+    if unresolved:
+        return f"{unresolved} review thread(s) are unresolved"
+    return ""
+
+
 def _note_unreviewed_merge(
     gh_command: Sequence[str],
     repo_root: Path,
@@ -3726,15 +3834,26 @@ def _note_unreviewed_merge(
     head_sha: str,
     detail: str,
     log: LogFn,
+    *,
+    automatic: bool = False,
 ) -> None:
     # Posted before the merge, so it records the decision, not a merge that
     # an unresolved thread or a `gh pr merge` failure can still stop.
-    body = _without_mentions(
-        "The operator chose `merge` at the llm-handoff prompt: merge this pull "
-        f"request without a Codex review of `{head_sha[:12]}` ({detail}). "
-        "The dispatcher merges it once every review thread is resolved.\n\n"
-        + _FOOTER
-    )
+    if automatic:
+        text = (
+            f"Merging without a Codex review: {detail}. Codex was asked once "
+            f"to review `{head_sha[:12]}` again, and that review did not finish "
+            "either. `publish.review_stall_action` is `merge`, the dispatcher's "
+            "audit passed for this commit, and no review thread is unresolved, "
+            "so llm-handoff merges this pull request without a Codex review."
+        )
+    else:
+        text = (
+            "The operator chose `merge` at the llm-handoff prompt: merge this pull "
+            f"request without a Codex review of `{head_sha[:12]}` ({detail}). "
+            "The dispatcher merges it once every review thread is resolved."
+        )
+    body = _without_mentions(text + "\n\n" + _FOOTER)
     posted, error = _post_issue_comment(gh_command, repo_root, pr_number, body)
     if posted is None:
         log(

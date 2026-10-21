@@ -2996,7 +2996,7 @@ def test_retry_at_the_review_prompt_asks_codex_again_and_merges_when_clean(
     assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
 
 
-def test_a_review_timeout_asks_the_operator_without_an_automatic_retry(
+def test_a_review_timeout_is_requested_once_more_then_asks_the_operator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, _remote, gh, env = _with_remote(tmp_path)
@@ -3005,7 +3005,7 @@ def test_a_review_timeout_asks_the_operator_without_an_automatic_retry(
     _start_story(repo)
     _set_api(tmp_path)
     prompt = _Prompt(repo, "quit")
-    _entries, log = _logs()
+    entries, log = _logs()
 
     outcome = _publish_with_review(
         repo,
@@ -3015,10 +3015,345 @@ def test_a_review_timeout_asks_the_operator_without_an_automatic_retry(
         review_prompt=prompt,
     )
 
+    assert any(
+        level == "AGENT"
+        and message.startswith("no completed Codex review")
+        and "asked Codex to review" in message
+        for level, message in entries
+    )
     [reason] = prompt.reasons
     assert "no completed Codex review" in reason
-    assert _posted(tmp_path) == []
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
     assert outcome.stop is True and "left open" in outcome.message
+
+
+# Stalls on the first poll that sees the review running.
+STALL_GATE = ReviewGate(reviewers=("codex",), timeout_seconds=600, stall_seconds=0)
+STALL_MERGE_GATE = ReviewGate(
+    reviewers=("codex",), timeout_seconds=600, stall_seconds=0, stall_action="merge"
+)
+
+
+def _codex_running_summary(sha: str, updated_at: str = BEFORE_REQUEST) -> dict:
+    """A summary that shows the review of ``sha`` running, as on a stall."""
+
+    return {
+        "user": {"login": BOT},
+        "updated_at": updated_at,
+        "body": "<!-- codex-pull-request-review-summary -->\n"
+        '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"'
+        + sha
+        + '","has_any_findings":null,"has_unresolved_findings":null,'
+        '"status":"running"},"security_review":null} -->\n\n'
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        f"| **Code Review** | **Running** | `{sha[:7]}` | PR opened |\n",
+    }
+
+
+def _stalled_review_story(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    _set_api(tmp_path, comments=[_codex_running_summary(head)])
+    return repo, gh, head
+
+
+def _audited(head: str) -> str:
+    """The audit's verified_pass for ``head``, as the auditor writes it."""
+
+    return VERIFIED.replace("close_type: story\n", f"close_type: story\nscope_sha: {head}\n")
+
+
+def _publish_stalled(
+    repo: Path,
+    gh: list[str],
+    log,
+    gate: ReviewGate,
+    handoff: str,
+    review_prompt=None,
+) -> PublishOutcome:
+    return _publish_pr(
+        repo,
+        gh,
+        log,
+        handoff_content=handoff,
+        review=gate,
+        sleep=lambda seconds: None,
+        review_prompt=review_prompt,
+    )
+
+
+def test_a_stalled_review_is_requested_once_more_and_merges_when_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _stalled_review_story(tmp_path, monkeypatch)
+    clean = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _after_review_requests(tmp_path, _api(comments=[clean]))
+    prompt = _Prompt(repo)
+    entries, log = _logs()
+
+    outcome = _publish_stalled(repo, gh, log, STALL_GATE, VERIFIED, prompt)
+
+    assert outcome == PublishOutcome()
+    assert prompt.reasons == []
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert any(
+        level == "AGENT"
+        and message.startswith(
+            f"the Codex review of {head[:12]} has shown as running for at least 0s"
+        )
+        and "asked Codex to review" in message
+        for level, message in entries
+    )
+
+
+def test_a_stall_after_the_retry_asks_the_operator_with_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _stalled_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_running_summary(head, AFTER_REQUEST)])
+    )
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_stalled(repo, gh, log, STALL_GATE, _audited(head), prompt)
+
+    [reason] = prompt.reasons
+    assert "has shown as running" in reason
+    assert "`merge`" in reason and "`retry`" in reason
+    assert prompt.states[0]["review_retry_head"] == head
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert outcome.stop is True and "left open" in outcome.message
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_a_stall_after_the_retry_pauses_without_a_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _stalled_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_running_summary(head, AFTER_REQUEST)])
+    )
+    entries, log = _logs()
+
+    outcome = _publish_stalled(repo, gh, log, STALL_GATE, _audited(head))
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert "has shown as running" in outcome.message
+    assert "Review it and merge it yourself" in outcome.message
+    assert any(level == "PAUSE" for level, _message in entries)
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_a_stall_after_the_retry_merges_with_the_merge_stall_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _stalled_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_running_summary(head, AFTER_REQUEST)])
+    )
+    prompt = _Prompt(repo)
+    entries, log = _logs()
+
+    outcome = _publish_stalled(repo, gh, log, STALL_MERGE_GATE, _audited(head), prompt)
+
+    assert outcome == PublishOutcome()
+    assert prompt.reasons == []
+    request, note = _posted(tmp_path)
+    assert request == REVIEW_REQUEST
+    assert note.startswith(
+        f"Merging without a Codex review: the Codex review of {head[:12]} has "
+        "shown as running"
+    )
+    assert "`publish.review_stall_action` is `merge`" in note
+    assert "@" not in note.replace("\u2060", "")
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert any(
+        level == "WARN"
+        and f"WITHOUT a Codex review of {head[:12]}" in message
+        and "review_stall_action is `merge`" in message
+        for level, message in entries
+    )
+
+
+def test_a_failed_retry_merges_with_the_merge_stall_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_failed_summary(head, AFTER_REQUEST)])
+    )
+    _entries, log = _logs()
+
+    outcome = _publish_stalled(repo, gh, log, STALL_MERGE_GATE, _audited(head))
+
+    assert outcome == PublishOutcome()
+    request, note = _posted(tmp_path)
+    assert request == REVIEW_REQUEST
+    assert note.startswith("Merging without a Codex review: Codex reported")
+    assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+
+
+def test_the_merge_stall_action_is_refused_while_a_thread_is_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _stalled_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_running_summary(head, AFTER_REQUEST)])
+    )
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 1})
+    prompt = _Prompt(repo, "quit")
+    entries, log = _logs()
+
+    outcome = _publish_stalled(repo, gh, log, STALL_MERGE_GATE, _audited(head), prompt)
+
+    [reason] = prompt.reasons
+    assert "did not merge it without a Codex review: 1 review thread(s) are unresolved" in reason
+    assert any(
+        level == "WARN" and "was not merged without a Codex review" in message
+        for level, message in entries
+    )
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert outcome.stop is True
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_the_merge_stall_action_needs_a_passed_audit_of_the_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _stalled_review_story(tmp_path, monkeypatch)
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_running_summary(head, AFTER_REQUEST)])
+    )
+    _entries, log = _logs()
+
+    # The handoff names no scope_sha, so nothing ties the audit to the head.
+    outcome = _publish_stalled(repo, gh, log, STALL_MERGE_GATE, VERIFIED)
+
+    assert outcome.stop is True
+    assert "HANDOFF.md does not record a passed audit" in outcome.message
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_the_merge_stall_action_never_has_the_planner_resolve_a_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _commit_all(repo, {STATE_FILE: STATE_BASE}, "Add the project state")
+    _git(repo, "push", "-q", "origin", "main")
+    _start_story(repo)
+    _commit_all(repo, {STATE_FILE: STATE_STORY}, "W9.9 status")
+    head = _git(repo, "rev-parse", "HEAD")
+    # main moves after the push, while the checks run, and conflicts with the
+    # story only in the project state file.
+    _commit_on_remote(
+        tmp_path, remote, "next-main", {STATE_FILE: STATE_OPERATOR}, "Regroom"
+    )
+    _set_gh(tmp_path, move_main_to="refs/heads/next-main")
+    _set_api(tmp_path, comments=[_codex_running_summary(head)])
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_running_summary(head, AFTER_REQUEST)])
+    )
+    resolver, prompts = _planner(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(
+        repo,
+        gh,
+        log,
+        handoff_content=_audited(head),
+        review=STALL_MERGE_GATE,
+        sleep=lambda seconds: None,
+        wait_for_checks=True,
+        state_resolver=resolver,
+    )
+
+    # The planner's resolution would be neither the audited commit nor a
+    # clean base-branch merge, so the merge pauses instead.
+    assert prompts == []
+    assert outcome.stop is True
+    assert f"conflicts in `{STATE_FILE}`" in outcome.message
+    merges = [call for call in _gh_calls(tmp_path) if call[:2] == ["pr", "merge"]]
+    assert len(merges) == 1
+    assert _gh_state(tmp_path)["pr"] == "OPEN"
+    assert not _merge_in_progress(repo)
+
+
+def test_the_merge_stall_action_keeps_the_usage_limit_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _failed_review_story(tmp_path, monkeypatch)
+    usage_limit = {
+        "user": {"login": BOT},
+        "created_at": "2099-01-01T00:00:00Z",
+        "body": "You have reached your Codex usage limits for code reviews.",
+    }
+    _set_api(tmp_path, comments=[_codex_failed_summary(head), usage_limit])
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+
+    outcome = _publish_stalled(repo, gh, log, STALL_MERGE_GATE, _audited(head), prompt)
+
+    [reason] = prompt.reasons
+    assert "usage limit" in reason
+    assert _posted(tmp_path) == []
+    assert outcome.stop is True
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_findings_after_a_stall_retry_take_the_correction_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, gh, head = _stalled_review_story(tmp_path, monkeypatch)
+    completed = {**_codex_summary(head), "updated_at": AFTER_REQUEST}
+    _after_review_requests(
+        tmp_path,
+        _api(comments=[completed], review_comments=[_codex_finding(head)]),
+    )
+    _entries, log = _logs()
+
+    outcome = _publish_stalled(repo, gh, log, STALL_MERGE_GATE, _audited(head))
+
+    assert outcome.stop is False and outcome.handoff is not None
+    assert "status: verified_fail" in outcome.handoff
+    assert _posted(tmp_path) == [REVIEW_REQUEST]
+    assert _saved_state(repo)["review_rounds"] == 1
+
+
+@pytest.mark.parametrize("action", ["prompt", "merge"])
+def test_a_restart_after_a_stall_retry_does_not_request_another(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    repo, gh, head = _stalled_review_story(tmp_path, monkeypatch)
+    _record_review_retry(repo, head)
+    # The retried review still showed running when the dispatcher restarted.
+    _set_api(tmp_path, comments=[_codex_running_summary(head, AFTER_REQUEST)])
+    prompt = _Prompt(repo, "quit")
+    _entries, log = _logs()
+    gate = STALL_MERGE_GATE if action == "merge" else STALL_GATE
+
+    outcome = _publish_stalled(repo, gh, log, gate, _audited(head), prompt)
+
+    assert REVIEW_REQUEST not in _posted(tmp_path)
+    if action == "merge":
+        assert outcome == PublishOutcome()
+        assert prompt.reasons == []
+        [note] = _posted(tmp_path)
+        assert note.startswith("Merging without a Codex review:")
+        assert [call[:2] for call in _gh_calls(tmp_path)][-1] == ["pr", "merge"]
+    else:
+        assert len(prompt.reasons) == 1
+        assert _posted(tmp_path) == []
+        assert outcome.stop is True
 
 
 def _codex_unattributed_summary(updated_at: str) -> dict:
@@ -3305,6 +3640,8 @@ def test_a_higher_round_limit_waits_for_codexs_own_review_of_the_fix(
         {"mode": "merge-commit", "wait_for_reviewers": ["codex"]},
         {"mode": "pr", "auto_merge": False, "wait_for_reviewers": ["codex"]},
         {"mode": "pr", "wait_for_reviewers": ["codex"], "review_timeout_seconds": 0},
+        {"mode": "pr", "wait_for_reviewers": ["codex"], "review_stall_seconds": 0},
+        {"mode": "pr", "wait_for_reviewers": ["codex"], "review_stall_action": "quit"},
         {"mode": "pr", "wait_for_reviewers": ["copilot"]},
     ],
 )
@@ -3328,6 +3665,27 @@ def test_wait_for_reviewers_config_accepts_codex(tmp_path: Path) -> None:
 
     assert config.publish.wait_for_reviewers == ("codex",)
     assert config.publish.codex_bot_login == BOT
+    assert config.publish.review_stall_seconds == 600
+    assert config.publish.review_stall_action == "prompt"
+
+
+def test_the_review_stall_keys_reach_the_review_gate(tmp_path: Path) -> None:
+    config = DispatchConfig(
+        repo_root=tmp_path,
+        enforce_work_packet=True,
+        commit_mode="dispatcher",
+        publish={
+            "mode": "pr",
+            "wait_for_reviewers": ["codex"],
+            "review_stall_seconds": 300,
+            "review_stall_action": "merge",
+        },
+    )
+
+    gate = orchestrator._review_gate(config)
+
+    assert gate is not None
+    assert (gate.stall_seconds, gate.stall_action) == (300, "merge")
 
 
 def test_pr_report_does_not_mention_github_accounts(
