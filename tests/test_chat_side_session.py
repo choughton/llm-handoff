@@ -1229,12 +1229,14 @@ def test_antigravity_sign_in_failure_is_an_error(monkeypatch, tmp_path) -> None:
 def test_antigravity_error_detail_is_redacted_and_capped(
     monkeypatch, tmp_path
 ) -> None:
+    # Built at runtime so secret scanners do not flag a literal token.
+    planted = "ghp_" + "Ab3dE" * 7 + "F"
     _install(
         monkeypatch,
         _FakeRun(
             [],
             exit_code=3,
-            stderr="token=ghp_abcdefghijklmnopqrstuvwxyz0123456789 " + "x" * 500,
+            stderr="token=" + planted + " " + "x" * 500,
         ),
     )
     result = _run("antigravity", tmp_path)
@@ -1242,7 +1244,8 @@ def test_antigravity_error_detail_is_redacted_and_capped(
     assert result.error is not None
     assert result.error.startswith(prefix)
     assert len(result.error) - len(prefix) <= 200
-    assert "ghp_abcdefghij" not in result.error
+    assert planted not in result.error
+    assert planted[:14] not in result.error
 
 
 def test_antigravity_failed_resume_is_not_retried_fresh(monkeypatch, tmp_path) -> None:
