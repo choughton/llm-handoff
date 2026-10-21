@@ -17,10 +17,15 @@ is not the one running. Role messages share the one FIFO queue with side
 messages and resume the role's session with ``resumed_role=True``. Otherwise
 the full text goes to the side session with a notice that says why.
 
-Known limit: the takeover check compares the handoff's content digest from
-before the answer with the digest after it. A role's own ``HANDOFF.md`` write
-that lands while an answer runs therefore also counts as a chat change to
-``HANDOFF.md`` and requests a takeover. No path filtering is done for it.
+The takeover check compares the handoff's content digest from before the
+answer with the digest after it, so a role's own ``HANDOFF.md`` write that
+lands while an answer runs also requests a takeover. The loop sorts that out
+(CHAT-35): when the role returned and the handoff on disk still has the
+requested digest and names that role as ``producer``, the request is cleared
+and the role's handback goes through its normal post-dispatch path. Known
+limit: a role's write while it is still running, when the poll then stops
+it, is still a takeover, and a chat rewrite that names the running role as
+``producer`` is taken as that role's handback.
 
 Chat keeps the role's own permissions; this module adds no read-only
 boundary.

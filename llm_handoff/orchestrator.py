@@ -2126,6 +2126,22 @@ def _run_loop(
                 # An answer still running when the role returned may yet
                 # rewrite the handoff and request a takeover.
                 chat_session.wait_for_answers(log_fn)
+                # A role that returned while an answer ran may have written
+                # its own handback; that is not a chat rewrite (CHAT-35).
+                if (
+                    dispatch_returned is not None
+                    and takeover_requested()
+                    and _takeover_is_role_handback(config, current_cycle.route)
+                ):
+                    _log(
+                        log_fn,
+                        "AGENT",
+                        f"HANDOFF.md changed while a chat answer ran, but the "
+                        f"{current_cycle.route} returned and the handoff names "
+                        f"it as producer, so it is the {current_cycle.route}'s "
+                        "handback, not a chat rewrite.",
+                    )
+                    clear_takeover()
                 # A role stopped by a chat answer raised; one that returned
                 # before the poll saw the request still yields to the chat.
                 chat_took_over = dispatch_returned is None or takeover_requested()
@@ -3144,6 +3160,37 @@ class _ChatTakeoverOutcome:
     story_baseline_known: bool = False
     story_baseline: StoryListBaseline | None = None
     pending_planner_recovery: PendingPlannerRecovery | None = None
+
+
+def _takeover_is_role_handback(config: DispatchConfig, route: RouteName) -> bool:
+    """Return True when the pending takeover names the role's own handback.
+
+    The request records the handoff bytes the chat answer saw when it
+    finished. When those bytes are still on disk and their frontmatter
+    ``producer`` normalizes to the dispatched route, the handoff change the
+    answer saw was the role's own handback write, not a chat rewrite. A
+    missing, unreadable, or unparseable handoff, a different producer, or
+    bytes that changed since the request never count as the role's.
+    """
+
+    requested_sha = takeover_handoff_sha()
+    if requested_sha is None:
+        return False
+    try:
+        data = config.handoff_full_path.read_bytes()
+    except (OSError, ValueError):
+        return False
+    # The same digest the chat worker records (``handoff_content_sha``).
+    if sha256(data).hexdigest() != requested_sha:
+        return False
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return False
+    frontmatter = _parse_frontmatter_or_none(text)
+    if frontmatter is None:
+        return False
+    return normalize_next_agent_value(frontmatter.producer) == route
 
 
 def _late_chat_takeover(

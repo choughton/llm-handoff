@@ -4,9 +4,14 @@ A chat answer that rewrites ``HANDOFF.md`` requests a takeover. Role and
 audit reviewer processes launched through ``_run_command_streaming`` poll the
 request and are stopped, process tree included, by raising ``ChatTakeover``,
 but only while the loop has armed the window around a role dispatch. The
-loop then validates and follows the chat's handoff. Nothing outside tests
-requests a takeover yet; the chat wiring calls
-``request_takeover_if_handoff_changed``.
+loop then validates and follows the chat's handoff. The chat answer worker
+calls ``request_takeover_if_handoff_changed`` after each answer.
+
+The request records only that the handoff's bytes changed, not who wrote
+them. When the role returned during the window and the recorded bytes are
+still on disk with a frontmatter ``producer`` naming that role, the loop
+clears the request and treats the handoff as the role's own handback
+(CHAT-35).
 """
 
 from __future__ import annotations
