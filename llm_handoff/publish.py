@@ -816,10 +816,13 @@ def publish_story(
             "its stories are already published, so there is nothing to publish.",
         )
         return PublishOutcome()
+    # An operator story is often its epic's last, so its audit closes the
+    # epic. The check above already let an epic close with nothing
+    # unpublished through.
     if (
         state is None
         and mode == "pr"
-        and frontmatter.close_type == "story"
+        and frontmatter.close_type in {"story", "epic"}
         and base_branch
         and branch_prefix
         and handoff_path is not None
@@ -4589,7 +4592,8 @@ def _adopt_base_branch_story(
     a story routed to ``user``: the operator commits the work locally on the
     base branch without pushing, and the planner sends that commit to the
     auditor. No story branch or state exists for it. When the audit passed
-    with ``close_type: story``, HEAD is the handoff's ``scope_sha``, HEAD is
+    with ``close_type: story``, or ``close_type: epic`` because the story was
+    the epic's last, HEAD is the handoff's ``scope_sha``, HEAD is
     one non-merge commit on top of ``remote/base_branch`` (the range the audit
     reviewed), that commit does not change ``handoff_path``, and nothing but
     ``handoff_path`` is uncommitted, the story branch is created at HEAD with
@@ -4689,9 +4693,10 @@ def _adopt_base_branch_story(
             f"`{base_branch}` still has them. Reset `{base_branch}` to "
             f"{remote}/{base_branch} yourself, then start the dispatcher again",
         )
+    audit = "Epic-close" if frontmatter.close_type == "epic" else "Story"
     log(
         "INFO",
-        f"Story audit passed for a commit on `{base_branch}` with no story "
+        f"{audit} audit passed for a commit on `{base_branch}` with no story "
         f"branch ({_describe_commit(repo_root, 'HEAD')}). "
         f"Created `{branch}` at that commit with its story state, checked it "
         f"out, and moved `{base_branch}` back to {remote}/{base_branch} "
