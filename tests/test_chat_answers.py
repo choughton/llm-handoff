@@ -9,6 +9,7 @@ import pytest
 from llm_handoff import chat_answers
 from llm_handoff.chat_answers import (
     CHAT_NO_ROLE_MESSAGE,
+    CHAT_STOPPING_MESSAGE,
     ChatAnswerWorker,
     ChatContext,
 )
@@ -404,6 +405,49 @@ def test_stop_finishes_running_answer_and_drops_queued(
     assert worker.wait_idle(timeout=WAIT) is True
     assert harness.session_calls[-1]["message"] == "after stop"
     assert harness.lines[-1] == "chat: answer to after stop"
+
+
+def test_submit_during_stop_never_overlaps_the_running_answer(
+    harness: Harness, worker
+) -> None:
+    started, gate = harness.block("first")
+    worker.submit("first")
+    assert started.wait(WAIT)
+    worker.submit("queued")
+    dropped_written = threading.Event()
+    harness.on_write = lambda line: (
+        dropped_written.set() if line.startswith("Chat stopped") else None
+    )
+    first_stopper = threading.Thread(target=worker.stop)
+    first_stopper.start()
+    assert dropped_written.wait(WAIT)
+
+    # The first answer is still running: a submit now must not start a
+    # second answer, and a second stop() must wait for the same thread.
+    assert worker.submit("during stop") == CHAT_STOPPING_MESSAGE
+    second_stopper = threading.Thread(target=worker.stop)
+    second_stopper.start()
+    second_stopper.join(timeout=0.05)
+    assert second_stopper.is_alive()
+    assert [call["message"] for call in harness.session_calls] == ["first"]
+
+    gate.set()
+    first_stopper.join(WAIT)
+    second_stopper.join(WAIT)
+    assert not first_stopper.is_alive()
+    assert not second_stopper.is_alive()
+    assert [call["message"] for call in harness.session_calls] == ["first"]
+    assert harness.lines.count(
+        "Chat stopped: 1 queued chat message was not answered."
+    ) == 1
+    assert worker.busy() is False
+
+    assert worker.submit("after stop") == "Chat message sent to the chat session."
+    assert worker.wait_idle(timeout=WAIT) is True
+    assert [call["message"] for call in harness.session_calls] == [
+        "first",
+        "after stop",
+    ]
 
 
 def test_stop_with_nothing_queued_writes_nothing(harness: Harness, worker) -> None:

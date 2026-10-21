@@ -47,6 +47,7 @@ __all__ = [
     "CHAT_ANSWER_PREFIX",
     "CHAT_ERROR_PREFIX",
     "CHAT_NO_ROLE_MESSAGE",
+    "CHAT_STOPPING_MESSAGE",
     "ChatAnswerWorker",
     "ChatContext",
 ]
@@ -56,6 +57,7 @@ CHAT_ERROR_PREFIX = "chat error: "
 CHAT_NO_ROLE_MESSAGE = "No role is running, so the chat message was not sent."
 CHAT_BLANK_MESSAGE = "The chat message was blank, so nothing was sent."
 CHAT_SENT_MESSAGE = "Chat message sent to the chat session."
+CHAT_STOPPING_MESSAGE = "Chat is stopping, so the chat message was not sent."
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,8 @@ class ChatAnswerWorker:
         self._cond = threading.Condition()
         self._queue: deque[tuple[str, ChatContext]] = deque()
         self._active = 0
+        # The worker thread keeps ownership of these until it exits (see
+        # ``_run``), so no second thread starts while an answer still runs.
         self._thread: threading.Thread | None = None
         self._stop_event: threading.Event | None = None
         self._sessions: dict[str, str] = {}
@@ -121,6 +125,10 @@ class ChatAnswerWorker:
         if context.provider not in SUPPORTED_CHAT_PROVIDERS:
             return chat_unavailable_message(context.provider)
         with self._cond:
+            if self._stop_event is not None and self._stop_event.is_set():
+                # stop() is waiting for the running answer; starting another
+                # thread now would answer two messages at once.
+                return CHAT_STOPPING_MESSAGE
             # Messages ahead: the ones waiting plus the one being answered.
             ahead = len(self._queue) + self._active
             self._queue.append((message, context))
@@ -143,19 +151,28 @@ class ChatAnswerWorker:
             )
 
     def stop(self) -> None:
-        """Finish the running answer, drop the rest, and join the thread."""
+        """Finish the running answer, drop the rest, and join the thread.
+
+        While stop() waits for the running answer, ``submit`` queues nothing
+        and returns ``CHAT_STOPPING_MESSAGE``; once stop() returns, the next
+        ``submit`` starts a fresh thread.
+        """
 
         with self._cond:
             thread = self._thread
             stop_event = self._stop_event
             if thread is None or stop_event is None:
                 return
-            stop_event.set()
-            dropped = len(self._queue)
-            self._queue.clear()
-            self._thread = None
-            self._stop_event = None
-            self._cond.notify_all()
+            dropped = 0
+            if not stop_event.is_set():
+                # Only the first stop() drops messages; a concurrent second
+                # stop() just waits for the same thread below.
+                stop_event.set()
+                dropped = len(self._queue)
+                self._queue.clear()
+                self._cond.notify_all()
+            # The thread handle stays set until the thread itself exits, so
+            # submit() cannot start a replacement while an answer runs.
         if dropped:
             self._safe_write(
                 f"Chat stopped: {dropped} queued chat "
@@ -185,6 +202,17 @@ class ChatAnswerWorker:
         thread.start()
 
     def _run(self, stop_event: threading.Event) -> None:
+        try:
+            self._run_loop(stop_event)
+        finally:
+            # Release ownership only once no answer can still be running.
+            with self._cond:
+                if self._thread is threading.current_thread():
+                    self._thread = None
+                    self._stop_event = None
+                self._cond.notify_all()
+
+    def _run_loop(self, stop_event: threading.Event) -> None:
         while True:
             with self._cond:
                 while not self._queue and not stop_event.is_set():

@@ -1466,7 +1466,10 @@ dependencies; Windows (`msvcrt`) and POSIX.
   session, an `OSError` from the record, or any other exception writes one
   `chat error:` line and the thread keeps going. `busy()`, `wait_idle()`,
   and an idempotent `stop()` (finishes the running answer, drops and counts
-  queued ones) are provided. Known limit: a role's own `HANDOFF.md` write
+  queued ones) are provided. The thread keeps its handle until it exits, so
+  a `submit` while `stop()` waits returns `Chat is stopping, so the chat
+  message was not sent.` and queues nothing, a concurrent `stop()` waits for
+  the same thread, and no two answers ever overlap. Known limit: a role's own `HANDOFF.md` write
   during an answer also counts as a chat change; no path filtering is done.
   Nothing in the loop calls it yet; CHAT-30 wires it in.
 - CHAT-30 (was part of CHAT-20): Chat messages are answered right away
