@@ -1028,6 +1028,382 @@ def test_tpm_self_loop_is_rejected() -> None:
     assert any(error.startswith("agent_self_loop:") for error in result.errors)
 
 
+# GROOM-4: a tpm stays inside the epic its dispatch started in.
+
+
+def _epic_handoff(
+    *,
+    epic_id: str | None,
+    next_agent: str = "backend",
+    producer: str = "tpm",
+    story_id: str = "S2",
+    remaining: list[str] | None = None,
+    status: str | None = None,
+    body: str = _TPM_WORK_PACKET,
+) -> str:
+    lines = [
+        "---",
+        f"next_agent: {next_agent}",
+        'reason: "Assign the next story."',
+    ]
+    if epic_id is not None:
+        lines.append(f"epic_id: {epic_id}")
+    lines.append(f"story_id: {story_id}")
+    if remaining is not None:
+        if remaining:
+            lines.append("remaining_stories:")
+            lines.extend(f'  - "{entry}"' for entry in remaining)
+        else:
+            lines.append("remaining_stories: []")
+    if status is not None:
+        lines.append(f"status: {status}")
+    lines.append(f"producer: {producer}")
+    lines.append("---")
+    return "\n".join(lines) + "\n\n# Handoff\n\n" + body
+
+
+_EPIC_PRIOR = _epic_handoff(
+    epic_id="EPIC-A",
+    next_agent="tpm",
+    producer="planner",
+    story_id="S1",
+    remaining=["S1 First story", "S2 Second story", "S3 Third story"],
+    body="## Next Step\n\n- **tpm:** Groom EPIC-A.\n",
+)
+
+
+def _epic_errors(result: Any) -> list[str]:
+    return [
+        error
+        for error in result.errors
+        if error.startswith("frontmatter_routing_rule:")
+        and ("producer `tpm`" in error or "dispatched role `tpm`" in error)
+        and "epic_id" in error
+    ]
+
+
+def _producer_mismatch_errors(result: Any) -> list[str]:
+    return [
+        error
+        for error in result.errors
+        if error.startswith("frontmatter_producer_mismatch:")
+    ]
+
+
+def _validate_against(text: str, prior: str | None, previous_agent: str = "tpm") -> Any:
+    from llm_handoff.validator import validate_handoff_text
+
+    return validate_handoff_text(text, previous_agent, prior_handoff_content=prior)
+
+
+def test_tpm_rewrite_that_changes_the_epic_fails() -> None:
+    current = _epic_handoff(
+        epic_id="EPIC-B", remaining=["S3 Third story"]
+    )
+
+    result = _validate_against(current, _EPIC_PRIOR)
+
+    matching = _epic_errors(result)
+    assert len(matching) == 1
+    assert "`EPIC-A`" in matching[0]
+    assert "`EPIC-B`" in matching[0]
+    assert "`planner`" in matching[0]
+    assert result.verdict == "NO"
+
+
+def test_tpm_epic_change_fails_with_empty_remaining_stories() -> None:
+    current = _epic_handoff(epic_id="EPIC-B", story_id="T1", remaining=[])
+
+    result = _validate_against(current, _EPIC_PRIOR)
+
+    assert len(_epic_errors(result)) == 1
+    # The story-list check skips two different epics, so only the epic guard
+    # catches this rewrite.
+    assert not any(
+        error.startswith("remaining_stories_dropped:") for error in result.errors
+    )
+
+
+def test_tpm_epic_change_fails_even_when_every_drop_has_a_reason() -> None:
+    current = _epic_handoff(
+        epic_id="EPIC-B",
+        story_id="S2",
+        remaining=[],
+        body=_TPM_WORK_PACKET
+        + "\n## Dropped Stories\n\n"
+        "- S1: Already done on main at 0a040ac.\n"
+        "- S3: Split into S4, S5.\n",
+    )
+
+    result = _validate_against(current, _EPIC_PRIOR)
+
+    assert len(_epic_errors(result)) == 1
+
+
+def test_tpm_rewrite_that_removes_the_epic_id_fails() -> None:
+    current = _epic_handoff(epic_id=None, remaining=["S3 Third story"])
+
+    result = _validate_against(current, _EPIC_PRIOR)
+
+    matching = _epic_errors(result)
+    assert len(matching) == 1
+    assert "removed epic_id `EPIC-A`" in matching[0]
+
+
+def test_tpm_rewrite_that_blanks_the_epic_id_fails() -> None:
+    current = _epic_handoff(epic_id='""', remaining=["S3 Third story"])
+
+    result = _validate_against(current, _EPIC_PRIOR)
+
+    assert len(_epic_errors(result)) == 1
+
+
+def test_tpm_same_epic_assignment_passes() -> None:
+    current = _epic_handoff(epic_id="EPIC-A", remaining=["S3 Third story"])
+
+    result = _validate_against(current, _EPIC_PRIOR)
+
+    assert _epic_errors(result) == []
+    assert result.errors == []
+
+
+def test_tpm_same_epic_compares_case_insensitively() -> None:
+    current = _epic_handoff(epic_id="epic-a", remaining=["S3 Third story"])
+
+    result = _validate_against(current, _EPIC_PRIOR)
+
+    assert _epic_errors(result) == []
+    assert result.errors == []
+
+
+@pytest.mark.parametrize(
+    ("status", "next_agent"),
+    [
+        ("escalate_to_user", "user"),
+        ("blocked_missing_context", "user"),
+        ("blocked_implementation_failure", "planner"),
+    ],
+)
+def test_tpm_same_epic_escalation_passes(status: str, next_agent: str) -> None:
+    current = _epic_handoff(
+        epic_id="EPIC-A",
+        next_agent=next_agent,
+        story_id="S1",
+        remaining=["S2 Second story", "S3 Third story"],
+        status=status,
+        body="The next story needs a design decision.\n",
+    )
+
+    result = _validate_against(current, _EPIC_PRIOR)
+
+    assert _epic_errors(result) == []
+
+
+def test_planner_may_change_the_epic() -> None:
+    prior = _epic_handoff(
+        epic_id="EPIC-A",
+        next_agent="planner",
+        producer="auditor",
+        story_id="S3",
+        remaining=[],
+        body="## Next Step\n\n- **planner:** Open the next epic.\n",
+    )
+    current = _epic_handoff(
+        epic_id="EPIC-B",
+        next_agent="tpm",
+        producer="planner",
+        story_id="T1",
+        remaining=["T1 First story", "T2 Second story"],
+        body="## Next Step\n\n- **tpm:** Groom EPIC-B.\n",
+    )
+
+    result = _validate_against(current, prior, previous_agent="planner")
+
+    assert not [
+        error for error in result.errors if error.startswith("frontmatter_routing_rule:")
+    ]
+
+
+def test_tpm_initializes_the_epic_when_the_prior_handoff_has_none() -> None:
+    prior = _epic_handoff(
+        epic_id=None,
+        next_agent="tpm",
+        producer="planner",
+        story_id="S1",
+        remaining=["S1 First story", "S2 Second story"],
+        body="## Next Step\n\n- **tpm:** Groom the open epic.\n",
+    )
+    current = _epic_handoff(epic_id="EPIC-A", story_id="S1", remaining=["S2 Second story"])
+
+    result = _validate_against(current, prior)
+
+    assert _epic_errors(result) == []
+    assert result.errors == []
+
+
+def test_tpm_epic_change_is_not_checked_without_prior_content() -> None:
+    current = _epic_handoff(epic_id="EPIC-B", remaining=["S3 Third story"])
+
+    result = _validate_against(current, None)
+
+    assert _epic_errors(result) == []
+    assert result.errors == []
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [
+        "",
+        "# Handoff without frontmatter\n",
+        "---\nnext_agent: [unclosed\n---\n\n# Handoff\n",
+        "---\n- not\n- a mapping\n---\n\n# Handoff\n",
+        "---\nnext_agent: tpm\n",
+    ],
+)
+def test_tpm_epic_guard_ignores_malformed_prior_content(prior: str) -> None:
+    current = _epic_handoff(epic_id="EPIC-B", remaining=["S3 Third story"])
+
+    result = _validate_against(current, prior)
+
+    assert _epic_errors(result) == []
+
+
+def test_tpm_epic_guard_reads_a_prior_handoff_with_a_bom() -> None:
+    current = _epic_handoff(epic_id="EPIC-B", remaining=["S3 Third story"])
+
+    result = _validate_against(current, "﻿" + _EPIC_PRIOR)
+
+    assert len(_epic_errors(result)) == 1
+
+
+def test_file_based_validation_rejects_a_tpm_epic_change(tmp_path: Path) -> None:
+    from llm_handoff.validator import validate_handoff
+
+    handoff_path = tmp_path / "HANDOFF.md"
+    handoff_path.write_text(
+        _epic_handoff(epic_id="EPIC-B", remaining=["S3 Third story"]),
+        encoding="utf-8",
+    )
+
+    result = validate_handoff(
+        handoff_path, "tpm", prior_handoff_content=_EPIC_PRIOR
+    )
+
+    assert len(_epic_errors(result)) == 1
+    assert result.verdict == "NO"
+
+
+def test_file_based_validation_passes_a_same_epic_tpm_assignment(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.validator import validate_handoff
+
+    handoff_path = tmp_path / "HANDOFF.md"
+    handoff_path.write_text(
+        _epic_handoff(epic_id="EPIC-A", remaining=["S3 Third story"]),
+        encoding="utf-8",
+    )
+
+    result = validate_handoff(
+        handoff_path, "tpm", prior_handoff_content=_EPIC_PRIOR
+    )
+
+    assert _epic_errors(result) == []
+
+
+# A dispatched tpm cannot bypass the epic guard by claiming another producer.
+
+
+def test_dispatched_tpm_claiming_planner_cannot_change_the_epic() -> None:
+    current = _epic_handoff(
+        epic_id="EPIC-B", producer="planner", story_id="T1", remaining=[]
+    )
+
+    result = _validate_against(current, _EPIC_PRIOR, previous_agent="tpm")
+
+    matching = _epic_errors(result)
+    assert len(matching) == 1
+    assert "dispatched role `tpm` changed epic_id from `EPIC-A` to `EPIC-B`" in (
+        matching[0]
+    )
+    assert len(_producer_mismatch_errors(result)) == 1
+    assert result.verdict == "NO"
+
+
+def test_dispatched_tpm_claiming_planner_cannot_remove_the_epic() -> None:
+    current = _epic_handoff(
+        epic_id=None, producer="planner", remaining=["S3 Third story"]
+    )
+
+    result = _validate_against(current, _EPIC_PRIOR, previous_agent="tpm")
+
+    matching = _epic_errors(result)
+    assert len(matching) == 1
+    assert "removed epic_id `EPIC-A`" in matching[0]
+
+
+def test_dispatched_tpm_must_write_producer_tpm() -> None:
+    current = _epic_handoff(
+        epic_id="EPIC-A", producer="planner", remaining=["S3 Third story"]
+    )
+
+    result = _validate_against(current, _EPIC_PRIOR, previous_agent="tpm")
+
+    assert _epic_errors(result) == []
+    matching = _producer_mismatch_errors(result)
+    assert len(matching) == 1
+    assert "`planner`" in matching[0]
+    assert result.verdict == "NO"
+
+
+def test_dispatched_tpm_producer_check_applies_without_prior_content() -> None:
+    current = _epic_handoff(
+        epic_id="EPIC-A", producer="planner", remaining=["S3 Third story"]
+    )
+
+    result = _validate_against(current, None, previous_agent="tpm")
+
+    assert len(_producer_mismatch_errors(result)) == 1
+
+
+def test_dispatched_planner_is_not_held_to_the_tpm_producer() -> None:
+    current = _epic_handoff(
+        epic_id="EPIC-B",
+        next_agent="tpm",
+        producer="planner",
+        story_id="T1",
+        remaining=["T1 First story"],
+        body="## Next Step\n\n- **tpm:** Groom EPIC-B.\n",
+    )
+
+    result = _validate_against(current, _EPIC_PRIOR, previous_agent="planner")
+
+    assert _producer_mismatch_errors(result) == []
+    assert _epic_errors(result) == []
+
+
+def test_file_based_validation_rejects_a_dispatched_tpm_claiming_planner(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.validator import validate_handoff
+
+    handoff_path = tmp_path / "HANDOFF.md"
+    handoff_path.write_text(
+        _epic_handoff(
+            epic_id="EPIC-B", producer="planner", story_id="T1", remaining=[]
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_handoff(
+        handoff_path, "tpm", prior_handoff_content=_EPIC_PRIOR
+    )
+
+    assert len(_epic_errors(result)) == 1
+    assert len(_producer_mismatch_errors(result)) == 1
+    assert result.verdict == "NO"
+
+
 # Check 6: rationalization patterns
 
 

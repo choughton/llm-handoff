@@ -280,6 +280,38 @@ def test_validator_skips_the_story_check_without_a_prior_handoff() -> None:
     assert not any("remaining_stories_dropped" in error for error in result.errors)
 
 
+def test_validator_skips_a_new_epic_for_a_non_tpm_producer() -> None:
+    current = _handoff(epic_id="EPIC-B", story_id="T1", remaining=["T2 Next epic story"])
+
+    result = validate_handoff_text(current, "auditor", prior_handoff_content=PRIOR)
+
+    assert not any("remaining_stories_dropped" in error for error in result.errors)
+    assert not any("epic_id" in error for error in result.errors)
+
+
+def test_tpm_cannot_rename_the_epic_to_skip_the_story_check() -> None:
+    current = _handoff(
+        next_agent="planner",
+        producer="tpm",
+        epic_id="EPIC-B",
+        story_id="S1",
+        remaining=["S2 Second story"],
+        body="# Handoff\n\nThe next story needs a planner decision.\n",
+    )
+
+    result = validate_handoff_text(current, "tpm", prior_handoff_content=PRIOR)
+
+    # The rename skips the story-list comparison, so the epic guard is what
+    # rejects the silently dropped S3.
+    assert not any("remaining_stories_dropped" in error for error in result.errors)
+    assert any(
+        error.startswith("frontmatter_routing_rule:")
+        and "producer `tpm` changed epic_id from `EPIC-A` to `EPIC-B`" in error
+        for error in result.errors
+    )
+    assert result.verdict == "NO"
+
+
 def test_validator_reads_the_project_state_file_for_the_warning(tmp_path: Path) -> None:
     handoff_path = tmp_path / "HANDOFF.md"
     handoff_path.write_text(
