@@ -115,8 +115,9 @@ configured role's provider CLI binary is on PATH, and that the handoff file
 routes and validates. When a role runs on
 Antigravity without `unsafe_bypass`, it also checks
 `~/.gemini/antigravity-cli/settings.json` for the required `agy`
-`permissions.allow` and `permissions.deny` entries and for `deny` or `ask`
-rules that override them, reading that file only
+`permissions.allow` and `permissions.deny` entries, for `deny` or `ask`
+rules that override them, and for `unsandboxed(...)` rules, which `agy`
+ignores, reading that file only
 (see [CONFIGURATION.md](CONFIGURATION.md)). It prints one `PASS`, `FAIL`,
 or `WARN` line per check and a summary. It exits `0` when there are no errors
 (warnings such as a dirty working tree or a missing handoff file are allowed)

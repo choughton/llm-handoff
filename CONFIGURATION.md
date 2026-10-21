@@ -1925,7 +1925,6 @@ expect, with a backslash before each regex metacharacter in `<cmd>`
 runs it. Under `permissions.deny`:
 
 - `command(regex:^git( .*)? push( .*)?$)`
-- `unsandboxed(regex:^git( .*)? push( .*)?$)`
 
 The regex form was checked live on 2026-10-17 with `agy` 1.4.2:
 `git status --short`, `git log --oneline -5`, and `python -m pytest --version`
@@ -1934,14 +1933,22 @@ earlier exact-string entries (`command(git status)` and so on) did not cover
 commands run with arguments, and the exact-string deny entries
 `command(git push)` and `unsandboxed(git push)` blocked only a bare
 `git push`: `git push origin main` ran when a broader `git` grant was
-present. The deny entries above also refused option-prefixed pushes such as
-`git -c core.pager=cat push origin main` and `git -C . push origin main`.
+present. The regex deny entry above also refused option-prefixed pushes
+such as `git -c core.pager=cat push origin main` and
+`git -C . push origin main`.
 
-The deny entries are deliberately broad: they refuse any `git` command line
-that contains ` push`, for example `git log --grep push`. The opt-in
+The list used to hold a second deny entry,
+`unsandboxed(regex:^git( .*)? push( .*)?$)`. On 2026-10-21, `agy` 1.4.4
+logged that `unsandboxed` permission rules are ignored and grant nothing;
+the `command(regex:...)` deny entry is the one that blocks pushes, so the
+`unsandboxed` entry was dropped. If your settings file still has it, remove
+it; `llm-handoff doctor` warns about it.
+
+The deny entry is deliberately broad: it refuses any `git` command line that
+contains ` push`, for example `git log --grep push`. The opt-in
 `command(regex:^python( .*)?$)` grant allows `python -c <code>`, which matches
-the Claude `Bash(python:*)` rule, so it can run `git push` past these deny
-entries. Unanchored regex semantics, glob forms, `git` aliases, and
+the Claude `Bash(python:*)` rule, so it can run `git push` past this deny
+entry. Unanchored regex semantics, glob forms, `git` aliases, and
 `sh -c "git push"` were not checked.
 
 When a deny entry refuses a command, `agy` reports it as a `run_command` tool
@@ -1949,12 +1956,12 @@ error inside a `SUCCESS` result with empty stderr. The adapter fails the
 dispatch on any `run_command` tool error whose message contains
 `Matches user-configured deny rule`, even when the role recovers and
 finishes. For each refusal it logs a fixed line with the step number and,
-when it is one of the required deny entries above, the matched entry, for
+when it is the required deny entry above, the matched entry, for
 example `Antigravity deny rule refused a command at step 2 (matched deny rule
 command(regex:^git( .*)? push( .*)?$))`; any other rule is reported as
 `matched a user-configured deny rule`. The refused command line and `agy`'s
 error text are never logged, because they can carry credentials. Because
-the deny entries are broad, they also fail turns that run harmless lines such
+the deny entry is broad, it also fails turns that run harmless lines such
 as `git log --grep push`.
 
 The grants are user-wide: they apply to every `agy` run for that user, in any
@@ -1981,10 +1988,9 @@ an interpreter are left out):
   `{"permissions": {"allow": [...], "deny": [...]}}` (a missing `allow` or
   `deny` key counts as an empty list; an optional `ask` key must also be a
   list of strings).
-- FAIL when a `permissions.allow` entry starts with `command(git push` or
-  `unsandboxed(git push`. A regex allow entry (`command(regex:<p>)` or
-  `unsandboxed(regex:<p>)`) is decided in this order, with at most one FAIL
-  per entry:
+- FAIL when a `permissions.allow` entry starts with `command(git push`. A
+  regex allow entry (`command(regex:<p>)`) is decided in this order, with at
+  most one FAIL per entry:
   - An entry that equals one of the required allow entries by exact string
     (a generated grant) passes, unless its plain command can push: its first
     word is `git` and it has no second word, its second word starts with `-`,
@@ -1994,9 +2000,8 @@ an interpreter are left out):
   - Any other entry whose pattern contains `git` (case-insensitive), whether
     or not it compiles, fails: the doctor cannot verify that it does not allow
     `git push`, so remove it or replace it with a generated grant. For
-    example, `command(regex:^git push --force$)`,
-    `command(regex:^git status$)`, and `unsandboxed(regex:^git status( .*)?$)`
-    fail.
+    example, `command(regex:^git push --force$)` and
+    `command(regex:^git status$)` fail.
   - Any other entry fails when its pattern compiles and matches (by
     `re.search`) any of `git push`, `git push origin main`, or
     `git -C . push origin main`; for example, `command(regex:.*)` fails. A
@@ -2007,8 +2012,13 @@ an interpreter are left out):
 - WARN for each required allow entry or deny entry that is missing. Entries
   match by exact string, and legacy `command(<cmd>)` exact grants do not cover
   commands run with arguments, so settings that still hold them get this
-  warning. Legacy deny entries `command(git push)` and
-  `unsandboxed(git push)` get a warning naming both regex deny entries.
+  warning. A legacy deny entry `command(git push)` gets a warning naming the
+  regex deny entry.
+- WARN for each of `permissions.allow`, `permissions.deny`, and
+  `permissions.ask` that holds an entry starting with `unsandboxed(`, naming
+  those entries. `agy` 1.4.4 ignores `unsandboxed` rules, so they allow or
+  deny nothing; remove them. This includes allow entries such as
+  `unsandboxed(git push)`, which are not checked as push grants.
 - WARN when a `permissions.deny` or `permissions.ask` rule overrides a
   required allow entry. Antigravity applies Deny > Ask > Allow, and a headless
   `agy -p` run denies any command that needs approval, so a rule such as
@@ -2018,7 +2028,7 @@ an interpreter are left out):
   allow entries. It counts a rule as overriding when it matches exactly, is a
   word prefix (`command(git)` for `git status`), is a `*` or `?` wildcard
   pattern that matches, or is a `regex:` pattern that matches. The required
-  deny entries do not match any required command, so they are not reported.
+  deny entry does not match any required command, so it is not reported.
   This errs toward warning; the exact `agy` matching rules for every form have
   not been checked against a live CLI.
 - WARN, with `interpreter_grants` off, for each `permissions.allow` entry
@@ -2080,7 +2090,7 @@ plus a grant for each `verification_allowed_prefixes` entry that starts with
 one of those interpreters.
 
 Turn it on only if you accept the risk. An interpreter can run any command,
-`git push` included, past the allowlist and the `git push` deny entries;
+`git push` included, past the allowlist and the `git push` deny entry;
 writing a script with `Write` and running it with `python`, or writing a
 `conftest.py` and running `pytest`, does the same. Role allowlists are a
 guardrail, not a sandbox. Whatever the value, protect the remote with
