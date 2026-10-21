@@ -52,8 +52,10 @@ from llm_handoff.chat_takeover import (
     ChatTakeover,
     arm_takeover,
     clear_takeover,
+    clear_takeover_if,
     disarm_takeover,
     handoff_content_sha,
+    pending_takeover,
     takeover_handoff_sha,
     takeover_requested,
 )
@@ -2126,6 +2128,34 @@ def _run_loop(
                 # An answer still running when the role returned may yet
                 # rewrite the handoff and request a takeover.
                 chat_session.wait_for_answers(log_fn)
+                # A role that returned while an answer ran may have written
+                # its own handback; that is not a chat rewrite (CHAT-35).
+                # Only the inspected request is cleared: a newer one from an
+                # answer that finished meanwhile stays and is followed.
+                inspected_takeover = (
+                    pending_takeover() if dispatch_returned is not None else None
+                )
+                if inspected_takeover is not None and _takeover_is_role_handback(
+                    config, current_cycle.route, inspected_takeover.handoff_sha
+                ):
+                    if clear_takeover_if(inspected_takeover.generation):
+                        _log(
+                            log_fn,
+                            "AGENT",
+                            f"HANDOFF.md changed while a chat answer ran, but "
+                            f"the {current_cycle.route} returned and the "
+                            f"handoff names it as producer, so it is the "
+                            f"{current_cycle.route}'s handback, not a chat "
+                            "rewrite.",
+                        )
+                    else:
+                        _log(
+                            log_fn,
+                            "AGENT",
+                            "Another chat answer rewrote HANDOFF.md after the "
+                            f"{current_cycle.route}'s handback, so the "
+                            "dispatcher follows the chat's handoff.",
+                        )
                 # A role stopped by a chat answer raised; one that returned
                 # before the poll saw the request still yields to the chat.
                 chat_took_over = dispatch_returned is None or takeover_requested()
@@ -3144,6 +3174,39 @@ class _ChatTakeoverOutcome:
     story_baseline_known: bool = False
     story_baseline: StoryListBaseline | None = None
     pending_planner_recovery: PendingPlannerRecovery | None = None
+
+
+def _takeover_is_role_handback(
+    config: DispatchConfig, route: RouteName, requested_sha: str | None
+) -> bool:
+    """Return True when the inspected takeover names the role's own handback.
+
+    ``requested_sha`` is the handoff digest the inspected request recorded:
+    the bytes the chat answer saw when it finished. When those bytes are
+    still on disk and their frontmatter
+    ``producer`` normalizes to the dispatched route, the handoff change the
+    answer saw was the role's own handback write, not a chat rewrite. A
+    missing, unreadable, or unparseable handoff, a different producer, or
+    bytes that changed since the request never count as the role's.
+    """
+
+    if requested_sha is None:
+        return False
+    try:
+        data = config.handoff_full_path.read_bytes()
+    except (OSError, ValueError):
+        return False
+    # The same digest the chat worker records (``handoff_content_sha``).
+    if sha256(data).hexdigest() != requested_sha:
+        return False
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return False
+    frontmatter = _parse_frontmatter_or_none(text)
+    if frontmatter is None:
+        return False
+    return normalize_next_agent_value(frontmatter.producer) == route
 
 
 def _late_chat_takeover(

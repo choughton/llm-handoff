@@ -16,6 +16,21 @@ This project follows a simple pre-release changelog until the first public tag.
   an `unsandboxed(...)` entry, and names the entries to remove. An
   `unsandboxed(git push)` or `unsandboxed(regex:...)` allow entry no longer
   fails as a push grant; it gets the same warning.
+- A role's own handback written while a chat answer runs is no longer taken
+  for a chat rewrite (CHAT-35). The chat worker requests a takeover whenever
+  `HANDOFF.md` changed during an answer, so a backend that wrote its
+  `ready_for_review` handback and returned mid-answer had its dispatcher
+  commit, `scope_sha` stamp, and work-claim gate dropped, and its raw
+  handback failed validation as a planner handoff. Now, when the role
+  returned and the handoff still holds the requested bytes with a
+  `producer` naming that role, the loop clears the request, keeps the chat
+  change record, and runs the role's normal post-dispatch path, with the
+  chat's paths riding the implementer commit. Any other producer, missing
+  frontmatter, a stopped role, or a rewrite after the role returned is
+  still a chat takeover. The loop clears only the request it inspected,
+  through new `chat_takeover.pending_takeover`/`clear_takeover_if` keyed to
+  a per-request generation, so a newer chat rewrite that lands between the
+  check and the clear is still followed.
 - The loop supplies finished role sessions to `@role` chat (CHAT-34). After
   each returned role dispatch, whatever its exit code, the loop keeps the
   role, story id, configured primary provider, and session id in memory

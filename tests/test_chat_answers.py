@@ -180,6 +180,9 @@ def test_module_docstring_states_the_limit_and_the_wiring() -> None:
     assert "CHAT-34" in doc
     assert "role_session" in doc
     assert "role's own ``HANDOFF.md`` write" in doc
+    # CHAT-35: the loop, not the worker, tells a role's handback apart.
+    assert "CHAT-35" in doc
+    assert "``producer``" in doc
 
 
 def test_no_running_role_queues_nothing(harness: Harness, worker) -> None:

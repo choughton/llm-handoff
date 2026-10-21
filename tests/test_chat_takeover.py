@@ -96,6 +96,44 @@ def test_module_wrappers_use_the_shared_controller(
     assert takeover_handoff_sha() is None
 
 
+def test_clear_if_drops_only_the_inspected_request() -> None:
+    controller = ChatTakeoverController()
+    assert controller.pending() is None
+    assert controller.clear_if(0) is False
+
+    controller.request("abc123")
+    inspected = controller.pending()
+    assert inspected is not None
+    assert inspected.handoff_sha == "abc123"
+
+    # A newer request, even with the same bytes, replaces the inspected one
+    # and survives a clear keyed to the old generation.
+    controller.request("abc123")
+    assert controller.clear_if(inspected.generation) is False
+    assert controller.requested() is True
+    newer = controller.pending()
+    assert newer is not None
+    assert newer.generation > inspected.generation
+
+    assert controller.clear_if(newer.generation) is True
+    assert controller.requested() is False
+    assert controller.pending() is None
+    # Clearing the same generation twice does nothing more.
+    assert controller.clear_if(newer.generation) is False
+
+
+def test_clear_if_leaves_the_armed_state(
+    shared_controller: ChatTakeoverController,
+) -> None:
+    arm_takeover()
+    request_takeover("cafe")
+    inspected = chat_takeover.pending_takeover()
+    assert inspected is not None
+    assert chat_takeover.clear_takeover_if(inspected.generation) is True
+    assert takeover_requested() is False
+    assert shared_controller.armed() is True
+
+
 def test_fresh_controller_starts_disarmed() -> None:
     controller = ChatTakeoverController()
     assert controller.armed() is False
