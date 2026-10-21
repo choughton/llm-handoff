@@ -1733,7 +1733,7 @@ The startup banner prints one `Launch <role>:` line per role and a
 | --- | --- | --- |
 | Claude Code | `--permission-mode dontAsk --tools <tool names> --strict-mcp-config --allowedTools <allowed_tools> --disallowedTools WebFetch,WebSearch` | `--dangerously-skip-permissions` |
 | Codex | `--sandbox workspace-write --ask-for-approval never` | `--yolo` |
-| Antigravity (`agy`) | none | `--dangerously-skip-permissions` |
+| Antigravity (`agy`) | `--mode accept-edits` | `--dangerously-skip-permissions` |
 
 Claude Code in `dontAsk` mode denies any tool call that `allowed_tools` does
 not allow instead of prompting. `--allowedTools` only pre-approves rules, so
@@ -1852,11 +1852,14 @@ commit in your setup, check its sandbox settings before reaching for
 
 The Antigravity adapter launches `agy -p <prompt> --agent <name>
 --output-format stream-json --print-timeout <seconds>s`, adding `--model` when
-the role sets `model` and `--conversation <id>` when it resumes. It passes no
-permission flag by default. In print mode `agy` allows workspace file reads
-and writes, but a shell command runs only when a `permissions.allow` grant in
-the `agy` user settings covers it, and those grants apply to every `agy` run
-for that user. The adapter passes no `--sandbox` flag. A `result` event whose
+the role sets `model` and `--conversation <id>` when it resumes. By default it
+also passes `--mode accept-edits`. Without it, print mode in `agy`'s default
+agent mode auto-denies every file write outside the system temp directory, so
+a role could not update `HANDOFF.md`. With it, `agy` approves file edits
+inside the workspace; a write outside the workspace or a shell command still
+runs only when a `permissions.allow` grant in the `agy` user settings covers
+it, and those grants apply to every `agy` run for that user. Both limits were
+checked against `agy` 1.4.4. The adapter passes no `--sandbox` flag. A `result` event whose
 `status` is not `SUCCESS`, or a run that ends without a `result` event, counts
 as a failed dispatch.
 
