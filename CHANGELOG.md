@@ -14,8 +14,8 @@ This project follows a simple pre-release changelog until the first public tag.
   it. `doctor` now warns, without failing, when `permissions.allow`,
   `permissions.deny`, or `permissions.ask` in the `agy` settings file holds
   an `unsandboxed(...)` entry, and names the entries to remove. An
-  `unsandboxed(...)` allow entry that can grant `git push` still fails and is
-  not repeated in the warning.
+  `unsandboxed(git push)` or `unsandboxed(regex:...)` allow entry no longer
+  fails as a push grant; it gets the same warning.
 - `agy` roles launch with `--mode accept-edits`. In its default agent mode,
   `agy` print mode auto-denies every file write outside the system temp
   directory, so an Antigravity planner could not rewrite `HANDOFF.md` and

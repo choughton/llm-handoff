@@ -427,9 +427,10 @@ def _check_role_binaries(
 
 
 _ANTIGRAVITY_CHECK_NAME = "antigravity permissions"
-_GIT_PUSH_GRANT_PREFIXES = ("command(git push", "unsandboxed(git push")
-_REGEX_GRANT_PREFIXES = ("command(regex:", "unsandboxed(regex:")
-# agy 1.4.4 ignores rules with this prefix.
+_GIT_PUSH_GRANT_PREFIX = "command(git push"
+_REGEX_GRANT_PREFIX = "command(regex:"
+# agy 1.4.4 ignores rules with this prefix, so they are warned about, not
+# checked as push grants.
 _IGNORED_RULE_PREFIX = "unsandboxed("
 # Push command lines a regex allow entry that does not name `git` must not
 # match. This is a backstop only: a pattern that names `git` is decided by
@@ -440,15 +441,11 @@ _GIT_PUSH_PROBES = ("git push", "git push origin main", "git -C . push origin ma
 def _regex_allow_pattern(entry: str) -> str | None:
     """Return the pattern of a regex allow ``entry``, or None for other entries.
 
-    A regex allow entry starts with ``command(regex:`` or
-    ``unsandboxed(regex:`` and ends with ``)``; its pattern is the text
-    between them.
+    A regex allow entry starts with ``command(regex:`` and ends with ``)``;
+    its pattern is the text between them.
     """
-    if not entry.endswith(")"):
-        return None
-    for prefix in _REGEX_GRANT_PREFIXES:
-        if entry.startswith(prefix):
-            return entry[len(prefix) : -1]
+    if entry.startswith(_REGEX_GRANT_PREFIX) and entry.endswith(")"):
+        return entry[len(_REGEX_GRANT_PREFIX) : -1]
     return None
 
 
@@ -647,17 +644,15 @@ def _check_antigravity_permissions(
         return
     allow, deny, ask = result
     found = False
-    failed_allow: set[str] = set()
     generated_commands = dict(zip(allow_required, allowed_commands, strict=True))
     for entry in allow:
-        if entry.startswith(_GIT_PUSH_GRANT_PREFIXES):
+        if entry.startswith(_GIT_PUSH_GRANT_PREFIX):
             problem: str | None = "push"
         else:
             problem = _regex_grant_push_problem(entry, generated_commands)
         if problem is None:
             continue
         found = True
-        failed_allow.add(entry)
         if problem == "unverifiable":
             advice = (
                 "the doctor cannot verify that this regex entry does not allow "
@@ -713,14 +708,8 @@ def _check_antigravity_permissions(
             )
     # agy 1.4.4 logs that `unsandboxed(...)` rules are ignored and grant
     # nothing, so a leftover entry is dead weight that looks like a guardrail.
-    # An allow entry that already failed above is not reported twice.
     for key, rules in (("allow", allow), ("deny", deny), ("ask", ask)):
-        ignored = [
-            rule
-            for rule in rules
-            if rule.startswith(_IGNORED_RULE_PREFIX)
-            and not (key == "allow" and rule in failed_allow)
-        ]
+        ignored = [rule for rule in rules if rule.startswith(_IGNORED_RULE_PREFIX)]
         if ignored:
             found = True
             checks.append(

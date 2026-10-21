@@ -1543,9 +1543,7 @@ def test_doctor_antigravity_missing_keys_count_as_empty_lists(
     assert "permissions.deny is missing" in lines[1]
 
 
-@pytest.mark.parametrize(
-    "grant", ["command(git push)", "command(git push origin main)", "unsandboxed(git push)"]
-)
+@pytest.mark.parametrize("grant", ["command(git push)", "command(git push origin main)"])
 def test_doctor_antigravity_fails_when_allow_grants_git_push(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, grant: str
 ) -> None:
@@ -1695,21 +1693,29 @@ def test_doctor_antigravity_warns_on_unsandboxed_entries_in_each_list(
     assert all("agy ignores `unsandboxed(...)` rules" in line for line in lines)
 
 
-def test_doctor_antigravity_does_not_repeat_a_failed_unsandboxed_allow(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+@pytest.mark.parametrize(
+    "grant",
+    [
+        "unsandboxed(git push)",
+        "unsandboxed(regex:^git status( .*)?$)",
+        "unsandboxed(regex:^git( .*)?$)",
+        "unsandboxed(regex:.*)",
+    ],
+)
+def test_doctor_antigravity_warns_not_fails_on_unsandboxed_push_allow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, grant: str
 ) -> None:
     repo = _agy_repo(tmp_path, monkeypatch, backend_fallback=False)
-    _write_agy_settings(
-        tmp_path, _complete_agy_settings(extra_allow=("unsandboxed(git push)",))
-    )
+    _write_agy_settings(tmp_path, _complete_agy_settings(extra_allow=(grant,)))
 
     exit_code, output = _run(repo, capsys)
 
-    assert exit_code == 1
+    assert exit_code == 0, output
     lines = _agy_lines(output)
     assert len(lines) == 1, output
-    assert lines[0].startswith(f"FAIL {AGY_CHECK}:")
-    assert "agy ignores" not in lines[0]
+    assert lines[0].startswith(f"WARN {AGY_CHECK}:")
+    assert f"permissions.allow has `{grant}`" in lines[0]
+    assert "agy ignores `unsandboxed(...)` rules" in lines[0]
 
 
 def test_doctor_antigravity_warns_on_legacy_exact_deny_entries(
@@ -1762,10 +1768,8 @@ def test_doctor_antigravity_fails_when_regex_allow_matches_git_push(
         "command(regex:^git -c x=y push origin main$)",
         "command(regex:^git status$)",
         "command(regex:^GIT( .*)?$)",
-        "unsandboxed(regex:^git status( .*)?$)",
         "command(regex:^git( .*)?$)",
         "command(regex:^git push( .*)?$)",
-        "unsandboxed(regex:^git( .*)?$)",
         "command(regex:^git -C \\. push)",
         "command(regex:^git[)",
     ],

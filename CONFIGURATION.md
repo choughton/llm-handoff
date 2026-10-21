@@ -1988,10 +1988,9 @@ an interpreter are left out):
   `{"permissions": {"allow": [...], "deny": [...]}}` (a missing `allow` or
   `deny` key counts as an empty list; an optional `ask` key must also be a
   list of strings).
-- FAIL when a `permissions.allow` entry starts with `command(git push` or
-  `unsandboxed(git push`. A regex allow entry (`command(regex:<p>)` or
-  `unsandboxed(regex:<p>)`) is decided in this order, with at most one FAIL
-  per entry:
+- FAIL when a `permissions.allow` entry starts with `command(git push`. A
+  regex allow entry (`command(regex:<p>)`) is decided in this order, with at
+  most one FAIL per entry:
   - An entry that equals one of the required allow entries by exact string
     (a generated grant) passes, unless its plain command can push: its first
     word is `git` and it has no second word, its second word starts with `-`,
@@ -2001,9 +2000,8 @@ an interpreter are left out):
   - Any other entry whose pattern contains `git` (case-insensitive), whether
     or not it compiles, fails: the doctor cannot verify that it does not allow
     `git push`, so remove it or replace it with a generated grant. For
-    example, `command(regex:^git push --force$)`,
-    `command(regex:^git status$)`, and `unsandboxed(regex:^git status( .*)?$)`
-    fail.
+    example, `command(regex:^git push --force$)` and
+    `command(regex:^git status$)` fail.
   - Any other entry fails when its pattern compiles and matches (by
     `re.search`) any of `git push`, `git push origin main`, or
     `git -C . push origin main`; for example, `command(regex:.*)` fails. A
@@ -2019,8 +2017,8 @@ an interpreter are left out):
 - WARN for each of `permissions.allow`, `permissions.deny`, and
   `permissions.ask` that holds an entry starting with `unsandboxed(`, naming
   those entries. `agy` 1.4.4 ignores `unsandboxed` rules, so they allow or
-  deny nothing; remove them. An `unsandboxed(...)` allow entry that fails as
-  described above is not repeated in this warning.
+  deny nothing; remove them. This includes allow entries such as
+  `unsandboxed(git push)`, which are not checked as push grants.
 - WARN when a `permissions.deny` or `permissions.ask` rule overrides a
   required allow entry. Antigravity applies Deny > Ask > Allow, and a headless
   `agy -p` run denies any command that needs approval, so a rule such as
