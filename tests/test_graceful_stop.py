@@ -319,12 +319,24 @@ def _chat_run_dispatch(
     stdin_tty: bool = True,
     stdout_tty: bool = True,
     run_loop_error: BaseException | None = None,
+    during_run: Any = None,
+    seen: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     from llm_handoff import chat_session
     from llm_handoff.chat_input import ChatInput
 
     (tmp_path / ".git").mkdir()
-    seen: dict[str, Any] = {"factory_calls": 0, "logger": None}
+    # A caller may pass ``seen`` to read it when ``_run_dispatch`` raises.
+    seen = {} if seen is None else seen
+    seen.update({"factory_calls": 0, "logger": None})
+    events: list[str] = seen.setdefault("events", [])
+    real_detach = chat_session.detach
+
+    def recording_detach() -> None:
+        events.append("detach")
+        real_detach()
+
+    monkeypatch.setattr(chat_session, "detach", recording_detach)
 
     class Logger(_ChatLoggerFake):
         def __init__(self, **kwargs: object) -> None:
@@ -340,6 +352,9 @@ def _chat_run_dispatch(
     def fake_run_loop(_config: object, *, log: Any = None) -> int:
         seen["chat_line_during_run"] = log.chat_line
         seen["session_attached_during_run"] = chat_session.SESSION.attached
+        seen["worker_during_run"] = chat_session.SESSION.worker
+        if during_run is not None:
+            during_run(seen)
         if run_loop_error is not None:
             raise run_loop_error
         return 0
@@ -353,11 +368,55 @@ def _chat_run_dispatch(
     monkeypatch.setattr(main_module.sys, "stdin", _TTYStream(stdin_tty))
     monkeypatch.setattr(main_module.sys, "stdout", _TTYStream(stdout_tty))
 
-    exit_code = main_module._run_dispatch(
-        dry_run=dry_run, use_manual_frontend=False, repo_root=tmp_path
-    )
-    seen["session_attached_after_run"] = chat_session.SESSION.attached
+    try:
+        exit_code = main_module._run_dispatch(
+            dry_run=dry_run, use_manual_frontend=False, repo_root=tmp_path
+        )
+    finally:
+        seen["session_attached_after_run"] = chat_session.SESSION.attached
+        seen["worker_after_run"] = chat_session.SESSION.worker
     return exit_code, seen
+
+
+class _FakeChatWorker:
+    """Stands in for ``ChatAnswerWorker`` and records how it is used."""
+
+    def __init__(self, events: list[str], **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.events = events
+        self.submitted: list[str] = []
+        self.stop_calls = 0
+
+    def submit(self, text: str) -> str:
+        self.submitted.append(text)
+        return "sent"
+
+    def busy(self) -> bool:
+        return False
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        return True
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self.events.append("stop")
+
+
+def _patch_fake_worker(
+    monkeypatch: pytest.MonkeyPatch, seen: dict[str, Any]
+) -> list[_FakeChatWorker]:
+    """Patch ``ChatAnswerWorker`` in ``__main__``; workers share seen's events."""
+
+    instances: list[_FakeChatWorker] = []
+    events: list[str] = seen.setdefault("events", [])
+
+    def build(**kwargs: Any) -> _FakeChatWorker:
+        worker = _FakeChatWorker(events, **kwargs)
+        instances.append(worker)
+        return worker
+
+    monkeypatch.setattr(main_module, "ChatAnswerWorker", build)
+    return instances
 
 
 def test_run_dispatch_attaches_the_chat_line_for_an_interactive_run(
@@ -374,33 +433,163 @@ def test_run_dispatch_attaches_the_chat_line_for_an_interactive_run(
     assert seen["logger"].attached == [seen["chat_line"], None]
 
 
-def test_run_dispatch_saves_sent_chat_lines_to_the_queue(
+def test_run_dispatch_sends_chat_lines_to_the_answer_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from llm_handoff import chat_session
-    from llm_handoff.chat_queue import (
-        ChatMessage,
-        load_chat_messages,
-        queued_message_notice,
+    from llm_handoff.chat_changes import chat_changes_path
+
+    seen: dict[str, Any] = {}
+    workers = _patch_fake_worker(monkeypatch, seen)
+
+    exit_code, seen = _chat_run_dispatch(
+        tmp_path, monkeypatch, dry_run=False, seen=seen
     )
 
-    exit_code, seen = _chat_run_dispatch(tmp_path, monkeypatch, dry_run=False)
+    assert exit_code == 0
+    assert len(workers) == 1
+    worker = workers[0]
+    on_submit = seen["factory_kwargs"].get("on_submit")
+    assert on_submit == worker.submit
+    repo_root = Path(worker.kwargs["repo_root"])
+    assert repo_root.resolve() == tmp_path.resolve()
+    assert worker.kwargs["handoff_path"] == (
+        repo_root / "docs" / "handoff" / "HANDOFF.md"
+    ).resolve()
+    assert worker.kwargs["changes_path"] == chat_changes_path(repo_root)
+
+    # The context callable reads the session when it is called.
+    context = worker.kwargs["context"]
+    first, second = object(), object()
+    monkeypatch.setattr(chat_session.SESSION, "_context", first)
+    assert context() is first
+    monkeypatch.setattr(chat_session.SESSION, "_context", second)
+    assert context() is second
+
+    assert on_submit("hello") == "sent"
+    assert worker.submitted == ["hello"]
+    assert not (tmp_path / "logs/dispatch/chat-queue.json").exists()
+    assert not hasattr(main_module, "save_chat_message")
+    assert not hasattr(main_module, "chat_queue_path")
+
+
+def test_run_dispatch_attaches_the_worker_only_during_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+    workers = _patch_fake_worker(monkeypatch, seen)
+
+    exit_code, seen = _chat_run_dispatch(
+        tmp_path, monkeypatch, dry_run=False, seen=seen
+    )
 
     assert exit_code == 0
-    on_submit = seen["factory_kwargs"].get("on_submit")
-    assert callable(on_submit)
-    queue = tmp_path / "logs/dispatch/chat-queue.json"
-    assert not queue.exists()
+    assert len(workers) == 1
+    assert seen["worker_during_run"] is workers[0]
+    assert seen["worker_after_run"] is None
 
-    monkeypatch.setattr(chat_session.SESSION, "_role", "backend")
-    notice = on_submit("hello")
 
-    assert notice == queued_message_notice("backend")
-    messages = load_chat_messages(queue)
-    assert len(messages) == 1
-    assert isinstance(messages[0], ChatMessage)
-    assert messages[0].text == "hello"
-    assert messages[0].role == "backend"
+@pytest.mark.parametrize(
+    ("run_loop_error", "expected_exit"),
+    [(None, 0), (KeyboardInterrupt(), 130), (RuntimeError("x"), None)],
+)
+def test_run_dispatch_stops_the_worker_before_the_session_detaches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    run_loop_error: BaseException | None,
+    expected_exit: int | None,
+) -> None:
+    seen: dict[str, Any] = {}
+    workers = _patch_fake_worker(monkeypatch, seen)
+
+    if expected_exit is None:
+        with pytest.raises(RuntimeError):
+            _chat_run_dispatch(
+                tmp_path,
+                monkeypatch,
+                dry_run=False,
+                run_loop_error=run_loop_error,
+                seen=seen,
+            )
+    else:
+        exit_code, seen = _chat_run_dispatch(
+            tmp_path,
+            monkeypatch,
+            dry_run=False,
+            run_loop_error=run_loop_error,
+            seen=seen,
+        )
+        assert exit_code == expected_exit
+
+    assert len(workers) == 1
+    assert workers[0].stop_calls == 1
+    assert seen["events"] == ["stop", "detach"]
+    assert seen["worker_after_run"] is None
+    assert seen["session_attached_after_run"] is False
+    assert seen["logger"].chat_line is None
+
+
+def test_run_dispatch_writes_chat_answers_through_the_logger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import functools
+
+    from llm_handoff import chat_session
+    from llm_handoff.chat_answers import (
+        CHAT_ANSWER_PREFIX,
+        ChatAnswerWorker,
+        ChatContext,
+    )
+    from llm_handoff.chat_side_session import ChatSessionResult
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_run_session(provider: str, message: str, **_kwargs: Any) -> Any:
+        calls.append((provider, message))
+        return ChatSessionResult(
+            text="the answer",
+            session_id=None,
+            exit_code=0,
+            error=None,
+            edited_paths=(),
+        )
+
+    monkeypatch.setattr(
+        main_module,
+        "ChatAnswerWorker",
+        functools.partial(
+            ChatAnswerWorker,
+            run_session=fake_run_session,
+            record_changes=lambda *_a, **_k: None,
+            request_takeover=lambda **_k: None,
+        ),
+    )
+
+    def during_run(seen: dict[str, Any]) -> None:
+        monkeypatch.setattr(
+            chat_session.SESSION,
+            "_context",
+            ChatContext(
+                role="backend",
+                provider="claude",
+                story_id="S1",
+                log_path=None,
+                agent_config=None,
+            ),
+        )
+        seen["notice"] = seen["factory_kwargs"]["on_submit"]("hello")
+        seen["idle"] = seen["worker_during_run"].wait_idle(timeout=5)
+
+    exit_code, seen = _chat_run_dispatch(
+        tmp_path, monkeypatch, dry_run=False, during_run=during_run
+    )
+
+    assert exit_code == 0
+    assert seen["idle"] is True
+    assert seen["notice"] == "Chat message sent to the chat session."
+    assert calls == [("claude", "hello")]
+    assert ("AGENT", f"{CHAT_ANSWER_PREFIX}the answer") in seen["logger"].logged
+    assert not (tmp_path / "logs/dispatch/chat-queue.json").exists()
 
 
 def test_run_dispatch_detaches_the_chat_line_on_keyboard_interrupt(
@@ -443,12 +632,16 @@ def test_run_dispatch_keeps_the_chat_line_off_without_an_interactive_run(
     stdin_tty: bool,
     stdout_tty: bool,
 ) -> None:
+    seen: dict[str, Any] = {}
+    workers = _patch_fake_worker(monkeypatch, seen)
+
     exit_code, seen = _chat_run_dispatch(
         tmp_path,
         monkeypatch,
         dry_run=dry_run,
         stdin_tty=stdin_tty,
         stdout_tty=stdout_tty,
+        seen=seen,
     )
 
     assert exit_code == 0
@@ -456,6 +649,9 @@ def test_run_dispatch_keeps_the_chat_line_off_without_an_interactive_run(
     assert seen["chat_line_during_run"] is None
     assert seen["session_attached_during_run"] is False
     assert seen["logger"].attached == []
+    assert workers == []
+    assert seen["worker_during_run"] is None
+    assert seen["events"] == ["detach"]
 
 
 def test_stop_request_for_another_pid_does_not_apply(tmp_path: Path) -> None:

@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Chat messages are answered right away (CHAT-32). In an interactive run, a
+  sent chat line now goes to a `ChatAnswerWorker` instead of the chat queue:
+  the answer prints as `chat:` lines above the chat line while the role keeps
+  running, and the loop waits for a running answer before its commits,
+  gates, and publish steps. The worker reads the running role's context when
+  a message is sent. `_run_dispatch` stops the worker (finishing the running
+  answer and dropping queued ones) and detaches it before the chat line is
+  removed, on every exit path. New submissions no longer write
+  `logs/dispatch/chat-queue.json`; messages saved there before this change
+  still trigger the existing queued-message hold, so none is stranded. Dry
+  runs and non-terminal runs build no worker. agy roles still get the "not
+  available yet" notice.
 - The loop waits for a running chat answer (CHAT-31). `chat_session` now
   carries the running role's `ChatContext` (`set_role(role, context=...)`,
   `SESSION.context`) and an optional answer worker (`attach_worker`), and

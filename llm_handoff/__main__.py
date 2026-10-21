@@ -23,11 +23,13 @@ from llm_handoff.antigravity_permissions import (
     format_antigravity_permissions,
 )
 from llm_handoff import chat_session, console_interrupt
+from llm_handoff.chat_answers import ChatAnswerWorker
+from llm_handoff.chat_changes import chat_changes_path
 from llm_handoff.chat_input import chat_input_for_console
 from llm_handoff.chat_line import ChatLine
-from llm_handoff.chat_queue import chat_queue_path, save_chat_message
 from llm_handoff.config import (
     DISPATCH_WINDOW_TITLE,
+    DispatchConfig,
     detect_repo_root,
     load_dispatch_config,
 )
@@ -143,28 +145,42 @@ def _stream_is_tty(stream: object) -> bool:
         return False
 
 
-def _attach_console_chat(logger: DispatchLogger, repo_root: Path) -> bool:
-    """Attach the console chat line and key capture for an interactive run.
+def _attach_console_chat(
+    logger: DispatchLogger, config: DispatchConfig
+) -> ChatAnswerWorker | None:
+    """Attach the console chat line, key capture, and chat answer worker.
 
     Only when both stdin and stdout are terminals; under the supervisor the
     child's stdout is a pipe, so the chat line stays off there. A sent line
-    is saved to the chat queue with the running role.
+    goes to the returned ``ChatAnswerWorker``, which answers it for the role
+    running at submit time and writes the answer through the logger. The
+    caller stops the worker. Returns None when chat stays off.
     """
 
     if not (_stream_is_tty(sys.stdin) and _stream_is_tty(sys.stdout)):
-        return False
-    queue_path = chat_queue_path(repo_root)
+        return None
 
-    def save(text: str) -> str:
-        return save_chat_message(queue_path, text, chat_session.SESSION.role)
+    def write_line(line: str) -> None:
+        logger("AGENT", line)
 
+    worker = ChatAnswerWorker(
+        repo_root=config.repo_root,
+        handoff_path=config.handoff_full_path,
+        changes_path=chat_changes_path(config.repo_root),
+        # Read the session at submit time, not at attach time.
+        context=lambda: chat_session.SESSION.context,
+        write_line=write_line,
+    )
     chat_line = ChatLine(sys.stdout)
-    chat_input = chat_input_for_console(sys.stdin, chat_line, on_submit=save)
+    chat_input = chat_input_for_console(
+        sys.stdin, chat_line, on_submit=worker.submit
+    )
     if chat_input is None:
-        return False
+        return None
     logger.attach_chat_line(chat_line)
     chat_session.attach(chat_line, chat_input)
-    return True
+    chat_session.attach_worker(worker)
+    return worker
 
 
 def _run_dispatch(
@@ -219,21 +235,30 @@ def _run_dispatch(
                 f"{stop_request_path(config.repo_root)}.",
             )
         previous_title, changed_title = _set_dispatch_console_title()
+        chat_worker: ChatAnswerWorker | None = None
         try:
             try:
                 if not dry_run:
-                    _attach_console_chat(logger, config.repo_root)
+                    chat_worker = _attach_console_chat(logger, config)
                 # The first Ctrl+C during a role's cycle asks for a graceful
                 # stop; a second one, or one outside a cycle, raises
                 # KeyboardInterrupt.
                 with console_interrupt.installed():
                     return run_loop(config, log=logger)
             finally:
-                # Stop key capture and erase the chat line before any later
-                # console line, on every exit path.
-                chat_session.detach()
-                if getattr(logger, "chat_line", None) is not None:
-                    logger.attach_chat_line(None)
+                # Finish the running chat answer and drop the worker while
+                # the chat line still exists, then stop key capture and erase
+                # the chat line before any later console line, on every exit
+                # path.
+                try:
+                    if chat_worker is not None:
+                        chat_worker.stop()
+                finally:
+                    if chat_worker is not None:
+                        chat_session.attach_worker(None)
+                    chat_session.detach()
+                    if getattr(logger, "chat_line", None) is not None:
+                        logger.attach_chat_line(None)
         except KeyboardInterrupt:
             logger("WARN", "Dispatch interrupted by user. Exiting.")
             return 130
