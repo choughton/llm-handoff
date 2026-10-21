@@ -4800,13 +4800,96 @@ CHAT_REAUDIT_FAILED: Literal["failed"] = "failed"
 CHAT_REAUDIT_UNMARKED: Literal["unmarked"] = "unmarked"
 
 
-def _write_handoff_durably(path: Path, content: str) -> None:
-    """Write ``content`` to ``path`` and flush it to disk before returning."""
+def _copy_handoff_metadata(path: Path, file_fd: int) -> None:
+    """Give the open file ``file_fd`` the existing ``path``'s POSIX metadata.
 
-    with path.open("w", encoding="utf-8") as handle:
-        handle.write(content)
-        handle.flush()
-        os.fsync(handle.fileno())
+    ``tempfile.mkstemp`` creates its file with mode 0600, and ``os.replace``
+    installs that file as the handoff, so without this a 0644 handoff would
+    become 0600. The permission bits are copied, plus the owner and group and
+    the extended attributes (which hold POSIX ACLs on Linux) where this
+    process may set them. Does nothing on Windows, where the new file
+    inherits the directory's ACL, or when ``path`` does not exist yet.
+    """
+
+    if sys.platform == "win32":
+        return
+    try:
+        existing = os.stat(path)
+    except FileNotFoundError:
+        return
+    attribute_names: list[str] = []
+    if hasattr(os, "listxattr"):
+        try:
+            attribute_names = os.listxattr(path)
+        except OSError:
+            attribute_names = []
+    for name in attribute_names:
+        # Some attributes (for example security labels) may not be settable
+        # by this process; the rest are still copied.
+        with contextlib.suppress(OSError):
+            os.setxattr(file_fd, name, os.getxattr(path, name))
+    try:
+        os.fchown(file_fd, existing.st_uid, existing.st_gid)
+    except OSError:
+        # A process that is not root cannot give a file to another user, but
+        # may still set a group it belongs to.
+        with contextlib.suppress(OSError):
+            os.fchown(file_fd, -1, existing.st_gid)
+    # Set the mode last: changing the owner can clear set-id bits.
+    os.fchmod(file_fd, stat.S_IMODE(existing.st_mode))
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush ``directory``'s entries to disk, so a rename in it is durable.
+
+    Does nothing on Windows, which cannot open a directory for fsync. A file
+    system that does not support fsync on a directory (``EINVAL``) is
+    skipped; any other error is raised.
+    """
+
+    if sys.platform == "win32":
+        return
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    except OSError as exc:
+        if exc.errno != errno.EINVAL:
+            raise
+    finally:
+        os.close(directory_fd)
+
+
+def _write_handoff_durably(path: Path, content: str) -> None:
+    """Replace ``path`` with ``content`` atomically, flushed to disk first.
+
+    The content is written and fsynced to a temporary file in the same
+    directory, which takes the existing handoff's mode, owner, and extended
+    attributes on POSIX, then replaces ``path``. On POSIX the directory is
+    then fsynced, so the replacement is durable before this returns. When
+    the write fails before the replace, the previous handoff survives
+    unchanged and the temporary file is removed. When the directory fsync
+    fails, the new handoff is in place but the error is still raised, so the
+    caller does not treat the write as durable.
+    """
+
+    # mkstemp creates a new randomly named file with O_CREAT | O_EXCL, so a
+    # link planted at a predictable temporary name is never opened or followed.
+    file_fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            _copy_handoff_metadata(path, handle.fileno())
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+        raise
 
 
 def _send_chat_changes_back_to_audit(
