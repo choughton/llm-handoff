@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- With a tpm configured, it grooms and assigns stories inside the open
+  epic; the planner keeps epic choice, goals, boundaries, and scope.
+  File-based role instructions and Linear templates reflect this split.
+  Validation rejects a dispatched tpm changing or removing an established
+  epic or claiming a different producer. Without a tpm, the planner
+  continues to groom and assign stories (GROOMING).
 - Chat runs on agy (CHAT-5). `antigravity` joins the chat providers, so a
   plain message while an `agy` role runs starts a side conversation that
   later messages resume, and `@role` resumes a finished `agy` role's
