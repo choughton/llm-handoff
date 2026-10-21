@@ -4800,6 +4800,15 @@ CHAT_REAUDIT_FAILED: Literal["failed"] = "failed"
 CHAT_REAUDIT_UNMARKED: Literal["unmarked"] = "unmarked"
 
 
+def _write_handoff_durably(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` and flush it to disk before returning."""
+
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def _send_chat_changes_back_to_audit(
     config: DispatchConfig,
     audit_assignment: str,
@@ -4863,22 +4872,25 @@ def _send_chat_changes_back_to_audit(
         if result.nothing_to_commit:
             clear_record()
         return None
-    clear_record()
     stamped = stamp_commit_sha(audit_assignment, result.sha)
     influence = result.chat_influences[-1] if result.chat_influences else None
     if influence is not None:
         stamped = _replace_operator_influence_section(stamped, influence)
+    # The record is the only trace of the intended re-audit until the
+    # rewritten handoff is on disk, so it is cleared only after a flushed
+    # write; a crash or write error before that keeps it.
     try:
-        config.handoff_full_path.write_text(stamped, encoding="utf-8")
+        _write_handoff_durably(config.handoff_full_path, stamped)
     except OSError as exc:
         _log(
             log,
             "ERROR",
             f"Could not write the re-audit handoff for the chat commit "
             f"{result.sha[:12]} to {config.handoff_full_path}: {exc}. The "
-            "story is not published.",
+            "story is not published; the chat change record is kept.",
         )
         return CHAT_REAUDIT_FAILED
+    clear_record()
     _log(
         log,
         "AGENT",

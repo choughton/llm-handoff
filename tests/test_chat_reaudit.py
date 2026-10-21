@@ -328,6 +328,61 @@ def test_helper_warns_when_the_clear_fails(
     assert record.exists()
 
 
+def test_helper_clears_the_record_only_after_the_handoff_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _base, _implemented, assignment, record = _story_repo(tmp_path)
+    config = _config(repo)
+    handoffs_at_clear: list[str] = []
+    real_clear = orchestrator.clear_chat_changes
+
+    def observing_clear(path: Path) -> None:
+        handoffs_at_clear.append(
+            config.handoff_full_path.read_text(encoding="utf-8")
+        )
+        real_clear(path)
+
+    monkeypatch.setattr(orchestrator, "clear_chat_changes", observing_clear)
+
+    result = orchestrator._send_chat_changes_back_to_audit(
+        config, assignment, lambda *_args: None
+    )
+
+    head = _git(repo, "rev-parse", "HEAD")
+    assert result == (STORY_ID, MARKER)
+    assert len(handoffs_at_clear) == 1
+    assert f"scope_sha: {head}\n" in handoffs_at_clear[0]
+    assert "next_agent: auditor\n" in handoffs_at_clear[0]
+    assert not record.exists()
+
+
+def test_helper_keeps_the_record_when_the_handoff_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _base, implemented, assignment, record = _story_repo(tmp_path)
+    approval = (repo / HANDOFF).read_text(encoding="utf-8")
+    messages: list[tuple[str, str]] = []
+
+    def failing_write(_path: Path, _content: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(orchestrator, "_write_handoff_durably", failing_write)
+
+    result = orchestrator._send_chat_changes_back_to_audit(
+        _config(repo), assignment, _collecting_log(messages)
+    )
+
+    assert result == orchestrator.CHAT_REAUDIT_FAILED
+    assert record.exists()
+    assert load_chat_changes(record)
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == approval
+    assert _git(repo, "rev-parse", "HEAD~1") == implemented
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "disk full" in errors[0] and "record is kept" in errors[0]
+    assert [level for level, _message in messages] == ["ERROR"]
+
+
 def test_helper_keeps_the_record_when_the_commit_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
