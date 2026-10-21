@@ -177,8 +177,10 @@ another provider, the message goes to the side session with a notice that
 says why. Chat answers keep the role's own permissions (on agy, the role's
 agent and `--mode accept-edits` or `unsafe_bypass`), and a chat change to
 `HANDOFF.md` follows the usual audit and takeover handling; see
-[Operator Chat](docs/ARCHITECTURE.md#operator-chat). Chat on agy is covered
-by mocked-stream tests only; it has not been checked against a live `agy`.
+[Operator Chat](docs/ARCHITECTURE.md#operator-chat). For chat on agy, edit
+event parsing is tested against a recorded `agy` 1.4.2 stream-json capture
+and mocked streams; the automated tests do not run an end-to-end
+interactive console chat against a live `agy`.
 
 For the same path with per-platform commands, see [QUICKSTART.md](QUICKSTART.md).
 For the slower explanation, see [WALKTHROUGH.md](WALKTHROUGH.md).

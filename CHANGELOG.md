@@ -16,10 +16,14 @@ This project follows a simple pre-release changelog until the first public tag.
   status, missing-result, deny-rule, soft-deny, and sign-in failures become
   chat errors. Chat edits are taken from `write_to_file`,
   `replace_file_content`, and `multi_replace_file_content` tool steps that
-  reach `DONE` without an error, using `tool_info.parameters.TargetFile`;
-  that field name comes from the `agy` binary's tool schema and has not been
-  seen in a live edit step. New `response_text()` on the Antigravity stream
-  monitor. Tested with mocked streams only.
+  reach `DONE` without an error, using `tool_info.parameters.TargetFile`.
+  The `write_to_file` and `replace_file_content` edit steps (`TargetFile`,
+  `ACTIVE` -> `DONE`, and `ERROR` with `tool_info.error`) were checked
+  against a recorded live `agy` 1.4.2 stream-json capture;
+  `multi_replace_file_content` is kept for agent-file compatibility. New
+  `response_text()` on the Antigravity stream monitor. Chat session tests
+  replay the captured events and use mocked streams; no end-to-end
+  interactive console chat against a live `agy` was run.
 - A role's own handback written while a chat answer runs is no longer taken
   for a chat rewrite (CHAT-35). The chat worker requests a takeover whenever
   `HANDOFF.md` changed during an answer, so a backend that wrote its

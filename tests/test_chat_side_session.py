@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
+import re
 
 import pytest
 
@@ -11,6 +12,7 @@ from llm_handoff.agent_types import _ProcessResult
 from llm_handoff.chat_side_session import (
     SUPPORTED_CHAT_PROVIDERS,
     ChatSessionResult,
+    _AntigravityEditTracker,
     build_chat_prompt,
     normalize_edited_paths,
     run_chat_session,
@@ -1123,11 +1125,85 @@ AGY_142_EDIT_CAPTURE: tuple[str, ...] = (
 )
 
 
-def _agy_142_capture(root: Path, lines: tuple[str, ...] = AGY_142_EDIT_CAPTURE) -> list[str]:
-    """Return capture lines with ``{root}`` set to ``root`` as a JSON string body."""
+_AGY_142_ROOT_CHILD = re.compile(r"\{root\}\\\\([A-Za-z0-9_.-]+)")
 
-    escaped_root = json.dumps(str(root))[1:-1]
-    return [line.replace("{root}", escaped_root) + "\n" for line in lines]
+
+def _agy_142_capture(
+    root: PurePath, lines: tuple[str, ...] = AGY_142_EDIT_CAPTURE
+) -> list[str]:
+    """Return capture lines with each ``{root}\\\\<name>`` set to ``root / name``.
+
+    The capture was taken on Windows, so its paths join with a backslash. The
+    whole child path is rebuilt with ``root``'s own separator and JSON-escaped,
+    so ``TargetFile`` is a child of ``root`` on Windows and POSIX alike.
+    """
+
+    replaced = [
+        _AGY_142_ROOT_CHILD.sub(
+            lambda match: json.dumps(str(root / match.group(1)))[1:-1], line
+        )
+        for line in lines
+    ]
+    assert not any("{root}" in line for line in replaced)
+    return [line + "\n" for line in replaced]
+
+
+def _agy_142_done_targets(lines: list[str]) -> list[str]:
+    return [
+        json.loads(line)["step_update"]["tool_info"]["parameters"]["TargetFile"]
+        for line in lines[:-1]
+        if json.loads(line)["step_update"]["state"] == "DONE"
+    ]
+
+
+def test_agy_142_capture_replays_with_posix_root() -> None:
+    # A POSIX root must not leave the capture's Windows backslash in TargetFile.
+    root = PurePosixPath("/srv/repo")
+    lines = _agy_142_capture(root)
+    targets = _agy_142_done_targets(lines)
+    assert targets == [
+        "/srv/repo/created.txt",
+        "/srv/repo/sample.txt",
+        "/srv/repo/sample.txt",
+        "/srv/repo/sample.txt",
+    ]
+    assert not any("\\" in target for target in targets)
+
+    tracker = _AntigravityEditTracker()
+    for line in lines:
+        tracker.consume_stdout(line)
+    tracker.finalize()
+    assert tracker.paths == targets
+    assert [PurePosixPath(path).relative_to(root).as_posix() for path in tracker.paths] == [
+        "created.txt",
+        "sample.txt",
+        "sample.txt",
+        "sample.txt",
+    ]
+
+
+def test_agy_142_capture_replays_with_native_root(tmp_path) -> None:
+    # The host's own root: on POSIX this is the POSIX-root replay end to end.
+    lines = _agy_142_capture(tmp_path)
+    targets = _agy_142_done_targets(lines)
+    assert targets == [
+        str(tmp_path / "created.txt"),
+        str(tmp_path / "sample.txt"),
+        str(tmp_path / "sample.txt"),
+        str(tmp_path / "sample.txt"),
+    ]
+    if isinstance(tmp_path, PurePosixPath):
+        assert not any("\\" in target for target in targets)
+
+    tracker = _AntigravityEditTracker()
+    for line in lines:
+        tracker.consume_stdout(line)
+    tracker.finalize()
+    assert tracker.paths == targets
+    assert normalize_edited_paths(tracker.paths, repo_root=tmp_path) == (
+        "created.txt",
+        "sample.txt",
+    )
 
 
 def test_antigravity_live_142_capture_records_done_edits_in_order(
