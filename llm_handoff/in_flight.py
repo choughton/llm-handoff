@@ -9,7 +9,11 @@ means that implementer was interrupted mid-dispatch: a second Ctrl+C, a closed
 window, or a crash. A ``handback`` record means the implementer returned but
 the cycle was interrupted before it finished its commit, validation, and gates.
 The record keeps what the dispatcher knew before the dispatch, so the start can
-tell the implementer's partial edits from operator edits.
+tell the implementer's partial edits from operator edits. When the
+dispatcher's implementer commit included chat-owned paths, the ``handback``
+record also keeps that commit's SHA and those paths, so a resumed handback
+hands the work-claim gate the same chat-owned paths the original cycle would
+have.
 
 The dispatcher also writes a ``planner`` record right before a planner
 dispatch and deletes it as soon as the dispatch returns. A planner record is
@@ -79,6 +83,11 @@ class InFlightRecord:
     text when the dispatch returned, and ``handback_head_sha``, HEAD at that
     moment. A ``dispatch`` record has neither.
 
+    ``chat_commit_sha`` and ``chat_committed`` are set only on an implementer
+    ``handback`` record whose dispatcher commit included chat-owned paths:
+    the SHA of that commit and the chat-owned paths it committed. They are
+    set together or not at all; otherwise they are None and ``()``.
+
     ``protected_digests`` are the protected control files and their sha256
     digests captured right before the dispatch, so a resumed handback checks
     protected files against the pre-dispatch checkout instead of one the
@@ -116,6 +125,8 @@ class InFlightRecord:
     handback_head_sha: str | None = None
     protected_digests: tuple[tuple[str, str], ...] | None = None
     head_branch: str | None = None
+    chat_commit_sha: str | None = None
+    chat_committed: tuple[str, ...] = ()
     version: int = IN_FLIGHT_RECORD_VERSION
 
     @property
@@ -142,6 +153,8 @@ def in_flight_record_payload(record: InFlightRecord) -> str:
         "carried_over": list(record.carried_over),
         "handback_content": record.handback_content,
         "handback_head_sha": record.handback_head_sha,
+        "chat_commit_sha": record.chat_commit_sha,
+        "chat_committed": list(record.chat_committed),
         "protected_digests": (
             None
             if record.protected_digests is None
@@ -171,6 +184,13 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     ``head_branch`` is None or a string. ``protected_digests`` is None,
     absent, or a list of ``[path, digest]`` string pairs. JSON nested too deeply to parse
     (``RecursionError``) is rejected like any other invalid JSON.
+
+    A missing ``chat_commit_sha`` reads as None and a missing
+    ``chat_committed`` as ``()``. ``chat_commit_sha`` must be None or a
+    string and ``chat_committed`` a list of strings; a non-empty
+    ``chat_committed`` needs a string ``chat_commit_sha`` and a set
+    ``chat_commit_sha`` needs a non-empty ``chat_committed``. Either one set
+    on a ``dispatch`` record or a non-implementer record rejects the record.
     """
 
     try:
@@ -218,6 +238,20 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
     )
     if raw_protected is not None and protected_digests is None:
         return None
+    chat_commit_sha = payload.get("chat_commit_sha")
+    if chat_commit_sha is not None and not isinstance(chat_commit_sha, str):
+        return None
+    raw_chat_committed = payload.get("chat_committed", [])
+    chat_committed = _strings(raw_chat_committed)
+    if chat_committed is None:
+        return None
+    if bool(chat_committed) != (chat_commit_sha is not None):
+        # The paths are bound to the commit that included them.
+        return None
+    if chat_commit_sha is not None and (
+        phase != "handback" or role not in _IMPLEMENTER_ROLES
+    ):
+        return None
     story_key = payload.get("story_key")
     if story_key is None:
         # Only a planner, finalizer, or auditor may have started from a
@@ -262,6 +296,8 @@ def load_in_flight_record(text: str) -> InFlightRecord | None:
         handback_content=handback_content,
         handback_head_sha=handback_head_sha,
         protected_digests=protected_digests,
+        chat_commit_sha=chat_commit_sha,
+        chat_committed=chat_committed,
     )
 
 

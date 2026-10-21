@@ -1540,6 +1540,107 @@ def test_a_record_written_before_the_handback_phase_still_loads() -> None:
     assert record.protected_digests is None
 
 
+# ---------------------------------------------------------------------------
+# CHAT-25: chat-committed paths on the handback record
+# ---------------------------------------------------------------------------
+
+
+def test_a_handback_record_with_chat_fields_round_trips() -> None:
+    record = _handback_record(
+        chat_commit_sha="b" * 40, chat_committed=("docs/chat.md", "src/chat.py")
+    )
+    text = in_flight_record_payload(record)
+    payload = json.loads(text)
+
+    assert payload["chat_commit_sha"] == "b" * 40
+    assert payload["chat_committed"] == ["docs/chat.md", "src/chat.py"]
+    assert payload["version"] == 1
+    assert load_in_flight_record(text) == record
+
+
+def test_a_version_1_record_without_chat_fields_loads() -> None:
+    payload = json.loads(in_flight_record_payload(_handback_record()))
+    del payload["chat_commit_sha"]
+    del payload["chat_committed"]
+
+    record = load_in_flight_record(json.dumps(payload))
+
+    assert record is not None
+    assert record.chat_commit_sha is None
+    assert record.chat_committed == ()
+
+
+def _chat_dispatch_payload() -> dict[str, Any]:
+    payload = json.loads(_plain_record_payload())
+    payload["chat_commit_sha"] = "b" * 40
+    payload["chat_committed"] = ["docs/chat.md"]
+    return payload
+
+
+def _chat_planner_payload() -> dict[str, Any]:
+    return _planner_payload(chat_commit_sha="b" * 40, chat_committed=["docs/chat.md"])
+
+
+def _chat_handback_payload(**changes: Any) -> dict[str, Any]:
+    payload = json.loads(in_flight_record_payload(_handback_record()))
+    payload.update(changes)
+    return payload
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: _chat_handback_payload(chat_commit_sha=7, chat_committed=["a.md"]),
+            id="sha_type",
+        ),
+        pytest.param(
+            lambda: _chat_handback_payload(
+                chat_commit_sha="b" * 40, chat_committed="a.md"
+            ),
+            id="paths_not_list",
+        ),
+        pytest.param(
+            lambda: _chat_handback_payload(
+                chat_commit_sha="b" * 40, chat_committed=[5]
+            ),
+            id="path_not_string",
+        ),
+        pytest.param(
+            lambda: _chat_handback_payload(
+                chat_commit_sha="b" * 40, chat_committed=None
+            ),
+            id="paths_null",
+        ),
+        pytest.param(
+            lambda: _chat_handback_payload(chat_committed=["a.md"]),
+            id="paths_without_sha",
+        ),
+        pytest.param(
+            lambda: _chat_handback_payload(
+                chat_commit_sha="b" * 40, chat_committed=[]
+            ),
+            id="sha_without_paths",
+        ),
+        pytest.param(lambda: _chat_dispatch_payload(), id="dispatch_record"),
+        pytest.param(lambda: _chat_planner_payload(), id="non_implementer_record"),
+    ],
+)
+def test_load_in_flight_record_rejects_bad_chat_fields(
+    build: Callable[[], dict[str, Any]],
+) -> None:
+    assert load_in_flight_record(json.dumps(build())) is None
+
+
+def test_a_planner_record_without_chat_fields_still_loads() -> None:
+    # The rejection above is about the chat fields, not the planner payload.
+    assert load_in_flight_record(json.dumps(_planner_payload())) is not None
+    payload = _chat_dispatch_payload()
+    payload["chat_commit_sha"] = None
+    payload["chat_committed"] = []
+    assert load_in_flight_record(json.dumps(payload)) is not None
+
+
 def _deeply_nested_record() -> str:
     depth = 200_000
     return "[" * depth + "]" * depth

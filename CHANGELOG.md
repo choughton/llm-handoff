@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Chat-committed paths survive a resumed handback (CHAT-25). `InFlightRecord`
+  gains `chat_commit_sha` and `chat_committed`, written only on an
+  implementer `handback` record and only together; a record without them
+  still loads (None and `()`), and a malformed or misplaced pair rejects the
+  record. After a dispatcher implementer commit that included chat-owned
+  paths, the handback record keeps that commit's SHA and paths. On a resumed
+  handback, the work-claim gate gets those paths as `chat_owned_paths` only
+  when the recorded SHA is HEAD, filtered to the paths that commit changed;
+  a record bound to another commit contributes nothing and logs one WARN.
+  Because the in-flight record is not authenticated, the interrupted-handback
+  recovery names those paths and their commit before the resume
+  confirmation, and the prompt says it accepts them as operator changes.
+  Behavior without chat changes is unchanged.
 - Chat changes ride the implementer commit (CHAT-22). In dispatcher commit
   mode, `commit_implementer_changes(..., chat_entries=...)` also commits each
   dirty `chat_owned_paths` file other than the handoff, after the in-scope

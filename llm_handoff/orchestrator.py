@@ -2302,6 +2302,16 @@ def _run_loop(
                     _handoff_story_id(assignment_content),
                     commit_result.chat_influences[-1],
                 )
+            if (
+                commit_result is not None
+                and commit_result.sha is not None
+                and commit_result.chat_committed
+            ):
+                # The handback refresh below keeps the chat-committed paths,
+                # bound to this commit, so a resumed handback can hand them
+                # to the work-claim gate.
+                in_flight_state.chat_commit_sha = commit_result.sha
+                in_flight_state.chat_committed = commit_result.chat_committed
             if commit_result is not None and commit_result.sha is not None:
                 # Committed files are no longer carry-over work.
                 implementer_leftovers = prune_implementer_leftovers(
@@ -2438,10 +2448,8 @@ def _run_loop(
                             pre_dispatch_state=pre_dispatch_state,
                             log=log_fn,
                             story_base_sha=story_base_sha,
-                            chat_owned_paths=(
-                                commit_result.chat_committed
-                                if commit_result is not None
-                                else ()
+                            chat_owned_paths=_gate_chat_owned_paths(
+                                config, commit_result, resumed_handback, log_fn
                             ),
                         )
                         if _accepted_approval(config):
@@ -2587,8 +2595,8 @@ def _run_loop(
                 pre_dispatch_state=pre_dispatch_state,
                 log=log_fn,
                 story_base_sha=story_base_sha,
-                chat_owned_paths=(
-                    commit_result.chat_committed if commit_result is not None else ()
+                chat_owned_paths=_gate_chat_owned_paths(
+                    config, commit_result, resumed_handback, log_fn
                 ),
             ):
                 previous_cycle = current_cycle
@@ -4744,6 +4752,102 @@ def _scope_sha_missing_for_gate(
     )
 
 
+def _gate_chat_owned_paths(
+    config: DispatchConfig,
+    commit_result: DispatcherCommitResult | None,
+    resumed_handback: InFlightRecord | None,
+    log: LogFn,
+) -> tuple[str, ...]:
+    """The chat-owned paths the work-claim gate accepts for this cycle.
+
+    The dispatcher commit's own ``chat_committed`` when it has any. Otherwise,
+    on a resumed handback, the record's ``chat_committed`` when its
+    ``chat_commit_sha`` is still HEAD, filtered to the paths that single
+    commit changed. A record bound to another commit contributes nothing and
+    logs one WARN; every other case returns ``()``.
+    """
+
+    if commit_result is not None and commit_result.chat_committed:
+        return commit_result.chat_committed
+    if resumed_handback is None or not resumed_handback.chat_committed:
+        return ()
+    recorded_sha = resumed_handback.chat_commit_sha
+    head = _git_head(config.repo_root)
+    if recorded_sha is None or head is None or recorded_sha != head:
+        _log(
+            log,
+            "WARN",
+            "The resumed handback record's chat-committed paths are bound to "
+            f"commit {_escape_control_characters(str(recorded_sha))}, but HEAD "
+            f"is {head or 'unknown'}, so the work-claim gate gets no chat-owned "
+            "paths from it.",
+        )
+        return ()
+    changed = _git_commit_changed_paths(config.repo_root, recorded_sha)
+    return tuple(
+        path for path in resumed_handback.chat_committed if path in changed
+    )
+
+
+def _resumable_chat_paths(
+    config: DispatchConfig, record: InFlightRecord
+) -> tuple[str, ...]:
+    """The record's chat-committed paths a resumed gate could accept.
+
+    The same filter as ``_gate_chat_owned_paths``: the record's
+    ``chat_committed`` when its ``chat_commit_sha`` is HEAD, limited to the
+    paths that commit changed; otherwise ``()``. The in-flight record is not
+    authenticated, so recovery discloses these paths to the operator before
+    the resume confirmation instead of trusting them silently.
+    """
+
+    if not record.chat_committed or record.chat_commit_sha is None:
+        return ()
+    if _git_head(config.repo_root) != record.chat_commit_sha:
+        return ()
+    changed = _git_commit_changed_paths(config.repo_root, record.chat_commit_sha)
+    return tuple(path for path in record.chat_committed if path in changed)
+
+
+def _resumed_chat_paths_disclosure(
+    record: InFlightRecord, chat_paths: tuple[str, ...]
+) -> str:
+    """The pre-confirmation line naming the chat-owned paths a resume accepts."""
+
+    listed = ", ".join(_escape_control_characters(path) for path in chat_paths)
+    return (
+        "The in-flight record claims these paths in commit "
+        f"{_escape_control_characters(str(record.chat_commit_sha))} are chat "
+        f"(operator) changes: {listed}. The record is not authenticated; "
+        "resuming lets the work-claim gate accept them outside the Work "
+        "Packet scope, so confirm only if you made these changes in a chat "
+        "side session."
+    )
+
+
+def _git_commit_changed_paths(repo_root: Path, sha: str) -> frozenset[str]:
+    """The paths the single commit ``sha`` changed; empty when Git fails."""
+
+    output = _run_git_stdout_raw(
+        repo_root,
+        [
+            "git",
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--no-renames",
+            "--name-only",
+            "-r",
+            "-z",
+            sha,
+            "--",
+        ],
+    )
+    if output is None:
+        return frozenset()
+    return frozenset(path for path in output.split("\0") if path)
+
+
 def _run_work_claim_gate(
     *,
     config: DispatchConfig,
@@ -6516,7 +6620,10 @@ class _InFlightRecordState:
     ``handback_inputs`` holds what that record was written from, and
     ``handback_content`` and ``handback_head_sha`` what it holds now, so the
     record can be refreshed after the dispatcher commit without reading it
-    back from disk.
+    back from disk. ``chat_commit_sha`` and ``chat_committed`` are the
+    dispatcher commit that included chat-owned paths and those paths; every
+    handback write keeps them, and a new implementer dispatch record resets
+    them. ``handback_chat`` is the pair the record on disk holds now.
     """
 
     def __init__(self) -> None:
@@ -6525,6 +6632,9 @@ class _InFlightRecordState:
         self.handback_inputs: _HandbackRecordInputs | None = None
         self.handback_content: str | None = None
         self.handback_head_sha: str | None = None
+        self.chat_commit_sha: str | None = None
+        self.chat_committed: tuple[str, ...] = ()
+        self.handback_chat: tuple[str | None, tuple[str, ...]] = (None, ())
 
 
 @dataclass(frozen=True)
@@ -6650,6 +6760,8 @@ def _write_in_flight_record(
     handback_content: str | None = None,
     handback_head_sha: str | None = None,
     protected_snapshot: ProtectedFileSnapshot | None = None,
+    chat_commit_sha: str | None = None,
+    chat_committed: tuple[str, ...] = (),
 ) -> bool:
     """Write the in-flight record before an implementer dispatch.
 
@@ -6663,9 +6775,20 @@ def _write_in_flight_record(
     handoff the dispatch left and ``handback_head_sha``, HEAD at that moment.
     ``protected_snapshot`` is the pre-dispatch protected-file snapshot; its
     digests are kept so a resumed handback checks protected files against
-    the checkout from before the dispatch.
+    the checkout from before the dispatch. ``chat_commit_sha`` and
+    ``chat_committed`` are stored only on a handback record, and only
+    together; a ``dispatch`` record resets the state's chat fields.
     """
 
+    if handback_content is None:
+        # A new implementer dispatch: no chat commit belongs to it yet.
+        state.chat_commit_sha = None
+        state.chat_committed = ()
+        chat_commit_sha = None
+        chat_committed = ()
+    elif chat_commit_sha is None or not chat_committed:
+        chat_commit_sha = None
+        chat_committed = ()
     if assignment_content == handoff_content:
         assignment_content = None
     story_key = carry_over_key(
@@ -6689,6 +6812,8 @@ def _write_in_flight_record(
         protected_digests=(
             protected_snapshot.digests if protected_snapshot is not None else None
         ),
+        chat_commit_sha=chat_commit_sha,
+        chat_committed=tuple(chat_committed),
     )
     return _store_in_flight_record(
         config,
@@ -6948,8 +7073,11 @@ def _record_in_flight_handback(
         handback_content=handback_content,
         handback_head_sha=handback_head_sha,
         protected_snapshot=protected_snapshot,
+        chat_commit_sha=state.chat_commit_sha,
+        chat_committed=state.chat_committed,
     ):
         state.handback_on_disk = True
+        state.handback_chat = (state.chat_commit_sha, state.chat_committed)
         state.handback_inputs = _HandbackRecordInputs(
             cycle=cycle,
             role=role,
@@ -6974,8 +7102,9 @@ def _refresh_in_flight_handback(
     leaves a record whose HEAD and handback text match the stamped claim;
     the next start then offers to resume it and the resumed cycle re-runs
     validation and the gate. Writes nothing in a dry run, without a handback
-    record on disk, or when HEAD and the handoff are what the record holds.
-    A failed write deletes the record instead. Returns False, after an
+    record on disk, or when HEAD, the handoff, and the chat-committed paths
+    are what the record holds. Each write keeps the state's
+    ``chat_commit_sha`` and ``chat_committed``. A failed write deletes the record instead. Returns False, after an
     ERROR, only when that delete failed too, so the run must stop.
     """
 
@@ -6986,9 +7115,11 @@ def _refresh_in_flight_handback(
         return True
     handback_content = _read_required_text(config.handoff_full_path)
     handback_head_sha = _git_head(config.repo_root)
+    chat = (state.chat_commit_sha, state.chat_committed)
     if (
         handback_content == state.handback_content
         and handback_head_sha == state.handback_head_sha
+        and chat == state.handback_chat
     ):
         return True
     if handback_content is not None and _write_in_flight_record(
@@ -7003,9 +7134,12 @@ def _refresh_in_flight_handback(
         handback_content=handback_content,
         handback_head_sha=handback_head_sha,
         protected_snapshot=inputs.protected_snapshot,
+        chat_commit_sha=state.chat_commit_sha,
+        chat_committed=state.chat_committed,
     ):
         state.handback_content = handback_content
         state.handback_head_sha = handback_head_sha
+        state.handback_chat = chat
         return True
     # Tried once: the record on disk no longer describes this cycle.
     state.handback_on_disk = False
@@ -7616,10 +7750,20 @@ def _recover_interrupted_handback(
                 "INFO",
                 _protected_baseline_disclosure(config, record, disclosed),
             )
+        chat_paths = _resumable_chat_paths(config, record)
+        if chat_paths:
+            _log(log, "INFO", _resumed_chat_paths_disclosure(record, chat_paths))
         confirmed = _confirm_carry_over_at_terminal(
             operator_prompt.reader(),
             f"Resume {record.role}'s interrupted {story} handback at the "
-            "dispatcher commit? [y/N]",
+            "dispatcher commit"
+            + (
+                f", accepting {len(chat_paths)} chat-owned path(s) listed above "
+                "as operator changes"
+                if chat_paths
+                else ""
+            )
+            + "? [y/N]",
             log,
         )
     if not confirmed:

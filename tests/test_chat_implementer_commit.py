@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 from pathlib import Path
 import subprocess
 
@@ -11,6 +12,8 @@ import pytest
 
 from llm_handoff import chat_changes
 from llm_handoff import orchestrator
+import llm_handoff.ledger as ledger
+from llm_handoff.agents import DispatchResult
 from llm_handoff.audit_review import OperatorInfluence
 from llm_handoff.chat_changes import (
     ChatChange,
@@ -20,12 +23,14 @@ from llm_handoff.chat_changes import (
     record_chat_changes,
 )
 from llm_handoff.chat_side_session import ChatSessionResult
-from llm_handoff.config import DispatchConfig
+from llm_handoff.config import IN_FLIGHT_STATE_PATH, DispatchConfig
 from llm_handoff.dispatcher_commit import (
     PENDING_COMMIT_SHA,
+    DispatcherCommitResult,
     _utc_marker_time,
     commit_implementer_changes,
 )
+from llm_handoff.in_flight import InFlightRecord, load_in_flight_record
 from llm_handoff.work_claim import capture_pre_dispatch_state, verify_work_claim
 
 
@@ -621,3 +626,273 @@ def test_chat_commit_marker_applies_only_to_its_story() -> None:
     )
     assert orchestrator._chat_commit_influence_for((None, marker), _claim()) is None
     assert orchestrator._chat_commit_influence_for(None, _claim()) is None
+
+
+# ---------------------------------------------------------------------------
+# CHAT-25: chat-committed paths survive a resumed handback
+# ---------------------------------------------------------------------------
+
+
+def _loop_claim() -> str:
+    return _claim().replace(
+        "# Backend Handback\n",
+        "# Backend Handback\n\n## Completed Work\n\n- Set VALUE to 2 in src/app.py.\n",
+    )
+
+
+def _loop_config(repo: Path) -> DispatchConfig:
+    return DispatchConfig(
+        repo_root=repo,
+        poll_interval_seconds=0,
+        pause_recovery="off",
+        max_consecutive_failures=3,
+        enforce_work_packet=True,
+        work_packet_verification_timeout_seconds=60,
+        commit_mode="dispatcher",
+        audit={
+            "reviewers": ["quality"],
+            "security_opt_out_reason": "Tests cover the single-auditor route.",
+        },
+    )
+
+
+def _in_flight_record(repo: Path) -> InFlightRecord:
+    record = load_in_flight_record(
+        (repo / IN_FLIGHT_STATE_PATH).read_text(encoding="utf-8")
+    )
+    assert record is not None
+    return record
+
+
+def _set_terminal(
+    monkeypatch: pytest.MonkeyPatch, *, operator_input: str | None
+) -> None:
+    monkeypatch.setattr(
+        orchestrator,
+        "_operator_stdin_is_interactive",
+        lambda: operator_input is not None,
+    )
+
+    def no_input() -> io.StringIO:
+        raise AssertionError("this run must not read operator input")
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_operator_input_stream",
+        (lambda: io.StringIO(operator_input))
+        if operator_input is not None
+        else no_input,
+    )
+
+
+@pytest.fixture
+def reset_story_bounce():
+    ledger.reset_bounce(STORY_ID)
+    yield
+    ledger.reset_bounce(STORY_ID)
+
+
+def _interrupt_gate_after_chat_commit(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> InFlightRecord:
+    """One backend cycle whose commit includes a chat path, interrupted in the gate."""
+
+    def finishing_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        _write(repo / "src" / "app.py", "VALUE = 2\n")
+        # A chat side session changed an out-of-bounds file mid-dispatch.
+        _write(repo / "src" / "api.py", "API = 2\n")
+        _record(chat_changes_path(repo), repo, "src/api.py")
+        path.write_text(_loop_claim(), encoding="utf-8")
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    def interrupted_verify(**_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "invoke_backend_role", finishing_backend)
+        patch.setattr(orchestrator, "verify_work_claim", interrupted_verify)
+        _set_terminal(patch, operator_input=None)
+        with pytest.raises(KeyboardInterrupt):
+            orchestrator.run_loop(
+                _loop_config(repo), max_cycles=1, log=lambda *_: None
+            )
+    return _in_flight_record(repo)
+
+
+def test_handback_record_keeps_the_chat_commit_and_its_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reset_story_bounce: None
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    record = _interrupt_gate_after_chat_commit(repo, monkeypatch)
+
+    head = _git(repo, "rev-parse", "HEAD")
+    assert _commit_files(repo, head) == ["src/api.py", "src/app.py"]
+    assert record.phase == "handback"
+    assert record.handback_head_sha == head
+    assert record.chat_commit_sha == head
+    assert record.chat_committed == ("src/api.py",)
+
+
+def test_resumed_handback_passes_the_recorded_chat_path_to_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reset_story_bounce: None
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _interrupt_gate_after_chat_commit(repo, monkeypatch)
+    head = _git(repo, "rev-parse", "HEAD")
+
+    def refusing_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        raise AssertionError("a resumed handback must not dispatch the role")
+
+    real_verify = orchestrator.verify_work_claim
+    gate_calls: list[tuple[tuple[str, ...], object]] = []
+
+    def recording_verify(**kwargs):
+        result = real_verify(**kwargs)
+        gate_calls.append((kwargs["chat_owned_paths"], result))
+        return result
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", refusing_backend)
+    monkeypatch.setattr(orchestrator, "verify_work_claim", recording_verify)
+    _set_terminal(monkeypatch, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _loop_config(repo), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    assert exit_code == 0
+    # The unauthenticated record's chat paths are disclosed before the
+    # operator confirms the resume, and the prompt names them.
+    disclosures = [
+        message
+        for _level, message in messages
+        if message.startswith("The in-flight record claims these paths")
+    ]
+    assert len(disclosures) == 1
+    assert head in disclosures[0] and "src/api.py" in disclosures[0]
+    prompts = [
+        message for _level, message in messages if message.startswith("Resume ")
+    ]
+    assert len(prompts) == 1
+    assert "accepting 1 chat-owned path(s) listed above" in prompts[0]
+    assert messages.index(("INFO", disclosures[0])) < messages.index(
+        ("INFO", prompts[0])
+    )
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert len(gate_calls) == 1
+    chat_owned, result = gate_calls[0]
+    assert chat_owned == ("src/api.py",)
+    assert _outcomes(result)["diff_scope"] == "PASS"
+    assert _outcomes(result)["worktree"] == "PASS"
+    assert "src/api.py" in _details(result)["diff_scope"]
+
+
+def _resumed_record(chat_commit_sha: str, *paths: str) -> InFlightRecord:
+    return InFlightRecord(
+        cycle=1,
+        role="backend",
+        story_key=f"story:{STORY_ID}",
+        phase="handback",
+        head_sha=None,
+        handoff_content=_assignment(),
+        dirty_fingerprints=(),
+        carried_over=(),
+        handback_content=_claim(),
+        handback_head_sha=chat_commit_sha,
+        chat_commit_sha=chat_commit_sha,
+        chat_committed=tuple(paths),
+    )
+
+
+def _commit_app_and_api(repo: Path) -> str:
+    _write(repo / "src" / "app.py", "VALUE = 2\n")
+    _write(repo / "src" / "api.py", "API = 2\n")
+    _git(repo, "add", "src/app.py", "src/api.py")
+    _git(repo, "commit", "-q", "-m", "work")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_resumed_record_bound_to_another_commit_contributes_nothing(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    head = _commit_app_and_api(repo)
+    messages: list[tuple[str, str]] = []
+
+    paths = orchestrator._gate_chat_owned_paths(
+        _config(repo), None, _resumed_record(base, "src/api.py"),
+        _collecting_log(messages),
+    )
+
+    assert paths == ()
+    warns = [message for level, message in messages if level == "WARN"]
+    assert len(warns) == 1
+    assert base in warns[0] and head in warns[0]
+
+
+def test_resumed_record_drops_a_path_the_commit_did_not_change(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    head = _commit_app_and_api(repo)
+    messages: list[tuple[str, str]] = []
+
+    paths = orchestrator._gate_chat_owned_paths(
+        _config(repo),
+        None,
+        _resumed_record(head, "src/api.py", "PROJECT_STATE.md"),
+        _collecting_log(messages),
+    )
+
+    assert paths == ("src/api.py",)
+    assert messages == []
+
+
+def test_resumable_chat_paths_match_the_gate_filter(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    head = _commit_app_and_api(repo)
+    config = _config(repo)
+
+    assert orchestrator._resumable_chat_paths(
+        config, _resumed_record(head, "src/api.py", "PROJECT_STATE.md")
+    ) == ("src/api.py",)
+    assert orchestrator._resumable_chat_paths(
+        config, _resumed_record(base, "src/api.py")
+    ) == ()
+    assert orchestrator._resumable_chat_paths(config, _resumed_record(head)) == ()
+    disclosure = orchestrator._resumed_chat_paths_disclosure(
+        _resumed_record(head, "src/api.py"), ("src/api.py",)
+    )
+    assert head in disclosure
+    assert "src/api.py" in disclosure
+    assert "not authenticated" in disclosure
+
+
+def test_gate_chat_owned_paths_prefers_the_commit_result_and_defaults_empty(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    head = _commit_app_and_api(repo)
+    record = _resumed_record(head, "src/api.py")
+    config = _config(repo)
+    fresh = DispatcherCommitResult(sha=head, chat_committed=("src/app.py",))
+    empty = DispatcherCommitResult(sha=None)
+
+    def log(*_args: object) -> None:
+        raise AssertionError("no log expected")
+
+    assert orchestrator._gate_chat_owned_paths(config, fresh, record, log) == (
+        "src/app.py",
+    )
+    assert orchestrator._gate_chat_owned_paths(config, empty, record, log) == (
+        "src/api.py",
+    )
+    assert orchestrator._gate_chat_owned_paths(config, empty, None, log) == ()
+    assert orchestrator._gate_chat_owned_paths(config, None, None, log) == ()
