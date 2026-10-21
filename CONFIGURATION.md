@@ -1445,7 +1445,11 @@ The outcomes:
     and no review thread is unresolved. Before merging, the dispatcher logs
     a `WARN` and posts a pull request comment that starts with "Merging
     without a Codex review:" and gives the reason. When a condition fails,
-    it logs a `WARN` with the reason and falls back to `prompt`.
+    it logs a `WARN` with the reason and falls back to `prompt`. If the base
+    branch moved and the pull request must take a base-branch merge first,
+    only a clean merge goes ahead: a conflict pauses, and the planner is not
+    asked to resolve it, so the merged commit stays the audited one plus
+    clean base-branch merges.
 
   A completed review with findings still takes the correction round, and a
   usage-limit failure always goes to the operator prompt, whatever the

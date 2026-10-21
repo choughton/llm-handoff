@@ -3242,6 +3242,52 @@ def test_the_merge_stall_action_needs_a_passed_audit_of_the_head(
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
 
 
+def test_the_merge_stall_action_never_has_the_planner_resolve_a_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _commit_all(repo, {STATE_FILE: STATE_BASE}, "Add the project state")
+    _git(repo, "push", "-q", "origin", "main")
+    _start_story(repo)
+    _commit_all(repo, {STATE_FILE: STATE_STORY}, "W9.9 status")
+    head = _git(repo, "rev-parse", "HEAD")
+    # main moves after the push, while the checks run, and conflicts with the
+    # story only in the project state file.
+    _commit_on_remote(
+        tmp_path, remote, "next-main", {STATE_FILE: STATE_OPERATOR}, "Regroom"
+    )
+    _set_gh(tmp_path, move_main_to="refs/heads/next-main")
+    _set_api(tmp_path, comments=[_codex_running_summary(head)])
+    _after_review_requests(
+        tmp_path, _api(comments=[_codex_running_summary(head, AFTER_REQUEST)])
+    )
+    resolver, prompts = _planner(repo)
+    _entries, log = _logs()
+
+    outcome = _publish_pr(
+        repo,
+        gh,
+        log,
+        handoff_content=_audited(head),
+        review=STALL_MERGE_GATE,
+        sleep=lambda seconds: None,
+        wait_for_checks=True,
+        state_resolver=resolver,
+    )
+
+    # The planner's resolution would be neither the audited commit nor a
+    # clean base-branch merge, so the merge pauses instead.
+    assert prompts == []
+    assert outcome.stop is True
+    assert f"conflicts in `{STATE_FILE}`" in outcome.message
+    merges = [call for call in _gh_calls(tmp_path) if call[:2] == ["pr", "merge"]]
+    assert len(merges) == 1
+    assert _gh_state(tmp_path)["pr"] == "OPEN"
+    assert not _merge_in_progress(repo)
+
+
 def test_the_merge_stall_action_keeps_the_usage_limit_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

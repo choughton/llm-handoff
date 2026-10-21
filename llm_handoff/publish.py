@@ -979,6 +979,7 @@ def publish_story(
                 f"pull request checks did not pass for {url or state.branch}: "
                 f"{_first_line(checks)}; it was left open",
             )
+    stall_merge = False
     if review is not None and review.reviewers:
         verdict = _wait_for_reviewers(
             repo_root=repo_root,
@@ -993,7 +994,8 @@ def publish_story(
             remote=remote,
             handoff_content=handoff_content,
         )
-        if verdict is not None:
+        stall_merge = verdict is _STALL_MERGE
+        if verdict is not None and not stall_merge:
             return verdict
     view = _open_pull_request(gh_command, repo_root, state.branch)
     number = view.get("number") if view else None
@@ -1023,8 +1025,10 @@ def publish_story(
         state=state,
         url=url,
         log=log,
-        # One planner resolution per publish: a second conflict pauses.
-        resolver=None if resolution else state_resolver,
+        # One planner resolution per publish: a second conflict pauses. A
+        # merge without a Codex review gets none: it must stay the audited
+        # commit plus clean base-branch merges.
+        resolver=None if resolution or stall_merge else state_resolver,
     )
 
 
@@ -3516,6 +3520,11 @@ def _handoff_route(handoff_content: str) -> tuple[str | None, str | None]:
     return normalize_next_agent_value(frontmatter.next_agent), story_id
 
 
+# What _wait_for_reviewers returns to merge without a Codex review under
+# ``review_stall_action: merge``.
+_STALL_MERGE = PublishOutcome(message="merge without a Codex review")
+
+
 def _wait_for_reviewers(
     *,
     repo_root: Path,
@@ -3530,7 +3539,8 @@ def _wait_for_reviewers(
     remote: str = "origin",
     handoff_content: str = "",
 ) -> PublishOutcome | None:
-    """Return ``None`` to merge, or the outcome that replaces the merge.
+    """Return ``None`` to merge, ``_STALL_MERGE`` to merge with no planner
+    conflict resolution, or the outcome that replaces the merge.
 
     A review Codex reports as failed, completes without naming a commit,
     shows running past ``review.stall_seconds``, or does not finish in time
@@ -3666,7 +3676,7 @@ def _wait_for_reviewers(
                 "publish.review_stall_action is `merge`. The audit passed for "
                 "this commit and no review thread is unresolved.",
             )
-            return None
+            return _STALL_MERGE
         log(
             "WARN",
             f"publish.review_stall_action is `merge`, but {url} was not merged "
