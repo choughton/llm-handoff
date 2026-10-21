@@ -13,9 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-28 (the
-  loop follows a chat rewrite of `HANDOFF.md`) in flight and CHAT-20,
-  CHAT-4, and CHAT-5 remaining. CHAT-27 (chat can stop the running role when
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-29 (the
+  chat answer worker) in flight and CHAT-30, CHAT-4, and CHAT-5 remaining.
+  CHAT-28 (the loop follows a chat rewrite of `HANDOFF.md`) was approved at
+  `a5b8ee1` and merged in PR #232. CHAT-20 was split into CHAT-29 and
+  CHAT-30 on 2026-10-21 before it started. CHAT-27 (chat can stop the running role when
   it rewrites `HANDOFF.md`) was approved at `5ec213e` and merged in PR #231.
   CHAT-26 (the re-audit
   handoff write replaces `HANDOFF.md` atomically) was approved at `661dc5a`
@@ -1102,12 +1104,14 @@ approved at `a2723e9` and merged in PR #226; CHAT-25 was approved at
 merged in PR #228; CHAT-24 was approved at `39d3c90` and merged in PR
 #229; CHAT-26 (follow-up from the CHAT-24 audit) was approved at `661dc5a`
 and merged in PR #230; CHAT-19 was split into CHAT-27 and CHAT-28; CHAT-27
-was approved at `5ec213e` and merged in PR #231; CHAT-28 is in flight;
-CHAT-20, CHAT-4, and CHAT-5 remain. Nothing else
-blocks it: HARD-3 is merged and RECOVERY is closed. Decided by the planner
-on 2026-10-20: CHAT-18 was split into CHAT-21 through CHAT-24 because it
-exceeded one packet. Decided by the planner on 2026-10-21: CHAT-19 was
-split into CHAT-27 and CHAT-28 for the same reason.
+was approved at `5ec213e` and merged in PR #231; CHAT-28 was approved at
+`a5b8ee1` and merged in PR #232; CHAT-20 was split into CHAT-29 and
+CHAT-30; CHAT-29 is in flight; CHAT-30, CHAT-4, and CHAT-5 remain. Nothing
+else blocks it: HARD-3 is merged and RECOVERY is closed. Decided by the
+planner on 2026-10-20: CHAT-18 was split into CHAT-21 through CHAT-24
+because it exceeded one packet. Decided by the planner on 2026-10-21:
+CHAT-19 was split into CHAT-27 and CHAT-28, and CHAT-20 into CHAT-29 and
+CHAT-30, for the same reason.
 
 Operator redesign (2026-10-20). Chat works like a side coding session the
 operator talks to while the loop runs: it answers right away, while the
@@ -1442,22 +1446,45 @@ dependencies; Windows (`msvcrt`) and POSIX.
   recovery, so the operator sees exactly what the chat wrote. (4) The
   finalizer branch is not armed and is unchanged; a request during the
   finalizer stays pending and is cleared before the next shared dispatch.
-- CHAT-20 (was part of CHAT-4): Messages are answered right away. Lands after
-  CHAT-21 through CHAT-28, so writable chat is never wired in
-  without them. A
-  non-blank chat submission goes to the CHAT-17 side session instead of the
-  CHAT-12 queue, and the answer prints above the chat line while the role
-  keeps running; messages typed while an answer runs wait in order, and
+- CHAT-20 (was part of CHAT-4): Split into CHAT-29 and CHAT-30 on
+  2026-10-21 before it started.
+- CHAT-29 (was part of CHAT-20): Chat answer worker. New
+  `llm_handoff/chat_answers.py` defines a frozen `ChatContext` (`role`,
+  `provider`, `story_id`, `log_path`, `agent_config`) and
+  `ChatAnswerWorker`, with the CHAT-17 `run_chat_session`, CHAT-21
+  `record_chat_changes`, and CHAT-27 `request_takeover_if_handoff_changed`
+  as injectable defaults. `submit(text)` fits `ChatInput`'s `on_submit`: it
+  reads the context at submit time, returns a notice and queues nothing when
+  no role runs or the provider is not `claude` or `codex` (`Chat is not
+  available for <provider> yet.`), and otherwise queues the stripped text,
+  starts the daemon thread, and names how many messages are ahead. The
+  thread answers in submission order, one at a time, resuming the saved
+  session per provider; it takes the handoff digest before the call, writes
+  each answer line as `chat: <line>` (or one `chat error:` line), records
+  the changes (failed results too), and then requests a takeover, so the
+  record lands before the takeover. A `ValueError` or `OSError` from the
+  session, an `OSError` from the record, or any other exception writes one
+  `chat error:` line and the thread keeps going. `busy()`, `wait_idle()`,
+  and an idempotent `stop()` (finishes the running answer, drops and counts
+  queued ones) are provided. Known limit: a role's own `HANDOFF.md` write
+  during an answer also counts as a chat change; no path filtering is done.
+  Nothing in the loop calls it yet; CHAT-30 wires it in.
+- CHAT-30 (was part of CHAT-20): Chat messages are answered right away
+  (wiring). Lands after CHAT-21 through CHAT-29, so writable chat is never
+  wired in without them. A non-blank chat submission goes to the CHAT-29
+  worker through `__main__._attach_console_chat` instead of the CHAT-12
+  queue, and the answer prints above the chat line while the role keeps
+  running; messages typed while an answer runs wait in order, and
   follow-ups resume the same side session for the rest of the run. After
-  each answer the loop applies CHAT-21 through CHAT-24, CHAT-27, and
-  CHAT-28. New
-  submissions no
-  longer write the CHAT-12 queue, and the CHAT-13 `Press Enter to continue`
-  hold runs only when that file already holds messages (saved before this
-  story, or kept by an earlier stop), so none is stranded. At the points
-  where the hold runs (before the publish and settle steps), and before the
-  work-claim gate commits, the loop also waits for a running chat answer to
-  finish. An agy role prints that chat is not available for agy yet.
+  each answer the worker applies CHAT-21 and CHAT-27, and the loop applies
+  CHAT-22 through CHAT-24 and CHAT-28. New submissions no longer write the
+  CHAT-12 queue, and the CHAT-13 `Press Enter to continue` hold runs only
+  when the queue file already holds messages (saved before this story, or
+  kept by an earlier stop), so none is stranded. Before the publish and
+  settle steps, and before the work-claim gate commits, the loop waits with
+  `wait_idle` for a running chat answer to finish. The worker is stopped
+  when the run ends. An agy role prints that chat is not available for agy
+  yet.
 - CHAT-4 (was part of CHAT-3): `@role` asks a finished role's own session.
   `@role <message>` finds the role's latest entry in the CHAT-15 dispatch
   record and resumes that session with the role's normal launch arguments,
