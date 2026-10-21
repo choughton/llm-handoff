@@ -16,13 +16,25 @@ that raises ``OSError`` leaves capture off and raises nothing.
 The session also carries the running role's ``ChatContext`` and an optional
 attached chat answer worker. ``wait_for_answers`` blocks the loop while that
 worker is answering, so commits, gates, and publishes see the answer's
-changes. Nothing attaches a worker yet; CHAT-32 wires it in.
+changes. ``__main__._attach_console_chat`` attaches the worker (CHAT-32).
+
+It also keeps the latest returned dispatch per role for ``@role`` chat
+(CHAT-34): ``record_role_dispatch`` stores the role, story id, configured
+primary provider, and session id in memory, and ``latest_role_dispatch``
+returns it. The repository copy of the dispatch record is never read for
+this, because a role can edit it. The entries survive role changes and
+``suspended()``; ``clear_role_dispatches`` (at run start) and ``detach``
+(at run teardown) drop them, so a later run in the same process cannot resume
+an earlier run's sessions. The loop thread writes the entries and the chat
+submission thread reads them, so a lock guards them.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
+import threading
 from typing import TYPE_CHECKING, Protocol
 
 from llm_handoff.chat_input import ChatInput
@@ -44,11 +56,27 @@ class ChatAnswerWaiter(Protocol):
     def wait_idle(self, timeout: float | None) -> bool: ...
 
 
+@dataclass(frozen=True)
+class RoleDispatch:
+    """The latest returned dispatch of one role in this run.
+
+    ``provider`` is None for the manual frontend and ``session_id`` is None
+    when the dispatch reported no usable session.
+    """
+
+    role: str
+    story_id: str | None
+    provider: str | None
+    session_id: str | None
+
+
 class ChatSession:
     """The attached chat line and keystroke capture for one process."""
 
     # Every call comes from the main thread, as with
-    # ``console_interrupt.ConsoleInterruptController``.
+    # ``console_interrupt.ConsoleInterruptController``, except
+    # ``latest_role_dispatch``, which the chat submission thread calls; the
+    # role dispatch entries are guarded by their own lock.
 
     def __init__(self) -> None:
         self._chat_line: ChatLine | None = None
@@ -56,6 +84,8 @@ class ChatSession:
         self._role: str | None = None
         self._context: ChatContext | None = None
         self._worker: ChatAnswerWaiter | None = None
+        self._role_dispatch_lock = threading.Lock()
+        self._role_dispatches: dict[str, RoleDispatch] = {}
 
     @property
     def attached(self) -> bool:
@@ -96,8 +126,43 @@ class ChatSession:
         self._context = None
         # The worker's owner stops it; detach only drops the reference.
         self._worker = None
+        # Detach is the run's teardown: no later run resumes these sessions.
+        self.clear_role_dispatches()
         if chat_line is not None:
             chat_line.set_role(None)
+
+    def record_role_dispatch(
+        self,
+        role: str,
+        *,
+        story_id: str | None,
+        provider: str | None,
+        session_id: str | None,
+    ) -> None:
+        """Keep ``role``'s returned dispatch as its latest one.
+
+        A blank or non-string session id is kept as None, so a later dispatch
+        without a usable session replaces an older one rather than leaving it
+        exposed.
+        """
+
+        if not isinstance(session_id, str) or not session_id.strip():
+            session_id = None
+        entry = RoleDispatch(
+            role=role, story_id=story_id, provider=provider, session_id=session_id
+        )
+        with self._role_dispatch_lock:
+            self._role_dispatches[role] = entry
+
+    def latest_role_dispatch(self, role: str) -> RoleDispatch | None:
+        """Return ``role``'s latest returned dispatch, or None when none is kept."""
+
+        with self._role_dispatch_lock:
+            return self._role_dispatches.get(role)
+
+    def clear_role_dispatches(self) -> None:
+        with self._role_dispatch_lock:
+            self._role_dispatches.clear()
 
     def set_role(
         self, role: str | None, context: ChatContext | None = None
@@ -192,14 +257,44 @@ def suspended() -> AbstractContextManager[None]:
     return SESSION.suspended()
 
 
+def record_role_dispatch(
+    role: str,
+    *,
+    story_id: str | None,
+    provider: str | None,
+    session_id: str | None,
+) -> None:
+    """Keep a returned role dispatch as that role's latest one."""
+
+    SESSION.record_role_dispatch(
+        role, story_id=story_id, provider=provider, session_id=session_id
+    )
+
+
+def latest_role_dispatch(role: str) -> RoleDispatch | None:
+    """Return the role's latest returned dispatch in this run, or None."""
+
+    return SESSION.latest_role_dispatch(role)
+
+
+def clear_role_dispatches() -> None:
+    """Forget every kept role dispatch; the loop calls this at run start."""
+
+    SESSION.clear_role_dispatches()
+
+
 __all__ = [
     "CHAT_ANSWER_WAIT_MESSAGE",
     "ChatAnswerWaiter",
     "ChatSession",
+    "RoleDispatch",
     "SESSION",
     "attach",
     "attach_worker",
+    "clear_role_dispatches",
     "detach",
+    "latest_role_dispatch",
+    "record_role_dispatch",
     "set_role",
     "suspended",
     "wait_for_answers",

@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The loop supplies finished role sessions to `@role` chat (CHAT-34). After
+  each returned role dispatch, whatever its exit code, the loop keeps the
+  role, story id, configured primary provider, and session id in memory
+  through new `chat_session.record_role_dispatch`/`latest_role_dispatch`; a
+  later dispatch of the role replaces its entry, even without a session. The
+  entries are cleared when `run_loop` starts and by `chat_session.detach`, and
+  never come from the repository dispatch record, so a disabled, failed, or
+  edited record changes nothing. `__main__._attach_console_chat` passes the
+  worker a `role_session` lookup that reads the latest entry at submit time
+  and supplies the role's configured agent settings. Chat on agy is still
+  not available (CHAT-5).
 - `agy` roles launch with `--mode accept-edits`. In its default agent mode,
   `agy` print mode auto-denies every file write outside the system temp
   directory, so an Antigravity planner could not rewrite `HANDOFF.md` and

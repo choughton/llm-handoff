@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import functools
 import inspect
+import io
 import threading
 from pathlib import Path
 
 import pytest
 
+from llm_handoff import __main__ as main_module
 from llm_handoff import chat_answers
+from llm_handoff import chat_session
 from llm_handoff import config
+from llm_handoff.chat_input import ChatInput
 from llm_handoff.chat_answers import (
     CHAT_BLANK_MESSAGE,
     CHAT_NO_ROLE_MESSAGE,
@@ -880,3 +885,235 @@ def test_role_record_os_error_uses_role_prefix(harness: Harness, worker) -> None
     assert str(harness.changes) in harness.lines[1]
     assert "disk full" in harness.lines[1]
     assert len(harness.lines) == 2
+
+
+# --- console attachment supplies the role-session lookup (CHAT-34) ------------
+
+
+class _TTYStream(io.StringIO):
+    def __init__(self, tty: bool) -> None:
+        super().__init__()
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+class _IdleKeyReader:
+    def __init__(self) -> None:
+        self._idle = threading.Event()
+
+    def open(self) -> None:
+        return None
+
+    def read_chars(self, timeout: float) -> str:
+        self._idle.wait(min(timeout, 0.005))
+        return ""
+
+    def close(self) -> None:
+        return None
+
+
+class _Logger:
+    def __init__(self) -> None:
+        self.logged: list[tuple[str, str]] = []
+        self.chat_line = None
+
+    def __call__(self, level: str, text: str) -> None:
+        self.logged.append((level, text))
+
+    def attach_chat_line(self, chat_line) -> None:
+        self.chat_line = chat_line
+
+
+class Console:
+    """``__main__._attach_console_chat`` with fake terminals and a fake session."""
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+        self.session_calls: list[dict] = []
+        self.on_submit = None
+        self.worker: ChatAnswerWorker | None = None
+        self.logger = _Logger()
+        self.config = config.DispatchConfig(
+            repo_root=tmp_path,
+            audit={
+                "reviewers": ["quality"],
+                "security_opt_out_reason": "Tests cover the single-auditor route.",
+            },
+        )
+
+    def run_session(self, provider, message, **kwargs):
+        self.session_calls.append({"provider": provider, "message": message, **kwargs})
+        return _result(f"answer to {message}")
+
+    def attach(
+        self,
+        *,
+        stdin_tty: bool = True,
+        stdout_tty: bool = True,
+        console_input: bool = True,
+    ) -> ChatAnswerWorker | None:
+        def factory(_stdin, chat_line, **kwargs):
+            if not console_input:
+                return None
+            if "on_submit" in kwargs:
+                self.on_submit = kwargs["on_submit"]
+            return ChatInput(chat_line, _IdleKeyReader(), poll_interval=0.01)
+
+        self.monkeypatch.setattr(main_module, "chat_input_for_console", factory)
+        self.monkeypatch.setattr(
+            main_module,
+            "ChatAnswerWorker",
+            functools.partial(
+                ChatAnswerWorker,
+                run_session=self.run_session,
+                record_changes=lambda *_a, **_k: None,
+                request_takeover=lambda **_k: False,
+            ),
+        )
+        self.monkeypatch.setattr(main_module.sys, "stdin", _TTYStream(stdin_tty))
+        self.monkeypatch.setattr(main_module.sys, "stdout", _TTYStream(stdout_tty))
+        self.worker = main_module._attach_console_chat(
+            self.logger, self.config  # type: ignore[arg-type]
+        )
+        return self.worker
+
+    def close(self) -> None:
+        if self.worker is not None:
+            chat_session.set_role(None)
+            self.worker.stop()
+            chat_session.attach_worker(None)
+        chat_session.detach()
+
+
+@pytest.fixture
+def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    chat_session.detach()
+    created = Console(tmp_path, monkeypatch)
+    yield created
+    created.close()
+
+
+def _running(role: str = "auditor") -> ChatContext:
+    return ChatContext(
+        role=role,
+        provider="claude",
+        story_id="S-9",
+        log_path="logs/dispatch/auditor.log",
+        agent_config=None,
+    )
+
+
+def test_attached_worker_resumes_a_session_recorded_after_attachment(
+    console: Console,
+) -> None:
+    worker = console.attach()
+    assert worker is not None
+    assert chat_session.SESSION.worker is worker
+    chat_session.set_role("auditor", _running())
+    assert console.on_submit is not None
+
+    # Nothing is recorded yet: the lookup runs at submit time and falls back.
+    assert console.on_submit("@backend before") == (
+        "No finished backend session is recorded, so the side session answers. "
+        "Chat message sent to the chat session."
+    )
+    assert worker.wait_idle(timeout=WAIT)
+
+    # The recorded provider and story id are kept, even when they differ from
+    # the configured ones.
+    chat_session.record_role_dispatch(
+        "backend", story_id="S-0", provider="claude", session_id="backend-1"
+    )
+    assert console.on_submit("@backend why?") == (
+        "Chat message sent to the backend session."
+    )
+    assert worker.wait_idle(timeout=WAIT)
+
+    side_call, role_call = console.session_calls
+    assert side_call["message"] == "@backend before"
+    assert "resumed_role" not in side_call or side_call["resumed_role"] is False
+    assert role_call["provider"] == "claude"
+    assert role_call["message"] == "why?"
+    assert role_call["role"] == "backend"
+    assert role_call["story_id"] == "S-0"
+    assert role_call["session_id"] == "backend-1"
+    assert role_call["agent_config"] is console.config.agents["backend"]
+    assert role_call["resumed_role"] is True
+    assert ("AGENT", "chat backend: answer to why?") in console.logger.logged
+
+
+def test_attached_lookup_follows_the_latest_entry(console: Console) -> None:
+    console.attach()
+    lookup = console.worker._role_session  # type: ignore[union-attr]
+    assert lookup is not None
+
+    chat_session.record_role_dispatch(
+        "planner", story_id="S-1", provider="codex", session_id="p-1"
+    )
+    first = lookup("planner")
+    chat_session.record_role_dispatch(
+        "planner", story_id="S-2", provider="codex", session_id="p-2"
+    )
+    second = lookup("planner")
+    chat_session.record_role_dispatch(
+        "planner", story_id="S-3", provider="codex", session_id=None
+    )
+
+    assert first == RoleSession(
+        role="planner",
+        provider="codex",
+        story_id="S-1",
+        session_id="p-1",
+        agent_config=console.config.agents["planner"],
+    )
+    assert second is not None and second.session_id == "p-2"
+    assert lookup("planner") is None
+    assert lookup("backend") is None
+
+
+def test_lookup_returns_none_for_a_role_with_no_configured_agent(
+    console: Console,
+) -> None:
+    assert "tpm" not in console.config.agents
+    chat_session.record_role_dispatch(
+        "tpm", story_id="S-1", provider="codex", session_id="t-1"
+    )
+
+    assert main_module._role_session_lookup(console.config)("tpm") is None
+
+
+def test_lookup_returns_none_after_detach(console: Console) -> None:
+    console.attach()
+    lookup = console.worker._role_session  # type: ignore[union-attr]
+    chat_session.record_role_dispatch(
+        "backend", story_id="S-1", provider="claude", session_id="b-1"
+    )
+    assert lookup("backend") is not None
+
+    console.close()
+    console.worker = None
+
+    assert chat_session.SESSION.attached is False
+    assert chat_session.SESSION.worker is None
+    assert lookup("backend") is None
+
+
+@pytest.mark.parametrize(
+    ("stdin_tty", "stdout_tty", "console_input"),
+    [(False, True, True), (True, False, True), (True, True, False)],
+)
+def test_no_worker_or_lookup_without_an_interactive_console(
+    console: Console, stdin_tty: bool, stdout_tty: bool, console_input: bool
+) -> None:
+    worker = console.attach(
+        stdin_tty=stdin_tty, stdout_tty=stdout_tty, console_input=console_input
+    )
+
+    assert worker is None
+    assert console.on_submit is None
+    assert chat_session.SESSION.attached is False
+    assert chat_session.SESSION.worker is None
+    assert console.logger.chat_line is None

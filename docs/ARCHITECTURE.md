@@ -389,6 +389,35 @@ be stopped this way; the finalizer, validators the dispatcher runs on its own,
 the normalizer, and hygiene repairs are never stopped. A chat answer that
 changes other files but not `HANDOFF.md` never stops the role.
 
+### Messages to a finished role
+
+`@<role> <message>` on the chat line, where `<role>` is an exact agent role
+name, resumes that role's own session from its latest finished dispatch in
+this run. After each role dispatch returns, whatever its exit code, the loop
+keeps the dispatch's role, story id, configured primary provider, and
+reported session id in dispatcher memory (`chat_session`). A later returned
+dispatch of the same role replaces the entry, even when it reported no
+session, so an older session is never resumed in its place. A dispatch that
+raised, a chat takeover that stopped the role before it returned, and a
+resumed handback add no entry; the manual frontend's entry has no session.
+The dispatcher never reads the repository copy of the dispatch record
+(`logs/dispatch/dispatch-record.json`) for this, because a role can edit it,
+and a disabled or failed record write does not stop the in-memory update.
+Entries survive role changes and console suspension, are cleared when a run
+starts, and are dropped at run teardown, so a later run in the same process
+cannot resume an earlier run's sessions.
+
+The console's chat answer worker looks the target up when the message is
+sent and resumes the session with the role's configured agent settings, the
+recorded provider, and the recorded story id. Only Claude and Codex sessions
+are resumed. When the target is the running role, has no kept session, or
+its recorded provider is not supported, the full message goes to the side
+session with a notice that says why. Role messages share the one FIFO queue
+with side messages, keep the target role's own permissions, and are recorded
+against the running story; a resulting `HANDOFF.md` change goes through the
+same takeover and audit handling as any chat change. Chat on agy is not
+available yet.
+
 ## Audit Fan-Out
 
 By default the auditor route runs one reviewer that both judges the work and
