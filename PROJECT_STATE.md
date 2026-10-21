@@ -13,10 +13,11 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-31 (the
-  loop waits for a running chat answer) in flight and CHAT-32, CHAT-4, and
-  CHAT-5 remaining. CHAT-30 was split into CHAT-31 and CHAT-32 on 2026-10-21
-  before it started. CHAT-29 (the chat answer worker) was approved at
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-32
+  (chat messages are answered right away, console wiring) in flight and
+  CHAT-4 and CHAT-5 remaining. CHAT-31 (the loop waits for a running chat
+  answer) was approved at `948c2fb` and merged in PR #234. CHAT-30 was split
+  into CHAT-31 and CHAT-32 on 2026-10-21 before it started. CHAT-29 (the chat answer worker) was approved at
   `48dee6a` and merged in PR #233.
   CHAT-28 (the loop follows a chat rewrite of `HANDOFF.md`) was approved at
   `a5b8ee1` and merged in PR #232. CHAT-20 was split into CHAT-29 and
@@ -1110,8 +1111,8 @@ and merged in PR #230; CHAT-19 was split into CHAT-27 and CHAT-28; CHAT-27
 was approved at `5ec213e` and merged in PR #231; CHAT-28 was approved at
 `a5b8ee1` and merged in PR #232; CHAT-20 was split into CHAT-29 and
 CHAT-30; CHAT-29 was approved at `48dee6a` and merged in PR #233; CHAT-30
-was split into CHAT-31 and CHAT-32; CHAT-31 is in flight; CHAT-32, CHAT-4,
-and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
+was split into CHAT-31 and CHAT-32; CHAT-31 was approved at `948c2fb` and
+merged in PR #234; CHAT-32 is in flight; CHAT-4 and CHAT-5 remain. Nothing else blocks it: HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into CHAT-21
 through CHAT-24 because it exceeded one packet. Decided by the planner on
 2026-10-21: CHAT-19 was split into CHAT-27 and CHAT-28, CHAT-20 into CHAT-29
@@ -1499,8 +1500,9 @@ dependencies; Windows (`msvcrt`) and POSIX.
   planner settle sites. Each of those later waits also checks for a takeover
   an answer requested after the role returned and follows the chat's
   handoff through the CHAT-28 path (without the planner-commit undo, which
-  already ran) before the next commit, gate, or publish step. No worker is
-  attached anywhere yet, so every wait is a no-op in a real run.
+  already ran) before the next commit, gate, or publish step. Approved at
+  `948c2fb` and merged in PR #234. CHAT-32 attaches the worker these waits
+  use.
 - CHAT-32 (was part of CHAT-30): Chat messages are answered right away
   (console wiring). Lands after CHAT-21 through CHAT-29 and CHAT-31, so
   writable chat is never wired in without them. A non-blank chat submission
@@ -1512,12 +1514,20 @@ dependencies; Windows (`msvcrt`) and POSIX.
   CHAT-22 through CHAT-24 and CHAT-28. New submissions no longer write the
   CHAT-12 queue, and the CHAT-13 `Press Enter to continue` hold runs only
   when the queue file already holds messages (saved before this story, or
-  kept by an earlier stop), so none is stranded. `_attach_console_chat`
-  builds the CHAT-29 worker with `context=chat_session.SESSION.context`,
-  attaches it with `chat_session.attach_worker`, and calls `stop()` then
-  `attach_worker(None)` in `_run_dispatch`'s `finally` before
-  `chat_session.detach()`. An agy role prints that chat is not available
-  for agy yet.
+  kept by an earlier stop), so none is stranded.
+  `_attach_console_chat(logger, config)` builds the CHAT-29 worker with
+  `context=lambda: chat_session.SESSION.context` (a callable that reads the
+  running role's context at submit time, not at attach time) and a
+  `write_line` that logs each line at `AGENT` level, makes `worker.submit`
+  the `ChatInput` `on_submit`, attaches the worker with
+  `chat_session.attach_worker`, and returns it. It returns `None` and
+  builds or attaches no worker when stdin or stdout is not a terminal or no
+  console key input is available: it first calls `chat_input_for_console`
+  with no callback and builds the worker only when that returns a
+  `ChatInput`, because `ChatInput` takes `on_submit` only when built. `_run_dispatch`'s `finally` calls `stop()` then
+  `attach_worker(None)` before `chat_session.detach()` on a normal return,
+  `KeyboardInterrupt`, or an exception. An agy role prints that chat is not
+  available for agy yet. In flight.
 - CHAT-4 (was part of CHAT-3): `@role` asks a finished role's own session.
   `@role <message>` finds the role's latest entry in the CHAT-15 dispatch
   record and resumes that session with the role's normal launch arguments,
