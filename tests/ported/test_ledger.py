@@ -408,6 +408,44 @@ def test_run_epic_close_redacts_secrets_in_stderr_lines(
     assert planted in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("stdout", "exit_code", "expected_exit", "parse_failed"),
+    [
+        (_ledger_output(push_result="SKIPPED"), 0, 0, False),
+        ("prose instead of structured fields", 0, 1, True),
+        ("", 17, 17, False),
+    ],
+    ids=["success", "parse-error", "nonzero-exit"],
+)
+def test_run_epic_close_keeps_the_finalizer_session_on_every_result(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    exit_code: int,
+    expected_exit: int,
+    parse_failed: bool,
+) -> None:
+    invoke_mock = Mock(
+        return_value=SubagentResult(
+            stdout=stdout,
+            stderr="",
+            exit_code=exit_code,
+            elapsed_seconds=1.0,
+            session_id="fin-sess",
+        )
+    )
+    monkeypatch.setattr(ledger, "invoke_support_role", invoke_mock)
+
+    result = ledger.run_epic_close(log=Mock())
+
+    assert result.subagent_exit_code == expected_exit
+    assert (result.parse_error is not None) is parse_failed
+    assert result.session_id == "fin-sess"
+
+
+def test_epic_close_result_session_defaults_to_none() -> None:
+    assert ledger.EpicCloseResult(subagent_exit_code=0, stdout="", stderr="").session_id is None
+
+
 def test_bounce_counts_persist_across_simulated_restart(tmp_path: Path) -> None:
     story_id = "story-persisted-bounce"
     state_path = tmp_path / "logs" / "dispatch" / "bounce-counts.json"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime
@@ -7,7 +8,7 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import Sequence
+from typing import Sequence, cast
 import unicodedata
 
 import click
@@ -23,12 +24,13 @@ from llm_handoff.antigravity_permissions import (
     format_antigravity_permissions,
 )
 from llm_handoff import chat_session, console_interrupt
-from llm_handoff.chat_answers import ChatAnswerWorker
+from llm_handoff.chat_answers import ChatAnswerWorker, RoleSession
 from llm_handoff.chat_changes import chat_changes_path
 from llm_handoff.chat_input import chat_input_for_console
 from llm_handoff.chat_line import ChatLine
 from llm_handoff.config import (
     DISPATCH_WINDOW_TITLE,
+    AgentRole,
     DispatchConfig,
     detect_repo_root,
     load_dispatch_config,
@@ -145,6 +147,35 @@ def _stream_is_tty(stream: object) -> bool:
         return False
 
 
+def _role_session_lookup(
+    config: DispatchConfig,
+) -> Callable[[str], RoleSession | None]:
+    """The ``@role`` lookup: the role's latest dispatch kept in this run.
+
+    Reads ``chat_session``'s in-memory entries at call time, never the
+    repository dispatch record. Returns None when no entry is kept, it has no
+    session id or provider, or the role has no configured agent. The recorded
+    provider and story id are kept; the worker checks provider support.
+    """
+
+    def lookup(role: str) -> RoleSession | None:
+        entry = chat_session.latest_role_dispatch(role)
+        if entry is None or entry.session_id is None or entry.provider is None:
+            return None
+        agent_config = config.agents.get(cast(AgentRole, role))
+        if agent_config is None:
+            return None
+        return RoleSession(
+            role=entry.role,
+            provider=entry.provider,
+            story_id=entry.story_id,
+            session_id=entry.session_id,
+            agent_config=agent_config,
+        )
+
+    return lookup
+
+
 def _attach_console_chat(
     logger: DispatchLogger, config: DispatchConfig
 ) -> ChatAnswerWorker | None:
@@ -153,8 +184,10 @@ def _attach_console_chat(
     Only when both stdin and stdout are terminals; under the supervisor the
     child's stdout is a pipe, so the chat line stays off there. A sent line
     goes to the returned ``ChatAnswerWorker``, which answers it for the role
-    running at submit time and writes the answer through the logger. The
-    caller stops the worker. Returns None when chat stays off.
+    running at submit time and writes the answer through the logger. An
+    ``@role`` line resumes that role's latest finished session through
+    ``_role_session_lookup``. The caller stops the worker. Returns None when
+    chat stays off.
     """
 
     if not (_stream_is_tty(sys.stdin) and _stream_is_tty(sys.stdout)):
@@ -177,6 +210,7 @@ def _attach_console_chat(
         # Read the session at submit time, not at attach time.
         context=lambda: chat_session.SESSION.context,
         write_line=write_line,
+        role_session=_role_session_lookup(config),
     )
     chat_input = chat_input_for_console(
         sys.stdin, chat_line, on_submit=worker.submit

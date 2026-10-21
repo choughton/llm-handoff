@@ -13,9 +13,17 @@ belong in commits, handoffs, and pull requests.
   resumes after TPM-ROLE with CHAT-17. The operator moves the self-host
   planner to agy, with a codex tpm, once TPM-ROLE lands, so TPM-ROLE's
   `Fit:` reason applies here too.
-- **Active Epic:** CHAT, by the operator direction above, with CHAT-33
-  (the chat answer worker routes `@role` messages to a finished role's
-  session) in flight and CHAT-34 and CHAT-5 remaining. CHAT-4 was split into
+- **Operator direction (2026-10-21):** with a tpm configured, the tpm grooms
+  stories (splits, reorders, and reshapes them inside the open epic) and the
+  planner keeps only epic-level direction. New epic 20 (GROOMING) is next
+  after CHAT closes, ahead of TRANSITION-RULES.
+- **Active Epic:** CHAT, by the operator direction above, with CHAT-34
+  (the loop supplies finished role sessions to `@role` chat) implemented and
+  awaiting audit, then CHAT-35 (a role's handback written during a chat
+  answer is not taken for a chat rewrite; operator, 2026-10-21) and CHAT-5
+  remaining. CHAT-33 (the chat answer worker routes
+  `@role` messages to a finished role's session) was approved at `94e0963`.
+  CHAT-4 was split into
   CHAT-33 and CHAT-34 on 2026-10-21 before it started. CHAT-32 (chat
   messages are answered right away, console wiring) was approved at
   `0bafd00` and merged in PR #235. CHAT-31 (the loop waits for a running chat
@@ -42,7 +50,7 @@ belong in commits, handoffs, and pull requests.
   (chat side-session launcher) was approved at `d059a25` and merged in PR
   #224. CHAT-18 was
   split into CHAT-21 through CHAT-24 on 2026-10-20. TRANSITION-RULES is unblocked now that
-  TPM-ROLE is closed and is next in line by fit. CHAT-15 (the loop records
+  TPM-ROLE is closed and is next after GROOMING. CHAT-15 (the loop records
   each dispatch in the dispatch record) was merged in PR #203. CHAT-3
   (dispatch record file) was approved at `6d387ab` and merged in PR #202.
   CHAT-14 (Claude and Codex role dispatches report their session id) was
@@ -1119,7 +1127,8 @@ CHAT-30; CHAT-29 was approved at `48dee6a` and merged in PR #233; CHAT-30
 was split into CHAT-31 and CHAT-32; CHAT-31 was approved at `948c2fb` and
 merged in PR #234; CHAT-32 was approved at `0bafd00` and merged in PR #235;
 CHAT-4 was split into CHAT-33 and CHAT-34 on 2026-10-21 before it started;
-CHAT-33 is in flight; CHAT-34 and CHAT-5 remain. Nothing else blocks it:
+CHAT-33 is in flight; CHAT-34, CHAT-35 (added by the operator 2026-10-21,
+before CHAT-5), and CHAT-5 remain. Nothing else blocks it:
 HARD-3 is merged and RECOVERY is
 closed. Decided by the planner on 2026-10-20: CHAT-18 was split into CHAT-21
 through CHAT-24 because it exceeded one packet. Decided by the planner on
@@ -1576,10 +1585,41 @@ dependencies; Windows (`msvcrt`) and POSIX.
   dispatch's role, story id, configured primary provider, and
   `DispatchResult.session_id` in dispatcher memory through `chat_session`,
   never reading the repository copy of the dispatch record, which a role can
-  edit. `__main__._attach_console_chat` passes the worker a `role_session`
+  edit. The finalizer runs through the epic-close ledger, so
+  `EpicCloseResult` carries `session_id` on every returned result (success,
+  parse error, non-zero exit) and the loop keeps it for `@finalizer` in
+  memory only; the epic-close ledger stays out of the persisted dispatch
+  record (CHAT-15). `__main__._attach_console_chat` passes the worker a `role_session`
   lookup that returns the role's latest kept entry with
   `config.agents[role]` as its agent config. README and
   `docs/ARCHITECTURE.md` describe `@role`.
+- CHAT-35 (added 2026-10-21 by the operator; runs before CHAT-5): A role's
+  own handback is not taken for a chat rewrite. Found live during CHAT-34:
+  a chat answer that only edited `PROJECT_STATE.md` was still running when
+  the backend wrote its `ready_for_review` handback (`close_type: story`,
+  `scope_sha` empty until the dispatcher commit). The worker compares the
+  handoff SHA before and after each answer (`chat_answers.py` `_answer`,
+  `chat_takeover.request_takeover_if_handoff_changed`), so the backend's
+  write requested a takeover; `_follow_chat_takeover` (`orchestrator.py`)
+  dropped the backend's commit, `scope_sha` stamp, and work-claim gate and
+  validated the raw handback, which failed `frontmatter_scope_sha_missing`
+  and paused the loop. Because the backend's cycle was dropped, its
+  `PROJECT_STATE.md` edit was then committed as chat's after the next
+  planner role (`718c363`) instead of riding the implementer commit
+  (CHAT-22). Fix: when the role returned during the chat window and the
+  changed handoff's `producer` names the dispatched role, it is the role's
+  handback: clear the takeover request, keep the chat change record, and
+  run the role's normal post-dispatch path (implementer commit with chat
+  paths riding along, stamp, gate, validation). A changed handoff with any
+  other producer, or one written while the role is still running, stays a
+  takeover as today. Tests in `tests/test_chat_takeover_loop.py`: a backend
+  handback written while an answer runs is committed, stamped, and audited,
+  with no pause and no chat commit of the backend's files; a chat rewrite
+  with `producer: planner` still takes over. Files: `llm_handoff/chat_takeover.py`,
+  `llm_handoff/chat_answers.py`, `llm_handoff/orchestrator.py`, their tests,
+  `docs/ARCHITECTURE.md`, `CHANGELOG.md`. When CHAT-34 closes,
+  `remaining_stories` must list CHAT-35 ahead of CHAT-5; a tpm that sees
+  only CHAT-5 routes to `planner` to add it.
 - CHAT-5 (was part of CHAT-3): Chat on agy. The side session and `@role`
   answers run on agy with the role's normal agent and grants, as agy role
   dispatches do.
@@ -1846,8 +1886,8 @@ normally with no second pass.
 ### 17. TRANSITION-RULES - per-producer legality in the validator
 
 Fit: unblocked; TPM-ROLE is closed, so TRANS-2's `tpm` dependency is met.
-Next in line after CHAT by fit; otherwise independent, and each story is
-small enough to fill a wait.
+Next in line after GROOMING (operator direction 2026-10-21); otherwise
+independent, and each story is small enough to fill a wait.
 
 The validator checks that `status` implies `next_agent` and that `finalizer`
 is reached only from the auditor with `close_type: epic`
@@ -2248,6 +2288,73 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   workflow's `dispatch_config.yaml` for the same stale sentence. Protected
   path; list it in Files in scope. Files: `dispatch_config.example.yaml`,
   `CHANGELOG.md`.
+
+### 20. GROOMING - the tpm grooms stories; the planner keeps direction
+
+Fit: operator direction 2026-10-21. It changes the planner's and the tpm's
+own protocol, so by the Backlog rule it goes before a feature: take it when
+CHAT closes, ahead of TRANSITION-RULES. Nothing blocks it; TPM-ROLE is closed
+and the self-host config runs a codex tpm.
+
+Today the tpm only picks: its prompts say "Never add, drop, split, renumber,
+or reorder stories or epics. Route any of those to `planner`", so every story
+that turns out larger than one packet costs a tpm-to-planner round trip, and
+the planner does story-level work (CHAT-4, -18, -19, -20, and -30 were all
+split by the planner). The operator wants the planner to hold the high-level
+direction (which epic, its goal, its boundaries, its `Fit:`) and the tpm to
+groom: size, split, reshape, and order the stories inside the open epic.
+Nothing in the dispatcher blocks a tpm split today: `story_list_errors`
+(`llm_handoff/story_list.py`) accepts any producer that lists a replaced
+story under `## Dropped Stories` with a reason. The change is the prompt
+contract plus one validator guard. Without `agents.tpm`, the planner keeps
+doing both jobs exactly as today.
+
+The tpm may, inside the open epic only: split a story into new flat IDs after
+the epic's highest number with `(was EPIC-N)` (the story size rule in the
+Backlog intro); renumber or reorder stories not yet started; rewrite a
+not-started story's description from the code; and add a follow-up story
+that stays within the epic's stated scope. A split or a story already done on
+the default branch leaves `remaining_stories` under `## Dropped Stories` with
+the reason (`split into EPIC-7, EPIC-8`). It records the change through the
+Work Packet it writes (`PROJECT_STATE.md` in Files in scope, recording the
+groomed stories in the Objective), as the planner does today. It still never
+picks, opens, closes, or re-scopes an epic, never edits an epic's intro or
+`Fit:` line, and never drops a story for a scope reason; those route to
+`planner`. The tpm grooms the whole epic on its first pass after the planner
+opens it, and again whenever the next story turns out too large.
+
+- GROOM-1: tpm grooming contract. Replace the never-split rule and the split
+  escalation in `docs/handoff/TPM_HANDOFF_PROMPT.md`,
+  `.agents/agents/tpm.md`, and `.codex/skills/llm-handoff-tpm/SKILL.md`
+  (root and `examples/reference-workflow/` copies) with the grooming rules in
+  this intro, and update the `tpm` boundary line in
+  `examples/reference-workflow/AGENTS.md`. Docs only; the `.claude/` copies
+  wait for GROOM-5.
+- GROOM-2: Planner keeps direction. With a tpm configured, the planner writes
+  each epic as an intro, goal, boundaries, `Fit:` line, and an outline of
+  stories, opens it, and routes to `tpm` without sizing or splitting stories;
+  it still handles tpm escalations that need epic-level judgment. Update
+  `docs/handoff/PLANNER_HANDOFF_PROMPT.md`, `.agents/agents/planner.md`, and
+  `.codex/skills/llm-handoff-planner/SKILL.md` (root and
+  `examples/reference-workflow/` copies), the `README.md` role table, and the
+  Backlog intro of this file (story size and IDs: the tpm sizes stories when
+  one is configured). The tpm-absent text stays unchanged.
+- GROOM-3: Linear templates. `llm_handoff/prompt_templates/linear/roles/tpm.md`
+  lets the tpm split and add Linear issues inside the epic's project or label
+  under the same rules; `roles/planner_with_tpm.md` drops its story-sizing
+  duty. The tpm-absent rendering stays byte-identical (the TPM-7 rendering
+  tests).
+- GROOM-4: The tpm stays inside its epic. `validator.py` rejects a
+  `producer: tpm` handoff whose `epic_id` differs from the handoff it started
+  from (`frontmatter_routing_rule`), because `story_list_errors` skips its
+  drop check across epics and a tpm could otherwise drop stories silently by
+  renaming the epic. A planner-to-tpm route with no prior `epic_id` is
+  allowed.
+- GROOM-5: Operator edit of the Claude tpm and planner agents (routes to
+  `user`). The exact edits for `.claude/agents/tpm.md` and
+  `.claude/agents/planner.md` (root and `examples/reference-workflow/`
+  copies) matching GROOM-1 and GROOM-2, plus one `CHANGELOG.md` entry for the
+  epic.
 
 ## Open Followups
 
