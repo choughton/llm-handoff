@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Role and audit reviewer processes can now be stopped by a chat takeover
+  request (CHAT-27): `_run_command_streaming` kills the process tree and
+  raises `ChatTakeover` when one is pending, and chat answers opt out. The
+  loop does not request a takeover yet.
 - The re-audit handoff write after a chat commit now replaces `HANDOFF.md`
   atomically (CHAT-26), so a failed write leaves the previous handoff in place.
   On POSIX the new file keeps the previous handoff's mode, owner, and

@@ -35,7 +35,7 @@ class _FakeRun:
         self.calls: list[dict[str, object]] = []
 
     def __call__(self, command, *, cwd, timeout_ms, idle_timeout_ms=None, env=None,
-                 on_stdout=None, on_stderr=None):
+                 on_stdout=None, on_stderr=None, stop_on_chat_takeover="unset"):
         self.calls.append(
             {
                 "command": list(command),
@@ -43,6 +43,7 @@ class _FakeRun:
                 "timeout_ms": timeout_ms,
                 "idle_timeout_ms": idle_timeout_ms,
                 "env": env,
+                "stop_on_chat_takeover": stop_on_chat_takeover,
             }
         )
         if on_stdout is not None:
@@ -149,6 +150,24 @@ def test_unsupported_provider_raises_before_launch(monkeypatch, tmp_path) -> Non
     assert "antigravity" in str(excinfo.value)
     assert "only claude and codex" in str(excinfo.value)
     assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    ("provider", "lines"),
+    [
+        ("claude", _lines(_claude_init(), _claude_result())),
+        ("codex", _lines(_codex_thread(), _codex_message())),
+    ],
+)
+def test_chat_launch_is_never_stopped_by_a_chat_takeover(
+    monkeypatch, tmp_path, provider, lines
+) -> None:
+    # A chat answer must not be stopped by the takeover its predecessor
+    # requested, so both launches opt out explicitly.
+    fake = _install(monkeypatch, _FakeRun(lines))
+    _run(provider, tmp_path)
+    [call] = fake.calls
+    assert call["stop_on_chat_takeover"] is False
 
 
 @pytest.mark.parametrize("message", ["", "   \n\t"])

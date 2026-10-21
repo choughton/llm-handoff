@@ -347,6 +347,8 @@ def _run_claude_chat(
         idle_timeout_ms=agent_config.idle_timeout_ms,
         env=_build_claude_env(agent_config),
         on_stdout=on_stdout,
+        # A chat answer is never stopped by a takeover its predecessor asked for.
+        stop_on_chat_takeover=False,
     )
     text = (monitor.final_result_text or "").strip()
     return ChatSessionResult(
@@ -384,6 +386,8 @@ def _run_codex_chat(
         idle_timeout_ms=agent_config.idle_timeout_ms,
         env=_build_codex_env(agent_config),
         on_stdout=on_stdout,
+        # A chat answer is never stopped by a takeover its predecessor asked for.
+        stop_on_chat_takeover=False,
     )
     text = unwrap_codex_final_message(monitor.last_agent_message).strip()
     return ChatSessionResult(

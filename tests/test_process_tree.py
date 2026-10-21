@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from llm_handoff import agent_process
+from llm_handoff import chat_takeover
 from llm_handoff import console_interrupt
 from llm_handoff import supervisor
 
@@ -163,6 +164,103 @@ def test_run_command_streaming_stops_on_a_second_console_ctrl_c(
     )
     monkeypatch.setattr(agent_process, "_kill_process_tree", fake_kill_tree)
     monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: True)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent_process._run_command_streaming(
+            ["agent.cmd"],
+            cwd=Path.cwd(),
+            timeout_ms=60_000,
+        )
+
+    assert tree_kills == [process]
+
+
+class _ExitsAfterPollsProcess(_FakeProcess):
+    """A fake child that runs for a few polls, then exits 0 on its own."""
+
+    def __init__(self, *, running_polls: int) -> None:
+        super().__init__()
+        self._running_polls = running_polls
+
+    def poll(self) -> int | None:
+        if self.returncode is None and self._running_polls <= 0:
+            self.returncode = 0
+        self._running_polls -= 1
+        return self.returncode
+
+
+def test_run_command_streaming_stops_on_a_chat_takeover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+
+    def fake_kill_tree(target: Any) -> None:
+        tree_kills.append(target)
+        target.kill()
+
+    monkeypatch.setattr(
+        agent_process.subprocess,
+        "Popen",
+        lambda _command, **_kwargs: process,
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", fake_kill_tree)
+    monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: False)
+    monkeypatch.setattr(agent_process, "takeover_requested", lambda: True)
+
+    with pytest.raises(chat_takeover.ChatTakeover):
+        agent_process._run_command_streaming(
+            ["agent.cmd"],
+            cwd=Path.cwd(),
+            timeout_ms=60_000,
+        )
+
+    assert tree_kills == [process]
+
+
+def test_run_command_streaming_ignores_a_chat_takeover_when_not_stoppable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _ExitsAfterPollsProcess(running_polls=3)
+    tree_kills: list[Any] = []
+    monkeypatch.setattr(
+        agent_process.subprocess,
+        "Popen",
+        lambda _command, **_kwargs: process,
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", tree_kills.append)
+    monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: False)
+    monkeypatch.setattr(agent_process, "takeover_requested", lambda: True)
+
+    result = agent_process._run_command_streaming(
+        ["agent.cmd"],
+        cwd=Path.cwd(),
+        timeout_ms=60_000,
+        stop_on_chat_takeover=False,
+    )
+
+    assert result.exit_code == 0
+    assert tree_kills == []
+
+
+def test_run_command_streaming_second_ctrl_c_wins_over_a_chat_takeover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeProcess()
+    tree_kills: list[Any] = []
+
+    def fake_kill_tree(target: Any) -> None:
+        tree_kills.append(target)
+        target.kill()
+
+    monkeypatch.setattr(
+        agent_process.subprocess,
+        "Popen",
+        lambda _command, **_kwargs: process,
+    )
+    monkeypatch.setattr(agent_process, "_kill_process_tree", fake_kill_tree)
+    monkeypatch.setattr(agent_process, "interrupt_now_requested", lambda: True)
+    monkeypatch.setattr(agent_process, "takeover_requested", lambda: True)
 
     with pytest.raises(KeyboardInterrupt):
         agent_process._run_command_streaming(
