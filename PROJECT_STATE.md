@@ -1361,6 +1361,11 @@ dependencies; Windows (`msvcrt`) and POSIX.
   `os.replace`s it, so a disk-full error or interruption before the replace
   leaves the previous handoff unchanged and the temporary file removed; the
   chat change record is still kept and the story still does not publish.
+  On POSIX the temporary file first takes the previous handoff's mode,
+  owner and group (where permitted), and extended attributes (POSIX ACLs on
+  Linux), and the directory is fsynced after the replace (an `EINVAL` from
+  a file system without directory fsync is skipped); a directory fsync
+  error still fails the write, so the record is kept (PR #230 review).
   No other handoff write changes.
 - CHAT-25 (follow-up from the CHAT-22 review): Chat-committed paths survive
   a resumed handback. The in-flight `handback` record gains

@@ -8,9 +8,13 @@ instead of publishing.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import errno
 import hashlib
+import os
 from pathlib import Path
+import stat
 import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -455,6 +459,148 @@ def test_durable_write_replaces_the_handoff(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == content
     assert _leftover_temporaries(path) == []
     assert sorted(entry.name for entry in tmp_path.iterdir()) == ["HANDOFF.md"]
+
+
+def test_durable_write_copies_metadata_before_fsync_and_syncs_the_directory_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, _original = _existing_handoff(tmp_path)
+    calls: list[tuple[str, Any]] = []
+    real_fsync = orchestrator.os.fsync
+    real_replace = orchestrator.os.replace
+
+    def recording_metadata(source: Path, file_fd: int) -> None:
+        assert isinstance(file_fd, int)
+        calls.append(("metadata", source))
+
+    def recording_fsync(file_fd: int) -> None:
+        calls.append(("fsync", None))
+        real_fsync(file_fd)
+
+    def recording_replace(source: Any, destination: Any) -> None:
+        calls.append(("replace", Path(destination)))
+        real_replace(source, destination)
+
+    def recording_directory_fsync(directory: Path) -> None:
+        calls.append(("fsync_directory", directory))
+
+    monkeypatch.setattr(orchestrator, "_copy_handoff_metadata", recording_metadata)
+    monkeypatch.setattr(orchestrator.os, "fsync", recording_fsync)
+    monkeypatch.setattr(orchestrator.os, "replace", recording_replace)
+    monkeypatch.setattr(orchestrator, "_fsync_directory", recording_directory_fsync)
+
+    orchestrator._write_handoff_durably(path, "# New handoff\n")
+
+    assert calls == [
+        ("metadata", path),
+        ("fsync", None),
+        ("replace", path),
+        ("fsync_directory", path.parent),
+    ]
+    assert path.read_text(encoding="utf-8") == "# New handoff\n"
+
+
+def test_durable_write_raises_when_the_directory_fsync_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, _original = _existing_handoff(tmp_path)
+
+    def failing_directory_fsync(_directory: Path) -> None:
+        raise OSError("directory fsync failed")
+
+    monkeypatch.setattr(orchestrator, "_fsync_directory", failing_directory_fsync)
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        orchestrator._write_handoff_durably(path, "# New handoff\n")
+
+    assert _leftover_temporaries(path) == []
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["HANDOFF.md"]
+
+
+def test_helper_keeps_the_record_when_the_directory_fsync_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _base, _implemented, assignment, record = _story_repo(tmp_path)
+    messages: list[tuple[str, str]] = []
+
+    def failing_directory_fsync(_directory: Path) -> None:
+        raise OSError("directory fsync failed")
+
+    monkeypatch.setattr(orchestrator, "_fsync_directory", failing_directory_fsync)
+
+    result = orchestrator._send_chat_changes_back_to_audit(
+        _config(repo), assignment, _collecting_log(messages)
+    )
+
+    assert result == orchestrator.CHAT_REAUDIT_FAILED
+    assert record.exists()
+    assert load_chat_changes(record)
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "directory fsync failed" in errors[0] and "record is kept" in errors[0]
+
+
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX file modes and directory fsync"
+)
+
+
+@posix_only
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o600])
+def test_durable_write_keeps_the_handoff_mode(tmp_path: Path, mode: int) -> None:
+    path, _original = _existing_handoff(tmp_path)
+    os.chmod(path, mode)
+
+    orchestrator._write_handoff_durably(path, "# New handoff\n")
+
+    assert stat.S_IMODE(os.stat(path).st_mode) == mode
+    assert path.read_text(encoding="utf-8") == "# New handoff\n"
+
+
+@posix_only
+def test_durable_write_keeps_the_handoff_owner_and_group(tmp_path: Path) -> None:
+    path, _original = _existing_handoff(tmp_path)
+    before = os.stat(path)
+
+    orchestrator._write_handoff_durably(path, "# New handoff\n")
+
+    after = os.stat(path)
+    assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+
+
+@posix_only
+def test_directory_fsync_opens_and_syncs_the_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[int] = []
+    real_fsync = orchestrator.os.fsync
+
+    def recording_fsync(file_fd: int) -> None:
+        synced.append(file_fd)
+        real_fsync(file_fd)
+
+    monkeypatch.setattr(orchestrator.os, "fsync", recording_fsync)
+
+    orchestrator._fsync_directory(tmp_path)
+
+    assert len(synced) == 1
+
+
+@posix_only
+@pytest.mark.parametrize(("error", "raised"), [(errno.EINVAL, False), (errno.EIO, True)])
+def test_directory_fsync_skips_only_an_unsupported_directory_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: int, raised: bool
+) -> None:
+    def failing_fsync(_fd: int) -> None:
+        raise OSError(error, os.strerror(error))
+
+    monkeypatch.setattr(orchestrator.os, "fsync", failing_fsync)
+
+    if raised:
+        with pytest.raises(OSError):
+            orchestrator._fsync_directory(tmp_path)
+    else:
+        orchestrator._fsync_directory(tmp_path)
 
 
 def test_helper_keeps_the_record_when_the_commit_fails(
