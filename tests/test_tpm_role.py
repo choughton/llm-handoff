@@ -1,11 +1,14 @@
-"""TPM-1 to TPM-3 and TPM-10: `tpm` is a recognized role name, a configured
-tpm route is dispatched, an unconfigured tpm route gets one planner repair,
-and the validator has rules for `producer: tpm`."""
+"""TPM-1 to TPM-3, TPM-10, and TPM-11: `tpm` is a recognized role name, a
+configured tpm route is dispatched, an unconfigured tpm route gets one planner
+repair, the validator has rules for `producer: tpm`, and `@tpm` at the
+operator prompt dispatches a configured tpm."""
 
 from __future__ import annotations
 
 import importlib
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, get_args
 from unittest.mock import Mock
@@ -624,6 +627,171 @@ def test_repair_guard_clears_after_another_route_dispatches(
     assert ("pause", orchestrator.TPM_NOT_CONFIGURED_PAUSE_REASON) not in events[
         :third
     ]
+
+
+# TPM-11: `@tpm <message>` at the operator prompt
+
+
+class _GatedOperatorStream:
+    """Scripted operator lines, one per prompt line or refused @tpm target.
+
+    Each ``readline`` waits until the dispatcher shows the prompt (or logs the
+    @tpm refusal, after which the same prompt keeps waiting), so lines typed
+    for a later pause are not drained as type-ahead.
+    """
+
+    def __init__(self, lines: list[str], release_on: set[str]) -> None:
+        self._lines = list(lines)
+        self._release_on = release_on
+        self._release = threading.Semaphore(0)
+        self._closed = False
+
+    def on_log(self, level: str, message: str) -> None:
+        if level == "PAUSE" and message in self._release_on:
+            self._release.release()
+
+    def readline(self) -> str:
+        self._release.acquire()
+        if self._closed or not self._lines:
+            return ""
+        return self._lines.pop(0) + "\n"
+
+    def close(self) -> None:
+        self._closed = True
+        self._release.release()
+
+
+def _run_operator_tpm_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    agents: Any,
+    operator_lines: list[str],
+) -> tuple[Any, list[str], list[str | None], list[tuple[str, str]], int]:
+    from llm_handoff.operator_prompt import PROMPT_LINE, TPM_TARGET_NOT_CONFIGURED
+    from llm_handoff.validator import ValidationResult
+
+    handoff_path = _write_tpm_route_fixture(tmp_path)
+    handoff_path.write_text(_USER_HANDOFF, encoding="utf-8")
+    orchestrator = importlib.import_module("llm_handoff.orchestrator")
+    stream = _GatedOperatorStream(
+        operator_lines, {PROMPT_LINE, TPM_TARGET_NOT_CONFIGURED}
+    )
+    dispatched: list[str] = []
+    tpm_instructions: list[str | None] = []
+    real_dispatch = orchestrator._dispatch_route
+
+    def recording_dispatch(route: str, *args: Any, **kwargs: Any) -> Any:
+        dispatched.append(route)
+        return real_dispatch(route, *args, **kwargs)
+
+    def fake_tpm(path: Path, **kwargs: Any) -> DispatchResult:
+        tpm_instructions.append(kwargs.get("additional_instruction"))
+        path.write_text(_TPM_ESCALATION_HANDOFF, encoding="utf-8")
+        return DispatchResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.1)
+
+    real_wait = orchestrator.wait_for_operator_or_handoff_change
+
+    def bounded_wait(*args: Any, stop_requested: Any = None, **kwargs: Any) -> Any:
+        deadline = time.monotonic() + 60.0
+
+        def stop_requested_or_fail() -> bool:
+            if time.monotonic() > deadline:
+                pytest.fail("Pause still waiting after 60s.")
+            return stop_requested is not None and stop_requested()
+
+        return real_wait(*args, stop_requested=stop_requested_or_fail, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "_dispatch_route", recording_dispatch)
+    monkeypatch.setattr(orchestrator, "invoke_tpm_role", fake_tpm)
+    _stub_support_role(orchestrator, monkeypatch)
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_args, **_kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[]
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", lambda: stream)
+    monkeypatch.setattr(
+        orchestrator, "wait_for_operator_or_handoff_change", bounded_wait
+    )
+    logs: list[tuple[str, str]] = []
+
+    def log(level: str, message: str) -> None:
+        logs.append((level, message))
+        stream.on_log(level, message)
+
+    config = _dispatch_config(
+        tmp_path, agents=agents, poll_interval_seconds=1, pause_recovery="off"
+    )
+    try:
+        exit_code = orchestrator.run_loop(config, log=log)
+    finally:
+        stream.close()
+    return orchestrator, dispatched, tpm_instructions, logs, exit_code
+
+
+def test_operator_tpm_target_dispatches_configured_tpm_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator, dispatched, tpm_instructions, logs, exit_code = (
+        _run_operator_tpm_loop(
+            tmp_path,
+            monkeypatch,
+            agents=_agents_with_tpm(),
+            operator_lines=["@tpm pick the next story", "quit"],
+        )
+    )
+
+    assert exit_code == 0
+    assert dispatched == ["tpm"]
+    assert len(tpm_instructions) == 1
+    instruction = tpm_instructions[0]
+    assert instruction is not None
+    assert "Operator instruction: pick the next story" in instruction
+    assert (
+        "A person at the dispatcher console dispatched you directly from the "
+        "operator prompt." in instruction
+    )
+    assert "write your normal handback" in instruction
+    assert (
+        "PAUSE",
+        "Operator prompt: scheduling the tpm dispatch with the operator's message.",
+    ) in logs
+    assert ("INFO", "Routing source: operator_role_dispatch") in logs
+
+
+def test_operator_tpm_target_without_agents_tpm_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_handoff.operator_prompt import PROMPT_LINE, TPM_TARGET_NOT_CONFIGURED
+
+    orchestrator, dispatched, tpm_instructions, logs, exit_code = (
+        _run_operator_tpm_loop(
+            tmp_path,
+            monkeypatch,
+            agents=config_module._default_agent_configs(),
+            operator_lines=["@tpm pick the next story", "quit"],
+        )
+    )
+
+    assert exit_code == 0
+    assert dispatched == []
+    assert tpm_instructions == []
+    assert ("PAUSE", TPM_TARGET_NOT_CONFIGURED) in logs
+    pauses = [message for level, message in logs if level == "PAUSE"]
+    # One prompt: the refusal kept it waiting and `quit` ended it.
+    assert pauses.count(PROMPT_LINE) == 1
+    assert pauses.index(TPM_TARGET_NOT_CONFIGURED) > pauses.index(PROMPT_LINE)
+    assert (
+        "PAUSE",
+        "The operator stopped the dispatcher from the prompt.",
+    ) in logs
+    assert not any("scheduling the tpm dispatch" in message for _, message in logs)
 
 
 # TPM-3 checks 1 to 5: validator rules for producer: tpm

@@ -27,7 +27,8 @@ belong in commits, handoffs, and pull requests.
   TIDY-7 batched in) was approved at `4a8f9fc` and merged in PR #216; TPM-13
   (tests, Linear tools, and inventory for the Claude tpm agent) was approved
   at `3291e2a` and merged in PR #219; TPM-10 (routing to the tpm when it is
-  configured) is in flight.
+  configured) was approved at `3f75142` and merged in PR #220; TPM-11
+  (operator prompt `@tpm <message>`) is in flight.
   ACTIVE-PLANNER and ESCALATION-RECONCILE still
   wait on their triggers, TRANSITION-RULES comes after TPM-ROLE, WORK-INTAKE
   needs a design check, and LINEAR-SWITCH has low urgency.
@@ -1468,7 +1469,7 @@ dispatched without its instructions.
   dispatch stay on the planner. Without `agents.tpm` every route is
   unchanged. TPM-10 also removes the interim pause for a configured tpm
   (`TPM_ROUTE_NOT_LAUNCHED_REASON`), so `next_agent: tpm` dispatches the
-  tpm.
+  tpm. Approved at `3f75142`, merged in PR #220.
 - TPM-11 (was part of TPM-3): Operator prompt `@tpm <message>`, like the
   other `@role` targets, refused with a clear message when `agents.tpm` is
   not configured.
