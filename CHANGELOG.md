@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- README, CONFIGURATION.md, and the handbook (both copies) now document the
+  operator-edit workflow (HUMAN-5): a person may replace `HANDOFF.md` with
+  plain words such as `I made the edits.` at any pause, while agent-written
+  handoffs still need valid frontmatter. CONFIGURATION.md has a new Operator
+  Edits section covering detection, the `Operator edited HANDOFF.md.` log,
+  the `logs/dispatch/operator-edit/previous-handoff.md` snapshot and its
+  limits (the first file a run sees is the baseline; a stale snapshot is not
+  evidence; detection does not persist across restarts), the routing of
+  valid and invalid edits, the single planner interpretation that pauses
+  instead of retrying, `--dry-run`, and the completion check for an
+  operator story finished from a note. Documentation only.
 - Planner and tpm instructions (Antigravity agents, Codex skills, handoff
   prompts, and their reference-workflow copies) now require an applyable
   artifact before an operator story routes to `user` (HUMAN-4): complete

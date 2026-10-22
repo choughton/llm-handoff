@@ -262,7 +262,56 @@ and miss changes.
   such as `I made the edits.` A person's reply needs no frontmatter; the
   planner reads it, checks the operator's commits, and writes the next valid
   handoff. Every agent-authored handoff still follows the routing contract
-  above.
+  above. See "Editing HANDOFF.md In Plain Words" below for what happens next.
+
+## Editing HANDOFF.md In Plain Words
+
+A person may replace `docs/handoff/HANDOFF.md` with plain words at any pause,
+for example `I made the edits.` Frontmatter is optional for a person. This
+exception covers only a person's edit: every handoff an agent writes still
+needs valid routing frontmatter.
+
+The dispatcher spots a person's edit by comparing the file with the last
+version it or a dispatched role wrote, so make the edit while the dispatcher
+is running, for example while it waits at a pause. The first version a run
+sees is its starting point, not an edit: a file replaced while the dispatcher
+was stopped is not treated as a person's edit.
+
+- **Valid frontmatter.** An edit whose frontmatter passes validation routes as
+  written.
+- **No, unparseable, or invalid frontmatter.** The dispatcher sends the
+  planner once to interpret the edit. The planner gets the person's text,
+  quoted, and the last valid handoff the dispatcher saw before the edit, when
+  it saw one. It checks that context and the Git state: the branch, the
+  uncommitted files, and the commits since that handoff. It then rewrites
+  only `HANDOFF.md` into a valid handoff for what the person meant. It does
+  not carry out the request itself, and its handoff passes the same
+  validation as any other. When the intent is unclear, it routes to `user`
+  with `status: escalate_to_user` and one plain question.
+- **A failed interpretation.** If that one pass does not leave a handoff that
+  passes validation, the dispatcher pauses and does not retry. Edit the file
+  again or answer at the operator prompt.
+- **Role output.** An invalid handoff a role wrote is not a person's edit and
+  keeps its existing repair path.
+
+When the previous handoff routed an operator story to `user`, a note such as
+`I made the edits.` does not prove the story is done. The planner checks the
+work with read-only Git commands:
+
+- the operator's commits make each requested edit and no other change;
+- no operator commit changes `docs/handoff/HANDOFF.md`;
+- no file other than `docs/handoff/HANDOFF.md` is uncommitted;
+- only when publishing would move the operator's commit to a story branch
+  (`publish.mode: pr` with `base_branch` and `branch_prefix` set): the
+  checkout is on the base branch, exactly one non-merge commit ahead of its
+  fork point with the remote base branch. In every other case the commits
+  are audited where they are.
+
+A clean result routes to `auditor` with `status: ready_for_review` and the
+concrete `git rev-parse HEAD` SHA as `scope_sha`. Anything off routes back to
+`user`, naming each problem and the exact fix in plain words. So apply the
+artifact, commit exactly the requested edits, keep the artifact and
+`docs/handoff/HANDOFF.md` out of the commit, and only then leave the note.
 
 ## CHANGELOG Entries
 
