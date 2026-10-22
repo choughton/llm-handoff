@@ -130,6 +130,12 @@ split out of `PROJECT_STATE.md`.
   merged in PR #261 (merge `9018e33`); quality and security reviews passed
   with no findings. Verification: dispatcher ran focused tests and the full
   suite at the audited SHA, exit 0.
+- **HUMAN-EDITS** - the planner makes sense of a free-form HANDOFF.md.
+  HUMAN-6, the last story, was approved at
+  `d3da792711cece1c89306cca32d2ba1e84364d7d` and merged in PR #268 (merge
+  `f4c0e3e`); quality and security reviews passed with no findings.
+  Verification: dispatcher ran the focused tests and `git diff --check` at
+  the audited SHA, exit 0.
 
 ## Status History
 
@@ -296,12 +302,80 @@ Current Status entries for closed or finished work, moved unchanged from
   PR #259 at `3d8db88`. TRANS-6 (operator edit of the Claude validator helpers
   to cite `docs/handoff/HANDBOOK.md#transition-table`) is implemented and
   awaiting audit.
+- **Active Epic (2026-10-22):** HUMAN-EDITS (epic 21). HUMAN-1 was approved
+  at `b34f02c` (PR #263, `10fb8ad`), HUMAN-2 at `f54f3c8` (PR #264,
+  `d9bb81f`), HUMAN-3 at `6874c69` (PR #265, `6e1e05d`), HUMAN-4 at `54db19c`
+  (PR #266, `5e4a0a1`), HUMAN-5 merged in PR #267, and HUMAN-6 approved at
+  `d3da792` (PR #268, `f4c0e3e`). TRANSITION-RULES (epic 17) closed with
+  TRANS-6, approved at `fbb8e4c` and merged in PR #261 (`9018e33`).
 
 ## Closed Epics
 
 Full sections of closed epics (intro, `Fit:` line, and story list), moved
 unchanged from the `PROJECT_STATE.md` backlog on 2026-10-21, most recent
 close first. The numbers are the epics' original labels.
+
+### 21. HUMAN-EDITS - the planner makes sense of a free-form HANDOFF.md
+
+Status: CLOSED. HUMAN-1 through HUMAN-6 are done; the last, HUMAN-6, was approved
+at `d3da792` and merged in PR #268 (`f4c0e3e`).
+
+Fit: operator experience; pick it right after TRANSITION-RULES closes.
+Nothing blocks it. Operator direction (2026-10-22): `HANDOFF.md` is meant to
+be human-readable, so it must be human-editable too. An operator should be
+able to replace the whole file with a plain sentence such as "I made the
+edits" and have the planner work out what happened, instead of having to
+write valid frontmatter.
+
+Why: on 2026-10-22 the operator finished the TRANS-6 `.claude/` operator
+story by hand and the loop rejected it four ways. Edits copied out of
+Markdown carried a stray `python` line from a code fence and missed one
+change; the commit included `HANDOFF.md`, which blocks the operator-commit
+publish; and the hand-written frontmatter paired `status: escalate_to_user`
+with `next_agent: auditor`. Today an invalid but parseable handoff gets a
+cleanup-only planner pass, and the operator has to know to type a precise
+sentence at the prompt instead. Nothing tells the planner that a person
+wrote the change or what the handoff said before it.
+
+- HUMAN-1: Spot an operator edit (approved at `b34f02c`, PR #263, `10fb8ad`).
+  A change to the handoff the dispatcher did not make, seen between
+  dispatches or while paused at the operator prompt, is an operator edit.
+  Save the last valid handoff the dispatcher saw (for example
+  `logs/dispatch/operator-edit/previous-handoff.md`, written with the
+  existing link-resistant writer) and log `Operator edited HANDOFF.md`.
+  Valid operator edits route as today.
+- HUMAN-2: Route an invalid or free-form operator edit to the planner
+  (approved at `f54f3c8`, PR #264, `d9bb81f`). When the edited file has no
+  frontmatter, unparseable frontmatter, or frontmatter that fails validation,
+  dispatch the planner once with the operator's text (quoted with the
+  operator-text delimiters from HARD-2), the saved previous handoff, and an
+  instruction to inspect Git state and write a valid handoff for what the
+  operator meant. This replaces the cleanup-only pass for operator edits;
+  role-written invalid handoffs keep today's path. If the planner cannot
+  tell, it routes to `user` with one plain question. `--dry-run` prints the
+  decision only.
+- HUMAN-3: Finish operator stories from a note (approved at `6874c69`, PR
+  #265, `6e1e05d`). When the previous handoff routed an operator story to
+  `user`, the planner instruction also says to compare the operator's commits
+  against the story's requested edits and to check that they do not change
+  `HANDOFF.md` and that nothing else is uncommitted. Only when publish would
+  adopt the commit (`publish.mode: pr` with `base_branch` and `branch_prefix`
+  set) does it also require the adoption shape: on the base branch, exactly
+  one non-merge commit ahead of `<remote>/<base_branch>`. A clean result
+  routes to `auditor` with the right `close_type` and `scope_sha`; anything
+  off routes to `user` naming each problem and the exact fix.
+- HUMAN-4: Hand the operator something applyable (approved at `54db19c`, PR
+  #266, `5e4a0a1`). A planner or tpm that routes an operator story to `user`
+  also writes the edits as full file contents or an applyable patch under
+  `logs/dispatch/operator/`, plus one copy-paste command block, and the
+  handoff says the operator may answer with a plain sentence once done.
+- HUMAN-5: Docs (merged in PR #267, `dfe38fe`). README and
+  `docs/handoff/HANDBOOK.md` say an operator may edit `HANDOFF.md` in plain
+  words at any pause; CONFIGURATION.md documents the saved previous handoff
+  and the routing.
+- HUMAN-6: Operator edit of the Claude planner and tpm agents (routes to
+  `user`) for HUMAN-3 and HUMAN-4, root and reference-workflow copies.
+  Approved at `d3da792` and merged in PR #268 (`f4c0e3e`).
 
 ### 17. TRANSITION-RULES - per-producer legality in the validator
 
