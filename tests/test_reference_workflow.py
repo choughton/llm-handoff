@@ -646,6 +646,63 @@ def test_protocol_files_describe_the_gate_verified_handback(root: Path) -> None:
     assert "does not establish a pass" in auditor
 
 
+# The non-Claude implementer helpers. The Claude agents get the same
+# contract in a later operator story.
+GATE_HANDBACK_HELPER_FILES = (
+    ".codex/skills/llm-handoff/SKILL.md",
+    ".codex/skills/llm-handoff-frontend/SKILL.md",
+    ".agents/agents/backend.md",
+    ".agents/agents/frontend.md",
+)
+GATE_HANDBACK_HELPER_PHRASES = (
+    "## Gate-Verified Handback",
+    GATE_DEFERRAL_WORDING,
+    "`enforce_work_packet: true`",
+    "Keep all five `## Verification Evidence` fields",
+    "the refused command and whether a permission rule or a missing tool stopped it",
+    "Without the gate (`enforce_work_packet: false`)",
+    "run it and report the result, or hand back a blocked status",
+    "A failing test is not an environment refusal",
+    "A refusal from an earlier session does not qualify",
+    "`pending-dispatcher-commit`",
+    "the dispatcher alone writes a `## Dispatcher Verification` section",
+    "an implementer never writes or edits it",
+)
+
+
+@pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
+@pytest.mark.parametrize("relative_path", GATE_HANDBACK_HELPER_FILES)
+def test_helper_files_describe_the_gate_verified_handback(
+    root: Path, relative_path: str
+) -> None:
+    content = " ".join((root / relative_path).read_text(encoding="utf-8").split())
+
+    for phrase in GATE_HANDBACK_HELPER_PHRASES:
+        assert phrase in content, (relative_path, phrase)
+
+
+@pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        ".codex/skills/llm-handoff/SKILL.md",
+        ".codex/skills/llm-handoff-frontend/SKILL.md",
+    ),
+)
+def test_codex_skills_make_the_temp_directory_deferral_conditional(
+    root: Path, relative_path: str
+) -> None:
+    content = " ".join((root / relative_path).read_text(encoding="utf-8").split())
+
+    # The sandbox temp-directory error follows the gate-verified handback
+    # rule; it is no longer an unconditional route to `ready_for_review`.
+    assert "do not move them into the repository" in content, relative_path
+    assert "do not point `--basetemp`, `TMP`, or `TEMP` inside it" in content
+    assert "follow Gate-Verified Handback below" in content, relative_path
+    assert "once the change is committed: the dispatcher's" not in content
+    assert "record the sandbox error under `Unresolved concerns`" not in content
+
+
 # The planner and tpm instruction surfaces that route an operator story to
 # `user`. The Claude agents get the same contract in a later operator story.
 OPERATOR_STORY_PROMPT_FILES = (

@@ -97,11 +97,41 @@ sandbox. On Windows the sandbox runs as a separate account, so add
 ownership.
 
 If a test needs temporary directories the sandbox cannot create (for example
-pytest's `tmp_path` on Windows), do not move them into the repository. Run
-what you can, record the sandbox error under `Unresolved concerns`, and hand
-back as `ready_for_review` once the change is committed: the dispatcher's
-work-claim gate re-runs the Work Packet's Verification command outside the
-sandbox before any audit.
+pytest's `tmp_path` on Windows), do not move them into the repository, and do
+not point `--basetemp`, `TMP`, or `TEMP` inside it. That sandbox error is a
+permission refusal: when it stops the Work Packet's Verification command,
+follow Gate-Verified Handback below. It is not an unconditional pass to
+`ready_for_review`.
+
+## Gate-Verified Handback
+
+Run every command the environment allows, including the Work Packet's
+Verification command, and report each one as usual.
+
+If an environment refusal in this turn, such as a sandbox or permission
+refusal or a missing-tool error, stops you from running the Verification
+command, and the dispatcher runs with `enforce_work_packet: true`, you may
+still hand back `status: ready_for_review`. Keep all five
+`## Verification Evidence` fields and change two:
+
+- `Commands run` reads `deferred to the work-claim gate: <the refusal, quoted>`,
+  quoting the refusal text the shell or tool returned.
+- `Output summary` identifies the refusal: the refused command and whether a
+  permission rule or a missing tool stopped it.
+
+Fill `Commit SHA verified`, `Files changed or reviewed`, and
+`Unresolved concerns` as in any handback. In dispatcher commit mode,
+`scope_sha` stays empty and `Commit SHA verified` stays
+`pending-dispatcher-commit`. Defer only the refused command.
+
+Without the gate (`enforce_work_packet: false`), nothing else runs the
+command: run it and report the result, or hand back a blocked status. A
+failing test is not an environment refusal and is not a passing result. A
+refusal from an earlier session does not qualify.
+
+After the gate passes, the dispatcher alone writes a
+`## Dispatcher Verification` section into the handoff; an implementer never
+writes or edits it. See Gate-Verified Handback in `docs/handoff/HANDBOOK.md`.
 
 ## Handling Audit Feedback
 
@@ -114,7 +144,7 @@ contract, document the contradiction and route to `planner` with
 ## Completion Checklist
 
 - Verify the requested backend scope is complete.
-- Run the focused tests or checks that cover the change.
+- Run the Work Packet's Verification command and the focused tests or checks that cover the change, or defer a refused command as in Gate-Verified Handback.
 - Commit the backend change only if the repository protocol asks agents to commit locally and you are not sandboxed; in dispatcher commit mode, leave it uncommitted.
 - Rewrite `docs/handoff/HANDOFF.md` with concrete files changed, checks run, blockers if any, and the next role.
 - Preserve the assignment's `## Work Packet` section in the handback; the auditor and the dispatcher's work-claim gate read it.

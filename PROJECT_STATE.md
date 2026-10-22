@@ -11,8 +11,9 @@ history.
 ## Current Status
 
 - **Active Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
-  handback) is implemented and awaits audit; ACTIVE-2 through ACTIVE-8
-  remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
+  handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
+  non-Claude helper files) is implemented and awaits audit; ACTIVE-3
+  through ACTIVE-8 remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
   merged in PR #272 (`4e380f9`).
 - **Parked Epic:** None.
 - **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger,
@@ -193,13 +194,15 @@ the `(was ...)` notes give the old IDs. None had started.
   deferred `Commands run` plus a PASS section validates. Grooming
   (2026-10-22): the story also mirrors the four protocol files into
   `examples/reference-workflow/docs/handoff/` and adds detector regressions;
-  the existing validator and gate behavior is retained. Progress: implemented
-  2026-10-22, awaiting audit.
+  the existing validator and gate behavior is retained. Progress: approved
+  2026-10-22 at `9197913ef76de7aeb9b2143d393442b6fbfbb21e`.
 - ACTIVE-2 (was part of ACTIVE-1): Gate-verified handback in the non-Claude
   helper files: the `llm-handoff` and `llm-handoff-frontend` Codex skills
   and `backend.md` and `frontend.md` under `.agents/agents/` (root and
   `examples/reference-workflow/` copies) describe the ACTIVE-1 wording.
-  Protected paths; list each in Files in scope.
+  Protected paths; list each in Files in scope. Progress: implemented
+  2026-10-22, awaiting audit; the Codex skills' temporary-directory
+  paragraph now follows the conditional gate-verified rule.
 - ACTIVE-3 (was part of ACTIVE-2): Verification preflight in `doctor`.
   Parse the live Work Packet when the handoff routes to an implementer
   (`doctor._check_handoff`, `llm_handoff/doctor.py` ~line 1873, already reads

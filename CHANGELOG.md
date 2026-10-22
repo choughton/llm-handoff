@@ -6,6 +6,21 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The Codex `llm-handoff` and `llm-handoff-frontend` skills and the
+  `.agents/agents/` `backend.md` and `frontend.md` helpers now carry the
+  ACTIVE-1 gate-verified handback (ACTIVE-2). With
+  `enforce_work_packet: true`, a current-turn environment refusal of the
+  Verification command allows `status: ready_for_review` with
+  `Commands run` reading `deferred to the work-claim gate: <the refusal,
+  quoted>`, an `Output summary` naming the refused command and the refusal,
+  and all five evidence fields kept; without the gate the run-or-block rule
+  stands, and a failing test or an earlier-session refusal does not qualify.
+  The helpers say only the dispatcher writes `## Dispatcher Verification`.
+  The Codex skills' temporary-directory paragraph no longer hands back
+  `ready_for_review` unconditionally: it keeps the ban on repository-local
+  temporary directories and defers to the same conditional rule. The
+  `examples/reference-workflow/` copies match, and new tests in
+  `tests/test_reference_workflow.py` cover both roots.
 - The handbook, implementer prompts, and auditor prompt now describe a
   gate-verified handback (ACTIVE-1). With `enforce_work_packet: true`, an
   implementer stopped in the current turn by a permission refusal or a
