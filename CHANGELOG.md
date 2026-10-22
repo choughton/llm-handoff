@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An operator story committed on the base branch still publishes when the
+  base branch moved on before the publish, for example when another pull
+  request merged while the audit ran. Before, publish required
+  `<remote>/<base_branch>` to be the operator commit's parent and stopped
+  with "HEAD is not on top of origin/main" (seen with TRANS-6 on
+  2026-10-22). It now requires one non-merge commit ahead of the point where
+  HEAD left the base branch, records that point as the story base, and lets
+  the usual base-branch merge bring the newer commits into the story branch.
 - The handbook has a `## Transition Table` listing, for every producer, the
   `next_agent` routes, statuses, and close types the validator permits it,
   with a separate row for dispatcher-authored validator handoffs and the

@@ -4670,12 +4670,16 @@ def _adopt_base_branch_story(
     auditor. No story branch or state exists for it. When the audit passed
     with ``close_type: story``, or ``close_type: epic`` because the story was
     the epic's last, HEAD is the handoff's ``scope_sha``, HEAD is
-    one non-merge commit on top of ``remote/base_branch`` (the range the audit
-    reviewed), that commit does not change ``handoff_path``, and nothing but
-    ``handoff_path`` is uncommitted, the story branch is created at HEAD with
-    its state, checked out, and the local base branch is moved back to
-    ``remote/base_branch``. The working tree is not touched and nothing is
-    pushed here; the normal publish continues from the story branch.
+    one non-merge commit on top of the point where it left
+    ``remote/base_branch`` (the range the audit reviewed), that commit does
+    not change ``handoff_path``, and nothing but ``handoff_path`` is
+    uncommitted, the story branch is created at HEAD with its state, checked
+    out, and the local base branch is moved to ``remote/base_branch``. The
+    base branch may have moved on since the operator committed (a pull
+    request merged, or a push); the normal publish then merges it into the
+    story branch, as it does for every story. The working tree is not touched
+    and nothing is pushed here; the normal publish continues from the story
+    branch.
 
     Returns the new story state, ``None`` with a warning when the checkout
     does not have that shape (the caller stops as before), or a stop when a
@@ -4712,11 +4716,16 @@ def _adopt_base_branch_story(
     if fetched.returncode != 0:
         return keep(f"git fetch {remote} {base_branch} failed ({_first_line(fetched)})")
     upstream = f"refs/remotes/{remote}/{base_branch}"
-    if _git(repo_root, ["merge-base", "--is-ancestor", upstream, "HEAD"]).returncode:
-        return keep(f"HEAD is not on top of {remote}/{base_branch}")
-    listed = _git(repo_root, ["rev-list", "--count", f"{upstream}..HEAD"])
-    merges = _git(repo_root, ["rev-list", "--merges", f"{upstream}..HEAD"])
-    if listed.returncode != 0 or merges.returncode != 0:
+    # Measure from where HEAD left the base branch, not from its current tip:
+    # the base branch may have moved on since the operator committed.
+    fork = _git(repo_root, ["merge-base", upstream, "HEAD"])
+    fork_sha = fork.stdout.strip() if fork.returncode == 0 else ""
+    if not fork_sha:
+        return keep(f"HEAD shares no history with {remote}/{base_branch}")
+    listed = _git(repo_root, ["rev-list", "--count", f"{fork_sha}..HEAD"])
+    merges = _git(repo_root, ["rev-list", "--merges", f"{fork_sha}..HEAD"])
+    behind = _git(repo_root, ["rev-list", "--count", f"HEAD..{upstream}"])
+    if listed.returncode != 0 or merges.returncode != 0 or behind.returncode != 0:
         return keep("git rev-list failed")
     if merges.stdout.strip():
         return keep(f"the commits since {remote}/{base_branch} include a merge commit")
@@ -4746,10 +4755,12 @@ def _adopt_base_branch_story(
     created = _git(repo_root, ["switch", "-c", branch])
     if created.returncode != 0:
         return keep(f"git switch -c {branch} failed ({_first_line(created)})")
+    # The story starts where the commit left the base branch; the publish
+    # merges any newer base-branch commits into the story branch.
     state = StoryState(
         branch=branch,
         base_branch=base_branch,
-        base_sha=upstream_sha,
+        base_sha=fork_sha,
         story_id=story_id,
         story_title=story_title,
         epic_id=(frontmatter.epic_id or "").strip(),
@@ -4770,13 +4781,20 @@ def _adopt_base_branch_story(
             f"{remote}/{base_branch} yourself, then start the dispatcher again",
         )
     audit = "Epic-close" if frontmatter.close_type == "epic" else "Story"
+    moved_on = behind.stdout.strip()
+    since = (
+        f" {remote}/{base_branch} gained {moved_on} commit(s) since that commit "
+        "was made; the publish merges them into the story branch."
+        if moved_on not in ("", "0")
+        else ""
+    )
     log(
         "INFO",
         f"{audit} audit passed for a commit on `{base_branch}` with no story "
         f"branch ({_describe_commit(repo_root, 'HEAD')}). "
         f"Created `{branch}` at that commit with its story state, checked it "
-        f"out, and moved `{base_branch}` back to {remote}/{base_branch} "
-        f"({upstream_sha[:12]}); publishing it as a pull request.",
+        f"out, and moved `{base_branch}` to {remote}/{base_branch} "
+        f"({upstream_sha[:12]}); publishing it as a pull request.{since}",
     )
     return state
 
