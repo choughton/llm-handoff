@@ -33,8 +33,10 @@ belong in commits, handoffs, and pull requests.
   final provenance mechanism) was approved at `9642d8a` and merged in PR
   #251 at `733d53f`. TRANS-4 (every dispatched role's handoff must name
   that role as `producer`, else `frontmatter_producer_mismatch`;
-  dispatcher-authored handoffs skip only that check) is implemented and
-  awaiting audit. TRANS-5 and TRANS-6 remain.
+  dispatcher-authored handoffs skip only that check; a chat takeover
+  rewrite may name `planner` or `user` through the `chat_takeover` flag) is
+  implemented, with the chat-takeover fix, and awaiting audit. TRANS-5 and
+  TRANS-6 remain.
 - **GROOMING (closed):** GROOM-5, the epic's last story,
   was approved at `6e24d98` and merged in PR #247 at `211bbfd`.
   GROOMING history (opened by the planner after CHAT closed at
@@ -2014,7 +2016,14 @@ handbook and the code from drifting.
   `frontmatter_producer_mismatch` unless the handoff is a dispatcher-written
   escalation. Decided 2026-10-21: generalize
   `_tpm_dispatch_producer_errors()` in `validate_handoff_text()` to every
-  role when `not dispatcher_authored`.
+  role when `not dispatcher_authored`. Chat-takeover fix (planner,
+  2026-10-21, after the backend handback at `1b1ef6d`): `validate_handoff()`
+  and `validate_handoff_text()` take a keyword-only `chat_takeover` flag,
+  passed only by the `_follow_chat_takeover` call. With it the producer
+  check accepts `planner` or `user`, and any other producer still fails
+  `frontmatter_producer_mismatch`; nothing else is waived and
+  `dispatcher_authored` stays false. Both chat prompt branches tell the chat
+  to set `producer: user` when it rewrites HANDOFF.md.
 - TRANS-5 (was TRANS-3): One table, two readers. Write the
   producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under
   `## Transition Table`, and add a test that parses that table and asserts it

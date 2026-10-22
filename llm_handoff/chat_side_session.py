@@ -156,6 +156,8 @@ def build_chat_prompt(
             f"HANDOFF.md path: {handoff_path}\n"
             f"{log_text}\n\n"
             "You may edit files and HANDOFF.md to do what the operator asks. "
+            "If you rewrite HANDOFF.md, set `producer: user` in its "
+            "frontmatter. "
             "Do not push to any remote. Answer the operator in plain text.\n\n"
             f"Operator message:\n{message.strip()}"
         )
@@ -167,6 +169,8 @@ def build_chat_prompt(
         f"HANDOFF.md path: {handoff_path}\n"
         f"{log_text}\n\n"
         "You may edit files and HANDOFF.md to do what the operator asks. "
+        "If you rewrite HANDOFF.md, set `producer: user` in its "
+        "frontmatter. "
         "Do not push to any remote. Answer the operator in plain text.\n\n"
         f"Operator message:\n{message.strip()}"
     )

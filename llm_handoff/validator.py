@@ -116,6 +116,9 @@ _VERIFIED_STATUSES = (
 # dispatcher-written content (`dispatcher_authored=True`) may let it carry a
 # verdict status.
 _VALIDATOR_ALWAYS_REJECTED_STATUSES = (HandoffStatus.READY_FOR_REVIEW.value,)
+# An operator-directed chat takeover rewrite plays the planner's part, so it
+# may name the operator (`user`) or the planner as producer, and no other role.
+_CHAT_TAKEOVER_PRODUCERS = ("planner", "user")
 _REQUIRED_EVIDENCE_FIELDS = {
     "Commands run",
     "Output summary",
@@ -557,6 +560,7 @@ def _dispatch_producer_errors(
     *,
     previous_route: str | None,
     dispatcher_authored: bool = False,
+    chat_takeover: bool = False,
 ) -> list[str]:
     """Errors for a dispatch whose handoff claims another role as producer.
 
@@ -572,11 +576,27 @@ def _dispatch_producer_errors(
     the producer is missing (already `frontmatter_producer_missing`), or when
     the caller validates a handoff the dispatcher wrote itself
     (`dispatcher_authored=True`), which always names `producer: validator`.
+
+    With `chat_takeover=True` the caller validates an operator-directed chat
+    rewrite (`_follow_chat_takeover`). The chat plays the planner's part on
+    the operator's behalf, so a producer of `planner` or `user` is accepted.
+    Any other producer still fails `frontmatter_producer_mismatch`, so a chat
+    rewrite cannot borrow auditor, finalizer, or implementer authority. The
+    flag waives nothing else.
     """
 
     if dispatcher_authored or previous_route is None or not current.producer:
         return []
-    if normalize_next_agent_value(current.producer) == previous_route:
+    normalized_producer = normalize_next_agent_value(current.producer)
+    if chat_takeover:
+        if normalized_producer in _CHAT_TAKEOVER_PRODUCERS:
+            return []
+        return [
+            f"frontmatter_producer_mismatch: a chat takeover rewrite names "
+            f"producer `{current.producer}`; a chat rewrite sets "
+            "`producer: user` or `producer: planner`."
+        ]
+    if normalized_producer == previous_route:
         return []
     return [
         f"frontmatter_producer_mismatch: the dispatched role is "
@@ -719,6 +739,7 @@ def validate_handoff(
     prior_handoff_content: str | None = None,
     project_state_path: Path | None = None,
     dispatcher_authored: bool = False,
+    chat_takeover: bool = False,
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
     project_state_content = (
@@ -737,6 +758,7 @@ def validate_handoff(
         prior_handoff_content=prior_handoff_content,
         project_state_content=project_state_content,
         dispatcher_authored=dispatcher_authored,
+        chat_takeover=chat_takeover,
     )
 
 
@@ -752,6 +774,7 @@ def validate_handoff_text(
     prior_handoff_content: str | None = None,
     project_state_content: str | None = None,
     dispatcher_authored: bool = False,
+    chat_takeover: bool = False,
 ) -> ValidationResult:
     """Validate a post-dispatch handoff.
 
@@ -766,6 +789,11 @@ def validate_handoff_text(
     `validate_handoff_frontmatter()`. Agent output must also name the
     dispatched role as `producer` (`frontmatter_producer_mismatch`); the flag
     skips only that identity check.
+
+    `chat_takeover` is only for the operator-directed chat takeover rewrite
+    (`_follow_chat_takeover`): the producer may then be `planner` or `user`,
+    and any other producer still fails `frontmatter_producer_mismatch`. It
+    waives no other check.
     """
 
     normalized_content = handoff_content.lstrip("\ufeff")
@@ -821,6 +849,7 @@ def validate_handoff_text(
                     frontmatter,
                     previous_route=previous_route,
                     dispatcher_authored=dispatcher_authored,
+                    chat_takeover=chat_takeover,
                 )
             )
             errors.extend(

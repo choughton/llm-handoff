@@ -305,6 +305,7 @@ def test_backend_stopped_by_chat_follows_the_chat_handoff(
     assert chat_check["kwargs"]["prior_handoff_content"] == assignment
     assert chat_check["kwargs"]["require_work_packet"] is True
     assert chat_check["kwargs"]["dispatcher_commit_mode"] is True
+    assert chat_check["kwargs"]["chat_takeover"] is True
     assert chat_check["armed"] is False
     assert chat_check["requested"] is False
     assert chat_check["in_flight_exists"] is False
@@ -448,6 +449,73 @@ def test_invalid_chat_handoff_pauses(
         assert "frontmatter_missing" in errors[0]
     else:
         assert "missing or empty" in errors[0]
+    assert chat_takeover.CONTROLLER.armed() is False
+
+
+@pytest.mark.parametrize(
+    ("producer", "followed"),
+    [("user", True), ("planner", True), ("auditor", False)],
+)
+def test_chat_rewrite_producer_is_checked_by_the_real_validator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, producer: str, followed: bool
+) -> None:
+    """TRANS-4: a chat rewrite may name `user` or `planner`, never another role."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo, _backend_assignment())
+    # A planner-shaped rewrite: every planner-dispatch check still runs, so
+    # it re-assigns the backend with a Work Packet.
+    chat_handoff = (
+        _backend_assignment()
+        .replace(
+            'reason: "Set the value."',
+            'reason: "The operator redirected the story from chat."',
+        )
+        .replace("producer: planner", f"producer: {producer}")
+    )
+
+    def stopped_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        path.write_text(chat_handoff, encoding="utf-8")
+        chat_takeover.request_takeover(chat_takeover.handoff_content_sha(path))
+        raise chat_takeover.ChatTakeover
+
+    pauses: list[str] = []
+
+    def recording_pause(_config: DispatchConfig, **kwargs: Any):
+        pauses.append(kwargs["reason"])
+        return orchestrator.PauseOutcome(kind="stop")
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", stopped_backend)
+    monkeypatch.setattr(orchestrator, "_pause_at_dispatcher_pause", recording_pause)
+    monkeypatch.setattr(
+        orchestrator, "_schedule_pause_recovery", _refuse("pause recovery")
+    )
+    messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        _config(repo), max_cycles=1, log=_collecting_log(messages)
+    )
+
+    errors = [
+        message
+        for level, message in messages
+        if level == "ERROR" and "The chat's handoff failed validation" in message
+    ]
+    if followed:
+        assert exit_code == 0, [m for level, m in messages if level == "ERROR"]
+        assert pauses == []
+        assert errors == []
+        assert any(
+            level == "AGENT" and "The chat's handoff is valid" in message
+            for level, message in messages
+        )
+    else:
+        assert exit_code == 1
+        assert len(pauses) == 1
+        assert pauses[0].startswith(orchestrator.CHAT_TAKEOVER_INVALID_PAUSE_PREFIX)
+        assert len(errors) == 1
+        assert "frontmatter_producer_mismatch" in errors[0]
+    assert (repo / HANDOFF).read_text(encoding="utf-8") == chat_handoff
     assert chat_takeover.CONTROLLER.armed() is False
 
 

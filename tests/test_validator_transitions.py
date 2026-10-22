@@ -389,3 +389,111 @@ def test_previous_role_grants_no_verdict_permission(previous_agent: str) -> None
     errors = validate_handoff_text(content, previous_agent).errors
 
     assert _verdict_error("verified_pass") in errors
+
+
+# TRANS-4: chat takeover producer identity
+#
+# `_follow_chat_takeover` validates an operator-directed chat rewrite as a
+# planner dispatch with `chat_takeover=True`. The rewrite may name
+# `producer: user` or `producer: planner`; any other producer still fails
+# `frontmatter_producer_mismatch`, and every other planner check still runs.
+
+MISMATCH = "frontmatter_producer_mismatch:"
+
+
+def _planner_shaped(producer: str, *, work_packet: bool = True) -> str:
+    packet = (
+        """
+## Work Packet
+
+- **Objective:** Set VALUE to 2.
+- **Files in scope:** `src/app.py`
+- **Files out of bounds:** `src/api.py`
+- **Context:** The operator redirected the story from chat.
+- **Verification command:**
+  - python -m pytest tests -q
+- **Expected next route:** auditor
+"""
+        if work_packet
+        else "\nNo packet.\n"
+    )
+    return (
+        "---\n"
+        "next_agent: backend\n"
+        'reason: "The operator redirected the story from chat."\n'
+        "epic_id: EPIC-1\n"
+        "story_id: EPIC-1-S1\n"
+        "story_title: Change the value\n"
+        f"producer: {producer}\n"
+        "---\n\n"
+        "# Operator Redirect\n" + packet
+    )
+
+
+def _mismatches(errors: list[str]) -> list[str]:
+    return [error for error in errors if error.startswith(MISMATCH)]
+
+
+@pytest.mark.parametrize("producer", ["user", "planner", " User "])
+def test_chat_takeover_accepts_user_or_planner_producer(producer: str) -> None:
+    result = validate_handoff_text(
+        _planner_shaped(producer), "planner", chat_takeover=True
+    )
+
+    assert result.errors == []
+    assert result.routing_instruction == "backend"
+
+
+@pytest.mark.parametrize(
+    "producer", ["auditor", "backend", "frontend", "tpm", "finalizer", "validator"]
+)
+def test_chat_takeover_rejects_any_other_producer(producer: str) -> None:
+    result = validate_handoff_text(
+        _planner_shaped(producer), "planner", chat_takeover=True
+    )
+
+    assert _mismatches(result.errors) == [
+        f"frontmatter_producer_mismatch: a chat takeover rewrite names producer "
+        f"`{producer}`; a chat rewrite sets `producer: user` or `producer: planner`."
+    ]
+    assert result.verdict == "NO"
+
+
+@pytest.mark.parametrize("flag", [None, False], ids=["default", "explicit-false"])
+def test_user_producer_after_a_planner_dispatch_fails_without_chat_takeover(
+    flag: bool | None,
+) -> None:
+    content = _planner_shaped("user")
+    if flag is None:
+        result = validate_handoff_text(content, "planner")
+    else:
+        result = validate_handoff_text(content, "planner", chat_takeover=flag)
+
+    assert _mismatches(result.errors) == [
+        "frontmatter_producer_mismatch: the dispatched role is `planner`, but the "
+        "handoff names producer `user`; a planner handoff sets `producer: planner`."
+    ]
+
+
+def test_chat_takeover_waives_no_planner_check() -> None:
+    result = validate_handoff_text(
+        _planner_shaped("user", work_packet=False),
+        "planner",
+        chat_takeover=True,
+        require_work_packet=True,
+    )
+
+    assert _mismatches(result.errors) == []
+    assert result.verdict == "NO"
+    assert any("Work Packet" in error for error in result.errors), result.errors
+
+
+def test_file_entry_point_propagates_chat_takeover(tmp_path: Path) -> None:
+    handoff_path = tmp_path / "HANDOFF.md"
+    handoff_path.write_text(_planner_shaped("user"), encoding="utf-8")
+
+    followed = validate_handoff(handoff_path, "planner", chat_takeover=True)
+    default = validate_handoff(handoff_path, "planner")
+
+    assert followed.errors == []
+    assert len(_mismatches(default.errors)) == 1
