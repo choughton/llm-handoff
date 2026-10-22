@@ -61,13 +61,16 @@ class RoleDispatch:
     """The latest returned dispatch of one role in this run.
 
     ``provider`` is None for the manual frontend and ``session_id`` is None
-    when the dispatch reported no usable session.
+    when the dispatch reported no usable session. ``fallback`` is True when
+    the role's fallback agent ran the dispatch; ``provider`` and
+    ``session_id`` are then the fallback's.
     """
 
     role: str
     story_id: str | None
     provider: str | None
     session_id: str | None
+    fallback: bool = False
 
 
 class ChatSession:
@@ -138,6 +141,7 @@ class ChatSession:
         story_id: str | None,
         provider: str | None,
         session_id: str | None,
+        fallback: bool = False,
     ) -> None:
         """Keep ``role``'s returned dispatch as its latest one.
 
@@ -149,7 +153,11 @@ class ChatSession:
         if not isinstance(session_id, str) or not session_id.strip():
             session_id = None
         entry = RoleDispatch(
-            role=role, story_id=story_id, provider=provider, session_id=session_id
+            role=role,
+            story_id=story_id,
+            provider=provider,
+            session_id=session_id,
+            fallback=fallback,
         )
         with self._role_dispatch_lock:
             self._role_dispatches[role] = entry
@@ -263,11 +271,16 @@ def record_role_dispatch(
     story_id: str | None,
     provider: str | None,
     session_id: str | None,
+    fallback: bool = False,
 ) -> None:
     """Keep a returned role dispatch as that role's latest one."""
 
     SESSION.record_role_dispatch(
-        role, story_id=story_id, provider=provider, session_id=session_id
+        role,
+        story_id=story_id,
+        provider=provider,
+        session_id=session_id,
+        fallback=fallback,
     )
 
 

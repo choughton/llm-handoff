@@ -3504,6 +3504,34 @@ def _dispatch_provider(config: DispatchConfig, route: RouteName) -> str | None:
     return agent_config.provider if agent_config is not None else None
 
 
+def _dispatched_session(
+    config: DispatchConfig, route: RouteName, dispatch_result: DispatchResult
+) -> tuple[str | None, str | None, bool]:
+    """The provider, session id, and fallback flag of the agent that ran.
+
+    After a failover the fallback ran: its provider and its session id, kept
+    for chat on ``fallback_session_id`` because ``session_id`` is cleared so
+    no later dispatch resumes it. Otherwise the configured primary and the
+    result's ``session_id``. The manual frontend has neither.
+    """
+
+    provider = _dispatch_provider(config, route)
+    if provider is None:
+        return None, None, False
+    agent_config = config.agents.get(cast(AgentRole, route))
+    if (
+        dispatch_result.fallback_ran
+        and agent_config is not None
+        and agent_config.fallback is not None
+    ):
+        return (
+            agent_config.fallback.provider,
+            dispatch_result.fallback_session_id,
+            True,
+        )
+    return provider, dispatch_result.session_id, False
+
+
 def _remember_role_session(
     config: DispatchConfig,
     *,
@@ -3518,12 +3546,15 @@ def _remember_role_session(
     session, so its entry carries none; that still replaces an older entry.
     """
 
-    provider = _dispatch_provider(config, route)
+    provider, session_id, fallback = _dispatched_session(
+        config, route, dispatch_result
+    )
     chat_session.record_role_dispatch(
         route,
         story_id=story_id,
         provider=provider,
-        session_id=dispatch_result.session_id if provider is not None else None,
+        session_id=session_id,
+        fallback=fallback,
     )
 
 
@@ -3543,11 +3574,23 @@ def _remember_finalizer_session(
 
     session_id = getattr(ledger_result, "session_id", None)
     provider = _dispatch_provider(config, "finalizer")
+    fallback = False
+    finalizer_config = config.agents.get("finalizer")
+    if (
+        getattr(ledger_result, "fallback_ran", False)
+        and finalizer_config is not None
+        and finalizer_config.fallback is not None
+    ):
+        # The fallback ran: chat resumes its session with its own CLI.
+        provider = finalizer_config.fallback.provider
+        session_id = getattr(ledger_result, "fallback_session_id", None)
+        fallback = True
     chat_session.record_role_dispatch(
         "finalizer",
         story_id=story_id,
         provider=provider,
         session_id=session_id if provider is not None else None,
+        fallback=fallback,
     )
 
 
@@ -3562,8 +3605,9 @@ def _record_role_dispatch(
 ) -> None:
     """Append the returned role dispatch to the run's dispatch record.
 
-    ``role`` is the route name. ``provider`` is the configured primary, or
-    None for the manual frontend. Nothing happens when ``state`` disables the
+    ``role`` is the route name. ``provider`` and ``session_id`` are those of
+    the agent that ran: the fallback after a failover, otherwise the
+    configured primary; the manual frontend has neither. Nothing happens when ``state`` disables the
     record.
 
     ``record_dispatch`` appends the entry to a private staging copy that
@@ -3577,7 +3621,9 @@ def _record_role_dispatch(
 
     if not state.enabled:
         return
-    provider = _dispatch_provider(config, route)
+    provider, session_id, _fallback = _dispatched_session(
+        config, route, dispatch_result
+    )
     state_path = _dispatch_record_state_path(config)
     if _carry_over_path_traverses_link(state_path):
         state.enabled = False
@@ -3595,7 +3641,7 @@ def _record_role_dispatch(
                 role=route,
                 story_id=story_id,
                 provider=provider,
-                session_id=dispatch_result.session_id,
+                session_id=session_id,
             )
             payload = staging_path.read_bytes()
         _write_carry_over_payload(

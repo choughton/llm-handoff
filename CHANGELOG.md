@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `@<role>` chat works after a failover. A failed-over dispatch cleared its
+  session id so no later dispatch resumes it, and the dispatch record and the
+  chat entry named the configured primary, so `@planner` after an agy-to-
+  Claude failover found no session and the side session answered instead.
+  The failover result now keeps the fallback's session on
+  `fallback_session_id` (with `fallback_ran`), the dispatch record and the
+  chat entry name the fallback's provider and session, and `@<role>` chat
+  resumes it with the fallback's agent settings. This covers every role
+  dispatch and the finalizer.
 - Roles read only the top of `CHANGELOG.md`. The handbook has a new
   `## CHANGELOG Entries` section, and every Claude, `agy`, and Codex role
   file (root and reference workflow) says how to read just the first 40
