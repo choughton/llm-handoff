@@ -165,6 +165,22 @@ press Enter to send the planner back in, type `@backend`, `@frontend`,
 `@auditor`, or `@tpm` (when a tpm is configured) with a message to dispatch
 that role directly, or type `retry` or `quit`. Editing `HANDOFF.md` by hand also resumes it.
 
+At any pause you may also replace `HANDOFF.md` with plain words, for example
+`I made the edits.` A person needs no frontmatter; every handoff an agent
+writes still does. Make the edit while the dispatcher runs: the first file a
+run sees is its starting point, not an edit. An edit with valid frontmatter
+routes as written. Otherwise the planner runs once to interpret it: it gets
+your text quoted and the last valid handoff the dispatcher saw, checks the
+branch, uncommitted files, and recent commits, and rewrites only
+`HANDOFF.md` into a valid handoff. It does not carry out your request, and
+when your intent is unclear it routes back to you with one plain question.
+If that pass does not produce a valid handoff, the loop pauses rather than
+retrying. After an operator story, the note is not proof: the planner
+compares your commits with the requested edits before routing to the
+auditor, and names each problem with its fix otherwise. See
+[Operator Edits](CONFIGURATION.md#operator-edits) and the handbook's
+[Operator Stories](docs/handoff/HANDBOOK.md#operator-stories) section.
+
 While a role runs in an interactive run, a chat line at the bottom of the
 console takes messages. A plain message goes to a side chat session for the
 running role. `@<role> <message>` (for example `@auditor why the bounce?`)

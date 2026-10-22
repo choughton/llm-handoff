@@ -15,8 +15,9 @@ history.
   (route an invalid or free-form operator edit to the planner) was
   approved at `f54f3c8` and merged in PR #264 (`d9bb81f`). HUMAN-3 (finish
   operator stories from a note) was approved at `6874c69` and merged in PR
-  #265 (`6e1e05d`). HUMAN-4 (hand the operator something applyable) is
-  implemented and awaits audit. HUMAN-5 and HUMAN-6 remain, in order.
+  #265 (`6e1e05d`). HUMAN-4 (hand the operator something applyable) was
+  approved at `54db19c` and merged in PR #266 (`5e4a0a1`). HUMAN-5 (docs)
+  is implemented and awaits audit. HUMAN-6 remains.
   TRANSITION-RULES (epic 17) closed with TRANS-6, approved at `fbb8e4c` and
   merged in PR #261 (`9018e33`).
 - **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining

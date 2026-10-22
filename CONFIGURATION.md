@@ -243,8 +243,9 @@ are listed here:
   which still routes to `user`, so the dispatcher pauses again.
 - `quit`: stop the dispatcher with exit code 0.
 
-Editing `HANDOFF.md` still resumes the loop, as it does without the prompt.
-The planner instruction states the pause reason and that a person at the
+Editing `HANDOFF.md` still resumes the loop, as it does without the prompt;
+an edit in plain words is handled as described in
+[Operator Edits](#operator-edits). The planner instruction states the pause reason and that a person at the
 dispatcher console sent it. Like bounded planner recovery, it forbids changes
 to source, tests, project-state files, ledger files, and completed work: the
 planner rewrites `HANDOFF.md` with a dispatchable route, or routes to `user`
@@ -304,6 +305,117 @@ dispatcher logs a `WARN` line and also waits for `HANDOFF.md` to change. To
 turn the prompt off, set `interactive_pause: false` or pass
 `--no-interactive-pause` on the command line. The startup banner shows
 whether the prompt is enabled.
+
+## Operator Edits
+
+A person may replace `HANDOFF.md` with plain words at any pause, for example
+`I made the edits.`, instead of writing frontmatter. Handoffs written by
+roles still need valid routing frontmatter. There is no setting for this
+behavior; it is always on.
+
+Detection. The dispatcher records each version of `HANDOFF.md` that it or a
+dispatched role wrote, at the write itself. It compares the file on disk with
+the last recorded version at each cycle start, before repair or
+normalization, at the end of a cycle, when a pause begins and ends, and
+before a dispatcher rewrite built from an earlier read. A version it did not
+record is an operator edit, including one made while validation, the
+work-claim gate, review, or publishing ran. The dispatcher logs
+`Operator edited HANDOFF.md.` once per edit and saves the last valid handoff
+it saw before the edit to `logs/dispatch/operator-edit/previous-handoff.md`
+with the same link-resistant writer as the carry-over record. It logs
+`Saved the previous valid handoff to ...` when the save succeeds, and a
+`WARN` line, writing nothing, when the path passes through a symlink or
+junction, when Git does not ignore it (add `/logs/dispatch/` to
+`.gitignore`), when the platform cannot write it safely, or when the write
+fails. `--dry-run` never writes it.
+
+Limits:
+
+- The first version observed in a run is the baseline, not an edit. Edit the
+  file while the dispatcher runs, for example at a pause. A file replaced
+  while the dispatcher was stopped is not detected as an operator edit, and
+  edit detection does not persist across restarts.
+- The previous context belongs to the observed edit: the planner gets the
+  previous valid handoff quoted in its instruction, from memory, not read
+  back from the snapshot file. When the dispatcher observed no valid handoff
+  before the edit in this run, it logs a `WARN` line, saves nothing, and
+  tells the planner no previous handoff is available. A
+  `previous-handoff.md` left by an earlier run or an earlier edit is stale
+  and is not evidence for the current edit.
+
+Routing:
+
+- An operator edit whose frontmatter parses and validates routes as written,
+  like any handoff.
+- An operator edit with no frontmatter, frontmatter that does not parse, or
+  frontmatter that fails validation gets one planner dispatch that interprets
+  it. A dispatch still scheduled when the edit is seen, such as bounded
+  planner recovery or an operator-prompt dispatch, is dropped with a `WARN`
+  line.
+- An invalid handoff a role wrote is not an operator edit and keeps its
+  existing path: post-dispatch validation and bounded planner recovery.
+- If the interpretation does not leave a handoff that passes full
+  post-dispatch validation, including a planner run that exits nonzero, the
+  dispatcher pauses with `OPERATOR EDIT NOT INTERPRETED` and does not retry
+  automatically. Edit `HANDOFF.md` again, which counts as a new edit with its
+  own interpretation, or answer at the operator prompt.
+- `--dry-run` logs
+  `[DRY RUN] Would dispatch the planner once to interpret the operator's HANDOFF.md edit.`
+  and dispatches nothing.
+
+The interpretation instruction names what is wrong with the frontmatter and
+quotes the operator's text between the `OPERATOR MESSAGE` markers and the
+previous valid handoff, when there is one, between `PREVIOUS HANDOFF`
+markers; neither can widen the planner's boundaries. The planner inspects the
+current branch, the uncommitted files, and the commits since the `scope_sha`
+or `prior_sha` the previous handoff records (or the recent commits when it
+records none), infers what the operator meant, and rewrites only
+`HANDOFF.md` into a valid handoff. It does not carry out the operator's
+request, change source, tests, project-state, ledger, or completed-work
+files, or bypass validation: its handoff goes through the same post-dispatch
+checks as any planner handoff. When the intent is unclear, it routes to
+`user` with `status: escalate_to_user` and one plain question.
+
+### Finishing An Operator Story From A Note
+
+An operator story is one only a person can make, such as edits under
+`.claude/`. The planner or tpm that routes it to `user` writes an applyable
+artifact under `logs/dispatch/operator/<story id>/` and one command block;
+the handbook's Operator Stories section in `docs/handoff/HANDBOOK.md` is the
+contract. The operator applies the artifact, commits exactly the requested
+edits, keeps the artifact and `HANDOFF.md` out of the commit, and then
+replaces `HANDOFF.md` with a plain note.
+
+When the previous valid handoff attached to the edit routed a story to `user`
+(it names a `story_id`), the interpretation instruction adds a completion
+check. A note is not proof the work is done. With read-only Git commands the
+planner:
+
+- compares the operator's committed diff with each requested edit, naming
+  every missing edit and every change it did not request, such as a stray
+  line copied from a Markdown code fence;
+- confirms no operator commit changes `HANDOFF.md`;
+- confirms `git status --porcelain` lists no uncommitted file other than
+  `HANDOFF.md`;
+- only with `publish.mode: pr` and both `publish.base_branch` and
+  `publish.branch_prefix` set, where publishing would adopt the operator's
+  commit (see [Publishing](#publishing-story-branches-and-pull-requests)),
+  also confirms the adoption shape: the checkout is on the base branch and
+  exactly one non-merge commit ahead of its fork point with
+  `<remote>/<base_branch>` (a base that moved on is fine), with HEAD as
+  `scope_sha`. A story branch the dispatcher already created for the story
+  is audited where it is. Every other publish setting audits the operator's
+  commits where they are, with the concrete HEAD SHA as `scope_sha`.
+
+A clean result routes to `auditor` with `status: ready_for_review`,
+`producer: planner`, the concrete HEAD SHA as `scope_sha`, the story identity
+and `remaining_stories` carried forward, the Work Packet, and a
+`## Verification Evidence` block. `close_type` is `epic` only when the
+previous handoff lists an explicit `remaining_stories: []`; otherwise it is
+`story`. Only the auditor approves the work. Any problem routes back to
+`user` with `status: escalate_to_user`, listing each problem with its exact
+fix in plain words; the planner makes no fix, commit, or branch change
+itself.
 
 ## Stopping The Dispatcher
 
