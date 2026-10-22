@@ -1994,3 +1994,46 @@ def test_review_prompt_needs_the_operator_prompt_at_a_terminal(
     assert ("PAUSE", "The review failed.") in entries
     closed = prompt_for(True, "")
     assert closed is not None and closed("The review failed.") == "quit"
+
+
+OPERATOR_EDITED_HANDOFF = """---
+next_agent: planner
+reason: "The operator answered the question."
+producer: user
+---
+
+## Answer
+
+Run story 2 next.
+"""
+
+
+def test_an_edit_at_the_operator_prompt_is_logged_once_and_saves_the_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _git_repo(tmp_path, USER_HANDOFF)
+    edited: list[bool] = []
+
+    def edit_at_first_prompt(level: str, message: str) -> None:
+        if level == "PAUSE" and message == PROMPT_LINE and not edited:
+            edited.append(True)
+            handoff_path.write_text(OPERATOR_EDITED_HANDOFF, encoding="utf-8")
+
+    # No typed line: the prompt keeps polling the file, which the operator
+    # edits instead of answering.
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=[],
+        planner_writes=[OTHER_USER_HANDOFF],
+        on_log=edit_at_first_prompt,
+    )
+
+    assert harness.run(_config(tmp_path), max_cycles=2) == 0
+
+    assert edited == [True]
+    # The valid edit routes as today.
+    assert harness.planner_instructions == [None]
+    assert harness.logs.count(("INFO", "Operator edited HANDOFF.md.")) == 1
+    snapshot = tmp_path / "logs" / "dispatch" / "operator-edit" / "previous-handoff.md"
+    assert snapshot.read_text(encoding="utf-8") == USER_HANDOFF

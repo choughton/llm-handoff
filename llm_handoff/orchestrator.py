@@ -169,6 +169,7 @@ from llm_handoff.validator import (
     parse_validation_output,
     record_dispatcher_handoff,
     validate_handoff,
+    validate_handoff_frontmatter,
     validate_handoff_text,
 )
 from llm_handoff.work_claim import (
@@ -683,6 +684,9 @@ def _run_loop(
         mark_startup_complete()
     # At most one operator input reader per run_loop call.
     operator_prompt = _OperatorPromptState()
+    # Tells operator edits of HANDOFF.md from role and dispatcher writes.
+    edit_watch = _OperatorEditWatch()
+    operator_prompt.edit_watch = edit_watch
     stop_watch = _StopRequestWatch(config.repo_root)
     # A leftover Git index lock breaks every Git write below (the publish
     # resume, interrupted-run recovery, dispatcher commits): pause until the
@@ -857,6 +861,10 @@ def _run_loop(
                 previous_cycle = None
             elif takeover.pending_planner_recovery is not None:
                 pending_planner_recovery = takeover.pending_planner_recovery
+        # The handoff the previous cycle's role and dispatcher left (or, on
+        # the first cycle, the run's baseline) is theirs, not an operator
+        # edit, unless the cycle already recorded it at its end or a pause.
+        edit_watch.settle(config)
         # Every path back to the top of the loop has finished its cycle: the
         # dispatch, the dispatcher commit, validation, and the work-claim gate.
         # The cycle that wrote a handback record is finished, so the record
@@ -878,6 +886,9 @@ def _run_loop(
         _log(log_fn, "INFO", f"--- Cycle {cycle_number} ---")
 
         handoff_content = _read_required_text(config.handoff_full_path)
+        # The raw file, before repair or normalization: a version nobody in
+        # the loop wrote is an operator edit.
+        edit_watch.begin_cycle(handoff_content, config, log_fn)
         tracker_lease_rebuild = config.tracker.provider == "linear" and (
             handoff_content is None or not handoff_content.strip()
         )
@@ -894,6 +905,7 @@ def _run_loop(
             if tracker_lease_rebuild_used:
                 # The rebuild cycle already ran for this miss; no second
                 # planner dispatch and no pause recovery.
+                edit_watch.accept_on_disk(config)
                 if not _pause_until_handoff_changes(
                     config,
                     handoff_sha=_content_sha(handoff_content or ""),
@@ -904,6 +916,8 @@ def _run_loop(
                     if stop_watch.requested(log_fn):
                         stop_watch.finish(log_fn)
                     return 0
+                edit_watch.observe_on_disk(config, log_fn)
+                edit_watch.settled = True
                 previous_cycle = None
                 continue
             tracker_lease_rebuild_used = True
@@ -947,6 +961,8 @@ def _run_loop(
                 log_fn,
                 repo_root=config.repo_root,
             )
+            # The repair and normalization above are dispatcher rewrites.
+            edit_watch.accept_on_disk(config)
 
         project_state_content = _read_optional_text(config.project_state_full_path)
         handoff_sha = _content_sha(handoff_content)
@@ -2821,6 +2837,7 @@ def _run_loop(
                         consecutive_failures = 0
                         if max_cycles is not None and cycle_number >= max_cycles:
                             return 0
+                        edit_watch.settle(config)
                         _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
                         _log(log_fn, "INFO", "")
                         continue
@@ -3085,6 +3102,9 @@ def _run_loop(
         if max_cycles is not None and cycle_number >= max_cycles:
             return 0
 
+        # The role's and dispatcher's last write this cycle; a later change
+        # before the next cycle reads the file is an operator edit.
+        edit_watch.settle(config)
         _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
         _log(log_fn, "INFO", "")
 
@@ -11407,11 +11427,246 @@ class _OperatorPromptState:
         # selected to run in this pause streak (not when it was scheduled,
         # since a HANDOFF.md change drops it); cleared where the streak resets.
         self.planner_tried = False
+        # The run's operator-edit watch; run_loop sets it. None (a pause
+        # called outside run_loop) watches nothing.
+        self.edit_watch: _OperatorEditWatch | None = None
 
     def reader(self) -> OperatorInputReader:
         if self._reader is None:
             self._reader = OperatorInputReader(_operator_input_stream())
         return self._reader
+
+
+OPERATOR_EDIT_SNAPSHOT_PARTS: tuple[str, ...] = ("logs", "dispatch", "operator-edit")
+OPERATOR_EDIT_SNAPSHOT_NAME = "previous-handoff.md"
+OPERATOR_EDIT_SNAPSHOT_PATH = PurePosixPath(
+    *OPERATOR_EDIT_SNAPSHOT_PARTS, OPERATOR_EDIT_SNAPSHOT_NAME
+)
+OPERATOR_EDIT_LOG = "Operator edited HANDOFF.md."
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorEdit:
+    """One HANDOFF.md version the dispatcher saw but did not write.
+
+    ``previous_valid`` is the last valid handoff the dispatcher observed
+    before this edit, or None when it observed none this run. ``saved`` is
+    True only when that handoff was written to the snapshot file.
+    """
+
+    content: str
+    previous_valid: str | None
+    saved: bool
+
+
+class _OperatorEditWatch:
+    """Tells operator edits of HANDOFF.md from role and dispatcher writes.
+
+    The dispatcher records each handoff version it or a dispatched role left
+    (``accept``) and compares the raw file against the last recorded version
+    where an operator could have changed it (``observe``): at each cycle
+    start, before repair or normalization, and when a pause ends. A version
+    the dispatcher did not record is an operator edit: it is logged once, and
+    the last valid handoff observed before it is saved to
+    ``logs/dispatch/operator-edit/previous-handoff.md``. The first version
+    observed in a run is the baseline, never an edit.
+
+    ``settled`` is True once the current cycle's own writes were recorded
+    (at the end of the cycle or when a pause began), so the loop top does
+    not record an edit made after that point as the dispatcher's.
+    """
+
+    def __init__(self) -> None:
+        self.observed_sha: str | None = None
+        self.valid_content: str | None = None
+        self.settled = False
+        self.last_edit: OperatorEdit | None = None
+
+    def accept(self, content: str, config: DispatchConfig) -> None:
+        """Record a version a role or the dispatcher wrote; never an edit."""
+
+        content_sha = _content_sha(content)
+        if content_sha == self.observed_sha:
+            return
+        self.observed_sha = content_sha
+        if _operator_edit_watch_valid(
+            content,
+            config,
+            dispatcher_authored=is_recorded_dispatcher_handoff(
+                config.repo_root, content
+            ),
+        ):
+            self.valid_content = content
+
+    def accept_on_disk(self, config: DispatchConfig) -> None:
+        content = _operator_edit_watch_read(config)
+        if content is not None:
+            self.accept(content, config)
+
+    def settle(self, config: DispatchConfig) -> None:
+        """Record the cycle's final version unless it is already recorded."""
+
+        if self.settled:
+            return
+        self.accept_on_disk(config)
+        self.settled = True
+
+    def begin_cycle(
+        self, content: str | None, config: DispatchConfig, log: LogFn
+    ) -> OperatorEdit | None:
+        """Observe the raw handoff a cycle starts from."""
+
+        self.settled = False
+        if content is None:
+            return None
+        return self.observe(content, config, log)
+
+    def observe(
+        self, content: str, config: DispatchConfig, log: LogFn
+    ) -> OperatorEdit | None:
+        """Compare ``content`` with the last recorded version.
+
+        Returns the edit when ``content`` is a version the dispatcher has not
+        seen, after logging it and saving the previous valid handoff.
+        """
+
+        content_sha = _content_sha(content)
+        if self.observed_sha is None:
+            # First observation this run: the baseline, not an edit.
+            self.observed_sha = content_sha
+            if _operator_edit_watch_valid(content, config):
+                self.valid_content = content
+            return None
+        if content_sha == self.observed_sha:
+            return None
+        self.observed_sha = content_sha
+        _log(log, "INFO", OPERATOR_EDIT_LOG)
+        previous_valid = self.valid_content
+        if previous_valid is None:
+            _log(
+                log,
+                "WARN",
+                "No valid HANDOFF.md was observed before this edit in this "
+                "run, so no previous handoff is saved for it; a file at "
+                f"{OPERATOR_EDIT_SNAPSHOT_PATH.as_posix()} is from an earlier "
+                "edit, not this one.",
+            )
+            saved = False
+        else:
+            saved = _save_operator_edit_snapshot(config, previous_valid, log)
+        # The snapshot is written before an edited version can become the
+        # new valid baseline; an invalid edit keeps the previous one.
+        if _operator_edit_watch_valid(content, config):
+            self.valid_content = content
+        edit = OperatorEdit(
+            content=content, previous_valid=previous_valid, saved=saved
+        )
+        self.last_edit = edit
+        return edit
+
+    def observe_on_disk(
+        self, config: DispatchConfig, log: LogFn
+    ) -> OperatorEdit | None:
+        content = _operator_edit_watch_read(config)
+        if content is None:
+            return None
+        return self.observe(content, config, log)
+
+
+def _operator_edit_watch_read(config: DispatchConfig) -> str | None:
+    try:
+        return _read_required_text(config.handoff_full_path)
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _operator_edit_watch_valid(
+    content: str, config: DispatchConfig, *, dispatcher_authored: bool = False
+) -> bool:
+    """Whether ``content`` has frontmatter that parses and validates."""
+
+    try:
+        frontmatter = parse_handoff_frontmatter_text(content)
+    except HandoffFrontmatterError:
+        return False
+    if frontmatter is None:
+        return False
+    result = validate_handoff_frontmatter(
+        frontmatter,
+        git_cwd=config.repo_root,
+        tracker_provider=config.tracker.provider,
+        dispatcher_authored=dispatcher_authored,
+    )
+    return not result.errors
+
+
+def _operator_edit_snapshot_path(config: DispatchConfig) -> Path:
+    """The snapshot's literal path under the resolved root, links not followed."""
+
+    return config.repo_root.resolve().joinpath(
+        *OPERATOR_EDIT_SNAPSHOT_PARTS, OPERATOR_EDIT_SNAPSHOT_NAME
+    )
+
+
+def _save_operator_edit_snapshot(
+    config: DispatchConfig, content: str, log: LogFn
+) -> bool:
+    """Save the previous valid handoff; True only when it was written.
+
+    Uses the carry-over record's link-resistant writer, so a symlink or
+    junction at the file or any directory above it writes nothing. A dry run
+    writes nothing.
+    """
+
+    shown = OPERATOR_EDIT_SNAPSHOT_PATH.as_posix()
+    if config.dry_run:
+        _log(
+            log,
+            "INFO",
+            f"[DRY RUN] Would save the previous valid handoff to {shown}.",
+        )
+        return False
+    not_saved = f"Could not save the previous valid handoff to {shown}"
+    if not _carry_over_disk_persistence_available():
+        _log(
+            log,
+            "WARN",
+            f"{not_saved}: this platform cannot write it without a "
+            "directory-swap race.",
+        )
+        return False
+    if not git_path_is_ignored(config.repo_root, shown):
+        _log(
+            log,
+            "WARN",
+            f"{not_saved}: Git does not ignore it, so it would show up as an "
+            "uncommitted file; add /logs/dispatch/ to .gitignore.",
+        )
+        return False
+    snapshot_path = _operator_edit_snapshot_path(config)
+    link_message = (
+        f"{not_saved}: the path {snapshot_path} passes through a symlink or "
+        "junction, so nothing was written. Remove the link to keep the "
+        "previous handoff."
+    )
+    if _carry_over_path_traverses_link(snapshot_path):
+        _log(log, "WARN", link_message)
+        return False
+    try:
+        _write_carry_over_payload(
+            config.repo_root.resolve(),
+            content,
+            OPERATOR_EDIT_SNAPSHOT_NAME,
+            parts=OPERATOR_EDIT_SNAPSHOT_PARTS,
+        )
+    except _CarryOverLinkError:
+        _log(log, "WARN", link_message)
+        return False
+    except OSError as exc:
+        _log(log, "WARN", f"{not_saved}: {exc}.")
+        return False
+    _log(log, "INFO", f"Saved the previous valid handoff to {shown}.")
+    return True
 
 
 PauseOutcomeKind = Literal[
@@ -11513,7 +11768,40 @@ def _pause_at_dispatcher_pause(
     A stop request seen before or during the pause ends the run instead.
     Once a scheduled planner or role dispatch has run in this pause streak,
     the prompt also offers the manual HANDOFF.md edit.
+
+    With the run's operator-edit watch, the handoff on disk when the pause
+    begins is recorded as the dispatcher's, and a version the operator left
+    when the pause ends (other than by stopping) is observed as an edit.
     """
+
+    edit_watch = operator_prompt.edit_watch
+    if edit_watch is not None:
+        edit_watch.accept_on_disk(config)
+    outcome = _wait_at_dispatcher_pause(
+        config,
+        handoff_sha=handoff_sha,
+        reason=reason,
+        log=log,
+        operator_prompt=operator_prompt,
+        stop_watch=stop_watch,
+    )
+    if edit_watch is not None:
+        if not outcome.stop:
+            edit_watch.observe_on_disk(config, log)
+        edit_watch.settled = True
+    return outcome
+
+
+def _wait_at_dispatcher_pause(
+    config: DispatchConfig,
+    *,
+    handoff_sha: str,
+    reason: str,
+    log: LogFn,
+    operator_prompt: _OperatorPromptState,
+    stop_watch: _StopRequestWatch | None = None,
+) -> PauseOutcome:
+    """The pause itself; see ``_pause_at_dispatcher_pause``."""
 
     def stop_or(kind: PauseOutcomeKind) -> PauseOutcome:
         if stop_watch is not None and stop_watch.requested(log):

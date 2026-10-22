@@ -10,10 +10,10 @@ history.
 
 ## Current Status
 
-- **Active Epic:** None. TRANSITION-RULES (epic 17) closed with TRANS-6,
-  approved at `fbb8e4c` and merged in PR #261 (`9018e33`). The planner picks
-  the next epic by fit; HUMAN-EDITS (epic 21) is next in line (operator
-  direction 2026-10-22).
+- **Active Epic:** HUMAN-EDITS (epic 21). HUMAN-1 (spot an operator edit)
+  is implemented and awaits audit; HUMAN-2 through HUMAN-6 remain, in order.
+  TRANSITION-RULES (epic 17) closed with TRANS-6, approved at `fbb8e4c` and
+  merged in PR #261 (`9018e33`).
 - **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
   (TIDY-12 and TIDY-13 are wording nits filed by the operator on
   2026-10-21). TIDY-8 is a backend story the planner picks by fit (the

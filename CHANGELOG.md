@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The dispatcher spots operator edits of `HANDOFF.md`. It records each
+  handoff version a role or the dispatcher itself wrote, and a version it did
+  not write, seen at a cycle start (before repair or normalization) or when
+  a pause ends, logs `Operator edited HANDOFF.md.` once. The last valid
+  handoff the dispatcher observed before the edit is saved to
+  `logs/dispatch/operator-edit/previous-handoff.md` through the carry-over
+  record's link-resistant writer; an invalid edit never replaces that valid
+  context. The first version a run sees is its baseline, not an edit. A
+  link on the path, a write failure, a path Git does not ignore, or the
+  absence of any valid predecessor logs a warning and saves nothing, and a
+  dry run saves nothing. Routing is unchanged: a valid edit routes as
+  before, and an invalid or free-form edit keeps today's path (HUMAN-1).
 - An operator story committed on the base branch still publishes when the
   base branch moved on before the publish, for example when another pull
   request merged while the audit ran. Before, publish required
