@@ -573,6 +573,83 @@ OPERATOR_EDIT_EXHAUSTED_PAUSE_REASON = (
     "the operator prompt; dispatch will resume after the file changes."
 )
 _OPERATOR_EDIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+# HUMAN-3: when the edit's own predecessor routed an identified story to
+# `user`, the operator may have done that story's work by hand. The planner
+# instruction then also asks for a completion check and an audit route. Only
+# config values and fixed words are substituted; story text stays in the
+# quoted PREVIOUS HANDOFF block.
+OPERATOR_STORY_LEAD = (
+    "The previous handoff routed a story to user, so the operator may have "
+    "done that story's edits by hand."
+)
+OPERATOR_STORY_TEMPLATE = (
+    OPERATOR_STORY_LEAD + " When the operator's text or the commits say that "
+    "work is done, a note such as \"I made the edits\" is not proof that it is "
+    "complete. Check it yourself with read-only Git commands before routing:\n"
+    "- Compare the operator's committed diff (`git log`, `git show`, "
+    "`git diff`) with each edit the previous handoff requested. Name every "
+    "requested edit that is missing and every change it did not request, "
+    "such as a stray line copied from a Markdown code fence.\n"
+    "- No operator commit changes {handoff_path}: the live handoff stays out "
+    "of the operator's commits (`git log --format=%h <range> -- "
+    "{handoff_path}` prints nothing).\n"
+    "- `git status --porcelain` lists no uncommitted file other than "
+    "{handoff_path}.\n"
+    "{adoption}"
+    "If every check passes, rewrite {handoff_path} to route to the auditor: "
+    "`next_agent: auditor`, `status: ready_for_review`, `producer: planner`, "
+    "`scope_sha:` the concrete SHA that `git rev-parse HEAD` prints (never "
+    "`HEAD`), and `close_type: {close_type}` {close_reason}. Keep the previous "
+    "handoff's epic_id, story_id, and story_title, copy its remaining_stories "
+    "forward unchanged, carry its `## Work Packet` section, and add a "
+    "`## Verification Evidence` block with its five fields that names the Git "
+    "commands you ran and the HEAD SHA as the commit verified. Only the "
+    "auditor approves the work: do not write `status: verified_pass` or say "
+    "that an audit passed.\n"
+    "If any check fails, route to user with `status: escalate_to_user`, keep "
+    "the same epic_id, story_id, story_title, and remaining_stories, and list "
+    "every problem you found, each with the exact fix in plain words and the "
+    "Git commands that make it, such as amending the commit with a missing "
+    "edit, removing a stray change, taking {handoff_path} out of a commit, "
+    "or committing or removing an uncommitted file. Do not make those fixes "
+    "yourself: change no file other than {handoff_path}, and do not commit, "
+    "amend, reset, stash, fetch, pull, merge, rebase, switch or create "
+    "branches, push, or publish."
+)
+OPERATOR_STORY_ADOPTION = (
+    "- Publishing uses `publish.mode: pr` with base branch `{base_branch}`, "
+    "so after the audit passes the dispatcher moves the operator's commit to "
+    "a story branch only in this shape: the checkout is on `{base_branch}`; "
+    "counted from the fork point that `git merge-base "
+    "{remote}/{base_branch} HEAD` prints, HEAD is exactly one commit ahead "
+    "(`git rev-list --count <fork point>..HEAD` prints 1); that commit is not "
+    "a merge commit (`git rev-list --merges <fork point>..HEAD` prints "
+    "nothing); and HEAD is the scope_sha. `{remote}/{base_branch}` may have "
+    "moved on since the operator committed; that is fine, so do not require "
+    "HEAD to be zero commits behind it. Use the remote-tracking ref as it is; "
+    "publishing fetches it later. More than one commit or a merge commit is "
+    "a problem whose fix squashes the work into one commit on top of the "
+    "fork point (`git reset --soft <fork point>`, then `git commit`). If the "
+    "checkout is instead a story branch starting with `{branch_prefix}` that "
+    "the dispatcher already created for this story, this shape does not "
+    "apply: audit the commits on that branch where they are, with HEAD as "
+    "scope_sha. Do not create, switch, or move branches yourself.\n"
+)
+OPERATOR_STORY_NO_ADOPTION = (
+    "- Publishing does not move operator commits to a story branch "
+    "({publish_setting}), so do not require a base branch or a single "
+    "commit: send the operator's commits to the auditor where they are, on "
+    "the current branch, with the concrete HEAD SHA as scope_sha.\n"
+)
+OPERATOR_STORY_CLOSE_STORY_REASON = (
+    "(the previous handoff lists remaining stories, so work remains in the "
+    "epic)"
+)
+OPERATOR_STORY_CLOSE_EPIC_REASON = (
+    "(the previous handoff lists no remaining stories, so this is the epic's "
+    "final story; if the project state file lists more stories for this "
+    "epic, use `close_type: story` instead)"
+)
 
 LogFn = Callable[[str, str], None]
 _COMMIT_SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
@@ -12078,7 +12155,9 @@ def _operator_edit_interpretation_instruction(
     """The planner instruction for one invalid operator edit (HUMAN-2).
 
     Uses the predecessor attached to ``edit``, never the snapshot file: the
-    file is named as a copy only when this edit saved it.
+    file is named as a copy only when this edit saved it. When that
+    predecessor routed a story to ``user``, the HUMAN-3 completion guidance
+    follows (see ``_operator_story_guidance``).
     """
 
     shown = OPERATOR_EDIT_SNAPSHOT_PATH.as_posix()
@@ -12094,13 +12173,74 @@ def _operator_edit_interpretation_instruction(
             path=shown,
             previous=_quote_untrusted(PREVIOUS_HANDOFF_LABEL, edit.previous_valid),
         )
-    return _render_prompt(
+    instruction = _render_prompt(
         OPERATOR_EDIT_INTERPRETATION_TEMPLATE,
         config.handoff_path,
         problem=_operator_edit_problem(edit.content),
         operator_text=_quote_untrusted(OPERATOR_MESSAGE_LABEL, edit.content),
         previous_context=previous_context,
         commit_context=_operator_edit_commit_context(edit.previous_valid),
+    )
+    story_guidance = _operator_story_guidance(config, edit.previous_valid)
+    if story_guidance is None:
+        return instruction
+    return f"{instruction}\n\n{story_guidance}"
+
+
+def _operator_story_predecessor(previous_valid: str | None):
+    """The edit's predecessor frontmatter when it routed a story to ``user``.
+
+    Only the previous valid handoff attached to the edit counts, never the
+    snapshot file. Returns None for a missing predecessor, another route, or
+    a ``user`` route that names no story.
+    """
+
+    if previous_valid is None:
+        return None
+    frontmatter = _parse_frontmatter_or_none(previous_valid)
+    if frontmatter is None:
+        return None
+    if (frontmatter.next_agent or "").strip().lower() != "user":
+        return None
+    if not (frontmatter.story_id or "").strip():
+        return None
+    return frontmatter
+
+
+def _operator_story_guidance(
+    config: DispatchConfig, previous_valid: str | None
+) -> str | None:
+    """HUMAN-3 completion guidance for an operator story, or None."""
+
+    frontmatter = _operator_story_predecessor(previous_valid)
+    if frontmatter is None:
+        return None
+    handoff_path = Path(config.handoff_path).as_posix()
+    publish = config.publish
+    if publish.mode == "pr" and publish.base_branch and publish.branch_prefix:
+        adoption = OPERATOR_STORY_ADOPTION.format(
+            base_branch=publish.base_branch,
+            remote=publish.remote,
+            branch_prefix=publish.branch_prefix,
+        )
+    else:
+        if publish.mode == "pr":
+            setting = (
+                "`publish.mode: pr` without both `publish.base_branch` and "
+                "`publish.branch_prefix` set"
+            )
+        else:
+            setting = f"`publish.mode: {publish.mode}`"
+        adoption = OPERATOR_STORY_NO_ADOPTION.format(publish_setting=setting)
+    if frontmatter.remaining_stories:
+        close_type, close_reason = "story", OPERATOR_STORY_CLOSE_STORY_REASON
+    else:
+        close_type, close_reason = "epic", OPERATOR_STORY_CLOSE_EPIC_REASON
+    return OPERATOR_STORY_TEMPLATE.format(
+        handoff_path=handoff_path,
+        adoption=adoption,
+        close_type=close_type,
+        close_reason=close_reason,
     )
 
 

@@ -6,6 +6,24 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- When the previous valid handoff attached to an invalid operator edit
+  routed an identified story to `user` (HUMAN-3), the planner's
+  interpretation instruction now also asks for a completion check: compare
+  the operator's committed diff with each requested edit and name missing or
+  stray changes, confirm no operator commit changes the configured handoff
+  path, and confirm nothing but the live handoff is uncommitted. A note such
+  as "I made the edits" is not proof. Only `publish.mode: pr` with
+  `base_branch` and `branch_prefix` set adds the adoption shape that
+  publishing checks: on the base branch, exactly one non-merge commit ahead
+  of the fork point with `<remote>/<base_branch>` (a base that moved on is
+  fine), and HEAD as `scope_sha`. Other publish settings audit the
+  operator's commits where they are, with the concrete HEAD SHA. A clean
+  result routes to `auditor` with `ready_for_review`, the story identity and
+  remaining stories kept, the Work Packet and Verification Evidence, and
+  `close_type: story` (or `epic` when no stories remain); any problem
+  routes to `user` with every problem and its exact fix. The guidance
+  authorizes no source edit, Git change, publish, or approval claim; other
+  predecessors keep the HUMAN-2 instruction unchanged.
 - An operator edit of `HANDOFF.md` with no frontmatter, frontmatter that
   does not parse, or frontmatter that fails validation now gets one planner
   pass that interprets it (HUMAN-2), chosen before frontmatter repair or
