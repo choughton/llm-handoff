@@ -14,8 +14,9 @@ history.
   TIDY-15. TIDY-14 (epic-close Linear evidence) is approved at `3b98682`
   and merged in PR #269 (`4db0d29`). TIDY-15 (handoff-repair Linear
   evidence) is approved at `a0bad86` and merged in PR #270 (`623d8a7`).
-  TIDY-12 (doctor's agy interpreter-grant line) is implemented and awaits
-  audit; TIDY-13 remains. HUMAN-EDITS
+  TIDY-12 (doctor's agy interpreter-grant line) is approved at `3cb5ef1`
+  and merged in PR #271 (`c8566bf`). TIDY-13 (example config tpm comment)
+  is implemented and awaits audit. HUMAN-EDITS
   (epic 21) closed with HUMAN-6, approved at `d3da792` and merged in PR #268
   (`f4c0e3e`).
 - **Parked Epic:** None.
@@ -475,10 +476,11 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   user-wide text; when one is missing, say which are missing and point to the
   `antigravity permissions` check. Severity stays WARN. Files:
   `llm_handoff/doctor.py`, `tests/test_doctor.py`, `CHANGELOG.md`.
-  Implemented; awaits audit. The line now reads the agy settings once
+  The line now reads the agy settings once
   (`_describe_agy_interpreter_grants`): present entries are "uses", absent
   ones "needs ... which permissions.allow is missing", and an absent or
   unreadable file claims no grant and points to `antigravity permissions`.
+  Approved at `3cb5ef1`, merged in PR #271 (`c8566bf`).
 - TIDY-13: The example config's tpm comment matches TPM-10. The commented
   `tpm:` block in `dispatch_config.example.yaml` (~line 180) still says "The
   dispatcher does not route to it yet: a handoff with next_agent: tpm still
@@ -488,7 +490,10 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   the planner picks every story. Check `CONFIGURATION.md` and the reference
   workflow's `dispatch_config.yaml` for the same stale sentence. Protected
   path; list it in Files in scope. Files: `dispatch_config.example.yaml`,
-  `CHANGELOG.md`.
+  `CHANGELOG.md`. Implemented; awaits audit. The comment now describes the
+  configured and absent tpm routes; the block stays commented out with its
+  values unchanged. `CONFIGURATION.md` and the reference workflow's
+  `dispatch_config.yaml` had no stale sentence.
 - TIDY-14: Epic-close Linear evidence (was TIDY-8). Add the finalizer-only
   `epic_closed` event, comment permission, close-posting instructions on the
   last leased issue, and matching validator comparisons. Verify the event
