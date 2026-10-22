@@ -257,6 +257,7 @@ def test_default_prompt_is_unchanged_byte_for_byte() -> None:
         "HANDOFF.md path: docs/handoff/HANDOFF.md\n"
         "The `backend` role's log: logs/dispatch/run.log\n\n"
         "You may edit files and HANDOFF.md to do what the operator asks. "
+        "If you rewrite HANDOFF.md, set `producer: user` in its frontmatter. "
         "Do not push to any remote. Answer the operator in plain text.\n\n"
         "Operator message:\nhi there"
     )
@@ -290,9 +291,28 @@ def test_resumed_role_prompt() -> None:
     assert "The `auditor` role's log: logs/dispatch/run.log\n" in prompt
     assert (
         "You may edit files and HANDOFF.md to do what the operator asks. "
+        "If you rewrite HANDOFF.md, set `producer: user` in its frontmatter. "
         "Do not push to any remote. Answer the operator in plain text."
     ) in prompt
     assert prompt.endswith("\n\nOperator message:\nWhy did you skip the test?")
+
+
+_CHAT_PRODUCER_SENTENCE = (
+    "If you rewrite HANDOFF.md, set `producer: user` in its frontmatter."
+)
+
+
+def test_both_prompt_branches_tell_the_chat_to_name_producer_user() -> None:
+    for resumed_role in (False, True):
+        prompt = build_chat_prompt(
+            "hi",
+            role="backend",
+            story_id="S-1",
+            handoff_path="HANDOFF.md",
+            log_path=None,
+            resumed_role=resumed_role,
+        )
+        assert _CHAT_PRODUCER_SENTENCE in prompt
 
 
 def test_resumed_role_prompt_without_story_or_log() -> None:

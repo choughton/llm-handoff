@@ -21,11 +21,15 @@ history.
   (validator producer: keyword-only `dispatcher_authored` flag on the three
   validation entry points; validator verdicts need it, and
   `ready_for_review`, `next_agent: finalizer`, and `close_type: epic` stay
-  rejected) is implemented; PR #251 Finding 1 (doctor and supervisor
-  preflight rejected valid dispatcher-written verdicts) is fixed in-story
-  with SHA-256 provenance in `logs/dispatch/dispatcher-handoff.json` and
-  Verification Evidence in the publish builders' verdicts, and the story is
-  awaiting audit. TRANS-4 through TRANS-6 remain.
+  rejected; PR #251 Finding 1 fixed in-story with SHA-256 provenance in
+  `logs/dispatch/dispatcher-handoff.json`, accepted by the planner as the
+  final provenance mechanism) was approved at `9642d8a` and merged in PR
+  #251 at `733d53f`. TRANS-4 (every dispatched role's handoff must name
+  that role as `producer`, else `frontmatter_producer_mismatch`;
+  dispatcher-authored handoffs skip only that check; a chat takeover
+  rewrite may name `planner` or `user` through the `chat_takeover` flag) is
+  implemented, with the chat-takeover fix, and awaiting audit. TRANS-5 and
+  TRANS-6 remain.
 - **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
   (TIDY-12 and TIDY-13 are wording nits filed by the operator on
   2026-10-21). TIDY-8 is a backend story the planner picks by fit (the
@@ -226,15 +230,30 @@ handbook and the code from drifting.
   `head_sha`), and the doctor and supervisor regressions use the real
   builders' output. Residual (audit, medium): the record is an unkeyed
   digest in agent-writable `logs/`, so a record an agent plants during a
-  dispatch the dispatcher never returns from is not cleared; moving it
-  out of agent reach or keying it needs a planner decision.
+  dispatch the dispatcher never returns from is not cleared. Decided by
+  the planner on 2026-10-21:
+  accepted within the workspace-local reference architecture (AGENTS.md
+  Scope Boundaries forbid out-of-repo state stores or key daemons,
+  orchestrator post-dispatch validation never reads the record, and
+  evidence, SHA, and finalizer/epic-close rules still apply).
 - TRANS-4 (was part of TRANS-2): Producer matches the dispatched role. The
   post-dispatch validation already knows the previous route; a `producer`
   that names a role other than the one just dispatched is rejected as
   `frontmatter_producer_mismatch` unless the handoff is a dispatcher-written
   escalation. Decided 2026-10-21: generalize
   `_tpm_dispatch_producer_errors()` in `validate_handoff_text()` to every
-  role when `not dispatcher_authored`.
+  role when `not dispatcher_authored`. Chat-takeover fix (planner,
+  2026-10-21, after the backend handback at `1b1ef6d`): `validate_handoff()`
+  and `validate_handoff_text()` take a keyword-only `chat_takeover` flag,
+  passed only by the `_follow_chat_takeover` call. With it the producer
+  check accepts `planner` or `user`, and any other producer still fails
+  `frontmatter_producer_mismatch`; nothing else is waived and
+  `dispatcher_authored` stays false. Both chat prompt branches tell the chat
+  to set `producer: user` when it rewrites HANDOFF.md. PR #257 review round
+  1: in Linear mode a `producer: user` takeover that assigns an implementer
+  still needs `selection_basis` (Finding 2, fixed); validating the successful
+  finalizer handoff in `run_loop` is deferred to the planner (Finding 1,
+  outside this packet's single orchestrator edit).
 - TRANS-5 (was TRANS-3): One table, two readers. Write the
   producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under
   `## Transition Table`, and add a test that parses that table and asserts it

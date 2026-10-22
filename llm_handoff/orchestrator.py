@@ -3436,7 +3436,10 @@ def _follow_chat_takeover(
     elif chat_handoff is None or not chat_handoff.strip():
         errors = "HANDOFF.md is missing or empty"
     else:
-        # The operator-directed rewrite plays the planner's part.
+        # The operator-directed rewrite plays the planner's part, so every
+        # planner-dispatch check runs. `chat_takeover=True` only lets the
+        # rewrite name `producer: user` (the operator) or `producer: planner`;
+        # any other producer still fails `frontmatter_producer_mismatch`.
         validation_result = validate_handoff(
             config.handoff_full_path,
             "planner",
@@ -3446,6 +3449,7 @@ def _follow_chat_takeover(
             tracker_provider=config.tracker.provider,
             prior_handoff_content=story_check_baseline,
             project_state_path=config.project_state_full_path,
+            chat_takeover=True,
         )
         story_baseline = _next_story_baseline(
             config, validation_result, story_check_baseline

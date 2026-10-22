@@ -116,6 +116,9 @@ _VERIFIED_STATUSES = (
 # dispatcher-written content (`dispatcher_authored=True`) may let it carry a
 # verdict status.
 _VALIDATOR_ALWAYS_REJECTED_STATUSES = (HandoffStatus.READY_FOR_REVIEW.value,)
+# An operator-directed chat takeover rewrite plays the planner's part, so it
+# may name the operator (`user`) or the planner as producer, and no other role.
+_CHAT_TAKEOVER_PRODUCERS = ("planner", "user")
 _REQUIRED_EVIDENCE_FIELDS = {
     "Commands run",
     "Output summary",
@@ -552,26 +555,54 @@ def _finalizer_dispatch_status_errors(
     ]
 
 
-def _tpm_dispatch_producer_errors(
+def _dispatch_producer_errors(
     current: HandoffRouting,
     *,
     previous_route: str | None,
+    dispatcher_authored: bool = False,
+    chat_takeover: bool = False,
 ) -> list[str]:
-    """Errors for a tpm dispatch whose handoff claims another producer.
+    """Errors for a dispatch whose handoff claims another role as producer.
 
-    The dispatcher knows which role it ran, so a tpm cannot opt out of the
-    tpm rules by writing `producer: planner`. A missing producer is already
-    reported as `frontmatter_producer_missing`.
+    The dispatcher knows which role it ran, so no role can borrow another
+    role's rules or authority by writing a different `producer` (a tpm
+    writing `producer: planner`, or a planner or backend writing
+    `producer: auditor` to route to the finalizer). The producer must
+    normalize to the dispatched role under the canonical frontmatter
+    normalization (`normalize_next_agent_value`).
+
+    No check runs when the previous role is unknown (already a
+    `unknown_previous_agent` warning; no identity is invented for it), when
+    the producer is missing (already `frontmatter_producer_missing`), or when
+    the caller validates a handoff the dispatcher wrote itself
+    (`dispatcher_authored=True`), which always names `producer: validator`.
+
+    With `chat_takeover=True` the caller validates an operator-directed chat
+    rewrite (`_follow_chat_takeover`). The chat plays the planner's part on
+    the operator's behalf, so a producer of `planner` or `user` is accepted.
+    Any other producer still fails `frontmatter_producer_mismatch`, so a chat
+    rewrite cannot borrow auditor, finalizer, or implementer authority. The
+    flag waives nothing else.
     """
 
-    if previous_route != "tpm" or not current.producer:
+    if dispatcher_authored or previous_route is None or not current.producer:
         return []
-    if normalize_next_agent_value(current.producer) == "tpm":
+    normalized_producer = normalize_next_agent_value(current.producer)
+    if chat_takeover:
+        if normalized_producer in _CHAT_TAKEOVER_PRODUCERS:
+            return []
+        return [
+            f"frontmatter_producer_mismatch: a chat takeover rewrite names "
+            f"producer `{current.producer}`; a chat rewrite sets "
+            "`producer: user` or `producer: planner`."
+        ]
+    if normalized_producer == previous_route:
         return []
     return [
-        "frontmatter_producer_mismatch: the dispatched role is `tpm`, but the "
-        f"handoff names producer `{current.producer}`; a tpm handoff sets "
-        "`producer: tpm`."
+        f"frontmatter_producer_mismatch: the dispatched role is "
+        f"`{previous_route}`, but the handoff names producer "
+        f"`{current.producer}`; a {previous_route} handoff sets "
+        f"`producer: {previous_route}`."
     ]
 
 
@@ -697,6 +728,37 @@ def _tracker_lease_findings(
     return errors, warnings
 
 
+def _chat_takeover_selection_basis_errors(
+    current: HandoffRouting,
+    *,
+    tracker_provider: str,
+    chat_takeover: bool,
+) -> list[str]:
+    """Linear selection provenance for a `producer: user` chat takeover.
+
+    `_follow_chat_takeover` treats the chat rewrite as a planner dispatch, so
+    a rewrite naming `producer: user` that assigns an implementer in Linear
+    mode needs `selection_basis` just as a planner's would. The frontmatter
+    check covers `producer: planner` already; this adds the same rule for
+    `producer: user` on the takeover path only.
+    """
+
+    if not chat_takeover or tracker_provider != "linear":
+        return []
+    if normalize_next_agent_value(current.producer) != "user":
+        return []
+    normalized_next_agent = normalize_next_agent_value(current.next_agent)
+    if normalized_next_agent not in _IMPLEMENTER_ROUTES:
+        return []
+    if current.selection_basis is not None:
+        return []
+    return [
+        "selection_basis_missing: "
+        f"chat takeover routed to `{normalized_next_agent}` in Linear mode "
+        "without selection_basis."
+    ]
+
+
 def validate_handoff(
     handoff_path: Path,
     previous_agent: str,
@@ -708,6 +770,7 @@ def validate_handoff(
     prior_handoff_content: str | None = None,
     project_state_path: Path | None = None,
     dispatcher_authored: bool = False,
+    chat_takeover: bool = False,
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
     project_state_content = (
@@ -726,6 +789,7 @@ def validate_handoff(
         prior_handoff_content=prior_handoff_content,
         project_state_content=project_state_content,
         dispatcher_authored=dispatcher_authored,
+        chat_takeover=chat_takeover,
     )
 
 
@@ -741,6 +805,7 @@ def validate_handoff_text(
     prior_handoff_content: str | None = None,
     project_state_content: str | None = None,
     dispatcher_authored: bool = False,
+    chat_takeover: bool = False,
 ) -> ValidationResult:
     """Validate a post-dispatch handoff.
 
@@ -752,7 +817,16 @@ def validate_handoff_text(
 
     `dispatcher_authored` is for callers checking a handoff the dispatcher
     wrote itself; agent output is always validated with it false. See
-    `validate_handoff_frontmatter()`.
+    `validate_handoff_frontmatter()`. Agent output must also name the
+    dispatched role as `producer` (`frontmatter_producer_mismatch`); the flag
+    skips only that identity check.
+
+    `chat_takeover` is only for the operator-directed chat takeover rewrite
+    (`_follow_chat_takeover`): the producer may then be `planner` or `user`,
+    and any other producer still fails `frontmatter_producer_mismatch`. It
+    waives no other check: in Linear mode a `producer: user` rewrite that
+    assigns an implementer still needs `selection_basis`, as a planner's
+    would.
     """
 
     normalized_content = handoff_content.lstrip("\ufeff")
@@ -804,8 +878,18 @@ def validate_handoff_text(
             frontmatter_valid = not frontmatter_result.errors
             frontmatter_producer = frontmatter.producer
             errors.extend(
-                _tpm_dispatch_producer_errors(
-                    frontmatter, previous_route=previous_route
+                _dispatch_producer_errors(
+                    frontmatter,
+                    previous_route=previous_route,
+                    dispatcher_authored=dispatcher_authored,
+                    chat_takeover=chat_takeover,
+                )
+            )
+            errors.extend(
+                _chat_takeover_selection_basis_errors(
+                    frontmatter,
+                    tracker_provider=tracker_provider,
+                    chat_takeover=chat_takeover,
                 )
             )
             errors.extend(
