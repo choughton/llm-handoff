@@ -2480,9 +2480,13 @@ set) before rewriting `HANDOFF.md`, and moves or relabels nothing. The
 validator's Linear grant is comment-only (`save_comment`, no `save_issue`):
 it posts only `handoff_repaired`, only on a repair turn, and a report-only
 validation turn posts no comments. A Claude report-only validator launch
-drops `save_comment` and `save_issue` from its allowlist, so it can read
-Linear but cannot write to it; only the routed repair turn keeps
-`save_comment`. For a report-only check in Linear mode the
+drops `save_comment` and `save_issue` from its allowlist, along with the bare
+`mcp__<server>` grant and any wildcard entry that matches either tool (such
+as `mcp__<server>__*`, `mcp__*`, or `*`), so it can read Linear but cannot
+write to it; only the routed repair turn keeps `save_comment`. That repair
+turn runs the `handoff-router` subagent, so `init --tracker linear` renders
+the validator's Linear tools into `.claude/agents/handoff-router.md` as well
+as `.claude/agents/handoff-validator.md`. For a report-only check in Linear mode the
 dispatcher appends `dispatcher_authored=true` or `dispatcher_authored=false`
 to the validator prompt, from its recorded dispatcher-handoff digest; the
 validator skips the `producer`, `next_agent`, and `status` comparison for a

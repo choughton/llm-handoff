@@ -13,8 +13,10 @@ history.
 - **Active Epic:** TIDY (epic 19). TIDY-8 was split into TIDY-14 and
   TIDY-15. TIDY-14 (epic-close Linear evidence) is approved at `3b98682`
   and merged in PR #269 (`4db0d29`). TIDY-15 (handoff-repair Linear
-  evidence) is implemented, PR #270 review round 1 is answered (one fix, one
-  deferred finding), and it awaits audit; TIDY-12 and TIDY-13 remain, in
+  evidence) is implemented, both PR #270 review findings are fixed (the
+  `handoff-router` Linear tools and wildcard write-grant stripping for
+  report-only validator launches), and it awaits audit; TIDY-12 and TIDY-13
+  remain, in
   that order. HUMAN-EDITS
   (epic 21) closed with HUMAN-6, approved at `d3da792` and merged in PR #268
   (`f4c0e3e`).
@@ -513,10 +515,16 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `.claude/agents/handoff-validator.md` copies still list only the read
   tools; `init --tracker linear` appends `save_comment`. PR #270 review
   round 1: report-only `_run_validator` launches now drop `save_comment` and
-  `save_issue` (`without_linear_write_tools`); deferred, out of scope: the
-  routed repair runs as `handoff-router`, whose generated `tools:` allowlist
-  `init --tracker linear` does not extend with the validator's Linear tools
-  (`llm_handoff/init_workflow.py` `_LINEAR_AGENT_TOOLS`).
+  `save_issue` (`without_linear_write_tools`). The planner then widened the
+  scope to `llm_handoff/init_workflow.py` for the deferred finding: the
+  routed repair runs as `handoff-router`, so `_LINEAR_AGENT_TOOLS` now maps
+  `.claude/agents/handoff-router.md` to the validator's tools and
+  `init --tracker linear` renders `get_issue`, `list_issues`,
+  `list_comments`, and `save_comment` into it (the checked-in vanilla
+  templates are unchanged). `without_linear_write_tools` also drops the bare
+  `mcp__<server>` grant and wildcard entries that match a write tool
+  (`fnmatch.fnmatchcase`, such as `mcp__<server>__*`, `mcp__*`, or `*`).
+  Both PR #270 findings are fixed; awaits audit.
 
 ## Open Followups
 

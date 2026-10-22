@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import os
 from pathlib import Path
 import re
@@ -903,13 +904,27 @@ def _with_linear_tools(
 LINEAR_WRITE_TOOLS: tuple[str, ...] = ("save_comment", "save_issue")
 
 
+def _grants_any(entry: str, removed: frozenset[str], server_grant: str) -> bool:
+    """Return True when an allowlist entry would grant a removed tool.
+
+    Matches exact names, the bare ``mcp__<server>`` server grant, and wildcard
+    entries such as ``mcp__<server>__*``, ``mcp__*``, or ``*``.
+    """
+
+    if entry in removed or entry == server_grant:
+        return True
+    return any(fnmatch.fnmatchcase(tool, entry) for tool in removed)
+
+
 def _without_tools(
-    agent_config: AgentConfig, removed: frozenset[str]
+    agent_config: AgentConfig, removed: frozenset[str], server_grant: str = ""
 ) -> AgentConfig:
     if agent_config.provider != "claude" or agent_config.unsafe_bypass:
         return agent_config
     base = agent_config.claude_allowed_tools
-    kept = tuple(tool for tool in base if tool not in removed)
+    kept = tuple(
+        tool for tool in base if not _grants_any(tool, removed, server_grant)
+    )
     if kept == base:
         return agent_config
     derived = agent_config.model_copy(update={"allowed_tools": kept})
@@ -926,15 +941,20 @@ def without_linear_write_tools(
 
     Removes ``mcp__<mcp_server>__save_comment`` and ``save_issue`` from a
     Claude launch's allowlist, so a report-only validator launch can read
-    Linear but cannot change it. Other providers, ``unsafe_bypass`` launches,
-    and allowlists without those tools come back unchanged.
+    Linear but cannot change it. Entries that would still grant a write tool
+    go too: the bare ``mcp__<mcp_server>`` server grant and wildcard entries
+    that match a write tool, such as ``mcp__<mcp_server>__*``,
+    ``mcp__<mcp_server>__save_*``, ``mcp__*``, or ``*``. Other providers,
+    ``unsafe_bypass`` launches, and allowlists without such entries come back
+    unchanged.
     """
 
     removed = frozenset(f"mcp__{mcp_server}__{tool}" for tool in LINEAR_WRITE_TOOLS)
-    updated = _without_tools(agent_config, removed)
+    server_grant = f"mcp__{mcp_server}"
+    updated = _without_tools(agent_config, removed, server_grant)
     fallback = agent_config.fallback
     if fallback is not None:
-        stripped_fallback = _without_tools(fallback, removed)
+        stripped_fallback = _without_tools(fallback, removed, server_grant)
         if stripped_fallback is not fallback:
             private = updated._claude_mcp_config
             grants = updated._interpreter_grants

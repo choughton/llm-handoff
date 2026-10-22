@@ -1627,6 +1627,58 @@ def test_without_linear_write_tools_drops_save_issue_and_keeps_others(
     assert stripped.uses_default_allowed_tools is False
 
 
+@pytest.mark.parametrize(
+    "grant",
+    [
+        "mcp__team-linear",
+        "mcp__team-linear__*",
+        "mcp__team-linear__save_*",
+        "mcp__team-linear__save_comment*",
+        "mcp__*",
+        "*",
+    ],
+)
+def test_without_linear_write_tools_drops_wildcard_write_grants(grant: str) -> None:
+    fallback = config_module.AgentConfig(
+        provider="claude", model="other", allowed_tools=("Read", grant)
+    )
+    agent = config_module.AgentConfig(
+        provider="claude",
+        allowed_tools=(
+            "Read",
+            "Bash(git status:*)",
+            grant,
+            "mcp__team-linear__get_issue",
+            "mcp__team-linear__list_*",
+            "mcp__other__*",
+        ),
+        fallback=fallback,
+    )
+
+    stripped = config_module.without_linear_write_tools(agent, "team-linear")
+
+    assert stripped.claude_allowed_tools == (
+        "Read",
+        "Bash(git status:*)",
+        "mcp__team-linear__get_issue",
+        "mcp__team-linear__list_*",
+        "mcp__other__*",
+    )
+    assert stripped.fallback is not None
+    assert stripped.fallback.claude_allowed_tools == ("Read",)
+    # The source config keeps its grants for routed repair turns.
+    assert grant in agent.claude_allowed_tools
+
+
+def test_without_linear_write_tools_keeps_other_server_wildcards() -> None:
+    agent = config_module.AgentConfig(
+        provider="claude",
+        allowed_tools=("Read", "mcp__linear-docs__*", "mcp__linear__list_*"),
+    )
+
+    assert config_module.without_linear_write_tools(agent, "linear") is agent
+
+
 def test_without_linear_write_tools_leaves_other_launches_unchanged() -> None:
     codex = config_module.AgentConfig(provider="codex")
     bypass = config_module.AgentConfig(

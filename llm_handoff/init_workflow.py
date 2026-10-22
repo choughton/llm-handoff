@@ -97,12 +97,15 @@ _VALIDATOR_AGENT_PATH = Path(".claude/agents/handoff-validator.md")
 # the validator's `mcp__<tracker.mcp_server>__*` tools after them.
 _VALIDATOR_BASE_TOOLS = "Read, Grep, Glob, Bash"
 # Claude subagent files whose `tools:` allowlist Linear init rewrites
-# (handoff-validator, planner, tpm, frontend, backend, auditor, and
-# ledger-updater), mapped to (role whose Linear tools are appended, built-in
-# tools kept in every mode). A subagent's `tools:` list is an allowlist, so
-# without the appended names the subagent cannot call the Linear MCP tools its
-# role launch allows. Each base string must equal the template's `tools:` line
-# without its `mcp__*` entries.
+# (handoff-validator, handoff-router, planner, tpm, frontend, backend, auditor,
+# and ledger-updater), mapped to (role whose Linear tools are appended,
+# built-in tools kept in every mode). A subagent's `tools:` list is an
+# allowlist, so without the appended names the subagent cannot call the Linear
+# MCP tools its role launch allows. Each base string must equal the template's
+# `tools:` line without its `mcp__*` entries. The dispatcher runs
+# handoff-router for a `next_agent: validator` handoff, so it gets the
+# validator's tools.
+_ROUTER_AGENT_PATH = Path(".claude/agents/handoff-router.md")
 _PLANNER_AGENT_PATH = Path(".claude/agents/planner.md")
 _TPM_AGENT_PATH = Path(".claude/agents/tpm.md")
 _FRONTEND_AGENT_PATH = Path(".claude/agents/frontend.md")
@@ -115,6 +118,7 @@ _AUDITOR_BASE_TOOLS = "Read, Grep, Glob, Bash"
 _FINALIZER_BASE_TOOLS = "Read, Edit, Write, Grep, Glob, Bash"
 _LINEAR_AGENT_TOOLS: dict[Path, tuple[str, str]] = {
     _VALIDATOR_AGENT_PATH: ("validator", _VALIDATOR_BASE_TOOLS),
+    _ROUTER_AGENT_PATH: ("validator", _VALIDATOR_BASE_TOOLS),
     _PLANNER_AGENT_PATH: ("planner", _WRITER_BASE_TOOLS),
     _TPM_AGENT_PATH: ("tpm", _WRITER_BASE_TOOLS),
     _FRONTEND_AGENT_PATH: ("frontend", _WRITER_BASE_TOOLS),

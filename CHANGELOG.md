@@ -15,7 +15,12 @@ This project follows a simple pre-release changelog until the first public tag.
   gets a comment-only `save_comment` grant (no `save_issue`) and posts only on
   a repair turn; report-only turns post nothing, and a Claude report-only
   validator launch drops `save_comment` and `save_issue` from its allowlist
-  (`without_linear_write_tools`). In Linear mode
+  (`without_linear_write_tools`), along with the bare `mcp__<server>` grant
+  and any wildcard entry that matches a write tool, such as
+  `mcp__<server>__*`, `mcp__*`, or `*`. `llm-handoff init --tracker linear`
+  renders the validator's Linear tools into `.claude/agents/handoff-router.md`
+  too, since the dispatcher runs that subagent for `next_agent: validator`
+  handoffs. In Linear mode
   `_run_validator` appends `dispatcher_authored=true` or
   `dispatcher_authored=false` to the validator prompt from the recorded
   dispatcher-handoff digest, and the evidence check skips the routing

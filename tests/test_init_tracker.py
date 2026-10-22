@@ -689,11 +689,13 @@ def test_linear_changes_only_config_agents_handbook_and_subagent_tools(
         FINALIZER_AGENT,
         # TIDY-15: Linear init appends the validator's `save_comment`.
         VALIDATOR_AGENT,
+        # TIDY-15: handoff-router runs `next_agent: validator` handoffs.
+        ROUTER_AGENT,
     }
 
 
-# Claude planner, tpm, frontend, backend, auditor, and finalizer subagent tools
-# lines gain their role's Linear MCP tools, since a subagent's `tools:` list
+# Claude planner, tpm, frontend, backend, auditor, finalizer, and router
+# subagent tools lines gain their role's Linear MCP tools, since a subagent's `tools:` list
 # is an allowlist.
 
 PLANNER_AGENT = Path(".claude/agents/planner.md")
@@ -702,6 +704,9 @@ FRONTEND_AGENT = Path(".claude/agents/frontend.md")
 BACKEND_AGENT = Path(".claude/agents/backend.md")
 AUDITOR_AGENT = Path(".claude/agents/auditor.md")
 FINALIZER_AGENT = Path(".claude/agents/ledger-updater.md")
+# The dispatcher runs handoff-router for `next_agent: validator`, so it gets
+# the validator's Linear tools.
+ROUTER_AGENT = Path(".claude/agents/handoff-router.md")
 _WRITER_TOOLS = b"tools: Read, Edit, Write, Grep, Glob, Bash"
 _AUDITOR_TOOLS = b"tools: Read, Grep, Glob, Bash"
 _FINALIZER_TOOLS = b"tools: Read, Edit, Write, Grep, Glob, Bash"
@@ -830,6 +835,7 @@ def test_claude_provider_linear_init_adds_planner_linear_tools(
         BACKEND_AGENT,
         AUDITOR_AGENT,
         FINALIZER_AGENT,
+        ROUTER_AGENT,
     ],
 )
 def test_vanilla_init_keeps_linear_subagent_templates(
@@ -908,6 +914,40 @@ def test_validator_rerun_on_custom_server_output_is_skipped(tmp_path: Path) -> N
     assert VALIDATOR_AGENT in result.skipped
     assert VALIDATOR_AGENT not in result.conflicts
     assert (tmp_path / VALIDATOR_AGENT).read_bytes() == agent
+
+
+@pytest.mark.parametrize("server", ["linear", "team-linear"])
+def test_router_tools_line_adds_validator_linear_tools(
+    tmp_path: Path, server: str
+) -> None:
+    _linear(tmp_path, tracker_mcp_server=server)
+    prefix = f"mcp__{server}__".encode()
+    line = _single_changed_line(tmp_path, ROUTER_AGENT, _AUDITOR_TOOLS)
+    assert line == _AUDITOR_TOOLS + b"".join(
+        b", " + prefix + tool
+        for tool in (b"get_issue", b"list_issues", b"list_comments", b"save_comment")
+    )
+    assert b"save_issue" not in line
+    # handoff-router and handoff-validator carry the same Linear grants.
+    validator_tools = [
+        raw
+        for raw in (tmp_path / VALIDATOR_AGENT).read_bytes().splitlines()
+        if raw.startswith(b"tools: ")
+    ]
+    assert validator_tools == [line]
+
+
+@pytest.mark.parametrize("server", ["linear", "team-linear"])
+def test_router_rerun_on_linear_output_is_skipped(
+    tmp_path: Path, server: str
+) -> None:
+    _linear(tmp_path, tracker_mcp_server=server)
+    agent = (tmp_path / ROUTER_AGENT).read_bytes()
+    (tmp_path / CONFIG).unlink()
+    result = _linear(tmp_path, tracker_mcp_server=server, dry_run=True)
+    assert ROUTER_AGENT in result.skipped
+    assert ROUTER_AGENT not in result.conflicts
+    assert (tmp_path / ROUTER_AGENT).read_bytes() == agent
 
 
 def test_validator_render_preserves_crlf_line_ending() -> None:
