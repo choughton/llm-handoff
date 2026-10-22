@@ -885,6 +885,72 @@ def test_run_loop_pauses_cleanly_for_escalation_or_unknown(
     assert any(expected_fragment in message for _, message in log_messages)
 
 
+def test_run_loop_spots_a_free_form_edit_at_a_pause_and_routes_it_as_today(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    escalation = """---
+next_agent: user
+reason: "Human decision required."
+status: escalate_to_user
+producer: planner
+---
+
+## Question
+
+Which story should run next?
+"""
+    repo_root, handoff_path = _write_repo(tmp_path, escalation)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, poll_interval_seconds=1)
+    log_messages: list[tuple[str, str]] = []
+    sleeps: list[float] = []
+
+    class _StopPolling(Exception):
+        pass
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 1:
+            handoff_path.write_text("I made the edits.\n", encoding="utf-8")
+            return
+        raise _StopPolling
+
+    monkeypatch.setattr(orchestrator.time, "sleep", sleep)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_support_role",
+        lambda subagent_name, prompt, log=None: _subagent_result(),
+    )
+
+    with pytest.raises(_StopPolling):
+        orchestrator.run_loop(
+            config,
+            log=lambda level, message: log_messages.append((level, message)),
+        )
+
+    assert log_messages.count(("INFO", "Operator edited HANDOFF.md.")) == 1
+    # HUMAN-1 only observes: the free-form edit still pauses on the
+    # unknown route, as before.
+    assert any(
+        "No routing instruction found" in message for _, message in log_messages
+    )
+    # This checkout is not a Git repository, so nothing is saved, and the
+    # log says why instead of claiming a snapshot.
+    assert not (
+        repo_root / "logs" / "dispatch" / "operator-edit" / "previous-handoff.md"
+    ).exists()
+    assert not any(
+        message.startswith("Saved the previous valid handoff")
+        for _, message in log_messages
+    )
+    assert any(
+        level == "WARN"
+        and message.startswith("Could not save the previous valid handoff")
+        for level, message in log_messages
+    )
+
+
 def test_run_loop_runs_handoff_validator_before_pausing_on_unknown_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
