@@ -7,9 +7,13 @@ This project follows a simple pre-release changelog until the first public tag.
 ## Unreleased
 
 - The dispatcher spots operator edits of `HANDOFF.md`. It records each
-  handoff version a role or the dispatcher itself wrote, and a version it did
-  not write, seen at a cycle start (before repair or normalization) or when
-  a pause ends, logs `Operator edited HANDOFF.md.` once. The last valid
+  handoff version a role or the dispatcher itself wrote at the moment it is
+  written (each dispatcher write, and each agent run when it returns), and a
+  version it did not write, seen at a cycle start (before repair or
+  normalization), at a cycle end, or when a pause begins or ends, logs
+  `Operator edited HANDOFF.md.` once. An edit made while validation, the
+  work-claim gate, review, or publishing runs is therefore an edit too, not
+  the role's handback. The last valid
   handoff the dispatcher observed before the edit is saved to
   `logs/dispatch/operator-edit/previous-handoff.md` through the carry-over
   record's link-resistant writer; an invalid edit never replaces that valid

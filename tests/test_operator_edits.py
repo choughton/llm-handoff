@@ -571,6 +571,130 @@ def test_invalid_role_output_is_not_an_operator_edit(
     assert not _snapshot(repo).exists()
 
 
+def test_an_edit_while_post_dispatch_work_runs_is_spotted_not_taken_as_the_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    roles = _Roles(
+        monkeypatch,
+        backend_writes=[BACKEND_ESCALATES],
+        planner_writes=[USER_ESCALATION],
+    )
+    validations: list[str] = []
+
+    def validate_while_the_operator_edits(*_args: Any, **_kwargs: Any) -> ValidationResult:
+        validations.append("validate")
+        if len(validations) == 1:
+            # The operator replaces the backend's handback while the
+            # dispatcher is still validating it.
+            _write(_handoff(repo), OPERATOR_TO_PLANNER)
+        return ValidationResult(verdict="YES", warnings=[], errors=[])
+
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate_while_the_operator_edits)
+    logs = _Logs()
+
+    exit_code = orchestrator.run_loop(_config(repo), max_cycles=2, log=logs)
+
+    assert exit_code == 0
+    # The valid operator edit routes as today.
+    assert roles.calls == ["backend", "planner"]
+    assert logs.edits() == 1
+    # Spotted when cycle 1 ends, not taken as the backend's write.
+    assert logs.entries.index(EDIT_LOG) < logs.entries.index(
+        ("INFO", "--- End of cycle 1 ---")
+    )
+    # The backend's handback, recorded when the backend returned.
+    assert _snapshot(repo).read_text(encoding="utf-8") == BACKEND_ESCALATES
+
+
+def _active_watch(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> orchestrator._OperatorEditWatch:
+    watch = orchestrator._OperatorEditWatch(_config(repo))
+    assert watch.config is not None
+    watch.observe(content, watch.config, _Logs())
+    monkeypatch.setattr(orchestrator, "_ACTIVE_OPERATOR_EDIT_WATCH", watch)
+    return watch
+
+
+def test_a_dispatcher_write_is_recorded_when_it_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", USER_ESCALATION)
+    watch = _active_watch(repo, monkeypatch, USER_ESCALATION)
+    assert watch.config is not None
+    logs = _Logs()
+
+    orchestrator._write_dispatcher_handoff(watch.config, OPERATOR_TO_PLANNER)
+
+    assert watch.observe_on_disk(watch.config, logs) is None
+    assert watch.valid_content == OPERATOR_TO_PLANNER
+    assert logs.entries == []
+    assert not _snapshot(repo).exists()
+
+
+def test_a_support_agent_write_is_recorded_when_the_agent_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", USER_ESCALATION)
+    watch = _active_watch(repo, monkeypatch, USER_ESCALATION)
+    assert watch.config is not None
+    logs = _Logs()
+
+    def support_writes(_name: str, _prompt: str, **_kwargs: Any) -> SubagentResult:
+        _write(_handoff(repo), OPERATOR_TO_PLANNER)
+        return SubagentResult(stdout="", stderr="", exit_code=0, elapsed_seconds=0.01)
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", support_writes)
+
+    orchestrator._invoke_support_callable(
+        "handoff-validator",
+        "prompt",
+        handoff_path=watch.config.handoff_full_path,
+        repo_root=repo,
+    )
+
+    assert watch.observe_on_disk(watch.config, logs) is None
+    assert logs.entries == []
+    # A later change nobody in the loop wrote is still an edit.
+    _write(_handoff(repo), FREE_FORM)
+    edit = watch.observe_on_disk(watch.config, logs)
+    assert edit is not None and edit.previous_valid == OPERATOR_TO_PLANNER
+    assert logs.edits() == 1
+
+
+def test_write_hooks_record_nothing_outside_a_run_or_for_another_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", USER_ESCALATION)
+    watch = _active_watch(repo, monkeypatch, USER_ESCALATION)
+    assert watch.config is not None
+    observed = watch.observed_sha
+    _write(_handoff(repo), OPERATOR_TO_PLANNER)
+
+    # A write to another file does not claim the handoff's change.
+    orchestrator._record_loop_handoff_write(repo / "PROJECT_STATE.md")
+    assert watch.observed_sha == observed
+
+    # Outside a run, no watch records anything.
+    monkeypatch.setattr(orchestrator, "_ACTIVE_OPERATOR_EDIT_WATCH", None)
+    orchestrator._record_loop_handoff_write(watch.config.handoff_full_path)
+    assert watch.observed_sha == observed
+
+    assert watch.observe_on_disk(watch.config, _Logs()) is not None
+
+
+def test_run_loop_clears_its_watch_when_it_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    _Roles(monkeypatch, backend_writes=[BACKEND_ESCALATES])
+
+    orchestrator.run_loop(_config(repo), max_cycles=1, log=_Logs())
+
+    assert orchestrator._ACTIVE_OPERATOR_EDIT_WATCH is None
+
+
 def test_a_run_that_starts_on_an_edited_file_takes_it_as_the_baseline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
