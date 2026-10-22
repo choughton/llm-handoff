@@ -18,9 +18,13 @@ This project follows a simple pre-release changelog until the first public tag.
   `user` one plain question. When no previous handoff was observed or saving
   it failed, the instruction says so instead of pointing at the snapshot
   file. The pass runs once per edit: a planner that leaves the edit
-  unchanged or writes an invalid handback gets no producer repair, cleanup
-  pass, or pause recovery for it, and the dispatcher pauses for the
-  operator; a new operator edit gets its own pass. Valid operator edits,
+  unchanged, writes an invalid handback, or exits nonzero gets no producer
+  repair, cleanup pass, pause recovery, or ordinary routing for it, and the
+  dispatcher pauses for the operator, including after a retry at the
+  prompt. The attempt ends only when a handoff passes full post-dispatch
+  validation (frontmatter that parses but fails it, such as a planner
+  self-loop, keeps it spent), a followed chat takeover replaces it, or a new
+  operator edit gets its own pass. Valid operator edits,
   invalid role-written handoffs, and the run's starting handoff keep their
   existing handling, and `--dry-run` only logs the decision.
 - The dispatcher spots operator edits of `HANDOFF.md`. It records each

@@ -987,6 +987,22 @@ FREE_FORM_ROUTING = """next_agent: backend
 - **backend:** Run story one again; I fixed the tests.
 """
 
+# A planner handback whose frontmatter parses and routes, so the watch's
+# frontmatter check accepts it, but which fails full post-dispatch
+# validation: a planner dispatch may not route back to the planner.
+PLANNER_SELF_LOOP = """---
+next_agent: planner
+reason: "Continue planning."
+producer: planner
+---
+
+## Next Step
+
+- **planner:** Continue planning.
+"""
+
+PLANNER_SELF_LOOP_ERROR = "planner_self_loop: the planner routed back to itself."
+
 INVALID_EDITS = pytest.mark.parametrize(
     "edit",
     [FREE_FORM, MALFORMED_YAML, INVALID_USER_FRONTMATTER, FREE_FORM_ROUTING],
@@ -1050,9 +1066,35 @@ def test_an_invalid_edit_is_offered_for_one_interpretation(
     watch.accept(FREE_FORM_AGAIN, config)
     assert watch.edit_to_interpret(FREE_FORM_AGAIN, config) is None
     assert watch.interpretation_exhausted(FREE_FORM_AGAIN, config)
-    # A valid handoff ends it.
+    # Recording output with valid frontmatter does not end it: full
+    # post-dispatch validation has not passed yet.
     watch.accept(BACKEND_ESCALATES, config)
+    assert watch.interpretation_exhausted(BACKEND_ESCALATES, config)
+    # A handoff that passes full validation ends it.
+    watch.release_interpretation()
     assert not watch.interpretation_exhausted(BACKEND_ESCALATES, config)
+
+
+def test_frontmatter_valid_output_keeps_the_attempt_spent(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "repo", USER_ESCALATION)
+    watch, config = _watch(repo)
+    logs = _Logs()
+    watch.observe(USER_ESCALATION, config, logs)
+    edit = watch.observe(FREE_FORM, config, logs)
+    assert edit is not None
+    watch.mark_interpreted(edit)
+
+    # A validation pass on the operator's unchanged edit is not a result.
+    watch.release_interpretation()
+    assert watch.interpretation_exhausted(FREE_FORM, config)
+
+    # A planner self-loop parses and routes, but fails full validation.
+    assert orchestrator._operator_edit_watch_valid(PLANNER_SELF_LOOP, config)
+    watch.accept(PLANNER_SELF_LOOP, config)
+
+    assert watch.interpreted_edit is edit
+    assert watch.edit_to_interpret(PLANNER_SELF_LOOP, config) is None
+    assert watch.interpretation_exhausted(PLANNER_SELF_LOOP, config)
 
 
 def test_a_role_write_is_never_replayed_as_the_last_edit(tmp_path: Path) -> None:
@@ -1364,6 +1406,143 @@ def test_an_invalid_planner_handback_pauses_without_another_recovery(
     assert not any("producer repair" in text for _level, text in logs.entries)
     assert not any(
         "Pause recovery: scheduling" in text for _level, text in logs.entries
+    )
+
+
+def _planner_fails_full_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    def validate(_path: Path, previous_agent: str, **_kwargs: Any) -> ValidationResult:
+        if previous_agent == "planner":
+            return ValidationResult(
+                verdict="NO", warnings=[], errors=[PLANNER_SELF_LOOP_ERROR]
+            )
+        return ValidationResult(verdict="YES", warnings=[], errors=[])
+
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+
+
+def test_a_frontmatter_valid_handback_that_fails_validation_stays_spent_on_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    roles = _Roles(
+        monkeypatch,
+        backend_writes=[BACKEND_ESCALATES],
+        planner_writes=[PLANNER_SELF_LOOP],
+    )
+    _planner_fails_full_validation(monkeypatch)
+    monkeypatch.setattr(orchestrator, "_operator_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_operator_input_stream", lambda: io.StringIO())
+    answers = [OperatorAction(kind="retry"), OperatorAction(kind="quit")]
+    waits: list[str] = []
+
+    def operator_retries_then_quits(*_args: Any, **_kwargs: Any) -> Any:
+        waits.append("wait")
+        return answers.pop(0)
+
+    monkeypatch.setattr(
+        orchestrator,
+        "wait_for_operator_or_handoff_change",
+        operator_retries_then_quits,
+    )
+    logs = _Logs()
+
+    def log(level: str, text: str) -> None:
+        logs(level, text)
+        if text == "--- End of cycle 1 ---":
+            _write(_handoff(repo), FREE_FORM)
+
+    exit_code = orchestrator.run_loop(
+        _config(repo, poll_interval_seconds=1, pause_recovery="planner"),
+        max_cycles=6,
+        log=log,
+    )
+
+    assert exit_code == 0
+    assert waits == ["wait", "wait"]
+    # The retry on the unchanged planner output gets no second planner pass
+    # and no ordinary routing of the self-loop.
+    assert roles.calls == ["backend", "planner"]
+    assert _interpretations(logs) == 1
+    pauses = [text for level, text in logs.entries if level == "PAUSE"]
+    assert any(
+        text.startswith("OPERATOR EDIT NOT INTERPRETED:")
+        and "failed validation: planner_self_loop" in text
+        for text in pauses
+    )
+    assert any(
+        text.startswith(
+            "OPERATOR EDIT NOT INTERPRETED: the planner's one interpretation "
+            "of the operator's HANDOFF.md edit did not leave a handoff that "
+            "passed validation"
+        )
+        for text in pauses
+    )
+    assert _handoff(repo).read_text(encoding="utf-8") == PLANNER_SELF_LOOP
+    assert not any(
+        "Pause recovery: scheduling" in text for _level, text in logs.entries
+    )
+
+
+def test_a_nonzero_planner_exit_pauses_instead_of_routing_its_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    roles = _Roles(monkeypatch, backend_writes=[BACKEND_ESCALATES])
+    _planner_fails_full_validation(monkeypatch)
+
+    def failing_planner(path: Path, **kwargs: Any) -> DispatchResult:
+        roles.calls.append("planner")
+        roles.planner_instructions.append(kwargs.get("additional_instruction"))
+        path.write_text(PLANNER_SELF_LOOP, encoding="utf-8")
+        return DispatchResult(stdout="", stderr="", exit_code=1, elapsed_seconds=0.01)
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", failing_planner)
+    logs = _Logs()
+
+    def log(level: str, text: str) -> None:
+        logs(level, text)
+        if text == "--- End of cycle 1 ---":
+            _write(_handoff(repo), FREE_FORM)
+
+    # The failure budget allows another cycle; it must not dispatch the
+    # planner again through ordinary routing.
+    exit_code = orchestrator.run_loop(
+        _config(repo, max_consecutive_failures=5, pause_recovery="planner"),
+        max_cycles=6,
+        log=log,
+    )
+
+    assert exit_code == 0
+    assert roles.calls == ["backend", "planner"]
+    assert _interpretations(logs) == 1
+    assert ("PAUSE", orchestrator.OPERATOR_EDIT_EXHAUSTED_PAUSE_REASON) in logs.entries
+    assert _handoff(repo).read_text(encoding="utf-8") == PLANNER_SELF_LOOP
+
+
+def test_a_validated_interpretation_releases_the_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    roles = _Roles(
+        monkeypatch,
+        backend_writes=[BACKEND_ESCALATES, BACKEND_ESCALATES],
+        planner_writes=[ASSIGN_BACKEND],
+    )
+    logs = _Logs()
+
+    def log(level: str, text: str) -> None:
+        logs(level, text)
+        if text == "--- End of cycle 1 ---":
+            _write(_handoff(repo), FREE_FORM)
+
+    exit_code = orchestrator.run_loop(_config(repo), max_cycles=3, log=log)
+
+    assert exit_code == 0
+    # The planner's validated assignment routes normally afterwards.
+    assert roles.calls == ["backend", "planner", "backend"]
+    assert _interpretations(logs) == 1
+    assert ("PAUSE", orchestrator.OPERATOR_EDIT_EXHAUSTED_PAUSE_REASON) not in (
+        logs.entries
     )
 
 

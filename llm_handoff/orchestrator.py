@@ -567,7 +567,8 @@ OPERATOR_EDIT_NO_PREVIOUS = (
 )
 OPERATOR_EDIT_EXHAUSTED_PAUSE_REASON = (
     "OPERATOR EDIT NOT INTERPRETED: the planner's one interpretation of the "
-    "operator's HANDOFF.md edit did not leave a valid handoff, and the "
+    "operator's HANDOFF.md edit did not leave a handoff that passed "
+    "validation, and the "
     "dispatcher does not retry it automatically. Edit HANDOFF.md or answer at "
     "the operator prompt; dispatch will resume after the file changes."
 )
@@ -921,6 +922,9 @@ def _run_loop_cycles(
             if takeover.story_baseline_known:
                 story_baseline = takeover.story_baseline
             if takeover.kind == "followed":
+                # The operator's chat rewrite passed validation and
+                # supersedes a spent operator-edit interpretation.
+                edit_watch.release_interpretation()
                 previous_cycle = takeover_cycle
                 consecutive_failures = 0
                 if max_cycles is not None and cycle_number >= max_cycles:
@@ -2891,6 +2895,10 @@ def _run_loop_cycles(
                 prior_handoff_content=story_check_baseline,
                 project_state_path=config.project_state_full_path,
             )
+            if validation_result.verdict != "NO":
+                # HUMAN-2: only a handoff that passes full validation ends a
+                # spent operator-edit interpretation attempt.
+                edit_watch.release_interpretation()
             story_baseline = _next_story_baseline(
                 config, validation_result, story_check_baseline
             )
@@ -3014,6 +3022,7 @@ def _run_loop_cycles(
                         ),
                     )
                     if validation_result.verdict != "NO":
+                        edit_watch.release_interpretation()
                         if forced_additional_instruction is None:
                             pause_recovery_used = False
                             operator_prompt.planner_tried = False
@@ -11725,12 +11734,20 @@ class _OperatorEditWatch:
         # edit is never replayed against content someone else wrote.
         self._edit_current = False
         # The edit that got its one planner interpretation (HUMAN-2). Kept
-        # until a valid version is recorded or a new edit is observed, so an
-        # unchanged file or an invalid planner handback gets no second pass.
+        # until a handoff passes full post-dispatch validation
+        # (``release_interpretation``) or a new edit is observed, so an
+        # unchanged file, an invalid planner handback, or a planner run that
+        # exits nonzero gets no second pass. Recording a version
+        # (``accept``) never releases it: frontmatter that parses and routes
+        # can still fail full validation, for example as a planner self-loop.
         self.interpreted_edit: OperatorEdit | None = None
 
     def accept(self, content: str, config: DispatchConfig) -> None:
-        """Record a version a role or the dispatcher wrote; never an edit."""
+        """Record a version a role or the dispatcher wrote; never an edit.
+
+        Does not release a spent interpretation attempt; only full
+        post-dispatch validation does (``release_interpretation``).
+        """
 
         content_sha = _content_sha(content)
         if content_sha == self.observed_sha:
@@ -11745,7 +11762,6 @@ class _OperatorEditWatch:
             ),
         ):
             self.valid_content = content
-            self.interpreted_edit = None
 
     def edit_to_interpret(
         self, content: str, config: DispatchConfig
@@ -11775,17 +11791,31 @@ class _OperatorEditWatch:
 
         self.interpreted_edit = edit
 
-    def interpretation_exhausted(self, content: str, config: DispatchConfig) -> bool:
-        """True when the one interpretation ran and ``content`` is still invalid.
+    def release_interpretation(self) -> None:
+        """End a spent attempt: a handoff passed full post-dispatch validation.
 
-        Holds until a valid version is recorded or a new edit is observed.
+        Also called when an operator-directed chat takeover is followed. The
+        operator's edit still on disk unchanged is not an interpretation
+        result, so the attempt stays spent then.
+        """
+
+        if self._edit_current:
+            return
+        self.interpreted_edit = None
+
+    def interpretation_exhausted(self, content: str, config: DispatchConfig) -> bool:
+        """True when the one interpretation ran and nothing has accepted it.
+
+        ``content`` is the version last observed. Holds, whatever that
+        version's frontmatter, until a handoff passes full post-dispatch
+        validation (``release_interpretation``) or a new operator edit is
+        observed: output that only looks valid, or a planner run that exited
+        nonzero, never falls through to ordinary routing.
         """
 
         if self.interpreted_edit is None:
             return False
-        if _content_sha(content) != self.observed_sha:
-            return False
-        return not _operator_edit_watch_valid(content, config)
+        return _content_sha(content) == self.observed_sha
 
     def accept_on_disk(self, config: DispatchConfig) -> None:
         content = _operator_edit_watch_read(config)
