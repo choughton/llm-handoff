@@ -175,7 +175,10 @@ such as `.claude/` files), follow the handbook's Operator Stories contract.
 Before you write the handoff, write the edits as an artifact under
 `logs/dispatch/operator/<story id>/`: complete file contents at
 `files/<target path>`, or one applyable patch, `changes.patch`, that
-`git apply` accepts from the repository root. A prose description of the
+`git apply` accepts from the repository root. When a target path contains a
+`.claude` segment, write `changes.patch` instead of `files/<target path>`,
+because Claude Code's `dontAsk` mode refuses writes to any path with a
+`.claude` segment. A prose description of the
 edits, or a fenced diff with no artifact, does not satisfy this. In the
 handoff, name the artifact path and give one command block, written for the
 operator's shell and run from the repository root, that applies it; the
