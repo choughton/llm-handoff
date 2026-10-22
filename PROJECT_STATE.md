@@ -638,6 +638,64 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   path; list it in Files in scope. Files: `dispatch_config.example.yaml`,
   `CHANGELOG.md`.
 
+### 21. HUMAN-EDITS - the planner makes sense of a free-form HANDOFF.md
+
+Fit: operator experience; pick it right after TRANSITION-RULES closes.
+Nothing blocks it. Operator direction (2026-10-22): `HANDOFF.md` is meant to
+be human-readable, so it must be human-editable too. An operator should be
+able to replace the whole file with a plain sentence such as "I made the
+edits" and have the planner work out what happened, instead of having to
+write valid frontmatter.
+
+Why: on 2026-10-22 the operator finished the TRANS-6 `.claude/` operator
+story by hand and the loop rejected it four ways. Edits copied out of
+Markdown carried a stray `python` line from a code fence and missed one
+change; the commit included `HANDOFF.md`, which blocks the operator-commit
+publish; and the hand-written frontmatter paired `status: escalate_to_user`
+with `next_agent: auditor`. Today an invalid but parseable handoff gets a
+cleanup-only planner pass, and the operator has to know to type a precise
+sentence at the prompt instead. Nothing tells the planner that a person
+wrote the change or what the handoff said before it.
+
+- HUMAN-1: Spot an operator edit. The dispatcher already knows the handoff
+  hash each dispatch left; a change it did not make, seen between
+  dispatches or while paused at the operator prompt, is an operator edit.
+  Save the last valid handoff the dispatcher saw (for example
+  `logs/dispatch/operator-edit/previous-handoff.md`, written with the
+  existing link-resistant writer) and log `Operator edited HANDOFF.md`.
+  Valid operator edits route as today.
+- HUMAN-2: Route an invalid or free-form operator edit to the planner. When
+  the edited file has no frontmatter, unparseable frontmatter, or
+  frontmatter that fails validation, dispatch the planner once with the
+  operator's text (quoted with the operator-text delimiters from HARD-2),
+  the saved previous handoff, and an instruction to inspect Git state (new
+  commits since the previous handoff, uncommitted files, branch) and write
+  a valid handoff for what the operator meant. This replaces the
+  cleanup-only pass for operator edits; role-written invalid handoffs keep
+  today's path. If the planner cannot tell, it routes to `user` with one
+  plain question. `--dry-run` prints the decision only.
+- HUMAN-3: Finish operator stories from a note. When the previous handoff
+  routed an operator story to `user`, the planner instruction also says to
+  check the commit shape the operator-commit publish needs (base branch,
+  exactly one non-merge commit ahead of `<remote>/<base_branch>`, the commit
+  does not change `HANDOFF.md`, nothing else uncommitted) and to compare the
+  commit against the story's requested edits. A clean commit routes to
+  `auditor` with the right `close_type` and `scope_sha`; anything off routes
+  to `user` naming each problem and the exact fix in plain words.
+- HUMAN-4: Hand the operator something applyable. A planner or tpm that
+  routes an operator story to `user` also writes the edits as full file
+  contents or an applyable patch under `logs/dispatch/operator/`, plus one
+  copy-paste command block, instead of prose edits inside Markdown fences,
+  and the handoff says the operator may answer with a plain sentence once
+  done. Update the role prompts (`.agents/`, `.codex/`, handbook, reference
+  copies); the Claude prompts are HUMAN-6.
+- HUMAN-5: Docs. README and `docs/handoff/HANDBOOK.md` say an operator may
+  edit `HANDOFF.md` in plain words at any pause, what the planner then does,
+  and that frontmatter is optional for a person; CONFIGURATION.md documents
+  the saved previous handoff and the routing.
+- HUMAN-6: Operator edit of the Claude planner and tpm agents (routes to
+  `user`) for HUMAN-3 and HUMAN-4, root and reference-workflow copies.
+
 ## Open Followups
 
 Promoted to HARDENING stories and removed below: AUDIT-COST (a),
