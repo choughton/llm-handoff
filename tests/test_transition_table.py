@@ -24,6 +24,10 @@ from llm_handoff.validator import validate_handoff_frontmatter, validate_handoff
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HANDBOOK = REPO_ROOT / "docs" / "handoff" / "HANDBOOK.md"
+# `llm-handoff init` distributes this copy, so it must carry the same contract.
+REFERENCE_HANDBOOK = (
+    REPO_ROOT / "examples" / "reference-workflow" / "docs" / "handoff" / "HANDBOOK.md"
+)
 TABLE_ANCHOR = "docs/handoff/HANDBOOK.md#transition-table"
 
 OMITTED = "(omitted)"
@@ -256,11 +260,22 @@ def _replace_in_row(text: str, row_prefix: str, old: str, new: str) -> str:
 # Parity
 
 
-def test_transition_table_matches_the_validator() -> None:
-    table = parse_transition_table(_handbook_text())
+@pytest.mark.parametrize(
+    "handbook", [HANDBOOK, REFERENCE_HANDBOOK], ids=["root", "reference"]
+)
+def test_transition_table_matches_the_validator(handbook: Path) -> None:
+    table = parse_transition_table(handbook.read_text(encoding="utf-8"))
 
     assert set(table) == REQUIRED_ROWS
     assert transition_table_mismatches(table) == []
+
+
+def test_the_distributed_handbook_carries_the_same_transition_table() -> None:
+    root = _SECTION_RE.search(_handbook_text())
+    reference = _SECTION_RE.search(REFERENCE_HANDBOOK.read_text(encoding="utf-8"))
+
+    assert root is not None and reference is not None
+    assert reference.group(1) == root.group(1)
 
 
 @pytest.mark.parametrize(
