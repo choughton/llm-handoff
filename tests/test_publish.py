@@ -6207,17 +6207,105 @@ def test_a_review_bounce_with_tracker_fields_passes_the_linear_lease_checks() ->
     )
     leased = _plain_state(story_id="LIN-9", tracker_issue="LIN-9", tracker_url=LINEAR_URL)
 
-    result = validate_handoff_text(_bounce(leased), "validator", tracker_provider="linear")
+    # The dispatcher wrote the bounce, so its verified_fail is trusted.
+    result = validate_handoff_text(
+        _bounce(leased),
+        "validator",
+        tracker_provider="linear",
+        dispatcher_authored=True,
+    )
 
     assert not [
         error for error in result.errors if error.startswith(lease_errors)
     ], result.errors
+    assert not [
+        error
+        for error in result.errors
+        if error.startswith("frontmatter_status_producer_rule:")
+    ], result.errors
 
-    # Without the saved fields, Linear mode still rejects the bounce.
+    # Without the saved fields, Linear mode still rejects the bounce; the
+    # dispatcher_authored flag waives no lease check.
     bare = validate_handoff_text(
-        _bounce(_plain_state(story_id="LIN-9")), "validator", tracker_provider="linear"
+        _bounce(_plain_state(story_id="LIN-9")),
+        "validator",
+        tracker_provider="linear",
+        dispatcher_authored=True,
     )
     assert any(error.startswith("tracker_issue_missing") for error in bare.errors)
+    assert any(error.startswith("tracker_url_missing") for error in bare.errors)
+
+
+def _builder_frontmatter_errors(
+    handoff: str, *, dispatcher_authored: bool, tracker_provider: str = "none"
+) -> list[str]:
+    from llm_handoff.router import parse_handoff_frontmatter_text
+    from llm_handoff.validator import validate_handoff_frontmatter
+
+    parsed = parse_handoff_frontmatter_text(handoff)
+    assert parsed is not None
+    return validate_handoff_frontmatter(
+        parsed,
+        tracker_provider=tracker_provider,
+        dispatcher_authored=dispatcher_authored,
+    ).errors
+
+
+@pytest.mark.parametrize(
+    ("build", "next_agent", "status"),
+    [(_bounce, "backend", "verified_fail"), (_deferred, "planner", "verified_pass")],
+)
+def test_generated_review_handoffs_pass_dispatcher_authored_validation(
+    build, next_agent: str, status: str
+) -> None:
+    from llm_handoff.router import parse_handoff_frontmatter_text
+
+    plain = build(_plain_state())
+    parsed = parse_handoff_frontmatter_text(plain)
+    assert parsed is not None
+    assert (parsed.next_agent, parsed.status, parsed.producer) == (
+        next_agent,
+        status,
+        "validator",
+    )
+
+    assert _builder_frontmatter_errors(plain, dispatcher_authored=True) == []
+    leased = build(
+        _plain_state(
+            story_id="LIN-9",
+            tracker_issue="LIN-9",
+            tracker_url=LINEAR_URL,
+            selection_basis="priority",
+        )
+    )
+    assert (
+        _builder_frontmatter_errors(
+            leased, dispatcher_authored=True, tracker_provider="linear"
+        )
+        == []
+    )
+
+    # Agent output with the same frontmatter gets no such trust.
+    untrusted = _builder_frontmatter_errors(plain, dispatcher_authored=False)
+    assert [
+        error
+        for error in untrusted
+        if error.startswith("frontmatter_status_producer_rule:")
+    ] == [
+        "frontmatter_status_producer_rule: producer `validator` cannot emit "
+        f"status `{status}`; only the auditor approves or fails work, and only "
+        "dispatcher-written handoffs carry a validator verdict."
+    ]
+
+
+def test_operator_review_bounce_passes_either_validation() -> None:
+    # An operator story's bounce pauses with escalate_to_user, which needs
+    # no verdict permission.
+    handoff = _bounce(_plain_state(implementer="user"))
+
+    assert "status: escalate_to_user\n" in handoff
+    assert _builder_frontmatter_errors(handoff, dispatcher_authored=True) == []
+    assert _builder_frontmatter_errors(handoff, dispatcher_authored=False) == []
 
 
 @pytest.mark.parametrize("build", [_bounce, _deferred])

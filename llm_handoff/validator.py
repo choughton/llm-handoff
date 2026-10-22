@@ -102,6 +102,13 @@ _VERIFIED_STATUSES = (
     HandoffStatus.VERIFIED_PASS.value,
     HandoffStatus.VERIFIED_FAIL.value,
 )
+# `producer: validator` names the validator role and the dispatcher's own
+# handoffs (review bounces, deferred findings, work-claim bounces, and
+# protected-file escalations). It never claims work for review, closes an
+# epic, or hands to the finalizer. Only a caller that knows it is checking
+# dispatcher-written content (`dispatcher_authored=True`) may let it carry a
+# verdict status.
+_VALIDATOR_ALWAYS_REJECTED_STATUSES = (HandoffStatus.READY_FOR_REVIEW.value,)
 _REQUIRED_EVIDENCE_FIELDS = {
     "Commands run",
     "Output summary",
@@ -174,7 +181,16 @@ def validate_handoff_frontmatter(
     *,
     git_cwd: Path | None = None,
     tracker_provider: str = "none",
+    dispatcher_authored: bool = False,
 ) -> ValidationResult:
+    """Validate handoff frontmatter on its own.
+
+    Set `dispatcher_authored` only when the caller itself built the handoff
+    (a dispatcher bounce or escalation). It lets `producer: validator` carry
+    `verified_pass` or `verified_fail`; it is never inferred from the
+    handoff's own fields, and it waives no other check.
+    """
+
     producer = parsed.producer or "unknown producer"
     errors: list[str] = []
     warnings: list[str] = []
@@ -290,10 +306,17 @@ def validate_handoff_frontmatter(
         errors.extend(_finalizer_producer_errors(parsed, normalized_next_agent))
     elif normalized_producer == "auditor":
         errors.extend(_auditor_producer_errors(parsed, normalized_next_agent))
-    elif normalized_producer != "validator" and parsed.producer:
-        # Validator-produced handoffs keep their behavior until TRANS-3 adds
-        # the dispatcher_authored flag. A missing producer is already
-        # reported as frontmatter_producer_missing.
+    elif normalized_producer == "validator":
+        errors.extend(
+            _validator_producer_errors(
+                parsed,
+                normalized_next_agent,
+                dispatcher_authored=dispatcher_authored,
+            )
+        )
+    elif parsed.producer:
+        # A missing producer is already reported as
+        # frontmatter_producer_missing.
         errors.extend(_verified_status_producer_errors(parsed))
 
     status_conflict = status_next_agent_conflict(parsed)
@@ -438,12 +461,52 @@ def _auditor_producer_errors(
     return errors
 
 
+def _validator_producer_errors(
+    parsed: HandoffRouting,
+    normalized_next_agent: str | None,
+    *,
+    dispatcher_authored: bool,
+) -> list[str]:
+    """Errors for a `producer: validator` handoff.
+
+    A validator handoff may route anywhere except `finalizer`, never sets
+    `close_type: epic`, and never emits `ready_for_review`. It carries
+    `verified_pass` or `verified_fail` only when `dispatcher_authored` is
+    set by a caller validating content the dispatcher wrote itself.
+    """
+
+    errors: list[str] = []
+    if normalized_next_agent == "finalizer":
+        errors.append(
+            "frontmatter_routing_rule: producer `validator` cannot route to "
+            "next_agent `finalizer`; only the auditor approves an epic close."
+        )
+    if parsed.close_type == "epic":
+        errors.append(
+            "frontmatter_routing_rule: producer `validator` emitted close_type "
+            "`epic`; only the auditor approves an epic close."
+        )
+    if parsed.status in _VALIDATOR_ALWAYS_REJECTED_STATUSES:
+        errors.append(
+            "frontmatter_status_producer_rule: producer `validator` cannot emit "
+            f"status `{parsed.status}`; only an implementer claims work for "
+            "review."
+        )
+    elif parsed.status in _VERIFIED_STATUSES and not dispatcher_authored:
+        errors.append(
+            "frontmatter_status_producer_rule: producer `validator` cannot emit "
+            f"status `{parsed.status}`; only the auditor approves or fails "
+            "work, and only dispatcher-written handoffs carry a validator "
+            "verdict."
+        )
+    return errors
+
+
 def _verified_status_producer_errors(parsed: HandoffRouting) -> list[str]:
     """Errors for a verdict status from a producer that gives no verdicts.
 
     Covers planner, user, and unrecognized producers. Implementer, tpm,
-    finalizer, and auditor producers have their own rules, and validator
-    producers stay exempt until TRANS-3.
+    finalizer, auditor, and validator producers have their own rules.
     """
 
     if parsed.status not in _VERIFIED_STATUSES:
@@ -637,6 +700,7 @@ def validate_handoff(
     tracker_provider: str = "none",
     prior_handoff_content: str | None = None,
     project_state_path: Path | None = None,
+    dispatcher_authored: bool = False,
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
     project_state_content = (
@@ -654,6 +718,7 @@ def validate_handoff(
         tracker_provider=tracker_provider,
         prior_handoff_content=prior_handoff_content,
         project_state_content=project_state_content,
+        dispatcher_authored=dispatcher_authored,
     )
 
 
@@ -668,6 +733,7 @@ def validate_handoff_text(
     tracker_provider: str = "none",
     prior_handoff_content: str | None = None,
     project_state_content: str | None = None,
+    dispatcher_authored: bool = False,
 ) -> ValidationResult:
     """Validate a post-dispatch handoff.
 
@@ -676,6 +742,10 @@ def validate_handoff_text(
     With `project_state_content`, story IDs the project state file never names
     are warnings; Linear mode skips that check because the tracker holds the
     stories.
+
+    `dispatcher_authored` is for callers checking a handoff the dispatcher
+    wrote itself; agent output is always validated with it false. See
+    `validate_handoff_frontmatter()`.
     """
 
     normalized_content = handoff_content.lstrip("\ufeff")
@@ -719,6 +789,7 @@ def validate_handoff_text(
                 frontmatter,
                 git_cwd=git_cwd,
                 tracker_provider=tracker_provider,
+                dispatcher_authored=dispatcher_authored,
             )
             errors.extend(frontmatter_result.errors)
             warnings.extend(frontmatter_result.warnings)

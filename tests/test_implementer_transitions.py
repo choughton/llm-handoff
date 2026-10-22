@@ -202,7 +202,9 @@ def test_implementer_legal_handbacks_pass(
         ("auditor", "backend", "verified_fail"),
         ("auditor", "planner", "verified_pass"),
         ("planner", "frontend", None),
-        ("validator", "backend", "verified_fail"),
+        # A validator verdict needs dispatcher_authored (TRANS-3); its
+        # routes to an implementer stay open.
+        ("validator", "backend", None),
         ("user", "planner", None),
     ],
 )

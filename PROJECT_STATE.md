@@ -23,8 +23,13 @@ belong in commits, handoffs, and pull requests.
   only to `auditor`, `planner`, or `user`, and never emit `verified_pass`,
   `verified_fail`, or `close_type: epic`) was merged in PR #249 at
   `7e061a2`. TRANS-2 (auditor and finalizer producers, per the planner's
-  2026-10-21 TRANS-2/TRANS-3 boundary decision recorded in epic 17) is
-  implemented and awaiting audit. TRANS-3 through TRANS-6 remain.
+  2026-10-21 TRANS-2/TRANS-3 boundary decision recorded in epic 17) was
+  approved at `bb5a247` and merged in PR #250 at `99c8bbd`. TRANS-3
+  (validator producer: keyword-only `dispatcher_authored` flag on the three
+  validation entry points; validator verdicts need it, and
+  `ready_for_review`, `next_agent: finalizer`, and `close_type: epic` stay
+  rejected) is implemented and awaiting audit. TRANS-4 through TRANS-6
+  remain.
 - **GROOMING (closed):** GROOM-5, the epic's last story,
   was approved at `6e24d98` and merged in PR #247 at `211bbfd`.
   GROOMING history (opened by the planner after CHAT closed at
