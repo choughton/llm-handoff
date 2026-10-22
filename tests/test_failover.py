@@ -78,6 +78,14 @@ def _codex_with_claude_fallback() -> AgentConfig:
         ('{"type":"result","is_error":true,"result":"usage limit reached"}', "", "rate_limit"),
         ("", "You've hit your usage limit. Try again later.", "rate_limit"),
         ("", "API Error: 529 overloaded_error", "rate_limit"),
+        # agy's stored result error when the account quota is used up.
+        (
+            "",
+            "Antigravity result status=ERROR: Individual quota reached. Please "
+            "upgrade your subscription to increase your limits. Resets in "
+            "72h11m35s.",
+            "rate_limit",
+        ),
         ("", "Invalid API key - please run /login", "auth"),
         ("", "[WinError 2] The system cannot find the file specified", "launch"),
         ("", "codex: command not found", "launch"),
@@ -119,6 +127,66 @@ def test_classify_fatal_failure_ignores_ordinary_failures(
 
 
 # --- role failover ---------------------------------------------------------
+
+
+def test_agy_quota_failure_fails_over_before_the_loop_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from llm_handoff.agent_providers import antigravity
+    from llm_handoff.agent_types import _ProcessResult
+
+    quota_message = (
+        "Individual quota reached. Please upgrade your subscription to "
+        "increase your limits. Resets in 72h11m35s."
+    )
+    stdout = json.dumps(
+        {"event": "result", "result": {"status": "ERROR", "error": {"message": quota_message}}}
+    )
+    monkeypatch.setattr(
+        antigravity,
+        "_run_command_streaming",
+        lambda *_args, **_kwargs: _ProcessResult(
+            stdout=stdout + "\n", stderr="", exit_code=3
+        ),
+    )
+    claude = Mock(return_value=_subagent(0, stdout="done", elapsed=2.0))
+    monkeypatch.setattr(agent_roles, "invoke_claude_subagent", claude)
+    agent_config = AgentConfig(
+        provider="antigravity",
+        fallback=AgentConfig(provider="claude", model="claude-sonnet-4-6"),
+    )
+    logs: list[tuple[str, str]] = []
+
+    result = agent_roles.invoke_role(
+        "planner",
+        _handoff(tmp_path),
+        agent_config=agent_config,
+        log=lambda level, message: logs.append((level, message)),
+        repo_root=tmp_path,
+    )
+
+    assert claude.call_count == 1
+    assert result.exit_code == 0
+    assert any(
+        "rate or usage limit. Failing over to claude" in message
+        for level, message in logs
+        if level == "WARN"
+    )
+    dispatch_config = DispatchConfig(repo_root=tmp_path)
+    dispatch_config.agents["planner"] = agent_config
+    assert (
+        orchestrator._stop_on_quota_exhaustion(
+            dispatch_config,
+            role="planner",
+            exit_code=result.exit_code,
+            stderr=result.stderr,
+            log=lambda level, message: logs.append((level, message)),
+        )
+        is False
+    )
 
 
 def test_invoke_role_fails_over_after_primary_timeout(

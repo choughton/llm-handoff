@@ -4703,13 +4703,15 @@ def _interrupt_finalizer(
     commit: tuple[str, ...] = (),
     other_file: bool = False,
     new_branch: str | None = None,
+    completed_work: bool = False,
     **config_overrides: Any,
 ) -> None:
     """Run one finalizer dispatch that is interrupted mid-dispatch.
 
     The finalizer optionally switches to ``new_branch``, writes ``leave`` to
     the handoff (leaves it alone with ``_KEEP``), writes the ledger with
-    ``ledger`` or ``commit``, changes src/api.py with ``other_file``, commits
+    ``ledger`` or ``commit``, writes COMPLETED_WORK.md with ``completed_work``
+    or when ``commit`` names it, changes src/api.py with ``other_file``, commits
     the paths in ``commit``, and is then interrupted; the record stays.
     """
 
@@ -4720,6 +4722,8 @@ def _interrupt_finalizer(
             (repo_root / HANDOFF_RELATIVE_PATH).write_text(leave, encoding="utf-8")
         if ledger or commit:
             _write(repo_root / "PROJECT_STATE.md", PARTIAL_LEDGER)
+        if completed_work or "COMPLETED_WORK.md" in commit:
+            _write(repo_root / "COMPLETED_WORK.md", PARTIAL_LEDGER)
         if other_file:
             _write(repo_root / "src" / "api.py", "API = 'finalizer'\n")
         if commit:
@@ -4999,6 +5003,54 @@ def test_an_agent_mode_finalizer_may_commit_the_handoff_with_the_ledger(
     assert handoff.read_text(encoding="utf-8") == FINISHED_FINALIZER_HANDOFF
 
 
+def test_a_dispatcher_mode_finalizer_may_commit_both_ledger_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(
+        tmp_path,
+        orchestrator,
+        monkeypatch,
+        leave=FINISHED_FINALIZER_HANDOFF,
+        commit=("PROJECT_STATE.md", "COMPLETED_WORK.md"),
+    )
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery()
+    assert [level for level, _message in messages] == ["INFO"]
+    assert "finished writing a valid handoff" in messages[0][1]
+    assert not _record_path(tmp_path).exists()
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+
+
+def test_an_uncommitted_completed_work_edit_keeps_the_finalizer_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    _interrupt_finalizer(
+        tmp_path, orchestrator, monkeypatch, leave=_KEEP, completed_work=True
+    )
+    original = _record_path(tmp_path).read_text(encoding="utf-8")
+    _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input="y\n")
+    messages: list[tuple[str, str]] = []
+
+    outcome = _recover(orchestrator, tmp_path, messages)
+
+    assert outcome == orchestrator.InterruptedDispatchRecovery(stop=True)
+    assert [level for level, _message in messages] == ["ERROR"]
+    assert "partial ledger edit" in messages[0][1]
+    assert "COMPLETED_WORK.md" in messages[0][1]
+    assert _record_path(tmp_path).read_text(encoding="utf-8") == original
+
+
 @pytest.mark.parametrize(
     ("commit_mode", "extra", "rejected"),
     [
@@ -5184,6 +5236,24 @@ def test_an_ignored_ledger_absent_from_head_counts_as_uncommitted(
 
     assert (
         orchestrator._project_state_has_uncommitted_changes(_config(tmp_path))
+        is True
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a separator on Windows")
+def test_a_backslash_completed_work_path_is_checked_literally_on_posix(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    config = _config(tmp_path, completed_work_path=r"docs\DONE.md")
+    # On POSIX the configured spelling is one file name with a backslash.
+    _write(tmp_path / r"docs\DONE.md", PARTIAL_LEDGER)
+
+    assert (
+        orchestrator._project_state_has_uncommitted_changes(
+            config, config.completed_work_path
+        )
         is True
     )
 

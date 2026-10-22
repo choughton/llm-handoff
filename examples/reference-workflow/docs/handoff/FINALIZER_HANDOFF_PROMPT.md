@@ -10,6 +10,9 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 - Update `PROJECT_STATE.md` if the consuming repo uses that file. Add every
   story that `remaining_stories` names and `PROJECT_STATE.md` does not list
   yet, so planned work outlives the handoff.
+- Keep `PROJECT_STATE.md` to current work: move the closed epic's section and
+  the status notes about it to `COMPLETED_WORK.md`, and append its ledger line
+  there. Create `COMPLETED_WORK.md` if it does not exist.
 - Rewrite `docs/handoff/HANDOFF.md` so the next cycle routes to `planner` or `user`.
 - Do not scope the next epic yourself.
 - After an epic close, route to `planner` in both configurations, with or

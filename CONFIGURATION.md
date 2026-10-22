@@ -13,6 +13,7 @@ for a copyable example shape.
 ```yaml
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
+completed_work_path: COMPLETED_WORK.md
 backend_resume: true
 planner_resume: true
 
@@ -56,8 +57,9 @@ The nested path is the recommended default because it leaves room for handoff
 examples, archive files, and prompt handoff helpers. The flat path is useful for
 small repos that prefer fewer directories.
 
-Both `handoff_path` and `project_state_path` must be relative paths that stay
-inside the repository. Config load rejects an empty value, a value with
+`handoff_path`, `project_state_path`, and `completed_work_path` must be
+relative paths that stay inside the repository, and `completed_work_path`
+must name a different file than the other two. Config load rejects an empty value, a value with
 control characters, an absolute path (`/x` or `\x`), a UNC path
 (`\\server\share` or `//server/share`), a drive-letter path (`C:\x`, `C:/x`,
 or `C:x`), a value with a `..` segment, a value that names the repository root
@@ -77,6 +79,23 @@ at an existing file if their workflow already uses one. The finalizer prompt
 names this configured path when it tells the finalizer which file to update
 and commit, and tells it to add every story that `remaining_stories` names and
 this file does not list yet.
+
+## Completed Work Path
+
+Recommended default:
+
+```yaml
+completed_work_path: COMPLETED_WORK.md
+```
+
+This file keeps closed work out of the project state file, which every
+planner, tpm, and auditor run reads in full. On each epic close the finalizer
+moves the closed epic's section (its intro, `Fit:` line, and story list) and
+the status notes about it from `project_state_path` to this file, appends one
+ledger line for the epic under `## Completed Scope Ledger`, and creates the
+file when it is missing. It commits both files together; in dispatcher commit
+mode it commits only these two and leaves `HANDOFF.md` uncommitted. Roles read
+this file only when they need history.
 
 After each dispatch, the post-dispatch gate warns
 (`remaining_story_not_in_project_state`) when `remaining_stories` names a
@@ -849,16 +868,18 @@ protected-baseline checks as a `planner` record, then:
 
 - a. Git is compared with the record's HEAD and branch, read-only, in any
   commit mode. A finalizer may commit only the project state file
-  (`project_state_path`), plus the handoff in agent commit mode, where it
-  commits both atomically. A branch switch, history that is not a descendant
+  (`project_state_path`) and the completed work file
+  (`completed_work_path`), plus the handoff in agent commit mode, where it
+  commits them atomically. A branch switch, history that is not a descendant
   of the record's HEAD, a record HEAD that is not a commit, or a commit since
   that HEAD that changes any other file (in dispatcher commit mode, the
   handoff included) logs one `ERROR` line naming the commits and files and
   stops before any dispatch, keeping the record. The dispatcher never resets
   or rewrites Git for a finalizer record. Otherwise commits since the
   record's HEAD count as a ledger commit.
-- b. When the project state file differs from HEAD in the working tree or
-  index, including a rename or deletion of it (or Git cannot tell), the
+- b. When the project state file or the completed work file differs from
+  HEAD in the working tree or index, including a rename or deletion of it (or
+  Git cannot tell), the
   interrupted finalizer may have left a partial ledger edit. The index entry
   and the file on disk are compared with HEAD's blob directly, so an edit
   hidden from `git status` by `assume-unchanged`, `skip-worktree`, or an
@@ -1904,6 +1925,27 @@ it as a sign-in failure: the loop stops and logs `agy` sign-in steps (run
 Only the Antigravity adapter checks for that phrase; output from other
 providers that says `authentication required` gets normal failure handling.
 
+When an `agy` run fails because the account quota is used up, every `agy`
+dispatch fails the same way until the quota resets, so the dispatcher stops
+instead of spending `max_consecutive_failures` on retries. The adapter logs
+the result event's error text at ERROR level for any non-`SUCCESS` result.
+If that error or `agy`'s stderr contains `RESOURCE_EXHAUSTED`, `code 429`, or
+`quota reached` (case-insensitive), the adapter appends a line starting
+`agy account quota is exhausted:` to stderr. The loop then stops and logs an
+ERROR naming the role, the provider, the reset time when `agy` gave one (for
+example `Resets in 72h11m35s`), and the fix: wait for the reset, or map the
+role to another provider under `agents.<role>` in the dispatch config, then
+start the dispatcher again. An out-of-quota resumed run is not rerun fresh.
+A role with a `fallback` fails over first, since `quota reached` and the
+appended line count as a rate or usage limit; the loop stops only when the
+result it gets still carries the line. The markers were taken from `agy`
+1.4.4's own log (`RESOURCE_EXHAUSTED (code 429): Individual quota reached.
+...`) and its stored result error (`Individual quota reached. ...`), so both
+the result error and stderr are checked. The reset time `agy` reports does not
+mean every request fails until then: a small `agy -p` request has succeeded
+inside that window, so the limit may block only larger requests. Only the Antigravity adapter checks
+them; quota text from other providers gets normal failure handling.
+
 Antigravity-mapped roles need these entries in
 `~/.gemini/antigravity-cli/settings.json`. Under `permissions.allow`, one
 anchored regex grant per command, so each covers the command with any
@@ -2586,11 +2628,11 @@ the work-claim gate off, switch `commit_mode` back to `agent` as well, and
 expect the sandbox to block the implementer's commit. It does not take the
 commit off the finalizer: in that mode the
 finalizer is told to commit only the project state file
-(`project_state_path`) and leave `HANDOFF.md` uncommitted, and the dispatcher
-does not commit the state update for it. If the sandbox blocks the
-finalizer's commit, the finalizer reports no commit SHA, the dispatcher
-pauses, and you commit the project state file (`project_state_path`)
-yourself.
+(`project_state_path`) and the completed work file (`completed_work_path`)
+and leave `HANDOFF.md` uncommitted, and the dispatcher does not commit the
+state update for it. If the sandbox blocks the finalizer's commit, the
+finalizer reports no commit SHA, the dispatcher pauses, and you commit those
+two files yourself.
 
 A fresh `codex exec` run returns the role's final message as a
 `{status, summary}` JSON envelope. For the `validator` and `finalizer`

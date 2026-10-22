@@ -313,6 +313,7 @@ def test_init_reference_workflow_copies_template_files(tmp_path: Path) -> None:
     assert result.conflicts == ()
     assert (tmp_path / "AGENTS.md").is_file()
     assert (tmp_path / "PROJECT_STATE.md").is_file()
+    assert (tmp_path / "COMPLETED_WORK.md").is_file()
     assert (tmp_path / "dispatch_config.yaml").is_file()
     assert (tmp_path / "docs" / "handoff" / "HANDOFF.md").is_file()
     assert (tmp_path / ".codex" / "skills" / "llm-handoff" / "SKILL.md").is_file()

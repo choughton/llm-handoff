@@ -34,6 +34,8 @@ prompted.
   Edit.
 - If a command is refused, rewrite it as one allowed command. A refusal does
   not mean the shell is unavailable.
+- `CHANGELOG.md` is long. To check an entry, read the diff or Read only the
+  file's top (`limit: 40`); do not read the whole file.
 
 ## Audit Rules
 

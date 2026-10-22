@@ -7,7 +7,8 @@ These instructions apply to this repository when it is using `llm-handoff`.
 This repo uses a file-based dispatch loop:
 
 - `docs/handoff/HANDOFF.md` is the live handoff state.
-- `PROJECT_STATE.md` is the durable project state file.
+- `PROJECT_STATE.md` is the durable project state file. It holds current
+  work; closed epics and their ledger lines live in `COMPLETED_WORK.md`.
 - Git commit SHAs are the durable record of completed work.
 - Prompts are advisory; validators are authoritative.
 - Ambiguous routing fails closed and routes to `validator` or `user`.

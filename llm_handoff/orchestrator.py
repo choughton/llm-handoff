@@ -116,7 +116,12 @@ from llm_handoff.in_flight import (
     load_in_flight_record,
 )
 from llm_handoff.no_record_recovery import find_no_record_candidates
-from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
+from llm_handoff.provider_auth import (
+    auth_failure_messages,
+    find_auth_failure,
+    find_quota_exhaustion,
+    quota_exhaustion_messages,
+)
 from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
     ReviewPromptFn,
@@ -1704,6 +1709,14 @@ def _run_loop(
                 log=log_fn,
             ):
                 return 1
+            if _stop_on_quota_exhaustion(
+                config,
+                role="finalizer",
+                exit_code=int(getattr(ledger_result, "subagent_exit_code", 0)),
+                stderr=ledger_result.stderr,
+                log=log_fn,
+            ):
+                return 1
             parse_error = ledger_result.parse_error
             if parse_error:
                 pause_diagnosis = _run_epic_close_validator(
@@ -2419,6 +2432,14 @@ def _run_loop(
                 role=current_cycle.route,
                 exit_code=dispatch_result.exit_code,
                 stdout=dispatch_result.stdout,
+                stderr=dispatch_result.stderr,
+                log=log_fn,
+            ):
+                return 1
+            if _stop_on_quota_exhaustion(
+                config,
+                role=current_cycle.route,
+                exit_code=dispatch_result.exit_code,
                 stderr=dispatch_result.stderr,
                 log=log_fn,
             ):
@@ -4821,6 +4842,39 @@ def _stop_on_auth_failure(
         detail=detail,
     ):
         _log(log, "ERROR", message)
+    return True
+
+
+def _stop_on_quota_exhaustion(
+    config: DispatchConfig,
+    *,
+    role: str,
+    exit_code: int,
+    stderr: str | None,
+    log: LogFn,
+) -> bool:
+    """Log the quota stop and return True when a failed run hit a used-up quota.
+
+    Only the agy adapter appends the quota line, and a configured fallback
+    has already run by the time the loop sees the result. Every retry would
+    fail the same way until the quota resets, so the loop stops instead of
+    spending its failure budget.
+    """
+
+    if exit_code == 0:
+        return False
+    detail = find_quota_exhaustion(stderr)
+    if detail is None:
+        return False
+    agent_config = config.agents.get(role)  # type: ignore[call-overload]
+    for message in quota_exhaustion_messages(
+        role=role,
+        provider=agent_config.provider if agent_config is not None else None,
+        binary=agent_config.binary if agent_config is not None else None,
+        detail=detail,
+    ):
+        # `detail` is agy's own error text, so it may echo a secret.
+        _log(log, "ERROR", redact_secrets(message))
     return True
 
 
@@ -9729,7 +9783,10 @@ def _interrupted_finalizer_git_state(
         return rewritten
     commits = tuple(listed.split())
     files = tuple(sorted({entry for entry in changed.split("\0") if entry}))
-    allowed = {normalize_repo_path(config.project_state_path.as_posix())}
+    allowed = {
+        normalize_repo_path(config.project_state_path.as_posix()),
+        normalize_repo_path(config.completed_work_path.as_posix()),
+    }
     if config.commit_mode != "dispatcher":
         allowed.add(normalize_repo_path(config.handoff_path.as_posix()))
     others = [path for path in files if normalize_repo_path(path) not in allowed]
@@ -9753,8 +9810,13 @@ def _interrupted_finalizer_git_state(
     return _InterruptedFinalizerGitState(commits=commits, files=files)
 
 
-def _project_state_has_uncommitted_changes(config: DispatchConfig) -> bool | None:
-    """Whether the project state file differs from HEAD in the index or tree.
+def _project_state_has_uncommitted_changes(
+    config: DispatchConfig, path: Path | None = None
+) -> bool | None:
+    """Whether a ledger file differs from HEAD in the index or tree.
+
+    ``path`` is the repository-relative file to check; it defaults to the
+    project state file. The finalizer also writes the completed work file.
 
     Asks ``git status`` about that one literal path with rename detection
     off, so a staged or unstaged rename away from the file still reports
@@ -9770,7 +9832,9 @@ def _project_state_has_uncommitted_changes(config: DispatchConfig) -> bool | Non
     """
 
     repo_root = config.repo_root
-    state_rel = normalize_repo_path(config.project_state_path.as_posix())
+    # The configured spelling, not normalize_repo_path(): on POSIX a
+    # backslash is part of the file name, so `docs\DONE.md` names one file.
+    state_rel = (path if path is not None else config.project_state_path).as_posix()
     literal = ":(literal)" + state_rel
     output = _run_git_stdout_raw(
         repo_root,
@@ -9897,10 +9961,17 @@ def _recover_interrupted_finalizer(
         )
         return InterruptedDispatchRecovery(stop=True)
     ledger_committed = bool(git_state.commits)
-    project_state_display = _escape_control_characters(
-        normalize_repo_path(config.project_state_path.as_posix())
-    )
-    ledger_dirty = _project_state_has_uncommitted_changes(config)
+    # The finalizer writes both ledger files; the first one that is dirty, or
+    # that Git cannot check, is the one the message names.
+    ledger_dirty: bool | None = False
+    project_state_display = ""
+    for ledger_path in (config.project_state_path, config.completed_work_path):
+        project_state_display = _escape_control_characters(
+            normalize_repo_path(ledger_path.as_posix())
+        )
+        ledger_dirty = _project_state_has_uncommitted_changes(config, ledger_path)
+        if ledger_dirty is None or ledger_dirty:
+            break
     if ledger_dirty is None or ledger_dirty:
         reason = (
             "Git could not list uncommitted files, so the dispatcher cannot "

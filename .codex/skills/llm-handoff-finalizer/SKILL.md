@@ -19,6 +19,11 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 4. The project state file named in the dispatcher prompt (`PROJECT_STATE.md` by default), if present
 5. `git log --oneline -10`
 
+Do not read `CHANGELOG.md` whole; it is long. To add an entry, read only its
+first 40 lines (`head -n 40 CHANGELOG.md` in a POSIX shell,
+`Get-Content CHANGELOG.md -TotalCount 40` in PowerShell) and add the bullet
+first under `## Unreleased`.
+
 ## Preconditions
 
 Proceed only when the handoff clearly shows:
@@ -33,6 +38,8 @@ If any precondition is missing, do not update project state. Rewrite `docs/hando
 ## State Update
 
 If the project state file named in the dispatcher prompt exists, update it according to the consuming repository's local instructions. Keep the edit focused on the closed scope, next active scope, and durable commit references.
+
+Keep the project state file to current work. Move the closed epic's section (its intro, `Fit:` line, and story list) and the status notes about it to the completed work file named in the dispatcher prompt (`COMPLETED_WORK.md` by default), and append one ledger line there for the closed scope with its durable commit references. Create the completed work file with a `## Completed Scope Ledger` section if it does not exist. Commit it together with the project state file.
 
 If the project state file named in the dispatcher prompt does not exist, create a minimal one only when `AGENTS.md` or `docs/handoff/HANDOFF.md` explicitly says this repository uses it. Otherwise, leave project state unchanged and route to `planner` or `user` with a clear reason.
 
@@ -87,11 +94,11 @@ The dispatcher does not commit the finalizer's state update; the finalizer
 commits it itself. What it commits depends on `commit_mode`:
 
 - `commit_mode: dispatcher`: the dispatcher says so in its prompt. Commit only
-  the project state file named in the dispatcher prompt and leave
-  `docs/handoff/HANDOFF.md` uncommitted. The dispatcher undoes a commit that
+  the project state file and the completed work file named in the
+  dispatcher prompt, and leave `docs/handoff/HANDOFF.md` uncommitted. The dispatcher undoes a commit that
   holds only the handoff and stops the loop on a commit that mixes the
   handoff with other files.
-- Otherwise: commit the project state file named in the dispatcher prompt and
+- Otherwise: commit the project state file, the completed work file, and
   `docs/handoff/HANDOFF.md` together.
 
 Codex keeps `.git` read-only inside its sandbox, so `git add` and
@@ -100,9 +107,9 @@ does not let git writes out of the sandbox, and it forbids `git push`. If you
 are sandboxed and the commit fails, do not work around the sandbox: leave the
 changes uncommitted, do not invent a commit SHA, write `COMMIT SHA: NONE`,
 and say under `CHANGES MADE` that the sandbox blocked the commit and which
-files the operator must commit: the project state file named in the
-dispatcher prompt alone in dispatcher commit mode, else the project state
-file named in the dispatcher prompt and `docs/handoff/HANDOFF.md`. The
+files the operator must commit: the project state and completed work files
+named in the dispatcher prompt in dispatcher commit mode, else those files
+and `docs/handoff/HANDOFF.md`. The
 dispatcher pauses when the commit SHA is missing, so a person commits the
 files before the loop continues.
 

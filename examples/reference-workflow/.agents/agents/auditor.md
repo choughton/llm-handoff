@@ -39,6 +39,8 @@ prompted, and the refusal fails the dispatch.
 - Use `view_file`, `list_dir`, `grep_search`, and `find_by_name` to read,
   list, and search files instead of shell commands such as `cat`, `ls`,
   or `find`.
+- `CHANGELOG.md` is long. To check an entry, read the diff or `view_file`
+  only its first 40 lines; do not read the whole file.
 
 ## Audit Rules
 

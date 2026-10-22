@@ -190,6 +190,26 @@ def test_supervisor_optional_repair_role_restarts_after_scoped_commit(
     assert packet["repair_role"] == "validator"
 
 
+def test_supervisor_failure_policy_stops_on_agy_quota_exhaustion() -> None:
+    supervisor = _load_supervisor_module()
+
+    policy = supervisor._failure_policy(
+        supervisor.DispatchProcessResult(
+            exit_code=1,
+            output_lines=(
+                "planner could not run: the antigravity (`agy`) account quota "
+                "is exhausted; it resets in 72h11m35s (Individual quota reached.).",
+                "Retrying will not help until the quota resets, so the dispatch "
+                "loop stops here.",
+            ),
+            elapsed_seconds=0.1,
+        )
+    )
+
+    assert policy.action == "stop"
+    assert policy.reason == "quota_exhausted"
+
+
 def test_supervisor_failure_policy_uses_specific_auth_and_network_markers() -> None:
     supervisor = _load_supervisor_module()
 

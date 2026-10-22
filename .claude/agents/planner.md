@@ -34,6 +34,8 @@ prompted.
   Edit.
 - If a command is refused, rewrite it as one allowed command. A refusal does
   not mean the shell is unavailable.
+- `CHANGELOG.md` is long. To add an entry, Read only its top (`limit: 40`)
+  and add the bullet first under `## Unreleased`; do not read the whole file.
 
 ## Boundaries
 

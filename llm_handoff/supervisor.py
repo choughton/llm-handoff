@@ -40,7 +40,11 @@ from llm_handoff.config import (
 # The PATH lookup (with the Windows .cmd fallback) is shared with the
 # standalone `llm-handoff doctor` command.
 from llm_handoff.doctor import _command_available, _command_binary_name  # noqa: F401
-from llm_handoff.provider_auth import AUTH_FAILURE_MARKERS, AUTH_FAILURE_PATTERNS
+from llm_handoff.provider_auth import (
+    AUTH_FAILURE_MARKERS,
+    AUTH_FAILURE_PATTERNS,
+    QUOTA_EXHAUSTED_MARKER,
+)
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.router import route as route_handoff
 from llm_handoff.text_io import read_dispatch_text
@@ -82,6 +86,8 @@ _REPAIRABLE_ZERO_EXIT_MARKERS = (
 # Shared with the orchestrator, which stops on the same sign-in failures.
 _AUTH_FAILURE_MARKERS = AUTH_FAILURE_MARKERS
 _AUTH_FAILURE_PATTERNS = AUTH_FAILURE_PATTERNS
+# Shared with the orchestrator, which stops when an agy account quota is used up.
+_QUOTA_EXHAUSTED_MARKERS = (QUOTA_EXHAUSTED_MARKER,)
 _TRANSIENT_FAILURE_MARKERS = (
     "session not found",
     "deadline_exceeded",
@@ -1128,6 +1134,8 @@ def _failure_policy(result: DispatchProcessResult) -> FailurePolicy:
         _AUTH_FAILURE_PATTERNS,
     ):
         return FailurePolicy(action="stop", reason="auth_failure")
+    if _contains_marker(joined_output, _QUOTA_EXHAUSTED_MARKERS):
+        return FailurePolicy(action="stop", reason="quota_exhausted")
     if _contains_marker(joined_output, _TRANSIENT_FAILURE_MARKERS):
         return FailurePolicy(action="retry", reason="transient_failure")
     return FailurePolicy(action="repair", reason="repairable_dispatch_failure")

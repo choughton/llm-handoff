@@ -21,11 +21,15 @@ from llm_handoff.agent_types import DispatchResult, LogFn, _ProcessResult
 from llm_handoff.antigravity_permissions import ANTIGRAVITY_REQUIRED_DENY
 from llm_handoff.provider_auth import (
     antigravity_auth_failure_line,
+    antigravity_quota_exhausted_line,
     find_antigravity_auth_failure,
+    find_antigravity_quota_exhaustion,
     find_auth_failure,
     find_permission_soft_deny,
+    find_quota_exhaustion,
     permission_soft_deny_message,
 )
+from llm_handoff.redaction import redact_secrets
 from llm_handoff.usage_log import format_usage_line
 
 
@@ -127,11 +131,12 @@ def invoke_antigravity(
         and result.exit_code != 0
         and find_permission_soft_deny(result.stderr) is None
         and find_auth_failure(result.stderr) is None
+        and find_quota_exhaustion(result.stderr) is None
         and ANTIGRAVITY_DENY_RULE_MARKER not in result.stderr
     ):
-        # A soft-denied, deny-rule-refused, or signed-out run would fail the
-        # same way in a fresh conversation, so only other resume failures get
-        # the one fresh rerun.
+        # A soft-denied, deny-rule-refused, signed-out, or out-of-quota run
+        # would fail the same way in a fresh conversation, so only other
+        # resume failures get the one fresh rerun.
         session_invalidated = True
         if log is not None:
             role_phrase = str(role).strip().lower() or "agent"
@@ -274,15 +279,18 @@ class _AntigravityStreamJsonMonitor:
         stdout = self._final_stdout(result.stdout)
         stderr = result.stderr
         exit_code = result.exit_code
+        result_error: str | None = None
         if self.result_event is not None:
             status = str(self.result_event.get("status") or "").strip().upper()
             if status != ANTIGRAVITY_SUCCESS_STATUS:
                 exit_code = exit_code or 1
-                stderr = _append_line(
-                    stderr,
-                    f"Antigravity result status={status or 'UNKNOWN'}: "
-                    f"{_format_error(self.result_event.get('error'))}",
-                )
+                result_error = _format_error(self.result_event.get("error"))
+                line = f"Antigravity result status={status or 'UNKNOWN'}: {result_error}"
+                stderr = _append_line(stderr, line)
+                # agy's run-level error text, kept raw in stderr; it is
+                # logged, redacted, so the reason shows in the dispatch log.
+                # No command line or tool error text is added here.
+                self._emit("ERROR", f"{self.agent_name}: {redact_secrets(line)}")
         elif exit_code == 0:
             exit_code = 1
             stderr = _append_line(
@@ -332,6 +340,16 @@ class _AntigravityStreamJsonMonitor:
                 # orchestrator and failover recognize it without provider context.
                 stderr = _append_line(
                     stderr, antigravity_auth_failure_line(sign_in_failure)
+                )
+            quota_failure = find_antigravity_quota_exhaustion(
+                result_error, result.stderr
+            )
+            if quota_failure is not None:
+                # Restate agy's quota error with a fixed prefix so the
+                # orchestrator stops the loop and failover treats it as a
+                # usage limit.
+                stderr = _append_line(
+                    stderr, antigravity_quota_exhausted_line(quota_failure)
                 )
 
         result_session = (

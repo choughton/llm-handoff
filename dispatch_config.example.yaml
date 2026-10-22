@@ -12,6 +12,8 @@
 
 handoff_path: docs/handoff/HANDOFF.md
 project_state_path: PROJECT_STATE.md
+# Closed epics and their ledger lines; the finalizer moves them here.
+completed_work_path: COMPLETED_WORK.md
 backend_resume: true
 planner_resume: true
 # Bounded planner recovery at dispatcher pauses (not next_agent: user): one

@@ -1615,7 +1615,7 @@ def test_shipped_configs_leave_tracker_off_and_document_it(
     assert loaded.tracker.provider == "none"
 
 
-_REPO_PATH_KEYS = ["handoff_path", "project_state_path"]
+_REPO_PATH_KEYS = ["handoff_path", "project_state_path", "completed_work_path"]
 
 
 @pytest.mark.parametrize("key", _REPO_PATH_KEYS)
@@ -1703,7 +1703,11 @@ def test_load_rejects_symlink_escaping_repo(tmp_path: Path, key: str) -> None:
 def test_load_accepts_repo_relative_paths(
     tmp_path: Path, key: str, value: str
 ) -> None:
-    config_path = _write_config(tmp_path, f"{key}: '{value}'\n")
+    text = f"{key}: '{value}'\n"
+    if key == "completed_work_path":
+        # The completed work file must not be the default handoff file.
+        text += "handoff_path: 'other/HANDOFF.md'\n"
+    config_path = _write_config(tmp_path, text)
 
     loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
@@ -1711,3 +1715,21 @@ def test_load_accepts_repo_relative_paths(
     full_path = (loaded.repo_root / getattr(loaded, key)).resolve()
     assert full_path.is_relative_to(loaded.repo_root)
     assert full_path != loaded.repo_root
+
+
+def test_completed_work_path_defaults_to_completed_work_md(tmp_path: Path) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path)
+
+    assert loaded.completed_work_path == Path("COMPLETED_WORK.md")
+    assert loaded.completed_work_full_path == (tmp_path / "COMPLETED_WORK.md").resolve()
+
+
+@pytest.mark.parametrize("key", ["handoff_path", "project_state_path"])
+def test_completed_work_path_must_differ_from_the_other_state_files(
+    tmp_path: Path, key: str
+) -> None:
+    with pytest.raises(ValueError, match=f"must name a different file than {key}"):
+        DispatchConfig(
+            repo_root=tmp_path,
+            **{key: Path("STATE.md"), "completed_work_path": Path("STATE.md")},
+        )

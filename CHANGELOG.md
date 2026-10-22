@@ -6,6 +6,36 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Roles read only the top of `CHANGELOG.md`. The handbook has a new
+  `## CHANGELOG Entries` section, and every Claude, `agy`, and Codex role
+  file (root and reference workflow) says how to read just the first 40
+  lines in its own tools (`Read` with `limit: 40`, `view_file` with a line
+  range, and for Codex `head -n 40` or `Get-Content -TotalCount 40`,
+  depending on its shell) and to add a new bullet first under
+  `## Unreleased`. Read-only validators and auditors check an entry from the
+  diff or the file's top. A full read of this file is about 29k tokens.
+- Closed work moves out of the project state file. A new
+  `completed_work_path` setting (default `COMPLETED_WORK.md`) names a second
+  state file. On each epic close the finalizer moves the closed epic's
+  section and status notes there and appends its ledger line, so the project
+  state file that every planner, tpm, and auditor run reads in full holds only
+  current work. The finalizer commits both files; interrupted-finalizer
+  recovery accepts commits to either and treats an uncommitted edit to either
+  as a partial ledger edit. `init` copies a `COMPLETED_WORK.md` template, and
+  the reference `PROJECT_STATE.md` no longer has a ledger section. This
+  repository's own history moved to `COMPLETED_WORK.md`.
+- An `agy` role whose account quota is used up now stops the dispatch loop
+  at once. Before, every dispatch failed the same way, the loop retried
+  until `max_consecutive_failures`, and the log showed only
+  `Antigravity result (status=ERROR)` and the exit code. The Antigravity
+  adapter now logs a non-`SUCCESS` result's error text at ERROR level. When
+  that error or `agy`'s stderr contains `RESOURCE_EXHAUSTED`, `code 429`, or
+  `quota reached`, it appends an `agy account quota is exhausted:` line; the
+  loop then logs the role, provider, reset time if given, and the fix (wait,
+  or map the role to another provider in the dispatch config), skips the
+  fresh-conversation rerun for a resumed run, and the supervisor stops with
+  reason `quota_exhausted`. A configured `fallback` still runs first:
+  failover now also treats `quota reached` as a rate or usage limit.
 - The `agy` agent files under `.agents/agents/` (root and reference
   workflow) list the base commands the `agy` settings grant and say the
   repository's verification commands are granted too, point to

@@ -229,6 +229,8 @@ can restore the wider surface, for example:
 The supervisor classifies child failures conservatively:
 
 - auth failures stop immediately;
+- a used-up `agy` account quota (the dispatcher's `account quota is
+  exhausted` stop) stops immediately with reason `quota_exhausted`;
 - specific transient failures such as `network error` or `network unreachable`
   get a retry budget;
 - repeated identical failure fingerprints stop;

@@ -195,7 +195,7 @@ of work and where evidence is recorded.
 | --- | --- | --- |
 | Backlog | Epics and stories the planner writes into `HANDOFF.md` frontmatter (`epic_id`, `story_id`, `remaining_stories`), seeded by what you describe in the handoff body and `PROJECT_STATE.md`. | A pool of Linear issues: one team, filtered by one project or one label, in a configured eligible state. |
 | Who picks the next story | The tpm when `agents.tpm` is configured, after it sizes, splits, and orders the open epic's stories; otherwise the planner, from the epic's plan. | The tpm when `agents.tpm` is configured, otherwise the planner, in both cases by Linear priority, then manual order, then creation date. |
-| Durable record | Git commits plus the ledger in `PROJECT_STATE.md`. | Git commits plus YAML evidence comments on the issue and issue-state changes. |
+| Durable record | Git commits plus the ledger in `COMPLETED_WORK.md`. | Git commits plus YAML evidence comments on the issue and issue-state changes. |
 | Who talks to Linear | Nobody. | The agents, through their own CLI's Linear MCP connector. The dispatcher never calls Linear and holds no Linear credential. |
 | Extra requirements | None. | `enforce_work_packet: true` (the default), a Linear MCP server configured in each provider CLI you use, and Linear-mode prompt text in `AGENTS.md` and `HANDBOOK.md`. |
 
