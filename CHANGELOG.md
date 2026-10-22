@@ -22,9 +22,9 @@ This project follows a simple pre-release changelog until the first public tag.
   parses the table and probes the validator for every producer, so a table
   edit without the matching validator change, or the reverse, fails. The
   validator never reads the table at runtime and its behavior is unchanged.
-  The reference handbook carries the same table, and the `agy` and Codex
-  validator helpers (root and reference workflow) cite it instead of keeping
-  their own route lists; the Codex routing guidance no longer offers a
+  The reference handbook carries the same table, and the Claude, `agy`, and
+  Codex validator helpers (root and reference workflow) cite it instead of
+  keeping their own route lists; the Codex routing guidance no longer offers a
   `finalizer` route to the validator.
 - `@<role>` chat works after a failover. A failed-over dispatch cleared its
   session id so no later dispatch resumes it, and the dispatch record and the

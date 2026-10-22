@@ -33,8 +33,10 @@ history.
   approved at `38676d1` and merged in PR #258 at `c208d81`. TRANS-5 (the
   handbook `## Transition Table`, its parsed parity test against the
   validator, the synchronized reference handbook, and the non-Claude
-  validator helpers citing the table) is implemented and awaiting audit.
-  TRANS-6 remains.
+  validator helpers citing the table) was approved at `1264a2c` and merged in
+  PR #259 at `3d8db88`. TRANS-6 (operator edit of the Claude validator helpers
+  to cite `docs/handoff/HANDBOOK.md#transition-table`) is implemented and
+  awaiting audit.
 - **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
   (TIDY-12 and TIDY-13 are wording nits filed by the operator on
   2026-10-21). TIDY-8 is a backend story the planner picks by fit (the

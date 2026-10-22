@@ -628,17 +628,18 @@ def test_runtime_validation_does_not_read_the_handbook() -> None:
     assert "Transition Table" not in source
 
 
-NON_CLAUDE_VALIDATOR_HELPERS = (
+VALIDATOR_HELPERS = (
     ".agents/agents/handoff-validator.md",
+    ".claude/agents/handoff-validator.md",
     ".codex/skills/llm-handoff-validator/SKILL.md",
 )
 
 
-@pytest.mark.parametrize("relative_path", NON_CLAUDE_VALIDATOR_HELPERS)
+@pytest.mark.parametrize("relative_path", VALIDATOR_HELPERS)
 @pytest.mark.parametrize(
     "root", [REPO_ROOT, REPO_ROOT / "examples" / "reference-workflow"], ids=["root", "reference"]
 )
-def test_non_claude_validator_helpers_cite_the_table(root: Path, relative_path: str) -> None:
+def test_validator_helpers_cite_the_table(root: Path, relative_path: str) -> None:
     content = (root / relative_path).read_text(encoding="utf-8")
 
     assert TABLE_ANCHOR in content
