@@ -14,6 +14,7 @@ from llm_handoff.config import (
     load_dispatch_config,
 )
 from llm_handoff.router import parse_handoff_frontmatter_text, route
+from llm_handoff.validator import validate_handoff_frontmatter
 
 
 ORIGINAL_AGENTS = "# Repository Instructions\n\nRun the tests before committing.\n"
@@ -502,6 +503,15 @@ def test_escalation_handoff_preserves_prior_content_without_rerouting(
     assert frontmatter.status == "escalate_to_user"
     assert "~~~~~markdown" in handoff
     assert "Next: dispatch backend" in handoff
+    # The escalation carries no verdict, so it validates with or without the
+    # dispatcher_authored flag (TRANS-3).
+    for dispatcher_authored in (True, False):
+        assert (
+            validate_handoff_frontmatter(
+                frontmatter, git_cwd=tmp_path, dispatcher_authored=dispatcher_authored
+            ).errors
+            == []
+        )
 
 
 def _quoting_repo(repo: Path) -> DispatchConfig:

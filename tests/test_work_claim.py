@@ -28,7 +28,11 @@ from llm_handoff.dispatcher_commit import (
 import llm_handoff.ledger as ledger
 from llm_handoff.router import parse_handoff_frontmatter_text, route
 from llm_handoff.stop_request import request_stop
-from llm_handoff.validator import ValidationResult, validate_handoff_text
+from llm_handoff.validator import (
+    ValidationResult,
+    validate_handoff_frontmatter,
+    validate_handoff_text,
+)
 from llm_handoff.work_claim import (
     CommandRun,
     ImplementerLeftovers,
@@ -844,6 +848,25 @@ def test_verify_work_claim_escalates_when_git_state_is_unavailable(
     assert bounce_route_for(result, implementer="backend").next_agent == "user"
     assert bounce_route_for(result, implementer="backend").status == "escalate_to_user"
 
+    # The escalation needs no verdict permission, so it validates either way.
+    bounce = build_bounce_handoff(
+        claim_content=_claim("a" * 40),
+        result=result,
+        implementer="backend",
+        route=bounce_route_for(result, implementer="backend"),
+        bounce_count=None,
+    )
+    frontmatter = parse_handoff_frontmatter_text(bounce)
+    assert frontmatter is not None
+    assert frontmatter.producer == "validator"
+    for dispatcher_authored in (True, False):
+        assert (
+            validate_handoff_frontmatter(
+                frontmatter, dispatcher_authored=dispatcher_authored
+            ).errors
+            == []
+        )
+
 
 # ---------------------------------------------------------------------------
 # Bounce handoff
@@ -906,6 +929,23 @@ def test_build_bounce_handoff_routes_back_to_implementer_with_evidence(
     assert "\n## Verification Evidence" not in body
     carried = parse_work_packet(bounce)
     assert carried.verification_commands == (FAIL_COMMAND,)
+
+    # The dispatcher wrote this verified_fail, so it validates only when the
+    # caller says so; the same frontmatter from an agent is rejected.
+    trusted = validate_handoff_frontmatter(
+        frontmatter, git_cwd=tmp_path, dispatcher_authored=True
+    )
+    assert trusted.errors == []
+    untrusted = validate_handoff_frontmatter(frontmatter, git_cwd=tmp_path)
+    assert [
+        error
+        for error in untrusted.errors
+        if error.startswith("frontmatter_status_producer_rule:")
+    ] == [
+        "frontmatter_status_producer_rule: producer `validator` cannot emit "
+        "status `verified_fail`; only the auditor approves or fails work, and "
+        "only dispatcher-written handoffs carry a validator verdict."
+    ]
 
 
 def test_build_bounce_handoff_routes_missing_packet_to_planner(tmp_path: Path) -> None:
@@ -1388,6 +1428,12 @@ def test_run_loop_bounces_missing_work_packet_to_planner(
     assert any(
         level == "ERROR" and message.startswith("work_packet_missing:")
         for level, message in messages
+    )
+    assert (
+        validate_handoff_frontmatter(
+            bounced, git_cwd=tmp_path, dispatcher_authored=True
+        ).errors
+        == []
     )
 
 

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from hashlib import sha256
+import hmac
+import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+import tempfile
 from typing import Literal
 
+from llm_handoff.config import DISPATCHER_HANDOFF_STATE_PATH
 from llm_handoff.agent_types import (
     BLOCKED_STATUSES,
     COMPLETION_STATUSES,
@@ -102,6 +109,13 @@ _VERIFIED_STATUSES = (
     HandoffStatus.VERIFIED_PASS.value,
     HandoffStatus.VERIFIED_FAIL.value,
 )
+# `producer: validator` names the validator role and the dispatcher's own
+# handoffs (review bounces, deferred findings, work-claim bounces, and
+# protected-file escalations). It never claims work for review, closes an
+# epic, or hands to the finalizer. Only a caller that knows it is checking
+# dispatcher-written content (`dispatcher_authored=True`) may let it carry a
+# verdict status.
+_VALIDATOR_ALWAYS_REJECTED_STATUSES = (HandoffStatus.READY_FOR_REVIEW.value,)
 _REQUIRED_EVIDENCE_FIELDS = {
     "Commands run",
     "Output summary",
@@ -174,7 +188,16 @@ def validate_handoff_frontmatter(
     *,
     git_cwd: Path | None = None,
     tracker_provider: str = "none",
+    dispatcher_authored: bool = False,
 ) -> ValidationResult:
+    """Validate handoff frontmatter on its own.
+
+    Set `dispatcher_authored` only when the caller itself built the handoff
+    (a dispatcher bounce or escalation). It lets `producer: validator` carry
+    `verified_pass` or `verified_fail`; it is never inferred from the
+    handoff's own fields, and it waives no other check.
+    """
+
     producer = parsed.producer or "unknown producer"
     errors: list[str] = []
     warnings: list[str] = []
@@ -290,10 +313,17 @@ def validate_handoff_frontmatter(
         errors.extend(_finalizer_producer_errors(parsed, normalized_next_agent))
     elif normalized_producer == "auditor":
         errors.extend(_auditor_producer_errors(parsed, normalized_next_agent))
-    elif normalized_producer != "validator" and parsed.producer:
-        # Validator-produced handoffs keep their behavior until TRANS-3 adds
-        # the dispatcher_authored flag. A missing producer is already
-        # reported as frontmatter_producer_missing.
+    elif normalized_producer == "validator":
+        errors.extend(
+            _validator_producer_errors(
+                parsed,
+                normalized_next_agent,
+                dispatcher_authored=dispatcher_authored,
+            )
+        )
+    elif parsed.producer:
+        # A missing producer is already reported as
+        # frontmatter_producer_missing.
         errors.extend(_verified_status_producer_errors(parsed))
 
     status_conflict = status_next_agent_conflict(parsed)
@@ -438,12 +468,52 @@ def _auditor_producer_errors(
     return errors
 
 
+def _validator_producer_errors(
+    parsed: HandoffRouting,
+    normalized_next_agent: str | None,
+    *,
+    dispatcher_authored: bool,
+) -> list[str]:
+    """Errors for a `producer: validator` handoff.
+
+    A validator handoff may route anywhere except `finalizer`, never sets
+    `close_type: epic`, and never emits `ready_for_review`. It carries
+    `verified_pass` or `verified_fail` only when `dispatcher_authored` is
+    set by a caller validating content the dispatcher wrote itself.
+    """
+
+    errors: list[str] = []
+    if normalized_next_agent == "finalizer":
+        errors.append(
+            "frontmatter_routing_rule: producer `validator` cannot route to "
+            "next_agent `finalizer`; only the auditor approves an epic close."
+        )
+    if parsed.close_type == "epic":
+        errors.append(
+            "frontmatter_routing_rule: producer `validator` emitted close_type "
+            "`epic`; only the auditor approves an epic close."
+        )
+    if parsed.status in _VALIDATOR_ALWAYS_REJECTED_STATUSES:
+        errors.append(
+            "frontmatter_status_producer_rule: producer `validator` cannot emit "
+            f"status `{parsed.status}`; only an implementer claims work for "
+            "review."
+        )
+    elif parsed.status in _VERIFIED_STATUSES and not dispatcher_authored:
+        errors.append(
+            "frontmatter_status_producer_rule: producer `validator` cannot emit "
+            f"status `{parsed.status}`; only the auditor approves or fails "
+            "work, and only dispatcher-written handoffs carry a validator "
+            "verdict."
+        )
+    return errors
+
+
 def _verified_status_producer_errors(parsed: HandoffRouting) -> list[str]:
     """Errors for a verdict status from a producer that gives no verdicts.
 
     Covers planner, user, and unrecognized producers. Implementer, tpm,
-    finalizer, and auditor producers have their own rules, and validator
-    producers stay exempt until TRANS-3.
+    finalizer, auditor, and validator producers have their own rules.
     """
 
     if parsed.status not in _VERIFIED_STATUSES:
@@ -637,6 +707,7 @@ def validate_handoff(
     tracker_provider: str = "none",
     prior_handoff_content: str | None = None,
     project_state_path: Path | None = None,
+    dispatcher_authored: bool = False,
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
     project_state_content = (
@@ -654,6 +725,7 @@ def validate_handoff(
         tracker_provider=tracker_provider,
         prior_handoff_content=prior_handoff_content,
         project_state_content=project_state_content,
+        dispatcher_authored=dispatcher_authored,
     )
 
 
@@ -668,6 +740,7 @@ def validate_handoff_text(
     tracker_provider: str = "none",
     prior_handoff_content: str | None = None,
     project_state_content: str | None = None,
+    dispatcher_authored: bool = False,
 ) -> ValidationResult:
     """Validate a post-dispatch handoff.
 
@@ -676,6 +749,10 @@ def validate_handoff_text(
     With `project_state_content`, story IDs the project state file never names
     are warnings; Linear mode skips that check because the tracker holds the
     stories.
+
+    `dispatcher_authored` is for callers checking a handoff the dispatcher
+    wrote itself; agent output is always validated with it false. See
+    `validate_handoff_frontmatter()`.
     """
 
     normalized_content = handoff_content.lstrip("\ufeff")
@@ -719,6 +796,7 @@ def validate_handoff_text(
                 frontmatter,
                 git_cwd=git_cwd,
                 tracker_provider=tracker_provider,
+                dispatcher_authored=dispatcher_authored,
             )
             errors.extend(frontmatter_result.errors)
             warnings.extend(frontmatter_result.warnings)
@@ -861,6 +939,193 @@ def validate_handoff_text(
         warnings=_dedupe(warnings),
         errors=_dedupe(errors),
         routing_instruction=routing_instruction,
+    )
+
+
+# Dispatcher-handoff provenance. The record holds only the SHA-256 of the
+# handoff the dispatcher last wrote itself, so any edit to HANDOFF.md drops
+# the trust. The dispatcher clears it when an agent dispatch returns, so a
+# record an agent planted during its turn is gone before anything reads it.
+_DISPATCHER_HANDOFF_RECORD_VERSION = 1
+_DISPATCHER_HANDOFF_RECORD_MAX_BYTES = 4096
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def dispatcher_handoff_digest(handoff_content: str) -> str:
+    """SHA-256 of a handoff's text, ignoring a leading byte-order mark."""
+
+    return sha256(handoff_content.lstrip("﻿").encode("utf-8")).hexdigest()
+
+
+def dispatcher_handoff_state_path(repo_root: Path) -> Path:
+    return repo_root / DISPATCHER_HANDOFF_STATE_PATH
+
+
+def _is_link_or_reparse_point(metadata: os.stat_result) -> bool:
+    # Windows reports junctions and other reparse points through
+    # st_file_attributes on Python 3.11 too; is_junction() is 3.12+.
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _dispatcher_handoff_path_is_unsafe(repo_root: Path) -> bool:
+    """Whether `logs`, `logs/dispatch`, or the record is a link or junction.
+
+    Missing components are safe. A directory component that is not a
+    directory, or a record that is not a single-link regular file, is unsafe.
+    """
+
+    current = repo_root
+    parts = DISPATCHER_HANDOFF_STATE_PATH.parts
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        if _is_link_or_reparse_point(metadata):
+            return True
+        if index < len(parts) - 1:
+            if not stat.S_ISDIR(metadata.st_mode):
+                return True
+        elif not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink > 1:
+            return True
+    return False
+
+
+def record_dispatcher_handoff(repo_root: Path, handoff_content: str) -> bool:
+    """Record `handoff_content` as the handoff the dispatcher just wrote.
+
+    Pass the text as read back from disk, so the digest matches what a later
+    reader sees. Returns False, writing nothing, when the record path goes
+    through a link or junction or the write fails.
+    """
+
+    if _dispatcher_handoff_path_is_unsafe(repo_root):
+        return False
+    path = dispatcher_handoff_state_path(repo_root)
+    payload = json.dumps(
+        {
+            "version": _DISPATCHER_HANDOFF_RECORD_VERSION,
+            "sha256": dispatcher_handoff_digest(handoff_content),
+        },
+        indent=2,
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if _dispatcher_handoff_path_is_unsafe(repo_root):
+            return False
+        # mkstemp opens a new randomly named file exclusively, and os.replace
+        # swaps the directory entry without following a link at the target.
+        file_fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+    except OSError:
+        return False
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload + "\n")
+        os.replace(temporary_path, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+        return False
+    return True
+
+
+def clear_dispatcher_handoff(repo_root: Path) -> bool:
+    """Delete the provenance record; True when no record is left.
+
+    A record path that goes through a link or junction is not touched;
+    `is_recorded_dispatcher_handoff()` refuses to read it either way.
+    """
+
+    path = dispatcher_handoff_state_path(repo_root)
+    current = repo_root
+    for part in DISPATCHER_HANDOFF_STATE_PATH.parent.parts:
+        current = current / part
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        if _is_link_or_reparse_point(metadata) or not stat.S_ISDIR(
+            metadata.st_mode
+        ):
+            return False
+    for attempt in range(2):
+        try:
+            # unlink removes a file symlink itself, never its target.
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            # A read-only record (as an agent could leave it on Windows).
+            if attempt == 0:
+                with contextlib.suppress(OSError):
+                    if stat.S_ISREG(os.lstat(path).st_mode):
+                        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+                continue
+            return False
+        except OSError:
+            return False
+    return False
+
+
+def is_recorded_dispatcher_handoff(repo_root: Path, handoff_content: str) -> bool:
+    """Whether `handoff_content` is the handoff the dispatcher last recorded.
+
+    False when there is no record, the record is malformed, or its path goes
+    through a link or junction. Callers pass the result as
+    `dispatcher_authored` to `validate_handoff_text()`.
+    """
+
+    if _dispatcher_handoff_path_is_unsafe(repo_root):
+        return False
+    path = dispatcher_handoff_state_path(repo_root)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        file_fd = os.open(path, flags)
+    except OSError:
+        return False
+    try:
+        metadata = os.fstat(file_fd)
+        if not stat.S_ISREG(metadata.st_mode) or (
+            metadata.st_size > _DISPATCHER_HANDOFF_RECORD_MAX_BYTES
+        ):
+            return False
+        data = os.read(file_fd, _DISPATCHER_HANDOFF_RECORD_MAX_BYTES + 1)
+    except OSError:
+        return False
+    finally:
+        os.close(file_fd)
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    version = payload.get("version")
+    if type(version) is not int or version != _DISPATCHER_HANDOFF_RECORD_VERSION:
+        return False
+    recorded = payload.get("sha256")
+    if not isinstance(recorded, str) or not _SHA256_HEX_RE.fullmatch(recorded):
+        return False
+    return hmac.compare_digest(
+        recorded.encode("ascii"),
+        dispatcher_handoff_digest(handoff_content).encode("ascii"),
     )
 
 

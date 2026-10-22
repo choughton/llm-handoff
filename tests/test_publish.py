@@ -3327,6 +3327,17 @@ def test_findings_after_a_stall_retry_take_the_correction_round(
     assert "status: verified_fail" in outcome.handoff
     assert _posted(tmp_path) == [REVIEW_REQUEST]
     assert _saved_state(repo)["review_rounds"] == 1
+    # The bounce names the reviewed head and passes the whole-handoff
+    # validator as a dispatcher-written verdict.
+    from llm_handoff.validator import validate_handoff_text
+
+    assert f"- **Commit SHA verified:** {head}\n" in outcome.handoff
+    assert (
+        validate_handoff_text(
+            outcome.handoff, "validator", git_cwd=repo, dispatcher_authored=True
+        ).errors
+        == []
+    )
 
 
 @pytest.mark.parametrize("action", ["prompt", "merge"])
@@ -4383,6 +4394,18 @@ def test_a_deferred_finding_gets_a_reply_and_goes_to_the_planner(
     assert "## Deferred Finding Decisions" in handoff
     assert "`Follow-up:`" in handoff
     assert "Files in scope" in handoff and "`src/widget.py`" in handoff
+    # The verdict names the story branch head the review rounds covered and
+    # passes the whole-handoff validator as a dispatcher-written handoff.
+    from llm_handoff.validator import validate_handoff_text
+
+    head = _git(repo, "rev-parse", "HEAD")
+    assert f"- **Commit SHA verified:** {head}\n" in handoff
+    assert (
+        validate_handoff_text(
+            handoff, "validator", git_cwd=repo, dispatcher_authored=True
+        ).errors
+        == []
+    )
 
 
 def test_a_retry_keeps_a_replied_deferred_finding_open_for_the_planner(
@@ -6100,6 +6123,7 @@ def _deferred(state: StoryState) -> str:
         state=state,
         findings=[{"number": 1, "location": "src/widget.py:1", "body": "Edge."}],
         url="https://example.invalid/pull/7",
+        head_sha="0" * 40,
     )
 
 
@@ -6207,17 +6231,158 @@ def test_a_review_bounce_with_tracker_fields_passes_the_linear_lease_checks() ->
     )
     leased = _plain_state(story_id="LIN-9", tracker_issue="LIN-9", tracker_url=LINEAR_URL)
 
-    result = validate_handoff_text(_bounce(leased), "validator", tracker_provider="linear")
+    # The dispatcher wrote the bounce, so its verified_fail is trusted.
+    result = validate_handoff_text(
+        _bounce(leased),
+        "validator",
+        tracker_provider="linear",
+        dispatcher_authored=True,
+    )
 
     assert not [
         error for error in result.errors if error.startswith(lease_errors)
     ], result.errors
+    assert not [
+        error
+        for error in result.errors
+        if error.startswith("frontmatter_status_producer_rule:")
+    ], result.errors
 
-    # Without the saved fields, Linear mode still rejects the bounce.
+    # Without the saved fields, Linear mode still rejects the bounce; the
+    # dispatcher_authored flag waives no lease check.
     bare = validate_handoff_text(
-        _bounce(_plain_state(story_id="LIN-9")), "validator", tracker_provider="linear"
+        _bounce(_plain_state(story_id="LIN-9")),
+        "validator",
+        tracker_provider="linear",
+        dispatcher_authored=True,
     )
     assert any(error.startswith("tracker_issue_missing") for error in bare.errors)
+    assert any(error.startswith("tracker_url_missing") for error in bare.errors)
+
+
+def _builder_frontmatter_errors(
+    handoff: str, *, dispatcher_authored: bool, tracker_provider: str = "none"
+) -> list[str]:
+    from llm_handoff.router import parse_handoff_frontmatter_text
+    from llm_handoff.validator import validate_handoff_frontmatter
+
+    parsed = parse_handoff_frontmatter_text(handoff)
+    assert parsed is not None
+    return validate_handoff_frontmatter(
+        parsed,
+        tracker_provider=tracker_provider,
+        dispatcher_authored=dispatcher_authored,
+    ).errors
+
+
+@pytest.mark.parametrize(
+    ("build", "next_agent", "status"),
+    [(_bounce, "backend", "verified_fail"), (_deferred, "planner", "verified_pass")],
+)
+def test_generated_review_handoffs_pass_dispatcher_authored_validation(
+    build, next_agent: str, status: str
+) -> None:
+    from llm_handoff.router import parse_handoff_frontmatter_text
+
+    plain = build(_plain_state())
+    parsed = parse_handoff_frontmatter_text(plain)
+    assert parsed is not None
+    assert (parsed.next_agent, parsed.status, parsed.producer) == (
+        next_agent,
+        status,
+        "validator",
+    )
+
+    assert _builder_frontmatter_errors(plain, dispatcher_authored=True) == []
+    leased = build(
+        _plain_state(
+            story_id="LIN-9",
+            tracker_issue="LIN-9",
+            tracker_url=LINEAR_URL,
+            selection_basis="priority",
+        )
+    )
+    assert (
+        _builder_frontmatter_errors(
+            leased, dispatcher_authored=True, tracker_provider="linear"
+        )
+        == []
+    )
+
+    # Agent output with the same frontmatter gets no such trust.
+    untrusted = _builder_frontmatter_errors(plain, dispatcher_authored=False)
+    assert [
+        error
+        for error in untrusted
+        if error.startswith("frontmatter_status_producer_rule:")
+    ] == [
+        "frontmatter_status_producer_rule: producer `validator` cannot emit "
+        f"status `{status}`; only the auditor approves or fails work, and only "
+        "dispatcher-written handoffs carry a validator verdict."
+    ]
+
+
+@pytest.mark.parametrize("build", [_bounce, _deferred])
+def test_generated_review_handoffs_pass_full_dispatcher_authored_validation(
+    build,
+) -> None:
+    # The whole-handoff validator, as doctor and supervisor preflight run it:
+    # the evidence and commit SHA requirements still apply to the verdict.
+    from llm_handoff.validator import validate_handoff_text
+
+    handoff = build(_plain_state())
+
+    assert "## Verification Evidence" in handoff
+    assert f"- **Commit SHA verified:** {'0' * 40}\n" in handoff
+    assert validate_handoff_text(handoff, "validator", dispatcher_authored=True).errors == []
+    untrusted = validate_handoff_text(handoff, "validator").errors
+    assert len(untrusted) == 1
+    assert untrusted[0].startswith("frontmatter_status_producer_rule:")
+
+
+def test_review_handoff_evidence_names_the_head_and_finding_locations() -> None:
+    from llm_handoff.publish import build_deferred_findings_handoff
+    from llm_handoff.validator import validate_handoff_text
+
+    head = "a" * 40
+    handoff = build_deferred_findings_handoff(
+        state=_plain_state(),
+        findings=[
+            {"number": 1, "location": "src/widget.py:1", "body": "Edge."},
+            {"number": 2, "location": "src/widget.py:1", "body": "Again."},
+        ],
+        url="https://example.invalid/pull/7",
+        head_sha=head,
+    )
+    evidence = handoff.split("## Verification Evidence\n", 1)[1]
+
+    assert f"- **Commit SHA verified:** {head}\n" in evidence
+    assert "Reviewed: `src/widget.py:1`. Changed: none" in evidence
+    assert "- **Unresolved concerns:** 2 deferred review finding(s)" in evidence
+    # Without the head commit the verdict fails validation instead of
+    # claiming a commit it did not check.
+    headless = build_deferred_findings_handoff(
+        state=_plain_state(),
+        findings=[],
+        url="https://example.invalid/pull/7",
+        head_sha="",
+    )
+    assert any(
+        error.startswith("EVIDENCE_MISSING")
+        for error in validate_handoff_text(
+            headless, "validator", dispatcher_authored=True
+        ).errors
+    )
+
+
+def test_operator_review_bounce_passes_either_validation() -> None:
+    # An operator story's bounce pauses with escalate_to_user, which needs
+    # no verdict permission.
+    handoff = _bounce(_plain_state(implementer="user"))
+
+    assert "status: escalate_to_user\n" in handoff
+    assert _builder_frontmatter_errors(handoff, dispatcher_authored=True) == []
+    assert _builder_frontmatter_errors(handoff, dispatcher_authored=False) == []
 
 
 @pytest.mark.parametrize("build", [_bounce, _deferred])

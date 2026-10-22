@@ -187,6 +187,11 @@ CHAT_QUEUE_STATE_PATH = Path("logs") / "dispatch" / "chat-queue.json"
 DISPATCH_RECORD_STATE_PATH = Path("logs") / "dispatch" / "dispatch-record.json"
 # Files a chat side-session changed, with their fingerprints and the message digest.
 CHAT_CHANGES_STATE_PATH = Path("logs") / "dispatch" / "chat-changes.json"
+# SHA-256 of the last handoff the dispatcher wrote itself (a bounce, review,
+# deferred-findings, or escalation handoff). Cleared when an agent dispatch
+# returns, so `doctor` and supervisor preflight trust a validator verdict only
+# while HANDOFF.md still matches what the dispatcher wrote.
+DISPATCHER_HANDOFF_STATE_PATH = Path("logs") / "dispatch" / "dispatcher-handoff.json"
 
 
 def detect_repo_root(start: Path | None = None) -> Path:

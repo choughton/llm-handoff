@@ -23,8 +23,16 @@ belong in commits, handoffs, and pull requests.
   only to `auditor`, `planner`, or `user`, and never emit `verified_pass`,
   `verified_fail`, or `close_type: epic`) was merged in PR #249 at
   `7e061a2`. TRANS-2 (auditor and finalizer producers, per the planner's
-  2026-10-21 TRANS-2/TRANS-3 boundary decision recorded in epic 17) is
-  implemented and awaiting audit. TRANS-3 through TRANS-6 remain.
+  2026-10-21 TRANS-2/TRANS-3 boundary decision recorded in epic 17) was
+  approved at `bb5a247` and merged in PR #250 at `99c8bbd`. TRANS-3
+  (validator producer: keyword-only `dispatcher_authored` flag on the three
+  validation entry points; validator verdicts need it, and
+  `ready_for_review`, `next_agent: finalizer`, and `close_type: epic` stay
+  rejected) is implemented; PR #251 Finding 1 (doctor and supervisor
+  preflight rejected valid dispatcher-written verdicts) is fixed in-story
+  with SHA-256 provenance in `logs/dispatch/dispatcher-handoff.json` and
+  Verification Evidence in the publish builders' verdicts, and the story is
+  awaiting audit. TRANS-4 through TRANS-6 remain.
 - **GROOMING (closed):** GROOM-5, the epic's last story,
   was approved at `6e24d98` and merged in PR #247 at `211bbfd`.
   GROOMING history (opened by the planner after CHAT closed at
@@ -1976,7 +1984,24 @@ handbook and the code from drifting.
   `verified_pass`; `ready_for_review`, `next_agent: finalizer`, and
   `close_type: epic` stay rejected. The validator-producer regression cases
   are updated in this story, and the review-bounce fixtures must keep
-  validating.
+  validating. Provenance (PR #251 Finding 1, fixed in-story): when the
+  dispatcher writes one of these handoffs it records the handoff's
+  normalized SHA-256 in `logs/dispatch/dispatcher-handoff.json`
+  (`DISPATCHER_HANDOFF_STATE_PATH`), and it clears that record when any
+  agent dispatch returns, before post-dispatch validation. `llm-handoff
+  doctor` and supervisor preflight pass `dispatcher_authored=True` only
+  while `HANDOFF.md` matches the record, so any edit drops the trust; the
+  record is never read or written through a symlink or junction on `logs`,
+  `logs/dispatch`, or the file. Post-dispatch, chat, repair, and
+  interrupted-role validation keep `dispatcher_authored=False`. The
+  provenance flag waives only the producer rule, so the two publish
+  builders now write a `## Verification Evidence` block naming the
+  reviewed story-branch head (the deferred-findings builder takes it as
+  `head_sha`), and the doctor and supervisor regressions use the real
+  builders' output. Residual (audit, medium): the record is an unkeyed
+  digest in agent-writable `logs/`, so a record an agent plants during a
+  dispatch the dispatcher never returns from is not cleared; moving it
+  out of agent reach or keying it needs a planner decision.
 - TRANS-4 (was part of TRANS-2): Producer matches the dispatched role. The
   post-dispatch validation already knows the previous route; a `producer`
   that names a role other than the one just dispatched is rejected as

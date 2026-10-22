@@ -751,6 +751,192 @@ def test_supervisor_honors_flat_handoff_path_from_dispatch_config(
     )
 
 
+def _validator_verdict(head: str, builder: str) -> str:
+    """A `producer: validator` verdict from the dispatcher's publish builders."""
+
+    from llm_handoff.pr_review import ReviewFinding
+    from llm_handoff.publish import (
+        StoryState,
+        build_deferred_findings_handoff,
+        build_review_bounce_handoff,
+    )
+
+    state = StoryState(
+        branch="llm-handoff/s1-first-story",
+        base_branch="main",
+        base_sha=head,
+        story_id="S1",
+        story_title="First story",
+        epic_id="E1",
+        work_packet=(
+            "## Work Packet\n\n"
+            "- **Objective:** Add a small feature.\n"
+            "- **Files in scope:** `src/app.py`\n"
+            "- **Files out of bounds:** `docs/**`\n"
+            "- **Context:** None.\n"
+            "- **Verification command:** `python -m pytest tests -q`\n"
+            "- **Expected next route:** auditor"
+        ),
+    )
+    url = "https://example.invalid/pull/1"
+    if builder == "bounce":
+        return build_review_bounce_handoff(
+            state=state,
+            findings=[ReviewFinding(body="Edge case.", path="src/app.py", line=1)],
+            url=url,
+            head_sha=head,
+            review_round=1,
+            max_rounds=2,
+        )
+    return build_deferred_findings_handoff(
+        state=state,
+        findings=[{"number": 1, "location": "src/app.py:1", "body": "Edge case."}],
+        url=url,
+        head_sha=head,
+    )
+
+
+VERDICT_BUILDERS = pytest.mark.parametrize("builder", ["bounce", "deferred"])
+
+
+def _write_git_repo(tmp_path: Path, builder: str = "deferred") -> tuple[Path, str]:
+    """A real Git repository (the commit SHA lookups need one) and a verdict."""
+
+    repo_root = _write_repo(tmp_path)
+    (repo_root / ".git").rmdir()
+    git = [
+        "git",
+        "-c",
+        "user.name=Supervisor Test",
+        "-c",
+        "user.email=supervisor@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+    ]
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "initial"]):
+        subprocess.run([*git, *args], cwd=repo_root, check=True, capture_output=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return repo_root, _validator_verdict(head, builder)
+
+
+VALIDATOR_VERDICT_ERROR = (
+    "frontmatter_status_producer_rule: producer `validator` cannot emit status "
+    "`verified_"
+)
+
+
+def _run_supervisor_doctor(repo_root: Path) -> tuple[int, list[tuple[str, str]]]:
+    supervisor = _load_supervisor_module()
+    config = supervisor.SupervisorConfig(repo_root=repo_root, doctor=True)
+    log_messages: list[tuple[str, str]] = []
+    exit_code = supervisor.run_supervised_dispatch(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+        dispatch_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("doctor mode must not dispatch"),
+        ),
+    )
+    return exit_code, log_messages
+
+
+def _verdict_errors(log_messages: list[tuple[str, str]]) -> list[str]:
+    return [
+        message
+        for level, message in log_messages
+        if level == "ERROR" and VALIDATOR_VERDICT_ERROR in message
+    ]
+
+
+@VERDICT_BUILDERS
+def test_supervisor_doctor_passes_a_recorded_dispatcher_verdict(
+    tmp_path: Path, builder: str
+) -> None:
+    from llm_handoff import config as config_module
+    from llm_handoff import orchestrator
+
+    repo_root, content = _write_git_repo(tmp_path, builder)
+    dispatch_config = config_module.load_dispatch_config(repo_root=repo_root)
+    orchestrator._write_dispatcher_handoff(dispatch_config, content)
+
+    exit_code, log_messages = _run_supervisor_doctor(repo_root)
+
+    assert _verdict_errors(log_messages) == []
+    assert exit_code == 0, [
+        message for level, message in log_messages if level == "ERROR"
+    ]
+
+
+@VERDICT_BUILDERS
+@pytest.mark.parametrize("edited", [False, True], ids=["unrecorded", "edited"])
+def test_supervisor_doctor_fails_an_unrecorded_or_edited_verdict(
+    tmp_path: Path, edited: bool, builder: str
+) -> None:
+    from llm_handoff import config as config_module
+    from llm_handoff import orchestrator
+
+    repo_root, content = _write_git_repo(tmp_path, builder)
+    handoff_path = repo_root / "docs" / "handoff" / "HANDOFF.md"
+    if edited:
+        dispatch_config = config_module.load_dispatch_config(repo_root=repo_root)
+        orchestrator._write_dispatcher_handoff(dispatch_config, content)
+        handoff_path.write_text(
+            content + "\nEdited after the dispatcher wrote it.\n",
+            encoding="utf-8",
+        )
+    else:
+        handoff_path.write_text(content, encoding="utf-8")
+
+    exit_code, log_messages = _run_supervisor_doctor(repo_root)
+
+    assert _verdict_errors(log_messages), log_messages
+    # The verdict's evidence and commit SHA still pass; only the untrusted
+    # verdict fails.
+    assert not [
+        message
+        for level, message in log_messages
+        if level == "ERROR"
+        and any(
+            code in message
+            for code in ("EVIDENCE_MISSING", "sha_missing", "evidence_sha_unknown")
+        )
+    ], log_messages
+    assert exit_code == 1
+
+
+def test_supervisor_repair_role_clears_a_planted_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import config as config_module
+    from llm_handoff import validator
+
+    supervisor = _load_supervisor_module()
+    repo_root, content = _write_git_repo(tmp_path)
+    handoff_path = repo_root / "docs" / "handoff" / "HANDOFF.md"
+    record = repo_root / config_module.DISPATCHER_HANDOFF_STATE_PATH
+
+    def planting_repair(*_args: object, **_kwargs: object) -> SubagentResult:
+        handoff_path.write_text(content, encoding="utf-8")
+        assert validator.record_dispatcher_handoff(repo_root, content)
+        assert record.is_file()
+        return _repair_result()
+
+    monkeypatch.setattr(supervisor, "invoke_support_role", planting_repair)
+    config = supervisor.SupervisorConfig(repo_root=repo_root, repair_role="planner")
+    failure_packet = tmp_path / "failure.md"
+    failure_packet.write_text("failure\n", encoding="utf-8")
+
+    supervisor._run_repair_role(config, failure_packet, lambda *_args: None)
+
+    assert not record.exists()
+    assert not validator.is_recorded_dispatcher_handoff(repo_root, content)
+
+
 def test_supervisor_preflight_reports_unloadable_dispatch_config(
     tmp_path: Path,
 ) -> None:

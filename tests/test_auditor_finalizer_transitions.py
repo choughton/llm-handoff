@@ -5,8 +5,8 @@ never sets `close_type`, and may emit only `verified_pass`,
 `blocked_missing_context`, `escalate_to_user`, or no status. A
 `producer: auditor` handoff never emits `ready_for_review` and never routes
 to `auditor`. `verified_pass` and `verified_fail` belong to the auditor (and
-the finalizer's epic-close `verified_pass`); validator producers keep their
-behavior until TRANS-3.
+the finalizer's epic-close `verified_pass`); validator producers carry them
+only in dispatcher-written handoffs (TRANS-3).
 """
 
 from __future__ import annotations
@@ -253,13 +253,24 @@ def test_generic_verdict_rule_names_the_producer(producer: str, status: str) -> 
     ("next_agent", "status"),
     [("backend", "verified_fail"), ("planner", "verified_pass")],
 )
-def test_validator_verdicts_keep_existing_behavior(next_agent: str, status: str) -> None:
-    # TRANS-3 locks validator producers down behind dispatcher_authored.
+def test_validator_verdicts_need_dispatcher_authored(next_agent: str, status: str) -> None:
+    # TRANS-3 locks validator verdicts behind dispatcher_authored; see
+    # tests/test_validator_transitions.py.
     errors = _frontmatter_errors(
         next_agent=next_agent, producer="validator", status=status
     )
+    trusted = validate_handoff_frontmatter(
+        HandoffRouting(
+            next_agent=next_agent,
+            reason="Transition handoff.",
+            producer="validator",
+            status=status,
+        ),
+        dispatcher_authored=True,
+    ).errors
 
-    assert _rule_errors(errors) == []
+    assert len(_rule_errors(errors)) == 1
+    assert trusted == []
 
 
 # Post-dispatch validation
