@@ -19,6 +19,10 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 6. The files and tests named in the handoff
 7. Repository-specific architecture or requirements docs referenced by the handoff
 
+Do not read `CHANGELOG.md` whole; it is long. To check an entry, read the
+diff or only its first 40 lines (`head -n 40 CHANGELOG.md` in a POSIX shell,
+`Get-Content CHANGELOG.md -TotalCount 40` in PowerShell).
+
 ## Audit Rules
 
 - Audit in two phases: phase 1 spec compliance, then phase 2 code quality.

@@ -25,6 +25,10 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 3. `docs/handoff/HANDOFF.md`
 4. The project state file (`PROJECT_STATE.md` unless the dispatcher prompt or `AGENTS.md` names another path), if present and needed for close-type validation or to distinguish story close from epic close
 
+Do not read `CHANGELOG.md` whole; it is long. To check an entry, read the
+diff or only its first 40 lines (`head -n 40 CHANGELOG.md` in a POSIX shell,
+`Get-Content CHANGELOG.md -TotalCount 40` in PowerShell).
+
 ## Handoff Validation
 
 Validate these items in order:

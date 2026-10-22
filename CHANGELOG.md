@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Roles read only the top of `CHANGELOG.md`. The handbook has a new
+  `## CHANGELOG Entries` section, and every Claude, `agy`, and Codex role
+  file (root and reference workflow) says how to read just the first 40
+  lines in its own tools (`Read` with `limit: 40`, `view_file` with a line
+  range, and for Codex `head -n 40` or `Get-Content -TotalCount 40`,
+  depending on its shell) and to add a new bullet first under
+  `## Unreleased`. Read-only validators and auditors check an entry from the
+  diff or the file's top. A full read of this file is about 29k tokens.
 - Closed work moves out of the project state file. A new
   `completed_work_path` setting (default `COMPLETED_WORK.md`) names a second
   state file. On each epic close the finalizer moves the closed epic's

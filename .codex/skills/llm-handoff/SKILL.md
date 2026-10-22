@@ -19,6 +19,11 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 6. `README.md`
 7. Repository-specific architecture or requirements docs referenced by the handoff
 
+Do not read `CHANGELOG.md` whole; it is long. To add an entry, read only its
+first 40 lines (`head -n 40 CHANGELOG.md` in a POSIX shell,
+`Get-Content CHANGELOG.md -TotalCount 40` in PowerShell) and add the bullet
+first under `## Unreleased`.
+
 ## Role Boundary
 
 The backend role owns backend code, tests, data contracts, persistence, command-line glue, and integration wiring. It does not own frontend-only work, planning, audit verdicts, or finalizer state updates.
