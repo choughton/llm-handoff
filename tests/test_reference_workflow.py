@@ -614,6 +614,66 @@ def test_implementer_prompts_carry_story_fields_forward() -> None:
         ) in content, relative_path
 
 
+# The planner and tpm instruction surfaces that route an operator story to
+# `user`. The Claude agents get the same contract in a later operator story.
+OPERATOR_STORY_PROMPT_FILES = (
+    ".agents/agents/planner.md",
+    ".agents/agents/tpm.md",
+    ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".codex/skills/llm-handoff-tpm/SKILL.md",
+    "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
+    "docs/handoff/TPM_HANDOFF_PROMPT.md",
+)
+OPERATOR_ARTIFACT_PHRASES = (
+    "## Operator Stories",
+    "`logs/dispatch/operator/<story id>/`",
+    "complete file contents",
+    "changes.patch",
+    "`git apply` accepts from the repository root",
+    "does not satisfy",
+    "one command block",
+    "the operator's shell",
+    "only commands, never file text",
+    "stage or commit the artifact",
+    "plain sentence",
+    "needs no frontmatter",
+)
+
+
+@pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
+def test_handbook_states_the_operator_artifact_contract(root: Path) -> None:
+    # An operator story hands the person an artifact to apply, not edits to
+    # copy out of Markdown, which carried a stray fence line into a commit.
+    text = " ".join(
+        (root / "docs/handoff/HANDBOOK.md").read_text(encoding="utf-8").split()
+    )
+
+    for phrase in OPERATOR_ARTIFACT_PHRASES:
+        assert phrase in text, phrase
+    assert "`logs/dispatch/operator/<story id>/files/<target path>`" in text
+    assert "`logs/dispatch/operator/<story id>/changes.patch`" in text
+    assert "`git apply logs/dispatch/operator/<story id>/changes.patch`" in text
+    assert "`Copy-Item -LiteralPath <artifact> -Destination <target>`" in text
+    assert "`cp <artifact> <target>`" in text
+    assert "never stages `docs/handoff/HANDOFF.md`" in text
+    assert "`logs/` is git-ignored" in text
+    assert "Every agent-authored handoff still follows the routing contract" in text
+
+
+@pytest.mark.parametrize("relative_path", OPERATOR_STORY_PROMPT_FILES)
+@pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
+def test_planner_and_tpm_prompts_require_an_operator_artifact(
+    root: Path, relative_path: str
+) -> None:
+    text = " ".join((root / relative_path).read_text(encoding="utf-8").split())
+
+    for phrase in OPERATOR_ARTIFACT_PHRASES:
+        assert phrase in text, (relative_path, phrase)
+    assert "Before you write the handoff, write the edits as an artifact" in text
+    assert "`files/<target path>`" in text
+    assert "replace `docs/handoff/HANDOFF.md` with a plain sentence" in text
+
+
 def test_role_files_say_to_read_only_the_top_of_the_changelog() -> None:
     # CHANGELOG.md grows with every story; a role that reads it whole to add
     # one bullet spends tokens on every dispatch that edits it.
