@@ -3919,6 +3919,72 @@ def test_an_adopted_operator_story_merges_and_returns_to_main(
     assert (repo / HANDOFF_PATH).read_text(encoding="utf-8") == "live handoff\n"
 
 
+def _operator_epic_close(scope_sha: str) -> str:
+    """The audit of an operator story that was its epic's last."""
+
+    return (
+        _operator_audit(scope_sha)
+        .replace("next_agent: planner", "next_agent: finalizer")
+        .replace("close_type: story", "close_type: epic")
+    )
+
+
+def test_an_operator_story_that_closes_its_epic_merges_and_keeps_the_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    upstream, head = _operator_story_on_main(repo)
+    audit = _operator_epic_close(head)
+    (repo / HANDOFF_PATH).write_text(audit, encoding="utf-8")
+    entries, log = _logs()
+
+    outcome = _publish_operator_story(repo, gh, log, head, handoff_content=audit)
+
+    # No handoff rewrite: the next cycle follows the audit's route to finalizer.
+    assert outcome == PublishOutcome()
+    assert [call[:2] for call in _gh_calls(tmp_path) if call[0] == "pr"] == [
+        ["pr", "view"],
+        ["pr", "create"],
+        ["pr", "view"],
+        ["pr", "merge"],
+    ]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "HEAD") == head != upstream
+    assert _git(remote, "rev-parse", "refs/heads/main") == head
+    assert _git(repo, "branch", "--list", BRANCH) == ""
+    assert not (repo / STATE_PATH).exists()
+    assert (repo / HANDOFF_PATH).read_text(encoding="utf-8") == audit
+    assert any(
+        level == "INFO"
+        and message.startswith("Epic-close audit passed for a commit on `main`")
+        for level, message in entries
+    )
+
+
+def test_an_epic_close_with_nothing_unpublished_is_not_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    head = _git(repo, "rev-parse", "HEAD")
+    entries, log = _logs()
+
+    outcome = _publish_operator_story(
+        repo, gh, log, head, handoff_content=_operator_epic_close(head)
+    )
+
+    assert outcome == PublishOutcome()
+    assert _gh_calls(tmp_path) == []
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "branch", "--list", BRANCH) == ""
+    assert not (repo / STATE_PATH).exists()
+    assert [level for level, _ in entries] == ["INFO"]
+    assert "nothing to publish" in entries[0][1]
+
+
 def _merge_commit_on_main(repo: Path) -> None:
     _git(repo, "switch", "-q", "-c", "side")
     _commit_all(repo, {"side.md": "side\n"}, "side work")
@@ -3957,12 +4023,10 @@ def _handoff_in_the_operator_commit(repo: Path) -> None:
         ),
         (lambda repo: None, "head", {"handoff_path": None}, None),
         (
-            lambda repo: None,
+            lambda repo: _commit_all(repo, {"more.md": "more\n"}, "unaudited"),
             "head",
-            {"handoff_content": VERIFIED.replace(
-                "close_type: story", "scope_sha: {head}\nclose_type: epic"
-            )},
-            None,
+            {"handoff_content": "{epic_close}"},
+            "commit(s) ahead of origin/main, not one",
         ),
     ],
     ids=[
@@ -3973,7 +4037,7 @@ def _handoff_in_the_operator_commit(repo: Path) -> None:
         "two-commits",
         "branch-exists",
         "no-handoff-path",
-        "epic-close",
+        "epic-close-two-commits",
     ],
 )
 def test_an_operator_story_on_main_that_does_not_fit_still_stops(
@@ -3993,7 +4057,9 @@ def test_an_operator_story_on_main_that_does_not_fit_still_stops(
     if "handoff_content" in options:
         options = {
             **options,
-            "handoff_content": str(options["handoff_content"]).format(head=head),
+            "handoff_content": str(options["handoff_content"]).format(
+                epic_close=_operator_epic_close(head)
+            ),
         }
     entries, log = _logs()
 

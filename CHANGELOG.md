@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An operator story committed on the base branch now also publishes when it
+  is the epic's last story. A `.claude/` operator story is normally last, so
+  its audit passes with `close_type: epic` and `next_agent: finalizer`, and
+  `pr` publish stopped with "the audited work is not on a story branch the
+  dispatcher created" instead of moving the commit to a story branch.
+  `publish_story` now runs the base-branch adoption for an epic-close audit
+  with the same checks as a story close (no story state, checkout on
+  `base_branch`, HEAD equal to `scope_sha`, exactly one non-merge commit
+  ahead of `<remote>/<base_branch>` that does not change the handoff). An
+  epic close with nothing unpublished is still checked first and publishes
+  nothing. After the merge the handoff is left as the audit wrote it, so the
+  next cycle routes to `finalizer`.
 - With a tpm configured, it grooms and assigns stories inside the open
   epic; the planner keeps epic choice, goals, boundaries, and scope.
   File-based role instructions and Linear templates reflect this split.
