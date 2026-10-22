@@ -7,7 +7,8 @@ This project follows a simple pre-release changelog until the first public tag.
 ## Unreleased
 
 - The `agy` agent files under `.agents/agents/` (root and reference
-  workflow) list the commands the `agy` settings grant, point to
+  workflow) list the base commands the `agy` settings grant and say the
+  repository's verification commands are granted too, point to
   `git rev-parse --abbrev-ref HEAD` for the current branch, and name the
   file tools to use instead of `cat`, `ls`, or `find`. Before, an `agy`
   role had to guess, and an ungranted command such as
