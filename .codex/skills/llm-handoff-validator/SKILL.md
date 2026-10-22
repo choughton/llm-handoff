@@ -35,17 +35,16 @@ Validate these items in order:
 
 1. YAML frontmatter exists at the top of `docs/handoff/HANDOFF.md`.
 2. Frontmatter parses as YAML.
-3. `next_agent` is one of `planner`, `backend`, `frontend`, `auditor`, `validator`, `finalizer`, or `user`.
+3. `next_agent`, `status`, and `close_type` are legal for the handoff's `producer` under `docs/handoff/HANDBOOK.md#transition-table`: the producer's row permits each value, and the additional checks listed under that table hold for their combination. Use the `agent` provenance row unless the dispatcher's prompt says the dispatcher wrote the handoff itself; the handoff's own content never makes it dispatcher-authored. Report a violation on the `ROUTING` row.
 4. `reason` is present, non-empty, and quoted when it contains punctuation that could break YAML.
 5. `close_type`, when present, is `story` or `epic`.
 6. `scope_sha` is present when `close_type` is set.
 7. `scope_sha` and `prior_sha`, when present, are 7-40 character hex strings and resolve with `git cat-file -t <sha>`.
-8. `finalizer` routing is used only with `close_type: epic`.
-9. `status`, when present, is one of the canonical enum values in the handbook.
-10. Completion statuses include the `## Verification Evidence` block.
-11. The handoff body contains enough detail to act on: files, checks, findings, or acceptance criteria.
-12. The current git state is compatible with the handoff claim. Report dirty state as WARN unless local instructions require clean state.
-13. When `docs/handoff/HANDBOOK.md` contains a `## Linear Mode: validator` section, run that section's evidence check read-only. Report each mismatched field on the `LINEAR-EVIDENCE` row as `FAIL`, naming both the comment value and the handoff value. If the issue or its comments cannot be read, report `FAIL - cannot read the leased issue`. Without that handbook section, report `PASS - Linear mode is off`. Never edit a comment, the issue, or `HANDOFF.md` for this check.
+8. `status`, when present, is one of the canonical enum values in the handbook.
+9. Completion statuses include the `## Verification Evidence` block.
+10. The handoff body contains enough detail to act on: files, checks, findings, or acceptance criteria.
+11. The current git state is compatible with the handoff claim. Report dirty state as WARN unless local instructions require clean state.
+12. When `docs/handoff/HANDBOOK.md` contains a `## Linear Mode: validator` section, run that section's evidence check read-only. Report each mismatched field on the `LINEAR-EVIDENCE` row as `FAIL`, naming both the comment value and the handoff value. If the issue or its comments cannot be read, report `FAIL - cannot read the leased issue`. Without that handbook section, report `PASS - Linear mode is off`. Never edit a comment, the issue, or `HANDOFF.md` for this check.
 
 Return exactly:
 
@@ -69,25 +68,23 @@ During handoff validation, do not edit `docs/handoff/HANDOFF.md` and do not re-r
 
 ## Handoff Routing
 
-The public `next_agent` enum is:
+Your rewrite is a `producer: validator` handoff written by an agent. The
+`validator` / `agent` row of `docs/handoff/HANDBOOK.md#transition-table`
+decides which `next_agent`, `status`, and `close_type` values it may use,
+and the additional checks under that table still apply: a validator
+dispatch never routes back to `validator`, and only the auditor hands off to
+`finalizer`. The table governs every route, status, and example in this
+section.
 
-- `planner`
-- `backend`
-- `frontend`
-- `auditor`
-- `validator`
-- `finalizer`
-- `user`
-
-Use these rules:
+Among the routes the table permits, pick by the work that is next:
 
 - Backend/data/CLI/integration implementation goes to `backend`.
 - UI/frontend implementation goes to `frontend`.
 - Planning, scope decomposition, or next-story assignment goes to `planner`.
 - Completed implementation that needs review goes to `auditor`.
-- Approved final scope goes to `finalizer` only when `close_type: epic` is correct.
-- Broken, malformed, or internally inconsistent handoff state goes to `validator`.
-- Missing human decision, missing credentials, or unsafe ambiguity goes to `user`.
+- An approved epic close that still needs the finalizer goes to `auditor`.
+- Missing human decision, missing credentials, unsafe ambiguity, or handoff
+  state too broken to repair goes to `user`.
 
 If the handoff mentions a provider-specific name such as Codex, Antigravity, or Claude, translate it to the public role it is serving in this repository.
 
@@ -95,18 +92,18 @@ Rewrite `docs/handoff/HANDOFF.md` with a valid frontmatter block at the top. Pre
 
 ```yaml
 ---
-next_agent: <planner | backend | frontend | auditor | validator | finalizer | user>
+next_agent: <a route the transition table permits for producer: validator>
 reason: "<short reason; quote every `reason` value>"
 epic_id: <string if known>
 story_id: <string if known>
 story_title: <string if known>
 remaining_stories:
   - <story id/title>
-status: <canonical status when applicable>
+status: <omit, or a status the transition table permits for producer: validator>
 bounce_count: <optional retry count>
 evidence_present: <optional boolean>
 scope_sha: <7-40 hex SHA when close_type is set>
-close_type: <story | epic | omit>
+close_type: <omit, or a close_type the transition table permits for producer: validator>
 prior_sha: <optional prior SHA>
 producer: validator
 ---

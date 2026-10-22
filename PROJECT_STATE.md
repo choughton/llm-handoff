@@ -29,8 +29,12 @@ history.
   dispatcher-authored handoffs skip only that check; a chat takeover
   rewrite may name `planner` or `user` through the `chat_takeover` flag) was
   merged in PR #257 at `3e5b6e5`. TRANS-7 (validate a rewritten finalizer
-  handoff in `run_loop` before following its route; PR #257 Finding 1) is
-  implemented and awaiting audit. TRANS-5 and TRANS-6 remain.
+  handoff in `run_loop` before following its route; PR #257 Finding 1) was
+  approved at `38676d1` and merged in PR #258 at `c208d81`. TRANS-5 (the
+  handbook `## Transition Table`, its parsed parity test against the
+  validator, the synchronized reference handbook, and the non-Claude
+  validator helpers citing the table) is implemented and awaiting audit.
+  TRANS-6 remains.
 - **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
   (TIDY-12 and TIDY-13 are wording nits filed by the operator on
   2026-10-21). TIDY-8 is a backend story the planner picks by fit (the
@@ -273,10 +277,12 @@ handbook and the code from drifting.
   producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under
   `## Transition Table`, and add a test that parses that table and asserts it
   matches the validator's rule set, so a prompt edit and a validator edit
-  cannot drift apart. The `handoff-validator` helper files under
-  `.agents/agents/` and the `.codex/skills/llm-handoff-validator` skill (root
-  and `examples/reference-workflow/` copies) cite the table instead of
-  restating it.
+  cannot drift apart. The reference handbook
+  (`examples/reference-workflow/docs/handoff/HANDBOOK.md`) carries the same
+  table, kept identical to the root handbook. The `handoff-validator` helper
+  files under `.agents/agents/` and the `.codex/skills/llm-handoff-validator`
+  skill (root and `examples/reference-workflow/` copies) cite the table
+  instead of restating it.
 - TRANS-6: Operator edit of the Claude validator helpers (routes to `user`).
   The planner writes the exact edit for `.claude/agents/handoff-validator.md`
   and its `examples/reference-workflow/` copy so they cite the TRANS-5 table,
