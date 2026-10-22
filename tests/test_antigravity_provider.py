@@ -566,7 +566,9 @@ def test_soft_deny_with_non_success_result_keeps_agy_exit_code(
     assert result.stderr.rstrip().endswith(
         "the entry applies to every agy run for that user."
     )
-    assert len(_soft_deny_errors(logs)) == 1
+    result_error, soft_deny_error = _soft_deny_errors(logs)
+    assert result_error.endswith("Antigravity result status=ERROR: denied")
+    assert "permissions.allow" in soft_deny_error
 
 
 def test_clean_run_logs_no_soft_deny(
@@ -1189,6 +1191,129 @@ def test_sign_in_failure_on_failed_resume_is_not_rerun_fresh(
     assert result.session_invalidated is False
     assert find_auth_failure(result.stderr) is not None
     assert not any(level == "WARN" and "conv-old" in m for level, m in logs)
+
+
+def test_non_success_result_error_is_logged_at_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stdout = _stream(_event(type="result", status="ERROR", error={"message": "boom"}))
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr="", exit_code=3))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 3
+    errors = [m for level, m in logs if level == "ERROR"]
+    assert errors == ["Antigravity planner: Antigravity result status=ERROR: boom"]
+
+
+# agy 1.4.4 logged these when the account quota ran out (2026-10-21). The
+# stream-json result text was not captured; print mode logged that it "ended
+# with error and no response: " followed by the message after the prefix.
+AGY_QUOTA_MESSAGE = (
+    "Individual quota reached. Please upgrade your subscription to increase "
+    "your limits. Resets in 72h11m35s."
+)
+AGY_QUOTA_STDERR = (
+    "generating and executing: RESOURCE_EXHAUSTED (code 429): " + AGY_QUOTA_MESSAGE
+)
+
+
+def _quota_result_stdout(error: object = AGY_QUOTA_MESSAGE) -> str:
+    return _stream(
+        _event(type="result", conversation_id="conv-q", status="ERROR", error=error)
+    )
+
+
+def test_quota_in_result_error_gets_a_quota_line(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.failover import classify_fatal_failure
+    from llm_handoff.provider_auth import find_quota_exhaustion
+
+    runner = _Runner(
+        _ProcessResult(stdout=_quota_result_stdout(), stderr="", exit_code=3)
+    )
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 3
+    assert result.stderr.splitlines() == [
+        f"Antigravity result status=ERROR: {AGY_QUOTA_MESSAGE}",
+        f"agy account quota is exhausted: {AGY_QUOTA_MESSAGE}",
+    ]
+    assert find_quota_exhaustion(result.stderr) == AGY_QUOTA_MESSAGE
+    assert any(
+        level == "ERROR" and AGY_QUOTA_MESSAGE in m for level, m in logs
+    )
+    # A configured fallback still gets the dispatch before the loop stops.
+    assert (
+        classify_fatal_failure(
+            exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr
+        )
+        == "rate_limit"
+    )
+
+
+def test_quota_in_agy_stderr_gets_a_quota_line(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.provider_auth import find_quota_exhaustion
+
+    runner = _Runner(
+        _ProcessResult(
+            stdout=_quota_result_stdout(error="run failed"),
+            stderr=AGY_QUOTA_STDERR,
+            exit_code=3,
+        )
+    )
+
+    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 3
+    assert find_quota_exhaustion(result.stderr) == AGY_QUOTA_STDERR
+
+
+def test_quota_failure_on_failed_resume_is_not_rerun_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.provider_auth import find_quota_exhaustion
+
+    runner = _Runner(
+        _ProcessResult(stdout=_quota_result_stdout(), stderr="", exit_code=3),
+        _ok(),
+    )
+
+    result, logs = _invoke(
+        monkeypatch, runner, tmp_path, use_resume=True, session_id="conv-old"
+    )
+
+    assert len(runner.commands) == 1
+    assert result.exit_code == 3
+    assert result.session_invalidated is False
+    assert find_quota_exhaustion(result.stderr) is not None
+    assert not any(level == "WARN" and "conv-old" in m for level, m in logs)
+
+
+def test_successful_run_mentioning_quota_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = _Runner(
+        _ProcessResult(
+            stdout=_success_stream(response="Handled the code 429 quota reached path."),
+            stderr="note: RESOURCE_EXHAUSTED retried",
+            exit_code=0,
+        )
+    )
+
+    result, _logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert result.exit_code == 0
+    assert result.stderr == "note: RESOURCE_EXHAUSTED retried"
 
 
 def test_resumed_success_without_new_id_keeps_the_session(

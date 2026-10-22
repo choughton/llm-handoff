@@ -9,12 +9,17 @@ from llm_handoff.agent_types import DispatchResult
 from llm_handoff.config import AgentConfig, DispatchConfig
 from llm_handoff.provider_auth import (
     antigravity_auth_failure_line,
+    antigravity_quota_exhausted_line,
     auth_failure_messages,
     auth_fix_instructions,
     find_antigravity_auth_failure,
+    find_antigravity_quota_exhaustion,
     find_auth_failure,
     find_permission_soft_deny,
+    find_quota_exhaustion,
     permission_soft_deny_message,
+    quota_exhaustion_messages,
+    quota_reset_time,
 )
 
 
@@ -325,6 +330,198 @@ def test_stop_on_auth_failure_ignores_authentication_required_for_other_provider
         exit_code=1,
         stdout="Deploy step failed: authentication required for deployment",
         stderr="",
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert stopped is False
+    assert logs == []
+
+
+# agy 1.4.4's quota error, as its log recorded it on 2026-10-21.
+AGY_QUOTA_MESSAGE = (
+    "Individual quota reached. Please upgrade your subscription to increase "
+    "your limits. Resets in 72h11m35s."
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        AGY_QUOTA_MESSAGE,
+        "RESOURCE_EXHAUSTED (code 429): " + AGY_QUOTA_MESSAGE,
+        "Error: request failed with code 429",
+        "rpc error: resource_exhausted",
+    ],
+)
+def test_find_antigravity_quota_exhaustion_recognizes_agy_quota_errors(
+    text: str,
+) -> None:
+    assert find_antigravity_quota_exhaustion(None, "noise\n" + text) == text
+
+
+def test_find_antigravity_quota_exhaustion_ignores_ordinary_failures() -> None:
+    assert find_antigravity_quota_exhaustion("Traceback: KeyError", None, "") is None
+
+
+def test_find_quota_exhaustion_only_matches_the_adapter_line() -> None:
+    # Raw quota text from any provider gets normal failure handling; only
+    # the line the agy adapter appends stops the loop.
+    raw = "RESOURCE_EXHAUSTED (code 429): " + AGY_QUOTA_MESSAGE
+    assert find_quota_exhaustion(raw) is None
+    line = antigravity_quota_exhausted_line(AGY_QUOTA_MESSAGE)
+    assert find_quota_exhaustion("agy notice", line) == AGY_QUOTA_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        (AGY_QUOTA_MESSAGE, "72h11m35s"),
+        ("quota reached; resets in 3h 5m", "3h5m"),
+        ("Individual quota reached.", None),
+    ],
+)
+def test_quota_reset_time(detail: str, expected: str | None) -> None:
+    assert quota_reset_time(detail) == expected
+
+
+def test_quota_exhaustion_messages_name_role_provider_reset_and_fix() -> None:
+    messages = quota_exhaustion_messages(
+        role="planner",
+        provider="antigravity",
+        binary=r"C:\tools\agy.cmd",
+        detail=AGY_QUOTA_MESSAGE,
+    )
+
+    assert messages[0] == (
+        "planner could not run: the antigravity (`agy`) account quota is "
+        f"exhausted; it resets in 72h11m35s ({AGY_QUOTA_MESSAGE})."
+    )
+    assert messages[1].startswith("Fix: wait for the quota to reset")
+    assert "`agents.planner`" in messages[1]
+    assert "stops here" in messages[2]
+
+
+def test_quota_exhaustion_messages_without_a_reset_time() -> None:
+    first = quota_exhaustion_messages(
+        role="backend",
+        provider="antigravity",
+        binary=None,
+        detail="Individual quota reached.",
+    )[0]
+
+    assert first == (
+        "backend could not run: the antigravity (`agy`) account quota is "
+        "exhausted (Individual quota reached.)."
+    )
+
+
+def test_run_loop_stops_on_the_first_quota_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_backend_handoff(tmp_path)
+    config = DispatchConfig(
+        repo_root=tmp_path,
+        poll_interval_seconds=0,
+        max_consecutive_failures=3,
+    )
+    config.agents["backend"] = AgentConfig(provider="antigravity", binary="agy")
+    attempts: list[int] = []
+    logs: list[tuple[str, str]] = []
+
+    def out_of_quota_backend(
+        _path: Path, *, log=None, use_resume=False
+    ) -> DispatchResult:
+        attempts.append(1)
+        return DispatchResult(
+            stdout="",
+            stderr=(
+                f"Antigravity result status=ERROR: {AGY_QUOTA_MESSAGE}\n"
+                f"{antigravity_quota_exhausted_line(AGY_QUOTA_MESSAGE)}"
+            ),
+            exit_code=3,
+            elapsed_seconds=0.1,
+        )
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", out_of_quota_backend)
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda _seconds: None)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert exit_code == 1
+    assert attempts == [1]
+    errors = [message for level, message in logs if level == "ERROR"]
+    assert any(
+        "backend could not run: the antigravity (`agy`) account quota is "
+        "exhausted; it resets in 72h11m35s" in message
+        for message in errors
+    )
+    assert any(message.startswith("Fix: wait for the quota") for message in errors)
+    assert not any("Failure count" in message for _, message in logs)
+
+
+def test_stop_on_quota_exhaustion_for_an_antigravity_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from llm_handoff.agent_providers import antigravity
+    from llm_handoff.agent_types import _ProcessResult
+
+    stdout = json.dumps(
+        {"event": "result", "result": {"status": "ERROR", "error": AGY_QUOTA_MESSAGE}}
+    )
+    monkeypatch.setattr(
+        antigravity,
+        "_run_command_streaming",
+        lambda *_args, **_kwargs: _ProcessResult(
+            stdout=stdout + "\n", stderr="", exit_code=3
+        ),
+    )
+    agent_config = AgentConfig(provider="antigravity")
+    result = antigravity.invoke_antigravity(
+        "planner",
+        tmp_path / "HANDOFF.md",
+        repo_root=tmp_path,
+        agent_config=agent_config,
+    )
+    dispatch_config = DispatchConfig(repo_root=tmp_path)
+    dispatch_config.agents["planner"] = agent_config
+    logs: list[tuple[str, str]] = []
+
+    stopped = orchestrator._stop_on_quota_exhaustion(
+        dispatch_config,
+        role="planner",
+        exit_code=result.exit_code,
+        stderr=result.stderr,
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert stopped is True
+    errors = [message for level, message in logs if level == "ERROR"]
+    assert errors[0].startswith(
+        "planner could not run: the antigravity (`agy`) account quota is exhausted"
+    )
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_stop_on_quota_exhaustion_ignores_raw_429_text_from_other_providers(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    dispatch_config = DispatchConfig(repo_root=tmp_path)
+    dispatch_config.agents["backend"] = AgentConfig(provider=provider)
+    logs: list[tuple[str, str]] = []
+
+    stopped = orchestrator._stop_on_quota_exhaustion(
+        dispatch_config,
+        role="backend",
+        exit_code=1,
+        stderr="RESOURCE_EXHAUSTED (code 429): " + AGY_QUOTA_MESSAGE,
         log=lambda level, message: logs.append((level, message)),
     )
 
