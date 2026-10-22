@@ -98,6 +98,24 @@ nested `- ...` bullets under `Commands run`. A label may carry one
 parenthetical note before its colon, as in `- **Commands run (this turn):**`.
 Write the `Commit SHA verified` SHA on the label line itself.
 
+One exception applies when the work-claim gate runs (`enforce_work_packet:
+true`, the default, and always in dispatcher commit mode). An implementer whose
+run of the Work Packet's Verification command was stopped in the current turn
+by an environment refusal, such as a permission refusal or a missing tool, may
+still hand back `ready_for_review` with all five fields and two of them
+changed:
+
+```markdown
+- **Commands run:** deferred to the work-claim gate: <the refusal, quoted>
+- **Output summary:** the refused command, and whether a permission rule or a missing tool stopped it
+```
+
+That deferred entry has no verbatim command line and no exit code, and it is
+still valid: the gate runs the command itself on the claimed commit before the
+auditor is dispatched. Report every command the environment allowed as usual
+and defer only the refused one. Without the gate, there is no exception. See
+"Gate-Verified Handback" in `HANDBOOK.md`.
+
 Evidence must be fresh for the current handoff. Results from a previous session,
 assumptions, and stale command output do not satisfy the contract.
 

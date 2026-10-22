@@ -818,7 +818,13 @@ def test_verify_work_claim_runs_the_packet_command_for_a_deferred_claim_with_a_h
 ) -> None:
     # The implementer commits HANDOFF.md after the implementation commit, so
     # scope_sha names HEAD~1. The gate accepts that claim and still runs the
-    # packet's Verification command; the deferral earns no shortcut.
+    # packet's Verification command; the deferral earns no shortcut. The
+    # recorded PASS names scope_sha, the audit head, not the handoff commit.
+    from llm_handoff.work_claim import (
+        has_passing_dispatcher_verification,
+        record_passed_verification,
+    )
+
     assignment = _assignment(GATE_RAN_COMMAND)
     _init_repo(tmp_path, assignment)
     state = capture_pre_dispatch_state(tmp_path)
@@ -838,6 +844,12 @@ def test_verify_work_claim_runs_the_packet_command_for_a_deferred_claim_with_a_h
     assert _outcomes(result)["verification"] == "PASS"
     assert [run.command for run in result.verification_runs] == [GATE_RAN_COMMAND]
     assert result.verification_runs[0].exit_code == 0
+
+    recorded = record_passed_verification(claim, result)
+
+    assert f"- **Verified commit:** `{work_sha}`" in recorded
+    assert has_passing_dispatcher_verification(recorded, work_sha)
+    assert not has_passing_dispatcher_verification(recorded, head)
 
 
 def test_verify_work_claim_fails_a_deferred_claim_when_the_command_fails(

@@ -19,10 +19,16 @@ This project follows a simple pre-release changelog until the first public tag.
   a missing, failing, or wrong-commit section does not establish a pass. A
   PASS recorded for a handoff-only commit above the claimed commit also
   counts, and the handbook and auditor prompt name the deferred wording as
-  the one exception to the README evidence schema. The
-  `examples/reference-workflow/` copies match. Runtime behavior is
-  unchanged; new tests cover the validator, the work-claim gate, and the
-  rationalization detector on the deferred wording.
+  the one exception to the README evidence schema. Both
+  `docs/handoff/README.md` copies now document that exception in the
+  evidence schema itself. The work-claim gate's passing
+  `## Dispatcher Verification` section now records the claim's `scope_sha`
+  as `Verified commit` (HEAD when `scope_sha` is empty), so a claim with a
+  handoff-only commit above `scope_sha` records the audit head and the
+  quality reviewer does not rerun the command. The
+  `examples/reference-workflow/` copies match; new tests cover the
+  validator, the work-claim gate, and the rationalization detector on the
+  deferred wording.
 - The commented `tpm:` block in `dispatch_config.example.yaml` no longer says
   the dispatcher does not route to the tpm (TIDY-13). Its comment now says
   that, when configured, auditor story-level approvals and planner epic opens

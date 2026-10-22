@@ -2638,7 +2638,11 @@ def passed_verification_section(result: WorkClaimResult) -> str:
     )
     lines.append("")
     lines.append("- **Verdict:** PASS")
-    verified = result.head_sha or result.scope_sha or "unknown"
+    # Record the claimed commit, which the audit scope resolves to, so a
+    # handoff-only commit above scope_sha (HEAD~1) still matches the audit
+    # head. Dispatcher commit mode leaves scope_sha empty; HEAD is then the
+    # claimed commit.
+    verified = result.scope_sha or result.head_sha or "unknown"
     lines.append(f"- **Verified commit:** `{verified}`")
     lines.append(f"- **Pre-dispatch HEAD:** `{result.pre_dispatch_head or 'unknown'}`")
     changed = ", ".join(f"`{path}`" for path in result.changed_files) or "none"
