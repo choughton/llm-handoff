@@ -1,7 +1,7 @@
 ---
 name: ledger-updater
 description: Finalizer role for approved epic closes. Updates durable project state, rewrites HANDOFF.md for the next route, and reports machine-readable results.
-tools: Read, Edit, Grep, Glob, Bash
+tools: Read, Edit, Write, Grep, Glob, Bash
 model: sonnet
 ---
 

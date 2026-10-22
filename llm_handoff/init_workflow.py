@@ -111,7 +111,8 @@ _AUDITOR_AGENT_PATH = Path(".claude/agents/auditor.md")
 _FINALIZER_AGENT_PATH = Path(".claude/agents/ledger-updater.md")
 _WRITER_BASE_TOOLS = "Read, Edit, Write, Grep, Glob, Bash"
 _AUDITOR_BASE_TOOLS = "Read, Grep, Glob, Bash"
-_FINALIZER_BASE_TOOLS = "Read, Edit, Grep, Glob, Bash"
+# The finalizer needs Write to create a missing completed work file.
+_FINALIZER_BASE_TOOLS = "Read, Edit, Write, Grep, Glob, Bash"
 _LINEAR_AGENT_TOOLS: dict[Path, tuple[str, str]] = {
     _VALIDATOR_AGENT_PATH: ("validator", _VALIDATOR_BASE_TOOLS),
     _PLANNER_AGENT_PATH: ("planner", _WRITER_BASE_TOOLS),

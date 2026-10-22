@@ -9828,9 +9828,9 @@ def _project_state_has_uncommitted_changes(
     """
 
     repo_root = config.repo_root
-    state_rel = normalize_repo_path(
-        (path if path is not None else config.project_state_path).as_posix()
-    )
+    # The configured spelling, not normalize_repo_path(): on POSIX a
+    # backslash is part of the file name, so `docs\DONE.md` names one file.
+    state_rel = (path if path is not None else config.project_state_path).as_posix()
     literal = ":(literal)" + state_rel
     output = _run_git_stdout_raw(
         repo_root,

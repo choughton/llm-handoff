@@ -5240,6 +5240,24 @@ def test_an_ignored_ledger_absent_from_head_counts_as_uncommitted(
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a separator on Windows")
+def test_a_backslash_completed_work_path_is_checked_literally_on_posix(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, handoff=FINALIZER_HANDOFF)
+    orchestrator = _orchestrator()
+    config = _config(tmp_path, completed_work_path=r"docs\DONE.md")
+    # On POSIX the configured spelling is one file name with a backslash.
+    _write(tmp_path / r"docs\DONE.md", PARTIAL_LEDGER)
+
+    assert (
+        orchestrator._project_state_has_uncommitted_changes(
+            config, config.completed_work_path
+        )
+        is True
+    )
+
+
 def test_a_clean_ledger_counts_as_committed(
     tmp_path: Path,
 ) -> None:
