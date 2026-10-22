@@ -139,6 +139,10 @@ class EpicCloseResult:
     # The finalizer's provider session id, or None; kept on every returned
     # result so ``@finalizer`` chat can resume the finished session.
     session_id: str | None = None
+    # Set when the finalizer's fallback agent ran; its session is kept here
+    # for ``@finalizer`` chat.
+    fallback_ran: bool = False
+    fallback_session_id: str | None = None
 
     def __post_init__(self) -> None:
         state_updated = self.project_state_updated or bool(self.ledger_updated)
@@ -323,6 +327,8 @@ def run_epic_close(
             stdout=subagent_result.stdout,
             stderr=subagent_result.stderr,
             session_id=subagent_result.session_id,
+            fallback_ran=subagent_result.fallback_ran,
+            fallback_session_id=subagent_result.fallback_session_id,
         )
 
     try:
@@ -354,6 +360,8 @@ def run_epic_close(
             stderr=subagent_result.stderr,
             parse_error=parse_error,
             session_id=subagent_result.session_id,
+            fallback_ran=subagent_result.fallback_ran,
+            fallback_session_id=subagent_result.fallback_session_id,
         )
 
     if parsed_output.push_status == "FAILED":
@@ -385,6 +393,8 @@ def run_epic_close(
         push_detail=parsed_output.push_detail,
         changes_made=parsed_output.changes_made,
         session_id=subagent_result.session_id,
+        fallback_ran=subagent_result.fallback_ran,
+        fallback_session_id=subagent_result.fallback_session_id,
     )
 
 

@@ -351,6 +351,26 @@ def test_orchestrator_dispatch_from_subagent_without_session_id_is_none() -> Non
     assert dispatch.stdout == "out"
 
 
+
+@pytest.mark.parametrize("module", [agent_roles, orchestrator])
+def test_dispatch_from_subagent_keeps_the_fallback_session(module) -> None:
+    # The auditor and validator routes convert a support-role result; a
+    # failover there must keep the fallback session for @role chat.
+    subagent = SubagentResult(
+        stdout="out",
+        stderr="",
+        exit_code=0,
+        elapsed_seconds=1.0,
+        fallback_ran=True,
+        fallback_session_id="fallback-sess",
+    )
+
+    dispatch = module._dispatch_from_subagent(subagent)
+
+    assert dispatch.session_id is None
+    assert dispatch.fallback_ran is True
+    assert dispatch.fallback_session_id == "fallback-sess"
+
 # --- Codex ------------------------------------------------------------------
 
 

@@ -459,15 +459,24 @@ def _run_with_failover(
     if isinstance(secondary, DispatchResult):
         # The fallback's session belongs to another agent, and the primary's
         # session may have stopped mid-turn, so neither is resumed next cycle.
+        # Chat may still talk to the fallback's finished session.
         return replace(
             secondary,
             elapsed_seconds=elapsed,
             session_id=None,
             session_invalidated=True,
+            fallback_ran=True,
+            fallback_session_id=secondary.session_id,
         )
     # The fallback's session belongs to another agent, so the support-role
-    # result reports no session id.
-    return replace(secondary, elapsed_seconds=elapsed, session_id=None)
+    # result reports no session id; chat may still talk to it.
+    return replace(
+        secondary,
+        elapsed_seconds=elapsed,
+        session_id=None,
+        fallback_ran=True,
+        fallback_session_id=secondary.session_id,
+    )
 
 
 def _describe_agent(agent_config: AgentConfig) -> str:
@@ -515,6 +524,8 @@ def _dispatch_from_subagent(result: SubagentResult) -> DispatchResult:
         elapsed_seconds=result.elapsed_seconds,
         session_id=result.session_id,
         usage=result.usage,
+        fallback_ran=result.fallback_ran,
+        fallback_session_id=result.fallback_session_id,
     )
 
 
