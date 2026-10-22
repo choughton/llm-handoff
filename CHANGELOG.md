@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The commented `tpm:` block in `dispatch_config.example.yaml` no longer says
+  the dispatcher does not route to the tpm (TIDY-13). Its comment now says
+  that, when configured, auditor story-level approvals and planner epic opens
+  route to the tpm, the planner keeps epic choice, pause recovery, and
+  repairs, and without it the planner picks every story. The block stays
+  commented out and its values are unchanged.
 - `llm-handoff doctor`'s per-role Antigravity `interpreter grants` warning now
   says what the agy user settings hold (TIDY-12). Interpreter entries present
   in `permissions.allow` are reported as "uses the agy allow entries", absent

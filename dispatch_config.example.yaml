@@ -179,9 +179,10 @@ agents:
     resume: false
     timeout_ms: 900000
 
-  # Optional tpm role. When it is absent the planner picks stories. The
-  # dispatcher does not route to it yet: a handoff with next_agent: tpm
-  # still pauses.
+  # Optional tpm role. When it is configured, the auditor's story-level
+  # approvals and the planner's epic opens route to the tpm, which assigns
+  # the next story; the planner keeps epic choice, pause recovery, and
+  # repairs. When it is absent, the planner picks every story.
   # tpm:
   #   provider: codex
   #   binary: codex
