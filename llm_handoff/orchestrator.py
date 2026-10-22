@@ -116,7 +116,12 @@ from llm_handoff.in_flight import (
     load_in_flight_record,
 )
 from llm_handoff.no_record_recovery import find_no_record_candidates
-from llm_handoff.provider_auth import auth_failure_messages, find_auth_failure
+from llm_handoff.provider_auth import (
+    auth_failure_messages,
+    find_auth_failure,
+    find_quota_exhaustion,
+    quota_exhaustion_messages,
+)
 from llm_handoff.pr_review import ReviewGate
 from llm_handoff.publish import (
     ReviewPromptFn,
@@ -1704,6 +1709,14 @@ def _run_loop(
                 log=log_fn,
             ):
                 return 1
+            if _stop_on_quota_exhaustion(
+                config,
+                role="finalizer",
+                exit_code=int(getattr(ledger_result, "subagent_exit_code", 0)),
+                stderr=ledger_result.stderr,
+                log=log_fn,
+            ):
+                return 1
             parse_error = ledger_result.parse_error
             if parse_error:
                 pause_diagnosis = _run_epic_close_validator(
@@ -2419,6 +2432,14 @@ def _run_loop(
                 role=current_cycle.route,
                 exit_code=dispatch_result.exit_code,
                 stdout=dispatch_result.stdout,
+                stderr=dispatch_result.stderr,
+                log=log_fn,
+            ):
+                return 1
+            if _stop_on_quota_exhaustion(
+                config,
+                role=current_cycle.route,
+                exit_code=dispatch_result.exit_code,
                 stderr=dispatch_result.stderr,
                 log=log_fn,
             ):
@@ -4817,6 +4838,39 @@ def _stop_on_auth_failure(
         detail=detail,
     ):
         _log(log, "ERROR", message)
+    return True
+
+
+def _stop_on_quota_exhaustion(
+    config: DispatchConfig,
+    *,
+    role: str,
+    exit_code: int,
+    stderr: str | None,
+    log: LogFn,
+) -> bool:
+    """Log the quota stop and return True when a failed run hit a used-up quota.
+
+    Only the agy adapter appends the quota line, and a configured fallback
+    has already run by the time the loop sees the result. Every retry would
+    fail the same way until the quota resets, so the loop stops instead of
+    spending its failure budget.
+    """
+
+    if exit_code == 0:
+        return False
+    detail = find_quota_exhaustion(stderr)
+    if detail is None:
+        return False
+    agent_config = config.agents.get(role)  # type: ignore[call-overload]
+    for message in quota_exhaustion_messages(
+        role=role,
+        provider=agent_config.provider if agent_config is not None else None,
+        binary=agent_config.binary if agent_config is not None else None,
+        detail=detail,
+    ):
+        # `detail` is agy's own error text, so it may echo a secret.
+        _log(log, "ERROR", redact_secrets(message))
     return True
 
 
