@@ -78,6 +78,71 @@ Use exactly one of these values when status is needed:
 
 Do not invent synonyms or change capitalization.
 
+## Transition Table
+
+This table is the producer-to-route-and-status contract that the
+llm-handoff validator (`llm_handoff/validator.py`) enforces. The llm-handoff
+test suite (`tests/test_transition_table.py`) parses the table and checks
+every row against the validator, so a table edit without the matching
+validator edit, or the reverse, fails those tests. The validator never reads
+this file at runtime.
+
+Each row lists what one `producer` value permits on its own: the `next_agent`
+routes, the `status` values, and the `close_type` values it may write.
+`(omitted)` means the field is left out. Provenance `agent` covers every
+handoff an agent writes. Provenance `dispatcher_authored` applies only when
+the caller running the validator built the handoff itself and passes
+`dispatcher_authored=True`; it is never inferred from handoff content, and for
+every producer other than `validator` it permits nothing beyond the `agent`
+row.
+
+| Producer | Provenance | next_agent | status | close_type |
+| --- | --- | --- | --- | --- |
+| `planner` | agent | `planner`, `tpm`, `backend`, `frontend`, `auditor`, `validator`, `user` | `(omitted)`, `ready_for_review`, `blocked_missing_context`, `blocked_implementation_failure`, `escalate_to_user` | `(omitted)`, `story`, `epic` |
+| `tpm` | agent | `planner`, `backend`, `frontend`, `auditor`, `user` | `(omitted)`, `blocked_missing_context`, `blocked_implementation_failure`, `escalate_to_user` | `(omitted)`, `story` |
+| `backend` | agent | `planner`, `auditor`, `user` | `(omitted)`, `ready_for_review`, `blocked_missing_context`, `blocked_implementation_failure`, `escalate_to_user` | `(omitted)`, `story` |
+| `frontend` | agent | `planner`, `auditor`, `user` | `(omitted)`, `ready_for_review`, `blocked_missing_context`, `blocked_implementation_failure`, `escalate_to_user` | `(omitted)`, `story` |
+| `auditor` | agent | `planner`, `tpm`, `backend`, `frontend`, `validator`, `finalizer`, `user` | `(omitted)`, `verified_pass`, `verified_fail`, `blocked_missing_context`, `blocked_implementation_failure`, `escalate_to_user` | `(omitted)`, `story`, `epic` |
+| `finalizer` | agent | `planner`, `tpm`, `user` | `(omitted)`, `verified_pass`, `blocked_missing_context`, `escalate_to_user` | `(omitted)` |
+| `validator` | agent | `planner`, `tpm`, `backend`, `frontend`, `auditor`, `validator`, `user` | `(omitted)`, `blocked_missing_context`, `blocked_implementation_failure`, `escalate_to_user` | `(omitted)`, `story` |
+| `validator` | dispatcher_authored | `planner`, `tpm`, `backend`, `frontend`, `auditor`, `validator`, `user` | `(omitted)`, `verified_pass`, `verified_fail`, `blocked_missing_context`, `blocked_implementation_failure`, `escalate_to_user` | `(omitted)`, `story` |
+| `user` | agent | `planner`, `tpm`, `backend`, `frontend`, `auditor`, `validator`, `user` | `(omitted)`, `ready_for_review`, `blocked_missing_context`, `blocked_implementation_failure`, `escalate_to_user` | `(omitted)`, `story`, `epic` |
+
+A row permits each value separately. A permitted route and a permitted status
+do not make their combination legal; every handoff must also pass these
+checks:
+
+- **Status route.** A status names its route, and `next_agent` must agree
+  (`frontmatter_status_route_conflict`). `ready_for_review` goes to
+  `auditor`. `verified_pass` goes to `finalizer` with `close_type: epic`, to
+  `tpm` when `next_agent` is `tpm`, and otherwise to `planner`.
+  `verified_fail` goes to the named `backend` or `frontend`, otherwise to
+  `planner`. `blocked_missing_context` and `escalate_to_user` go to `user`,
+  and `blocked_implementation_failure` goes to `planner`.
+- **Epic close.** `close_type: epic` requires `next_agent` `auditor` or
+  `finalizer`, and `next_agent: finalizer` requires both `close_type: epic`
+  and `producer: auditor` (`frontmatter_routing_rule`). A planner or user
+  epic close therefore routes only to `auditor`.
+- **Evidence.** `ready_for_review`, `verified_pass`, and `verified_fail` need
+  a populated `## Verification Evidence` block naming a commit. The only
+  exemption is a finalizer `verified_pass` when both the dispatched role and
+  the producer are `finalizer`.
+- **SHA.** A set `close_type` needs a `scope_sha`; `scope_sha` and
+  `prior_sha` are 7-40 hex characters that resolve to commits; and an
+  implementer `ready_for_review` handback names its `scope_sha`.
+- **Configured tpm.** `next_agent: tpm` is dispatchable only when
+  `agents.tpm` is configured. Otherwise the dispatcher sends one repair to
+  the planner, then pauses.
+- **Dispatch identity.** After a dispatch, `producer` must name the
+  dispatched role (`frontmatter_producer_mismatch`), and the handoff may not
+  route back to that role (`planner_self_loop`, `agent_self_loop`). A
+  finalizer `verified_pass` after any other role's dispatch is rejected, and
+  a tpm dispatch keeps its `epic_id`. Two callers differ. A
+  dispatcher-authored handoff, which always names `producer: validator`,
+  skips only the identity check. An operator-directed chat takeover rewrite
+  may name `producer: planner` or `producer: user`, and no other producer.
+  Neither waives any other check.
+
 ## Evidence Block Reference
 
 When `status` is `ready_for_review`, `verified_pass`, or `verified_fail`, include

@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The handbook has a `## Transition Table` listing, for every producer, the
+  `next_agent` routes, statuses, and close types the validator permits it,
+  with a separate row for dispatcher-authored validator handoffs and the
+  status-route, epic-close, evidence, SHA, configured-tpm, and
+  dispatch-identity checks that still apply to each combination. A new test
+  parses the table and probes the validator for every producer, so a table
+  edit without the matching validator change, or the reverse, fails. The
+  validator never reads the table at runtime and its behavior is unchanged.
+  The reference handbook carries the same table, and the `agy` and Codex
+  validator helpers (root and reference workflow) cite it instead of keeping
+  their own route lists; the Codex routing guidance no longer offers a
+  `finalizer` route to the validator.
 - `@<role>` chat works after a failover. A failed-over dispatch cleared its
   session id so no later dispatch resumes it, and the dispatch record and the
   chat entry named the configured primary, so `@planner` after an agy-to-
