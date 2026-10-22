@@ -1925,6 +1925,27 @@ it as a sign-in failure: the loop stops and logs `agy` sign-in steps (run
 Only the Antigravity adapter checks for that phrase; output from other
 providers that says `authentication required` gets normal failure handling.
 
+When an `agy` run fails because the account quota is used up, every `agy`
+dispatch fails the same way until the quota resets, so the dispatcher stops
+instead of spending `max_consecutive_failures` on retries. The adapter logs
+the result event's error text at ERROR level for any non-`SUCCESS` result.
+If that error or `agy`'s stderr contains `RESOURCE_EXHAUSTED`, `code 429`, or
+`quota reached` (case-insensitive), the adapter appends a line starting
+`agy account quota is exhausted:` to stderr. The loop then stops and logs an
+ERROR naming the role, the provider, the reset time when `agy` gave one (for
+example `Resets in 72h11m35s`), and the fix: wait for the reset, or map the
+role to another provider under `agents.<role>` in the dispatch config, then
+start the dispatcher again. An out-of-quota resumed run is not rerun fresh.
+A role with a `fallback` fails over first, since `quota reached` and the
+appended line count as a rate or usage limit; the loop stops only when the
+result it gets still carries the line. The markers were taken from `agy`
+1.4.4's own log (`RESOURCE_EXHAUSTED (code 429): Individual quota reached.
+...`) and its stored result error (`Individual quota reached. ...`), so both
+the result error and stderr are checked. The reset time `agy` reports does not
+mean every request fails until then: a small `agy -p` request has succeeded
+inside that window, so the limit may block only larger requests. Only the Antigravity adapter checks
+them; quota text from other providers gets normal failure handling.
+
 Antigravity-mapped roles need these entries in
 `~/.gemini/antigravity-cli/settings.json`. Under `permissions.allow`, one
 anchored regex grant per command, so each covers the command with any

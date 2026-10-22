@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from llm_handoff.provider_auth import find_auth_failure
+from llm_handoff.provider_auth import QUOTA_EXHAUSTED_MARKER, find_auth_failure
 
 
 FailoverReason = Literal["launch", "auth", "rate_limit", "timeout"]
@@ -44,6 +44,11 @@ RATE_LIMIT_MARKERS = (
     "usage limit reached",
     "usage_limit_reached",
     "hit your usage limit",
+    # agy's result error for a used-up account quota: "Individual quota
+    # reached. ... Resets in 72h11m35s."
+    "quota reached",
+    # The line the agy adapter appends when the account quota is used up.
+    QUOTA_EXHAUSTED_MARKER,
 )
 
 TIMEOUT_MARKER = "process timed out after"

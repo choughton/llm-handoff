@@ -16,6 +16,18 @@ This project follows a simple pre-release changelog until the first public tag.
   as a partial ledger edit. `init` copies a `COMPLETED_WORK.md` template, and
   the reference `PROJECT_STATE.md` no longer has a ledger section. This
   repository's own history moved to `COMPLETED_WORK.md`.
+- An `agy` role whose account quota is used up now stops the dispatch loop
+  at once. Before, every dispatch failed the same way, the loop retried
+  until `max_consecutive_failures`, and the log showed only
+  `Antigravity result (status=ERROR)` and the exit code. The Antigravity
+  adapter now logs a non-`SUCCESS` result's error text at ERROR level. When
+  that error or `agy`'s stderr contains `RESOURCE_EXHAUSTED`, `code 429`, or
+  `quota reached`, it appends an `agy account quota is exhausted:` line; the
+  loop then logs the role, provider, reset time if given, and the fix (wait,
+  or map the role to another provider in the dispatch config), skips the
+  fresh-conversation rerun for a resumed run, and the supervisor stops with
+  reason `quota_exhausted`. A configured `fallback` still runs first:
+  failover now also treats `quota reached` as a rate or usage limit.
 - The `agy` agent files under `.agents/agents/` (root and reference
   workflow) list the base commands the `agy` settings grant and say the
   repository's verification commands are granted too, point to
