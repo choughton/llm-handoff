@@ -4261,6 +4261,36 @@ def test_preflight_explicit_prefix_claude_rule_respects_word_boundary(
     assert all("denied provider grant" in warn for warn in warns)
 
 
+def test_preflight_claude_remedy_escapes_control_characters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checks = _preflight(
+        tmp_path,
+        monkeypatch,
+        CLAUDE_BLOCK,
+        ("python -m pytest \x1b[2Ktests -q", "npm test \x07--watch"),
+        available=("python", "npm"),
+    )
+
+    warns = _warns(checks)
+    assert len(warns) == 2, warns
+    output = "\n".join(warns)
+    assert "\x1b" not in output and "\x07" not in output
+    assert "`Bash(python -m pytest \\x1b[2Ktests -q)`" in warns[0]
+    assert "`Bash(npm test \\x07--watch)`" in warns[1]
+
+
+def test_claude_denial_remedy_escapes_the_executable() -> None:
+    agent_config = config_module.AgentConfig(provider="claude", binary="claude")
+    for tools in ((), ("Bash(to\x1bol:*)",)):
+        remedy = doctor._claude_denial_remedy(
+            agent_config, "to\x1bol --run", "to\x1bol", tools
+        )
+        assert "\x1b" not in remedy
+        assert "`Bash(to\\x1bol:*)`" in remedy
+        assert "`Bash(to\\x1bol --run)`" in remedy
+
+
 @pytest.mark.parametrize(
     ("rule", "command", "allowed"),
     [

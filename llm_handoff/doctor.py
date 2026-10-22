@@ -1903,10 +1903,18 @@ def _claude_denial_remedy(
     executable: str | None,
     tools: tuple[str, ...],
 ) -> str:
-    """Name the allowed_tools change that would let a Claude launch run it."""
-    exact_rule = f"`Bash({command})`"
+    """Name the allowed_tools change that would let a Claude launch run it.
+
+    ``command`` and ``executable`` come from an agent-written Work Packet, so
+    both are passed through ``_ascii_entry`` before they reach the suggested
+    rules; a raw escape sequence could otherwise rewrite terminal output.
+    """
     is_interpreter = executable in _INTERPRETER_EXECUTABLES
     near = _claude_rules_for_executable(tools, executable)
+    command = _ascii_entry(command)
+    if executable is not None:
+        executable = _ascii_entry(executable)
+    exact_rule = f"`Bash({command})`"
     note = ""
     if near:
         note = (
