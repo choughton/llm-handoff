@@ -265,6 +265,9 @@ handbook and the code from drifting.
   status pauses or schedules pause recovery instead of dispatching the
   requested role. An unchanged handoff keeps the stale-finalizer recovery
   to planner, and the finalizer `verified_pass` evidence exemption stays.
+  A chat answer that rewrites the handoff after the finalizer returned,
+  including while its handoff is validated, is followed as a chat takeover
+  and validated as one (PR #258 Finding 1), never passed as the finalizer's.
   Tests: `tests/ported/test_orchestrator.py`, `tests/test_work_claim.py`.
 - TRANS-5 (was TRANS-3): One table, two readers. Write the
   producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under

@@ -1632,8 +1632,20 @@ def _run_loop(
                     config, "finalizer", handoff_content, log_fn
                 ),
             )
+            # A takeover request left from before this dispatch is stale, as
+            # before a shared-branch dispatch. The finalizer is never stopped
+            # by one; a request made from here on is followed after it returns.
+            clear_takeover()
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
             chat_session.wait_for_answers(log_fn)
+            # A finalizer that wrote its handoff while an answer ran left a
+            # request naming its own handback, not a chat rewrite (CHAT-35).
+            # Only the inspected request is cleared: a newer one stays.
+            inspected_takeover = pending_takeover()
+            if inspected_takeover is not None and _takeover_is_role_handback(
+                config, "finalizer", inspected_takeover.handoff_sha
+            ):
+                clear_takeover_if(inspected_takeover.generation)
             _clear_dispatcher_handoff_after_dispatch(config, log_fn)
             # CHAT-34: keep the returned finalizer session for @finalizer
             # chat, whatever its exit code or output. In memory only: the
@@ -1771,6 +1783,31 @@ def _run_loop(
                 and story_baseline.handoff_sha == current_cycle.handoff_sha
                 else handoff_content
             )
+            # A chat answer can rewrite HANDOFF.md after the finalizer
+            # returned. Each wait below lets running answers settle and
+            # follows a rewrite one made as a chat takeover, validated as
+            # one, so the finalizer gate never passes a chat's handoff and
+            # no chat rewrite is followed unvalidated.
+            late_finalizer_takeover = partial(
+                _late_chat_takeover,
+                config,
+                route="finalizer",
+                role_label="finalizer",
+                log=log_fn,
+                in_flight_state=in_flight_state,
+                pre_dispatch_state=None,
+                story_key=None,
+                protected_before=protected_before,
+                assignment_content=handoff_content or "",
+                prior_handoff_sha=current_cycle.handoff_sha,
+                story_check_baseline=finalizer_story_baseline or "",
+                stop_watch=stop_watch,
+                operator_prompt=operator_prompt,
+            )
+            late_takeover = late_finalizer_takeover()
+            if late_takeover is not None:
+                pending_chat_takeover = (late_takeover, current_cycle)
+                continue
             finalizer_validation = _validate_finalizer_rewrite(
                 config,
                 handoff_content=handoff_content,
@@ -1826,7 +1863,12 @@ def _run_loop(
                     pending_planner_recovery = pause.pending_planner_recovery
                 continue
 
-            chat_session.wait_for_answers(log_fn)
+            # An answer that rewrote HANDOFF.md while the finalizer handoff
+            # was validated is followed as a takeover, not as the finalizer's.
+            late_takeover = late_finalizer_takeover()
+            if late_takeover is not None:
+                pending_chat_takeover = (late_takeover, current_cycle)
+                continue
             role_chat_marker = _chat_marker_after_role(
                 _commit_chat_changes_after_role(
                     config=config,
