@@ -152,7 +152,7 @@ into the target repository between `<!-- llm-handoff:linear:begin -->` and
 | [llm_handoff/prompt_templates/linear/roles/frontend.md](../llm_handoff/prompt_templates/linear/roles/frontend.md) | `docs/handoff/HANDBOOK.md` | Frontend evidence comment on handback. |
 | [llm_handoff/prompt_templates/linear/roles/auditor.md](../llm_handoff/prompt_templates/linear/roles/auditor.md) | `docs/handoff/HANDBOOK.md` | Pass and fail issue-state transitions, user-attention steps. |
 | [llm_handoff/prompt_templates/linear/roles/validator.md](../llm_handoff/prompt_templates/linear/roles/validator.md) | `docs/handoff/HANDBOOK.md` | Read-only check that the latest evidence comment matches `HANDOFF.md`. |
-| [llm_handoff/prompt_templates/linear/roles/finalizer.md](../llm_handoff/prompt_templates/linear/roles/finalizer.md) | `docs/handoff/HANDBOOK.md` | Finalizer is read-only in Linear mode: no comments, no issue updates. |
+| [llm_handoff/prompt_templates/linear/roles/finalizer.md](../llm_handoff/prompt_templates/linear/roles/finalizer.md) | `docs/handoff/HANDBOOK.md` | Finalizer is comment-only in Linear mode: after an approved epic close it posts one `epic_closed` evidence comment on the last story's leased issue, and makes no issue-state, label, or field updates. |
 
 ## Reference Workflow Template
 

@@ -10,20 +10,12 @@ history.
 
 ## Current Status
 
-- **Active Epic:** HUMAN-EDITS (epic 21). HUMAN-1 (spot an operator edit)
-  was approved at `b34f02c` and merged in PR #263 (`10fb8ad`). HUMAN-2
-  (route an invalid or free-form operator edit to the planner) was
-  approved at `f54f3c8` and merged in PR #264 (`d9bb81f`). HUMAN-3 (finish
-  operator stories from a note) was approved at `6874c69` and merged in PR
-  #265 (`6e1e05d`). HUMAN-4 (hand the operator something applyable) was
-  approved at `54db19c` and merged in PR #266 (`5e4a0a1`). HUMAN-5 (docs)
-  is implemented and awaits audit. HUMAN-6 remains.
-  TRANSITION-RULES (epic 17) closed with TRANS-6, approved at `fbb8e4c` and
-  merged in PR #261 (`9018e33`).
-- **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
-  (TIDY-12 and TIDY-13 are wording nits filed by the operator on
-  2026-10-21). TIDY-8 is a backend story the planner picks by fit (the
-  operator confirmed both events on 2026-10-20).
+- **Active Epic:** TIDY (epic 19). TIDY-8 was split into TIDY-14 and
+  TIDY-15. TIDY-14 (epic-close Linear evidence) is implemented and awaits
+  audit; TIDY-15, TIDY-12, and TIDY-13 remain, in that order. HUMAN-EDITS
+  (epic 21) closed with HUMAN-6, approved at `d3da792` and merged in PR #268
+  (`f4c0e3e`).
+- **Parked Epic:** None.
 - **Other Open Epics:** ACTIVE-PLANNER and ESCALATION-RECONCILE still wait
   on their triggers, WORK-INTAKE needs a design check, and LINEAR-SWITCH has
   low urgency.
@@ -430,14 +422,6 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `.claude/` only. Batched (operator, 2026-10-20): ride along with the next
   `.claude/` operator story's `user` route, as the Fit line says. Riding
   with TPM-9 (planner, 2026-10-20). Approved at `4a8f9fc`, merged in PR #216.
-- TIDY-8: Linear evidence events for epic closes and handoff repairs
-  (operator confirmed both events on 2026-10-20). (a) In Linear mode the finalizer posts
-  nothing, so an epic close leaves no evidence comment; add an `epic_closed`
-  event to `LINEAR_EVIDENCE_EVENTS` and the evidence comment template, posted
-  on the last story's issue. (b) A validator or planner repair of a leased
-  handoff posts nothing; add a `handoff_repaired` event so the
-  `LINEAR-EVIDENCE` check accepts a repaired lease whose producer changed.
-  Vanilla mode is unchanged. Closes source-dispatcher comparison (a) and (b).
 - TIDY-9: Merge-aware audit range. Approved at `935b9c8`, merged in PR #184.
   When a story branch has merged its base
   branch after the saved story base, the audit fan-out range (base from
@@ -498,68 +482,22 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   workflow's `dispatch_config.yaml` for the same stale sentence. Protected
   path; list it in Files in scope. Files: `dispatch_config.example.yaml`,
   `CHANGELOG.md`.
-
-### 21. HUMAN-EDITS - the planner makes sense of a free-form HANDOFF.md
-
-Fit: operator experience; pick it right after TRANSITION-RULES closes.
-Nothing blocks it. Operator direction (2026-10-22): `HANDOFF.md` is meant to
-be human-readable, so it must be human-editable too. An operator should be
-able to replace the whole file with a plain sentence such as "I made the
-edits" and have the planner work out what happened, instead of having to
-write valid frontmatter.
-
-Why: on 2026-10-22 the operator finished the TRANS-6 `.claude/` operator
-story by hand and the loop rejected it four ways. Edits copied out of
-Markdown carried a stray `python` line from a code fence and missed one
-change; the commit included `HANDOFF.md`, which blocks the operator-commit
-publish; and the hand-written frontmatter paired `status: escalate_to_user`
-with `next_agent: auditor`. Today an invalid but parseable handoff gets a
-cleanup-only planner pass, and the operator has to know to type a precise
-sentence at the prompt instead. Nothing tells the planner that a person
-wrote the change or what the handoff said before it.
-
-- HUMAN-1: Spot an operator edit. The dispatcher already knows the handoff
-  hash each dispatch left; a change it did not make, seen between
-  dispatches or while paused at the operator prompt, is an operator edit.
-  Save the last valid handoff the dispatcher saw (for example
-  `logs/dispatch/operator-edit/previous-handoff.md`, written with the
-  existing link-resistant writer) and log `Operator edited HANDOFF.md`.
-  Valid operator edits route as today.
-- HUMAN-2: Route an invalid or free-form operator edit to the planner. When
-  the edited file has no frontmatter, unparseable frontmatter, or
-  frontmatter that fails validation, dispatch the planner once with the
-  operator's text (quoted with the operator-text delimiters from HARD-2),
-  the saved previous handoff, and an instruction to inspect Git state (new
-  commits since the previous handoff, uncommitted files, branch) and write
-  a valid handoff for what the operator meant. This replaces the
-  cleanup-only pass for operator edits; role-written invalid handoffs keep
-  today's path. If the planner cannot tell, it routes to `user` with one
-  plain question. `--dry-run` prints the decision only.
-- HUMAN-3: Finish operator stories from a note. When the previous handoff
-  routed an operator story to `user`, the planner instruction also says to
-  compare the operator's commits against the story's requested edits and to
-  check that they do not change `HANDOFF.md` and that nothing else is
-  uncommitted. Only when publish would adopt the commit (`publish.mode: pr`
-  with `base_branch` and `branch_prefix` set, as in
-  `llm_handoff/publish.py` `publish_story`) does it also require the
-  adoption shape: on the base branch, exactly one non-merge commit ahead of
-  `<remote>/<base_branch>`. In other publish modes the operator's commits
-  are audited where they are, with HEAD as `scope_sha`. A clean result
-  routes to `auditor` with the right `close_type` and `scope_sha`; anything
-  off routes to `user` naming each problem and the exact fix in plain words.
-- HUMAN-4: Hand the operator something applyable. A planner or tpm that
-  routes an operator story to `user` also writes the edits as full file
-  contents or an applyable patch under `logs/dispatch/operator/`, plus one
-  copy-paste command block, instead of prose edits inside Markdown fences,
-  and the handoff says the operator may answer with a plain sentence once
-  done. Update the role prompts (`.agents/`, `.codex/`, handbook, reference
-  copies); the Claude prompts are HUMAN-6.
-- HUMAN-5: Docs. README and `docs/handoff/HANDBOOK.md` say an operator may
-  edit `HANDOFF.md` in plain words at any pause, what the planner then does,
-  and that frontmatter is optional for a person; CONFIGURATION.md documents
-  the saved previous handoff and the routing.
-- HUMAN-6: Operator edit of the Claude planner and tpm agents (routes to
-  `user`) for HUMAN-3 and HUMAN-4, root and reference-workflow copies.
+- TIDY-14: Epic-close Linear evidence (was TIDY-8). Add the finalizer-only
+  `epic_closed` event, comment permission, close-posting instructions on the
+  last leased issue, and matching validator comparisons. Verify the event
+  contract, tool grants, and generated templates. Closes source-dispatcher
+  comparison (a).
+- TIDY-15: Handoff-repair Linear evidence (was TIDY-8). Add
+  `handoff_repaired` for planner and validator repairs of an existing lease,
+  with the repaired outgoing routing fields and unchanged issue identity.
+  Update both planner template variants, validator repair instructions,
+  comment-only validator grants, and evidence comparisons so a repaired
+  lease's new producer is represented. Preserve read-only report turns,
+  existing lease-opening/user-attention behavior, and vanilla mode. Verify
+  the repair event contract, grants, and generated templates; inspect
+  dispatcher-authored repair paths when scoping this story so report-only or
+  dispatcher-authored handoffs are not mistaken for agent comment-posting
+  turns. Closes source-dispatcher comparison (b).
 
 ## Open Followups
 

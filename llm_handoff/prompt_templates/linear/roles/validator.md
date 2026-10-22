@@ -29,10 +29,13 @@ Evidence check. Run this read-only check on every Linear-mode turn:
      events need not carry `commit_sha`, so do not compare it for them.
 4. Apply the `producer`, `next_agent`, and `status` comparisons only when the
    handoff `producer` is a role the evidence-comment contract allows to post
-   an event. The roles `validator` and `finalizer` post no evidence
-   comments, so when either one wrote the handoff, the latest evidence
-   comment necessarily comes from an earlier turn. Then compare only
-   `issue` and `tracker_url`, and run the contract checks in step 2.
+   an event. A `finalizer` handoff is one of these: its latest evidence
+   comment is the `epic_closed` comment on the last story's issue, so compare
+   that comment's `producer`, `next_agent`, and `status` with the handoff as
+   well. The role `validator` posts no evidence comments, so when it wrote
+   the handoff, the latest evidence comment necessarily comes from an
+   earlier turn. Then compare only `issue` and `tracker_url`, and run the
+   contract checks in step 2.
 5. Each of these also counts as a mismatch: the handoff has no
    `tracker_issue`, the issue has no evidence comment, or the latest evidence
    comment's `producer` differs from the handoff `producer` when step 4
