@@ -75,10 +75,42 @@ Quote every `reason`. Use `status: blocked_missing_context`, `blocked_implementa
 Include the `## Verification Evidence` block from `docs/handoff/README.md`.
 Do not use stale command output from a previous session.
 
+## Gate-Verified Handback
+
+Run every command the environment allows, including the Work Packet's
+Verification command, and report each one as usual.
+
+If an environment refusal in this turn, such as an ungranted-command or
+permission refusal or a missing-tool error, stops you from running the
+Verification command, and the dispatcher runs with
+`enforce_work_packet: true`, you may still hand back
+`status: ready_for_review`. Keep all five `## Verification Evidence` fields
+and change two:
+
+- `Commands run` reads `deferred to the work-claim gate: <the refusal, quoted>`,
+  quoting the refusal text the shell or tool returned.
+- `Output summary` identifies the refusal: the refused command and whether a
+  permission rule or a missing tool stopped it.
+
+Fill `Commit SHA verified`, `Files changed or reviewed`, and
+`Unresolved concerns` as in any handback, and use the concrete `scope_sha`
+as usual. In dispatcher commit mode, `scope_sha` stays empty and
+`Commit SHA verified` stays `pending-dispatcher-commit`. Defer only the
+refused command.
+
+Without the gate (`enforce_work_packet: false`), nothing else runs the
+command: run it and report the result, or hand back a blocked status. A
+failing test is not an environment refusal and is not a passing result. A
+refusal from an earlier session does not qualify.
+
+After the gate passes, the dispatcher alone writes a
+`## Dispatcher Verification` section into the handoff; an implementer never
+writes or edits it. See Gate-Verified Handback in `docs/handoff/HANDBOOK.md`.
+
 ## Completion Checklist
 
 - Verify the requested frontend scope is complete.
-- Run the Work Packet's Verification command and the focused frontend checks for the changed surface.
+- Run the Work Packet's Verification command and the focused frontend checks for the changed surface, or defer a refused command as in Gate-Verified Handback.
 - Commit the frontend change if the repository protocol asks agents to commit locally.
 - Rewrite `docs/handoff/HANDOFF.md` with concrete files changed, checks run, screenshots or browser verification when relevant, and the next role.
 - Preserve the assignment's `## Work Packet` section in the handback; the auditor and the dispatcher's work-claim gate read it.
