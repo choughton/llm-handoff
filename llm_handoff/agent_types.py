@@ -56,6 +56,11 @@ class DispatchResult:
     # Optional message run_loop logs when it stops for stop_loop; without
     # it, run_loop logs the audit-reviewer start failure message.
     stop_reason: str | None = None
+    # Set when the role's fallback agent ran this dispatch. ``session_id``
+    # is then None so no later dispatch resumes it; ``fallback_session_id``
+    # keeps the fallback's session for ``@role`` chat only.
+    fallback_ran: bool = False
+    fallback_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,10 @@ class SubagentResult:
     usage: dict[str, object] | None = None
     # Provider session id (Claude stream-json `system`/`init` event), or None.
     session_id: str | None = None
+    # As on DispatchResult: the fallback ran, and its session is kept for
+    # ``@role`` chat only.
+    fallback_ran: bool = False
+    fallback_session_id: str | None = None
 
 
 @dataclass(frozen=True)

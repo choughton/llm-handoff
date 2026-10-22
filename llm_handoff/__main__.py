@@ -155,7 +155,9 @@ def _role_session_lookup(
     Reads ``chat_session``'s in-memory entries at call time, never the
     repository dispatch record. Returns None when no entry is kept, it has no
     session id or provider, or the role has no configured agent. The recorded
-    provider and story id are kept; the worker checks provider support.
+    provider and story id are kept; the worker checks provider support. A
+    dispatch the role's fallback ran resumes with the fallback's agent
+    config, so chat launches the CLI that owns the session.
     """
 
     def lookup(role: str) -> RoleSession | None:
@@ -163,6 +165,8 @@ def _role_session_lookup(
         if entry is None or entry.session_id is None or entry.provider is None:
             return None
         agent_config = config.agents.get(cast(AgentRole, role))
+        if agent_config is not None and entry.fallback:
+            agent_config = agent_config.fallback
         if agent_config is None:
             return None
         return RoleSession(

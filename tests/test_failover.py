@@ -335,6 +335,9 @@ def test_fallback_starts_without_the_primary_session(
     assert result.exit_code == 0
     assert result.session_id is None
     assert result.session_invalidated is True
+    # No later dispatch resumes it, but @planner chat can still reach it.
+    assert result.fallback_ran is True
+    assert result.fallback_session_id == "codex-thread"
 
 
 def test_invoke_role_without_fallback_returns_primary_failure(
@@ -464,6 +467,8 @@ def test_support_role_failover_drops_the_fallback_session_id(
     assert result.exit_code == 0
     assert result.session_id is None
     assert result.usage == {"input_tokens": 5}
+    assert result.fallback_ran is True
+    assert result.fallback_session_id == "fallback-session"
 
 
 def test_support_role_codex_failover_drops_the_codex_thread_id(

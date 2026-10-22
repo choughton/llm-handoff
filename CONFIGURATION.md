@@ -2753,6 +2753,11 @@ Rules and limits:
 - One level only: a fallback cannot have its own fallback.
 - The fallback starts a fresh session. When it runs, the dispatcher also drops
   the planner's saved session, so the next planner dispatch starts fresh.
+- `@<role>` chat still reaches a role whose fallback ran, for every role and
+  the finalizer. No later dispatch resumes the fallback's session, but the
+  dispatch record and the chat entry name the fallback's provider and session
+  id, and chat resumes that session with the fallback's own settings
+  (`provider`, `binary`, `model`).
 - The fallback provider needs the same role files the primary needs, such as
   the Claude subagent, Codex skill, or `agy` agent file for that role.
 - If the fallback also fails, its result is the dispatch result and the

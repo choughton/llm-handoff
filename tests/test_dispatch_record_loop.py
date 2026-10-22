@@ -15,7 +15,11 @@ from llm_handoff import __main__ as main_module
 from llm_handoff import chat_session, orchestrator
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.chat_takeover import ChatTakeover
-from llm_handoff.config import DISPATCH_RECORD_STATE_PATH, DispatchConfig
+from llm_handoff.config import (
+    DISPATCH_RECORD_STATE_PATH,
+    AgentConfig,
+    DispatchConfig,
+)
 from llm_handoff.dispatch_record import (
     DispatchEntry,
     dispatch_record_path,
@@ -1158,3 +1162,110 @@ def test_the_in_memory_entry_ignores_the_record_state(tmp_path: Path) -> None:
         "f-1",
     )
     assert not dispatch_record_path(tmp_path).exists()
+
+
+# Failover: chat still reaches the fallback agent's session.
+_CLAUDE_FALLBACK = AgentConfig(
+    provider="claude", binary="claude", model="claude-opus-5-5"
+)
+
+
+def _config_with_fallback(tmp_path: Path, role: str) -> DispatchConfig:
+    agents = dict(_config(tmp_path).agents)
+    agents[role] = AgentConfig(
+        provider="antigravity", binary="agy", fallback=_CLAUDE_FALLBACK
+    )
+    return _config(tmp_path, agents=agents)
+
+
+def _failover_result(session_id: str | None = "claude-sess") -> DispatchResult:
+    return DispatchResult(
+        stdout="",
+        stderr="",
+        exit_code=0,
+        elapsed_seconds=0.0,
+        session_id=None,
+        session_invalidated=True,
+        fallback_ran=True,
+        fallback_session_id=session_id,
+    )
+
+
+@pytest.mark.parametrize("role", ["planner", "backend", "tpm"])
+def test_a_failover_dispatch_keeps_the_fallback_session_for_chat(
+    tmp_path: Path, role: str
+) -> None:
+    config = _config_with_fallback(tmp_path, role)
+
+    orchestrator._remember_role_session(
+        config, route=role, story_id="S1", dispatch_result=_failover_result()
+    )
+
+    assert _latest(role) == (role, "S1", "claude", "claude-sess")
+    entry = chat_session.latest_role_dispatch(role)
+    assert entry is not None and entry.fallback is True
+    session = main_module._role_session_lookup(config)(role)
+    assert session is not None
+    assert session.provider == "claude"
+    assert session.session_id == "claude-sess"
+    # Chat resumes with the fallback's CLI, not the primary agy config.
+    assert session.agent_config == _CLAUDE_FALLBACK
+
+
+def test_a_failover_dispatch_records_the_fallback_provider_and_session(
+    tmp_path: Path,
+) -> None:
+    config = _config_with_fallback(tmp_path, "planner")
+
+    orchestrator._record_role_dispatch(
+        config,
+        route="planner",
+        story_id="S1",
+        dispatch_result=_failover_result(),
+        log=lambda *_: None,
+        state=orchestrator._DispatchRecordState(enabled=True),
+    )
+
+    assert _summary(_record(tmp_path)) == [("planner", "S1", "claude", "claude-sess")]
+
+
+def test_a_primary_dispatch_still_records_the_primary(tmp_path: Path) -> None:
+    config = _config_with_fallback(tmp_path, "planner")
+    result = DispatchResult(
+        stdout="", stderr="", exit_code=0, elapsed_seconds=0.0, session_id="agy-conv"
+    )
+
+    orchestrator._remember_role_session(
+        config, route="planner", story_id="S1", dispatch_result=result
+    )
+
+    assert _latest("planner") == ("planner", "S1", "antigravity", "agy-conv")
+    session = main_module._role_session_lookup(config)("planner")
+    assert session is not None
+    assert session.agent_config == config.agents["planner"]
+
+
+def test_a_failover_finalizer_keeps_the_fallback_session_for_chat(
+    tmp_path: Path,
+) -> None:
+    agents = dict(_config(tmp_path).agents)
+    agents["finalizer"] = AgentConfig(
+        provider="codex", binary="codex", fallback=_CLAUDE_FALLBACK
+    )
+    config = _config(tmp_path, agents=agents)
+
+    class _Result:
+        parse_error = None
+        subagent_exit_code = 0
+        session_id = None
+        fallback_ran = True
+        fallback_session_id = "claude-fin"
+
+    orchestrator._remember_finalizer_session(
+        config, story_id="S1", ledger_result=_Result()
+    )
+
+    assert _latest("finalizer") == ("finalizer", "S1", "claude", "claude-fin")
+    session = main_module._role_session_lookup(config)("finalizer")
+    assert session is not None
+    assert session.agent_config == _CLAUDE_FALLBACK
