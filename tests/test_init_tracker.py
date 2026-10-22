@@ -554,8 +554,10 @@ def test_default_handbook_text_pins_the_tpm_absent_block() -> None:
 
 # SHA-256 of the tpm-absent Linear handbook text. GROOMING changes only the
 # tpm-configured templates, so this rendering must stay byte-identical.
+# Re-pinned by TIDY-14, which adds the `epic_closed` event and changes the
+# finalizer and validator sections (shared by both renderings).
 TPM_ABSENT_HANDBOOK_SHA256 = (
-    "59980cf6137cfbf7b1069e67842b5b8280e4732293e2837d470d9a1a3e76b292"
+    "be7673b12104ebab83cbe9a3fd6dfc7298ad7a91eea4a161290e9db07be6ee09"
 )
 
 
@@ -778,7 +780,7 @@ def test_backend_auditor_and_finalizer_tools_lines_add_linear_tools(
         ),
         FINALIZER_AGENT: (
             _FINALIZER_TOOLS,
-            (b"get_issue", b"list_issues", b"list_comments"),
+            (b"get_issue", b"list_issues", b"list_comments", b"save_comment"),
         ),
     }
     for relative_path, (base, tools) in expected.items():

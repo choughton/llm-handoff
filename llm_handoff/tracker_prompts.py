@@ -34,6 +34,7 @@ LINEAR_EVIDENCE_EVENTS: dict[str, tuple[AgentRole, ...]] = {
     "audit_failed": ("auditor",),
     "user_attention_requested": ("planner", "tpm", "auditor"),
     "user_attention_cleared": ("planner", "tpm", "auditor"),
+    "epic_closed": ("finalizer",),
 }
 
 # Events whose comment must carry commit_sha, commands_run, output_summary,

@@ -235,11 +235,56 @@ def test_validator_exempts_roles_that_post_no_evidence_comments() -> None:
     text = " ".join(linear_role_section("validator").split())
     posters = {role for roles in LINEAR_EVIDENCE_EVENTS.values() for role in roles}
     non_posters = [role for role in LINEAR_PROMPT_ROLES if role not in posters]
-    assert non_posters == ["validator", "finalizer"]
+    assert non_posters == ["validator"]
     for role in non_posters:
         assert f"`{role}`" in text, role
-    assert "post no evidence comments" in text
+    assert "posts no evidence comments" in text
     assert "compare only `issue` and `tracker_url`" in text
+    step_four = text[text.index("4. Apply the") : text.index("5. Each of these")]
+    assert "The role `validator` posts no evidence comments" in step_four
+    assert "`finalizer` and" not in step_four
+    assert "`validator` and `finalizer`" not in step_four
+
+
+def test_validator_compares_finalizer_epic_closed_evidence() -> None:
+    text = " ".join(linear_role_section("validator").split())
+    step_four = text[text.index("4. Apply the") : text.index("5. Each of these")]
+    assert "A `finalizer` handoff is one of these" in step_four
+    assert "`epic_closed` comment on the last story's issue" in step_four
+    assert (
+        "compare that comment's `producer`, `next_agent`, and `status` with the "
+        "handoff as well"
+    ) in step_four
+    # Required-event SHA comparison and the pending-commit exception stay.
+    assert "`pending-dispatcher-commit` when `commit_mode` is `dispatcher`" in text
+    assert "On a turn that asks only for a validation report and forbids file" in (
+        text
+    )
+
+
+def test_finalizer_section_posts_epic_closed_on_leased_issue_only() -> None:
+    raw = linear_role_section("finalizer")
+    text = " ".join(raw.split())
+    for phrase in (
+        "Your one Linear write is the `epic_closed` evidence comment",
+        "Change no issue state, labels, or fields, select no new issue",
+        "only when the auditor approved the epic close",
+        "`close_type: epic`",
+        "names a leased issue in `tracker_issue` and `tracker_url`",
+        "the last story's issue",
+        "set the comment's `issue` and `tracker_url` to those incoming values",
+        "Set its `producer` to `finalizer`",
+        "its `next_agent` and `status` to the values your outgoing "
+        "`HANDOFF.md` writes",
+        "before you rewrite `HANDOFF.md`",
+        "keep `tracker_issue` and `tracker_url` unchanged",
+        "Never guess an issue.",
+        "`status: blocked_missing_context` with `next_agent: user`",
+        "one specific question for the user",
+    ):
+        assert phrase in text, phrase
+    assert "save_issue" not in raw
+    assert "save_comment" not in raw
 
 
 def test_validator_reports_without_editing_on_validation_only_turns() -> None:
@@ -600,6 +645,7 @@ def test_evidence_event_role_mapping() -> None:
         "audit_failed": ("auditor",),
         "user_attention_requested": ("planner", "tpm", "auditor"),
         "user_attention_cleared": ("planner", "tpm", "auditor"),
+        "epic_closed": ("finalizer",),
     }
     assert LINEAR_EVIDENCE_REQUIRED_EVENTS == (
         "implementation_handoff",
@@ -673,8 +719,17 @@ def test_contract_allows_pending_marker_in_dispatcher_commit_mode() -> None:
     assert "`pending-dispatcher-commit`" in auditor
 
 
+def test_epic_closed_is_finalizer_only_and_not_a_required_event() -> None:
+    assert LINEAR_EVIDENCE_EVENTS["epic_closed"] == ("finalizer",)
+    for event, roles in LINEAR_EVIDENCE_EVENTS.items():
+        if event != "epic_closed":
+            assert "finalizer" not in roles, event
+    assert "epic_closed" not in LINEAR_EVIDENCE_REQUIRED_EVENTS
+    assert "| `epic_closed` | `finalizer` |" in linear_evidence_contract()
+
+
 @pytest.mark.parametrize("role", ["validator", "finalizer"])
-def test_read_only_roles_mention_no_write_tools(role: str) -> None:
+def test_validator_and_finalizer_sections_name_no_write_tools(role: str) -> None:
     text = linear_role_section(role)
     assert "save_comment" not in text
     assert "save_issue" not in text

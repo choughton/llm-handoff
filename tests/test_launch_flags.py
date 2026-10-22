@@ -952,6 +952,7 @@ _EXPECTED_LINEAR_TOOLS: dict[str, tuple[str, ...]] = {
         "mcp__linear__get_issue",
         "mcp__linear__list_issues",
         "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
     ),
 }
 _DEFAULT_GUIDANCE = claude.claude_shell_guidance(config.CLAUDE_DEFAULT_ALLOWED_TOOLS)

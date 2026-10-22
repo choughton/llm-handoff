@@ -6,6 +6,15 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Linear mode now records epic closes (TIDY-14): a new finalizer-only
+  `epic_closed` evidence event, a comment-only `save_comment` grant for the
+  finalizer (no `save_issue`), and finalizer prompt text that posts the
+  comment on the last story's leased issue before the onward handoff, keeps
+  `tracker_issue` and `tracker_url`, never guesses a missing lease, and routes
+  to `user` with `blocked_missing_context` when the issue cannot be
+  established. The validator's evidence check now compares a finalizer
+  handoff's `producer`, `next_agent`, and `status` with that comment.
+  `epic_closed` is not a required-evidence event. Vanilla mode is unchanged.
 - README, CONFIGURATION.md, and the handbook (both copies) now document the
   operator-edit workflow (HUMAN-5): a person may replace `HANDOFF.md` with
   plain words such as `I made the edits.` at any pause, while agent-written

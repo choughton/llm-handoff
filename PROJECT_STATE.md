@@ -10,13 +10,12 @@ history.
 
 ## Current Status
 
-- **Active Epic:** None. HUMAN-EDITS (epic 21) closed with HUMAN-6, approved
-  at `d3da792` and merged in PR #268 (`f4c0e3e`). The planner picks the next
-  epic by fit from the Backlog.
-- **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
-  (TIDY-12 and TIDY-13 are wording nits filed by the operator on
-  2026-10-21). TIDY-8 is a backend story the planner picks by fit (the
-  operator confirmed both events on 2026-10-20).
+- **Active Epic:** TIDY (epic 19). TIDY-8 was split into TIDY-14 and
+  TIDY-15. TIDY-14 (epic-close Linear evidence) is implemented and awaits
+  audit; TIDY-15, TIDY-12, and TIDY-13 remain, in that order. HUMAN-EDITS
+  (epic 21) closed with HUMAN-6, approved at `d3da792` and merged in PR #268
+  (`f4c0e3e`).
+- **Parked Epic:** None.
 - **Other Open Epics:** ACTIVE-PLANNER and ESCALATION-RECONCILE still wait
   on their triggers, WORK-INTAKE needs a design check, and LINEAR-SWITCH has
   low urgency.
@@ -423,14 +422,6 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   `.claude/` only. Batched (operator, 2026-10-20): ride along with the next
   `.claude/` operator story's `user` route, as the Fit line says. Riding
   with TPM-9 (planner, 2026-10-20). Approved at `4a8f9fc`, merged in PR #216.
-- TIDY-8: Linear evidence events for epic closes and handoff repairs
-  (operator confirmed both events on 2026-10-20). (a) In Linear mode the finalizer posts
-  nothing, so an epic close leaves no evidence comment; add an `epic_closed`
-  event to `LINEAR_EVIDENCE_EVENTS` and the evidence comment template, posted
-  on the last story's issue. (b) A validator or planner repair of a leased
-  handoff posts nothing; add a `handoff_repaired` event so the
-  `LINEAR-EVIDENCE` check accepts a repaired lease whose producer changed.
-  Vanilla mode is unchanged. Closes source-dispatcher comparison (a) and (b).
 - TIDY-9: Merge-aware audit range. Approved at `935b9c8`, merged in PR #184.
   When a story branch has merged its base
   branch after the saved story base, the audit fan-out range (base from
@@ -491,6 +482,22 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   workflow's `dispatch_config.yaml` for the same stale sentence. Protected
   path; list it in Files in scope. Files: `dispatch_config.example.yaml`,
   `CHANGELOG.md`.
+- TIDY-14: Epic-close Linear evidence (was TIDY-8). Add the finalizer-only
+  `epic_closed` event, comment permission, close-posting instructions on the
+  last leased issue, and matching validator comparisons. Verify the event
+  contract, tool grants, and generated templates. Closes source-dispatcher
+  comparison (a).
+- TIDY-15: Handoff-repair Linear evidence (was TIDY-8). Add
+  `handoff_repaired` for planner and validator repairs of an existing lease,
+  with the repaired outgoing routing fields and unchanged issue identity.
+  Update both planner template variants, validator repair instructions,
+  comment-only validator grants, and evidence comparisons so a repaired
+  lease's new producer is represented. Preserve read-only report turns,
+  existing lease-opening/user-attention behavior, and vanilla mode. Verify
+  the repair event contract, grants, and generated templates; inspect
+  dispatcher-authored repair paths when scoping this story so report-only or
+  dispatcher-authored handoffs are not mistaken for agent comment-posting
+  turns. Closes source-dispatcher comparison (b).
 
 ## Open Followups
 

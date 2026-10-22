@@ -2332,7 +2332,7 @@ is computed in memory and never written to the config file.
 | `frontend` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
 | `auditor` | `get_issue`, `list_issues`, `list_comments`, `save_comment`, `save_issue` |
 | `validator` | `get_issue`, `list_issues`, `list_comments` |
-| `finalizer` | `get_issue`, `list_issues`, `list_comments` |
+| `finalizer` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
 
 The `tpm` row applies only when `agents.tpm` is configured; without it, no
 role gets those tools under the `tpm` name.
@@ -2466,7 +2466,13 @@ mismatch on its `LINEAR-EVIDENCE` row as a `FAIL`. The planner posts
 to `success_state` and leaves a failing one in `in_progress_state`, posting
 `audit_passed` or `audit_failed` first, and follows the same user-attention
 steps as the planner, also moving the issue to `blocked_state` when it is set
-and back to `in_progress_state` when it clears the request.
+and back to `in_progress_state` when it clears the request. On an approved
+epic close, the finalizer posts an `epic_closed` comment on the last story's
+leased issue before its onward handoff, keeps `tracker_issue` and
+`tracker_url` in that handoff, and changes no issue; with no leased issue it
+posts nothing and routes to `user` with `status: blocked_missing_context`. The
+validator compares a finalizer handoff's `producer`, `next_agent`, and
+`status` with that comment.
 
 `llm-handoff init --tracker linear` renders this text. It only sets up a
 fresh repository, one with no `dispatch_config.yaml` yet; if that path exists,
