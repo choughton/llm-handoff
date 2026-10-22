@@ -552,26 +552,37 @@ def _finalizer_dispatch_status_errors(
     ]
 
 
-def _tpm_dispatch_producer_errors(
+def _dispatch_producer_errors(
     current: HandoffRouting,
     *,
     previous_route: str | None,
+    dispatcher_authored: bool = False,
 ) -> list[str]:
-    """Errors for a tpm dispatch whose handoff claims another producer.
+    """Errors for a dispatch whose handoff claims another role as producer.
 
-    The dispatcher knows which role it ran, so a tpm cannot opt out of the
-    tpm rules by writing `producer: planner`. A missing producer is already
-    reported as `frontmatter_producer_missing`.
+    The dispatcher knows which role it ran, so no role can borrow another
+    role's rules or authority by writing a different `producer` (a tpm
+    writing `producer: planner`, or a planner or backend writing
+    `producer: auditor` to route to the finalizer). The producer must
+    normalize to the dispatched role under the canonical frontmatter
+    normalization (`normalize_next_agent_value`).
+
+    No check runs when the previous role is unknown (already a
+    `unknown_previous_agent` warning; no identity is invented for it), when
+    the producer is missing (already `frontmatter_producer_missing`), or when
+    the caller validates a handoff the dispatcher wrote itself
+    (`dispatcher_authored=True`), which always names `producer: validator`.
     """
 
-    if previous_route != "tpm" or not current.producer:
+    if dispatcher_authored or previous_route is None or not current.producer:
         return []
-    if normalize_next_agent_value(current.producer) == "tpm":
+    if normalize_next_agent_value(current.producer) == previous_route:
         return []
     return [
-        "frontmatter_producer_mismatch: the dispatched role is `tpm`, but the "
-        f"handoff names producer `{current.producer}`; a tpm handoff sets "
-        "`producer: tpm`."
+        f"frontmatter_producer_mismatch: the dispatched role is "
+        f"`{previous_route}`, but the handoff names producer "
+        f"`{current.producer}`; a {previous_route} handoff sets "
+        f"`producer: {previous_route}`."
     ]
 
 
@@ -752,7 +763,9 @@ def validate_handoff_text(
 
     `dispatcher_authored` is for callers checking a handoff the dispatcher
     wrote itself; agent output is always validated with it false. See
-    `validate_handoff_frontmatter()`.
+    `validate_handoff_frontmatter()`. Agent output must also name the
+    dispatched role as `producer` (`frontmatter_producer_mismatch`); the flag
+    skips only that identity check.
     """
 
     normalized_content = handoff_content.lstrip("\ufeff")
@@ -804,8 +817,10 @@ def validate_handoff_text(
             frontmatter_valid = not frontmatter_result.errors
             frontmatter_producer = frontmatter.producer
             errors.extend(
-                _tpm_dispatch_producer_errors(
-                    frontmatter, previous_route=previous_route
+                _dispatch_producer_errors(
+                    frontmatter,
+                    previous_route=previous_route,
+                    dispatcher_authored=dispatcher_authored,
                 )
             )
             errors.extend(

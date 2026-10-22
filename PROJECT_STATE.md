@@ -28,11 +28,13 @@ belong in commits, handoffs, and pull requests.
   (validator producer: keyword-only `dispatcher_authored` flag on the three
   validation entry points; validator verdicts need it, and
   `ready_for_review`, `next_agent: finalizer`, and `close_type: epic` stay
-  rejected) is implemented; PR #251 Finding 1 (doctor and supervisor
-  preflight rejected valid dispatcher-written verdicts) is fixed in-story
-  with SHA-256 provenance in `logs/dispatch/dispatcher-handoff.json` and
-  Verification Evidence in the publish builders' verdicts, and the story is
-  awaiting audit. TRANS-4 through TRANS-6 remain.
+  rejected; PR #251 Finding 1 fixed in-story with SHA-256 provenance in
+  `logs/dispatch/dispatcher-handoff.json`, accepted by the planner as the
+  final provenance mechanism) was approved at `9642d8a` and merged in PR
+  #251 at `733d53f`. TRANS-4 (every dispatched role's handoff must name
+  that role as `producer`, else `frontmatter_producer_mismatch`;
+  dispatcher-authored handoffs skip only that check) is implemented and
+  awaiting audit. TRANS-5 and TRANS-6 remain.
 - **GROOMING (closed):** GROOM-5, the epic's last story,
   was approved at `6e24d98` and merged in PR #247 at `211bbfd`.
   GROOMING history (opened by the planner after CHAT closed at
@@ -2000,8 +2002,12 @@ handbook and the code from drifting.
   `head_sha`), and the doctor and supervisor regressions use the real
   builders' output. Residual (audit, medium): the record is an unkeyed
   digest in agent-writable `logs/`, so a record an agent plants during a
-  dispatch the dispatcher never returns from is not cleared; moving it
-  out of agent reach or keying it needs a planner decision.
+  dispatch the dispatcher never returns from is not cleared. Decided by
+  the planner on 2026-10-21:
+  accepted within the workspace-local reference architecture (AGENTS.md
+  Scope Boundaries forbid out-of-repo state stores or key daemons,
+  orchestrator post-dispatch validation never reads the record, and
+  evidence, SHA, and finalizer/epic-close rules still apply).
 - TRANS-4 (was part of TRANS-2): Producer matches the dispatched role. The
   post-dispatch validation already knows the previous route; a `producer`
   that names a role other than the one just dispatched is rejected as
