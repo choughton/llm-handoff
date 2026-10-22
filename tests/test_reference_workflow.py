@@ -612,3 +612,25 @@ def test_implementer_prompts_carry_story_fields_forward() -> None:
             "If the assignment has `remaining_stories: []`, "
             "write `remaining_stories: []`"
         ) in content, relative_path
+
+
+def test_role_files_say_to_read_only_the_top_of_the_changelog() -> None:
+    # CHANGELOG.md grows with every story; a role that reads it whole to add
+    # one bullet spends tokens on every dispatch that edits it.
+    hints = {
+        ".claude/agents": "`limit: 40`",
+        ".agents/agents": "first 40",
+        ".codex/skills": "Get-Content CHANGELOG.md -TotalCount 40",
+    }
+    for root in (REPO_ROOT, REFERENCE_WORKFLOW):
+        handbook = (root / "docs/handoff/HANDBOOK.md").read_text(encoding="utf-8")
+        assert "## CHANGELOG Entries" in handbook, root
+        for directory, hint in hints.items():
+            pattern = "*/SKILL.md" if directory == ".codex/skills" else "*.md"
+            role_files = sorted((root / directory).glob(pattern))
+            assert role_files, (root, directory)
+            for path in role_files:
+                text = " ".join(path.read_text(encoding="utf-8").split())
+                assert "`CHANGELOG.md`" in text, path
+                assert hint in text, path
+                assert "whole" in text, path

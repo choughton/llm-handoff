@@ -18,6 +18,10 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared status enum a
 5. `docs/handoff/README.md`
 6. The frontend source and test files named in the Work Packet
 
+Do not read `CHANGELOG.md` whole; it is long. To add an entry, read only its
+top (`Get-Content CHANGELOG.md -TotalCount 40`) and add the bullet first
+under `## Unreleased`.
+
 ## Role Boundary
 
 - Stay inside the Work Packet's `Files in scope`, and never touch `Files out of bounds`.

@@ -19,6 +19,10 @@ The tpm role exists only when `agents.tpm` is configured in the dispatch config.
 4. `docs/handoff/HANDOFF.md`
 5. Only the code needed to groom the epic and scope the story
 
+Do not read `CHANGELOG.md` whole; it is long. To add an entry, read only its
+top (`Get-Content CHANGELOG.md -TotalCount 40`) and add the bullet first
+under `## Unreleased`.
+
 ## Role Boundary
 
 - Groom the stories inside the open epic, then take the next story from `remaining_stories` and write its assignment with a concrete `## Work Packet`.

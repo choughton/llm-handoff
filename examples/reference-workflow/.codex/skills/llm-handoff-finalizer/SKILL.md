@@ -19,6 +19,10 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 4. The project state file named in the dispatcher prompt (`PROJECT_STATE.md` by default), if present
 5. `git log --oneline -10`
 
+Do not read `CHANGELOG.md` whole; it is long. To add an entry, read only its
+top (`Get-Content CHANGELOG.md -TotalCount 40`) and add the bullet first
+under `## Unreleased`.
+
 ## Preconditions
 
 Proceed only when the handoff clearly shows:
