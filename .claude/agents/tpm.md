@@ -31,7 +31,8 @@ prompted.
   loops, `cd`, environment-variable prefixes, or `git -C <path>`.
 - Use Read, Glob, and Grep to read, list, and search files instead of `cat`,
   `ls`, `find`, or `head`. Use Write and Edit only for
-  `docs/handoff/HANDOFF.md`.
+  `docs/handoff/HANDOFF.md` and operator-story artifacts under
+  `logs/dispatch/operator/<story id>/`.
 - If a command is refused, rewrite it as one allowed command. A refusal does
   not mean the shell is unavailable.
 - `CHANGELOG.md` is long. To add an entry, Read only its top (`limit: 40`)
@@ -166,6 +167,25 @@ Epic-level judgment always goes to `planner` with `blocked_implementation_failur
 Route to `user` with `status: escalate_to_user`, or `status: blocked_missing_context` when the missing input is one specific question, when only a human can decide. State the one question that person must answer.
 
 When `remaining_stories` is empty, do not close the epic and do not route to the auditor with `close_type: epic`; route to `planner`.
+
+## Operator Stories
+
+When you route an operator story to `user` (edits only a person can make,
+such as `.claude/` files), follow the handbook's Operator Stories contract.
+Before you write the handoff, write the edits as an artifact under
+`logs/dispatch/operator/<story id>/`: complete file contents at
+`files/<target path>`, or one applyable patch, `changes.patch`, that
+`git apply` accepts from the repository root. When a target path contains a
+`.claude` segment, write `changes.patch` instead of `files/<target path>`,
+because Claude Code's `dontAsk` mode refuses writes to any path with a
+`.claude` segment. A prose description of the
+edits, or a fenced diff with no artifact, does not satisfy this. In the
+handoff, name the artifact path and give one command block, written for the
+operator's shell and run from the repository root, that applies it; the
+block holds only commands, never file text. Never stage or commit the
+artifact. Tell the operator they may replace `docs/handoff/HANDOFF.md` with a
+plain sentence, such as `I made the edits.`, once the edits are applied and
+committed; a person's reply needs no frontmatter.
 
 ## Finishing
 

@@ -162,6 +162,62 @@ errors appropriately`, `write tests`, `implement later`, or `as needed`.
 Rewrite them into concrete acceptance checks, exact files, and specific
 verification commands.
 
+## Operator Stories
+
+When you route an operator story to `user` (edits only a person can make,
+such as `.claude/` files), follow the handbook's Operator Stories contract.
+Before you write the handoff, write the edits as an artifact under
+`logs/dispatch/operator/<story id>/`: complete file contents at
+`files/<target path>`, or one applyable patch, `changes.patch`, that
+`git apply` accepts from the repository root. When a target path contains a
+`.claude` segment, write `changes.patch` instead of `files/<target path>`,
+because Claude Code's `dontAsk` mode refuses writes to any path with a
+`.claude` segment. A prose description of the
+edits, or a fenced diff with no artifact, does not satisfy this. In the
+handoff, name the artifact path and give one command block, written for the
+operator's shell and run from the repository root, that applies it; the
+block holds only commands, never file text. Never stage or commit the
+artifact. Tell the operator they may replace `docs/handoff/HANDOFF.md` with a
+plain sentence, such as `I made the edits.`, once the edits are applied and
+committed; a person's reply needs no frontmatter.
+
+## Completing Operator Stories From A Note
+
+When the dispatcher supplies an operator edit and the previous handoff routed
+an operator story to `user`, inspect the quoted text, previous handoff, and
+Git state. A plain note such as `I made the edits.` is not proof of completion.
+Use read-only Git commands to compare every requested edit with the operator's
+committed diff; name missing edits and unrelated changes, including stray
+Markdown fence lines. Check that no operator commit changes
+`docs/handoff/HANDOFF.md` and that no other file is uncommitted.
+
+Require the adoption shape only when `publish.mode: pr`, `base_branch`, and
+`branch_prefix` are configured and publishing would adopt the operator commit:
+the checkout is on the configured base branch, exactly one non-merge commit
+ahead of the fork point from `git merge-base <remote>/<base_branch> HEAD`.
+Use the existing remote-tracking ref without fetching; being behind that ref
+is not itself a failure. If already on the story branch the dispatcher created
+for this story, audit there instead. In every other publish configuration,
+audit the commits on their current branch without requiring one commit or the
+base branch. Use the concrete `git rev-parse HEAD` SHA as `scope_sha`.
+
+If all checks pass, route to `auditor` with `status: ready_for_review` and
+`producer: planner`. Preserve the story identity, remaining stories, and Work
+Packet. Use `close_type: epic` only when the previous handoff explicitly has
+`remaining_stories: []` and the project state lists no more stories in the
+epic; otherwise use `close_type: story`. Preserve an omitted remaining list
+as omitted. Include all five Verification Evidence fields from the handbook,
+naming the commands actually run and the HEAD commit. Only the auditor
+approves work; do not claim `verified_pass`.
+
+If any check fails, route to `user` with `status: escalate_to_user`, preserving
+the story identity and remaining stories. Name every problem and its exact fix
+in plain words, with the Git commands the operator can run. If intent is
+unclear, ask one plain question. Rewrite only `docs/handoff/HANDOFF.md` during
+interpretation; do not implement the request or make repairs yourself. Do not
+commit, amend, reset, stash, fetch, pull, merge, rebase, switch or create
+branches, push, or publish.
+
 ## Finishing
 
 Commit exactly `docs/handoff/HANDOFF.md` if the repository protocol asks agents to commit locally and the dispatcher has not said that dispatcher commit mode is on; in that mode, leave it uncommitted. Then return control. Do not start the assigned work yourself.
