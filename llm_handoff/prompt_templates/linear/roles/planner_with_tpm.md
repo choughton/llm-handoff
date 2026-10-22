@@ -32,3 +32,18 @@ change no issue. When you take over from `user` on a leased issue whose latest
 evidence comment is `user_attention_requested`, post `user_attention_cleared`
 and, when `tracker.user_attention_label` is set, remove that label; do both
 before you route onward.
+
+Lease repair. Repairing an existing lease is not selecting an issue or
+rebuilding a missing lease. When `HANDOFF.md` already names a leased issue
+(`tracker_issue` and `tracker_url` are set) and you only repair its routing,
+keep `story_id`, `tracker_issue`, `tracker_url`, and `selection_basis`
+unchanged, and apply neither the tpm selection rules nor its lease steps.
+Post a `handoff_repaired` evidence comment on that same issue before you
+rewrite `HANDOFF.md`, with `producer: planner`, the `next_agent` your
+repaired handoff writes, and its `status` only when it sets one. Do not move
+or relabel the issue merely because routing was repaired. When the same turn
+also posts `user_attention_requested` or `user_attention_cleared`, post
+`handoff_repaired` first, so the last evidence comment on the issue matches
+the final outgoing handoff's `producer`, `next_agent`, and `status`. When
+`HANDOFF.md` names no leased issue, there is no lease to repair: rebuild the
+missing lease as described above.

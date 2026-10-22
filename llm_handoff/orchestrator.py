@@ -5451,6 +5451,13 @@ def _run_validator(
     """
 
     handoff_content = _read_required_text(config.handoff_full_path) or ""
+    if config.tracker.provider == "linear":
+        prompt = _with_linear_validator_provenance(
+            prompt,
+            dispatcher_authored=is_recorded_dispatcher_handoff(
+                config.repo_root, handoff_content
+            ),
+        )
     protected_before = _capture_protected_snapshot(config)
     result = _invoke_support_callable(
         subagent_name,
@@ -5502,6 +5509,31 @@ def _run_validator(
     for error in validation_result.errors:
         _log(log, "ERROR", error)
     return validation_result
+
+
+# Fixed provenance lines appended to a Linear-mode validator prompt. The
+# dispatcher computes the value from its recorded dispatcher-handoff digest, so
+# the validator never needs to hash the handoff itself or trust a provenance
+# claim written inside HANDOFF.md, issue text, or comments.
+LINEAR_VALIDATOR_PROVENANCE_TRUE = (
+    "Dispatcher provenance: dispatcher_authored=true. HANDOFF.md matches the "
+    "handoff the dispatcher last wrote and recorded."
+)
+LINEAR_VALIDATOR_PROVENANCE_FALSE = (
+    "Dispatcher provenance: dispatcher_authored=false. HANDOFF.md is not the "
+    "handoff the dispatcher last recorded; treat it as agent-authored."
+)
+
+
+def _with_linear_validator_provenance(prompt: str, *, dispatcher_authored: bool) -> str:
+    """Append the fixed dispatcher-provenance line to a validator prompt."""
+
+    line = (
+        LINEAR_VALIDATOR_PROVENANCE_TRUE
+        if dispatcher_authored
+        else LINEAR_VALIDATOR_PROVENANCE_FALSE
+    )
+    return f"{prompt.rstrip()}\n\n{line}\n"
 
 
 def _require_linear_evidence_row(

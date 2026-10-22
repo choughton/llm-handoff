@@ -865,7 +865,9 @@ LINEAR_ROLE_TOOLS: dict[AgentRole, tuple[str, ...]] = {
         "save_comment",
         "save_issue",
     ),
-    "validator": ("get_issue", "list_issues", "list_comments"),
+    # Comment-only: the validator posts `handoff_repaired` on a repair turn and
+    # never edits issues.
+    "validator": ("get_issue", "list_issues", "list_comments", "save_comment"),
     # Comment-only: the finalizer posts `epic_closed` and never edits issues.
     "finalizer": ("get_issue", "list_issues", "list_comments", "save_comment"),
 }

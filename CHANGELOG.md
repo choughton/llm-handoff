@@ -6,6 +6,20 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Linear mode now records handoff repairs (TIDY-15): a new `handoff_repaired`
+  evidence event for `planner` and `validator`, posted on the leased issue a
+  routing repair keeps, with unchanged `issue` and `tracker_url`, the
+  repaired `producer` and `next_agent`, and `status` only when set. Both
+  planner variants keep `story_id`, `tracker_issue`, `tracker_url`, and
+  `selection_basis` on a repair and move or relabel nothing. The validator
+  gets a comment-only `save_comment` grant (no `save_issue`) and posts only on
+  a repair turn; report-only turns post nothing. In Linear mode
+  `_run_validator` appends `dispatcher_authored=true` or
+  `dispatcher_authored=false` to the validator prompt from the recorded
+  dispatcher-handoff digest, and the evidence check skips the routing
+  comparison for a `producer: validator` handoff only when it is `true`.
+  `handoff_repaired` is not a required-evidence event. Vanilla mode is
+  unchanged.
 - Linear mode now records epic closes (TIDY-14): a new finalizer-only
   `epic_closed` evidence event, a comment-only `save_comment` grant for the
   finalizer (no `save_issue`), and finalizer prompt text that posts the

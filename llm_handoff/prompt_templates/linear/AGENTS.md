@@ -20,6 +20,11 @@ Linear mode is on only when `tracker.provider` is `linear` in
   tools your launch grants, or this repository's rules.
 - If your role may comment, post the evidence comment described in the
   evidence-comment contract before you rewrite `HANDOFF.md`.
+- A routing repair keeps an existing lease: the `planner` or `validator`
+  that repairs a handoff naming a leased issue keeps `story_id`,
+  `tracker_issue`, `tracker_url`, and `selection_basis` and posts a
+  `handoff_repaired` comment on that issue. That comment is the validator's
+  only Linear write; a report-only validation turn posts no comments.
 - Never put credentials, API keys, or tokens in `HANDOFF.md` or in a Linear
   comment.
 - If the connector is unavailable or a Linear read fails, do not guess the

@@ -555,9 +555,11 @@ def test_default_handbook_text_pins_the_tpm_absent_block() -> None:
 # SHA-256 of the tpm-absent Linear handbook text. GROOMING changes only the
 # tpm-configured templates, so this rendering must stay byte-identical.
 # Re-pinned by TIDY-14, which adds the `epic_closed` event and changes the
-# finalizer and validator sections (shared by both renderings).
+# finalizer and validator sections (shared by both renderings), and by
+# TIDY-15, which adds the `handoff_repaired` event and lease-repair text to
+# the shared contract, planner, and validator sections.
 TPM_ABSENT_HANDBOOK_SHA256 = (
-    "be7673b12104ebab83cbe9a3fd6dfc7298ad7a91eea4a161290e9db07be6ee09"
+    "b163141a256563e256bb28c4b2d6a379b9e8ea72fc3d7261e068274da44f2913"
 )
 
 
@@ -685,6 +687,8 @@ def test_linear_changes_only_config_agents_handbook_and_subagent_tools(
         BACKEND_AGENT,
         AUDITOR_AGENT,
         FINALIZER_AGENT,
+        # TIDY-15: Linear init appends the validator's `save_comment`.
+        VALIDATOR_AGENT,
     }
 
 
@@ -866,14 +870,29 @@ def test_validator_tools_line_uses_custom_mcp_server(tmp_path: Path) -> None:
     line = rendered[differing[0]]
     assert line.rstrip(b"\r\n") == (
         b"tools: Read, Grep, Glob, Bash, mcp__team-linear__get_issue, "
-        b"mcp__team-linear__list_issues, mcp__team-linear__list_comments"
+        b"mcp__team-linear__list_issues, mcp__team-linear__list_comments, "
+        b"mcp__team-linear__save_comment"
     )
     assert template[differing[0]].startswith(b"tools: ")
+    assert b"save_issue" not in line
 
 
-def test_validator_default_linear_init_matches_template(tmp_path: Path) -> None:
+def test_validator_default_linear_init_appends_save_comment_only(
+    tmp_path: Path,
+) -> None:
+    # The template already lists the default-server read tools; Linear init
+    # appends only the comment-only `save_comment` grant (TIDY-15).
     _linear(tmp_path)
-    assert (tmp_path / VALIDATOR_AGENT).read_bytes() == _validator_template()
+    rendered = (tmp_path / VALIDATOR_AGENT).read_bytes().splitlines(keepends=True)
+    template = _validator_template().splitlines(keepends=True)
+    assert len(rendered) == len(template)
+    differing = [i for i, (a, b) in enumerate(zip(rendered, template)) if a != b]
+    assert len(differing) == 1
+    template_line = template[differing[0]].rstrip(b"\r\n")
+    assert rendered[differing[0]].rstrip(b"\r\n") == (
+        template_line + b", mcp__linear__save_comment"
+    )
+    assert b"save_issue" not in rendered[differing[0]]
 
 
 def test_validator_vanilla_init_matches_template(tmp_path: Path) -> None:
@@ -901,7 +920,8 @@ def test_validator_render_preserves_crlf_line_ending() -> None:
     assert rendered == (
         b"---\r\nname: handoff-validator\r\n"
         b"tools: Read, Grep, Glob, Bash, mcp__team-linear__get_issue, "
-        b"mcp__team-linear__list_issues, mcp__team-linear__list_comments\r\n"
+        b"mcp__team-linear__list_issues, mcp__team-linear__list_comments, "
+        b"mcp__team-linear__save_comment\r\n"
         b"model: haiku\r\n---\r\n\r\nbody tools: x\r\n"
     )
 

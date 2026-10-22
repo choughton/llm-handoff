@@ -1326,10 +1326,12 @@ def test_linear_role_tool_table() -> None:
         "backend": (*read, "save_comment"),
         "frontend": (*read, "save_comment"),
         "auditor": (*read, "save_comment", "save_issue"),
-        "validator": read,
+        # Comment-only: handoff_repaired evidence, no issue updates.
+        "validator": (*read, "save_comment"),
         # Comment-only: epic_closed evidence, no issue updates.
         "finalizer": (*read, "save_comment"),
     }
+    assert "save_issue" not in config_module.LINEAR_ROLE_TOOLS["validator"]
     assert "save_issue" not in config_module.LINEAR_ROLE_TOOLS["finalizer"]
     assert set(config_module.LINEAR_ROLE_TOOLS) == (
         config_module.REQUIRED_AGENT_ROLES | {"tpm"}
@@ -1345,6 +1347,12 @@ def test_linear_tools_for_role_prefixes_in_table_order() -> None:
         "mcp__linear__save_issue",
     )
     assert config_module.linear_tools_for_role("finalizer", "my-linear") == (
+        "mcp__my-linear__get_issue",
+        "mcp__my-linear__list_issues",
+        "mcp__my-linear__list_comments",
+        "mcp__my-linear__save_comment",
+    )
+    assert config_module.linear_tools_for_role("validator", "my-linear") == (
         "mcp__my-linear__get_issue",
         "mcp__my-linear__list_issues",
         "mcp__my-linear__list_comments",
