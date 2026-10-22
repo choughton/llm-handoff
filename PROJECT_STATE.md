@@ -676,12 +676,16 @@ wrote the change or what the handoff said before it.
   plain question. `--dry-run` prints the decision only.
 - HUMAN-3: Finish operator stories from a note. When the previous handoff
   routed an operator story to `user`, the planner instruction also says to
-  check the commit shape the operator-commit publish needs (base branch,
-  exactly one non-merge commit ahead of `<remote>/<base_branch>`, the commit
-  does not change `HANDOFF.md`, nothing else uncommitted) and to compare the
-  commit against the story's requested edits. A clean commit routes to
-  `auditor` with the right `close_type` and `scope_sha`; anything off routes
-  to `user` naming each problem and the exact fix in plain words.
+  compare the operator's commits against the story's requested edits and to
+  check that they do not change `HANDOFF.md` and that nothing else is
+  uncommitted. Only when publish would adopt the commit (`publish.mode: pr`
+  with `base_branch` and `branch_prefix` set, as in
+  `llm_handoff/publish.py` `publish_story`) does it also require the
+  adoption shape: on the base branch, exactly one non-merge commit ahead of
+  `<remote>/<base_branch>`. In other publish modes the operator's commits
+  are audited where they are, with HEAD as `scope_sha`. A clean result
+  routes to `auditor` with the right `close_type` and `scope_sha`; anything
+  off routes to `user` naming each problem and the exact fix in plain words.
 - HUMAN-4: Hand the operator something applyable. A planner or tpm that
   routes an operator story to `user` also writes the edits as full file
   contents or an applyable patch under `logs/dispatch/operator/`, plus one
