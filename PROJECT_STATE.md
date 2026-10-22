@@ -249,7 +249,11 @@ handbook and the code from drifting.
   check accepts `planner` or `user`, and any other producer still fails
   `frontmatter_producer_mismatch`; nothing else is waived and
   `dispatcher_authored` stays false. Both chat prompt branches tell the chat
-  to set `producer: user` when it rewrites HANDOFF.md.
+  to set `producer: user` when it rewrites HANDOFF.md. PR #257 review round
+  1: in Linear mode a `producer: user` takeover that assigns an implementer
+  still needs `selection_basis` (Finding 2, fixed); validating the successful
+  finalizer handoff in `run_loop` is deferred to the planner (Finding 1,
+  outside this packet's single orchestrator edit).
 - TRANS-5 (was TRANS-3): One table, two readers. Write the
   producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under
   `## Transition Table`, and add a test that parses that table and asserts it

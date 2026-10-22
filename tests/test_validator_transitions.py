@@ -488,6 +488,60 @@ def test_chat_takeover_waives_no_planner_check() -> None:
     assert any("Work Packet" in error for error in result.errors), result.errors
 
 
+def _linear_takeover(producer: str, *, selection_basis: str | None) -> str:
+    basis = f"selection_basis: {selection_basis}\n" if selection_basis else ""
+    return _planner_shaped(producer).replace(
+        "story_id: EPIC-1-S1\n",
+        "story_id: ENG-42\n"
+        "tracker_issue: ENG-42\n"
+        "tracker_url: https://linear.app/example/issue/ENG-42/change-the-value\n"
+        + basis,
+    )
+
+
+SELECTION_MISSING = "selection_basis_missing:"
+
+
+@pytest.mark.parametrize("producer", ["user", "planner"])
+def test_linear_chat_takeover_requires_selection_basis(producer: str) -> None:
+    result = validate_handoff_text(
+        _linear_takeover(producer, selection_basis=None),
+        "planner",
+        chat_takeover=True,
+        tracker_provider="linear",
+    )
+
+    missing = [e for e in result.errors if e.startswith(SELECTION_MISSING)]
+    assert len(missing) == 1, result.errors
+    assert result.verdict == "NO"
+
+
+@pytest.mark.parametrize("producer", ["user", "planner"])
+def test_linear_chat_takeover_with_selection_basis_passes(producer: str) -> None:
+    result = validate_handoff_text(
+        _linear_takeover(producer, selection_basis="priority"),
+        "planner",
+        chat_takeover=True,
+        tracker_provider="linear",
+    )
+
+    assert result.errors == []
+
+
+def test_user_selection_basis_rule_applies_only_on_the_takeover_path() -> None:
+    content = _linear_takeover("user", selection_basis=None)
+
+    vanilla = validate_handoff_text(
+        content, "planner", chat_takeover=True, tracker_provider="none"
+    )
+    not_takeover = validate_handoff_text(
+        content, "planner", tracker_provider="linear"
+    )
+
+    assert not any(e.startswith(SELECTION_MISSING) for e in vanilla.errors)
+    assert not any(e.startswith(SELECTION_MISSING) for e in not_takeover.errors)
+
+
 def test_file_entry_point_propagates_chat_takeover(tmp_path: Path) -> None:
     handoff_path = tmp_path / "HANDOFF.md"
     handoff_path.write_text(_planner_shaped("user"), encoding="utf-8")

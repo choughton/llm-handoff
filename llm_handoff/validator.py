@@ -728,6 +728,37 @@ def _tracker_lease_findings(
     return errors, warnings
 
 
+def _chat_takeover_selection_basis_errors(
+    current: HandoffRouting,
+    *,
+    tracker_provider: str,
+    chat_takeover: bool,
+) -> list[str]:
+    """Linear selection provenance for a `producer: user` chat takeover.
+
+    `_follow_chat_takeover` treats the chat rewrite as a planner dispatch, so
+    a rewrite naming `producer: user` that assigns an implementer in Linear
+    mode needs `selection_basis` just as a planner's would. The frontmatter
+    check covers `producer: planner` already; this adds the same rule for
+    `producer: user` on the takeover path only.
+    """
+
+    if not chat_takeover or tracker_provider != "linear":
+        return []
+    if normalize_next_agent_value(current.producer) != "user":
+        return []
+    normalized_next_agent = normalize_next_agent_value(current.next_agent)
+    if normalized_next_agent not in _IMPLEMENTER_ROUTES:
+        return []
+    if current.selection_basis is not None:
+        return []
+    return [
+        "selection_basis_missing: "
+        f"chat takeover routed to `{normalized_next_agent}` in Linear mode "
+        "without selection_basis."
+    ]
+
+
 def validate_handoff(
     handoff_path: Path,
     previous_agent: str,
@@ -793,7 +824,9 @@ def validate_handoff_text(
     `chat_takeover` is only for the operator-directed chat takeover rewrite
     (`_follow_chat_takeover`): the producer may then be `planner` or `user`,
     and any other producer still fails `frontmatter_producer_mismatch`. It
-    waives no other check.
+    waives no other check: in Linear mode a `producer: user` rewrite that
+    assigns an implementer still needs `selection_basis`, as a planner's
+    would.
     """
 
     normalized_content = handoff_content.lstrip("\ufeff")
@@ -849,6 +882,13 @@ def validate_handoff_text(
                     frontmatter,
                     previous_route=previous_route,
                     dispatcher_authored=dispatcher_authored,
+                    chat_takeover=chat_takeover,
+                )
+            )
+            errors.extend(
+                _chat_takeover_selection_basis_errors(
+                    frontmatter,
+                    tracker_provider=tracker_provider,
                     chat_takeover=chat_takeover,
                 )
             )
