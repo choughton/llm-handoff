@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The `agy` agent files under `.agents/agents/` (root and reference
+  workflow) list the commands the `agy` settings grant, point to
+  `git rev-parse --abbrev-ref HEAD` for the current branch, and name the
+  file tools to use instead of `cat`, `ls`, or `find`. Before, an `agy`
+  role had to guess, and an ungranted command such as
+  `git branch --show-current` was refused and failed the dispatch.
 - An operator story committed on the base branch now also publishes when it
   is the epic's last story. A `.claude/` operator story is normally last, so
   its audit passes with `close_type: epic` and `next_agent: finalizer`, and

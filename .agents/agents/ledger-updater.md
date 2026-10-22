@@ -26,6 +26,14 @@ prompted, and the refusal fails the dispatch.
 - Do not join commands with `&&`, `;`, or `|`, and do not use redirections,
   loops, `cd`, environment-variable prefixes, or `git -C <path>`.
 - Never run `git push`.
+- The settings grant only `git status`, `git diff`, `git log`, `git show`,
+  `git cat-file`, `git add`, `git commit`, and `git rev-parse`, with any
+  arguments, plus `python`, `python3`, and `pytest` when the operator opted
+  in to interpreter grants. Any other command is refused. For the current
+  branch, run `git rev-parse --abbrev-ref HEAD`, not `git branch`.
+- Use `view_file`, `list_dir`, `grep_search`, and `find_by_name` to read,
+  list, and search files instead of shell commands such as `cat`, `ls`,
+  or `find`.
 
 ## Preconditions
 

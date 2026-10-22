@@ -340,3 +340,30 @@ def test_format_output_is_ascii_only() -> None:
         assert all(" " <= ch <= "~" for ch in line), line
     assert "    - command(regex:^npm test\\x1b\\[2J( .*)?$)" in lines
     assert "    - command(regex:^caf\\xe9 test( .*)?$)" in lines
+
+
+def _shell_commands_section(text: str) -> str:
+    start = text.index("## Shell Commands\n")
+    end = text.find("\n## ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def test_agent_files_name_every_granted_command() -> None:
+    # An agy role that guesses an ungranted command (such as `git branch`)
+    # is refused and the dispatch fails, so each file lists the grants.
+    root = Path(__file__).resolve().parents[1]
+    granted = perms.ANTIGRAVITY_ALLOWED_COMMANDS + perms.ANTIGRAVITY_INTERPRETER_COMMANDS
+    for agents_dir in (
+        root / ".agents" / "agents",
+        root / "examples" / "reference-workflow" / ".agents" / "agents",
+    ):
+        role_files = sorted(agents_dir.glob("*.md"))
+        assert role_files, agents_dir
+        for role_file in role_files:
+            section = " ".join(
+                _shell_commands_section(role_file.read_text(encoding="utf-8")).split()
+            )
+            for command in granted:
+                assert f"`{command}`" in section, (role_file, command)
+            if role_file.stem != "handoff-validator":
+                assert "`git rev-parse --abbrev-ref HEAD`" in section, role_file
