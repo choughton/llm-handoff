@@ -1207,6 +1207,26 @@ def test_non_success_result_error_is_logged_at_error(
     assert errors == ["Antigravity planner: Antigravity result status=ERROR: boom"]
 
 
+def test_logged_result_error_is_redacted_but_stderr_keeps_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    secret = "sk-ant-abcdefghijklmnopqrstuvwxyz"
+    stdout = _stream(
+        _event(type="result", status="ERROR", error=f"bad key {secret} rejected")
+    )
+    runner = _Runner(_ProcessResult(stdout=stdout, stderr="", exit_code=3))
+
+    result, logs = _invoke(monkeypatch, runner, tmp_path)
+
+    assert secret in result.stderr
+    assert all(secret not in message for _level, message in logs)
+    assert any(
+        level == "ERROR" and "bad key [REDACTED] rejected" in message
+        for level, message in logs
+    )
+
+
 # agy 1.4.4 logged these when the account quota ran out (2026-10-21). The
 # stream-json result text was not captured; print mode logged that it "ended
 # with error and no response: " followed by the message after the prefix.

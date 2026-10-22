@@ -508,6 +508,27 @@ def test_stop_on_quota_exhaustion_for_an_antigravity_role(
     )
 
 
+def test_stop_on_quota_exhaustion_redacts_agy_detail(tmp_path: Path) -> None:
+    secret = "AIza" + "a" * 35
+    dispatch_config = DispatchConfig(repo_root=tmp_path)
+    dispatch_config.agents["planner"] = AgentConfig(provider="antigravity")
+    logs: list[tuple[str, str]] = []
+
+    stopped = orchestrator._stop_on_quota_exhaustion(
+        dispatch_config,
+        role="planner",
+        exit_code=3,
+        stderr=antigravity_quota_exhausted_line(
+            f"RESOURCE_EXHAUSTED (code 429) for key {secret}"
+        ),
+        log=lambda level, message: logs.append((level, message)),
+    )
+
+    assert stopped is True
+    assert all(secret not in message for _level, message in logs)
+    assert "[REDACTED]" in logs[0][1]
+
+
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 def test_stop_on_quota_exhaustion_ignores_raw_429_text_from_other_providers(
     tmp_path: Path,

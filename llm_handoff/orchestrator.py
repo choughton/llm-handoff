@@ -4869,7 +4869,8 @@ def _stop_on_quota_exhaustion(
         binary=agent_config.binary if agent_config is not None else None,
         detail=detail,
     ):
-        _log(log, "ERROR", message)
+        # `detail` is agy's own error text, so it may echo a secret.
+        _log(log, "ERROR", redact_secrets(message))
     return True
 
 

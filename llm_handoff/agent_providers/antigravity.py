@@ -29,6 +29,7 @@ from llm_handoff.provider_auth import (
     find_quota_exhaustion,
     permission_soft_deny_message,
 )
+from llm_handoff.redaction import redact_secrets
 from llm_handoff.usage_log import format_usage_line
 
 
@@ -286,10 +287,10 @@ class _AntigravityStreamJsonMonitor:
                 result_error = _format_error(self.result_event.get("error"))
                 line = f"Antigravity result status={status or 'UNKNOWN'}: {result_error}"
                 stderr = _append_line(stderr, line)
-                # agy's run-level error text, already kept in stderr; it is
-                # logged so the reason shows in the dispatch log. No command
-                # line or tool error text is added here.
-                self._emit("ERROR", f"{self.agent_name}: {line}")
+                # agy's run-level error text, kept raw in stderr; it is
+                # logged, redacted, so the reason shows in the dispatch log.
+                # No command line or tool error text is added here.
+                self._emit("ERROR", f"{self.agent_name}: {redact_secrets(line)}")
         elif exit_code == 0:
             exit_code = 1
             stderr = _append_line(
