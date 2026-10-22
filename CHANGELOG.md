@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Planner and tpm instructions (Antigravity agents, Codex skills, handoff
+  prompts, and their reference-workflow copies) now require an applyable
+  artifact before an operator story routes to `user` (HUMAN-4): complete
+  file contents under `logs/dispatch/operator/<story id>/files/` or one
+  `changes.patch` that `git apply` accepts, named in the handoff with one
+  command block for the operator's shell that applies it from the repository
+  root. Prose edits or a fenced diff without an artifact no longer suffice,
+  the artifact stays git-ignored and uncommitted, and the handoff tells the
+  operator they may reply with a plain sentence once the edits are applied
+  and committed. The handbook states the shared contract in a new
+  Operator Stories section. The Claude planner and tpm agents follow in
+  HUMAN-6.
 - When the previous valid handoff attached to an invalid operator edit
   routed an identified story to `user` (HUMAN-3), the planner's
   interpretation instruction now also asks for a completion check: compare

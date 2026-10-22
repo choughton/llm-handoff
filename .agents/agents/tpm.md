@@ -173,6 +173,22 @@ Route to `user` with `status: escalate_to_user`, or `status: blocked_missing_con
 
 When `remaining_stories` is empty, do not close the epic and do not route to the auditor with `close_type: epic`; route to `planner`.
 
+## Operator Stories
+
+When you route an operator story to `user` (edits only a person can make,
+such as `.claude/` files), follow the handbook's Operator Stories contract.
+Before you write the handoff, write the edits as an artifact under
+`logs/dispatch/operator/<story id>/`: complete file contents at
+`files/<target path>`, or one applyable patch, `changes.patch`, that
+`git apply` accepts from the repository root. A prose description of the
+edits, or a fenced diff with no artifact, does not satisfy this. In the
+handoff, name the artifact path and give one command block, written for the
+operator's shell and run from the repository root, that applies it; the
+block holds only commands, never file text. Never stage or commit the
+artifact. Tell the operator they may replace `docs/handoff/HANDOFF.md` with a
+plain sentence, such as `I made the edits.`, once the edits are applied and
+committed; a person's reply needs no frontmatter.
+
 ## Finishing
 
 Rewrite `docs/handoff/HANDOFF.md` and return control. Leave it uncommitted in dispatcher commit mode. Do not start the assigned work yourself.

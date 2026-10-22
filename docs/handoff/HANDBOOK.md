@@ -228,6 +228,42 @@ match it:
 To ask the planner for a re-scope, use `blocked_implementation_failure`, not
 `blocked_missing_context`.
 
+## Operator Stories
+
+An operator story is a story whose edits only a person can make, such as
+edits under `.claude/` that Claude roles cannot write. A planner or tpm that
+routes an operator story to `user` first writes the edits as an artifact the
+operator can apply, then names it in the handoff. A prose description of the
+edits, or a fenced diff in the handoff with no artifact behind it, does not
+satisfy this contract: edits copied out of Markdown carry stray fence lines
+and miss changes.
+
+- **Location.** Write the artifact under
+  `logs/dispatch/operator/<story id>/`. `logs/` is git-ignored: never stage
+  or commit the artifact, and do not list it in a Work Packet's Files in
+  scope.
+- **Format.** Use one of two forms. Complete file contents: one file per
+  target, holding the full new text of that file, at
+  `logs/dispatch/operator/<story id>/files/<target path>`. Or one applyable
+  patch, `logs/dispatch/operator/<story id>/changes.patch`, a unified diff
+  that `git apply` accepts from the repository root. Prefer complete file
+  contents; they apply without matching context.
+- **Command block.** Give one command block that the operator copies and runs
+  from the repository root to apply the artifact. Write it for the operator's
+  shell: `Copy-Item -LiteralPath <artifact> -Destination <target>` in
+  PowerShell, `cp <artifact> <target>` in a POSIX shell, or
+  `git apply logs/dispatch/operator/<story id>/changes.patch`, which runs the
+  same in both. The block holds only commands, never file text, so no fence
+  label such as `python` or `diff` can land in a file. It may end by staging
+  and committing exactly the target files; it never stages
+  `docs/handoff/HANDOFF.md`.
+- **Plain reply.** Tell the operator that once the edits are applied and
+  committed, they may replace `docs/handoff/HANDOFF.md` with a plain sentence
+  such as `I made the edits.` A person's reply needs no frontmatter; the
+  planner reads it, checks the operator's commits, and writes the next valid
+  handoff. Every agent-authored handoff still follows the routing contract
+  above.
+
 ## CHANGELOG Entries
 
 `CHANGELOG.md` grows with every story, and reading it whole costs tokens on
