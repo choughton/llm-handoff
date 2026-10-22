@@ -44,7 +44,11 @@ from llm_handoff.provider_auth import AUTH_FAILURE_MARKERS, AUTH_FAILURE_PATTERN
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.router import route as route_handoff
 from llm_handoff.text_io import read_dispatch_text
-from llm_handoff.validator import validate_handoff_text
+from llm_handoff.validator import (
+    clear_dispatcher_handoff,
+    is_recorded_dispatcher_handoff,
+    validate_handoff_text,
+)
 
 
 LogFn = Callable[[str, str], None]
@@ -744,15 +748,20 @@ def _run_repair_role(
         config,
         failure_packet_path,
     )
-    return invoke_support_role(
-        "supervisor-repair",
-        prompt,
-        role=config.repair_role,
-        handoff_path=dispatch_config.handoff_full_path,
-        agent_config=agent_config,
-        log=log,
-        repo_root=dispatch_config.repo_root,
-    )
+    try:
+        return invoke_support_role(
+            "supervisor-repair",
+            prompt,
+            role=config.repair_role,
+            handoff_path=dispatch_config.handoff_full_path,
+            agent_config=agent_config,
+            log=log,
+            repo_root=dispatch_config.repo_root,
+        )
+    finally:
+        # The repair agent could have planted a provenance record; any
+        # dispatcher-written handoff it left is no longer trusted.
+        clear_dispatcher_handoff(dispatch_config.repo_root)
 
 
 def _supervisor_repair_agent_config(agent_config: AgentConfig) -> AgentConfig:
@@ -898,6 +907,11 @@ def _run_preflight(
                 git_cwd=config.repo_root,
                 dispatcher_commit_mode=dispatcher_commit_mode,
                 tracker_provider=tracker_provider,
+                # Only a handoff whose SHA-256 the dispatcher recorded when
+                # it wrote it may carry a validator verdict.
+                dispatcher_authored=is_recorded_dispatcher_handoff(
+                    config.repo_root, handoff_content
+                ),
             )
             for error in validation.errors:
                 _add_handoff_preflight_issue(

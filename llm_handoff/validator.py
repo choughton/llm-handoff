@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from hashlib import sha256
+import hmac
+import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+import tempfile
 from typing import Literal
 
+from llm_handoff.config import DISPATCHER_HANDOFF_STATE_PATH
 from llm_handoff.agent_types import (
     BLOCKED_STATUSES,
     COMPLETION_STATUSES,
@@ -932,6 +939,193 @@ def validate_handoff_text(
         warnings=_dedupe(warnings),
         errors=_dedupe(errors),
         routing_instruction=routing_instruction,
+    )
+
+
+# Dispatcher-handoff provenance. The record holds only the SHA-256 of the
+# handoff the dispatcher last wrote itself, so any edit to HANDOFF.md drops
+# the trust. The dispatcher clears it when an agent dispatch returns, so a
+# record an agent planted during its turn is gone before anything reads it.
+_DISPATCHER_HANDOFF_RECORD_VERSION = 1
+_DISPATCHER_HANDOFF_RECORD_MAX_BYTES = 4096
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def dispatcher_handoff_digest(handoff_content: str) -> str:
+    """SHA-256 of a handoff's text, ignoring a leading byte-order mark."""
+
+    return sha256(handoff_content.lstrip("﻿").encode("utf-8")).hexdigest()
+
+
+def dispatcher_handoff_state_path(repo_root: Path) -> Path:
+    return repo_root / DISPATCHER_HANDOFF_STATE_PATH
+
+
+def _is_link_or_reparse_point(metadata: os.stat_result) -> bool:
+    # Windows reports junctions and other reparse points through
+    # st_file_attributes on Python 3.11 too; is_junction() is 3.12+.
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _dispatcher_handoff_path_is_unsafe(repo_root: Path) -> bool:
+    """Whether `logs`, `logs/dispatch`, or the record is a link or junction.
+
+    Missing components are safe. A directory component that is not a
+    directory, or a record that is not a single-link regular file, is unsafe.
+    """
+
+    current = repo_root
+    parts = DISPATCHER_HANDOFF_STATE_PATH.parts
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        if _is_link_or_reparse_point(metadata):
+            return True
+        if index < len(parts) - 1:
+            if not stat.S_ISDIR(metadata.st_mode):
+                return True
+        elif not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink > 1:
+            return True
+    return False
+
+
+def record_dispatcher_handoff(repo_root: Path, handoff_content: str) -> bool:
+    """Record `handoff_content` as the handoff the dispatcher just wrote.
+
+    Pass the text as read back from disk, so the digest matches what a later
+    reader sees. Returns False, writing nothing, when the record path goes
+    through a link or junction or the write fails.
+    """
+
+    if _dispatcher_handoff_path_is_unsafe(repo_root):
+        return False
+    path = dispatcher_handoff_state_path(repo_root)
+    payload = json.dumps(
+        {
+            "version": _DISPATCHER_HANDOFF_RECORD_VERSION,
+            "sha256": dispatcher_handoff_digest(handoff_content),
+        },
+        indent=2,
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if _dispatcher_handoff_path_is_unsafe(repo_root):
+            return False
+        # mkstemp opens a new randomly named file exclusively, and os.replace
+        # swaps the directory entry without following a link at the target.
+        file_fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+    except OSError:
+        return False
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload + "\n")
+        os.replace(temporary_path, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+        return False
+    return True
+
+
+def clear_dispatcher_handoff(repo_root: Path) -> bool:
+    """Delete the provenance record; True when no record is left.
+
+    A record path that goes through a link or junction is not touched;
+    `is_recorded_dispatcher_handoff()` refuses to read it either way.
+    """
+
+    path = dispatcher_handoff_state_path(repo_root)
+    current = repo_root
+    for part in DISPATCHER_HANDOFF_STATE_PATH.parent.parts:
+        current = current / part
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        if _is_link_or_reparse_point(metadata) or not stat.S_ISDIR(
+            metadata.st_mode
+        ):
+            return False
+    for attempt in range(2):
+        try:
+            # unlink removes a file symlink itself, never its target.
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            # A read-only record (as an agent could leave it on Windows).
+            if attempt == 0:
+                with contextlib.suppress(OSError):
+                    if stat.S_ISREG(os.lstat(path).st_mode):
+                        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+                continue
+            return False
+        except OSError:
+            return False
+    return False
+
+
+def is_recorded_dispatcher_handoff(repo_root: Path, handoff_content: str) -> bool:
+    """Whether `handoff_content` is the handoff the dispatcher last recorded.
+
+    False when there is no record, the record is malformed, or its path goes
+    through a link or junction. Callers pass the result as
+    `dispatcher_authored` to `validate_handoff_text()`.
+    """
+
+    if _dispatcher_handoff_path_is_unsafe(repo_root):
+        return False
+    path = dispatcher_handoff_state_path(repo_root)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        file_fd = os.open(path, flags)
+    except OSError:
+        return False
+    try:
+        metadata = os.fstat(file_fd)
+        if not stat.S_ISREG(metadata.st_mode) or (
+            metadata.st_size > _DISPATCHER_HANDOFF_RECORD_MAX_BYTES
+        ):
+            return False
+        data = os.read(file_fd, _DISPATCHER_HANDOFF_RECORD_MAX_BYTES + 1)
+    except OSError:
+        return False
+    finally:
+        os.close(file_fd)
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    version = payload.get("version")
+    if type(version) is not int or version != _DISPATCHER_HANDOFF_RECORD_VERSION:
+        return False
+    recorded = payload.get("sha256")
+    if not isinstance(recorded, str) or not _SHA256_HEX_RE.fullmatch(recorded):
+        return False
+    return hmac.compare_digest(
+        recorded.encode("ascii"),
+        dispatcher_handoff_digest(handoff_content).encode("ascii"),
     )
 
 

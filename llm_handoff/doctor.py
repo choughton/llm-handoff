@@ -82,7 +82,10 @@ from llm_handoff.provider_auth import ANTIGRAVITY_SETTINGS_PATH
 from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
 from llm_handoff.router import route as route_handoff
 from llm_handoff.text_io import read_dispatch_text
-from llm_handoff.validator import validate_handoff_text
+from llm_handoff.validator import (
+    is_recorded_dispatcher_handoff,
+    validate_handoff_text,
+)
 from llm_handoff.work_claim import command_executable, find_scanner_executable
 
 CheckStatus = Literal["PASS", "FAIL", "WARN"]
@@ -1868,6 +1871,11 @@ def _check_handoff(
             require_work_packet=require_work_packet,
             dispatcher_commit_mode=dispatcher_commit_mode,
             tracker_provider=tracker_provider,
+            # Only a handoff whose SHA-256 the dispatcher recorded when it
+            # wrote it may carry a validator verdict.
+            dispatcher_authored=is_recorded_dispatcher_handoff(
+                repo_root, handoff_content
+            ),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         checks.append(

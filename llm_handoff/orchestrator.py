@@ -157,7 +157,12 @@ from llm_handoff.router import (
 from llm_handoff.text_io import read_dispatch_text
 from llm_handoff.validator import (
     ValidationResult,
+    clear_dispatcher_handoff,
+    dispatcher_handoff_digest,
+    dispatcher_handoff_state_path,
+    is_recorded_dispatcher_handoff,
     parse_validation_output,
+    record_dispatcher_handoff,
     validate_handoff,
     validate_handoff_text,
 )
@@ -735,7 +740,7 @@ def _run_loop(
             state_resolver=_state_conflict_resolver(config, log_fn),
         )
         if outcome.handoff is not None:
-            config.handoff_full_path.write_text(outcome.handoff, encoding="utf-8")
+            _write_dispatcher_handoff(config, outcome.handoff, log_fn)
         if outcome.stop:
             return outcome.exit_code
         if outcome.handoff is None:
@@ -755,7 +760,7 @@ def _run_loop(
                 state_resolver=_state_conflict_resolver(config, log_fn),
             )
             if outcome.handoff is not None:
-                config.handoff_full_path.write_text(outcome.handoff, encoding="utf-8")
+                _write_dispatcher_handoff(config, outcome.handoff, log_fn)
             if outcome.stop:
                 return outcome.exit_code
 
@@ -1252,7 +1257,7 @@ def _run_loop(
             if orphan.stop:
                 return orphan.exit_code
             if orphan.handoff is not None:
-                config.handoff_full_path.write_text(orphan.handoff, encoding="utf-8")
+                _write_dispatcher_handoff(config, orphan.handoff, log_fn)
                 previous_cycle = None
                 continue
             if orphan.pause:
@@ -1624,6 +1629,7 @@ def _run_loop(
             )
             ledger_result = _invoke_epic_close(config=config, log=log_fn)
             chat_session.wait_for_answers(log_fn)
+            _clear_dispatcher_handoff_after_dispatch(config, log_fn)
             # CHAT-34: keep the returned finalizer session for @finalizer
             # chat, whatever its exit code or output. In memory only: the
             # epic-close ledger is not in the dispatch record (CHAT-15).
@@ -2054,6 +2060,10 @@ def _run_loop(
                     config, current_cycle.route, assignment_content, log_fn
                 ),
             )
+            # Read while the provenance record is still the dispatcher's own.
+            dispatch_trusted_digest = _recorded_dispatcher_handoff_digest(
+                config, handoff_content
+            )
             if resumed_handback is not None:
                 # The interrupted dispatch already returned; its cycle resumes
                 # at the dispatcher commit as if the role had exited 0.
@@ -2181,6 +2191,11 @@ def _run_loop(
                     )
                 else:
                     previous_agent = current_cycle.route
+            # Before any post-dispatch validation: the role could have
+            # planted a provenance record, so nothing it left is trusted.
+            _clear_dispatcher_handoff_after_dispatch(
+                config, log_fn, trusted_digest=dispatch_trusted_digest
+            )
             if chat_took_over:
                 takeover = _follow_chat_takeover(
                     config,
@@ -2485,9 +2500,7 @@ def _run_loop(
                 )
                 if deferral is not None:
                     if deferral.handoff is not None:
-                        config.handoff_full_path.write_text(
-                            deferral.handoff, encoding="utf-8"
-                        )
+                        _write_dispatcher_handoff(config, deferral.handoff, log_fn)
                     if deferral.stop:
                         return deferral.exit_code
                     previous_cycle = current_cycle
@@ -2913,8 +2926,8 @@ def _run_loop(
                             handoff_path=config.handoff_path,
                         )
                         if outcome.handoff is not None:
-                            config.handoff_full_path.write_text(
-                                outcome.handoff, encoding="utf-8"
+                            _write_dispatcher_handoff(
+                                config, outcome.handoff, log_fn
                             )
                         if outcome.stop:
                             return outcome.exit_code
@@ -3826,7 +3839,10 @@ def _invoke_dispatch_callable(
     handoff_path: Path,
     **kwargs: object,
 ) -> DispatchResult:
-    return func(handoff_path, **_supported_kwargs(func, kwargs))
+    try:
+        return func(handoff_path, **_supported_kwargs(func, kwargs))
+    finally:
+        _clear_dispatcher_handoff_for(kwargs.get("repo_root"))
 
 
 def _invoke_support_callable(
@@ -3834,11 +3850,21 @@ def _invoke_support_callable(
     prompt: str,
     **kwargs: object,
 ) -> SubagentResult:
-    return invoke_support_role(
-        subagent_name,
-        prompt,
-        **_supported_kwargs(invoke_support_role, kwargs),
-    )
+    try:
+        return invoke_support_role(
+            subagent_name,
+            prompt,
+            **_supported_kwargs(invoke_support_role, kwargs),
+        )
+    finally:
+        _clear_dispatcher_handoff_for(kwargs.get("repo_root"))
+
+
+def _clear_dispatcher_handoff_for(repo_root: object) -> None:
+    """Drop the provenance record after an agent run (see validator)."""
+
+    if isinstance(repo_root, Path):
+        clear_dispatcher_handoff(repo_root)
 
 
 def _supported_kwargs(
@@ -4583,6 +4609,7 @@ def _enforce_protected_files(
         role_label=role_label,
         violations=violations,
         error=error,
+        log=log,
     )
     _log(
         log,
@@ -4627,6 +4654,7 @@ def _write_protected_file_escalation(
     role_label: str,
     violations: tuple[str, ...],
     error: str,
+    log: LogFn | None = None,
 ) -> None:
     previous_content = _read_required_text(config.handoff_full_path)
     reason = (
@@ -4667,11 +4695,98 @@ def _write_protected_file_escalation(
             fence += "~"
         lines.extend([f"{fence}markdown", previous_content.rstrip("\n"), fence])
     config.handoff_full_path.parent.mkdir(parents=True, exist_ok=True)
-    config.handoff_full_path.write_text(
-        "\n".join(lines) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    _write_dispatcher_handoff(config, "\n".join(lines) + "\n", log, newline="\n")
+
+
+def _write_dispatcher_handoff(
+    config: DispatchConfig,
+    content: str,
+    log: LogFn | None = None,
+    *,
+    newline: str | None = None,
+) -> None:
+    """Write a handoff the dispatcher authored and record its SHA-256.
+
+    The record lets `llm-handoff doctor` and supervisor preflight validate
+    the handoff with `dispatcher_authored=True` while HANDOFF.md is
+    unchanged. Agent handbacks, even ones the dispatcher stamps, are written
+    directly and never recorded.
+    """
+
+    config.handoff_full_path.write_text(content, encoding="utf-8", newline=newline)
+    _record_dispatcher_handoff(config, log)
+
+
+def _record_dispatcher_handoff(config: DispatchConfig, log: LogFn | None) -> None:
+    """Record the on-disk handoff, as a reader sees it, as dispatcher-written."""
+
+    try:
+        written = _read_required_text(config.handoff_full_path)
+    except OSError:
+        written = None
+    if written is not None and record_dispatcher_handoff(config.repo_root, written):
+        return
+    if log is not None:
+        _log(
+            log,
+            "WARN",
+            "Could not record the dispatcher-written handoff in "
+            f"{dispatcher_handoff_state_path(config.repo_root)}; "
+            "`llm-handoff doctor` and supervisor preflight will not trust its "
+            "validator verdict.",
+        )
+
+
+def _recorded_dispatcher_handoff_digest(
+    config: DispatchConfig, handoff_content: str | None
+) -> str | None:
+    """The digest of ``handoff_content`` when it is the recorded dispatcher handoff.
+
+    Read before an agent dispatch, while the record is still the
+    dispatcher's own, so the record can be restored afterward when the
+    agent left that handoff unchanged.
+    """
+
+    if handoff_content is None or not is_recorded_dispatcher_handoff(
+        config.repo_root, handoff_content
+    ):
+        return None
+    return dispatcher_handoff_digest(handoff_content)
+
+
+def _clear_dispatcher_handoff_after_dispatch(
+    config: DispatchConfig,
+    log: LogFn | None,
+    *,
+    trusted_digest: str | None = None,
+) -> None:
+    """Drop the provenance record once an agent dispatch returns.
+
+    An agent could have written the record during its turn, so nothing it
+    left is trusted. ``trusted_digest`` is the dispatcher handoff recorded
+    before the dispatch (see ``_recorded_dispatcher_handoff_digest``); when
+    HANDOFF.md still has exactly that content, the record is written again.
+    """
+
+    if not clear_dispatcher_handoff(config.repo_root):
+        if log is not None:
+            _log(
+                log,
+                "WARN",
+                "Could not clear the dispatcher-handoff record "
+                f"{dispatcher_handoff_state_path(config.repo_root)}; it is "
+                "behind a link or junction or could not be deleted, so "
+                "diagnostics will not trust it.",
+            )
+        return
+    if trusted_digest is None:
+        return
+    try:
+        current = _read_required_text(config.handoff_full_path)
+    except OSError:
+        return
+    if current is not None and dispatcher_handoff_digest(current) == trusted_digest:
+        _record_dispatcher_handoff(config, log)
 
 
 def _stop_on_auth_failure(
@@ -5988,7 +6103,7 @@ def _run_work_claim_gate(
         route=bounce_route,
         bounce_count=count if frontmatter.story_id else None,
     )
-    config.handoff_full_path.write_text(bounce_content, encoding="utf-8")
+    _write_dispatcher_handoff(config, bounce_content, log)
     _log(
         log,
         "AGENT",

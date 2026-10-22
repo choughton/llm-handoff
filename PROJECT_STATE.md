@@ -28,8 +28,10 @@ belong in commits, handoffs, and pull requests.
   (validator producer: keyword-only `dispatcher_authored` flag on the three
   validation entry points; validator verdicts need it, and
   `ready_for_review`, `next_agent: finalizer`, and `close_type: epic` stay
-  rejected) is implemented and awaiting audit. TRANS-4 through TRANS-6
-  remain.
+  rejected) is implemented; PR #251 Finding 1 (doctor and supervisor
+  preflight rejected valid dispatcher-written verdicts) is fixed in-story
+  with SHA-256 provenance in `logs/dispatch/dispatcher-handoff.json`, and
+  the story is awaiting audit. TRANS-4 through TRANS-6 remain.
 - **GROOMING (closed):** GROOM-5, the epic's last story,
   was approved at `6e24d98` and merged in PR #247 at `211bbfd`.
   GROOMING history (opened by the planner after CHAT closed at
@@ -1981,7 +1983,16 @@ handbook and the code from drifting.
   `verified_pass`; `ready_for_review`, `next_agent: finalizer`, and
   `close_type: epic` stay rejected. The validator-producer regression cases
   are updated in this story, and the review-bounce fixtures must keep
-  validating.
+  validating. Provenance (PR #251 Finding 1, fixed in-story): when the
+  dispatcher writes one of these handoffs it records the handoff's
+  normalized SHA-256 in `logs/dispatch/dispatcher-handoff.json`
+  (`DISPATCHER_HANDOFF_STATE_PATH`), and it clears that record when any
+  agent dispatch returns, before post-dispatch validation. `llm-handoff
+  doctor` and supervisor preflight pass `dispatcher_authored=True` only
+  while `HANDOFF.md` matches the record, so any edit drops the trust; the
+  record is never read or written through a symlink or junction on `logs`,
+  `logs/dispatch`, or the file. Post-dispatch, chat, repair, and
+  interrupted-role validation keep `dispatcher_authored=False`.
 - TRANS-4 (was part of TRANS-2): Producer matches the dispatched role. The
   post-dispatch validation already knows the previous route; a `producer`
   that names a role other than the one just dispatched is rejected as

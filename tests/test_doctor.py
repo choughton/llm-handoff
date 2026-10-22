@@ -941,6 +941,143 @@ def test_doctor_still_fails_auditor_verified_pass_without_evidence(
     assert "FAIL handoff validation: EVIDENCE_MISSING" in output
 
 
+# TRANS-3 / PR #251 Finding 1: dispatcher-written validator verdicts.
+
+
+def _validator_verdict_handoff(head: str) -> str:
+    """A `producer: validator` verdict like the dispatcher's own builders write."""
+
+    return f"""---
+next_agent: planner
+reason: "1 deferred review finding(s) keep the pull request from merging."
+epic_id: "E1"
+story_id: "S1"
+story_title: "First story"
+status: verified_pass
+scope_sha: {head}
+producer: validator
+---
+
+# Handoff: S1 deferred review findings
+
+## Verification Evidence
+
+- **Commands run:** `python -m pytest tests -q`
+- **Output summary:** exit 0
+- **Commit SHA verified:** {head}
+- **Files changed or reviewed:** src/app.py
+- **Unresolved concerns:** none
+"""
+
+
+def _verdict_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return repo, _validator_verdict_handoff(head)
+
+
+def _write_as_dispatcher(repo: Path, content: str) -> None:
+    """Write and record the handoff through the dispatcher's own writer."""
+
+    from llm_handoff import orchestrator
+
+    config = config_module.load_dispatch_config(repo_root=repo)
+    config.handoff_full_path.parent.mkdir(parents=True, exist_ok=True)
+    orchestrator._write_dispatcher_handoff(config, content)
+
+
+def _handoff_validation_checks(repo: Path) -> list[doctor.DoctorCheck]:
+    report = doctor.run_doctor(repo_root=repo)
+    return [check for check in report.checks if check.name == "handoff validation"]
+
+
+_VALIDATOR_VERDICT_ERROR = (
+    "frontmatter_status_producer_rule: producer `validator` cannot emit status "
+    "`verified_pass`"
+)
+
+
+def test_doctor_passes_a_recorded_dispatcher_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, content = _verdict_repo(tmp_path)
+    _write_as_dispatcher(repo, content)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    checks = _handoff_validation_checks(repo)
+
+    assert [check.status for check in checks] == ["PASS"], checks
+    assert (repo / config_module.DISPATCHER_HANDOFF_STATE_PATH).is_file()
+
+
+def test_doctor_fails_an_unrecorded_validator_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, content = _verdict_repo(tmp_path)
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+    handoff_path.write_text(content, encoding="utf-8")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    checks = _handoff_validation_checks(repo)
+
+    assert any(
+        check.status == "FAIL" and check.message.startswith(_VALIDATOR_VERDICT_ERROR)
+        for check in checks
+    ), checks
+
+
+def test_doctor_fails_a_recorded_verdict_edited_afterward(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, content = _verdict_repo(tmp_path)
+    _write_as_dispatcher(repo, content)
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    handoff_path.write_text(
+        content.replace("- **Unresolved concerns:** none", "- **Unresolved concerns:** n/a"),
+        encoding="utf-8",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    checks = _handoff_validation_checks(repo)
+
+    assert any(
+        check.status == "FAIL" and check.message.startswith(_VALIDATOR_VERDICT_ERROR)
+        for check in checks
+    ), checks
+
+
+def test_doctor_fails_a_verdict_whose_record_an_agent_planted_then_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import orchestrator, validator
+
+    repo, content = _verdict_repo(tmp_path)
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+    handoff_path.write_text(content, encoding="utf-8")
+    # An agent writes a matching record during its turn; the dispatcher
+    # clears it when the dispatch returns.
+    assert validator.record_dispatcher_handoff(repo, content)
+    config = config_module.load_dispatch_config(repo_root=repo)
+    orchestrator._clear_dispatcher_handoff_after_dispatch(config, None)
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    checks = _handoff_validation_checks(repo)
+
+    assert not (repo / config_module.DISPATCHER_HANDOFF_STATE_PATH).exists()
+    assert any(
+        check.status == "FAIL" and check.message.startswith(_VALIDATOR_VERDICT_ERROR)
+        for check in checks
+    ), checks
+
+
 def test_doctor_warns_on_dirty_tree_and_falls_back_to_default_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
