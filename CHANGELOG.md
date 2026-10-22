@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff doctor`'s per-role Antigravity `interpreter grants` warning now
+  says what the agy user settings hold (TIDY-12). Interpreter entries present
+  in `permissions.allow` are reported as "uses the agy allow entries", absent
+  ones as "needs the agy allow entries ..., which ... permissions.allow is
+  missing", and an absent, unreadable, or wrong-shaped settings file claims no
+  grant and points to the `antigravity permissions` check. The line stays WARN
+  and keeps the bypass-risk, user-wide, and flag-cause text; the settings file
+  is only read.
 - Linear mode now records handoff repairs (TIDY-15): a new `handoff_repaired`
   evidence event for `planner` and `validator`, posted on the leased issue a
   routing repair keeps, with unchanged `issue` and `tracker_url`, the

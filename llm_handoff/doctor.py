@@ -832,6 +832,48 @@ def _settings_interpreter_grant(entry: str) -> bool:
     return False
 
 
+def _describe_agy_interpreter_grants(agy_matches: list[str]) -> str:
+    """Say which interpreter ``agy_matches`` entries the settings file has.
+
+    Reads the ``agy`` user settings with ``_read_antigravity_permissions`` and
+    matches each entry against ``permissions.allow`` by exact string, as the
+    ``antigravity permissions`` check does. Present entries are reported as
+    used and absent ones as missing; an absent, unreadable, or wrong-shaped
+    file claims no grant and points to that check. The file is only read.
+    """
+
+    def listed(entries: list[str]) -> str:
+        return ", ".join(f"`{_ascii_entry(entry)}`" for entry in entries)
+
+    see_check = f"see the `{_ANTIGRAVITY_CHECK_NAME}` check"
+    result = _read_antigravity_permissions(antigravity_settings_path())
+    if result is None:
+        return (
+            f"needs the agy allow entries {listed(agy_matches)}; "
+            f"{ANTIGRAVITY_SETTINGS_PATH} was not found, so none is granted "
+            f"yet ({see_check})"
+        )
+    if isinstance(result, str):
+        return (
+            f"needs the agy allow entries {listed(agy_matches)}; "
+            f"{ANTIGRAVITY_SETTINGS_PATH} could not be read as settings, so "
+            f"the doctor did not check them ({see_check} for details)"
+        )
+    allow = result[0]
+    present = [entry for entry in agy_matches if entry in allow]
+    missing = [entry for entry in agy_matches if entry not in allow]
+    parts: list[str] = []
+    if present:
+        parts.append(f"uses the agy allow entries {listed(present)}")
+    if missing:
+        parts.append(
+            f"needs the agy allow entries {listed(missing)}, which "
+            f"{ANTIGRAVITY_SETTINGS_PATH} permissions.allow is missing "
+            f"({see_check})"
+        )
+    return " and ".join(parts)
+
+
 def _check_interpreter_grants(
     dispatch_config: DispatchConfig,
     checks: list[DoctorCheck],
@@ -842,10 +884,11 @@ def _check_interpreter_grants(
     config's ``interpreter_grants`` (``claude_default_allowed_tools``, the
     rule in ``agent_providers/claude.py``); Antigravity launches use the
     required ``agy`` allow entries plus the verification prefixes for that
-    flag (the settings file is not read here). ``unsafe_bypass`` launches
-    have no shell allowlist at all. With ``interpreter_grants: true`` each
-    warning about a grant the flag adds names the flag as its cause. Every
-    line is WARN or PASS, never FAIL.
+    flag, and the ``agy`` settings file is read to say which of the
+    interpreter entries it has (``_describe_agy_interpreter_grants``).
+    ``unsafe_bypass`` launches have no shell allowlist at all. With
+    ``interpreter_grants: true`` each warning about a grant the flag adds
+    names the flag as its cause. Every line is WARN or PASS, never FAIL.
     """
     interpreter_grants = dispatch_config.interpreter_grants
     allowed_commands = antigravity_allowed_commands(
@@ -869,6 +912,8 @@ def _check_interpreter_grants(
     )
     added = False
     allowlisted_launch = False
+    # Read the agy settings at most once, and only when an agy launch needs it.
+    agy_grants: str | None = None
     for label, agent_config in _role_launches(dispatch_config):
         provider = agent_config.provider
         if agent_config.unsafe_bypass:
@@ -914,15 +959,13 @@ def _check_interpreter_grants(
             allowlisted_launch = True
             if agy_matches:
                 added = True
+                if agy_grants is None:
+                    agy_grants = _describe_agy_interpreter_grants(agy_matches)
                 checks.append(
                     DoctorCheck(
                         "WARN",
                         _INTERPRETER_CHECK_NAME,
-                        f"{label} (provider antigravity) needs the agy allow "
-                        "entries "
-                        + ", ".join(
-                            f"`{_ascii_entry(entry)}`" for entry in agy_matches
-                        )
+                        f"{label} (provider antigravity) {agy_grants}"
                         + f"; {_INTERPRETER_BYPASS_RISK}, and these grants are "
                         "user-wide, so they apply to every agy run for this user"
                         + flag_cause,

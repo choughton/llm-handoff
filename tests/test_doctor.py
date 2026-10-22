@@ -3870,6 +3870,196 @@ def test_doctor_interpreter_grants_name_antigravity_verification_prefixes(
     assert lines[0].endswith(INTERP_FLAG_CAUSE)
 
 
+AGY_INTERP_ENTRIES = (
+    _grant("python"),
+    _grant("python3"),
+    _grant("pytest"),
+    _grant("python -m pytest"),
+)
+AGY_INTERP_TAIL = (
+    "; an interpreter can run any command, including `git push`, past the "
+    "allowlist, so the allowlist is a guardrail, not a sandbox, and these "
+    "grants are user-wide, so they apply to every agy run for this user"
+    + INTERP_FLAG_CAUSE
+)
+AGY_SEE_CHECK = "see the `antigravity permissions` check"
+
+
+def _listed(entries: tuple[str, ...] | list[str]) -> str:
+    return ", ".join(f"`{entry}`" for entry in entries)
+
+
+def _agy_interp_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Planner on agy, backend with an agy fallback, flag on, python prefix."""
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["planner"] = "provider: antigravity\nbinary: fake-agy"
+    blocks["backend"] = (
+        "provider: codex\nbinary: fake-codex\n"
+        "fallback:\n  provider: antigravity\n  binary: fake-agy"
+    )
+    return _interp_repo(
+        tmp_path,
+        monkeypatch,
+        blocks,
+        extra='verification_allowed_prefixes: ["python -m pytest", "npm test"]\n'
+        "interpreter_grants: true\n",
+    )
+
+
+def _agy_interp_lines(body: str) -> list[str]:
+    return [
+        f"WARN {INTERP_CHECK}: {label} (provider antigravity) {body}"
+        + AGY_INTERP_TAIL
+        for label in ("planner", "backend fallback")
+    ]
+
+
+def test_doctor_interpreter_grants_agy_all_present_says_uses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_interp_repo(tmp_path, monkeypatch)
+    # Listed out of order on purpose: the warning keeps the generated order.
+    _write_agy_settings(
+        tmp_path, _complete_agy_settings(tuple(reversed(AGY_INTERP_ENTRIES)))
+    )
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert lines == _agy_interp_lines(
+        f"uses the agy allow entries {_listed(AGY_INTERP_ENTRIES)}"
+    )
+    assert "needs" not in " ".join(lines)
+    assert "missing" not in " ".join(lines)
+
+
+def test_doctor_interpreter_grants_agy_partial_names_only_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_interp_repo(tmp_path, monkeypatch)
+    present = (AGY_INTERP_ENTRIES[0], AGY_INTERP_ENTRIES[3])
+    missing = (AGY_INTERP_ENTRIES[1], AGY_INTERP_ENTRIES[2])
+    _write_agy_settings(tmp_path, _complete_agy_settings(present))
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _interp_lines(output) == _agy_interp_lines(
+        f"uses the agy allow entries {_listed(present)} and needs the agy "
+        f"allow entries {_listed(missing)}, which "
+        f"{doctor.ANTIGRAVITY_SETTINGS_PATH} permissions.allow is missing "
+        f"({AGY_SEE_CHECK})",
+    )
+
+
+def test_doctor_interpreter_grants_agy_none_present_names_all_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_interp_repo(tmp_path, monkeypatch)
+    _write_agy_settings(tmp_path, _complete_agy_settings())
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert lines == _agy_interp_lines(
+        f"needs the agy allow entries {_listed(AGY_INTERP_ENTRIES)}, which "
+        f"{doctor.ANTIGRAVITY_SETTINGS_PATH} permissions.allow is missing "
+        f"({AGY_SEE_CHECK})",
+    )
+    assert "uses the agy" not in " ".join(lines)
+
+
+def test_doctor_interpreter_grants_agy_absent_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_interp_repo(tmp_path, monkeypatch)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert lines == _agy_interp_lines(
+        f"needs the agy allow entries {_listed(AGY_INTERP_ENTRIES)}; "
+        f"{doctor.ANTIGRAVITY_SETTINGS_PATH} was not found, so none is granted "
+        f"yet ({AGY_SEE_CHECK})",
+    )
+    assert not _agy_settings_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",
+        [1, 2],
+        {"permissions": []},
+        {"permissions": {"allow": "command(regex:^python( .*)?$)"}},
+        {"permissions": {"allow": [1]}},
+    ],
+    ids=["malformed", "not-object", "no-permissions", "allow-string", "allow-ints"],
+)
+def test_doctor_interpreter_grants_agy_bad_settings_claim_no_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, content: object
+) -> None:
+    repo = _agy_interp_repo(tmp_path, monkeypatch)
+    path = _write_agy_settings(tmp_path, content)
+    before = path.read_bytes()
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert lines == _agy_interp_lines(
+        f"needs the agy allow entries {_listed(AGY_INTERP_ENTRIES)}; "
+        f"{doctor.ANTIGRAVITY_SETTINGS_PATH} could not be read as settings, so "
+        f"the doctor did not check them ({AGY_SEE_CHECK} for details)",
+    )
+    assert "uses the agy" not in " ".join(lines)
+    assert path.read_bytes() == before
+
+
+def test_doctor_interpreter_grants_agy_unreadable_settings_claim_no_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _agy_interp_repo(tmp_path, monkeypatch)
+    # A directory at the settings path raises an OSError other than
+    # FileNotFoundError on read, which the reader reports as unreadable.
+    _agy_settings_path(tmp_path).mkdir(parents=True)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    lines = _interp_lines(output)
+    assert lines == _agy_interp_lines(
+        f"needs the agy allow entries {_listed(AGY_INTERP_ENTRIES)}; "
+        f"{doctor.ANTIGRAVITY_SETTINGS_PATH} could not be read as settings, so "
+        f"the doctor did not check them ({AGY_SEE_CHECK} for details)",
+    )
+    agy_lines = _agy_lines(output)
+    assert agy_lines and agy_lines[0].startswith(
+        f"WARN {AGY_CHECK}: {doctor.ANTIGRAVITY_SETTINGS_PATH} could not be read ("
+    )
+
+
+def test_doctor_interpreter_grants_agy_unsafe_bypass_skips_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: _safe_claude_block() for role in ROLES}
+    blocks["backend"] = _codex_block()
+    blocks["planner"] = "provider: antigravity\nbinary: fake-agy\nunsafe_bypass: true"
+    repo = _interp_repo(tmp_path, monkeypatch, blocks, "interpreter_grants: true\n")
+    _write_agy_settings(tmp_path, "{not json")
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert _interp_lines(output) == [
+        f"WARN {INTERP_CHECK}: planner (provider antigravity) sets "
+        "unsafe_bypass: true, so the launch has no shell allowlist at all"
+    ]
+
+
 def test_doctor_interpreter_grants_warn_on_unsafe_bypass_launches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
