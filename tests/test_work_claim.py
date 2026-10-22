@@ -6047,11 +6047,26 @@ def _run_finalizer_cycle(
     config = _dispatch_config(tmp_path, commit_mode="dispatcher")
     messages: list[tuple[str, str]] = []
 
+    # The finalizer's rewrite is validated before its route is followed, so the
+    # fake writes a legal finalizer handoff: planner route, verified_pass, no
+    # close_type, and no backend ownership line.
+    finalizer_handoff = f"""---
+next_agent: planner
+reason: "EPIC-1 closed; choose the next epic."
+epic_id: EPIC-1
+story_id: {STORY_ID}
+story_title: Change the value
+status: verified_pass
+producer: finalizer
+---
+
+# EPIC-1 Closed
+
+The ledger records EPIC-1 as closed at {audited}.
+"""
+
     def fake_epic_close(**_kwargs: object) -> EpicCloseResult:
-        config.handoff_full_path.write_text(
-            _claim(audited, status="verified_pass", producer="finalizer", next_agent="planner"),
-            encoding="utf-8",
-        )
+        config.handoff_full_path.write_text(finalizer_handoff, encoding="utf-8")
         finalizer_work()
         return EpicCloseResult(subagent_exit_code=0, stdout="", stderr="")
 

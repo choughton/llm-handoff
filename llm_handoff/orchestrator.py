@@ -1762,6 +1762,70 @@ def _run_loop(
                     return 1
                 continue
 
+            # TRANS-7: a handoff the finalizer rewrote is checked before its
+            # route is followed. An unchanged handoff skips this, so the
+            # stale-finalizer recovery still sends the next cycle to planner.
+            finalizer_story_baseline = (
+                story_baseline.content
+                if story_baseline is not None
+                and story_baseline.handoff_sha == current_cycle.handoff_sha
+                else handoff_content
+            )
+            finalizer_validation = _validate_finalizer_rewrite(
+                config,
+                handoff_content=handoff_content,
+                prior_handoff_sha=current_cycle.handoff_sha,
+                story_check_baseline=finalizer_story_baseline,
+                log=log_fn,
+            )
+            if finalizer_validation is not None:
+                story_baseline = _next_story_baseline(
+                    config, finalizer_validation, finalizer_story_baseline or ""
+                )
+            if (
+                finalizer_validation is not None
+                and finalizer_validation.verdict == "NO"
+            ):
+                pause_reason = _post_dispatch_failure_pause_reason(
+                    "finalizer", finalizer_validation, None
+                )
+                _log(log_fn, "ERROR", pause_reason)
+                if _pause_recovery_available(
+                    config,
+                    pause_recovery_used,
+                    log_fn,
+                    diagnosis=finalizer_validation,
+                ):
+                    pending_planner_recovery = _schedule_pause_recovery(
+                        config,
+                        pause_reason=pause_reason,
+                        validation_result=finalizer_validation,
+                        log=log_fn,
+                    )
+                    pause_recovery_used = True
+                    previous_cycle = current_cycle
+                    consecutive_failures = 0
+                    continue
+                pause = _pause_at_dispatcher_pause(
+                    config,
+                    handoff_sha=_content_sha(
+                        _read_required_text(config.handoff_full_path) or ""
+                    ),
+                    reason=pause_reason,
+                    log=log_fn,
+                    operator_prompt=operator_prompt,
+                    stop_watch=stop_watch,
+                )
+                if pause.stop:
+                    # Without polling, the rejected rewrite ends the run with
+                    # a failure code, as the shared post-dispatch gate does.
+                    return 1 if pause.kind == "stop" else 0
+                if pause.kind == "retry":
+                    previous_cycle = None
+                elif pause.pending_planner_recovery is not None:
+                    pending_planner_recovery = pause.pending_planner_recovery
+                continue
+
             chat_session.wait_for_answers(log_fn)
             role_chat_marker = _chat_marker_after_role(
                 _commit_chat_changes_after_role(
@@ -3560,6 +3624,44 @@ def _remember_role_session(
         session_id=session_id,
         fallback=fallback,
     )
+
+
+def _validate_finalizer_rewrite(
+    config: DispatchConfig,
+    *,
+    handoff_content: str | None,
+    prior_handoff_sha: str,
+    story_check_baseline: str | None,
+    log: LogFn,
+) -> ValidationResult | None:
+    """Validate the handoff a successful finalizer dispatch rewrote.
+
+    Whether the handoff changed is decided from the file itself, not from the
+    ledger-updater's ``handoff_rewritten`` report. An unchanged handoff, or one
+    that is now missing or empty, returns ``None``: the stale-finalizer
+    recovery (or the next cycle's missing-handoff handling) owns those cases,
+    and validating the auditor handoff the finalizer started from would only
+    report a producer mismatch.
+    """
+
+    current = _read_required_text(config.handoff_full_path)
+    if current is None or not current.strip():
+        return None
+    if handoff_content is not None and current == handoff_content:
+        return None
+    _log(log, "AGENT", "Running post-dispatch validation for finalizer...")
+    result = validate_handoff(
+        config.handoff_full_path,
+        "finalizer",
+        prior_handoff_sha=prior_handoff_sha,
+        require_work_packet=config.enforce_work_packet,
+        dispatcher_commit_mode=config.commit_mode == "dispatcher",
+        tracker_provider=config.tracker.provider,
+        prior_handoff_content=story_check_baseline,
+        project_state_path=config.project_state_full_path,
+    )
+    _log_validation(result, "finalizer", log)
+    return result
 
 
 def _remember_finalizer_session(

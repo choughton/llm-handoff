@@ -2902,6 +2902,289 @@ producer: auditor
     assert ("INFO", "Routing instruction: planner") in log_messages
 
 
+_FINALIZER_ASSIGNMENT = """---
+next_agent: finalizer
+reason: "E2 approved; close the ledger."
+scope_sha: a656195
+close_type: epic
+producer: auditor
+---
+
+# E2 Close
+
+**auditor (ledger-updater):** Close the E2 epic.
+"""
+
+
+def _finalizer_validation_spy(
+    orchestrator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    """Run real validation for finalizer output; stub every other role."""
+
+    real_validate = orchestrator.validate_handoff
+    validated_roles: list[str] = []
+
+    def spy(path: Path, previous_agent: str, **kwargs: Any) -> ValidationResult:
+        validated_roles.append(previous_agent)
+        if previous_agent == "finalizer":
+            assert kwargs.get("dispatcher_authored", False) is False
+            assert kwargs.get("chat_takeover", False) is False
+            assert kwargs["prior_handoff_content"] == _FINALIZER_ASSIGNMENT
+            assert kwargs["project_state_path"] is not None
+            return real_validate(path, previous_agent, **kwargs)
+        return _validation_result()
+
+    monkeypatch.setattr(orchestrator, "validate_handoff", spy)
+    return validated_roles
+
+
+def _finalizer_rewrite_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rewrite: str,
+    *,
+    pause_recovery: str = "off",
+    max_cycles: int = 3,
+) -> tuple[int, list[str], list[str | None], list[str], list[tuple[str, str]]]:
+    repo_root, handoff_path = _write_repo(tmp_path, _FINALIZER_ASSIGNMENT)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, pause_recovery=pause_recovery)
+    log_messages: list[tuple[str, str]] = []
+    backend_calls: list[str] = []
+    planner_instructions: list[str | None] = []
+
+    def fake_epic_close(log=None) -> EpicCloseResult:
+        handoff_path.write_text(rewrite, encoding="utf-8")
+        # The flag is false on purpose: the dispatcher reads the file itself.
+        return EpicCloseResult(
+            subagent_exit_code=0,
+            stdout="",
+            stderr="",
+            handoff_rewritten=False,
+        )
+
+    monkeypatch.setattr(orchestrator, "run_epic_close", fake_epic_close)
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_backend_role",
+        lambda path, **kwargs: backend_calls.append("backend") or _dispatch_result(),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_planner_role",
+        lambda path, additional_instruction=None, log=None, **kwargs: (
+            planner_instructions.append(additional_instruction)
+            or _dispatch_result()
+        ),
+    )
+    validated_roles = _finalizer_validation_spy(orchestrator, monkeypatch)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=max_cycles,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+    return exit_code, backend_calls, planner_instructions, validated_roles, log_messages
+
+
+def test_run_loop_rejects_finalizer_rewrite_with_forged_producer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exit_code, backend_calls, planner_instructions, validated_roles, log_messages = (
+        _finalizer_rewrite_run(
+            tmp_path,
+            monkeypatch,
+            """---
+next_agent: backend
+reason: "Start the next story."
+producer: planner
+---
+
+# Next Story
+""",
+        )
+    )
+
+    assert exit_code == 1
+    assert backend_calls == []
+    assert planner_instructions == []
+    assert validated_roles == ["finalizer"]
+    assert any(
+        level == "ERROR"
+        and message.startswith("frontmatter_producer_mismatch:")
+        and "`finalizer`" in message
+        for level, message in log_messages
+    )
+    assert ("AGENT", "Post-dispatch gate FAILED for finalizer.") in log_messages
+    assert any(
+        level == "PAUSE"
+        and "Post-dispatch validation failed for finalizer" in message
+        for level, message in log_messages
+    )
+
+
+@pytest.mark.parametrize(
+    ("frontmatter_lines", "expected_error"),
+    [
+        (
+            "next_agent: backend\n",
+            "producer `finalizer` cannot route to next_agent `backend`",
+        ),
+        (
+            "next_agent: planner\nstatus: ready_for_review\n",
+            "producer `finalizer` cannot emit status `ready_for_review`",
+        ),
+    ],
+)
+def test_run_loop_rejects_finalizer_rewrite_with_illegal_route_or_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frontmatter_lines: str,
+    expected_error: str,
+) -> None:
+    exit_code, backend_calls, planner_instructions, validated_roles, log_messages = (
+        _finalizer_rewrite_run(
+            tmp_path,
+            monkeypatch,
+            "---\n"
+            + frontmatter_lines
+            + 'reason: "E2 closed."\nproducer: finalizer\n---\n\n# E2 Closed\n',
+        )
+    )
+
+    assert exit_code == 1
+    assert backend_calls == []
+    assert planner_instructions == []
+    assert validated_roles == ["finalizer"]
+    assert any(
+        level == "ERROR" and expected_error in message
+        for level, message in log_messages
+    )
+    assert ("AGENT", "Post-dispatch gate FAILED for finalizer.") in log_messages
+
+
+def test_run_loop_sends_rejected_finalizer_rewrite_to_pause_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exit_code, backend_calls, planner_instructions, validated_roles, log_messages = (
+        _finalizer_rewrite_run(
+            tmp_path,
+            monkeypatch,
+            """---
+next_agent: backend
+reason: "Start the next story."
+producer: auditor
+---
+
+# Next Story
+""",
+            pause_recovery="planner",
+            max_cycles=2,
+        )
+    )
+
+    assert exit_code == 0
+    assert backend_calls == []
+    assert len(planner_instructions) == 1
+    assert planner_instructions[0] is not None
+    assert "frontmatter_producer_mismatch" in planner_instructions[0]
+    assert validated_roles[0] == "finalizer"
+
+
+def test_run_loop_accepts_legal_finalizer_rewrite_without_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exit_code, backend_calls, planner_instructions, validated_roles, log_messages = (
+        _finalizer_rewrite_run(
+            tmp_path,
+            monkeypatch,
+            """---
+next_agent: planner
+reason: "E2 closed; choose the next epic."
+status: verified_pass
+producer: finalizer
+---
+
+# E2 Closed
+""",
+            max_cycles=2,
+        )
+    )
+
+    assert exit_code == 0
+    assert backend_calls == []
+    # The planner runs as a normal route, not as stale-finalizer recovery.
+    assert planner_instructions == [None]
+    assert validated_roles == ["finalizer", "planner"]
+    assert any(
+        level == "AGENT"
+        and message.startswith("Post-dispatch gate PASSED")
+        and message.endswith("for finalizer.")
+        for level, message in log_messages
+    )
+    assert ("AGENT", "Post-dispatch gate FAILED for finalizer.") not in log_messages
+    assert all("EVIDENCE_MISSING" not in message for _, message in log_messages)
+    assert all(
+        "STALE finalizer detected" not in message for _, message in log_messages
+    )
+
+
+def test_run_loop_unchanged_finalizer_handoff_keeps_stale_recovery_with_real_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, handoff_path = _write_repo(tmp_path, _FINALIZER_ASSIGNMENT)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    planner_instructions: list[str | None] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "run_epic_close",
+        lambda log=None: EpicCloseResult(
+            subagent_exit_code=0,
+            stdout="",
+            stderr="",
+            # A true flag with an unchanged file still skips validation.
+            handoff_rewritten=True,
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "invoke_planner_role",
+        lambda path, additional_instruction=None, log=None, **kwargs: (
+            planner_instructions.append(additional_instruction)
+            or _dispatch_result()
+        ),
+    )
+    validated_roles = _finalizer_validation_spy(orchestrator, monkeypatch)
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert handoff_path.read_text(encoding="utf-8") == _FINALIZER_ASSIGNMENT
+    assert "finalizer" not in validated_roles
+    assert len(planner_instructions) == 1
+    assert planner_instructions[0] is not None
+    assert "prior finalizer cycle already completed" in planner_instructions[0]
+    assert all(
+        "frontmatter_producer_mismatch" not in message for _, message in log_messages
+    )
+    assert (
+        "WARN",
+        "STALE finalizer detected after a completed finalizer cycle; redirecting this cycle to the planner for forward routing.",
+    ) in log_messages
+
+
 def test_run_loop_trips_circuit_breaker_after_three_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
