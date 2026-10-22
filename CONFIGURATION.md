@@ -2331,7 +2331,7 @@ is computed in memory and never written to the config file.
 | `backend` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
 | `frontend` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
 | `auditor` | `get_issue`, `list_issues`, `list_comments`, `save_comment`, `save_issue` |
-| `validator` | `get_issue`, `list_issues`, `list_comments` |
+| `validator` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
 | `finalizer` | `get_issue`, `list_issues`, `list_comments`, `save_comment` |
 
 The `tpm` row applies only when `agents.tpm` is configured; without it, no
@@ -2472,7 +2472,25 @@ leased issue before its onward handoff, keeps `tracker_issue` and
 `tracker_url` in that handoff, and changes no issue; with no leased issue it
 posts nothing and routes to `user` with `status: blocked_missing_context`. The
 validator compares a finalizer handoff's `producer`, `next_agent`, and
-`status` with that comment.
+`status` with that comment. A planner or validator that repairs the routing
+of a handoff with an existing lease keeps `story_id`, `tracker_issue`,
+`tracker_url`, and `selection_basis`, posts a `handoff_repaired` comment on
+that issue with the repaired `producer` and `next_agent` (and `status` when
+set) before rewriting `HANDOFF.md`, and moves or relabels nothing. The
+validator's Linear grant is comment-only (`save_comment`, no `save_issue`):
+it posts only `handoff_repaired`, only on a repair turn, and a report-only
+validation turn posts no comments. A Claude report-only validator launch
+drops `save_comment` and `save_issue` from its allowlist, along with the bare
+`mcp__<server>` grant and any wildcard entry that matches either tool (such
+as `mcp__<server>__*`, `mcp__*`, or `*`), so it can read Linear but cannot
+write to it; only the routed repair turn keeps `save_comment`. That repair
+turn runs the `handoff-router` subagent, so `init --tracker linear` renders
+the validator's Linear tools into `.claude/agents/handoff-router.md` as well
+as `.claude/agents/handoff-validator.md`. For a report-only check in Linear mode the
+dispatcher appends `dispatcher_authored=true` or `dispatcher_authored=false`
+to the validator prompt, from its recorded dispatcher-handoff digest; the
+validator skips the `producer`, `next_agent`, and `status` comparison for a
+`producer: validator` handoff only when that line says `true`.
 
 `llm-handoff init --tracker linear` renders this text. It only sets up a
 fresh repository, one with no `dispatch_config.yaml` yet; if that path exists,

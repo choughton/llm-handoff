@@ -32,10 +32,19 @@ Events and the roles that may post them:
 | `user_attention_requested` | `planner`, `tpm`, `auditor` |
 | `user_attention_cleared` | `planner`, `tpm`, `auditor` |
 | `epic_closed` | `finalizer` |
+| `handoff_repaired` | `planner`, `validator` |
 
 The events `implementation_handoff`, `audit_passed`, and `audit_failed`
 require `commit_sha`, `commands_run`, `output_summary`, and
 `unresolved_concerns`. Evidence must come from the current turn.
+
+A `handoff_repaired` comment records a routing repair that keeps an existing
+lease. Post it on the leased issue the repaired handoff keeps, with
+`version: 1`, `producer` (`planner` or `validator`), `issue` and
+`tracker_url` unchanged from that lease, and the `next_agent` the repaired
+handoff writes. Add `status` only when the repaired handoff sets one. A
+routing repair claims no implementation or audit evidence, so never add a
+`commit_sha` or a `status` the repaired handoff does not carry.
 
 When `commit_mode` is `dispatcher`, an implementer's changes are still
 uncommitted when it posts `implementation_handoff`; the dispatcher creates the

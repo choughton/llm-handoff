@@ -6,6 +6,27 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Linear mode now records handoff repairs (TIDY-15): a new `handoff_repaired`
+  evidence event for `planner` and `validator`, posted on the leased issue a
+  routing repair keeps, with unchanged `issue` and `tracker_url`, the
+  repaired `producer` and `next_agent`, and `status` only when set. Both
+  planner variants keep `story_id`, `tracker_issue`, `tracker_url`, and
+  `selection_basis` on a repair and move or relabel nothing. The validator
+  gets a comment-only `save_comment` grant (no `save_issue`) and posts only on
+  a repair turn; report-only turns post nothing, and a Claude report-only
+  validator launch drops `save_comment` and `save_issue` from its allowlist
+  (`without_linear_write_tools`), along with the bare `mcp__<server>` grant
+  and any wildcard entry that matches a write tool, such as
+  `mcp__<server>__*`, `mcp__*`, or `*`. `llm-handoff init --tracker linear`
+  renders the validator's Linear tools into `.claude/agents/handoff-router.md`
+  too, since the dispatcher runs that subagent for `next_agent: validator`
+  handoffs. In Linear mode
+  `_run_validator` appends `dispatcher_authored=true` or
+  `dispatcher_authored=false` to the validator prompt from the recorded
+  dispatcher-handoff digest, and the evidence check skips the routing
+  comparison for a `producer: validator` handoff only when it is `true`.
+  `handoff_repaired` is not a required-evidence event. Vanilla mode is
+  unchanged.
 - Linear mode now records epic closes (TIDY-14): a new finalizer-only
   `epic_closed` evidence event, a comment-only `save_comment` grant for the
   finalizer (no `save_issue`), and finalizer prompt text that posts the

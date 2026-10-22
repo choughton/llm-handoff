@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import os
 from pathlib import Path
 import re
@@ -865,7 +866,10 @@ LINEAR_ROLE_TOOLS: dict[AgentRole, tuple[str, ...]] = {
         "save_comment",
         "save_issue",
     ),
-    "validator": ("get_issue", "list_issues", "list_comments"),
+    # Comment-only: the validator posts `handoff_repaired` on a repair turn and
+    # never edits issues. Report-only validator launches drop `save_comment`
+    # too (`without_linear_write_tools`).
+    "validator": ("get_issue", "list_issues", "list_comments", "save_comment"),
     # Comment-only: the finalizer posts `epic_closed` and never edits issues.
     "finalizer": ("get_issue", "list_issues", "list_comments", "save_comment"),
 }
@@ -893,6 +897,73 @@ def _with_linear_tools(
     derived._interpreter_grants = agent_config._interpreter_grants
     derived._allowed_tools_from_default = agent_config.uses_default_allowed_tools
     return derived
+
+
+# Linear MCP tools that change Linear, unprefixed. Report-only validator
+# launches drop them (`without_linear_write_tools`).
+LINEAR_WRITE_TOOLS: tuple[str, ...] = ("save_comment", "save_issue")
+
+
+def _grants_any(entry: str, removed: frozenset[str], server_grant: str) -> bool:
+    """Return True when an allowlist entry would grant a removed tool.
+
+    Matches exact names, the bare ``mcp__<server>`` server grant, and wildcard
+    entries such as ``mcp__<server>__*``, ``mcp__*``, or ``*``.
+    """
+
+    if entry in removed or entry == server_grant:
+        return True
+    return any(fnmatch.fnmatchcase(tool, entry) for tool in removed)
+
+
+def _without_tools(
+    agent_config: AgentConfig, removed: frozenset[str], server_grant: str = ""
+) -> AgentConfig:
+    if agent_config.provider != "claude" or agent_config.unsafe_bypass:
+        return agent_config
+    base = agent_config.claude_allowed_tools
+    kept = tuple(
+        tool for tool in base if not _grants_any(tool, removed, server_grant)
+    )
+    if kept == base:
+        return agent_config
+    derived = agent_config.model_copy(update={"allowed_tools": kept})
+    derived._claude_mcp_config = agent_config._claude_mcp_config
+    derived._interpreter_grants = agent_config._interpreter_grants
+    derived._allowed_tools_from_default = agent_config.uses_default_allowed_tools
+    return derived
+
+
+def without_linear_write_tools(
+    agent_config: AgentConfig, mcp_server: str
+) -> AgentConfig:
+    """Return ``agent_config`` (and its fallback) without Linear write tools.
+
+    Removes ``mcp__<mcp_server>__save_comment`` and ``save_issue`` from a
+    Claude launch's allowlist, so a report-only validator launch can read
+    Linear but cannot change it. Entries that would still grant a write tool
+    go too: the bare ``mcp__<mcp_server>`` server grant and wildcard entries
+    that match a write tool, such as ``mcp__<mcp_server>__*``,
+    ``mcp__<mcp_server>__save_*``, ``mcp__*``, or ``*``. Other providers,
+    ``unsafe_bypass`` launches, and allowlists without such entries come back
+    unchanged.
+    """
+
+    removed = frozenset(f"mcp__{mcp_server}__{tool}" for tool in LINEAR_WRITE_TOOLS)
+    server_grant = f"mcp__{mcp_server}"
+    updated = _without_tools(agent_config, removed, server_grant)
+    fallback = agent_config.fallback
+    if fallback is not None:
+        stripped_fallback = _without_tools(fallback, removed, server_grant)
+        if stripped_fallback is not fallback:
+            private = updated._claude_mcp_config
+            grants = updated._interpreter_grants
+            from_default = updated._allowed_tools_from_default
+            updated = updated.model_copy(update={"fallback": stripped_fallback})
+            updated._claude_mcp_config = private
+            updated._interpreter_grants = grants
+            updated._allowed_tools_from_default = from_default
+    return updated
 
 
 def _with_interpreter_grants(

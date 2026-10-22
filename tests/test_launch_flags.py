@@ -943,10 +943,13 @@ _EXPECTED_LINEAR_TOOLS: dict[str, tuple[str, ...]] = {
         "mcp__linear__save_comment",
         "mcp__linear__save_issue",
     ),
+    # Comment-only (TIDY-15): `save_comment` for handoff_repaired, never
+    # `save_issue`.
     "validator": (
         "mcp__linear__get_issue",
         "mcp__linear__list_issues",
         "mcp__linear__list_comments",
+        "mcp__linear__save_comment",
     ),
     "finalizer": (
         "mcp__linear__get_issue",
@@ -1161,11 +1164,18 @@ def test_linear_mode_custom_allowed_tools_skip_listed_linear_tools(
 def test_linear_mode_uses_the_configured_mcp_server_name(tmp_path: Path) -> None:
     loaded = _linear_config(tmp_path, _all_claude_agents(), mcp_server="team-linear")
 
-    assert loaded.agents["validator"].allowed_tools[-3:] == (
+    assert loaded.agents["validator"].allowed_tools[-4:] == (
         "mcp__team-linear__get_issue",
         "mcp__team-linear__list_issues",
         "mcp__team-linear__list_comments",
+        "mcp__team-linear__save_comment",
     )
+    assert not any(
+        tool.endswith("__save_issue")
+        for tool in loaded.agents["validator"].allowed_tools
+    )
+    args = orchestrator._launch_args_for_role(loaded, "validator")
+    assert "mcp__team-linear__save_comment" in args[args.index("--allowedTools") + 1]
 
 
 def test_linear_mode_claude_fallback_gets_its_roles_tools(tmp_path: Path) -> None:
