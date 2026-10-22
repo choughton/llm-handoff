@@ -13,7 +13,10 @@ This project follows a simple pre-release changelog until the first public tag.
   normalization), at a cycle end, or when a pause begins or ends, logs
   `Operator edited HANDOFF.md.` once. An edit made while validation, the
   work-claim gate, review, or publishing runs is therefore an edit too, not
-  the role's handback. The last valid
+  the role's handback. The work-claim gate observes the handoff after its
+  checks and before it rewrites the claim (pass or bounce), so an edit made
+  during verification is logged and its predecessor saved even though the
+  rewrite then replaces it. The last valid
   handoff the dispatcher observed before the edit is saved to
   `logs/dispatch/operator-edit/previous-handoff.md` through the carry-over
   record's link-resistant writer; an invalid edit never replaces that valid

@@ -6389,6 +6389,9 @@ def _run_work_claim_gate(
         chat_owned_paths=chat_owned_paths,
     )
     _log_work_claim_result(result, log)
+    # Both branches below rewrite the handoff from claim_content, read before
+    # verification ran; spot an operator edit made meanwhile first.
+    _observe_loop_handoff_before_rewrite(log)
     if result.passed:
         _log(log, "AGENT", f"Work-claim gate PASSED for {previous_agent}.")
         # Record the pass so the auditor does not re-run the verification.
@@ -11640,6 +11643,23 @@ def _record_loop_handoff_write(path: object = None) -> None:
     if isinstance(path, Path) and path != watch.config.handoff_full_path:
         return
     watch.accept_on_disk(watch.config)
+
+
+def _observe_loop_handoff_before_rewrite(log: LogFn) -> None:
+    """Observe the on-disk handoff before a write built from an earlier read.
+
+    A dispatcher write that rebuilds the handoff from content it read before
+    a long step (the work-claim gate's verification) would replace an
+    operator edit made during that step, and the write hook would then
+    record the replacement as the dispatcher's. Observing first logs the
+    edit and saves the last valid handoff before it. Does nothing while no
+    loop is running.
+    """
+
+    watch = _ACTIVE_OPERATOR_EDIT_WATCH
+    if watch is None or watch.config is None:
+        return
+    watch.observe_on_disk(watch.config, log)
 
 
 def _operator_edit_watch_read(config: DispatchConfig) -> str | None:

@@ -617,6 +617,132 @@ def _active_watch(
     return watch
 
 
+def _ready_for_review_claim(repo: Path) -> str:
+    head = _git(repo, "rev-parse", "HEAD")
+    return f"""---
+next_agent: auditor
+reason: "Backend work complete; audit requested."
+epic_id: EDIT
+story_id: EDIT-GATE
+story_title: Story one
+status: ready_for_review
+scope_sha: {head}
+close_type: story
+producer: backend
+---
+
+## Verification Evidence
+
+- **Commands run:** python -m pytest tests -q
+- **Output summary:** passed
+- **Commit SHA verified:** {head}
+- **Files changed or reviewed:** app.py
+- **Unresolved concerns:** none
+"""
+
+
+def _work_claim_result(*errors: str) -> Any:
+    return orchestrator.WorkClaimResult(
+        checks=(),
+        errors=errors,
+        pre_dispatch_head=None,
+        head_sha=None,
+        scope_sha=None,
+        changed_files=(),
+        verification_runs=(),
+        work_packet=None,
+        work_packet_text=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("errors", "rewrite_marker"),
+    [
+        ((), "- **Verdict:** PASS"),
+        (("scope_violation: changed files outside Files in scope: x.py.",), "producer: validator"),
+    ],
+    ids=["gate-passes", "gate-fails"],
+)
+def test_an_edit_while_the_work_claim_gate_verifies_is_spotted_before_the_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    errors: tuple[str, ...],
+    rewrite_marker: str,
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    claim = _ready_for_review_claim(repo)
+    _write(_handoff(repo), claim)
+    # The backend's claim, recorded when the backend returned.
+    watch = _active_watch(repo, monkeypatch, claim)
+    assert watch.config is not None
+    assert watch.valid_content == claim
+    gate_config = _config(
+        repo, enforce_work_packet=True, work_packet_opt_out_reason=None
+    )
+    assert orchestrator._work_claim_gate_applies(gate_config, "backend")
+
+    def verify_while_the_operator_edits(**_kwargs: Any) -> Any:
+        # The operator replaces the claim while the gate's checks run.
+        _write(_handoff(repo), OPERATOR_TO_PLANNER)
+        return _work_claim_result(*errors)
+
+    monkeypatch.setattr(orchestrator, "verify_work_claim", verify_while_the_operator_edits)
+    monkeypatch.setattr(orchestrator, "record_status_transition", lambda *_a, **_k: 1)
+    logs = _Logs()
+
+    bounced = orchestrator._run_work_claim_gate(
+        config=gate_config,
+        route="backend",
+        previous_agent="backend",
+        assignment_content=ASSIGN_BACKEND,
+        pre_dispatch_state=object(),  # type: ignore[arg-type]
+        log=logs,
+    )
+
+    assert bounced is bool(errors)
+    # The gate still rewrites the claim it verified.
+    assert rewrite_marker in _handoff(repo).read_text(encoding="utf-8")
+    # The edit is logged once, before the rewrite replaced it.
+    assert logs.edits() == 1
+    assert watch.last_edit is not None
+    assert watch.last_edit.content == OPERATOR_TO_PLANNER
+    assert watch.last_edit.previous_valid == claim
+    assert watch.last_edit.saved
+    # The last valid handoff before the edit: the backend's claim.
+    assert _snapshot(repo).read_text(encoding="utf-8") == claim
+    # The rewrite itself is the dispatcher's, not another edit.
+    assert watch.observe_on_disk(watch.config, logs) is None
+    assert logs.edits() == 1
+
+
+def test_the_work_claim_gate_without_an_edit_logs_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    claim = _ready_for_review_claim(repo)
+    _write(_handoff(repo), claim)
+    watch = _active_watch(repo, monkeypatch, claim)
+    assert watch.config is not None
+    monkeypatch.setattr(
+        orchestrator, "verify_work_claim", lambda **_k: _work_claim_result()
+    )
+    logs = _Logs()
+
+    orchestrator._run_work_claim_gate(
+        config=_config(repo, enforce_work_packet=True, work_packet_opt_out_reason=None),
+        route="backend",
+        previous_agent="backend",
+        assignment_content=ASSIGN_BACKEND,
+        pre_dispatch_state=object(),  # type: ignore[arg-type]
+        log=logs,
+    )
+
+    assert logs.edits() == 0
+    assert not _snapshot(repo).exists()
+    assert watch.observe_on_disk(watch.config, logs) is None
+    assert logs.edits() == 0
+
+
 def test_a_dispatcher_write_is_recorded_when_it_is_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
