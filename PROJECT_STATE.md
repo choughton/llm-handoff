@@ -13,7 +13,8 @@ history.
 - **Active Epic:** TIDY (epic 19). TIDY-8 was split into TIDY-14 and
   TIDY-15. TIDY-14 (epic-close Linear evidence) is approved at `3b98682`
   and merged in PR #269 (`4db0d29`). TIDY-15 (handoff-repair Linear
-  evidence) is implemented and awaits audit; TIDY-12 and TIDY-13 remain, in
+  evidence) is implemented, PR #270 review round 1 is answered (one fix, one
+  deferred finding), and it awaits audit; TIDY-12 and TIDY-13 remain, in
   that order. HUMAN-EDITS
   (epic 21) closed with HUMAN-6, approved at `d3da792` and merged in PR #268
   (`f4c0e3e`).
@@ -510,7 +511,12 @@ Line numbers are from `105ea42`; re-check them when writing the Work Packet.
   and `status` comparison for a `producer: validator` handoff only when that
   line says `true`. Implemented; awaits audit. The checked-in
   `.claude/agents/handoff-validator.md` copies still list only the read
-  tools; `init --tracker linear` appends `save_comment`.
+  tools; `init --tracker linear` appends `save_comment`. PR #270 review
+  round 1: report-only `_run_validator` launches now drop `save_comment` and
+  `save_issue` (`without_linear_write_tools`); deferred, out of scope: the
+  routed repair runs as `handoff-router`, whose generated `tools:` allowlist
+  `init --tracker linear` does not extend with the validator's Linear tools
+  (`llm_handoff/init_workflow.py` `_LINEAR_AGENT_TOOLS`).
 
 ## Open Followups
 

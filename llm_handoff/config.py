@@ -866,7 +866,8 @@ LINEAR_ROLE_TOOLS: dict[AgentRole, tuple[str, ...]] = {
         "save_issue",
     ),
     # Comment-only: the validator posts `handoff_repaired` on a repair turn and
-    # never edits issues.
+    # never edits issues. Report-only validator launches drop `save_comment`
+    # too (`without_linear_write_tools`).
     "validator": ("get_issue", "list_issues", "list_comments", "save_comment"),
     # Comment-only: the finalizer posts `epic_closed` and never edits issues.
     "finalizer": ("get_issue", "list_issues", "list_comments", "save_comment"),
@@ -895,6 +896,54 @@ def _with_linear_tools(
     derived._interpreter_grants = agent_config._interpreter_grants
     derived._allowed_tools_from_default = agent_config.uses_default_allowed_tools
     return derived
+
+
+# Linear MCP tools that change Linear, unprefixed. Report-only validator
+# launches drop them (`without_linear_write_tools`).
+LINEAR_WRITE_TOOLS: tuple[str, ...] = ("save_comment", "save_issue")
+
+
+def _without_tools(
+    agent_config: AgentConfig, removed: frozenset[str]
+) -> AgentConfig:
+    if agent_config.provider != "claude" or agent_config.unsafe_bypass:
+        return agent_config
+    base = agent_config.claude_allowed_tools
+    kept = tuple(tool for tool in base if tool not in removed)
+    if kept == base:
+        return agent_config
+    derived = agent_config.model_copy(update={"allowed_tools": kept})
+    derived._claude_mcp_config = agent_config._claude_mcp_config
+    derived._interpreter_grants = agent_config._interpreter_grants
+    derived._allowed_tools_from_default = agent_config.uses_default_allowed_tools
+    return derived
+
+
+def without_linear_write_tools(
+    agent_config: AgentConfig, mcp_server: str
+) -> AgentConfig:
+    """Return ``agent_config`` (and its fallback) without Linear write tools.
+
+    Removes ``mcp__<mcp_server>__save_comment`` and ``save_issue`` from a
+    Claude launch's allowlist, so a report-only validator launch can read
+    Linear but cannot change it. Other providers, ``unsafe_bypass`` launches,
+    and allowlists without those tools come back unchanged.
+    """
+
+    removed = frozenset(f"mcp__{mcp_server}__{tool}" for tool in LINEAR_WRITE_TOOLS)
+    updated = _without_tools(agent_config, removed)
+    fallback = agent_config.fallback
+    if fallback is not None:
+        stripped_fallback = _without_tools(fallback, removed)
+        if stripped_fallback is not fallback:
+            private = updated._claude_mcp_config
+            grants = updated._interpreter_grants
+            from_default = updated._allowed_tools_from_default
+            updated = updated.model_copy(update={"fallback": stripped_fallback})
+            updated._claude_mcp_config = private
+            updated._interpreter_grants = grants
+            updated._allowed_tools_from_default = from_default
+    return updated
 
 
 def _with_interpreter_grants(

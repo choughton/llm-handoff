@@ -13,7 +13,9 @@ This project follows a simple pre-release changelog until the first public tag.
   planner variants keep `story_id`, `tracker_issue`, `tracker_url`, and
   `selection_basis` on a repair and move or relabel nothing. The validator
   gets a comment-only `save_comment` grant (no `save_issue`) and posts only on
-  a repair turn; report-only turns post nothing. In Linear mode
+  a repair turn; report-only turns post nothing, and a Claude report-only
+  validator launch drops `save_comment` and `save_issue` from its allowlist
+  (`without_linear_write_tools`). In Linear mode
   `_run_validator` appends `dispatcher_authored=true` or
   `dispatcher_authored=false` to the validator prompt from the recorded
   dispatcher-handoff digest, and the evidence check skips the routing

@@ -1570,6 +1570,78 @@ def test_linear_mode_derivation_is_idempotent_on_revalidation(
     )
 
 
+def test_without_linear_write_tools_keeps_reads_and_drops_writes(
+    tmp_path: Path,
+) -> None:
+    mcp_file = tmp_path / "linear-mcp.json"
+    mcp_file.write_text("{}", encoding="utf-8")
+    fallback = config_module.AgentConfig(provider="claude", model="other")
+    loaded = DispatchConfig(
+        repo_root=tmp_path,
+        agents=_linear_agents(
+            validator=config_module.AgentConfig(provider="claude", fallback=fallback)
+        ),
+        tracker=_linear_tracker(claude_mcp_config="linear-mcp.json"),
+        interpreter_grants=True,
+    )
+    validator = loaded.agents["validator"]
+    assert "mcp__linear__save_comment" in validator.claude_allowed_tools
+
+    report_only = config_module.without_linear_write_tools(validator, "linear")
+
+    read_tools = (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
+        "mcp__linear__list_comments",
+    )
+    expected = (*config_module.claude_default_allowed_tools(True), *read_tools)
+    assert report_only.claude_allowed_tools == expected
+    assert report_only.fallback is not None
+    assert report_only.fallback.claude_allowed_tools == expected
+    for agent in (report_only, report_only.fallback):
+        assert agent.claude_mcp_config_path == mcp_file.resolve()
+        assert agent.interpreter_grants is True
+        assert agent.uses_default_allowed_tools is True
+    # The loaded config keeps the comment grant for routed repair turns.
+    assert "mcp__linear__save_comment" in validator.claude_allowed_tools
+    assert validator.fallback is not None
+    assert "mcp__linear__save_comment" in validator.fallback.claude_allowed_tools
+
+
+def test_without_linear_write_tools_drops_save_issue_and_keeps_others(
+    tmp_path: Path,
+) -> None:
+    agent = config_module.AgentConfig(
+        provider="claude",
+        allowed_tools=(
+            "Read",
+            "mcp__linear__save_issue",
+            "mcp__linear__save_comment",
+            "mcp__other__save_comment",
+        ),
+    )
+
+    stripped = config_module.without_linear_write_tools(agent, "linear")
+
+    assert stripped.claude_allowed_tools == ("Read", "mcp__other__save_comment")
+    assert stripped.uses_default_allowed_tools is False
+
+
+def test_without_linear_write_tools_leaves_other_launches_unchanged() -> None:
+    codex = config_module.AgentConfig(provider="codex")
+    bypass = config_module.AgentConfig(
+        provider="claude",
+        unsafe_bypass=True,
+        allowed_tools=("Read", "mcp__linear__save_comment"),
+    )
+    no_writes = config_module.AgentConfig(
+        provider="claude", allowed_tools=("Read", "mcp__linear__get_issue")
+    )
+
+    for agent in (codex, bypass, no_writes):
+        assert config_module.without_linear_write_tools(agent, "linear") is agent
+
+
 def test_linear_mode_mcp_config_path_lives_on_derived_agent(tmp_path: Path) -> None:
     mcp_file = tmp_path / "linear-mcp.json"
     mcp_file.write_text("{}", encoding="utf-8")

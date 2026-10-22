@@ -5088,6 +5088,62 @@ def test_run_validator_provenance_is_false_when_handoff_differs_from_record(
     assert "dispatcher_authored=true" not in prompt
 
 
+def test_run_validator_launches_without_linear_write_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _handoff_path = _write_repo(tmp_path, _LINEAR_VALIDATOR_HANDOFF)
+    orchestrator = _load_orchestrator_module()
+    config = _linear_validator_config(repo_root)
+    validator = config.agents["validator"]
+    assert validator.provider == "claude"
+    assert "mcp__linear__save_comment" in validator.claude_allowed_tools
+    launched: list[Any] = []
+
+    def fake_invoke(_name: str, _prompt: str, **kwargs: object) -> SubagentResult:
+        launched.append(kwargs["agent_config"])
+        return _subagent_result(exit_code=1, stdout="", stderr="")
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_invoke)
+    orchestrator._run_validator(
+        config, "handoff-validator", "base prompt", "Validator", lambda *_: None
+    )
+
+    assert len(launched) == 1
+    tools = launched[0].claude_allowed_tools
+    # Report-only launches read Linear but cannot comment or edit issues.
+    assert "mcp__linear__get_issue" in tools
+    assert "mcp__linear__list_comments" in tools
+    assert "mcp__linear__save_comment" not in tools
+    assert "mcp__linear__save_issue" not in tools
+    # The routed repair turn keeps the comment grant on the loaded config.
+    assert "mcp__linear__save_comment" in (
+        config.agents["validator"].claude_allowed_tools
+    )
+
+
+def test_run_validator_keeps_vanilla_agent_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, _handoff_path = _write_repo(tmp_path, _LINEAR_VALIDATOR_HANDOFF)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    launched: list[Any] = []
+
+    def fake_invoke(_name: str, _prompt: str, **kwargs: object) -> SubagentResult:
+        launched.append(kwargs["agent_config"])
+        return _subagent_result(exit_code=1, stdout="", stderr="")
+
+    monkeypatch.setattr(orchestrator, "invoke_support_role", fake_invoke)
+    orchestrator._run_validator(
+        config, "handoff-validator", "base prompt", "Validator", lambda *_: None
+    )
+
+    assert launched == [config.agents["validator"]]
+    assert launched[0] is config.agents["validator"]
+
+
 @pytest.mark.parametrize("recorded", [True, False])
 def test_run_validator_leaves_non_linear_prompt_unchanged(
     tmp_path: Path,
