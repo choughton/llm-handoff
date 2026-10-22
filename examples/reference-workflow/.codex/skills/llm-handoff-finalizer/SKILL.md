@@ -20,8 +20,9 @@ Start by reading `docs/handoff/HANDBOOK.md`; it defines the shared frontmatter, 
 5. `git log --oneline -10`
 
 Do not read `CHANGELOG.md` whole; it is long. To add an entry, read only its
-top (`Get-Content CHANGELOG.md -TotalCount 40`) and add the bullet first
-under `## Unreleased`.
+first 40 lines (`head -n 40 CHANGELOG.md` in a POSIX shell,
+`Get-Content CHANGELOG.md -TotalCount 40` in PowerShell) and add the bullet
+first under `## Unreleased`.
 
 ## Preconditions
 

@@ -168,7 +168,8 @@ To ask the planner for a re-scope, use `blocked_implementation_failure`, not
 `CHANGELOG.md` grows with every story, and reading it whole costs tokens on
 every dispatch that edits it. To add an entry, read only the top of the file,
 about the first 40 lines (Claude `Read` with a `limit`, `agy` `view_file` with
-a line range, Codex `Get-Content CHANGELOG.md -TotalCount 40`), and add the new
+a line range, Codex `head -n 40 CHANGELOG.md` in a POSIX shell or
+`Get-Content CHANGELOG.md -TotalCount 40` in PowerShell), and add the new
 bullet as the first entry under `## Unreleased`. Read further only when the
 Work Packet asks you to change an older entry.
 

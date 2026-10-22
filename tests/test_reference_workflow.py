@@ -620,7 +620,7 @@ def test_role_files_say_to_read_only_the_top_of_the_changelog() -> None:
     hints = {
         ".claude/agents": "`limit: 40`",
         ".agents/agents": "first 40",
-        ".codex/skills": "Get-Content CHANGELOG.md -TotalCount 40",
+        ".codex/skills": "`head -n 40 CHANGELOG.md` in a POSIX shell",
     }
     for root in (REPO_ROOT, REFERENCE_WORKFLOW):
         handbook = (root / "docs/handoff/HANDBOOK.md").read_text(encoding="utf-8")
