@@ -10,33 +10,10 @@ history.
 
 ## Current Status
 
-- **Active Epic:** TRANSITION-RULES (epic 17), opened by the planner after
-  GROOMING closed at `d4bdd04`; the tpm groomed it with all six stories kept
-  in order. TRANS-1 (implementer producers: `backend` and `frontend` route
-  only to `auditor`, `planner`, or `user`, and never emit `verified_pass`,
-  `verified_fail`, or `close_type: epic`) was merged in PR #249 at
-  `7e061a2`. TRANS-2 (auditor and finalizer producers, per the planner's
-  2026-10-21 TRANS-2/TRANS-3 boundary decision recorded in epic 17) was
-  approved at `bb5a247` and merged in PR #250 at `99c8bbd`. TRANS-3
-  (validator producer: keyword-only `dispatcher_authored` flag on the three
-  validation entry points; validator verdicts need it, and
-  `ready_for_review`, `next_agent: finalizer`, and `close_type: epic` stay
-  rejected; PR #251 Finding 1 fixed in-story with SHA-256 provenance in
-  `logs/dispatch/dispatcher-handoff.json`, accepted by the planner as the
-  final provenance mechanism) was approved at `9642d8a` and merged in PR
-  #251 at `733d53f`. TRANS-4 (every dispatched role's handoff must name
-  that role as `producer`, else `frontmatter_producer_mismatch`;
-  dispatcher-authored handoffs skip only that check; a chat takeover
-  rewrite may name `planner` or `user` through the `chat_takeover` flag) was
-  merged in PR #257 at `3e5b6e5`. TRANS-7 (validate a rewritten finalizer
-  handoff in `run_loop` before following its route; PR #257 Finding 1) was
-  approved at `38676d1` and merged in PR #258 at `c208d81`. TRANS-5 (the
-  handbook `## Transition Table`, its parsed parity test against the
-  validator, the synchronized reference handbook, and the non-Claude
-  validator helpers citing the table) was approved at `1264a2c` and merged in
-  PR #259 at `3d8db88`. TRANS-6 (operator edit of the Claude validator helpers
-  to cite `docs/handoff/HANDBOOK.md#transition-table`) is implemented and
-  awaiting audit.
+- **Active Epic:** None. TRANSITION-RULES (epic 17) closed with TRANS-6,
+  approved at `fbb8e4c` and merged in PR #261 (`9018e33`). The planner picks
+  the next epic by fit; HUMAN-EDITS (epic 21) is next in line (operator
+  direction 2026-10-22).
 - **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
   (TIDY-12 and TIDY-13 are wording nits filed by the operator on
   2026-10-21). TIDY-8 is a backend story the planner picks by fit (the
@@ -166,130 +143,6 @@ normally with no second pass.
   `docs/handoff/PLANNER_HANDOFF_PROMPT.md` documents the pass, and the
   handbook's escalation section says a user escalation may be reconciled once
   when the key is on.
-
-### 17. TRANSITION-RULES - per-producer legality in the validator
-
-Fit: unblocked; TPM-ROLE is closed, so TRANS-2's `tpm` dependency is met.
-Next in line after GROOMING (operator direction 2026-10-21); otherwise
-independent, and each story is small enough to fill a wait.
-
-The validator checks that `status` implies `next_agent` and that `finalizer`
-is reached only from the auditor with `close_type: epic`
-(`llm_handoff/validator.py` ~lines 230-244). It does not check who may emit a
-status or who an implementer may route to, so a backend handback with
-`status: verified_pass` or a planner handoff to `finalizer` with a forged
-`producer: auditor` is only caught by prompts. The source project enforces
-a per-producer table. Make the table explicit here, enforce it, and keep the
-handbook and the code from drifting.
-
-- TRANS-1: Implementer producers. A handoff with `producer: backend` or
-  `producer: frontend` may route only to `auditor`, `planner`, or `user`
-  (`frontmatter_routing_rule`); `verified_pass`, `verified_fail`, and
-  `close_type: epic` from an implementer are rejected
-  (`frontmatter_status_producer_rule`). Inspect every fixture under
-  `tests/ported/fixtures/handoffs/` and the reference-workflow starter
-  handoff (`producer: user`, which stays accepted). Intentional legacy and
-  negative routing cases (empty, malformed, frontmatter-free inputs) keep
-  their expected router/validator results; a purportedly valid implementer
-  fixture that violates the new rules is updated, not exempted or
-  grandfathered.
-- TRANS-2: Auditor and finalizer producers. `verified_pass` and
-  `verified_fail` require `producer: auditor` (`frontmatter_status_producer_rule`
-  for planner, user, implementer, tpm, and unrecognized producers);
-  `producer: validator` keeps its existing behavior until TRANS-3.
-  `producer: auditor` never emits `ready_for_review` and never routes to
-  `auditor`. `producer: finalizer` routes only to `planner`, `tpm`, or
-  `user` (when `agents.tpm` is unset, the existing TPM-3 check intercepts
-  `next_agent: tpm`), never sets `close_type` (`story` or `epic`), and emits
-  only `verified_pass`, `blocked_missing_context`, `escalate_to_user`, or no
-  status. A finalizer `verified_pass` after a known non-finalizer dispatch
-  is rejected, and the evidence exemption applies only when both the
-  previous route and the normalized producer are `finalizer` (doctor and
-  supervisor preflight pass the producer as the previous agent).
-- TRANS-3 (was part of TRANS-2): Validator producer and dispatcher-authored
-  handoffs. Decided 2026-10-21: the dispatcher's own builders
-  (`build_review_bounce_handoff()` and `build_deferred_findings_handoff()`
-  in `llm_handoff/publish.py`, `build_bounce_handoff()` in
-  `llm_handoff/work_claim.py`, and `_write_protected_file_escalation()` in
-  `llm_handoff/orchestrator.py`) keep `producer: validator`; no new
-  `dispatcher` producer string is added. Instead `validate_handoff_frontmatter()`,
-  `validate_handoff()`, and `validate_handoff_text()` gain a keyword-only
-  `dispatcher_authored: bool = False`. By default `producer: validator` may
-  route anywhere except `finalizer`, may not set `close_type: epic`, and may
-  not emit `ready_for_review`, `verified_pass`, or `verified_fail`. With
-  `dispatcher_authored=True` it may also emit `verified_fail` or
-  `verified_pass`; `ready_for_review`, `next_agent: finalizer`, and
-  `close_type: epic` stay rejected. The validator-producer regression cases
-  are updated in this story, and the review-bounce fixtures must keep
-  validating. Provenance (PR #251 Finding 1, fixed in-story): when the
-  dispatcher writes one of these handoffs it records the handoff's
-  normalized SHA-256 in `logs/dispatch/dispatcher-handoff.json`
-  (`DISPATCHER_HANDOFF_STATE_PATH`), and it clears that record when any
-  agent dispatch returns, before post-dispatch validation. `llm-handoff
-  doctor` and supervisor preflight pass `dispatcher_authored=True` only
-  while `HANDOFF.md` matches the record, so any edit drops the trust; the
-  record is never read or written through a symlink or junction on `logs`,
-  `logs/dispatch`, or the file. Post-dispatch, chat, repair, and
-  interrupted-role validation keep `dispatcher_authored=False`. The
-  provenance flag waives only the producer rule, so the two publish
-  builders now write a `## Verification Evidence` block naming the
-  reviewed story-branch head (the deferred-findings builder takes it as
-  `head_sha`), and the doctor and supervisor regressions use the real
-  builders' output. Residual (audit, medium): the record is an unkeyed
-  digest in agent-writable `logs/`, so a record an agent plants during a
-  dispatch the dispatcher never returns from is not cleared. Decided by
-  the planner on 2026-10-21:
-  accepted within the workspace-local reference architecture (AGENTS.md
-  Scope Boundaries forbid out-of-repo state stores or key daemons,
-  orchestrator post-dispatch validation never reads the record, and
-  evidence, SHA, and finalizer/epic-close rules still apply).
-- TRANS-4 (was part of TRANS-2): Producer matches the dispatched role. The
-  post-dispatch validation already knows the previous route; a `producer`
-  that names a role other than the one just dispatched is rejected as
-  `frontmatter_producer_mismatch` unless the handoff is a dispatcher-written
-  escalation. Decided 2026-10-21: generalize
-  `_tpm_dispatch_producer_errors()` in `validate_handoff_text()` to every
-  role when `not dispatcher_authored`. Chat-takeover fix (planner,
-  2026-10-21, after the backend handback at `1b1ef6d`): `validate_handoff()`
-  and `validate_handoff_text()` take a keyword-only `chat_takeover` flag,
-  passed only by the `_follow_chat_takeover` call. With it the producer
-  check accepts `planner` or `user`, and any other producer still fails
-  `frontmatter_producer_mismatch`; nothing else is waived and
-  `dispatcher_authored` stays false. Both chat prompt branches tell the chat
-  to set `producer: user` when it rewrites HANDOFF.md. PR #257 review round
-  1: in Linear mode a `producer: user` takeover that assigns an implementer
-  still needs `selection_basis` (Finding 2, fixed); validating the successful
-  finalizer handoff in `run_loop` is deferred to the planner (Finding 1,
-  outside this packet's single orchestrator edit).
-- TRANS-7 (was part of TRANS-4): Post-dispatch handoff validation for
-  rewritten finalizer handoffs in `run_loop` (PR #257 Finding 1, accepted by
-  the planner as an in-epic follow-up). After a successful finalizer
-  dispatch, a handoff whose content changed from the pre-dispatch text
-  (decided from the file, not the ledger-updater's `handoff_rewritten` flag)
-  is validated with `validate_handoff(..., "finalizer", ...)` before its
-  route is followed; a forged producer or an illegal finalizer route or
-  status pauses or schedules pause recovery instead of dispatching the
-  requested role. An unchanged handoff keeps the stale-finalizer recovery
-  to planner, and the finalizer `verified_pass` evidence exemption stays.
-  A chat answer that rewrites the handoff after the finalizer returned,
-  including while its handoff is validated, is followed as a chat takeover
-  and validated as one (PR #258 Finding 1), never passed as the finalizer's.
-  Tests: `tests/ported/test_orchestrator.py`, `tests/test_work_claim.py`.
-- TRANS-5 (was TRANS-3): One table, two readers. Write the
-  producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under
-  `## Transition Table`, and add a test that parses that table and asserts it
-  matches the validator's rule set, so a prompt edit and a validator edit
-  cannot drift apart. The reference handbook
-  (`examples/reference-workflow/docs/handoff/HANDBOOK.md`) carries the same
-  table, kept identical to the root handbook. The `handoff-validator` helper
-  files under `.agents/agents/` and the `.codex/skills/llm-handoff-validator`
-  skill (root and `examples/reference-workflow/` copies) cite the table
-  instead of restating it.
-- TRANS-6: Operator edit of the Claude validator helpers (routes to `user`).
-  The planner writes the exact edit for `.claude/agents/handoff-validator.md`
-  and its `examples/reference-workflow/` copy so they cite the TRANS-5 table,
-  as GEM-5c did. If TIDY-7 is still open, list its edits in the same handoff
-  (operator batching, 2026-10-20).
 
 ### 18. ACTIVE-PLANNER - finish stories without a person at the console
 
