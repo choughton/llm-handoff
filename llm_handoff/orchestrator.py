@@ -3955,6 +3955,8 @@ def _dispatch_from_subagent(result: SubagentResult) -> DispatchResult:
         elapsed_seconds=result.elapsed_seconds,
         session_id=result.session_id,
         usage=result.usage,
+        fallback_ran=result.fallback_ran,
+        fallback_session_id=result.fallback_session_id,
     )
 
 
