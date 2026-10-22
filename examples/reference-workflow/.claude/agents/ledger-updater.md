@@ -1,7 +1,7 @@
 ---
 name: ledger-updater
 description: Finalizer role for approved epic closes. Updates durable project state, rewrites HANDOFF.md for the next route, and reports machine-readable results.
-tools: Read, Edit, Grep, Glob, Bash
+tools: Read, Edit, Write, Grep, Glob, Bash
 model: sonnet
 ---
 
@@ -47,6 +47,8 @@ If any precondition is missing, do not update project state. Rewrite `docs/hando
 ## State Update
 
 If the project state file named in the dispatcher prompt exists, update it according to the consuming repository's local instructions. Keep the edit focused on the closed scope, next active scope, and durable commit references.
+
+Keep the project state file to current work. Move the closed epic's section (its intro, `Fit:` line, and story list) and the status notes about it to the completed work file named in the dispatcher prompt (`COMPLETED_WORK.md` by default), and append one ledger line there for the closed scope with its durable commit references. Create the completed work file with a `## Completed Scope Ledger` section if it does not exist. Commit it together with the project state file.
 
 If the project state file named in the dispatcher prompt does not exist, create a minimal one only when `AGENTS.md` or `docs/handoff/HANDOFF.md` explicitly says this repository uses it. Otherwise, leave project state unchanged and route to `planner` or `user` with a clear reason.
 

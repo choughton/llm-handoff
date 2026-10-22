@@ -14,16 +14,10 @@ project docs.
 
 - None.
 
-## Completed Scope Ledger
-
-Append one compact line per approved epic close:
-
-```text
-- **<Epic Name>** - <one-line summary>. SHA `<sha>`. Verification: <checks>.
-```
-
 ## Notes
 
 - `docs/handoff/HANDOFF.md` is the live state file.
-- `PROJECT_STATE.md` is the durable status file.
+- `PROJECT_STATE.md` is the durable status file. It holds current work only:
+  the finalizer moves each closed epic and its ledger line to
+  `COMPLETED_WORK.md`.
 - Git history is the durable record of completed work.

@@ -21,6 +21,7 @@ REFERENCE_WORKFLOW = REPO_ROOT / "examples" / "reference-workflow"
 REQUIRED_TEMPLATE_FILES = (
     "AGENTS.md",
     "PROJECT_STATE.md",
+    "COMPLETED_WORK.md",
     "dispatch_config.yaml",
     "docs/handoff/HANDOFF.md",
     "docs/handoff/HANDBOOK.md",

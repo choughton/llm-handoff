@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Closed work moves out of the project state file. A new
+  `completed_work_path` setting (default `COMPLETED_WORK.md`) names a second
+  state file. On each epic close the finalizer moves the closed epic's
+  section and status notes there and appends its ledger line, so the project
+  state file that every planner, tpm, and auditor run reads in full holds only
+  current work. The finalizer commits both files; interrupted-finalizer
+  recovery accepts commits to either and treats an uncommitted edit to either
+  as a partial ledger edit. `init` copies a `COMPLETED_WORK.md` template, and
+  the reference `PROJECT_STATE.md` no longer has a ledger section. This
+  repository's own history moved to `COMPLETED_WORK.md`.
 - An `agy` role whose account quota is used up now stops the dispatch loop
   at once. Before, every dispatch failed the same way, the loop retried
   until `max_consecutive_failures`, and the log showed only

@@ -14,6 +14,7 @@ role names.
 ```text
 AGENTS.md
 PROJECT_STATE.md
+COMPLETED_WORK.md
 dispatch_config.yaml
 .gitignore
 docs/handoff/README.md

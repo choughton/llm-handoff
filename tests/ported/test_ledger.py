@@ -209,6 +209,55 @@ def test_default_ledger_updater_prompt_still_names_project_state_md() -> None:
     )
 
 
+def test_default_ledger_updater_prompt_moves_closed_work_to_completed_work_md() -> (
+    None
+):
+    prompt = ledger.LEDGER_UPDATER_PROMPT
+    assert "COMPLETED_WORK.md" in prompt
+    assert "move the closed epic's section" in prompt
+    assert "append one ledger line" in prompt
+
+
+@pytest.mark.parametrize("commit_mode", ["agent", "dispatcher"])
+def test_ledger_updater_prompt_commits_the_configured_completed_work_path(
+    commit_mode: str,
+) -> None:
+    prompt = ledger.ledger_updater_prompt(
+        Path("docs/handoff/HANDOFF.md"),
+        commit_mode,
+        Path("docs/STATE.md"),
+        Path("docs/DONE.md"),
+    )
+    assert "COMPLETED_WORK.md" not in prompt
+    assert "PROJECT_STATE.md" not in prompt
+    if commit_mode == "dispatcher":
+        assert "commit only docs/STATE.md and docs/DONE.md" in prompt
+    else:
+        assert "Commit docs/STATE.md, docs/DONE.md, and docs/handoff/HANDOFF.md" in prompt
+
+
+def test_run_epic_close_sends_the_configured_completed_work_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    def fake_invoke_support_role(_name: str, prompt: str, **_kwargs: object):
+        prompts.append(prompt)
+        return SubagentResult(stdout="", stderr="", exit_code=1, elapsed_seconds=0)
+
+    monkeypatch.setattr(ledger, "invoke_support_role", fake_invoke_support_role)
+    dispatch_config = config_module.DispatchConfig(
+        repo_root=tmp_path, completed_work_path=Path("HISTORY.md")
+    )
+
+    ledger.run_epic_close(config=dispatch_config)
+
+    assert len(prompts) == 1
+    assert "HISTORY.md" in prompts[0]
+    assert "COMPLETED_WORK.md" not in prompts[0]
+
+
 def test_run_epic_close_parses_audit_sha_from_rich_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

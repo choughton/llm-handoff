@@ -6137,7 +6137,10 @@ def test_the_finalizer_is_told_to_leave_the_handoff_uncommitted_in_dispatcher_mo
 
     assert "Dispatcher commit mode is on" in dispatcher
     assert f"leave {HANDOFF_RELATIVE_PATH.as_posix()} uncommitted" in dispatcher
-    assert f"Commit PROJECT_STATE.md and {HANDOFF_RELATIVE_PATH.as_posix()}" in agent
+    assert (
+        "Commit PROJECT_STATE.md, COMPLETED_WORK.md, and "
+        f"{HANDOFF_RELATIVE_PATH.as_posix()}"
+    ) in agent
 
 
 @pytest.mark.parametrize("commit_mode", ["agent", "dispatcher"])

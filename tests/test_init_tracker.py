@@ -698,7 +698,7 @@ AUDITOR_AGENT = Path(".claude/agents/auditor.md")
 FINALIZER_AGENT = Path(".claude/agents/ledger-updater.md")
 _WRITER_TOOLS = b"tools: Read, Edit, Write, Grep, Glob, Bash"
 _AUDITOR_TOOLS = b"tools: Read, Grep, Glob, Bash"
-_FINALIZER_TOOLS = b"tools: Read, Edit, Grep, Glob, Bash"
+_FINALIZER_TOOLS = b"tools: Read, Edit, Write, Grep, Glob, Bash"
 
 
 def _single_changed_line(
