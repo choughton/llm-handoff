@@ -30,8 +30,9 @@ belong in commits, handoffs, and pull requests.
   `ready_for_review`, `next_agent: finalizer`, and `close_type: epic` stay
   rejected) is implemented; PR #251 Finding 1 (doctor and supervisor
   preflight rejected valid dispatcher-written verdicts) is fixed in-story
-  with SHA-256 provenance in `logs/dispatch/dispatcher-handoff.json`, and
-  the story is awaiting audit. TRANS-4 through TRANS-6 remain.
+  with SHA-256 provenance in `logs/dispatch/dispatcher-handoff.json` and
+  Verification Evidence in the publish builders' verdicts, and the story is
+  awaiting audit. TRANS-4 through TRANS-6 remain.
 - **GROOMING (closed):** GROOM-5, the epic's last story,
   was approved at `6e24d98` and merged in PR #247 at `211bbfd`.
   GROOMING history (opened by the planner after CHAT closed at
@@ -1992,7 +1993,15 @@ handbook and the code from drifting.
   while `HANDOFF.md` matches the record, so any edit drops the trust; the
   record is never read or written through a symlink or junction on `logs`,
   `logs/dispatch`, or the file. Post-dispatch, chat, repair, and
-  interrupted-role validation keep `dispatcher_authored=False`.
+  interrupted-role validation keep `dispatcher_authored=False`. The
+  provenance flag waives only the producer rule, so the two publish
+  builders now write a `## Verification Evidence` block naming the
+  reviewed story-branch head (the deferred-findings builder takes it as
+  `head_sha`), and the doctor and supervisor regressions use the real
+  builders' output. Residual (audit, medium): the record is an unkeyed
+  digest in agent-writable `logs/`, so a record an agent plants during a
+  dispatch the dispatcher never returns from is not cleared; moving it
+  out of agent reach or keying it needs a planner decision.
 - TRANS-4 (was part of TRANS-2): Producer matches the dispatched role. The
   post-dispatch validation already knows the previous route; a `producer`
   that names a role other than the one just dispatched is rejected as

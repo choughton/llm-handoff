@@ -751,31 +751,56 @@ def test_supervisor_honors_flat_handoff_path_from_dispatch_config(
     )
 
 
-VALIDATOR_VERDICT_TEMPLATE = """---
-next_agent: planner
-reason: "1 deferred review finding(s) keep the pull request from merging."
-epic_id: "E1"
-story_id: "S1"
-story_title: "First story"
-status: verified_pass
-scope_sha: {head}
-producer: validator
----
+def _validator_verdict(head: str, builder: str) -> str:
+    """A `producer: validator` verdict from the dispatcher's publish builders."""
 
-# Handoff: S1 deferred review findings
+    from llm_handoff.pr_review import ReviewFinding
+    from llm_handoff.publish import (
+        StoryState,
+        build_deferred_findings_handoff,
+        build_review_bounce_handoff,
+    )
 
-## Verification Evidence
+    state = StoryState(
+        branch="llm-handoff/s1-first-story",
+        base_branch="main",
+        base_sha=head,
+        story_id="S1",
+        story_title="First story",
+        epic_id="E1",
+        work_packet=(
+            "## Work Packet\n\n"
+            "- **Objective:** Add a small feature.\n"
+            "- **Files in scope:** `src/app.py`\n"
+            "- **Files out of bounds:** `docs/**`\n"
+            "- **Context:** None.\n"
+            "- **Verification command:** `python -m pytest tests -q`\n"
+            "- **Expected next route:** auditor"
+        ),
+    )
+    url = "https://example.invalid/pull/1"
+    if builder == "bounce":
+        return build_review_bounce_handoff(
+            state=state,
+            findings=[ReviewFinding(body="Edge case.", path="src/app.py", line=1)],
+            url=url,
+            head_sha=head,
+            review_round=1,
+            max_rounds=2,
+        )
+    return build_deferred_findings_handoff(
+        state=state,
+        findings=[{"number": 1, "location": "src/app.py:1", "body": "Edge case."}],
+        url=url,
+        head_sha=head,
+    )
 
-- **Commands run:** `python -m pytest tests -q`
-- **Output summary:** exit 0
-- **Commit SHA verified:** {head}
-- **Files changed or reviewed:** src/app.py
-- **Unresolved concerns:** none
-"""
+
+VERDICT_BUILDERS = pytest.mark.parametrize("builder", ["bounce", "deferred"])
 
 
-def _write_git_repo(tmp_path: Path) -> tuple[Path, str]:
-    """A real Git repository (the scope_sha lookup needs one) and its HEAD."""
+def _write_git_repo(tmp_path: Path, builder: str = "deferred") -> tuple[Path, str]:
+    """A real Git repository (the commit SHA lookups need one) and a verdict."""
 
     repo_root = _write_repo(tmp_path)
     (repo_root / ".git").rmdir()
@@ -797,11 +822,12 @@ def _write_git_repo(tmp_path: Path) -> tuple[Path, str]:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    return repo_root, VALIDATOR_VERDICT_TEMPLATE.format(head=head)
+    return repo_root, _validator_verdict(head, builder)
+
 
 VALIDATOR_VERDICT_ERROR = (
     "frontmatter_status_producer_rule: producer `validator` cannot emit status "
-    "`verified_pass`"
+    "`verified_"
 )
 
 
@@ -827,13 +853,14 @@ def _verdict_errors(log_messages: list[tuple[str, str]]) -> list[str]:
     ]
 
 
+@VERDICT_BUILDERS
 def test_supervisor_doctor_passes_a_recorded_dispatcher_verdict(
-    tmp_path: Path,
+    tmp_path: Path, builder: str
 ) -> None:
     from llm_handoff import config as config_module
     from llm_handoff import orchestrator
 
-    repo_root, content = _write_git_repo(tmp_path)
+    repo_root, content = _write_git_repo(tmp_path, builder)
     dispatch_config = config_module.load_dispatch_config(repo_root=repo_root)
     orchestrator._write_dispatcher_handoff(dispatch_config, content)
 
@@ -845,14 +872,15 @@ def test_supervisor_doctor_passes_a_recorded_dispatcher_verdict(
     ]
 
 
+@VERDICT_BUILDERS
 @pytest.mark.parametrize("edited", [False, True], ids=["unrecorded", "edited"])
 def test_supervisor_doctor_fails_an_unrecorded_or_edited_verdict(
-    tmp_path: Path, edited: bool
+    tmp_path: Path, edited: bool, builder: str
 ) -> None:
     from llm_handoff import config as config_module
     from llm_handoff import orchestrator
 
-    repo_root, content = _write_git_repo(tmp_path)
+    repo_root, content = _write_git_repo(tmp_path, builder)
     handoff_path = repo_root / "docs" / "handoff" / "HANDOFF.md"
     if edited:
         dispatch_config = config_module.load_dispatch_config(repo_root=repo_root)
@@ -867,6 +895,17 @@ def test_supervisor_doctor_fails_an_unrecorded_or_edited_verdict(
     exit_code, log_messages = _run_supervisor_doctor(repo_root)
 
     assert _verdict_errors(log_messages), log_messages
+    # The verdict's evidence and commit SHA still pass; only the untrusted
+    # verdict fails.
+    assert not [
+        message
+        for level, message in log_messages
+        if level == "ERROR"
+        and any(
+            code in message
+            for code in ("EVIDENCE_MISSING", "sha_missing", "evidence_sha_unknown")
+        )
+    ], log_messages
     assert exit_code == 1
 
 

@@ -2617,7 +2617,12 @@ def _route_deferred_to_planner(
     return PublishOutcome(
         message=f"Deferred review findings on {url}",
         handoff=build_deferred_findings_handoff(
-            state=state, findings=findings, url=url, displaced=displaced
+            state=state,
+            findings=findings,
+            url=url,
+            # Every caller is on the story branch at its reviewed head.
+            head_sha=git_head(repo_root) or state.reviewed_head,
+            displaced=displaced,
         ),
     )
 
@@ -2716,7 +2721,59 @@ def build_review_bounce_handoff(
             lines += [finding.url, ""]
     if state.work_packet:
         lines += [state.work_packet.strip(), ""]
+    lines += _dispatcher_evidence_lines(
+        commands=(
+            f"Codex pull request review of commit {head_sha} on "
+            f"{url or state.branch}; the dispatcher read its review threads "
+            "through the GitHub CLI."
+        ),
+        output=(
+            f"The review reported {count} finding(s), so the pull request was "
+            f"not merged (correction round {review_round} of {max_rounds})."
+        ),
+        commit_sha=head_sha,
+        locations=[finding.location() for finding in findings],
+        concerns=(
+            f"{count} review finding(s) listed above."
+            if count
+            else "None reported by the review."
+        ),
+    )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _dispatcher_evidence_lines(
+    *,
+    commands: str,
+    output: str,
+    commit_sha: str,
+    locations: Sequence[str],
+    concerns: str,
+) -> list[str]:
+    """The Verification Evidence block of a dispatcher-written validator verdict.
+
+    The validator requires it on every `verified_pass` and `verified_fail`
+    handoff, dispatcher-written ones included, so the verdict names the
+    commit the review covered and what the dispatcher checked.
+    """
+
+    unique = list(dict.fromkeys(location for location in locations if location))
+    reviewed = (
+        "Reviewed: " + ", ".join(f"`{location}`" for location in unique) + ". "
+        if unique
+        else "Reviewed: the pull request diff. "
+    )
+    return [
+        "## Verification Evidence",
+        "",
+        f"- **Commands run:** {commands}",
+        f"- **Output summary:** {output}",
+        f"- **Commit SHA verified:** {commit_sha}",
+        f"- **Files changed or reviewed:** {reviewed}Changed: none; the "
+        "dispatcher wrote only this handoff.",
+        f"- **Unresolved concerns:** {concerns}",
+        "",
+    ]
 
 
 def build_deferred_findings_handoff(
@@ -2724,9 +2781,14 @@ def build_deferred_findings_handoff(
     state: StoryState,
     findings: Sequence[dict[str, object]],
     url: str,
+    head_sha: str,
     displaced: Path | None = None,
 ) -> str:
-    """Route deferred review findings to the planner for one decision pass."""
+    """Route deferred review findings to the planner for one decision pass.
+
+    ``head_sha`` is the story branch head the audit and review rounds
+    covered; the handoff's Verification Evidence names it.
+    """
 
     count = len(findings)
     frontmatter: dict[str, object] = {
@@ -2830,6 +2892,20 @@ def build_deferred_findings_handoff(
             _demote(_without_heading(state.work_packet), levels=1),
             "",
         ]
+    lines += _dispatcher_evidence_lines(
+        commands=(
+            f"Dispatcher publish checks on {url or state.branch}: the "
+            "work-claim gate, the audit, and the Codex review rounds; the "
+            "dispatcher read the review threads through the GitHub CLI."
+        ),
+        output=(
+            f"Only the {count} deferred finding thread(s) below are "
+            "unresolved, so the pull request was not merged."
+        ),
+        commit_sha=head_sha,
+        locations=[str(finding.get("location") or "") for finding in findings],
+        concerns=f"{count} deferred review finding(s) listed above.",
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 

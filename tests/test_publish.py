@@ -3327,6 +3327,17 @@ def test_findings_after_a_stall_retry_take_the_correction_round(
     assert "status: verified_fail" in outcome.handoff
     assert _posted(tmp_path) == [REVIEW_REQUEST]
     assert _saved_state(repo)["review_rounds"] == 1
+    # The bounce names the reviewed head and passes the whole-handoff
+    # validator as a dispatcher-written verdict.
+    from llm_handoff.validator import validate_handoff_text
+
+    assert f"- **Commit SHA verified:** {head}\n" in outcome.handoff
+    assert (
+        validate_handoff_text(
+            outcome.handoff, "validator", git_cwd=repo, dispatcher_authored=True
+        ).errors
+        == []
+    )
 
 
 @pytest.mark.parametrize("action", ["prompt", "merge"])
@@ -4383,6 +4394,18 @@ def test_a_deferred_finding_gets_a_reply_and_goes_to_the_planner(
     assert "## Deferred Finding Decisions" in handoff
     assert "`Follow-up:`" in handoff
     assert "Files in scope" in handoff and "`src/widget.py`" in handoff
+    # The verdict names the story branch head the review rounds covered and
+    # passes the whole-handoff validator as a dispatcher-written handoff.
+    from llm_handoff.validator import validate_handoff_text
+
+    head = _git(repo, "rev-parse", "HEAD")
+    assert f"- **Commit SHA verified:** {head}\n" in handoff
+    assert (
+        validate_handoff_text(
+            handoff, "validator", git_cwd=repo, dispatcher_authored=True
+        ).errors
+        == []
+    )
 
 
 def test_a_retry_keeps_a_replied_deferred_finding_open_for_the_planner(
@@ -6100,6 +6123,7 @@ def _deferred(state: StoryState) -> str:
         state=state,
         findings=[{"number": 1, "location": "src/widget.py:1", "body": "Edge."}],
         url="https://example.invalid/pull/7",
+        head_sha="0" * 40,
     )
 
 
@@ -6296,6 +6320,59 @@ def test_generated_review_handoffs_pass_dispatcher_authored_validation(
         f"status `{status}`; only the auditor approves or fails work, and only "
         "dispatcher-written handoffs carry a validator verdict."
     ]
+
+
+@pytest.mark.parametrize("build", [_bounce, _deferred])
+def test_generated_review_handoffs_pass_full_dispatcher_authored_validation(
+    build,
+) -> None:
+    # The whole-handoff validator, as doctor and supervisor preflight run it:
+    # the evidence and commit SHA requirements still apply to the verdict.
+    from llm_handoff.validator import validate_handoff_text
+
+    handoff = build(_plain_state())
+
+    assert "## Verification Evidence" in handoff
+    assert f"- **Commit SHA verified:** {'0' * 40}\n" in handoff
+    assert validate_handoff_text(handoff, "validator", dispatcher_authored=True).errors == []
+    untrusted = validate_handoff_text(handoff, "validator").errors
+    assert len(untrusted) == 1
+    assert untrusted[0].startswith("frontmatter_status_producer_rule:")
+
+
+def test_review_handoff_evidence_names_the_head_and_finding_locations() -> None:
+    from llm_handoff.publish import build_deferred_findings_handoff
+    from llm_handoff.validator import validate_handoff_text
+
+    head = "a" * 40
+    handoff = build_deferred_findings_handoff(
+        state=_plain_state(),
+        findings=[
+            {"number": 1, "location": "src/widget.py:1", "body": "Edge."},
+            {"number": 2, "location": "src/widget.py:1", "body": "Again."},
+        ],
+        url="https://example.invalid/pull/7",
+        head_sha=head,
+    )
+    evidence = handoff.split("## Verification Evidence\n", 1)[1]
+
+    assert f"- **Commit SHA verified:** {head}\n" in evidence
+    assert "Reviewed: `src/widget.py:1`. Changed: none" in evidence
+    assert "- **Unresolved concerns:** 2 deferred review finding(s)" in evidence
+    # Without the head commit the verdict fails validation instead of
+    # claiming a commit it did not check.
+    headless = build_deferred_findings_handoff(
+        state=_plain_state(),
+        findings=[],
+        url="https://example.invalid/pull/7",
+        head_sha="",
+    )
+    assert any(
+        error.startswith("EVIDENCE_MISSING")
+        for error in validate_handoff_text(
+            headless, "validator", dispatcher_authored=True
+        ).errors
+    )
 
 
 def test_operator_review_bounce_passes_either_validation() -> None:
