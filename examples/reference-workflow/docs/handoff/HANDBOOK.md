@@ -160,6 +160,42 @@ auditor's approval forward and verifies no commit itself.
 Evidence must come from the current turn. Prior output, assumptions, and model
 confidence are not evidence.
 
+### Gate-Verified Handback
+
+With `enforce_work_packet: true`, the work-claim gate runs the Work Packet's
+`Verification command` itself on the claimed commit before the auditor is
+dispatched. The gate is on unless the dispatch config sets
+`enforce_work_packet: false`, and dispatcher commit mode always runs it.
+
+An implementer whose run of the Verification command was stopped in the
+current turn by an environment refusal, such as a permission refusal or a
+missing-tool error, may then still hand back `status: ready_for_review`. Its
+`## Verification Evidence` block keeps all five fields and changes two:
+
+- `Commands run` reads `deferred to the work-claim gate: <the refusal, quoted>`,
+  quoting the refusal text the shell or tool returned.
+- `Output summary` identifies the refusal: the refused command and whether a
+  permission rule or a missing tool stopped it.
+
+`Commit SHA verified`, `Files changed or reviewed`, and `Unresolved concerns`
+are filled as in any handback, and the `scope_sha` and dispatcher commit mode
+conventions (an empty `scope_sha` and `pending-dispatcher-commit`) are
+unchanged. Run every command the environment allows and report it as usual;
+defer only the refused command.
+
+Without the gate (`enforce_work_packet: false`), nothing else runs the
+command, so the current rule stands: run it and report the result, or hand
+back a blocked status. A failing test is not an environment refusal and is
+not a passing result. A refusal from an earlier session does not qualify.
+
+The auditor treats the deferred `Commands run` together with a
+`## Dispatcher Verification` section whose `Verdict` is `PASS` and whose
+`Verified commit` is the claimed commit as valid evidence. It is not a
+finding and not a reason to run the same Verification command again. Only the
+dispatcher writes that section, after the gate passes; an implementer never
+writes or edits it. A missing section, a `FAIL` verdict, or a section for a
+different commit does not establish a pass, so the claim stays unverified.
+
 ## Pull Request Review Responses
 
 When the dispatcher bounces pull request review findings back to you, add a

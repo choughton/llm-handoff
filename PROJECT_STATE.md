@@ -10,13 +10,13 @@ history.
 
 ## Current Status
 
-- **Active Epic:** None. TIDY (epic 19) closed with TIDY-13, approved at
-  `7816ae6` and merged in PR #272 (`4e380f9`). The planner picks the next
-  epic by fit.
+- **Active Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
+  handback) is implemented and awaits audit; ACTIVE-2 through ACTIVE-8
+  remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
+  merged in PR #272 (`4e380f9`).
 - **Parked Epic:** None.
-- **Other Open Epics:** ACTIVE-PLANNER and ESCALATION-RECONCILE still wait
-  on their triggers, WORK-INTAKE needs a design check, and LINEAR-SWITCH has
-  low urgency.
+- **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger,
+  WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
 - **Epic Awaiting Close:** None.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
@@ -190,7 +190,11 @@ the `(was ...)` notes give the old IDs. None had started.
   `llm_handoff/rationalization_patterns.yaml` (~lines 10-12 and 20-22) must
   not match the new wording. Tests: the validator accepts the block, the
   gate still runs the command on such a claim, and an auditor fixture with a
-  deferred `Commands run` plus a PASS section validates.
+  deferred `Commands run` plus a PASS section validates. Grooming
+  (2026-10-22): the story also mirrors the four protocol files into
+  `examples/reference-workflow/docs/handoff/` and adds detector regressions;
+  the existing validator and gate behavior is retained. Progress: implemented
+  2026-10-22, awaiting audit.
 - ACTIVE-2 (was part of ACTIVE-1): Gate-verified handback in the non-Claude
   helper files: the `llm-handoff` and `llm-handoff-frontend` Codex skills
   and `backend.md` and `frontend.md` under `.agents/agents/` (root and
@@ -267,7 +271,11 @@ the `(was ...)` notes give the old IDs. None had started.
   confirms that baseline is the implementer handback the planner read or
   passes the handback separately. The `agent_self_loop` check (~line 466)
   does not cover this case, since planner to backend is a different role.
-  Tests in `tests/ported/test_validator.py`.
+  Tests in `tests/ported/test_validator.py`. Grooming (2026-10-22): the
+  validator argument is `previous_agent`, not the stale `previous_route`
+  reference above; the story still checks that the prior content is the
+  actual implementer handback rather than assuming the story baseline
+  supplies it.
 - ACTIVE-7 (was part of ACTIVE-4): No pointless re-dispatch, planner side.
   When the planner receives `blocked_implementation_failure` whose handback
   carries the ACTIVE-6 bullet, it must not re-dispatch the same role with an
@@ -286,7 +294,12 @@ the `(was ...)` notes give the old IDs. None had started.
   the PASS section (`.claude/agents/auditor.md` ~line 46), so it needs no
   change unless ACTIVE-1's auditor prompt wording must be mirrored. If
   TIDY-7 is still open, list its edits in the same handoff (operator
-  batching, 2026-10-20).
+  batching, 2026-10-20). Grooming (2026-10-22): use the handbook's Operator
+  Stories artifact contract under `logs/dispatch/operator/ACTIVE-8/`, with
+  complete files or an applyable patch and an apply command; prose-only
+  edits in the handoff are insufficient. TIDY-7 is already closed per the
+  planner, so there is no TIDY-7 batching work. The story stays last and
+  operator-owned.
 
 ## Open Followups
 
@@ -320,8 +333,8 @@ notes below; the remaining letters are unchanged.
   handoff is not kept. Fixing it means copying the security descriptor
   before the replace and failing closed when it cannot be copied.
 
-- From the TIDY-15 audit (medium, security reviewer; non-blocking, awaits
-  planner disposition): removing the Linear write tools from Claude
+- From the TIDY-15 audit (medium, security reviewer; kept in Open Followups
+  by the planner for a future hardening pass): removing the Linear write tools from Claude
   `--allowedTools` for report-only validator launches does not deny writes
   that inherited user or project permissions already allow. The reviewer
   recommends explicit `--disallowedTools` entries for the configured

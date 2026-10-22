@@ -757,6 +757,82 @@ def test_verify_work_claim_stops_at_first_failing_command(tmp_path: Path) -> Non
     assert len(result.verification_runs) == 1
 
 
+# Gate-verified handback (HANDBOOK.md "Gate-Verified Handback"): a claim whose
+# `Commands run` defers to the gate gets no shortcut; the gate still runs the
+# packet's own Verification command.
+DEFERRED_COMMANDS_RUN = (
+    '- **Commands run:** deferred to the work-claim gate: "Permission to use '
+    'Bash with command python -m pytest tests/test_app.py -q has been denied."'
+)
+GATE_RAN_COMMAND = f'"{PYTHON}" -c "print(\'gate ran the packet command\')"'
+
+
+def _deferred_claim(scope_sha: str) -> str:
+    claim = _claim(scope_sha)
+    deferred = claim.replace(
+        "- **Commands run:** `python -m pytest tests/test_app.py -q`",
+        DEFERRED_COMMANDS_RUN,
+    ).replace(
+        "- **Output summary:** exit 0",
+        "- **Output summary:** `python -m pytest tests/test_app.py -q` was "
+        "refused by a permission rule before it ran.",
+    )
+    assert deferred != claim
+    return deferred
+
+
+def test_verify_work_claim_runs_the_packet_command_for_a_deferred_claim(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.work_claim import (
+        has_passing_dispatcher_verification,
+        record_passed_verification,
+        recorded_verification_commands,
+    )
+
+    assignment = _assignment(GATE_RAN_COMMAND)
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+    claim = _deferred_claim(head)
+
+    result = _verify(tmp_path, assignment=assignment, claim=claim, state=state)
+
+    assert result.errors == ()
+    assert result.passed
+    assert _outcomes(result)["verification"] == "PASS"
+    assert [run.command for run in result.verification_runs] == [GATE_RAN_COMMAND]
+    assert result.verification_runs[0].exit_code == 0
+    assert "gate ran the packet command" in result.verification_runs[0].output_tail
+
+    recorded = record_passed_verification(claim, result)
+
+    assert has_passing_dispatcher_verification(recorded, head)
+    assert recorded_verification_commands(recorded) == (GATE_RAN_COMMAND,)
+    assert DEFERRED_COMMANDS_RUN in recorded
+
+
+def test_verify_work_claim_fails_a_deferred_claim_when_the_command_fails(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment(FAIL_COMMAND)
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    head = _commit_all(tmp_path, "set value")
+
+    result = _verify(
+        tmp_path, assignment=assignment, claim=_deferred_claim(head), state=state
+    )
+
+    assert not result.passed
+    assert result.failed_prefixes == ("verification_failed",)
+    assert [run.command for run in result.verification_runs] == [FAIL_COMMAND]
+    assert result.verification_runs[0].exit_code == 3
+    assert "verification boom" in result.verification_runs[0].output_tail
+
+
 def test_verify_work_claim_rejects_missing_work_packet(tmp_path: Path) -> None:
     _init_repo(tmp_path, _assignment_without_packet())
     state = capture_pre_dispatch_state(tmp_path)
