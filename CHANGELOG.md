@@ -16,7 +16,10 @@ This project follows a simple pre-release changelog until the first public tag.
   gate the current rule stands, and a failing test is not a refusal. The
   auditor treats that wording plus a dispatcher-authored
   `## Dispatcher Verification` PASS for the claimed commit as valid evidence;
-  a missing, failing, or wrong-commit section does not establish a pass. The
+  a missing, failing, or wrong-commit section does not establish a pass. A
+  PASS recorded for a handoff-only commit above the claimed commit also
+  counts, and the handbook and auditor prompt name the deferred wording as
+  the one exception to the README evidence schema. The
   `examples/reference-workflow/` copies match. Runtime behavior is
   unchanged; new tests cover the validator, the work-claim gate, and the
   rationalization detector on the deferred wording.

@@ -813,6 +813,33 @@ def test_verify_work_claim_runs_the_packet_command_for_a_deferred_claim(
     assert DEFERRED_COMMANDS_RUN in recorded
 
 
+def test_verify_work_claim_runs_the_packet_command_for_a_deferred_claim_with_a_handoff_commit(
+    tmp_path: Path,
+) -> None:
+    # The implementer commits HANDOFF.md after the implementation commit, so
+    # scope_sha names HEAD~1. The gate accepts that claim and still runs the
+    # packet's Verification command; the deferral earns no shortcut.
+    assignment = _assignment(GATE_RAN_COMMAND)
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    work_sha = _commit_all(tmp_path, "set value")
+    claim = _deferred_claim(work_sha)
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, claim)
+    head = _commit_all(tmp_path, "handoff")
+    assert head != work_sha
+
+    result = _verify(tmp_path, assignment=assignment, claim=claim, state=state)
+
+    assert result.errors == ()
+    assert result.passed
+    scope_check = next(check for check in result.checks if check.name == "scope_sha")
+    assert "HEAD~1" in scope_check.detail
+    assert _outcomes(result)["verification"] == "PASS"
+    assert [run.command for run in result.verification_runs] == [GATE_RAN_COMMAND]
+    assert result.verification_runs[0].exit_code == 0
+
+
 def test_verify_work_claim_fails_a_deferred_claim_when_the_command_fails(
     tmp_path: Path,
 ) -> None:

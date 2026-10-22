@@ -68,9 +68,13 @@ Reference the schema in `docs/handoff/README.md`; do not invent another format.
 
 An implementer handback whose `Commands run` reads
 `deferred to the work-claim gate: <the refusal, quoted>` is a gate-verified
-handback (see Gate-Verified Handback in `docs/handoff/HANDBOOK.md`). When the
+handback (see Gate-Verified Handback in `docs/handoff/HANDBOOK.md`). That
+wording is the one exception to the README schema's verbatim command lines
+and exit codes; do not reject it for lacking them. When the
 handoff also carries a `## Dispatcher Verification` section with
-`Verdict: PASS` for the claimed commit, that pair is valid evidence: do not
+`Verdict: PASS` for the claimed commit, or for a later commit when every
+commit after the claimed one changes only `HANDOFF.md`, that pair is valid
+evidence: do not
 report the deferral as a finding, and do not run the same Verification
 command again. Only the dispatcher writes that section; an implementer never
 writes or edits it. A missing section, a `FAIL` verdict, or a section for a

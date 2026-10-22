@@ -181,7 +181,10 @@ missing-tool error, may then still hand back `status: ready_for_review`. Its
 are filled as in any handback, and the `scope_sha` and dispatcher commit mode
 conventions (an empty `scope_sha` and `pending-dispatcher-commit`) are
 unchanged. Run every command the environment allows and report it as usual;
-defer only the refused command.
+defer only the refused command. This wording is the one exception to the
+evidence schema in `docs/handoff/README.md`, which otherwise asks for verbatim
+command lines and exit codes: the deferred entry has neither, and it is still
+valid.
 
 Without the gate (`enforce_work_packet: false`), nothing else runs the
 command, so the current rule stands: run it and report the result, or hand
@@ -190,7 +193,10 @@ not a passing result. A refusal from an earlier session does not qualify.
 
 The auditor treats the deferred `Commands run` together with a
 `## Dispatcher Verification` section whose `Verdict` is `PASS` and whose
-`Verified commit` is the claimed commit as valid evidence. It is not a
+`Verified commit` is the claimed commit as valid evidence. When the
+implementer committed `HANDOFF.md` after the claimed commit, the section may
+name that later commit instead; it still counts when every commit between it
+and the claimed commit changes only `HANDOFF.md`. It is not a
 finding and not a reason to run the same Verification command again. Only the
 dispatcher writes that section, after the gate passes; an implementer never
 writes or edits it. A missing section, a `FAIL` verdict, or a section for a
