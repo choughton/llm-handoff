@@ -452,6 +452,181 @@ def test_evidence_commit_sha_must_be_on_the_label_line(tmp_path: Path) -> None:
     assert "empty Commit SHA verified" in errors[0]
 
 
+# Gate-verified handback (HANDBOOK.md "Gate-Verified Handback"): with
+# enforce_work_packet: true, an implementer stopped by an environment refusal
+# defers the Verification command to the work-claim gate.
+_REFUSAL = (
+    '"Permission to use Bash with command python -m pytest tests -q has been '
+    'denied."'
+)
+_DEFERRED_WORK_PACKET = """
+## Work Packet
+
+- **Objective:** Reject empty widget names.
+- **Files in scope:** src/widgets.py, tests/test_widgets.py
+- **Files out of bounds:** none
+- **Context:** Keep the public API unchanged.
+- **Verification command:** python -m pytest tests -q
+- **Expected next route:** auditor
+"""
+
+
+def _deferred_evidence(sha: str, *, commit_value: str | None = None) -> str:
+    return f"""
+## Verification Evidence
+
+- **Commands run:** deferred to the work-claim gate: {_REFUSAL}
+- **Output summary:** `python -m pytest tests -q` was refused by a permission rule before it ran; no test result.
+- **Commit SHA verified:** {sha if commit_value is None else commit_value}
+- **Files changed or reviewed:** src/widgets.py, tests/test_widgets.py
+- **Unresolved concerns:** none
+"""
+
+
+def _deferred_implementer_handback(
+    role: str, sha: str, *, commit_value: str | None = None
+) -> str:
+    return _with_frontmatter(
+        f"""# {role} Handback
+
+**Agent:** {role}
+
+## Completed Work
+
+- Rejected empty widget names.
+{_DEFERRED_WORK_PACKET}{_deferred_evidence(sha, commit_value=commit_value)}""",
+        next_agent="auditor",
+        reason=f'"{role.capitalize()} work complete; audit requested."',
+        status="ready_for_review",
+        scope_sha=sha,
+        close_type="story",
+        producer=role,
+    )
+
+
+@pytest.mark.parametrize("role", ["backend", "frontend"])
+def test_validator_accepts_gate_deferred_implementer_evidence(
+    tmp_path: Path, role: str
+) -> None:
+    head_sha = _init_git_repo(tmp_path)
+
+    result = validator.validate_handoff_text(
+        _deferred_implementer_handback(role, head_sha),
+        role,
+        prior_handoff_sha="0" * 64,
+        git_cwd=tmp_path,
+        require_work_packet=True,
+    )
+
+    assert result.errors == []
+    assert not any(
+        "RATIONALIZATION_DETECTED" in warning for warning in result.warnings
+    )
+    assert result.routing_instruction == "auditor"
+
+
+@pytest.mark.parametrize("role", ["backend", "frontend"])
+def test_gate_deferred_evidence_keeps_the_commit_sha_requirement(
+    tmp_path: Path, role: str
+) -> None:
+    head_sha = _init_git_repo(tmp_path)
+
+    empty_sha = validator.validate_handoff_text(
+        _deferred_implementer_handback(role, head_sha, commit_value=""),
+        role,
+        prior_handoff_sha="0" * 64,
+        git_cwd=tmp_path,
+        require_work_packet=True,
+    )
+    head_literal = validator.validate_handoff_text(
+        _deferred_implementer_handback(role, head_sha, commit_value="HEAD"),
+        role,
+        prior_handoff_sha="0" * 64,
+        git_cwd=tmp_path,
+        require_work_packet=True,
+    )
+
+    assert any(
+        "empty Commit SHA verified" in error for error in empty_sha.errors
+    )
+    assert any(
+        "cannot use HEAD as Commit SHA verified" in error
+        for error in head_literal.errors
+    )
+
+
+def test_gate_deferred_evidence_keeps_all_five_fields(tmp_path: Path) -> None:
+    head_sha = _init_git_repo(tmp_path)
+    handback = _deferred_implementer_handback("backend", head_sha).replace(
+        "- **Unresolved concerns:** none\n", ""
+    )
+
+    result = validator.validate_handoff_text(
+        handback,
+        "backend",
+        prior_handoff_sha="0" * 64,
+        git_cwd=tmp_path,
+        require_work_packet=True,
+    )
+
+    assert any(
+        "missing Unresolved concerns" in error for error in result.errors
+    )
+
+
+def test_validator_accepts_auditor_pass_on_deferred_evidence_with_dispatcher_pass(
+    tmp_path: Path,
+) -> None:
+    from llm_handoff.work_claim import has_passing_dispatcher_verification
+
+    head_sha = _init_git_repo(tmp_path)
+    handoff = _with_frontmatter(
+        f"""# Audit Report
+
+**Agent:** auditor
+
+## Verdict
+
+APPROVED. The implementer deferred the Verification command to the
+work-claim gate, and the dispatcher's PASS below covers the claimed commit.
+{_DEFERRED_WORK_PACKET}
+## Dispatcher Verification
+
+The dispatcher verified this `ready_for_review` claim before dispatching the
+auditor, and every check passed.
+
+- **Verdict:** PASS
+- **Verified commit:** `{head_sha}`
+- **Pre-dispatch HEAD:** `{head_sha}`
+- **Changed files since dispatch:** `src/widgets.py`
+- **Checks:**
+  - PASS `verification`: `python -m pytest tests -q` exited 0 after 1.0s.
+- **Verification command:** `python -m pytest tests -q` (exited 0 after 1.0s)
+{_deferred_evidence(head_sha)}""",
+        next_agent="planner",
+        reason='"Audit passed; route to planner."',
+        status="verified_pass",
+        scope_sha=head_sha,
+        close_type="story",
+        producer="auditor",
+    )
+
+    result = validator.validate_handoff_text(
+        handoff,
+        "auditor",
+        prior_handoff_sha="0" * 64,
+        git_cwd=tmp_path,
+        require_work_packet=True,
+    )
+
+    assert has_passing_dispatcher_verification(handoff, head_sha)
+    assert result.errors == []
+    assert not any(
+        "RATIONALIZATION_DETECTED" in warning for warning in result.warnings
+    )
+    assert result.routing_instruction == "planner"
+
+
 def test_validator_rejects_invalid_status(tmp_path: Path) -> None:
     handoff_path = _write_handoff(
         tmp_path,

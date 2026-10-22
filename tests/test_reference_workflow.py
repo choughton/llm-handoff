@@ -614,6 +614,38 @@ def test_implementer_prompts_carry_story_fields_forward() -> None:
         ) in content, relative_path
 
 
+GATE_DEFERRAL_WORDING = "`deferred to the work-claim gate: <the refusal, quoted>`"
+
+
+@pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
+def test_protocol_files_describe_the_gate_verified_handback(root: Path) -> None:
+    def text(relative_path: str) -> str:
+        return " ".join(
+            (root / "docs/handoff" / relative_path).read_text(encoding="utf-8").split()
+        )
+
+    handbook = text("HANDBOOK.md")
+    assert "### Gate-Verified Handback" in handbook
+    assert GATE_DEFERRAL_WORDING in handbook
+    assert "`enforce_work_packet: true`" in handbook
+    assert "A failing test is not an environment refusal" in handbook
+    assert "an implementer never writes or edits it" in handbook
+    assert "does not establish a pass" in handbook
+
+    for prompt in ("BACKEND_HANDOFF_PROMPT.md", "FRONTEND_HANDOFF_PROMPT.md"):
+        content = text(prompt)
+        assert GATE_DEFERRAL_WORDING in content, prompt
+        assert "`enforce_work_packet: true`" in content, prompt
+        assert "A failing test is not an environment refusal" in content, prompt
+
+    auditor = text("AUDITOR_HANDOFF_PROMPT.md")
+    assert GATE_DEFERRAL_WORDING in auditor
+    assert "`## Dispatcher Verification`" in auditor
+    assert "do not report the deferral as a finding" in auditor
+    assert "an implementer never writes or edits it" in auditor
+    assert "does not establish a pass" in auditor
+
+
 # The planner and tpm instruction surfaces that route an operator story to
 # `user`. The Claude agents get the same contract in a later operator story.
 OPERATOR_STORY_PROMPT_FILES = (

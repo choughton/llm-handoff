@@ -6,6 +6,29 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The handbook, implementer prompts, and auditor prompt now describe a
+  gate-verified handback (ACTIVE-1). With `enforce_work_packet: true`, an
+  implementer stopped in the current turn by a permission refusal or a
+  missing-tool error may hand back `status: ready_for_review` with
+  `Commands run` reading `deferred to the work-claim gate: <the refusal,
+  quoted>` and an `Output summary` that identifies the refusal; the other
+  three evidence fields and the SHA conventions are unchanged. Without the
+  gate the current rule stands, and a failing test is not a refusal. The
+  auditor treats that wording plus a dispatcher-authored
+  `## Dispatcher Verification` PASS for the claimed commit as valid evidence;
+  a missing, failing, or wrong-commit section does not establish a pass. A
+  PASS recorded for a handoff-only commit above the claimed commit also
+  counts, and the handbook and auditor prompt name the deferred wording as
+  the one exception to the README evidence schema. Both
+  `docs/handoff/README.md` copies now document that exception in the
+  evidence schema itself. The work-claim gate's passing
+  `## Dispatcher Verification` section now records the claim's `scope_sha`
+  as `Verified commit` (HEAD when `scope_sha` is empty), so a claim with a
+  handoff-only commit above `scope_sha` records the audit head and the
+  quality reviewer does not rerun the command. The
+  `examples/reference-workflow/` copies match; new tests cover the
+  validator, the work-claim gate, and the rationalization detector on the
+  deferred wording.
 - The commented `tpm:` block in `dispatch_config.example.yaml` no longer says
   the dispatcher does not route to the tpm (TIDY-13). Its comment now says
   that, when configured, auditor story-level approvals and planner epic opens

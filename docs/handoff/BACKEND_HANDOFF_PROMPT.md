@@ -78,6 +78,17 @@ Rules:
   replace it with the template's placeholder item. The auditor reads that
   explicit empty list as the epic's last story.
 - Do not use stale commands or results from a previous session as evidence.
+- If an environment refusal in this turn, such as a permission refusal or a
+  missing-tool error, stops you from running the Work Packet's
+  Verification command, and the dispatcher runs with
+  `enforce_work_packet: true`, you may still hand back
+  `status: ready_for_review`. Write `Commands run` as
+  `deferred to the work-claim gate: <the refusal, quoted>`, make
+  `Output summary` identify the refusal, and fill the other three fields and
+  the SHA or dispatcher-commit values as usual. Without the gate, run the
+  command or hand back a blocked status. A failing test is not an
+  environment refusal and is not a passing result. See Gate-Verified
+  Handback in `docs/handoff/HANDBOOK.md`.
 - If blocked, pick the status by who must act next and explain the blocker:
   - A question only a person can answer: `status: blocked_missing_context`
     with `next_agent: user`, stating the one question.
