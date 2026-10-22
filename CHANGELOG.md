@@ -20,7 +20,9 @@ This project follows a simple pre-release changelog until the first public tag.
   operator's commits where they are, with the concrete HEAD SHA. A clean
   result routes to `auditor` with `ready_for_review`, the story identity and
   remaining stories kept, the Work Packet and Verification Evidence, and
-  `close_type: story` (or `epic` when no stories remain); any problem
+  `close_type: story` (or `epic` only when the previous handoff lists an
+  explicit `remaining_stories: []`; an omitted list is unknown and closes
+  only the story); any problem
   routes to `user` with every problem and its exact fix. The guidance
   authorizes no source edit, Git change, publish, or approval claim; other
   predecessors keep the HUMAN-2 instruction unchanged.

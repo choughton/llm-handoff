@@ -1900,6 +1900,25 @@ def test_a_clean_result_routes_to_the_auditor_with_the_right_close(
     assert "`close_type: epic` " + orchestrator.OPERATOR_STORY_CLOSE_EPIC_REASON in epic
 
 
+def test_an_omitted_story_list_is_unknown_and_closes_only_the_story(
+    tmp_path: Path,
+) -> None:
+    # A review bounce routes an operator story to user without
+    # remaining_stories; that is not an explicit `remaining_stories: []`.
+    omitted = OPERATOR_STORY.replace('remaining_stories:\n  - "EDIT-3"\n', "")
+    assert "remaining_stories" not in omitted
+    repo = _init_repo(tmp_path / "repo", omitted)
+
+    instruction = _story_instruction(_config(repo), omitted)
+
+    assert STORY_GUIDANCE in instruction
+    assert (
+        "`close_type: story` " + orchestrator.OPERATOR_STORY_CLOSE_UNKNOWN_REASON
+    ) in instruction
+    assert "`close_type: epic`" not in instruction
+    assert orchestrator.OPERATOR_STORY_CLOSE_EPIC_REASON not in instruction
+
+
 def test_problems_route_to_the_user_with_every_fix(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "repo", OPERATOR_STORY)
     config = _pr_config(repo, base_branch="main")

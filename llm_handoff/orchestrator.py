@@ -650,6 +650,14 @@ OPERATOR_STORY_CLOSE_EPIC_REASON = (
     "final story; if the project state file lists more stories for this "
     "epic, use `close_type: story` instead)"
 )
+# An omitted remaining_stories says nothing about the epic (the parser gives
+# it the same empty tuple as an explicit `[]`), so it never means the last
+# story; the auditor's own epic-close rule also needs an explicit empty list.
+OPERATOR_STORY_CLOSE_UNKNOWN_REASON = (
+    "(the previous handoff omits remaining_stories, so it does not say "
+    "whether this is the epic's final story; close the story only and leave "
+    "remaining_stories omitted)"
+)
 
 LogFn = Callable[[str, str], None]
 _COMMIT_SHA_RE = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
@@ -12234,8 +12242,10 @@ def _operator_story_guidance(
         adoption = OPERATOR_STORY_NO_ADOPTION.format(publish_setting=setting)
     if frontmatter.remaining_stories:
         close_type, close_reason = "story", OPERATOR_STORY_CLOSE_STORY_REASON
-    else:
+    elif "remaining_stories" in frontmatter.model_fields_set:
         close_type, close_reason = "epic", OPERATOR_STORY_CLOSE_EPIC_REASON
+    else:
+        close_type, close_reason = "story", OPERATOR_STORY_CLOSE_UNKNOWN_REASON
     return OPERATOR_STORY_TEMPLATE.format(
         handoff_path=handoff_path,
         adoption=adoption,
