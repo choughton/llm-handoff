@@ -1575,13 +1575,17 @@ nothing on the checkout that is not on `<remote>` still publishes nothing.)
 It needs
 `base_branch` and `branch_prefix` set, the checkout on `base_branch`, HEAD
 equal to the handoff's `scope_sha` and exactly one non-merge commit ahead of
-`<remote>/<base_branch>` (the audit without story state reviews only
-`HEAD~1..HEAD`), that commit not changing `HANDOFF.md`, nothing else
-uncommitted, and no existing branch with the story's name. It then creates the story branch at HEAD (named from the
-handoff's `story_id` and `story_title`) with its story state, checks it out,
-and moves the local base branch back to `<remote>/<base_branch>` without
-touching the working tree. The publish continues as usual: push, pull
-request, review gate, and merge. The pull request report names the operator
+the point where it left `<remote>/<base_branch>` (the audit without story
+state reviews only `HEAD~1..HEAD`), that commit not changing `HANDOFF.md`,
+nothing else uncommitted, and no existing branch with the story's name. The
+base branch may have moved on since the operator committed, for example when
+another pull request merged while the audit ran. It then creates the story
+branch at HEAD (named from the handoff's `story_id` and `story_title`) with
+its story state, checks it out, and moves the local base branch to
+`<remote>/<base_branch>` without touching the working tree. The publish
+continues as usual: it merges the latest base branch into the story branch
+(with the same conflict handling as any story), then push, pull request,
+review gate, and merge. The pull request report names the operator
 as the implementer, and a review bounce goes back to `user` with
 `status: escalate_to_user`, so the loop pauses for the operator. After an
 epic-close merge, the next cycle follows the audit's route to `finalizer`.

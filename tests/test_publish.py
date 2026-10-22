@@ -3904,6 +3904,82 @@ def test_a_story_the_operator_committed_on_main_moves_to_a_story_branch(
     )
 
 
+def test_an_operator_story_publishes_after_the_base_branch_moved_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A pull request merged on the remote after the operator committed, so
+    # origin/main is no longer the operator commit's parent.
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    upstream, head = _operator_story_on_main(repo)
+    _commit_on_remote(
+        tmp_path, remote, "main", {"elsewhere.md": "merged\n"}, "Elsewhere"
+    )
+    moved = _git(remote, "rev-parse", "refs/heads/main")
+    assert moved != upstream
+    entries, log = _logs()
+
+    outcome = _publish_operator_story(repo, gh, log, head, auto_merge=False)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert _git(repo, "rev-parse", "main") == moved
+    # The publish merged the newer base branch into the story branch.
+    story_head = _git(repo, "rev-parse", "HEAD")
+    for ancestor in (head, moved):
+        _git(repo, "merge-base", "--is-ancestor", ancestor, story_head)
+    assert _git(remote, "rev-parse", f"refs/heads/{BRANCH}") == story_head
+    assert (repo / "elsewhere.md").read_text(encoding="utf-8") == "merged\n"
+    assert (repo / HANDOFF_PATH).read_text(encoding="utf-8") == "live handoff\n"
+    assert any(
+        level == "INFO"
+        and f"Created `{BRANCH}`" in message
+        and "gained 1 commit(s)" in message
+        for level, message in entries
+    )
+    assert [call[:2] for call in _gh_calls(tmp_path)] == [
+        ["pr", "view"],
+        ["pr", "create"],
+    ]
+
+
+def test_an_adopted_operator_story_starts_where_it_left_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import publish as publish_module
+    from llm_handoff.router import parse_handoff_frontmatter_text
+
+    repo, remote, _gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    upstream, head = _operator_story_on_main(repo)
+    _commit_on_remote(
+        tmp_path, remote, "main", {"elsewhere.md": "merged\n"}, "Elsewhere"
+    )
+    moved = _git(remote, "rev-parse", "refs/heads/main")
+    handoff = _operator_audit(head)
+    _entries, log = _logs()
+
+    state = publish_module._adopt_base_branch_story(
+        repo_root=repo,
+        remote="origin",
+        base_branch="main",
+        branch_prefix="llm-handoff/",
+        handoff_path=HANDOFF_PATH,
+        handoff_content=handoff,
+        frontmatter=parse_handoff_frontmatter_text(handoff),
+        log=log,
+    )
+
+    assert isinstance(state, publish_module.StoryState)
+    # The story base is the operator commit's parent, not the newer tip, so
+    # a base..head diff shows only the operator's change.
+    assert state.base_sha == upstream
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _git(repo, "rev-parse", "main") == moved
+
+
 def test_an_adopted_operator_story_merges_and_returns_to_main(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
