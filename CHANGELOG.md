@@ -6,6 +6,22 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `llm-handoff doctor` now runs a warning-only verification preflight
+  (ACTIVE-3) when the live handoff routes to `backend` or `frontend`. The
+  reusable `doctor.check_verification_preflight(config, handoff_content)`
+  compares each Work Packet Verification command with the routed role's
+  launch and fallback: the leading executable must resolve on PATH, a Claude
+  launch needs an `allowed_tools` rule (explicit or the
+  `interpreter_grants`-aware default) that approves the whole command, with
+  exact rules covering only that command, an Antigravity launch needs a grant
+  from `antigravity_allowed_commands` and no required deny entry refusing it,
+  and a Codex launch is checked for the executable only. `unsafe_bypass`
+  launches skip the grant checks. With the work-claim gate on, a command that
+  `verification_command_allowed` rejects is also reported. Each line names
+  the role, provider, fallback, command, and a remedy, and tells a missing
+  executable from a denied grant and a gate-prefix rejection. The check never
+  emits FAIL, never runs a command, and skips non-implementer routes and
+  missing or malformed Work Packets. Dispatcher integration is ACTIVE-4.
 - The Codex `llm-handoff` and `llm-handoff-frontend` skills and the
   `.agents/agents/` `backend.md` and `frontend.md` helpers now carry the
   ACTIVE-1 gate-verified handback (ACTIVE-2). With

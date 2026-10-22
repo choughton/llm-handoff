@@ -17,7 +17,11 @@ or `permissions.ask` rules that override a required allow entry, reading that
 file only. It also warns, per role launch, about interpreter grants (shell
 rules that let an agent run `python`, `python3`, or `pytest`, or any command)
 and `unsafe_bypass` launches, because an interpreter can run any command past
-the shell allowlist; these lines are warnings only. In Linear mode (`tracker.provider: linear`) it reports, for each
+the shell allowlist; these lines are warnings only. When the handoff routes
+to backend or frontend, a warning-only verification preflight
+(``check_verification_preflight``) compares each Work Packet Verification
+command with that role's launch and fallback and with the work-claim gate's
+prefix allowlist, without running any command. In Linear mode (`tracker.provider: linear`) it reports, for each
 provider CLI the configured roles launch, whether that CLI's MCP config files
 define a server named `tracker.mcp_server`; it reads those MCP config files
 only, never prints a value from them, and never runs the provider CLI.
@@ -54,7 +58,7 @@ from typing import Any, Literal
 import yaml
 
 from llm_handoff.agent_process import _run_logged_agent_command
-from llm_handoff.agent_providers.claude import _build_claude_env
+from llm_handoff.agent_providers.claude import _BASH_RULE_RE, _build_claude_env
 from llm_handoff.antigravity_permissions import (
     ANTIGRAVITY_REQUIRED_DENY,
     antigravity_allow_entries,
@@ -86,7 +90,12 @@ from llm_handoff.validator import (
     is_recorded_dispatcher_handoff,
     validate_handoff_text,
 )
-from llm_handoff.work_claim import command_executable, find_scanner_executable
+from llm_handoff.work_claim import (
+    command_executable,
+    find_scanner_executable,
+    parse_work_packet_verification_commands,
+    verification_command_allowed,
+)
 
 CheckStatus = Literal["PASS", "FAIL", "WARN"]
 
@@ -201,6 +210,7 @@ def run_doctor(
         tracker_provider=tracker_provider,
         git_available=git_available,
         checks=checks,
+        dispatch_config=dispatch_config,
     )
     return DoctorReport(repo_root=resolved_root, checks=tuple(checks))
 
@@ -1835,6 +1845,311 @@ def _describe_missing(names: list[str]) -> str:
     return "none of " + ", ".join(names) + " is available"
 
 
+VERIFICATION_PREFLIGHT_CHECK_NAME = "verification preflight"
+_PREFLIGHT_ROUTES = ("backend", "frontend")
+_PREFLIGHT_STATIC_NOTE = (
+    "static check only; it does not prove that runtime permissions or the "
+    "tests will pass"
+)
+
+
+def _claude_bash_rule_allows(rule: str, command: str) -> bool:
+    """Return True when the Claude ``rule`` approves the shell ``command``.
+
+    Bare ``Bash`` and ``Bash(*)`` approve every command. Otherwise the rule is
+    parsed as ``agent_providers.claude._BASH_RULE_RE`` does: ``Bash(x:*)`` and
+    ``Bash(x *)`` approve ``x`` and ``x`` followed by a space and arguments
+    (a word prefix, so ``Bash(git diff:*)`` does not approve ``git diffx``);
+    ``Bash(x)`` approves exactly ``x``; a ``*`` inside ``x`` matches any text.
+    Rules for other tools approve nothing.
+    """
+    stripped_rule = rule.strip()
+    if stripped_rule in ("Bash", "Bash(*)"):
+        return True
+    match = _BASH_RULE_RE.fullmatch(stripped_rule)
+    if match is None:
+        return False
+    inner, wildcard = match.group(1).strip(), match.group(2)
+    if not inner:
+        return False
+    if wildcard:
+        return command == inner or command.startswith(inner + " ")
+    if "*" in inner:
+        pattern = ".*".join(re.escape(part) for part in inner.split("*"))
+        return re.fullmatch(pattern, command, flags=re.DOTALL) is not None
+    return command == inner
+
+
+def _claude_rules_for_executable(
+    tools: tuple[str, ...], executable: str | None
+) -> list[str]:
+    """Return the ``Bash(...)`` rules whose first token is ``executable``."""
+    if executable is None:
+        return []
+    rules: list[str] = []
+    for rule in tools:
+        match = _BASH_RULE_RE.fullmatch(rule.strip())
+        if match is None:
+            continue
+        tokens = match.group(1).split()
+        if tokens and tokens[0] == executable:
+            rules.append(rule)
+    return rules
+
+
+def _claude_denial_remedy(
+    agent_config: AgentConfig,
+    command: str,
+    executable: str | None,
+    tools: tuple[str, ...],
+) -> str:
+    """Name the allowed_tools change that would let a Claude launch run it.
+
+    ``command`` and ``executable`` come from an agent-written Work Packet, so
+    both are passed through ``_ascii_entry`` before they reach the suggested
+    rules; a raw escape sequence could otherwise rewrite terminal output.
+    """
+    is_interpreter = executable in _INTERPRETER_EXECUTABLES
+    near = _claude_rules_for_executable(tools, executable)
+    command = _ascii_entry(command)
+    if executable is not None:
+        executable = _ascii_entry(executable)
+    exact_rule = f"`Bash({command})`"
+    note = ""
+    if near:
+        note = (
+            " (the existing rule(s) "
+            + ", ".join(f"`{_ascii_entry(rule)}`" for rule in near)
+            + " do not cover this command; an exact rule approves only that "
+            "command)"
+        )
+    if agent_config.uses_default_allowed_tools:
+        if is_interpreter and not agent_config.interpreter_grants:
+            return (
+                "set interpreter_grants: true or an allowed_tools rule such as "
+                f"`Bash({executable}:*)` or {exact_rule}{note}"
+            )
+        return (
+            f"set allowed_tools for this role with a rule such as {exact_rule}"
+            + (f" or `Bash({executable}:*)`" if executable else "")
+            + "; an explicit allowed_tools list replaces the default list, so "
+            f"copy the default rules into it{note}"
+        )
+    remedy = (
+        f"add a rule such as {exact_rule}"
+        + (f" or `Bash({executable}:*)`" if executable else "")
+        + f" to this role's allowed_tools{note}"
+    )
+    if is_interpreter:
+        remedy += (
+            "; interpreter_grants does not change an explicit allowed_tools "
+            "list"
+        )
+    return remedy
+
+
+def _antigravity_command_granted(command: str, allowed: tuple[str, ...]) -> bool:
+    """Match ``command`` the way ``antigravity_command_grant`` regexes do."""
+    return any(
+        command == granted or command.startswith(granted + " ")
+        for granted in allowed
+    )
+
+
+def _antigravity_denying_entry(command: str) -> str | None:
+    """Return the required deny entry that refuses ``command``, or None."""
+    for entry in ANTIGRAVITY_REQUIRED_DENY:
+        pattern = _regex_allow_pattern(entry)
+        if pattern is None:
+            continue
+        try:
+            if re.search(pattern, command) is not None:
+                return entry
+        except re.error:
+            continue
+    return None
+
+
+def _preflight_launch_problems(
+    dispatch_config: DispatchConfig,
+    label: str,
+    agent_config: AgentConfig,
+    commands: tuple[str, ...],
+) -> list[DoctorCheck]:
+    """Return the WARN lines for one launch of the routed implementer."""
+    provider = agent_config.provider
+    who = f"{label} ({provider})"
+    problems: list[DoctorCheck] = []
+
+    def warn(message: str) -> None:
+        problems.append(
+            DoctorCheck("WARN", VERIFICATION_PREFLIGHT_CHECK_NAME, message)
+        )
+
+    agy_allowed: tuple[str, ...] | None = None
+    for command in commands:
+        stripped = command.strip(" \t")
+        shown = _ascii_entry(stripped)
+        executable = command_executable(stripped)
+        target = (
+            f"`{_ascii_entry(executable)}` (`{shown}`)" if executable else f"`{shown}`"
+        )
+        if executable is not None and not _role_binary_available(
+            executable, dispatch_config.repo_root
+        ):
+            warn(
+                f"{who} cannot run {target}: missing executable, "
+                f"`{_ascii_entry(executable)}` was not found on PATH; install "
+                "it or change the Verification command"
+            )
+        if agent_config.unsafe_bypass or provider == "codex":
+            # unsafe_bypass launches have no shell allowlist, and Codex runs
+            # in a sandbox with no command allowlist to compare against.
+            continue
+        if provider == "claude":
+            tools = agent_config.claude_allowed_tools
+            if any(_claude_bash_rule_allows(rule, stripped) for rule in tools):
+                continue
+            warn(
+                f"{who} cannot run {target}: denied provider grant, no "
+                "allowed_tools rule approves it; "
+                + _claude_denial_remedy(agent_config, stripped, executable, tools)
+            )
+        elif provider == "antigravity":
+            denying = _antigravity_denying_entry(stripped)
+            if denying is not None:
+                warn(
+                    f"{who} cannot run {target}: denied provider grant, the "
+                    f"required permissions.deny entry `{denying}` refuses it "
+                    "because agents must not push; change the Verification "
+                    "command"
+                )
+                continue
+            if agy_allowed is None:
+                agy_allowed = antigravity_allowed_commands(
+                    dispatch_config.verification_allowed_prefixes,
+                    interpreter_grants=dispatch_config.interpreter_grants,
+                )
+            if _antigravity_command_granted(stripped, agy_allowed):
+                continue
+            if (
+                executable in _INTERPRETER_EXECUTABLES
+                and not dispatch_config.interpreter_grants
+            ):
+                remedy = (
+                    "set interpreter_grants: true (agy gets no interpreter "
+                    "grant without it, even for a verification_allowed_prefixes "
+                    "entry)"
+                )
+            else:
+                remedy = (
+                    "add a verification_allowed_prefixes entry that covers it "
+                    "and the matching permissions.allow entry "
+                    f"`{_ascii_entry(antigravity_command_grant(stripped))}` in "
+                    f"{ANTIGRAVITY_SETTINGS_PATH}"
+                )
+            warn(
+                f"{who} cannot run {target}: denied provider grant, no "
+                f"generated agy grant covers it; {remedy}"
+            )
+    return problems
+
+
+def check_verification_preflight(
+    dispatch_config: DispatchConfig,
+    handoff_content: str,
+) -> list[DoctorCheck]:
+    """Check the live Work Packet's Verification commands against its launches.
+
+    Runs only when ``handoff_content`` routes to ``backend`` or ``frontend``,
+    and checks only that role's launch and its fallback. Each Verification
+    command is compared with what the launch can run: its leading executable
+    (``work_claim.command_executable``) must resolve on PATH; a Claude launch
+    must have an ``allowed_tools`` rule that approves the whole command; an
+    Antigravity launch must have a grant from ``antigravity_allowed_commands``
+    and no required deny entry refusing it; a Codex launch has no command
+    allowlist, so only the executable is checked. ``unsafe_bypass`` launches
+    skip the grant checks. With the work-claim gate on, each command is also
+    checked with ``work_claim.verification_command_allowed``.
+
+    Every returned line is WARN or PASS, never FAIL. A missing or malformed
+    Work Packet returns no lines (handoff validation reports it). Nothing is
+    run or written; the result is a static diagnostic only.
+    """
+    try:
+        route = route_handoff(handoff_content).route
+    except (HandoffFrontmatterError, ValueError):
+        return []
+    if route not in _PREFLIGHT_ROUTES:
+        return []
+    agent_config = dispatch_config.agents.get(route)
+    if agent_config is None:
+        return []
+    try:
+        parsed = parse_work_packet_verification_commands(handoff_content)
+    except ValueError:
+        return []
+    if parsed is None:
+        return []
+    commands = tuple(
+        command for command in parsed[0] if command.strip(" \t")
+    )
+    if not commands:
+        return []
+
+    launches: list[tuple[str, AgentConfig]] = [(route, agent_config)]
+    if agent_config.fallback is not None:
+        launches.append((f"{route} fallback", agent_config.fallback))
+
+    checks: list[DoctorCheck] = []
+    for command in commands:
+        if command_executable(command.strip(" \t")) is None:
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    VERIFICATION_PREFLIGHT_CHECK_NAME,
+                    f"{route} cannot be checked for "
+                    f"`{_ascii_entry(command.strip())}`: the command does not "
+                    "start with a plain program name, so its executable was "
+                    "not looked up; start it with the program to run",
+                )
+            )
+    for label, launch in launches:
+        checks.extend(
+            _preflight_launch_problems(dispatch_config, label, launch, commands)
+        )
+    if dispatch_config.enforce_work_packet:
+        for command in commands:
+            reason = verification_command_allowed(
+                command, dispatch_config.verification_allowed_prefixes
+            )
+            if reason is None:
+                continue
+            checks.append(
+                DoctorCheck(
+                    "WARN",
+                    VERIFICATION_PREFLIGHT_CHECK_NAME,
+                    f"{route} Verification command rejected by gate prefix: "
+                    f"{_ascii_entry(reason)} The work-claim gate will fail the "
+                    "claim with verification_not_allowed; rewrite the command "
+                    "or add a matching verification_allowed_prefixes entry",
+                )
+            )
+    if not checks:
+        covered = ", ".join(
+            f"{label} ({launch.provider})" for label, launch in launches
+        )
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                VERIFICATION_PREFLIGHT_CHECK_NAME,
+                f"{covered} can run the {len(commands)} Verification "
+                f"command(s); {_PREFLIGHT_STATIC_NOTE}",
+            )
+        )
+    return checks
+
+
 def _check_handoff(
     repo_root: Path,
     handoff_path: Path,
@@ -1844,13 +2159,15 @@ def _check_handoff(
     checks: list[DoctorCheck],
     require_work_packet: bool = True,
     tracker_provider: str = "none",
+    dispatch_config: DispatchConfig | None = None,
 ) -> None:
     """Validate the current handoff the way the dispatch loop does.
 
     ``require_work_packet`` mirrors ``enforce_work_packet`` so a handoff the
     dispatcher would reject for a missing Work Packet also fails here.
     ``tracker_provider`` mirrors ``tracker.provider`` so Linear-mode lease
-    rules apply the same way.
+    rules apply the same way. With a loaded ``dispatch_config`` it also adds
+    the warning-only ``check_verification_preflight`` lines.
     """
     if not handoff_path.exists():
         checks.append(
@@ -1885,6 +2202,8 @@ def _check_handoff(
         )
     for warning in decision.warnings:
         checks.append(DoctorCheck("WARN", "handoff route", warning))
+    if dispatch_config is not None:
+        checks.extend(check_verification_preflight(dispatch_config, handoff_content))
 
     try:
         frontmatter = parse_handoff_frontmatter_text(handoff_content)

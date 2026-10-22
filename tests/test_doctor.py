@@ -4108,3 +4108,437 @@ def test_doctor_interpreter_grant_warnings_keep_exit_code_zero(
     assert {check.status for check in interp} == {"WARN"}
     assert [check for check in report.checks if check.status == "FAIL"] == []
     assert report.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Verification preflight (check_verification_preflight)
+# ---------------------------------------------------------------------------
+
+PREFLIGHT = doctor.VERIFICATION_PREFLIGHT_CHECK_NAME
+CLAUDE_BLOCK = "provider: claude\nbinary: fake-claude"
+
+
+def _preflight_handoff(
+    commands: tuple[str, ...], next_agent: str = "backend"
+) -> str:
+    command_lines = "".join(f"  - {command}\n" for command in commands)
+    return (
+        "---\n"
+        f"next_agent: {next_agent}\n"
+        'reason: "Planner assigns the story."\n'
+        'epic_id: "E1"\n'
+        'story_id: "S1"\n'
+        'story_title: "First story"\n'
+        "producer: planner\n"
+        "---\n\n"
+        "# Handoff: S1 First story\n\n"
+        "## Work Packet\n\n"
+        "- **Objective:** Add a small feature.\n"
+        "- **Files in scope:** `src/app.py`\n"
+        "- **Files out of bounds:** none\n"
+        "- **Context:** None.\n"
+        "- **Verification command:**\n"
+        f"{command_lines}"
+        "- **Expected next route:** auditor\n"
+    )
+
+
+def _preflight_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend_block: str,
+    *,
+    extra: str = "",
+    available: tuple[str, ...] = ("python", "git"),
+) -> config_module.DispatchConfig:
+    repo = tmp_path / "preflight"
+    repo.mkdir(exist_ok=True)
+    blocks = {role: CLAUDE_BLOCK for role in ROLES}
+    blocks["backend"] = backend_block
+    _write_agents(repo, blocks, extra)
+    _stub_which(
+        monkeypatch, {"fake-claude", "fake-codex", "fake-agy", *available}
+    )
+    return config_module.load_dispatch_config(repo_root=repo)
+
+
+def _preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend_block: str,
+    commands: tuple[str, ...] = ("python -m pytest tests -q",),
+    *,
+    extra: str = "",
+    available: tuple[str, ...] = ("python", "git"),
+    next_agent: str = "backend",
+) -> list[doctor.DoctorCheck]:
+    config = _preflight_config(
+        tmp_path, monkeypatch, backend_block, extra=extra, available=available
+    )
+    checks = doctor.check_verification_preflight(
+        config, _preflight_handoff(commands, next_agent)
+    )
+    assert all(check.name == PREFLIGHT for check in checks)
+    assert "FAIL" not in {check.status for check in checks}
+    return checks
+
+
+def _warns(checks: list[doctor.DoctorCheck]) -> list[str]:
+    return [check.message for check in checks if check.status == "WARN"]
+
+
+def test_preflight_warns_when_default_claude_list_denies_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checks = _preflight(tmp_path, monkeypatch, CLAUDE_BLOCK)
+
+    warns = _warns(checks)
+    assert len(warns) == 1, warns
+    assert warns[0].startswith(
+        "backend (claude) cannot run `python` (`python -m pytest tests -q`): "
+        "denied provider grant"
+    )
+    assert "set interpreter_grants: true or an allowed_tools rule" in warns[0]
+    assert doctor.DoctorCheck("WARN", PREFLIGHT, warns[0]).format().startswith(
+        "WARN verification preflight: backend (claude) cannot run `python`"
+    )
+
+
+def test_preflight_passes_default_claude_list_with_interpreter_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checks = _preflight(
+        tmp_path, monkeypatch, CLAUDE_BLOCK, extra="interpreter_grants: true\n"
+    )
+
+    assert [check.status for check in checks] == ["PASS"]
+    assert checks[0].message.startswith(
+        "backend (claude) can run the 1 Verification command(s); static check"
+    )
+
+
+def test_preflight_explicit_exact_claude_rule_covers_only_that_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = (
+        CLAUDE_BLOCK + '\nallowed_tools: ["Read", "Bash(python -m pytest tests -q)"]'
+    )
+    checks = _preflight(
+        tmp_path,
+        monkeypatch,
+        block,
+        ("python -m pytest tests -q", "python -m pytest tests/test_doctor.py -q"),
+        extra="interpreter_grants: true\n",
+    )
+
+    warns = _warns(checks)
+    assert len(warns) == 1, warns
+    assert "`python -m pytest tests/test_doctor.py -q`" in warns[0]
+    assert "denied provider grant" in warns[0]
+    assert "`Bash(python -m pytest tests -q)` do not cover this command" in warns[0]
+    assert "to this role's allowed_tools" in warns[0]
+    # The flag is on, yet it does not change an explicit list, and the remedy
+    # does not suggest setting it.
+    assert "interpreter_grants does not change an explicit allowed_tools" in warns[0]
+    assert "set interpreter_grants: true" not in warns[0]
+
+
+def test_preflight_explicit_prefix_claude_rule_respects_word_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = CLAUDE_BLOCK + '\nallowed_tools: ["Bash(git diff:*)"]'
+    checks = _preflight(
+        tmp_path,
+        monkeypatch,
+        block,
+        ("git diff --check", "git diff", "git diffx", "git status"),
+    )
+
+    warns = _warns(checks)
+    assert len(warns) == 2, warns
+    assert "(`git diffx`)" in warns[0]
+    assert "(`git status`)" in warns[1]
+    assert all("denied provider grant" in warn for warn in warns)
+
+
+def test_preflight_claude_remedy_escapes_control_characters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checks = _preflight(
+        tmp_path,
+        monkeypatch,
+        CLAUDE_BLOCK,
+        ("python -m pytest \x1b[2Ktests -q", "npm test \x07--watch"),
+        available=("python", "npm"),
+    )
+
+    warns = _warns(checks)
+    assert len(warns) == 2, warns
+    output = "\n".join(warns)
+    assert "\x1b" not in output and "\x07" not in output
+    assert "`Bash(python -m pytest \\x1b[2Ktests -q)`" in warns[0]
+    assert "`Bash(npm test \\x07--watch)`" in warns[1]
+
+
+def test_claude_denial_remedy_escapes_the_executable() -> None:
+    agent_config = config_module.AgentConfig(provider="claude", binary="claude")
+    for tools in ((), ("Bash(to\x1bol:*)",)):
+        remedy = doctor._claude_denial_remedy(
+            agent_config, "to\x1bol --run", "to\x1bol", tools
+        )
+        assert "\x1b" not in remedy
+        assert "`Bash(to\\x1bol:*)`" in remedy
+        assert "`Bash(to\\x1bol --run)`" in remedy
+
+
+@pytest.mark.parametrize(
+    ("rule", "command", "allowed"),
+    [
+        ("Bash", "anything at all", True),
+        ("Bash(*)", "rm -rf build", True),
+        ("Bash(python:*)", "python -m pytest", True),
+        ("Bash(python:*)", "python", True),
+        ("Bash(python:*)", "python3 -m pytest", False),
+        ("Bash(python *)", "python -c 1", True),
+        ("Bash(npm test)", "npm test", True),
+        ("Bash(npm test)", "npm test --watch", False),
+        ("Bash(git * main)", "git push origin main", True),
+        ("Bash(git * main)", "git push origin dev", False),
+        ("Read", "python", False),
+    ],
+)
+def test_preflight_claude_rule_matching(rule: str, command: str, allowed: bool) -> None:
+    assert doctor._claude_bash_rule_allows(rule, command) is allowed
+
+
+def test_preflight_antigravity_needs_interpreter_grants_for_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = "provider: antigravity\nbinary: fake-agy"
+    checks = _preflight(
+        tmp_path,
+        monkeypatch,
+        block,
+        ("python -m pytest tests -q", "git diff --check"),
+        extra='verification_allowed_prefixes: ["python -m pytest", "git diff"]\n',
+    )
+
+    warns = _warns(checks)
+    assert len(warns) == 1, warns
+    assert warns[0].startswith("backend (antigravity) cannot run `python`")
+    assert "denied provider grant" in warns[0]
+    assert "set interpreter_grants: true" in warns[0]
+
+
+def test_preflight_antigravity_passes_with_interpreter_grants_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = "provider: antigravity\nbinary: fake-agy"
+    checks = _preflight(
+        tmp_path,
+        monkeypatch,
+        block,
+        ("python -m pytest tests -q", "git diff --check"),
+        extra=(
+            "interpreter_grants: true\n"
+            'verification_allowed_prefixes: ["python -m pytest", "git diff"]\n'
+        ),
+    )
+
+    assert [check.status for check in checks] == ["PASS"], checks
+
+
+def test_preflight_antigravity_names_the_missing_grant_and_the_push_deny(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = "provider: antigravity\nbinary: fake-agy"
+    checks = _preflight(
+        tmp_path,
+        monkeypatch,
+        block,
+        ("make test", "git push origin main"),
+        available=("make", "git"),
+    )
+
+    warns = _warns(checks)
+    assert len(warns) == 2, warns
+    assert warns[0].startswith("backend (antigravity) cannot run `make`")
+    assert "add a verification_allowed_prefixes entry" in warns[0]
+    assert agy_perms.antigravity_command_grant("make test") in warns[0]
+    assert "required permissions.deny entry" in warns[1]
+
+
+def test_preflight_codex_checks_only_executable_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = "provider: codex\nbinary: fake-codex"
+    present = _preflight(
+        tmp_path, monkeypatch, block, ("python -m pytest tests -q", "make test"),
+        available=("python", "make"),
+    )
+    assert [check.status for check in present] == ["PASS"]
+    assert present[0].message.startswith("backend (codex) can run the 2")
+
+    missing = _preflight(
+        tmp_path, monkeypatch, block, ("python -m pytest tests -q", "make test"),
+        available=("python",),
+    )
+    warns = _warns(missing)
+    assert len(warns) == 1, warns
+    assert warns[0].startswith(
+        "backend (codex) cannot run `make` (`make test`): missing executable"
+    )
+    assert "denied provider grant" not in warns[0]
+
+
+def test_preflight_labels_primary_and_fallback_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = (
+        CLAUDE_BLOCK
+        + "\nfallback:\n  provider: antigravity\n  binary: fake-agy"
+    )
+    checks = _preflight(tmp_path, monkeypatch, block)
+
+    warns = _warns(checks)
+    assert len(warns) == 2, warns
+    assert warns[0].startswith("backend (claude) cannot run `python`")
+    assert warns[1].startswith("backend fallback (antigravity) cannot run `python`")
+
+
+def test_preflight_checks_only_the_routed_implementer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # frontend (claude, default list) would be denied python; backend (codex)
+    # is the routed role and can run it.
+    checks = _preflight(tmp_path, monkeypatch, "provider: codex\nbinary: fake-codex")
+    assert [check.status for check in checks] == ["PASS"]
+
+    frontend = _preflight(
+        tmp_path,
+        monkeypatch,
+        "provider: codex\nbinary: fake-codex",
+        next_agent="frontend",
+    )
+    warns = _warns(frontend)
+    assert len(warns) == 1 and warns[0].startswith("frontend (claude)"), warns
+
+
+def test_preflight_warns_on_gate_prefix_rejection_only_with_the_gate_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = "provider: codex\nbinary: fake-codex"
+    prefixes = 'verification_allowed_prefixes: ["python -m pytest"]\n'
+    checks = _preflight(
+        tmp_path, monkeypatch, block, ("python -m pytest -q", "git diff --check"),
+        extra=prefixes,
+    )
+
+    warns = _warns(checks)
+    assert len(warns) == 1, warns
+    assert warns[0].startswith(
+        "backend Verification command rejected by gate prefix: "
+        "Verification command `git diff --check` does not start with any"
+    )
+    assert "add a matching verification_allowed_prefixes entry" in warns[0]
+
+    gate_off = _preflight(
+        tmp_path, monkeypatch, block, ("python -m pytest -q", "git diff --check"),
+        extra=prefixes
+        + "enforce_work_packet: false\n"
+        + 'work_packet_opt_out_reason: "Testing the gate-off path."\n',
+    )
+    assert [check.status for check in gate_off] == ["PASS"]
+
+
+def test_preflight_unsafe_bypass_skips_grants_but_not_executables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = CLAUDE_BLOCK + "\nunsafe_bypass: true"
+    checks = _preflight(tmp_path, monkeypatch, block)
+    assert [check.status for check in checks] == ["PASS"]
+
+    missing = _preflight(tmp_path, monkeypatch, block, available=())
+    warns = _warns(missing)
+    assert len(warns) == 1, warns
+    assert "missing executable" in warns[0]
+
+
+@pytest.mark.parametrize("next_agent", ["planner", "auditor", "user"])
+def test_preflight_skips_non_implementer_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, next_agent: str
+) -> None:
+    checks = _preflight(tmp_path, monkeypatch, CLAUDE_BLOCK, next_agent=next_agent)
+    assert checks == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "not a handoff at all",
+        "---\nnext_agent: [\n---\n",
+        HANDOFF_WITHOUT_WORK_PACKET,
+        _preflight_handoff((), "backend"),
+    ],
+)
+def test_preflight_ignores_missing_or_malformed_work_packets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    config = _preflight_config(tmp_path, monkeypatch, CLAUDE_BLOCK)
+    assert doctor.check_verification_preflight(config, content) == []
+
+
+def test_preflight_warns_when_a_command_has_no_plain_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checks = _preflight(
+        tmp_path,
+        monkeypatch,
+        "provider: codex\nbinary: fake-codex",
+        ("X=1 python -m pytest",),
+    )
+    warns = _warns(checks)
+    assert len(warns) == 1, warns
+    assert "does not start with a plain program name" in warns[0]
+
+
+def test_doctor_preflight_warnings_keep_exit_code_and_run_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    marker = tmp_path / "verification-ran.txt"
+    command = f"python -c \"open(r'{marker}', 'w').close()\""
+    repo = _make_repo(
+        tmp_path, NO_GEMINI, handoff=_preflight_handoff((command, "make test"))
+    )
+    config_before = (repo / "dispatch_config.yaml").read_bytes()
+    handoff_path = repo / "docs" / "handoff" / "HANDOFF.md"
+    handoff_before = handoff_path.read_bytes()
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude", "python"})
+    real_run = subprocess.run
+    calls: list[object] = []
+
+    def recording_run(args: object, *rest: object, **kwargs: object) -> object:
+        calls.append(args)
+        return real_run(args, *rest, **kwargs)
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError(f"doctor ran a command: {args!r}")
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    monkeypatch.setattr("llm_handoff.work_claim.run_shell_command", refuse)
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    preflight = [line for line in output.splitlines() if PREFLIGHT in line]
+    assert preflight == [
+        "WARN verification preflight: backend (codex) cannot run `make` "
+        "(`make test`): missing executable, `make` was not found on PATH; "
+        "install it or change the Verification command"
+    ], output
+    assert not marker.exists()
+    for args in calls:
+        assert isinstance(args, list) and args[0] == "git", args
+    assert (repo / "dispatch_config.yaml").read_bytes() == config_before
+    assert handoff_path.read_bytes() == handoff_before
