@@ -1295,8 +1295,9 @@ def _evidence_contract_errors(
     ):
         # The finalizer's epic-close handoff carries the auditor's approval
         # forward; it verifies no commit itself. The auditor handoff it
-        # replaces held the evidence, and the dispatch loop does not run
-        # post-dispatch validation on finalizer output. Both the dispatched
+        # replaces held the evidence, so the dispatch loop's post-dispatch
+        # validation of a rewritten finalizer handoff skips this block while
+        # still checking its producer, route, and status. Both the dispatched
         # role and the producer must be the finalizer; doctor and the
         # supervisor preflight pass the producer as the previous role.
         return []

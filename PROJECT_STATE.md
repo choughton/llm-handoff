@@ -27,9 +27,10 @@ history.
   #251 at `733d53f`. TRANS-4 (every dispatched role's handoff must name
   that role as `producer`, else `frontmatter_producer_mismatch`;
   dispatcher-authored handoffs skip only that check; a chat takeover
-  rewrite may name `planner` or `user` through the `chat_takeover` flag) is
-  implemented, with the chat-takeover fix, and awaiting audit. TRANS-5 and
-  TRANS-6 remain.
+  rewrite may name `planner` or `user` through the `chat_takeover` flag) was
+  merged in PR #257 at `3e5b6e5`. TRANS-7 (validate a rewritten finalizer
+  handoff in `run_loop` before following its route; PR #257 Finding 1) is
+  implemented and awaiting audit. TRANS-5 and TRANS-6 remain.
 - **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining
   (TIDY-12 and TIDY-13 are wording nits filed by the operator on
   2026-10-21). TIDY-8 is a backend story the planner picks by fit (the
@@ -254,6 +255,20 @@ handbook and the code from drifting.
   still needs `selection_basis` (Finding 2, fixed); validating the successful
   finalizer handoff in `run_loop` is deferred to the planner (Finding 1,
   outside this packet's single orchestrator edit).
+- TRANS-7 (was part of TRANS-4): Post-dispatch handoff validation for
+  rewritten finalizer handoffs in `run_loop` (PR #257 Finding 1, accepted by
+  the planner as an in-epic follow-up). After a successful finalizer
+  dispatch, a handoff whose content changed from the pre-dispatch text
+  (decided from the file, not the ledger-updater's `handoff_rewritten` flag)
+  is validated with `validate_handoff(..., "finalizer", ...)` before its
+  route is followed; a forged producer or an illegal finalizer route or
+  status pauses or schedules pause recovery instead of dispatching the
+  requested role. An unchanged handoff keeps the stale-finalizer recovery
+  to planner, and the finalizer `verified_pass` evidence exemption stays.
+  A chat answer that rewrites the handoff after the finalizer returned,
+  including while its handoff is validated, is followed as a chat takeover
+  and validated as one (PR #258 Finding 1), never passed as the finalizer's.
+  Tests: `tests/ported/test_orchestrator.py`, `tests/test_work_claim.py`.
 - TRANS-5 (was TRANS-3): One table, two readers. Write the
   producer-to-route-and-status table once in `docs/handoff/HANDBOOK.md` under
   `## Transition Table`, and add a test that parses that table and asserts it
