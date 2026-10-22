@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An operator edit of `HANDOFF.md` with no frontmatter, frontmatter that
+  does not parse, or frontmatter that fails validation now gets one planner
+  pass that interprets it (HUMAN-2), chosen before frontmatter repair or
+  normalization can rewrite the operator's text. The planner receives the
+  edit between the OPERATOR MESSAGE markers and the last valid handoff
+  observed before that edit between PREVIOUS HANDOFF markers, both quoted so
+  marker strings and braces stay inert, plus an instruction to inspect the
+  branch, uncommitted files, and commits since the previous handoff's
+  recorded commit, then rewrite only `HANDOFF.md` into a valid route or ask
+  `user` one plain question. When no previous handoff was observed or saving
+  it failed, the instruction says so instead of pointing at the snapshot
+  file. The pass runs once per edit: a planner that leaves the edit
+  unchanged or writes an invalid handback gets no producer repair, cleanup
+  pass, or pause recovery for it, and the dispatcher pauses for the
+  operator; a new operator edit gets its own pass. Valid operator edits,
+  invalid role-written handoffs, and the run's starting handoff keep their
+  existing handling, and `--dry-run` only logs the decision.
 - The dispatcher spots operator edits of `HANDOFF.md`. It records each
   handoff version a role or the dispatcher itself wrote at the moment it is
   written (each dispatcher write, and each agent run when it returns), and a

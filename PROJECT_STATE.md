@@ -11,7 +11,9 @@ history.
 ## Current Status
 
 - **Active Epic:** HUMAN-EDITS (epic 21). HUMAN-1 (spot an operator edit)
-  is implemented and awaits audit; HUMAN-2 through HUMAN-6 remain, in order.
+  was approved at `b34f02c` and merged in PR #263 (`10fb8ad`). HUMAN-2
+  (route an invalid or free-form operator edit to the planner) is
+  implemented and awaits audit; HUMAN-3 through HUMAN-6 remain, in order.
   TRANSITION-RULES (epic 17) closed with TRANS-6, approved at `fbb8e4c` and
   merged in PR #261 (`9018e33`).
 - **Parked Epic:** TIDY, with TIDY-8, TIDY-12, and TIDY-13 remaining

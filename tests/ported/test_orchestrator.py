@@ -79,6 +79,21 @@ def _write_repo(
     return repo_root, handoff_path
 
 
+# An operator's fix made while the dispatcher pauses. An operator edit
+# without valid frontmatter goes to the planner for interpretation (HUMAN-2),
+# so a fix meant to route straight to backend carries frontmatter.
+_OPERATOR_BACKEND_FIX = """---
+next_agent: backend
+reason: "Implement Story 1."
+producer: user
+---
+
+## Next Step
+
+- **backend:** Implement Story 1.
+"""
+
+
 def test_read_required_text_accepts_utf16_le_bom(tmp_path: Path) -> None:
     handoff_path = tmp_path / "HANDOFF.md"
     handoff_path.write_text("# Frontend Handback\n", encoding="utf-16")
@@ -885,7 +900,7 @@ def test_run_loop_pauses_cleanly_for_escalation_or_unknown(
     assert any(expected_fragment in message for _, message in log_messages)
 
 
-def test_run_loop_spots_a_free_form_edit_at_a_pause_and_routes_it_as_today(
+def test_run_loop_sends_a_free_form_edit_at_a_pause_to_the_planner_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -905,6 +920,7 @@ Which story should run next?
     config = _dispatch_config(repo_root, poll_interval_seconds=1)
     log_messages: list[tuple[str, str]] = []
     sleeps: list[float] = []
+    planner_instructions: list[str | None] = []
 
     class _StopPolling(Exception):
         pass
@@ -916,11 +932,33 @@ Which story should run next?
             return
         raise _StopPolling
 
+    def fake_planner(
+        path: Path, additional_instruction: str | None = None, log=None, **kwargs
+    ) -> DispatchResult:
+        del log, kwargs
+        planner_instructions.append(additional_instruction)
+        # The planner asks the operator one plain question.
+        path.write_text(
+            escalation.replace(
+                "Which story should run next?", "Did you commit the edits?"
+            ),
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
     monkeypatch.setattr(orchestrator.time, "sleep", sleep)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
     monkeypatch.setattr(
         orchestrator,
         "invoke_support_role",
         lambda subagent_name, prompt, log=None: _subagent_result(),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *args, **kwargs: ValidationResult(
+            verdict="YES", warnings=[], errors=[]
+        ),
     )
 
     with pytest.raises(_StopPolling):
@@ -930,11 +968,20 @@ Which story should run next?
         )
 
     assert log_messages.count(("INFO", "Operator edited HANDOFF.md.")) == 1
-    # HUMAN-1 only observes: the free-form edit still pauses on the
-    # unknown route, as before.
-    assert any(
+    # HUMAN-2: the free-form edit goes to the planner once, not to the
+    # unknown-route pause or a cleanup pass.
+    assert len(planner_instructions) == 1
+    instruction = planner_instructions[0] or ""
+    assert "<<<OPERATOR MESSAGE>>>\nI made the edits.\n\n<<<END OPERATOR MESSAGE>>>" in (
+        instruction
+    )
+    assert ("INFO", "Routing source: operator_edit_interpretation") in log_messages
+    assert not any(
         "No routing instruction found" in message for _, message in log_messages
     )
+    # The save failed, so the snapshot path is not offered as this edit's.
+    assert "It could not be saved to" in instruction
+    assert "<<<PREVIOUS HANDOFF>>>" in instruction
     # This checkout is not a Git repository, so nothing is saved, and the
     # log says why instead of claiming a snapshot.
     assert not (
@@ -1276,13 +1323,7 @@ There is no next step in this file.
 
     def fake_sleep(seconds: int) -> None:
         sleep_calls.append(seconds)
-        handoff_path.write_text(
-            """## Next Step
-
-- **backend:** Preview the dispatch.
-""",
-            encoding="utf-8",
-        )
+        handoff_path.write_text(_OPERATOR_BACKEND_FIX, encoding="utf-8")
 
     monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
 
@@ -1395,13 +1436,7 @@ Completed work.
 
     def fake_sleep(seconds: int) -> None:
         sleep_calls.append(seconds)
-        handoff_path.write_text(
-            """## Next Step
-
-- **backend:** Implement Story 1.
-""",
-            encoding="utf-8",
-        )
+        handoff_path.write_text(_OPERATOR_BACKEND_FIX, encoding="utf-8")
 
     monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
 
@@ -1529,13 +1564,7 @@ Completed work.
 
     def fake_sleep(seconds: int) -> None:
         sleep_calls.append(seconds)
-        handoff_path.write_text(
-            """## Next Step
-
-- **backend:** Implement Story 1.
-""",
-            encoding="utf-8",
-        )
+        handoff_path.write_text(_OPERATOR_BACKEND_FIX, encoding="utf-8")
 
     monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
 
@@ -2550,13 +2579,7 @@ Completed work.
 
     def fake_sleep(seconds: int) -> None:
         sleep_calls.append(seconds)
-        handoff_path.write_text(
-            """## Next Step
-
-- **backend:** Implement Story 1.
-""",
-            encoding="utf-8",
-        )
+        handoff_path.write_text(_OPERATOR_BACKEND_FIX, encoding="utf-8")
 
     monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
     monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_codex)
@@ -3977,13 +4000,7 @@ def test_run_loop_runs_handoff_validator_and_pauses_on_epic_close_parse_failure(
 
     def fake_sleep(seconds: int) -> None:
         sleep_calls.append(seconds)
-        handoff_path.write_text(
-            """## Next Step
-
-- **backend:** Implement Story 1.
-""",
-            encoding="utf-8",
-        )
+        handoff_path.write_text(_OPERATOR_BACKEND_FIX, encoding="utf-8")
 
     monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
 
@@ -4064,13 +4081,7 @@ def test_run_loop_runs_handoff_validator_before_low_confidence_dispatch(
 
     def fake_sleep(seconds: int) -> None:
         sleep_calls.append(seconds)
-        handoff_path.write_text(
-            """## Next Step
-
-- **backend:** Implement Story 1.
-""",
-            encoding="utf-8",
-        )
+        handoff_path.write_text(_OPERATOR_BACKEND_FIX, encoding="utf-8")
 
     monkeypatch.setattr(orchestrator.time, "sleep", fake_sleep)
 
