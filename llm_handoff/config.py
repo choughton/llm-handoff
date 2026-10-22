@@ -146,6 +146,9 @@ _MODEL_FLAG_PROVIDERS: frozenset[str] = frozenset({"claude", "antigravity"})
 
 DEFAULT_HANDOFF_PATH = Path("docs/handoff/HANDOFF.md")
 DEFAULT_PROJECT_STATE_PATH = Path("PROJECT_STATE.md")
+# Closed epics and their ledger lines; the finalizer moves them here so the
+# project state file every role reads stays limited to current work.
+DEFAULT_COMPLETED_WORK_PATH = Path("COMPLETED_WORK.md")
 DEFAULT_SHARED_INIT_PROMPT_PATH = Path("docs/handoff/SHARED_REPO_INIT_PROMPT.md")
 DEFAULT_CONFIG_PATH = Path("dispatch_config.yaml")
 # Control files the roles read as instructions. A dispatch that changes one of
@@ -1043,8 +1046,9 @@ def _repo_relative_path_error(key: str, value: str, rule: str) -> str:
 
 
 def _check_repo_relative_path(key: str, value: str) -> None:
-    """Reject a handoff_path or project_state_path value that is not a plain
-    repo-relative path. Raises ``ValueError`` naming the key and the rule."""
+    """Reject a handoff_path, project_state_path, or completed_work_path value
+    that is not a plain repo-relative path. Raises ``ValueError`` naming the
+    key and the rule."""
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
         rule = "control characters are not allowed"
     elif not value.strip():
@@ -1068,6 +1072,7 @@ class DispatchConfig(BaseModel):
     repo_root: Path
     handoff_path: Path = DEFAULT_HANDOFF_PATH
     project_state_path: Path = DEFAULT_PROJECT_STATE_PATH
+    completed_work_path: Path = DEFAULT_COMPLETED_WORK_PATH
     agents: dict[AgentRole, AgentConfig] = Field(default_factory=_default_agent_configs)
     normalizer: NormalizerConfig = Field(default_factory=NormalizerConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
@@ -1140,7 +1145,7 @@ class DispatchConfig(BaseModel):
         # that resolves outside the repository (a symlink escape) or onto the
         # repository root itself (such as `.`).
         root = self.repo_root.resolve()
-        for key in ("handoff_path", "project_state_path"):
+        for key in ("handoff_path", "project_state_path", "completed_work_path"):
             path = getattr(self, key)
             resolved = (self.repo_root / path).resolve()
             if resolved == root:
@@ -1151,6 +1156,13 @@ class DispatchConfig(BaseModel):
                 raise ValueError(_repo_relative_path_error(
                     key, str(path), "it resolves outside the repository"
                 ))
+        completed = (self.repo_root / self.completed_work_path).resolve()
+        for key in ("handoff_path", "project_state_path"):
+            if (self.repo_root / getattr(self, key)).resolve() == completed:
+                raise ValueError(
+                    f"completed_work_path {str(self.completed_work_path)!r} must "
+                    f"name a different file than {key}."
+                )
         return self
 
     @model_validator(mode="after")
@@ -1304,7 +1316,9 @@ class DispatchConfig(BaseModel):
     def _resolve_repo_root(cls, value: Path) -> Path:
         return Path(value).resolve()
 
-    @field_validator("handoff_path", "project_state_path", mode="before")
+    @field_validator(
+        "handoff_path", "project_state_path", "completed_work_path", mode="before"
+    )
     @classmethod
     def _normalize_relative_path(cls, value: object, info: ValidationInfo) -> object:
         # Runs before Path conversion: Path("") would read as ".".
@@ -1446,6 +1460,10 @@ class DispatchConfig(BaseModel):
     @property
     def project_state_full_path(self) -> Path:
         return (self.repo_root / self.project_state_path).resolve()
+
+    @property
+    def completed_work_full_path(self) -> Path:
+        return (self.repo_root / self.completed_work_path).resolve()
 
     @property
     def tracker_claude_mcp_config_path(self) -> Path | None:

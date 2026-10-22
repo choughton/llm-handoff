@@ -53,6 +53,7 @@ Use these public names consistently:
 - Default handoff path: `docs/handoff/HANDOFF.md`
 - Optional flat handoff path: `HANDOFF.md`
 - Generic project state file: `PROJECT_STATE.md`
+- Generic completed work file: `COMPLETED_WORK.md`
 
 Avoid legacy extraction names in public docs, examples, prompts, and config
 except in tests that explicitly verify unsupported aliases are rejected or

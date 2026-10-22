@@ -9725,7 +9725,10 @@ def _interrupted_finalizer_git_state(
         return rewritten
     commits = tuple(listed.split())
     files = tuple(sorted({entry for entry in changed.split("\0") if entry}))
-    allowed = {normalize_repo_path(config.project_state_path.as_posix())}
+    allowed = {
+        normalize_repo_path(config.project_state_path.as_posix()),
+        normalize_repo_path(config.completed_work_path.as_posix()),
+    }
     if config.commit_mode != "dispatcher":
         allowed.add(normalize_repo_path(config.handoff_path.as_posix()))
     others = [path for path in files if normalize_repo_path(path) not in allowed]
@@ -9749,8 +9752,13 @@ def _interrupted_finalizer_git_state(
     return _InterruptedFinalizerGitState(commits=commits, files=files)
 
 
-def _project_state_has_uncommitted_changes(config: DispatchConfig) -> bool | None:
-    """Whether the project state file differs from HEAD in the index or tree.
+def _project_state_has_uncommitted_changes(
+    config: DispatchConfig, path: Path | None = None
+) -> bool | None:
+    """Whether a ledger file differs from HEAD in the index or tree.
+
+    ``path`` is the repository-relative file to check; it defaults to the
+    project state file. The finalizer also writes the completed work file.
 
     Asks ``git status`` about that one literal path with rename detection
     off, so a staged or unstaged rename away from the file still reports
@@ -9766,7 +9774,9 @@ def _project_state_has_uncommitted_changes(config: DispatchConfig) -> bool | Non
     """
 
     repo_root = config.repo_root
-    state_rel = normalize_repo_path(config.project_state_path.as_posix())
+    state_rel = normalize_repo_path(
+        (path if path is not None else config.project_state_path).as_posix()
+    )
     literal = ":(literal)" + state_rel
     output = _run_git_stdout_raw(
         repo_root,
@@ -9893,10 +9903,17 @@ def _recover_interrupted_finalizer(
         )
         return InterruptedDispatchRecovery(stop=True)
     ledger_committed = bool(git_state.commits)
-    project_state_display = _escape_control_characters(
-        normalize_repo_path(config.project_state_path.as_posix())
-    )
-    ledger_dirty = _project_state_has_uncommitted_changes(config)
+    # The finalizer writes both ledger files; the first one that is dirty, or
+    # that Git cannot check, is the one the message names.
+    ledger_dirty: bool | None = False
+    project_state_display = ""
+    for ledger_path in (config.project_state_path, config.completed_work_path):
+        project_state_display = _escape_control_characters(
+            normalize_repo_path(ledger_path.as_posix())
+        )
+        ledger_dirty = _project_state_has_uncommitted_changes(config, ledger_path)
+        if ledger_dirty is None or ledger_dirty:
+            break
     if ledger_dirty is None or ledger_dirty:
         reason = (
             "Git could not list uncommitted files, so the dispatcher cannot "
