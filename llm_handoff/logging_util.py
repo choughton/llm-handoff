@@ -119,6 +119,8 @@ class DispatchLogger:
     def attach_chat_line(self, chat_line: ChatLine | None) -> None:
         """Route console lines through ``chat_line``, or directly when None.
 
+        While a chat line is attached, every log level is printed above it,
+        including steady-state INFO and DEBUG that the direct console omits.
         A previously attached chat line is cleared first, so its drawn prompt
         does not stay on screen in front of the next console line.
         """
@@ -250,6 +252,11 @@ class DispatchLogger:
 
     def _should_write_console(self, level: str, message: str) -> bool:
         if self.log_file_path is None:
+            return True
+        # An attached chat line is the operator's live view of the run, so
+        # every level reaches it; the steady-state filter below applies only
+        # to the direct console stream.
+        if self.chat_line is not None:
             return True
         if level in CONSOLE_ALWAYS_LEVELS:
             return True

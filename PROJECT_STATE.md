@@ -11,8 +11,11 @@ history.
 ## Current Status
 
 - **Active Epic:** LOOSE-ENDS (epic 22). LOOSE-1 (config resume settings
-  work without CLI flags) is implemented and awaits audit; LOOSE-2, LOOSE-3,
-  and LOOSE-4 remain, in that order. TIDY (epic 19) closed with TIDY-13,
+  work without CLI flags) is approved at `0585fb4`
+  (`0585fb4d19a04354a52601470672567ccf8fb21b`) and merged in PR #284
+  (`9a94f35`, `9a94f3599cda149aec769c69b16789a925902b11`). LOOSE-2
+  (dispatcher log lines show on the console while the chat line is up) is
+  implemented and awaits audit; LOOSE-3 and LOOSE-4 remain, in that order. TIDY (epic 19) closed with TIDY-13,
   approved at `7816ae6` and merged in PR #272 (`4e380f9`).
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
@@ -403,10 +406,11 @@ Each story is one behavior change with its own tests.
   top-level file settings without flags, the `agents.<role>.resume`
   fallback, the top-level key winning over it, provider-default `resume`
   falling through to `True` (`default`), and the banner `source:` output.
-  Progress: implemented 2026-10-23, awaiting audit; `load_dispatch_config`
+  Progress: implemented 2026-10-23; `load_dispatch_config`
   and a `DispatchConfig` before-validator share one resolver, a config
   that sets `<role>_resume_source` fails to load, and CLI help and
   CONFIGURATION.md (Runtime Controls, Provider Fields) state the precedence.
+  Approved at `0585fb4` and merged in PR #284 (`9a94f35`).
 - LOOSE-2: Dispatcher log lines show on the console while the chat line is
   up. On 2026-10-22 the epic-close pre-audit verification logged `Dispatcher
   verification (epic close): running Work Packet Verification command ...`
@@ -420,7 +424,10 @@ Each story is one behavior change with its own tests.
   (2026-10-22): `llm_handoff/logging_util.py` filters steady-state `INFO`
   and `DEBUG` before console rendering, so inspect that filter along with
   `llm_handoff/chat_line.py`; redrawing the prompt alone cannot recover a
-  filtered message.
+  filtered message. Progress: implemented 2026-10-23, awaiting audit;
+  `DispatchLogger._should_write_console` lets every level through while a
+  chat line is attached, and the steady-state filter still governs the
+  direct console when none is attached, including after detachment.
 - LOOSE-3: Windows `HANDOFF.md` replacement keeps the file's ACL. From the
   CHAT-26 audit (medium, security reviewer): on Windows
   `_write_handoff_durably` (`llm_handoff/orchestrator.py`) replaces

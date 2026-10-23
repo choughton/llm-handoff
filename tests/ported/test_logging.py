@@ -341,6 +341,26 @@ def test_dispatch_logger_routes_non_startup_info_to_log_only(
     )
 
 
+def test_dispatch_logger_routes_non_startup_debug_to_log_only_without_chat_line(
+    tmp_path: Path,
+) -> None:
+    logging_util = _load_logging_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    console = io.StringIO()
+    logger = _build_logger(logging_util, repo_root, console=console)
+    logger.mark_startup_complete()
+
+    logger.log("DEBUG", "Steady-state debug detail")
+
+    expected_line = "[2026-04-17T12:34:56] [DEBUG] Steady-state debug detail"
+    assert logger.chat_line is None
+    assert console.getvalue() == ""
+    assert logger.log_file_path.read_text(encoding="utf-8").endswith(
+        expected_line + "\n"
+    )
+
+
 def test_dispatch_logger_warns_and_keeps_console_logging_on_file_write_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
