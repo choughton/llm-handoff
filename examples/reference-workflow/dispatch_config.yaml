@@ -11,6 +11,13 @@ completed_work_path: COMPLETED_WORK.md
 # planner attempt per pause streak, then the dispatcher waits for a HANDOFF.md
 # edit. "off" (quoted; YAML reads a bare off as false) always waits.
 pause_recovery: planner
+# Opt-in user-escalation reconciliation, off by default. true gives a
+# non-planner next_agent: user handoff (status escalate_to_user or
+# blocked_missing_context) one bounded planner check for a stale blocker
+# before the pause, on any cycle, at most once per handoff content per run. A
+# planner-written user route pauses with no check ("reconciled by planner").
+# Independent of pause_recovery; --dry-run dispatches nothing.
+reconcile_user_escalations: false
 # Operator prompt at pauses when stdin is a TTY (not in --dry-run or with
 # poll_interval_seconds: 0): Enter or text dispatches the planner,
 # `@backend|@frontend|@auditor <message>` dispatches that role directly,

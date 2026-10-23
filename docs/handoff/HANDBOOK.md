@@ -294,6 +294,16 @@ match it:
 To ask the planner for a re-scope, use `blocked_implementation_failure`, not
 `blocked_missing_context`.
 
+**Reconciled user escalations.** When the dispatch config sets
+`reconcile_user_escalations: true`, a user escalation may be reconciled once
+before the dispatcher pauses: a frontmatter `next_agent: user` handoff with
+`escalate_to_user` or `blocked_missing_context` from a role other than
+`planner` gets one bounded planner check per handoff content per run. The
+planner rewrites it to `user` with the same question when the blocker still
+holds, or to the next role when it does not. A planner-written user route
+gets no check and pauses as `reconciled by planner`. With the default
+`false`, every user route pauses at once.
+
 **Environment refusal handbacks.** An implementer handback with
 `status: blocked_implementation_failure` and an `Environment refusal` bullet
 reports that the environment, not the code, stopped the work. Never route

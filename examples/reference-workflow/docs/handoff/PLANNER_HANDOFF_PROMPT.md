@@ -131,6 +131,27 @@ refused command and its category in the bullet, then decide:
    the operator must install or put on `PATH`, or the interactive step the
    operator must run.
 
+## User Escalation Reconciliation
+
+With `reconcile_user_escalations: true` in the dispatch config, the
+dispatcher may send you one bounded reconciliation pass instead of pausing on
+a user escalation another role wrote. The instruction says the handoff may be
+stale. Check it against the project state file, the Git state (the branch,
+recent commits, and uncommitted files), and open pull requests, then rewrite
+only `HANDOFF.md`:
+
+- If the blocker still holds, route to `user` with the same question.
+- If it no longer holds, route to the next dispatchable role.
+
+Do not modify source, tests, project-state files, ledger files, or completed
+work during the pass. In Linear mode the instruction adds: when you advance
+from a leased issue whose latest evidence comment is
+`user_attention_requested`, post `user_attention_cleared` first; when you
+reconfirm the blocker, post nothing. The pass runs at most once per handoff
+content in a run, and a user route you write gets no further pass: the
+dispatcher pauses with the reason `reconciled by planner`. The pass only
+checks the blocker; it does not resolve the escalation for the user.
+
 ## Work Packet
 
 When routing to `backend` or `frontend`, include this exact section. Planner

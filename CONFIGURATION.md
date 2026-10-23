@@ -206,7 +206,9 @@ exit code 0. A recovery cycle, or any other cycle with a forced planner
 instruction, never resets it.
 
 A handoff routed to `user` (`next_agent: user`) never triggers recovery; the
-dispatcher always waits for a person. The same holds when the pause validator
+dispatcher waits for a person, after the one opt-in check described in
+[User Escalation Reconciliation](#user-escalation-reconciliation) when
+`reconcile_user_escalations` is on. The same holds when the pause validator
 leaves `HANDOFF.md` routed to `user`, for example after it changed a protected
 file and the dispatcher wrote the protected-file escalation. `--dry-run` never
 schedules recovery. In Linear mode, a pause diagnosis whose `LINEAR-EVIDENCE`
@@ -218,6 +220,57 @@ row: recovery needs a parsed `PASS` or `WARN` status.
 Set `pause_recovery: "off"` to skip recovery and pause at once, as earlier
 releases did. Quote the value: YAML reads a bare `off` as the boolean `false`,
 which the config rejects. The startup banner shows the active mode.
+
+## User Escalation Reconciliation
+
+`reconcile_user_escalations` gives a stale user escalation one bounded planner
+check before the dispatcher pauses on it:
+
+```yaml
+reconcile_user_escalations: false   # false (default) | true
+```
+
+A `next_agent: user` handoff can be stale by the time the loop reads it: the
+question may already be answered in a commit, a merged pull request, or
+`PROJECT_STATE.md`. With the default `false`, every user route pauses at once,
+as described above.
+
+With `true`, a user route is reconciled when all of these hold:
+
+- the route comes from the handoff frontmatter, not from prose or from the
+  three-fix circuit breaker;
+- `status` is `escalate_to_user` or `blocked_missing_context`;
+- `producer` is a recognized role other than `planner`;
+- this exact handoff content (its SHA-256) has not had a reconciliation pass
+  earlier in the same run.
+
+The check can run on any cycle. The dispatcher logs `Reconciling a user
+escalation from <producer> before pausing` and dispatches the planner in the
+same cycle with one instruction: the handoff may be stale; check it against
+the project state file, the Git state, and open pull requests; rewrite it to
+`user` with the same question if the blocker still holds, or to the next
+dispatchable role if it does not. In Linear mode the instruction adds one
+rule: when the planner advances from a leased issue whose latest evidence
+comment is `user_attention_requested`, it posts `user_attention_cleared`
+first; when it reconfirms the blocker, it posts nothing. The dispatcher
+itself writes nothing to the tracker.
+
+The check is bounded and does not resolve anything on its own:
+
+- Each handoff content SHA gets at most one pass per run. The guard is
+  run-local and is not reset when the pause-recovery streak resets, so the
+  same escalation coming back later in the run pauses without another pass.
+  A different eligible escalation from a non-planner role gets its own pass.
+- A user route the planner wrote, whether during the pass or at any other
+  time, pauses with no pass. Its pause reason says `reconciled by planner`.
+- The pass is independent of `pause_recovery`: it runs with
+  `pause_recovery: "off"` too. A live pass counts as the pause streak's
+  planner attempt for pause recovery and the operator prompt.
+- The dispatcher log reports each live pass as
+  `user_escalation_reconciliations=<n>`, a run-local count of actual passes.
+- `--dry-run` logs the decision and the planner dispatch it would make, but
+  dispatches nothing, records no handoff SHA as reconciled, and neither
+  counts nor logs the pass.
 
 ## Operator Prompt
 
