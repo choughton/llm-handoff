@@ -10,9 +10,13 @@ history.
 
 ## Current Status
 
-- **Active Epic:** None. LOOSE-ENDS (epic 22) closed with LOOSE-4, approved
-  at `9f2526e` (`9f2526ec66fecb648d5caf5b250bc3838902b413`) and merged in PR
-  #287 (`7bfd742`). The planner picks the next epic by fit from the Backlog.
+- **Active Epic:** LINEAR-SWITCH (epic 11). Picked by fit after LOOSE-ENDS
+  (epic 22) closed with LOOSE-4, approved at `9f2526e`
+  (`9f2526ec66fecb648d5caf5b250bc3838902b413`) and merged in PR #287
+  (`7bfd742`): ACTIVE-PLANNER is parked on the operator, WORK-INTAKE needs a
+  design check, and ESCALATION-RECONCILE waits on its trigger. LIN-11 is
+  split into LIN-13 and LIN-14. LIN-13 (initialized-target safety preflight)
+  is implemented and in audit; LIN-14 and LIN-12 remain.
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
@@ -31,8 +35,8 @@ history.
   and ACTIVE-7 into both `planner.md` copies, and checking `auditor.md`),
   once the loop is ready to pause for the operator and writes the
   `logs/dispatch/operator/ACTIVE-8/` artifact.
-- **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger,
-  WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
+- **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger, and
+  WORK-INTAKE needs a design check.
 - **Epic Awaiting Close:** None.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
@@ -89,10 +93,20 @@ Closed epics, with their full intros and story lists, are in
 Fit: low urgency; only repositories that switch tracker modes need it.
 LINEAR-WORKFLOW is closed, so nothing blocks it.
 
-- LIN-11: `init --tracker linear` and `init --tracker none` switch an
-  initialized repository between modes, only between assignments and never
-  while `.dispatch.lock` exists; `--dry-run`; `--force` reports what is left
-  behind; a round trip is byte-identical.
+- LIN-13 (was LIN-11): Initialized-repository tracker switch safety
+  preflight. Before planning or writing any file for either `--tracker`
+  mode, `init` refuses an initialized target (one with `dispatch_config.yaml`)
+  whose config is a directory, a link, unreadable, invalid YAML, or fails
+  config validation; that has `.dispatch.lock` or dispatcher run-state files;
+  or whose configured handoff holds a `tracker_issue` lease, routes to an
+  implementing or reviewing role, or cannot be read as between assignments.
+  `--dry-run` and `--force` do not bypass it; the CLI exits 2 with one line.
+  Safe initialized targets keep the fresh-repo refusal for `--tracker linear`
+  until LIN-14. Status: implemented, in audit.
+- LIN-14 (was LIN-11): `init --tracker linear` and `init --tracker none`
+  switch an initialized repository between modes behind LIN-13's preflight;
+  `--dry-run`; conflicts; `--force` reports what is left behind; a round trip
+  is byte-identical.
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 
