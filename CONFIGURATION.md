@@ -1191,7 +1191,8 @@ publish:
   remote: origin         # pr mode
   auto_merge: true       # pr mode: merge once the audit passes
   wait_for_checks: false # pr mode: wait for the PR's CI checks before merging
-  wait_for_reviewers: [] # pr mode + auto_merge: [codex] waits for Codex review
+  wait_for_reviewers: [] # pr mode + auto_merge: [codex] waits for Codex review;
+                         # [codex-local] runs `codex exec review` locally
   review_timeout_seconds: 1200
   review_poll_seconds: 30
   review_stall_seconds: 600 # a review shown running this long is stalled
@@ -1651,6 +1652,74 @@ Finding text comes from the pull request and is untrusted. The bounce tells
 the implementer to check each finding and to fix only what holds up inside
 the Work Packet's scope. The work-claim gate and the audit still apply to
 the fix.
+
+#### Running The Codex Review Locally
+
+The Codex connector reviews only repositories it is installed on. For a
+repository it cannot read, set `wait_for_reviewers: [codex-local]` instead:
+the dispatcher runs the review itself with the Codex CLI and your Codex CLI
+login, and nothing is sent to the connector. `codex` and `codex-local` cannot
+be listed together.
+
+After the push, the dispatcher runs, in the repository and on the pushed head
+commit:
+
+```text
+codex exec --sandbox read-only review --base <remote>/<base_branch> \
+  -c web_search="disabled" --json --ephemeral \
+  --output-last-message logs/dispatch/codex-review/last-message.txt
+```
+
+The base ref is the remote base branch that the dispatcher merged into the
+story branch before the push, so the review covers the story's changes.
+`codex exec review` ignores `--output-schema`; the dispatcher reads its
+final message, an overall explanation followed, when there are findings, by
+one `- [P<n>] <title> - <path>:<start>-<end>` entry per finding (the
+separator is an em dash). Every finding counts, whatever its priority: the
+GitHub connector shows only P0 and P1 findings, but the local review's P2
+findings include real bugs. A final message that lists review comments the
+dispatcher cannot read is a failed review, never a clean one.
+
+The dispatcher then posts to the pull request with `gh`, under your GitHub
+account:
+
+- each finding as an inline review comment on its line of the head commit;
+  when GitHub refuses the line (it is outside the diff), on its file; when
+  GitHub refuses both, the finding is listed in the summary comment and has
+  no review thread to answer or resolve;
+- one summary comment with the finding count and Codex's explanation, for
+  every finished review, clean or not.
+
+From there the outcomes are the ones above: no findings merges, findings
+start the correction round, and the implementer's responses are posted as
+replies on the dispatcher's review comments, which it then resolves. With
+`max_review_rounds` above 1, each pushed fix gets its own local review.
+
+Differences from the GitHub review:
+
+- There is no polling: `review_poll_seconds`, `review_stall_seconds`, and
+  `codex_bot_login` do not apply. `review_timeout_seconds` bounds the
+  `codex exec review` run; a run that exceeds it is a timeout.
+- A run that exits non-zero, or whose message cannot be read, is a failed
+  review. The retry runs `codex exec review` once more instead of posting
+  `@codex review`; after that, `review_stall_action` applies as above. A
+  usage limit is never retried or merged without a review. When the
+  dispatcher is stopped during the retry or at the operator prompt, the next
+  start runs no third review of that commit: it treats the retry as
+  unfinished and goes straight to `review_stall_action`.
+- Only GitHub refusing a comment's position (HTTP 422) falls back to the
+  file or the summary comment. Any other failure to post a finding, such as
+  an authentication, permission, rate-limit, or server error, stops the
+  publish with the error and leaves the pull request open, because a finding
+  without its review thread would not block the merge.
+- The review runs in Codex's read-only sandbox, with the agent environment
+  allowlist and no `OPENAI_API_KEY`, so it cannot run tests that need to
+  write files. Like the audit reviewers, it is an LLM reading
+  agent-written code and is not hardened against prompt injection in that
+  code.
+- `codex exec review` is not the connector's reviewer. It is the Codex
+  CLI's review command, so the findings it reports, and how many, can
+  differ from what the connector would post for the same commit.
 
 Agents never branch, push, or merge: the dispatcher does all of it, and only
 after the work-claim gate and both reviewers pass. `pr` mode pushes with your

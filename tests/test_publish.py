@@ -164,6 +164,23 @@ elif args[:3] == ["api", "--method", "POST"]:
     if state.get("fail_comment"):
         sys.exit("HTTP 403: Resource not accessible by integration")
     body = args[args.index("-f") + 1].partition("=")[2]
+    if args[3].endswith("/pulls/7/comments"):
+        # An inline review comment: record its fields, give it an ID.
+        fields = {}
+        for flag, value in zip(args, args[1:]):
+            if flag in ("-f", "-F"):
+                key, _, field = value.partition("=")
+                fields.setdefault(key, field)
+        if state.get("fail_review_comment"):
+            sys.exit("HTTP 403: Resource not accessible by integration")
+        if "line" in fields and state.get("fail_line_comment"):
+            sys.exit("HTTP 422: pull_request_review_thread.line must be part of the diff")
+        posted = state.setdefault("posted", [])
+        posted.append({"endpoint": args[3], "body": body, "fields": fields})
+        save()
+        print(json.dumps({"id": 5000 + len(posted),
+                          "html_url": f"https://github.example/acme/repo/pull/7#discussion_r{len(posted)}"}))
+        sys.exit(0)
     state.setdefault("posted", []).append({"endpoint": args[3], "body": body})
     # Lets a test answer each review request with new Codex activity.
     if body == "@codex review" and state.get("after_review_request"):
@@ -2615,6 +2632,26 @@ def test_publish_ignores_handoffs_that_are_not_verified_pass(tmp_path: Path) -> 
 
     assert outcome.stop is False
     assert _git(tmp_path, "branch", "--show-current") == BRANCH
+
+
+def test_codex_local_reviewer_replaces_the_github_codex_review(
+    tmp_path: Path,
+) -> None:
+    config = DispatchConfig(
+        repo_root=tmp_path,
+        enforce_work_packet=True,
+        commit_mode="dispatcher",
+        publish={"mode": "pr", "wait_for_reviewers": ["codex-local"]},
+    )
+    assert config.publish.wait_for_reviewers == ("codex-local",)
+
+    with pytest.raises(ValueError, match="`codex` or `codex-local`, not both"):
+        DispatchConfig(
+            repo_root=tmp_path,
+            enforce_work_packet=True,
+            commit_mode="dispatcher",
+            publish={"mode": "pr", "wait_for_reviewers": ["codex", "codex-local"]},
+        )
 
 
 def test_publish_modes_require_dispatcher_commits(tmp_path: Path) -> None:
@@ -6803,3 +6840,280 @@ def test_run_loop_leaves_a_merged_story_branch_before_the_planner_runs(
         for level, message in entries
     )
     assert not any("Story branch not ready" in message for _level, message in entries)
+
+
+# `codex-local`: the dispatcher runs `codex exec review` itself and posts the
+# findings to the pull request.
+
+# Records each run's arguments in the state file named by argv[1] and prints
+# the next reply's final message, like `codex exec review`.
+FAKE_LOCAL_CODEX = r"""
+import json, sys
+state_path, args = sys.argv[1], sys.argv[2:]
+with open(state_path, encoding="utf-8") as handle:
+    state = json.load(handle)
+state.setdefault("runs", []).append(args)
+replies = state["replies"]
+reply = replies.pop(0) if len(replies) > 1 else replies[0]
+with open(state_path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle)
+if reply.get("message"):
+    path = args[args.index("--output-last-message") + 1]
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(reply["message"])
+sys.stderr.write(reply.get("stderr", ""))
+sys.exit(reply.get("exit", 0))
+"""
+
+LOCAL_CLEAN = "The widget module is correct. No actionable regressions were identified."
+
+
+def _local_gate(tmp_path: Path, *replies: dict) -> tuple[ReviewGate, Path]:
+    script = tmp_path / "fake_codex.py"
+    script.write_text(FAKE_LOCAL_CODEX, encoding="utf-8")
+    state = tmp_path / "codex_state.json"
+    state.write_text(json.dumps({"replies": list(replies)}), encoding="utf-8")
+    gate = ReviewGate(
+        reviewers=("codex-local",),
+        timeout_seconds=600,
+        codex_command=(sys.executable, str(script), str(state)),
+    )
+    return gate, state
+
+
+def _local_runs(state: Path) -> list[list[str]]:
+    return json.loads(state.read_text(encoding="utf-8")).get("runs", [])
+
+
+def _local_finding(repo: Path, line: int = 1) -> str:
+    root = repo.resolve().as_posix()
+    return (
+        "The widget can be unset.\n\nFull review comments:\n\n"
+        f"- [P2] Handle a missing widget \u2014 {root}/src/widget.py:{line}-{line}\n"
+        "  WIDGET can be unset.\n"
+    )
+
+
+def _all_posted(tmp_path: Path) -> list[dict]:
+    return _gh_state(tmp_path).get("posted", [])
+
+
+def test_codex_local_clean_review_posts_a_summary_and_merges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    gate, codex_state = _local_gate(tmp_path, {"message": LOCAL_CLEAN})
+    entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    assert outcome == PublishOutcome()
+    [args] = _local_runs(codex_state)
+    assert args[:4] == ["exec", "--sandbox", "read-only", "review"]
+    assert args[args.index("--base") + 1] == "origin/main"
+    [summary] = _all_posted(tmp_path)
+    assert summary["endpoint"] == "repos/{owner}/{repo}/issues/7/comments"
+    assert "**Local Codex review**" in summary["body"]
+    assert "no findings" in summary["body"]
+    assert LOCAL_CLEAN in summary["body"]
+    calls = _gh_calls(tmp_path)
+    # No waiting on the GitHub Codex connector.
+    assert not any(
+        call[:2] == ["api", "--paginate"] and call[-1].endswith("/issues/7/comments")
+        for call in calls
+    )
+    assert calls[-1][:2] == ["pr", "merge"]
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert any("found no issues" in message for _level, message in entries)
+
+
+def test_codex_local_findings_become_review_threads_for_one_correction_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    first = _git(repo, "rev-parse", "HEAD")
+    gate, codex_state = _local_gate(tmp_path, {"message": _local_finding(repo)})
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    assert outcome.stop is False and outcome.handoff is not None
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    comment, summary = _all_posted(tmp_path)
+    assert comment["endpoint"] == "repos/{owner}/{repo}/pulls/7/comments"
+    assert comment["fields"]["commit_id"] == first
+    assert comment["fields"]["path"] == "src/widget.py"
+    assert comment["fields"]["line"] == "1"
+    assert comment["fields"]["side"] == "RIGHT"
+    assert comment["body"].startswith("**[P2] Handle a missing widget**")
+    assert "1 finding(s)" in summary["body"]
+    handoff = outcome.handoff
+    assert "status: verified_fail" in handoff
+    assert "### Finding 1: `src/widget.py:1`" in handoff
+    assert "WIDGET can be unset." in handoff
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["review_rounds"] == 1
+    assert state["open_findings"] == [
+        {
+            "number": 1,
+            "comment_id": 5001,
+            "location": "src/widget.py:1",
+            "body": "**[P2] Handle a missing widget**\n\nWIDGET can be unset.",
+        }
+    ]
+
+    # The fix merges once its thread is answered and resolved, with no
+    # second local review.
+    _set_threads(tmp_path, {"id": "T1", "isResolved": False, "comment_id": 5001})
+    (repo / "src" / "widget.py").write_text("WIDGET = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "W9.9 Handle a missing widget")
+    save_review_responses(
+        repo,
+        "## Review Responses\n\n### Finding 1: `src/widget.py:1`\n"
+        "Defaulted WIDGET when it is unset.\n",
+    )
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    assert outcome == PublishOutcome()
+    assert len(_local_runs(codex_state)) == 1
+    gh_state = _gh_state(tmp_path)
+    assert gh_state["threads"][0]["isResolved"] is True
+    [reply] = gh_state["replies"]
+    assert reply["endpoint"].endswith("/pulls/7/comments/5001/replies")
+    assert _gh_calls(tmp_path)[-1][:2] == ["pr", "merge"]
+
+
+def test_codex_local_finding_outside_the_diff_goes_on_its_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    path = tmp_path / "gh_state.json"
+    path.write_text(json.dumps({"fail_line_comment": True}), encoding="utf-8")
+    gate, _codex_state = _local_gate(tmp_path, {"message": _local_finding(repo, 40)})
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    assert outcome.handoff is not None
+    comment, _summary = _all_posted(tmp_path)
+    assert comment["fields"]["subject_type"] == "file"
+    assert "line" not in comment["fields"]
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["open_findings"][0]["comment_id"] == 5001
+
+
+def test_codex_local_failed_review_runs_once_more_then_pauses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    gate, codex_state = _local_gate(tmp_path, {"exit": 1, "stderr": "stream error"})
+    entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    assert outcome.stop is True
+    assert "left open" in outcome.message
+    assert "stream error" in outcome.message
+    assert len(_local_runs(codex_state)) == 2
+    assert all(post["body"] != "@codex review" for post in _all_posted(tmp_path))
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+    assert any(
+        "ran `codex exec review` of" in message and "again" in message
+        for _level, message in entries
+    )
+
+
+def test_codex_local_restart_after_an_interrupted_retry_runs_no_third_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import publish as publish_module
+
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    gate, codex_state = _local_gate(tmp_path, {"exit": 1, "stderr": "stream error"})
+    _entries, log = _logs()
+    real_review = publish_module._run_local_review
+    reviews: list[int] = []
+
+    def interrupted_retry(**kwargs):
+        # The operator stops the dispatcher while the retry runs.
+        reviews.append(1)
+        if len(reviews) == 2:
+            raise KeyboardInterrupt
+        return real_review(**kwargs)
+
+    monkeypatch.setattr(publish_module, "_run_local_review", interrupted_retry)
+    with pytest.raises(KeyboardInterrupt):
+        _publish_with_review(repo, gh, log, gate=gate)
+    monkeypatch.setattr(publish_module, "_run_local_review", real_review)
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["review_retry_head"] == head
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    # The retry for this head is on record, so the restart runs no review.
+    assert outcome.stop is True
+    assert "did not finish before the dispatcher stopped" in outcome.message
+    assert len(_local_runs(codex_state)) == 1
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_codex_local_usage_limit_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    gate, codex_state = _local_gate(
+        tmp_path, {"exit": 1, "stderr": "ERROR: You've hit your usage limit."}
+    )
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    assert outcome.stop is True
+    assert "usage limit" in outcome.message
+    assert len(_local_runs(codex_state)) == 1
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_codex_local_stops_when_a_finding_cannot_be_posted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    path = tmp_path / "gh_state.json"
+    path.write_text(json.dumps({"fail_review_comment": True}), encoding="utf-8")
+    gate, codex_state = _local_gate(tmp_path, {"message": _local_finding(repo)})
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    # Only GitHub refusing the line (HTTP 422) falls back; a permission error
+    # stops the publish instead of saving a finding without its thread.
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert outcome.handoff is None
+    assert "could not post the local Codex review finding" in outcome.message
+    assert "HTTP 403" in outcome.message
+    assert len(_local_runs(codex_state)) == 1
+    assert _all_posted(tmp_path) == []
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]

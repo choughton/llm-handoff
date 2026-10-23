@@ -240,9 +240,12 @@ CommitMode = Literal["agent", "dispatcher"]
 # What happens to audited work: stay local, merge a story branch with a report
 # commit, or push it and open a pull request.
 PublishMode = Literal["local", "merge-commit", "pr"]
-# GitHub pull request reviewers whose review of the head commit must finish,
-# without findings, before the dispatcher merges a story's pull request.
-PublishReviewer = Literal["codex"]
+# Pull request reviewers whose review of the head commit must finish, without
+# findings, before the dispatcher merges a story's pull request: `codex` is the
+# ChatGPT Codex connector's GitHub review; `codex-local` is a `codex exec
+# review` the dispatcher runs itself, for a repository the connector cannot
+# read.
+PublishReviewer = Literal["codex", "codex-local"]
 # What the dispatcher does at a non-user pause: schedule one bounded planner
 # recovery per pause streak, or pause and wait for a HANDOFF.md edit.
 PauseRecoveryMode = Literal["planner", "off"]
@@ -608,6 +611,12 @@ class PublishConfig(BaseModel):
             )
         if len(set(self.wait_for_reviewers)) != len(self.wait_for_reviewers):
             raise ValueError("publish.wait_for_reviewers must not repeat a reviewer.")
+        if {"codex", "codex-local"} <= set(self.wait_for_reviewers):
+            raise ValueError(
+                "publish.wait_for_reviewers takes `codex` or `codex-local`, not "
+                "both: `codex-local` runs the Codex review locally in place of "
+                "the GitHub one."
+            )
         for name in (
             "review_timeout_seconds",
             "review_poll_seconds",
