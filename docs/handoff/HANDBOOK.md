@@ -242,6 +242,30 @@ outside that pass are acted on only when they decide every open finding and
 the pull request head is the reviewed commit; otherwise they pause the
 dispatcher too.
 
+## Tests In Files In Scope
+
+A story that changes behavior also changes the tests that assert the old
+behavior, so those tests are in scope by definition. The planner, or the tpm
+when it writes the Work Packet, lists the affected test files or the `tests/`
+directory in Files in scope. The work-claim gate treats every file under a
+directory entry as in scope, including a test file the implementer adds.
+
+A Work Packet never tells the implementer to stop because a test outside
+Files in scope must change, in that wording or any other. The validator's
+advisory rationalization check flags that instruction only in a planner
+handoff with a completion status, so an ordinary assignment goes unchecked;
+the rule holds either way. When the planner cannot tell which test files
+assert the behavior, it lists `tests/`.
+
+To find which tests assert the old behavior, the planner may run the relevant
+tests read-only while scoping, when its launch permits the command. For a
+Claude role that keeps the default allowlist, the top-level
+`interpreter_grants: true` in the dispatch config supplies the `python`,
+`python3`, and `pytest` grants; agy roles get the same grants from that key.
+Without a grant, or when the launch refuses the command, the planner reads
+the tests instead and lists `tests/`. Scoping runs change no files, and this
+rule changes no role's permissions.
+
 ## When To Flag Uncertainty
 
 Stop and route to `planner`, `validator`, or `user` when scope, ownership,

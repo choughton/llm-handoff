@@ -31,6 +31,12 @@ planner:
   # Missing verification specificity.
   - pattern: "\\b(run relevant tests|write tests for this|verify as appropriate)\\b"
     failure_mode: "planner omitted concrete verification command"
+  # Stop instruction for a test outside Files in scope. Tests that assert the
+  # behavior a story changes belong in Files in scope. Two orders: "stop if a
+  # test outside ... must change" and "if a test outside ... must change, stop".
+  # Negated ("do not stop") or quoted stop words do not match.
+  - pattern: "(?<!not )(?<!n't )(?<!never )(?<!['\"`])\\b(stop|halt|pause|abort)\\b[^.;\\n]{0,60}?\\b(if|when|whenever|because|once)\\b[^.;\\n]{0,30}?\\btests?\\b[^.;\\n]{0,40}?\\boutside\\b[^.;\\n]{0,40}?\\b(must|needs?|has to|have to|requires?)\\b[^.;\\n]{0,20}?\\b(chang|updat|edit|modif)\\w*|\\b(if|when|whenever)\\b[^.;\\n]{0,30}?\\btests?\\b[^.;\\n]{0,40}?\\boutside\\b[^.;\\n]{0,40}?\\b(must|needs?|has to|have to|requires?)\\b[^.;\\n]{0,20}?\\b(chang|updat|edit|modif)\\w*[^.;\\n]{0,30}?(?<!not )(?<!n't )(?<!never )\\b(stop|halt|pause|abort)\\b"
+    failure_mode: "planner told the implementer to stop for a test outside Files in scope"
 
 tpm:
   # Vague assignment language in a routine story pick.

@@ -125,6 +125,15 @@ Never list the same path under both fields: a packet cannot limit edits within
 a file, so keep the file in `Files in scope` and state the limit in the
 Objective.
 
+Follow the handbook's Tests In Files In Scope rule. When a story changes
+behavior, the tests that assert the old behavior are in scope: list those
+test files, or `tests/`, in `Files in scope`. Never write an instruction to
+stop because a test outside Files in scope must change, in any wording. To
+find the affected tests, run the relevant tests read-only while scoping when
+your launch permits the command (for a Claude role on the default allowlist,
+`interpreter_grants: true` supplies the `pytest` grant). When the command is
+refused, read the tests instead and list `tests/`.
+
 Do not put a path under a `.claude/` directory, at the root or nested such
 as `examples/app/.claude/agents/x.md`, in `Files in scope` for a role whose
 `provider` in the dispatch config is `claude` (unless it sets
