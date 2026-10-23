@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Scanner commands can use a new `{changed_js_files}` placeholder: the
+  `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, and `.cts` subset of
+  `{changed_files}`. Like `{changed_py_files}`, a scanner that uses it is
+  skipped on claims where the list is empty, and `llm-handoff doctor` names
+  it in the scanner's condition. CONFIGURATION.md adds a Node.js scanner
+  example (gitleaks, semgrep, `npx --no eslint`, and `npm audit`).
 - `llm-handoff doctor` now runs a warning-only verification preflight
   (ACTIVE-3) when the live handoff routes to `backend` or `frontend`. The
   reusable `doctor.check_verification_preflight(config, handoff_content)`

@@ -54,6 +54,7 @@ def _context(tmp_path: Path) -> ScannerContext:
         diff_range="aaa..bbb",
         changed_files=("src/app.py",),
         changed_py_files=("src/app.py",),
+        changed_js_files=(),
     )
 
 
@@ -240,6 +241,7 @@ def test_gate_runs_trusted_path_scanner_not_repository_copy(
             diff_range="aaa..bbb",
             changed_files=("src/app.py",),
             changed_py_files=("src/app.py",),
+            changed_js_files=(),
         ),
         runner=run_shell_command,
     )

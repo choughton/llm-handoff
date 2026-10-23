@@ -81,16 +81,19 @@ work_packet_verification_timeout_seconds: 600
 # these tools; install them in the target repository's environment yourself.
 # A missing executable fails every claim the scanner applies to with
 # scanner_missing:<name> when required: true, and is skipped when
-# required: false. A command that uses {changed_files} or {changed_py_files}
-# is skipped on claims where that list is empty. Run
+# required: false. A command that uses {changed_files}, {changed_py_files},
+# or {changed_js_files} is skipped on claims where that list is empty. Run
 # `llm-handoff doctor` to see which configured scanners will run.
 # For Python repositories, bandit, pip-audit, and gitleaks are recommended.
+# For Node.js repositories, see the example in CONFIGURATION.md (gitleaks,
+# semgrep, `npx --no eslint ... {changed_js_files}`, and npm audit).
 # Use semgrep only with a pinned local ruleset kept in the repository
 # (--config <path to a ruleset in the repo>), not --config auto, which
 # downloads rules from the network at run time.
 # Placeholders: {diff_range} = <pre-dispatch HEAD>..<scope_sha>,
-# {changed_files} and {changed_py_files} = shell-quoted changed paths,
-# {repo_root} = shell-quoted repository root. Double literal braces.
+# {changed_files} = shell-quoted changed paths, {changed_py_files} = the .py
+# subset, {changed_js_files} = the .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts
+# subset, {repo_root} = shell-quoted repository root. Double literal braces.
 scanners:
   - name: gitleaks
     command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}

@@ -1718,9 +1718,9 @@ run it: `PASS` when its executable is on `PATH`, `FAIL` when a
 applies to would fail with `scanner_missing:<name>`), and `WARN` when a
 `required: false` scanner's executable is missing, when the command does not
 start with a plain program name doctor can look up, or when scanners are
-configured but the gate is off. When the command uses `{changed_files}` or
-`{changed_py_files}`, the gate skips the scanner on claims where that list is
-empty, and doctor's message says the outcome applies only to claims where the
+configured but the gate is off. When the command uses `{changed_files}`,
+`{changed_py_files}`, or `{changed_js_files}`, the gate skips the scanner on
+claims where that list is empty, and doctor's message says the outcome applies only to claims where the
 list is nonempty. Doctor looks the executable up the same way the gate does
 and never runs a scanner command.
 
@@ -1761,6 +1761,46 @@ database. `semgrep` with a local ruleset and `--metrics off` does not need to
 download rules; `--config auto` would, and its results could change between
 runs without a commit.
 
+For Node.js repositories, `gitleaks`, `semgrep` with a pinned JavaScript and
+TypeScript ruleset, and the repository's own ESLint or Biome config are the
+recommended starting set, with `npm audit` as the dependency audit:
+
+```yaml
+enforce_work_packet: true
+scanners:
+  - name: gitleaks
+    command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}
+    timeout_ms: 300000
+    required: true
+  - name: semgrep
+    # A ruleset committed to the repository, for example built from the
+    # javascript/ and typescript/ security rules.
+    command: semgrep scan --config <local ruleset path> --metrics off --error --quiet {changed_files}
+    timeout_ms: 300000
+    required: true
+  - name: eslint
+    command: npx --no eslint --no-warn-ignored --max-warnings 0 {changed_js_files}
+    timeout_ms: 180000
+    required: true
+  - name: npm-audit
+    command: npm audit --audit-level=high
+    timeout_ms: 300000
+    required: false
+```
+
+The gate looks up a scanner's executable on `PATH` or by absolute path, never
+by a relative path such as `node_modules/.bin/eslint`, so run locally
+installed tools through `npx`. `--no` makes `npx` fail instead of downloading
+a package that is not installed, which keeps the result tied to the version
+pinned in `package.json` and the lockfile. `--no-warn-ignored` keeps ESLint
+from warning about a changed file its config ignores, which `--max-warnings 0`
+would otherwise turn into a failure. For Biome, use
+`npx --no biome check --no-errors-on-unmatched {changed_js_files}`.
+`npm audit` needs network access and is not diff-shaped, like `pip-audit`; use
+`pnpm audit` or `yarn npm audit` for those package managers. A TypeScript type
+check such as `tsc --noEmit` covers the whole project, so put it in the Work
+Packet Verification command instead of the scanner list.
+
 Fields:
 
 - `name`: label used in log lines and error prefixes; letters, digits, `.`,
@@ -1779,14 +1819,20 @@ Placeholders:
 | `{diff_range}` | `<pre-dispatch HEAD>..<scope_sha>`, ready for `git log` or `git diff` options |
 | `{changed_files}` | space-separated, shell-quoted repository-relative paths changed in that range that still exist |
 | `{changed_py_files}` | the `.py` subset of `{changed_files}` |
+| `{changed_js_files}` | the JavaScript and TypeScript subset of `{changed_files}`: `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, and `.cts` |
 | `{repo_root}` | the shell-quoted absolute repository root |
 
-Scope gitleaks, semgrep, and bandit to the diff or the changed files as shown.
-Run pip-audit unscoped, because a dependency audit is not diff-shaped. Literal
-braces in a command must be doubled (`{{` and `}}`). A command that references
-an unknown placeholder fails config load with `scanner_config_invalid:<name>`.
-A scanner whose command references `{changed_files}` or `{changed_py_files}`
-is skipped with an INFO log line when that list is empty for the claim.
+Suffixes match case-sensitively. `{changed_js_files}` leaves out framework
+files such as `.vue` and `.svelte`; use `{changed_files}` for a linter that
+handles them.
+
+Scope gitleaks, semgrep, bandit, and ESLint to the diff or the changed files
+as shown. Run pip-audit and npm audit unscoped, because a dependency audit is
+not diff-shaped. Literal braces in a command must be doubled (`{{` and `}}`).
+A command that references an unknown placeholder fails config load with
+`scanner_config_invalid:<name>`. A scanner whose command references
+`{changed_files}`, `{changed_py_files}`, or `{changed_js_files}` is skipped
+with an INFO log line when that list is empty for the claim.
 
 Scanners run only after the `scope_sha`, diff-scope, and working-tree checks
 pass; there is no value in scanning out-of-bounds work. They run in config

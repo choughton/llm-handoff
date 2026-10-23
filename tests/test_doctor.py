@@ -674,6 +674,30 @@ def test_doctor_passes_every_scanner_whose_executable_is_on_path(
     assert "skip it on other claims" not in lines[1]
 
 
+def test_doctor_names_changed_js_files_in_scanner_condition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    _add_config(
+        repo,
+        "scanners:\n"
+        "  - name: eslint\n"
+        "    command: npx --no eslint --max-warnings 0 {changed_js_files}\n",
+    )
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude", "npx"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    line = _scanner_lines(output)[0]
+    assert line.startswith("PASS scanner eslint:")
+    assert "executable `npx`" in line
+    assert (
+        "will run scanner eslint on claims where {changed_js_files} is "
+        "nonempty and skip it on other claims"
+    ) in line
+
+
 def test_doctor_scanner_with_both_list_placeholders_names_both(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

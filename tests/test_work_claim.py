@@ -1774,21 +1774,24 @@ def test_render_scanner_command_substitutes_and_quotes_paths(tmp_path: Path) -> 
     context = ScannerContext(
         repo_root=tmp_path,
         diff_range="aaa..bbb",
-        changed_files=("src/my file.py", "docs/notes.md"),
+        changed_files=("src/my file.py", "docs/notes.md", "web/my app.ts"),
         changed_py_files=("src/my file.py",),
+        changed_js_files=("web/my app.ts",),
     )
 
     rendered = render_scanner_command(
         "tool --range {diff_range} --root {repo_root} -- {changed_files} "
-        ":: {changed_py_files}",
+        ":: {changed_py_files} :: {changed_js_files}",
         context,
     )
 
     quoted = shell_quote("src/my file.py")
+    quoted_ts = shell_quote("web/my app.ts")
     assert quoted != "src/my file.py"
     assert rendered.command == (
         f"tool --range aaa..bbb --root {shell_quote(str(tmp_path))} -- "
-        f"{quoted} {shell_quote('docs/notes.md')} :: {quoted}"
+        f"{quoted} {shell_quote('docs/notes.md')} {quoted_ts} :: {quoted} "
+        f":: {quoted_ts}"
     )
     assert rendered.empty_placeholder is None
 
@@ -1801,12 +1804,48 @@ def test_render_scanner_command_skips_when_list_placeholder_is_empty(
         diff_range="aaa..bbb",
         changed_files=("docs/notes.md",),
         changed_py_files=(),
+        changed_js_files=(),
     )
 
     rendered = render_scanner_command("bandit -q {changed_py_files}", context)
 
     assert rendered.command is None
     assert rendered.empty_placeholder == "changed_py_files"
+
+
+def test_render_scanner_command_skips_when_changed_js_files_is_empty(
+    tmp_path: Path,
+) -> None:
+    context = ScannerContext(
+        repo_root=tmp_path,
+        diff_range="aaa..bbb",
+        changed_files=("src/app.py",),
+        changed_py_files=("src/app.py",),
+        changed_js_files=(),
+    )
+
+    rendered = render_scanner_command("eslint {changed_js_files}", context)
+
+    assert rendered.command is None
+    assert rendered.empty_placeholder == "changed_js_files"
+
+
+def test_load_dispatch_config_accepts_changed_js_files_placeholder(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        "scanners:\n"
+        "  - name: eslint\n"
+        "    command: npx --no eslint --max-warnings 0 {changed_js_files}\n",
+        encoding="utf-8",
+    )
+
+    config = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert config.scanners[0].command == (
+        "npx --no eslint --max-warnings 0 {changed_js_files}"
+    )
 
 
 def test_scanner_receives_quoted_paths_with_spaces(
@@ -1914,6 +1953,66 @@ def test_scanner_skips_when_changed_py_files_is_empty(
     assert result.scanner_runs[0].outcome == "SKIP"
     assert result.scanner_runs[0].skipped is True
     assert "{changed_py_files} is empty" in result.scanner_runs[0].detail
+
+
+def test_scanner_receives_only_js_and_ts_files_for_changed_js_files(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "jsscan", FINDING_TOOL_BODY)
+    assignment = _assignment(files_in_scope="web/")
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    js_ts = [
+        "web/a.js",
+        "web/b.jsx",
+        "web/c.mjs",
+        "web/d.cjs",
+        "web/e.ts",
+        "web/f.tsx",
+        "web/g.mts",
+        "web/h.cts",
+    ]
+    for path in [*js_ts, "web/App.vue", "web/notes.md", "web/package.json"]:
+        _write(tmp_path / path, "x\n")
+    head = _commit_all(tmp_path, "add web files")
+
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [_scanner("jsscan", "jsscan {changed_js_files}")],
+        assignment=assignment,
+    )
+
+    scanner_run = result.scanner_runs[0]
+    assert scanner_run.run is not None
+    assert f"finding: {json.dumps(js_ts)}" in scanner_run.run.output_tail
+
+
+def test_scanner_skips_when_changed_js_files_is_empty(
+    tmp_path: Path,
+    fake_bin: Path,
+) -> None:
+    _install_fake_tool(fake_bin, "jsscan", FINDING_TOOL_BODY)
+    assignment = _assignment(files_in_scope="docs/")
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "docs" / "notes.md", "notes\n")
+    head = _commit_all(tmp_path, "add notes")
+
+    result = _verify_with_scanners(
+        tmp_path,
+        state,
+        head,
+        [_scanner("jsscan", "jsscan {changed_js_files}")],
+        assignment=assignment,
+    )
+
+    assert result.passed
+    assert result.scanner_runs[0].outcome == "SKIP"
+    assert result.scanner_runs[0].skipped is True
+    assert "{changed_js_files} is empty" in result.scanner_runs[0].detail
 
 
 def test_required_missing_scanner_fails_and_optional_is_skipped(
@@ -2137,6 +2236,7 @@ def test_run_scanner_hands_env_passthrough_to_the_runner(
         diff_range="aaa..bbb",
         changed_files=("src/app.py",),
         changed_py_files=("src/app.py",),
+        changed_js_files=(),
     )
 
     scanner_run, error = run_scanner(
@@ -2789,6 +2889,7 @@ def test_docs_describe_scanners() -> None:
         "{diff_range}",
         "{changed_files}",
         "{changed_py_files}",
+        "{changed_js_files}",
         "{repo_root}",
     ):
         assert placeholder in configuration

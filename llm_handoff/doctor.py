@@ -1263,15 +1263,20 @@ def _check_scanners(
             )
 
 
-_SCANNER_LIST_PLACEHOLDERS = ("changed_files", "changed_py_files")
+_SCANNER_LIST_PLACEHOLDERS = (
+    "changed_files",
+    "changed_py_files",
+    "changed_js_files",
+)
 
 
 def _scanner_applies_condition(command: str) -> str:
     """Describe which claims a scanner applies to, or "" for every claim.
 
     The gate skips a scanner, before it looks up the executable, when the
-    command references ``{changed_files}`` or ``{changed_py_files}`` and that
-    list is empty for the claim (``work_claim.render_scanner_command``).
+    command references ``{changed_files}``, ``{changed_py_files}``, or
+    ``{changed_js_files}`` and that list is empty for the claim
+    (``work_claim.render_scanner_command``).
     """
     try:
         placeholders = scanner_command_placeholders(command)
