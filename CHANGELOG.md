@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- In `pr` mode, an operator story committed on the base branch right after a
+  local-only finalizer epic close is now adopted and published instead of
+  stopping the loop. Adoption accepts earlier unpublished non-merge commits
+  below the audited commit when each changes only `project_state_path` and
+  `completed_work_path`; the pull request carries them, and the log says the
+  audit did not review them. Merges, any other file, and commits that change
+  `HANDOFF.md` still stop adoption. The planner prompt, `HANDBOOK.md`, and
+  `CONFIGURATION.md` describe the wider adoption shape.
 - An applied `init --tracker linear`, fresh or as a switch of an initialized
   repository (a same-mode rerun included), now ends its output with a
   `Linear setup` section (LIN-12): configure and authenticate the named

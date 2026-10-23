@@ -425,7 +425,9 @@ planner:
   commit (see [Publishing](#publishing-story-branches-and-pull-requests)),
   also confirms the adoption shape: the checkout is on the base branch and
   exactly one non-merge commit ahead of its fork point with
-  `<remote>/<base_branch>` (a base that moved on is fine), with HEAD as
+  `<remote>/<base_branch>` (a base that moved on is fine; earlier unpublished
+  commits that change only `project_state_path` and `completed_work_path`,
+  such as a finalizer epic close, are allowed below it), with HEAD as
   `scope_sha`. A story branch the dispatcher already created for the story
   is audited where it is. Every other publish setting audits the operator's
   commits where they are, with the concrete HEAD SHA as `scope_sha`.
@@ -1714,7 +1716,13 @@ the point where it left `<remote>/<base_branch>` (the audit without story
 state reviews only `HEAD~1..HEAD`), that commit not changing `HANDOFF.md`,
 nothing else uncommitted, and no existing branch with the story's name. The
 base branch may have moved on since the operator committed, for example when
-another pull request merged while the audit ran. It then creates the story
+another pull request merged while the audit ran. Below the operator's commit
+there may also be unpublished non-merge commits that each change only
+`project_state_path` and `completed_work_path`: in `pr` mode a finalizer epic
+close stays on the local base branch until the next story publishes it. The
+story branch carries them as finalizer output that was already approved; the
+audit did not review them, and the log says so. Any other extra commit still
+stops adoption. It then creates the story
 branch at HEAD (named from the handoff's `story_id` and `story_title`) with
 its story state, checks it out, and moves the local base branch to
 `<remote>/<base_branch>` without touching the working tree. The publish

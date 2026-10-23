@@ -403,7 +403,10 @@ work with read-only Git commands:
 - only when publishing would move the operator's commit to a story branch
   (`publish.mode: pr` with `base_branch` and `branch_prefix` set): the
   checkout is on the base branch, exactly one non-merge commit ahead of its
-  fork point with the remote base branch. In every other case the commits
+  fork point with the remote base branch. Below that commit there may also
+  be unpublished non-merge commits that change only `PROJECT_STATE.md` and
+  `COMPLETED_WORK.md`, such as an epic close the finalizer left on the base
+  branch; the pull request carries them. In every other case the commits
   are audited where they are.
 
 A clean result routes to `auditor` with `status: ready_for_review` and the

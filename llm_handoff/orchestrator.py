@@ -3405,6 +3405,10 @@ def _run_loop_cycles(
                                 config, log_fn
                             ),
                             handoff_path=config.handoff_path,
+                            ledger_paths=(
+                                config.project_state_path,
+                                config.completed_work_path,
+                            ),
                         )
                         if outcome.handoff is not None:
                             _write_dispatcher_handoff(

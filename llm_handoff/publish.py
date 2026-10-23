@@ -779,6 +779,7 @@ def publish_story(
     review_prompt: ReviewPromptFn | None = None,
     state_resolver: StateConflictResolver | None = None,
     handoff_path: Path | None = None,
+    ledger_paths: Sequence[Path] = (),
 ) -> PublishOutcome:
     """Merge or open a pull request for an audited story.
 
@@ -786,7 +787,9 @@ def publish_story(
     ``publish.branch_prefix``) identify the base branch for an epic close
     that has no story state. In ``pr`` mode they, with ``handoff_path``, also
     let a story the operator committed on the base branch move to a story
-    branch and publish (see :func:`_adopt_base_branch_story`).
+    branch and publish (see :func:`_adopt_base_branch_story`), carrying
+    unpublished commits that change only ``ledger_paths`` (the project state
+    and completed work files) with it.
     ``review_prompt`` asks the operator what to do
     when the Codex review fails or times out; without it the loop stops.
     ``state_resolver`` lets the planner resolve one base-branch merge per
@@ -837,6 +840,7 @@ def publish_story(
             handoff_content=handoff_content,
             frontmatter=frontmatter,
             log=log,
+            ledger_paths=ledger_paths,
         )
         if isinstance(adopted, PublishOutcome):
             return adopted
@@ -4671,6 +4675,7 @@ def _adopt_base_branch_story(
     handoff_content: str,
     frontmatter: HandoffRouting,
     log: LogFn,
+    ledger_paths: Sequence[Path] = (),
 ) -> StoryState | PublishOutcome | None:
     """Move a story the operator committed on the base branch to a story branch.
 
@@ -4690,6 +4695,14 @@ def _adopt_base_branch_story(
     story branch, as it does for every story. The working tree is not touched
     and nothing is pushed here; the normal publish continues from the story
     branch.
+
+    In ``pr`` mode a finalizer epic close stays on the local base branch
+    until the next story publishes it, so an operator story can sit on top
+    of one. HEAD may therefore also carry earlier unpublished non-merge
+    commits that each change only ``ledger_paths``. The audit still covered
+    only HEAD~1..HEAD: those commits come along as finalizer output that was
+    already approved, the same way they ride along with an implementer's
+    story branch, and the log says so.
 
     Returns the new story state, ``None`` with a warning when the checkout
     does not have that shape (the caller stops as before), or a stop when a
@@ -4740,13 +4753,29 @@ def _adopt_base_branch_story(
     if merges.stdout.strip():
         return keep(f"the commits since {remote}/{base_branch} include a merge commit")
     # With no story state the audit reviewed HEAD~1..HEAD, so a longer range
-    # would publish commits no one audited.
-    if listed.stdout.strip() != "1":
-        return keep(
-            f"HEAD is {listed.stdout.strip() or 'an unknown number of'} commit(s) "
-            f"ahead of {remote}/{base_branch}, not one, and the audit covered "
-            "only the last"
+    # would publish commits no one audited, unless the older ones are only
+    # finalizer ledger updates.
+    count = listed.stdout.strip()
+    ledger = sorted(
+        {normalize_repo_path(Path(path).as_posix()) for path in ledger_paths}
+    )
+    carried = 0
+    if count != "1":
+        ahead = (
+            f"HEAD is {count or 'an unknown number of'} commit(s) ahead of "
+            f"{remote}/{base_branch}, not one, and the audit covered only the last"
         )
+        if not count.isdigit() or int(count) < 2 or not ledger:
+            return keep(ahead)
+        outside = _commits_outside(repo_root, f"{fork_sha}..HEAD~1", ledger)
+        if outside is None:
+            return keep("git diff-tree failed")
+        if outside:
+            return keep(
+                f"{ahead}; commit(s) {', '.join(outside)} do not change only "
+                f"{_path_list(ledger)}"
+            )
+        carried = int(count) - 1
     handoff_commits = _unpushed_handoff_commits(
         repo_root, remote, base_branch, handoff_path
     )
@@ -4798,15 +4827,55 @@ def _adopt_base_branch_story(
         if moved_on not in ("", "0")
         else ""
     )
+    along = (
+        f" It also carries {carried} earlier unpublished commit(s) that change "
+        f"only {_path_list(ledger)}: finalizer output that was already "
+        "approved, which this audit did not review."
+        if carried
+        else ""
+    )
     log(
         "INFO",
         f"{audit} audit passed for a commit on `{base_branch}` with no story "
         f"branch ({_describe_commit(repo_root, 'HEAD')}). "
         f"Created `{branch}` at that commit with its story state, checked it "
         f"out, and moved `{base_branch}` to {remote}/{base_branch} "
-        f"({upstream_sha[:12]}); publishing it as a pull request.{since}",
+        f"({upstream_sha[:12]}); publishing it as a pull request.{along}{since}",
     )
     return state
+
+
+def _commits_outside(
+    repo_root: Path, revisions: str, allowed: Sequence[str]
+) -> list[str] | None:
+    """Return short SHAs of commits in ``revisions`` that change a path not in
+    ``allowed``, or change nothing. ``None`` when Git fails."""
+
+    listed = _git(repo_root, ["rev-list", "--reverse", revisions])
+    if listed.returncode != 0:
+        return None
+    outside = []
+    for sha in listed.stdout.split():
+        # -z keeps non-ASCII paths literal instead of quoted (core.quotePath).
+        changed = _git(
+            repo_root,
+            [
+                "diff-tree",
+                "-z",
+                "-r",
+                "--root",
+                "--no-commit-id",
+                "--name-only",
+                "--no-renames",
+                sha,
+            ],
+        )
+        if changed.returncode != 0:
+            return None
+        paths = [path for path in changed.stdout.split("\0") if path]
+        if not paths or any(path not in allowed for path in paths):
+            outside.append(sha[:12])
+    return outside
 
 
 def _stop(log: LogFn, message: str) -> PublishOutcome:

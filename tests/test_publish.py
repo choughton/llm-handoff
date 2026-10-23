@@ -3836,6 +3836,7 @@ def test_pr_epic_close_on_a_pushed_story_branch_without_state_stops(
 
 
 HANDOFF_PATH = Path("docs/handoff/HANDOFF.md")
+LEDGER_PATHS = (Path("PROJECT_STATE.md"), Path("COMPLETED_WORK.md"))
 
 
 def _operator_story_on_main(repo: Path) -> tuple[str, str]:
@@ -3868,6 +3869,7 @@ def _publish_operator_story(
         "base_branch": "main",
         "branch_prefix": "llm-handoff/",
         "handoff_path": HANDOFF_PATH,
+        "ledger_paths": LEDGER_PATHS,
     }
     options.update(kwargs)
     return _publish_pr(repo, gh, log, **options)
@@ -4166,6 +4168,126 @@ def test_an_operator_story_on_main_that_does_not_fit_still_stops(
         assert warnings == []
     else:
         assert len(warnings) == 1 and warning in warnings[0]
+
+
+EPIC_CLOSE_LEDGER = {
+    "PROJECT_STATE.md": "# Project State\n\nE1 closed.\n",
+    "COMPLETED_WORK.md": "# Completed Work\n\n- E1 closed.\n",
+}
+
+
+def _operator_story_on_an_epic_close(
+    repo: Path, earlier: dict[str, str]
+) -> tuple[str, str, str]:
+    """Commit ``earlier`` on main, unpushed, then an operator story on top.
+
+    The default ``earlier`` shape is a finalizer epic close that ``pr`` mode
+    left on the local base branch. Returns the remote main, the earlier
+    commit, and the operator commit.
+    """
+
+    upstream = _git(repo, "rev-parse", "HEAD")
+    _commit_all(repo, earlier, "Close E1")
+    earlier_sha = _git(repo, "rev-parse", "HEAD")
+    _remote_main, head = _operator_story_on_main(repo)
+    return upstream, earlier_sha, head
+
+
+def test_an_operator_story_on_a_local_epic_close_carries_it_into_the_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    upstream, epic_close, head = _operator_story_on_an_epic_close(
+        repo, EPIC_CLOSE_LEDGER
+    )
+    entries, log = _logs()
+
+    outcome = _publish_operator_story(repo, gh, log, head, auto_merge=False)
+
+    assert outcome.stop is True and outcome.exit_code == 0
+    assert _git(repo, "branch", "--show-current") == BRANCH
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _git(repo, "rev-parse", "HEAD~1") == epic_close
+    assert _git(repo, "rev-parse", "main") == upstream
+    assert _git(remote, "rev-parse", f"refs/heads/{BRANCH}") == head
+    assert _git(remote, "rev-parse", "refs/heads/main") == upstream
+    assert (repo / HANDOFF_PATH).read_text(encoding="utf-8") == "live handoff\n"
+    assert [call[:2] for call in _gh_calls(tmp_path)] == [
+        ["pr", "view"],
+        ["pr", "create"],
+    ]
+    assert not [message for level, message in entries if level == "WARN"]
+    assert any(
+        level == "INFO"
+        and f"Created `{BRANCH}`" in message
+        and "carries 1 earlier unpublished commit(s)" in message
+        and "this audit did not review" in message
+        for level, message in entries
+    )
+
+
+def test_a_non_ascii_ledger_path_counts_as_ledger_only(tmp_path: Path) -> None:
+    from llm_handoff import publish as publish_module
+
+    # Git quotes non-ASCII paths by default (core.quotePath).
+    _init(tmp_path)
+    _git(tmp_path, "config", "core.quotePath", "true")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _commit_all(tmp_path, {"docs/état.md": "E1 closed.\n"}, "Close E1")
+    _commit_all(tmp_path, {"notes.md": "not ledger\n"}, "Other")
+    other = _git(tmp_path, "rev-parse", "HEAD")
+
+    outside = publish_module._commits_outside(
+        tmp_path, f"{base}..HEAD", ["docs/état.md"]
+    )
+
+    assert outside == [other[:12]]
+
+
+@pytest.mark.parametrize(
+    ("earlier", "options", "warning"),
+    [
+        (
+            {"PROJECT_STATE.md": "E1 closed.\n", "notes.md": "not ledger\n"},
+            {},
+            "do not change only `COMPLETED_WORK.md`, `PROJECT_STATE.md`",
+        ),
+        (
+            {"PROJECT_STATE.md": "E1 closed.\n", HANDOFF_PATH.as_posix(): "old\n"},
+            {},
+            "do not change only",
+        ),
+        (EPIC_CLOSE_LEDGER, {"ledger_paths": ()}, "not one"),
+    ],
+    ids=["non-ledger-file", "handoff-file", "no-ledger-paths"],
+)
+def test_an_operator_story_on_an_unpublished_non_ledger_commit_still_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    earlier: dict[str, str],
+    options: dict[str, object],
+    warning: str,
+) -> None:
+    repo, remote, gh, env = _with_remote(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    upstream, _earlier, head = _operator_story_on_an_epic_close(repo, earlier)
+    entries, log = _logs()
+
+    outcome = _publish_operator_story(repo, gh, log, head, **options)
+
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert "no story state" in outcome.message
+    assert _gh_calls(tmp_path) == []
+    assert _git(repo, "branch", "--show-current") == "main"
+    assert _git(repo, "rev-parse", "main") == head
+    assert _git(remote, "rev-parse", "refs/heads/main") == upstream
+    assert not (repo / STATE_PATH).exists()
+    warnings = [message for level, message in entries if level == "WARN"]
+    assert len(warnings) == 1 and warning in warnings[0]
+    assert "2 commit(s) ahead of origin/main" in warnings[0]
 
 
 def _start_empty_story(repo: Path) -> None:
