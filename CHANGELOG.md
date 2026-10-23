@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Scanner commands can use a new `{changed_js_files}` placeholder: the
+  `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, and `.cts` subset of
+  `{changed_files}`. Like `{changed_py_files}`, a scanner that uses it is
+  skipped on claims where the list is empty, and `llm-handoff doctor` names
+  it in the scanner's condition. CONFIGURATION.md adds a Node.js scanner
+  example (gitleaks, semgrep, `npx --yes=false -- eslint`, and `npm audit`).
 - `publish.wait_for_reviewers` accepts `codex-local` for a repository the
   ChatGPT Codex connector cannot read. In `pr` mode with `auto_merge`, the
   dispatcher runs `codex exec --sandbox read-only review --base

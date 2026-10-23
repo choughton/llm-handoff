@@ -354,10 +354,12 @@ Scanner rules of thumb:
   whether the gate will run it.
 - Use semgrep only with a ruleset committed to the repository. `--config
   auto` downloads rules at run time, so results can change without a commit.
-- Scope gitleaks, semgrep, and bandit to the diff with `{diff_range}`,
-  `{changed_files}`, or `{changed_py_files}`. A scanner that uses a changed-
-  files placeholder is skipped when that list is empty. Run dependency audits
-  such as pip-audit unscoped.
+- Scope gitleaks, semgrep, bandit, and ESLint to the diff with
+  `{diff_range}`, `{changed_files}`, `{changed_py_files}`, or
+  `{changed_js_files}` (the JavaScript and TypeScript subset). A scanner that
+  uses a changed-files placeholder is skipped when that list is empty. Run
+  dependency audits such as pip-audit or npm audit unscoped.
+  [CONFIGURATION.md](CONFIGURATION.md#scanners) has a Node.js example.
 - Scanners get the same allowlisted environment as the Verification command.
   A token such as `SEMGREP_APP_TOKEN` or a proxy setting must be listed under
   `work_claim_env_passthrough`.

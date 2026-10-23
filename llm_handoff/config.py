@@ -131,7 +131,13 @@ def verification_whitespace_problem(text: str) -> str | None:
 
 SCANNER_TIMEOUT_MS = 300_000
 SCANNER_PLACEHOLDERS = frozenset(
-    {"diff_range", "changed_files", "changed_py_files", "repo_root"}
+    {
+        "diff_range",
+        "changed_files",
+        "changed_py_files",
+        "changed_js_files",
+        "repo_root",
+    }
 )
 _SCANNER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
