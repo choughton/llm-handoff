@@ -424,6 +424,9 @@ class InitResult:
     switched_from: str | None = None
     conflict_details: tuple[str, ...] = ()
     forced: tuple[str, ...] = ()
+    # The Linear MCP server name the written config selects, so `init` can
+    # name it in its onboarding steps. None in file mode.
+    tracker_mcp_server: str | None = None
 
 
 class InitWorkflowError(RuntimeError):
@@ -2088,6 +2091,7 @@ def _switch_tracker_mode(
         switched_from=old_mode,
         conflict_details=tuple(details),
         forced=tuple(forced),
+        tracker_mcp_server=new_server,
     )
     if conflicts and not dry_run:
         raise TrackerSwitchConflictError(result.conflicts, result.conflict_details)
@@ -2254,6 +2258,11 @@ def init_reference_workflow(
         verification_command=verification_command,
         antigravity_detected=antigravity_detected,
         tracker=TRACKER_NONE if tracker_config is None else TRACKER_LINEAR,
+        tracker_mcp_server=(
+            None
+            if tracker_config is None
+            else (tracker_config.mcp_server or DEFAULT_TRACKER_MCP_SERVER)
+        ),
     )
 
     if conflicts and not dry_run:

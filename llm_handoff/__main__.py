@@ -39,6 +39,7 @@ from llm_handoff.doctor import run_doctor
 from llm_handoff.init_workflow import (
     DEFAULT_TRACKER_MCP_SERVER,
     REFERENCE_MAPPING,
+    TRACKER_LINEAR,
     InitConflictError,
     InitResult,
     InitWorkflowError,
@@ -526,6 +527,7 @@ def init_command(
 
     if result.switched_from is not None:
         _echo_tracker_switch(result)
+        _echo_linear_onboarding(result)
         return
 
     action = "DRY RUN" if result.dry_run else "Initialized"
@@ -554,6 +556,37 @@ def init_command(
     _echo_candidates(result.candidates, result.verification_command)
     if result.antigravity_detected:
         _echo_antigravity_permissions(result.verification_command)
+    _echo_linear_onboarding(result)
+
+
+def _echo_linear_onboarding(result: InitResult) -> None:
+    """Print the Linear setup steps after an applied Linear init or switch.
+
+    Init only writes files: it configures no connector, authenticates
+    nothing, runs no provider CLI, and never contacts Linear. These lines
+    tell the operator what is left to do by hand.
+    """
+    if result.dry_run or result.tracker != TRACKER_LINEAR:
+        return
+    server = _terminal_safe(result.tracker_mcp_server or DEFAULT_TRACKER_MCP_SERVER)
+    root = _terminal_safe(str(result.target_root))
+    for line in (
+        "",
+        "Linear setup (full guide: docs/LINEAR.md in the llm-handoff repository):",
+        "  1. In every provider CLI that runs a role or fallback, configure "
+        f'and authenticate a Linear MCP server named "{server}". init did not '
+        "configure or authenticate any connector.",
+        f"  2. Change to the initialized repository root first: {root}",
+        "  3. Run: llm-handoff doctor",
+        "     It checks that each provider CLI's MCP config defines the "
+        "server. It does not prove that the connector authenticates.",
+        "  4. Optional: llm-handoff doctor --probe-tracker ENG-123",
+        "     Replace ENG-123 with a Linear issue you can access. The probe "
+        "launches one configured Claude role or fallback to read that issue, "
+        "so it needs at least one Claude role or fallback (a Codex-only setup "
+        "cannot run it), and it does not check any other provider's connector.",
+    ):
+        typer.echo(line)
 
 
 def _echo_antigravity_permissions(verification_command: str | None) -> None:

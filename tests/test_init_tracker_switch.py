@@ -936,6 +936,115 @@ def test_switch_errors_are_init_workflow_errors() -> None:
     assert issubclass(TrackerSwitchConflictError, InitConflictError)
 
 
+# LIN-12: Linear onboarding after an applied switch.
+
+ONBOARDING = "Linear setup (full guide: docs/LINEAR.md"
+_LINEAR_ARGS = ("--tracker", "linear", "--tracker-team", "ENG", "--tracker-project", "P")
+
+
+def _onboarding(stdout: str) -> list[str]:
+    lines = stdout.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(ONBOARDING)]
+    assert len(starts) == 1, stdout
+    return lines[starts[0] :]
+
+
+def _no_onboarding(result) -> None:
+    assert "Linear setup" not in result.stdout
+    assert "Linear setup" not in result.stderr
+    assert "--probe-tracker" not in result.output
+
+
+@pytest.mark.parametrize("server", [None, "team-linear"])
+def test_cli_switch_to_linear_prints_onboarding_after_the_summary(
+    tmp_path: Path, server: str | None
+) -> None:
+    _fresh(tmp_path, provider="claude")
+    extra = () if server is None else ("--tracker-mcp-server", server)
+    result = _invoke(str(tmp_path), *_LINEAR_ARGS, *extra)
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    section = _onboarding(result.stdout)
+    # The section follows the whole switch summary.
+    assert lines.index("Tracker: linear") < len(lines) - len(section)
+    assert lines[len(lines) - len(section) - 1] == ""
+    text = "\n".join(section)
+    assert f'Linear MCP server named "{server or "linear"}"' in text
+    assert "every provider CLI that runs a role or fallback" in text
+    assert f"repository root first: {tmp_path.resolve()}" in text
+    assert "Run: llm-handoff doctor" in text
+    assert "Optional: llm-handoff doctor --probe-tracker ENG-123" in text
+    assert "Replace ENG-123" in text
+    assert "Codex-only" in text
+    assert "does not prove" in text
+
+
+def test_cli_same_mode_linear_rerun_prints_onboarding(tmp_path: Path) -> None:
+    _fresh(tmp_path, provider="codex")
+    first = _invoke(str(tmp_path), *_LINEAR_ARGS, "--tracker-mcp-server", "lin")
+    assert first.exit_code == 0, first.output
+    rerun = _invoke(str(tmp_path), *_LINEAR_ARGS, "--tracker-mcp-server", "lin")
+    assert rerun.exit_code == 0, rerun.output
+    assert "Switched: tracker linear -> linear" in rerun.stdout
+    assert "Change: 0 file(s)" in rerun.stdout
+    assert 'Linear MCP server named "lin"' in "\n".join(_onboarding(rerun.stdout))
+
+
+def test_cli_switch_negative_paths_print_no_onboarding(tmp_path: Path) -> None:
+    _fresh(tmp_path, provider="claude")
+    dry = _invoke(str(tmp_path), *_LINEAR_ARGS, "--dry-run")
+    assert dry.exit_code == 0, dry.output
+    _no_onboarding(dry)
+
+    to_none_first = _invoke(str(tmp_path), "--tracker", "none")
+    assert to_none_first.exit_code == 0, to_none_first.output
+    _no_onboarding(to_none_first)
+
+    applied = _invoke(str(tmp_path), *_LINEAR_ARGS)
+    assert applied.exit_code == 0, applied.output
+    back = _invoke(str(tmp_path), "--tracker", "none")
+    assert back.exit_code == 0, back.output
+    assert "Switched: tracker linear -> none" in back.stdout
+    _no_onboarding(back)
+
+    refused = _invoke(str(tmp_path), "--provider", "claude", *_LINEAR_ARGS)
+    assert refused.exit_code == 2, refused.output
+    _no_onboarding(refused)
+
+
+def test_cli_switch_conflict_prints_no_onboarding(tmp_path: Path) -> None:
+    _fresh(tmp_path, provider="claude")
+    _edit_tools_line(tmp_path)
+    blocked = _invoke(str(tmp_path), *_LINEAR_ARGS)
+    assert blocked.exit_code == 1, blocked.output
+    assert "Tracker switch aborted: nothing was changed." in blocked.stderr
+    _no_onboarding(blocked)
+
+    forced = _invoke(str(tmp_path), *_LINEAR_ARGS, "--force")
+    assert forced.exit_code == 0, forced.output
+    assert "Left behind or replaced by --force: 1 file(s)" in forced.stdout
+    assert len(_onboarding(forced.stdout)) > 1
+
+
+def test_cli_switch_preflight_refusal_prints_no_onboarding(tmp_path: Path) -> None:
+    _fresh(tmp_path, provider="claude")
+    (tmp_path / HANDOFF).write_text(
+        "---\nnext_agent: backend\nreason: \"Busy.\"\nproducer: planner\n---\n",
+        encoding="utf-8",
+    )
+    result = _invoke(str(tmp_path), *_LINEAR_ARGS)
+    assert result.exit_code == 2, result.output
+    _no_onboarding(result)
+
+
+def test_switch_result_names_the_mcp_server(tmp_path: Path) -> None:
+    _fresh(tmp_path, provider="claude")
+    assert _switch(tmp_path, "linear").tracker_mcp_server == "linear"
+    custom = _switch(tmp_path, "linear", tracker_mcp_server="team-linear")
+    assert custom.tracker_mcp_server == "team-linear"
+    assert _switch(tmp_path, "none").tracker_mcp_server is None
+
+
 def test_validator_tools_line_round_trips_on_the_default_server(tmp_path: Path) -> None:
     _fresh(tmp_path, provider="claude")
     template_line = _tools_line(tmp_path, VALIDATOR_AGENT)

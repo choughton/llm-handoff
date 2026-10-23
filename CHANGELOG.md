@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An applied `init --tracker linear`, fresh or as a switch of an initialized
+  repository (a same-mode rerun included), now ends its output with a
+  `Linear setup` section (LIN-12): configure and authenticate the named
+  Linear MCP server (`--tracker-mcp-server`, default `linear`) in every
+  provider CLI that runs a role or fallback, change to the repository root,
+  run `llm-handoff doctor`, and optionally run
+  `llm-handoff doctor --probe-tracker ENG-123` with an accessible issue. It
+  says that doctor does not prove authentication and that the probe needs a
+  Claude role or fallback. Dry runs, refused or conflicting runs, and file
+  mode print no section; `init` still configures no connector and contacts
+  nothing. `InitResult` gains `tracker_mcp_server`. New `docs/LINEAR.md`
+  walks from init through connector setup, doctor, the probe, and the first
+  dispatcher run, linked from README and CONFIGURATION.
 - `init --tracker linear` and `init --tracker none` now switch an initialized
   repository between modes (LIN-14) instead of refusing it, after the LIN-13
   safety check. A switch plans every file first and changes only the managed
