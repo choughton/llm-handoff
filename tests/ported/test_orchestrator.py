@@ -5260,3 +5260,470 @@ def test_run_loop_console_ctrl_c_during_dispatch_stops_before_next_dispatch(
     assert console_controller.active_role is None
     assert sum(1 for _l, m in log_messages if m.startswith("--- Cycle")) == 1
     assert "- **auditor:** Audit Story 1." in handoff_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Verification preflight in the dispatcher (ACTIVE-4)
+# ---------------------------------------------------------------------------
+
+# Never on PATH, so the shared preflight always reports a missing executable.
+_PREFLIGHT_MISSING_TOOL = "llm-handoff-preflight-missing-tool"
+
+
+def _preflight_packet(
+    command: str,
+    *,
+    next_agent: str = "backend",
+    producer: str = "planner",
+) -> str:
+    return (
+        "---\n"
+        f"next_agent: {next_agent}\n"
+        'reason: "Planner assigns the story."\n'
+        'epic_id: "E1"\n'
+        'story_id: "S1"\n'
+        'story_title: "First story"\n'
+        f"producer: {producer}\n"
+        "---\n\n"
+        "# Handoff: S1 First story\n\n"
+        "## Work Packet\n\n"
+        "- **Objective:** Add a small feature.\n"
+        "- **Files in scope:** `src/app.py`\n"
+        "- **Files out of bounds:** none\n"
+        "- **Context:** None.\n"
+        "- **Verification command:**\n"
+        f"  - {command}\n"
+        "- **Expected next route:** auditor\n"
+    )
+
+
+def _preflight_lines(
+    log_messages: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    return [
+        (level, message)
+        for level, message in log_messages
+        if message.startswith("verification preflight:")
+    ]
+
+
+def _expected_preflight_warnings(config: Any, content: str) -> list[tuple[str, str]]:
+    doctor = importlib.import_module("llm_handoff.doctor")
+    expected = [
+        ("WARN", f"{check.name}: {check.message}")
+        for check in doctor.check_verification_preflight(config, content)
+        if check.status == "WARN"
+    ]
+    assert expected, "the fixture must produce a shared preflight warning"
+    return expected
+
+
+def _forbid_agents_and_verification(
+    orchestrator: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("dry-run must not launch an agent or run verification")
+
+    for name in (
+        "invoke_backend_role",
+        "invoke_frontend_role",
+        "invoke_planner_role",
+        "verify_work_claim",
+    ):
+        monkeypatch.setattr(orchestrator, name, unexpected)
+
+
+@pytest.mark.parametrize(
+    ("route", "command"),
+    [
+        # Missing executable (backend runs on Codex by default).
+        ("backend", f"{_PREFLIGHT_MISSING_TOOL} --check"),
+        # Denied provider grant: agy gets no interpreter grant by default.
+        ("frontend", "python -m pytest tests -q"),
+    ],
+)
+def test_startup_verification_preflight_logs_shared_warning_in_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    command: str,
+) -> None:
+    content = _preflight_packet(command, next_agent=route)
+    repo_root, handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    expected = _expected_preflight_warnings(config, content)
+    _forbid_agents_and_verification(orchestrator, monkeypatch)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    # Startup logs the shared lines once; the first cycle skips the same
+    # content instead of repeating them.
+    assert _preflight_lines(log_messages) == expected
+    startup_index = log_messages.index(expected[0])
+    first_cycle_index = next(
+        index
+        for index, (_level, message) in enumerate(log_messages)
+        if message.startswith("--- Cycle")
+    )
+    assert startup_index < first_cycle_index
+    if route == "frontend":
+        assert any("denied provider grant" in message for _l, message in expected)
+    else:
+        assert any("missing executable" in message for _l, message in expected)
+    assert any(message.startswith("[DRY RUN] Would") for _l, message in log_messages)
+    assert handoff_path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.parametrize("route", ["backend", "frontend"])
+def test_cycle_verification_preflight_runs_in_dry_run_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    content = _preflight_packet(
+        f"{_PREFLIGHT_MISSING_TOOL} --check", next_agent=route
+    )
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    expected = _expected_preflight_warnings(config, content)
+    _forbid_agents_and_verification(orchestrator, monkeypatch)
+    # Without the startup check, the dry-run preview must still report it:
+    # the per-cycle call sits before the dry-run early return.
+    monkeypatch.setattr(
+        orchestrator,
+        "_log_startup_verification_preflight",
+        lambda _config, _log: None,
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert _preflight_lines(log_messages) == expected
+    first_cycle_index = next(
+        index
+        for index, (_level, message) in enumerate(log_messages)
+        if message.startswith("--- Cycle")
+    )
+    assert log_messages.index(expected[0]) > first_cycle_index
+
+
+def test_verification_preflight_reports_rejected_gate_prefix_as_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = _preflight_packet("make check")
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config_module = importlib.import_module("llm_handoff.config")
+    config = config_module.DispatchConfig(
+        repo_root=repo_root,
+        pause_recovery="off",
+        dry_run=True,
+        audit={
+            "reviewers": ["quality"],
+            "security_opt_out_reason": "Tests cover the single-auditor route.",
+        },
+        enforce_work_packet=True,
+        verification_allowed_prefixes=("python -m pytest",),
+    )
+    expected = _expected_preflight_warnings(config, content)
+    _forbid_agents_and_verification(orchestrator, monkeypatch)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert any("rejected by gate prefix" in message for _l, message in expected)
+    assert _preflight_lines(log_messages) == expected
+
+
+@pytest.mark.parametrize("route", ["backend", "frontend"])
+def test_cycle_verification_preflight_checks_work_packet_written_mid_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    startup_content = _preflight_packet(
+        "python -m pytest tests -q", next_agent="planner", producer="user"
+    )
+    planner_packet = _preflight_packet(
+        f"{_PREFLIGHT_MISSING_TOOL} --mid-run", next_agent=route
+    )
+    repo_root, handoff_path = _write_repo(tmp_path, startup_content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    expected = _expected_preflight_warnings(config, planner_packet)
+    events: list[tuple[str, str]] = []
+
+    def fake_planner(path: Path, **_kwargs: Any) -> DispatchResult:
+        events.append(("DISPATCHED", "planner"))
+        path.write_text(planner_packet, encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_implementer(path: Path, **_kwargs: Any) -> DispatchResult:
+        events.append(("DISPATCHED", route))
+        path.write_text(
+            "---\n"
+            "next_agent: user\n"
+            'reason: "Need a decision."\n'
+            "status: blocked_missing_context\n"
+            f"producer: {route}\n"
+            "---\n\n"
+            "## user\n\nWhich tool should verify this?\n",
+            encoding="utf-8",
+        )
+        return _dispatch_result()
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(orchestrator, f"invoke_{route}_role", fake_implementer)
+    monkeypatch.setattr(
+        orchestrator, "validate_handoff", lambda *_args, **_kwargs: _validation_result()
+    )
+    monkeypatch.setattr(orchestrator, "_git_head", Mock(return_value="a" * 40))
+
+    exit_code = orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: events.append((level, message)),
+    )
+
+    assert exit_code == 0
+    # The warning names the planner's new packet, not the startup content,
+    # and the implementer still runs after it.
+    assert _preflight_lines(events) == expected
+    assert all("--mid-run" in message for _l, message in expected)
+    planner_index = events.index(("DISPATCHED", "planner"))
+    warning_index = events.index(expected[0])
+    implementer_index = events.index(("DISPATCHED", route))
+    assert planner_index < warning_index < implementer_index
+    assert "next_agent: user" in handoff_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Non-implementer route with a Work Packet.
+        _preflight_packet(
+            f"{_PREFLIGHT_MISSING_TOOL} --check", next_agent="auditor"
+        ),
+        # Implementer route without a Work Packet.
+        """---
+next_agent: backend
+reason: "Implement the story."
+producer: planner
+---
+
+## Next Step
+
+- **backend:** Implement the story.
+""",
+        # Implementer route whose Work Packet lists no Verification command.
+        _preflight_packet("placeholder-command").replace(
+            "  - placeholder-command\n", ""
+        ),
+        # Malformed frontmatter.
+        "---\nnext_agent: [\n---\n",
+    ],
+    ids=[
+        "auditor-route",
+        "no-work-packet",
+        "empty-verification-command",
+        "malformed-frontmatter",
+    ],
+)
+def test_verification_preflight_silent_without_implementer_work_packet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+) -> None:
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    doctor = importlib.import_module("llm_handoff.doctor")
+    assert doctor.check_verification_preflight(config, content) == []
+    _forbid_agents_and_verification(orchestrator, monkeypatch)
+    # An unroutable handoff asks the validator for a diagnosis; stub it.
+    monkeypatch.setattr(
+        orchestrator, "_run_unknown_route_validator", lambda *_a, **_k: None
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert _preflight_lines(log_messages) == []
+
+
+@pytest.mark.parametrize("route", ["backend", "frontend"])
+def test_cycle_verification_preflight_checks_operator_chosen_implementer(
+    tmp_path: Path,
+    route: str,
+) -> None:
+    # A handoff routed to `user` that the operator answers with `@backend` or
+    # `@frontend`: startup checks nothing and records no skip key, and the
+    # cycle checks the Work Packet for the role the operator dispatched.
+    content = _preflight_packet(
+        f"{_PREFLIGHT_MISSING_TOOL} --operator", next_agent="user", producer="user"
+    )
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    routed = _preflight_packet(f"{_PREFLIGHT_MISSING_TOOL} --operator", next_agent=route)
+    expected = _expected_preflight_warnings(config, routed)
+    log_messages: list[tuple[str, str]] = []
+
+    def log(level: str, message: str) -> None:
+        log_messages.append((level, message))
+
+    startup_key = orchestrator._log_startup_verification_preflight(config, log)
+
+    assert startup_key is None
+    assert _preflight_lines(log_messages) == []
+
+    pending = orchestrator._log_cycle_verification_preflight(
+        config, route, content, log, startup_sha=startup_key
+    )
+
+    assert pending is None
+    assert _preflight_lines(log_messages) == expected
+    assert all(f"{route} (" in message for _l, message in expected)
+
+
+def test_cycle_verification_preflight_skip_needs_same_route(
+    tmp_path: Path,
+) -> None:
+    # Startup checked this content for backend; an operator `@frontend` on
+    # the same content is a different launch and is still checked.
+    content = _preflight_packet(f"{_PREFLIGHT_MISSING_TOOL} --check")
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+
+    def log(level: str, message: str) -> None:
+        log_messages.append((level, message))
+
+    startup_key = orchestrator._log_startup_verification_preflight(config, log)
+    backend_lines = _preflight_lines(log_messages)
+
+    assert startup_key is not None
+    assert backend_lines == _expected_preflight_warnings(config, content)
+
+    pending = orchestrator._log_cycle_verification_preflight(
+        config, "frontend", content, log, startup_sha=startup_key
+    )
+
+    assert pending is None
+    frontend_lines = _preflight_lines(log_messages)[len(backend_lines) :]
+    assert frontend_lines == _expected_preflight_warnings(
+        config,
+        _preflight_packet(f"{_PREFLIGHT_MISSING_TOOL} --check", next_agent="frontend"),
+    )
+
+    log_messages.clear()
+    # The same role on the same content is skipped once.
+    assert (
+        orchestrator._log_cycle_verification_preflight(
+            config, "backend", content, log, startup_sha=startup_key
+        )
+        is None
+    )
+    assert _preflight_lines(log_messages) == []
+
+
+def test_verification_preflight_skips_manual_frontend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A manual frontend run never launches the configured frontend provider,
+    # so no provider-grant warning is logged for it.
+    content = _preflight_packet("python -m pytest tests -q", next_agent="frontend")
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True, use_manual_frontend=True)
+    _expected_preflight_warnings(config, content)
+    _forbid_agents_and_verification(orchestrator, monkeypatch)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert _preflight_lines(log_messages) == []
+    assert any(message.startswith("[DRY RUN] Would") for _l, message in log_messages)
+    assert (
+        orchestrator._log_cycle_verification_preflight(
+            config,
+            "frontend",
+            content,
+            lambda level, message: log_messages.append((level, message)),
+            startup_sha=None,
+        )
+        is None
+    )
+    assert _preflight_lines(log_messages) == []
+
+
+def test_verification_preflight_logs_pass_as_info_and_survives_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doctor = importlib.import_module("llm_handoff.doctor")
+    content = _preflight_packet("python -m pytest tests -q")
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True)
+    _forbid_agents_and_verification(orchestrator, monkeypatch)
+    passed = doctor.DoctorCheck(
+        "PASS", doctor.VERIFICATION_PREFLIGHT_CHECK_NAME, "backend (codex) can run it"
+    )
+    monkeypatch.setattr(
+        orchestrator, "check_verification_preflight", lambda *_a: [passed]
+    )
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert _preflight_lines(log_messages) == [
+        ("INFO", "verification preflight: backend (codex) can run it")
+    ]
+
+    def broken_check(*_args: Any) -> list[Any]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(orchestrator, "check_verification_preflight", broken_check)
+    log_messages.clear()
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    lines = _preflight_lines(log_messages)
+    assert lines and all(level == "WARN" for level, _m in lines)
+    assert "RuntimeError: boom" in lines[0][1]
+    assert any(message.startswith("[DRY RUN] Would") for _l, message in log_messages)
