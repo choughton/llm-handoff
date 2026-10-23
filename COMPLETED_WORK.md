@@ -150,6 +150,12 @@ split out of `PROJECT_STATE.md`.
   (PR #286, `3c4e37f`). Quality and security reviews passed with no
   findings. Verification: dispatcher ran the Work Packet pytest command and
   `git diff --check` at the audited SHA, exit 0.
+- **LINEAR-SWITCH** - mode switching and onboarding. LIN-12, the last story,
+  was approved at `7a57591544c251de89d8a2c900b4fa86a0b28cf1` and merged in
+  PR #290 (merge `28815f5`); LIN-13 `d35f9de` (preflight), LIN-14 `6538275`
+  (PR #289, `f7b8d17`). Quality and security reviews passed with no findings.
+  Verification: dispatcher ran the focused init tests and `git diff --check`
+  at the audited SHA, exit 0.
 
 ## Status History
 
@@ -338,11 +344,47 @@ Current Status entries for closed or finished work, moved unchanged from
   deny Linear writes) approved at `9f2526e`, PR #287 (`7bfd742`); LOOSE-ENDS
   closed.
 
+- **Active Epic (2026-10-23):** LINEAR-SWITCH (epic 11), picked by fit after
+  LOOSE-ENDS closed. LIN-11 was split into LIN-13 and LIN-14. LIN-13
+  (initialized-target safety preflight) approved at `d35f9de`. LIN-14
+  (tracker-mode switching) approved at `6538275`, PR #289 (`f7b8d17`). LIN-12
+  (Linear onboarding output and `docs/LINEAR.md`) approved at `7a57591`, PR
+  #290 (`28815f5`); LINEAR-SWITCH closed.
+
 ## Closed Epics
 
 Full sections of closed epics (intro, `Fit:` line, and story list), moved
 unchanged from the `PROJECT_STATE.md` backlog on 2026-10-21, most recent
 close first. The numbers are the epics' original labels.
+
+### 11. LINEAR-SWITCH - mode switching and onboarding
+
+Status: CLOSED. LIN-12 through LIN-14 are done; the last, LIN-12, was
+approved at `7a57591` and merged in PR #290 (`28815f5`).
+
+Fit: low urgency; only repositories that switch tracker modes need it.
+LINEAR-WORKFLOW is closed, so nothing blocks it.
+
+- LIN-13 (was LIN-11): Initialized-repository tracker switch safety
+  preflight. Before planning or writing any file for either `--tracker`
+  mode, `init` refuses an initialized target (one with `dispatch_config.yaml`)
+  whose config is a directory, a link, unreadable, invalid YAML, or fails
+  config validation; that has `.dispatch.lock` or dispatcher run-state files;
+  or whose configured handoff holds a `tracker_issue` lease, routes to an
+  implementing or reviewing role, or cannot be read as between assignments.
+  `--dry-run` and `--force` do not bypass it; the CLI exits 2 with one line.
+  Status: approved at `d35f9de`.
+- LIN-14 (was LIN-11): `init --tracker linear` and `init --tracker none`
+  switch an initialized repository between modes behind LIN-13's preflight;
+  `--dry-run`; conflicts; `--force` reports what is left behind; a round trip
+  is byte-identical. Status: approved at `6538275` and merged in PR #289
+  (`f7b8d17`).
+- LIN-12: After `init --tracker linear`, print connector setup steps, the
+  `doctor` command, and the probe command; add `docs/LINEAR.md`. Status:
+  approved at `7a57591544c251de89d8a2c900b4fa86a0b28cf1` and merged in PR #290
+  (`28815f5`); an applied Linear init or switch (same-mode reruns included)
+  prints a `Linear setup` section naming the MCP server, and
+  `docs/LINEAR.md` is linked from README and CONFIGURATION.
 
 ### 22. LOOSE-ENDS - security followups and loop papercuts
 
