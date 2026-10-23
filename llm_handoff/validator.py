@@ -37,6 +37,7 @@ from llm_handoff.text_io import read_dispatch_text
 from llm_handoff.work_claim import (
     EVIDENCE_LABEL_NOTE,
     evidence_sha_token,
+    extract_work_packet_section,
     work_packet_errors,
 )
 
@@ -144,6 +145,17 @@ _TRACKER_LEASE_FIELDS = ("tracker_issue", "tracker_url", "selection_basis")
 # the auditor reviewing it. Planner, user, validator, and finalizer routes are
 # exempt because they do not work a single tracker issue.
 _TRACKER_LEASE_ROUTES = {"backend", "frontend", "auditor"}
+# The bullet an implementer writes when the environment, not the code, made it
+# hand back `blocked_implementation_failure`:
+# `- **Environment refusal:** <permission rule | missing binary | no TTY>:
+# <the refusal text, quoted>`.
+_ENVIRONMENT_REFUSAL_BULLET_RE = re.compile(
+    r"(?i)^-[ \t]+\*\*Environment refusal:\*\*[ \t]*(.*)$"
+)
+_ENVIRONMENT_REFUSAL_VALUE_RE = re.compile(
+    r"(?i)^(permission rule|missing binary|no tty)[ \t]*:[ \t]*(\S.*)$"
+)
+_FENCE_LINE_RE = re.compile(r"^[ ]{0,3}(?:```|~~~)")
 _TASK_ASSIGNMENT_DEPRECATION_WARNING = (
     "task_assignment_deprecated: ## Task Assignment is a legacy alias; use a "
     "## Work Packet section with the six bold fields instead."
@@ -771,6 +783,7 @@ def validate_handoff(
     project_state_path: Path | None = None,
     dispatcher_authored: bool = False,
     chat_takeover: bool = False,
+    dispatched_handoff_content: str | None = None,
 ) -> ValidationResult:
     handoff_content = read_dispatch_text(handoff_path)
     project_state_content = (
@@ -790,6 +803,7 @@ def validate_handoff(
         project_state_content=project_state_content,
         dispatcher_authored=dispatcher_authored,
         chat_takeover=chat_takeover,
+        dispatched_handoff_content=dispatched_handoff_content,
     )
 
 
@@ -806,6 +820,7 @@ def validate_handoff_text(
     project_state_content: str | None = None,
     dispatcher_authored: bool = False,
     chat_takeover: bool = False,
+    dispatched_handoff_content: str | None = None,
 ) -> ValidationResult:
     """Validate a post-dispatch handoff.
 
@@ -827,6 +842,11 @@ def validate_handoff_text(
     waives no other check: in Linear mode a `producer: user` rewrite that
     assigns an implementer still needs `selection_basis`, as a planner's
     would.
+
+    `dispatched_handoff_content` is the handoff on disk when the role was
+    dispatched, the one it actually read. It can differ from
+    `prior_handoff_content`, which may be an older story-list baseline. It
+    feeds only the advisory `planner_redispatch_after_refusal` warning.
     """
 
     normalized_content = handoff_content.lstrip("\ufeff")
@@ -996,6 +1016,14 @@ def validate_handoff_text(
             previous_route=previous_route,
         )
     )
+    if dispatched_handoff_content is not None and frontmatter is not None:
+        warnings.extend(
+            _planner_redispatch_after_refusal_warnings(
+                frontmatter,
+                normalized_content,
+                dispatched_handoff_content,
+            )
+        )
     errors.extend(
         _scope_claim_errors(
             normalized_content,
@@ -1422,6 +1450,89 @@ def _rationalization_warnings(
         f"line {match.line_number}: `{match.phrase}`" for match in matches[:3]
     )
     return [f"RATIONALIZATION_DETECTED: {details}"]
+
+
+def _environment_refusal(handoff_content: str) -> tuple[str, str] | None:
+    """The first well-formed `Environment refusal` bullet outside code fences.
+
+    Returns the documented category and the refusal text. A bullet whose
+    value is empty, names no documented category, or has no refusal text
+    after the category is not a refusal report.
+    """
+
+    lines = handoff_content.lstrip("﻿").replace("\r\n", "\n").split("\n")
+    in_fence = False
+    for index, line in enumerate(lines):
+        if _FENCE_LINE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = _ENVIRONMENT_REFUSAL_BULLET_RE.match(line)
+        if match is None:
+            continue
+        parts = [match.group(1).strip()]
+        for follow in lines[index + 1 :]:
+            if not follow.strip():
+                continue
+            if not follow[0].isspace():
+                break
+            parts.append(follow.strip())
+        value = " ".join(part for part in parts if part)
+        value_match = _ENVIRONMENT_REFUSAL_VALUE_RE.match(value)
+        if value_match is None:
+            continue
+        return value_match.group(1), value_match.group(2).strip()
+    return None
+
+
+def _planner_redispatch_after_refusal_warnings(
+    current: HandoffRouting,
+    handoff_content: str,
+    dispatched_handoff_content: str,
+) -> list[str]:
+    """Warn when a planner re-sends an environment-refused Work Packet.
+
+    Applies only when the handoff the planner read is an implementer's
+    `blocked_implementation_failure` handback carrying an `Environment
+    refusal` bullet, the planner routes back to that same implementer, and
+    both handoffs carry a `## Work Packet` section with identical text. The
+    warning is advisory: routing and every error rule are unchanged.
+    """
+
+    if normalize_next_agent_value(current.producer) != "planner":
+        return []
+    target = normalize_next_agent_value(current.next_agent)
+    if target not in _IMPLEMENTER_ROUTES:
+        return []
+    try:
+        prior = parse_handoff_frontmatter_text(
+            dispatched_handoff_content.lstrip("﻿")
+        )
+    except HandoffFrontmatterError:
+        return []
+    if prior is None:
+        return []
+    if normalize_next_agent_value(prior.producer) != target:
+        return []
+    if prior.status != HandoffStatus.BLOCKED_IMPLEMENTATION_FAILURE.value:
+        return []
+    refusal = _environment_refusal(dispatched_handoff_content)
+    if refusal is None:
+        return []
+    prior_packet = extract_work_packet_section(dispatched_handoff_content)
+    current_packet = extract_work_packet_section(handoff_content)
+    if prior_packet is None or current_packet is None:
+        return []
+    if prior_packet != current_packet:
+        return []
+    category, text = refusal
+    return [
+        "planner_redispatch_after_refusal: the planner routes the unchanged "
+        f"Work Packet back to `{target}`, whose handback was blocked by an "
+        f"environment refusal ({category}: {_clip(text)}); the same refusal "
+        "will stop it again unless the Work Packet or the environment changes."
+    ]
 
 
 def _frontmatter_status(frontmatter: HandoffRouting | None) -> HandoffStatus | None:

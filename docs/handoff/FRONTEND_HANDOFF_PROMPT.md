@@ -103,3 +103,11 @@ Rules:
   - Work that needs re-scoping, including a failed work-claim gate:
     `status: blocked_implementation_failure` with `next_agent: planner`.
   See the Escalation Protocol in `docs/handoff/HANDBOOK.md`.
+- If the environment, not the code, caused a
+  `blocked_implementation_failure` handback (a permission rule refused a
+  command, a binary is missing, or a command needed a TTY), add exactly one
+  bullet in this shape to the handback body:
+  `- **Environment refusal:** <permission rule | missing binary | no TTY>: <the refusal text, quoted>`.
+  Use one of the three category names as written and quote the refusal text
+  the shell or tool returned. A failing test is not an environment refusal,
+  and a gate-deferred `ready_for_review` handback does not need this bullet.

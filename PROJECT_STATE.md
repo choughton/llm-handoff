@@ -15,8 +15,10 @@ history.
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
   preflight in `doctor`) is approved at `2de1b44`. ACTIVE-4 (verification
   preflight in the dispatcher) is approved at `d77b61f` and merged in PR #276
-  (`f7625f8`). ACTIVE-5 (test scope policy) is implemented and awaits audit;
-  ACTIVE-6 through ACTIVE-8 remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
+  (`f7625f8`). ACTIVE-5 (test scope policy) is approved at `98c3118` and
+  merged in PR #280 (`0953fc3`). ACTIVE-6 (environment refusal bullet and
+  validator warning) is implemented and awaits audit; ACTIVE-7 and ACTIVE-8
+  remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
   merged in PR #272 (`4e380f9`).
 - **Parked Epic:** None.
 - **Other Open Epics:** LOOSE-ENDS (epic 22) is unblocked and needs no
@@ -277,8 +279,10 @@ the `(was ...)` notes give the old IDs. None had started.
   dispatcher-commit test for new files under a directory entry are reused,
   and one `verify_work_claim` case adds a new test under `tests/`. The
   pattern stays advisory with existing status gating; no assignment-time
-  detector activation. Progress: implemented 2026-10-22, awaiting audit;
-  the handbook carries a Tests In Files In Scope section.
+  detector activation. Progress: implemented 2026-10-22; the handbook
+  carries a Tests In Files In Scope section. Approved 2026-10-22 at
+  `98c311812f777ad558706381316ebe84122f38b6` and merged in PR #280
+  (`0953fc32804a6b4b1adc1d27e53f7c91b5a0ece4`).
 - ACTIVE-6 (was part of ACTIVE-4): Environment refusal bullet and validator
   warning. An implementer that hands back `blocked_implementation_failure`
   for an environment reason writes one bullet in the handback body,
@@ -304,7 +308,10 @@ the `(was ...)` notes give the old IDs. None had started.
   validator argument is `previous_agent`, not the stale `previous_route`
   reference above; the story still checks that the prior content is the
   actual implementer handback rather than assuming the story baseline
-  supplies it.
+  supplies it. Progress: implemented 2026-10-22, awaiting audit; the
+  validator takes the handoff the planner was dispatched on as
+  `dispatched_handoff_content`, separate from the story-list baseline, and
+  the orchestrator passes it on post-dispatch validation and producer repair.
 - ACTIVE-7 (was part of ACTIVE-4): No pointless re-dispatch, planner side.
   When the planner receives `blocked_implementation_failure` whose handback
   carries the ACTIVE-6 bullet, it must not re-dispatch the same role with an

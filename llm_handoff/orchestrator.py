@@ -3006,6 +3006,9 @@ def _run_loop_cycles(
                 tracker_provider=config.tracker.provider,
                 prior_handoff_content=story_check_baseline,
                 project_state_path=config.project_state_full_path,
+                # The handoff this dispatch read, which the story-list
+                # baseline above may not be.
+                dispatched_handoff_content=handoff_content,
             )
             if validation_result.verdict != "NO":
                 # HUMAN-2: only a handoff that passes full validation ends a
@@ -3101,6 +3104,7 @@ def _run_loop_cycles(
                     previous_agent=previous_agent,
                     log=log_fn,
                     story_check_baseline=story_check_baseline,
+                    dispatched_handoff_content=handoff_content,
                 )
                 if repair_attempt.attempted:
                     story_baseline = _next_story_baseline(
@@ -4493,6 +4497,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
     previous_agent: str,
     log: LogFn,
     story_check_baseline: str | None = None,
+    dispatched_handoff_content: str | None = None,
 ) -> HandoffRepairAttempt:
     handoff_content = _read_required_text(config.handoff_full_path) or ""
     if not _is_repairable_handoff_hygiene_failure(
@@ -4617,6 +4622,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         # against the rewrite that dropped the stories.
         prior_handoff_content=story_check_baseline,
         project_state_path=config.project_state_full_path,
+        dispatched_handoff_content=dispatched_handoff_content,
     )
     if repaired_validation.verdict == "NO":
         _log(

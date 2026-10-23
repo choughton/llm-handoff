@@ -5727,3 +5727,134 @@ def test_verification_preflight_logs_pass_as_info_and_survives_errors(
     assert lines and all(level == "WARN" for level, _m in lines)
     assert "RuntimeError: boom" in lines[0][1]
     assert any(message.startswith("[DRY RUN] Would") for _l, message in log_messages)
+
+
+_REFUSAL_WORK_PACKET = """## Work Packet
+
+- **Objective:** Reject empty widget names.
+- **Files in scope:** src/widgets.py, tests/
+- **Files out of bounds:** frontend/
+- **Context:** Keep the `WidgetError` contract.
+- **Verification command:** python -m pytest tests/test_widgets.py -q
+- **Expected next route:** auditor
+"""
+
+
+def _refusal_story_handoff(
+    *,
+    next_agent: str,
+    producer: str,
+    remaining: list[str],
+    status: str | None = None,
+    body: str,
+) -> str:
+    lines = [
+        "---",
+        f"next_agent: {next_agent}",
+        'reason: "Widget story."',
+        "epic_id: WIDGETS",
+        "story_id: S1",
+        "story_title: Reject empty widget names",
+        "remaining_stories:",
+        *(f"  - {story}" for story in remaining),
+    ]
+    if status is not None:
+        lines.append(f"status: {status}")
+    lines.extend([f"producer: {producer}", "---", "", body])
+    return "\n".join(lines)
+
+
+def test_run_loop_checks_planner_redispatch_against_the_handback_it_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The backend handback drops S3, so the planner's story-list baseline is
+    # the original assignment; the refusal warning must still read the
+    # backend handback the planner was dispatched on.
+    assignment = _refusal_story_handoff(
+        next_agent="backend",
+        producer="planner",
+        remaining=["S2 Second story", "S3 Third story"],
+        body=_REFUSAL_WORK_PACKET,
+    )
+    handback = _refusal_story_handoff(
+        next_agent="planner",
+        producer="backend",
+        status="blocked_implementation_failure",
+        remaining=["S2 Second story"],
+        body=(
+            "# Backend Handback\n\n"
+            + _REFUSAL_WORK_PACKET
+            + "\n## Blocker\n\n"
+            '- **Environment refusal:** permission rule: "Bash(python -m pytest '
+            'tests/test_widgets.py -q) is not allowed"\n'
+        ),
+    )
+    redispatch = _refusal_story_handoff(
+        next_agent="backend",
+        producer="planner",
+        remaining=["S2 Second story", "S3 Third story"],
+        body=_REFUSAL_WORK_PACKET,
+    )
+    repo_root, handoff_path = _write_repo(
+        tmp_path,
+        assignment,
+        project_state_content="# PROJECT STATE\n\n- S1: One\n- S2: Two\n- S3: Three\n",
+    )
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+    planner_calls: list[dict[str, Any]] = []
+    real_validate = orchestrator.validate_handoff
+
+    def fake_backend(path: Path, **_kwargs: object) -> DispatchResult:
+        path.write_text(handback, encoding="utf-8")
+        return _dispatch_result()
+
+    def fake_planner(path: Path, **_kwargs: object) -> DispatchResult:
+        path.write_text(redispatch, encoding="utf-8")
+        return _dispatch_result()
+
+    def spy(path: Path, previous_agent: str, **kwargs: Any) -> ValidationResult:
+        if previous_agent == "backend":
+            # A story-list failure with no route sends the planner in next and
+            # keeps the assignment as the story-list baseline.
+            return ValidationResult(
+                verdict="NO",
+                warnings=[],
+                errors=[
+                    "remaining_stories_dropped: the rewrite dropped `S3 Third story`.",
+                    "routing_instruction_missing: test-only failure.",
+                ],
+                routing_instruction=None,
+            )
+        result = real_validate(path, previous_agent, **kwargs)
+        planner_calls.append({"kwargs": kwargs, "result": result})
+        return result
+
+    monkeypatch.setattr(orchestrator, "invoke_backend_role", fake_backend)
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", fake_planner)
+    monkeypatch.setattr(orchestrator, "validate_handoff", spy)
+
+    orchestrator.run_loop(
+        config,
+        max_cycles=2,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert len(planner_calls) == 1
+    kwargs = planner_calls[0]["kwargs"]
+    assert kwargs["prior_handoff_content"] == assignment
+    assert kwargs["dispatched_handoff_content"] == handback
+    result = planner_calls[0]["result"]
+    assert [
+        warning
+        for warning in result.warnings
+        if warning.startswith("planner_redispatch_after_refusal:")
+    ]
+    assert not any(
+        "planner_redispatch_after_refusal" in error for error in result.errors
+    )
+    assert any(
+        "planner_redispatch_after_refusal" in message for _l, message in log_messages
+    )

@@ -681,6 +681,33 @@ def test_helper_files_describe_the_gate_verified_handback(
         assert phrase in content, (relative_path, phrase)
 
 
+ENVIRONMENT_REFUSAL_BULLET = (
+    "`- **Environment refusal:** <permission rule | missing binary | no TTY>: "
+    "<the refusal text, quoted>`"
+)
+ENVIRONMENT_REFUSAL_FILES = (
+    "docs/handoff/BACKEND_HANDOFF_PROMPT.md",
+    "docs/handoff/FRONTEND_HANDOFF_PROMPT.md",
+    *GATE_HANDBACK_HELPER_FILES,
+)
+
+
+@pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
+@pytest.mark.parametrize("relative_path", ENVIRONMENT_REFUSAL_FILES)
+def test_implementer_files_require_the_environment_refusal_bullet(
+    root: Path, relative_path: str
+) -> None:
+    content = " ".join((root / relative_path).read_text(encoding="utf-8").split())
+
+    assert ENVIRONMENT_REFUSAL_BULLET in content, relative_path
+    assert "a binary is missing, or a command needed a TTY" in content, relative_path
+    assert "A failing test is not an environment refusal" in content, relative_path
+    # The bullet is for blocked handbacks only, not gate-deferred claims.
+    assert (
+        "a gate-deferred `ready_for_review` handback does not need this bullet"
+    ) in content, relative_path
+
+
 @pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
 @pytest.mark.parametrize(
     "relative_path",

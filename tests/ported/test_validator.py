@@ -2550,3 +2550,234 @@ def test_sha_missing_counts_any_hex_token_outside_a_git_repo(tmp_path: Path) -> 
     result = validate_handoff(handoff_path, "backend", prior_handoff_sha="0" * 64)
 
     assert not _errors_with_prefix(result, "sha_missing:")
+
+
+# ACTIVE-6: a planner that sends an environment-refused Work Packet back
+# unchanged gets an advisory warning.
+
+_REDISPATCH_WARNING = "planner_redispatch_after_refusal:"
+_REFUSED_WORK_PACKET = """## Work Packet
+
+- **Objective:** Reject empty `name` values in `create_widget`.
+- **Files in scope:** src/foo/bar.py, tests/test_bar.py
+- **Files out of bounds:** src/foo/api.py, frontend/
+- **Context:** Preserve the existing `WidgetError` contract.
+- **Verification command:** python -m pytest tests/test_bar.py -q
+- **Expected next route:** auditor
+"""
+_REFUSAL_TEXTS = {
+    "permission rule": '"Bash(python -m pytest tests/test_bar.py -q) is not in the allowlist"',
+    "missing binary": '"python: command not found"',
+    "no TTY": '"the input device is not a TTY"',
+}
+
+
+def _refusal_handback(
+    *,
+    producer: str = "backend",
+    status: str = "blocked_implementation_failure",
+    next_agent: str = "planner",
+    refusal: str | None = "permission rule",
+    refusal_line: str | None = None,
+    work_packet: str | None = _REFUSED_WORK_PACKET,
+) -> str:
+    if refusal_line is None:
+        refusal_line = (
+            f"- **Environment refusal:** {refusal}: {_REFUSAL_TEXTS[refusal]}\n"
+            if refusal is not None
+            else "- Tests failed: 2 failed, 10 passed.\n"
+        )
+    return _with_frontmatter(
+        f"""# {producer} Handback
+
+{work_packet or ""}
+## Blocker
+
+{refusal_line}""",
+        next_agent=next_agent,
+        reason='"Blocked; re-scope requested."',
+        status=status,
+        producer=producer,
+    )
+
+
+def _redispatch(
+    next_agent: str = "backend",
+    *,
+    producer: str = "planner",
+    work_packet: str | None = _REFUSED_WORK_PACKET,
+) -> str:
+    return _with_frontmatter(
+        f"""# Handoff: Reject empty widget names
+
+{work_packet or ""}
+## Next Step
+
+- **{next_agent}:** Implement the validation and route to auditor.
+""",
+        next_agent=next_agent,
+        reason='"Re-dispatch the widget story."',
+        producer=producer,
+    )
+
+
+def _redispatch_warnings(result: validator.ValidationResult) -> list[str]:
+    return [w for w in result.warnings if w.startswith(_REDISPATCH_WARNING)]
+
+
+@pytest.mark.parametrize("role", ["backend", "frontend"])
+@pytest.mark.parametrize("category", ["permission rule", "missing binary", "no TTY"])
+def test_planner_redispatch_after_refusal_warns_for_an_unchanged_work_packet(
+    role: str, category: str
+) -> None:
+    current = _redispatch(role)
+    baseline = validator.validate_handoff_text(current, "planner")
+
+    result = validator.validate_handoff_text(
+        current,
+        "planner",
+        dispatched_handoff_content=_refusal_handback(
+            producer=role, refusal=category
+        ),
+    )
+
+    warnings = _redispatch_warnings(result)
+    assert len(warnings) == 1
+    assert f"`{role}`" in warnings[0]
+    assert category in warnings[0]
+    # Advisory only: no new error and the route is unchanged.
+    assert result.errors == baseline.errors == []
+    assert result.routing_instruction == role
+    assert not any(_REDISPATCH_WARNING in error for error in result.errors)
+
+
+def test_planner_redispatch_after_refusal_reads_a_wrapped_refusal_bullet() -> None:
+    handback = _refusal_handback(
+        refusal_line=(
+            "- **Environment refusal:** missing binary:\n"
+            '  "pytest: command not found"\n'
+        )
+    )
+
+    result = validator.validate_handoff_text(
+        _redispatch(), "planner", dispatched_handoff_content=handback
+    )
+
+    assert len(_redispatch_warnings(result)) == 1
+
+
+@pytest.mark.parametrize(
+    ("current", "previous_agent", "dispatched"),
+    [
+        pytest.param(
+            _redispatch(
+                work_packet=_REFUSED_WORK_PACKET.replace(
+                    "tests/test_bar.py -q", "tests/test_bar.py -q --no-header"
+                )
+            ),
+            "planner",
+            _refusal_handback(),
+            id="changed-work-packet",
+        ),
+        pytest.param(
+            _redispatch("frontend"),
+            "planner",
+            _refusal_handback(producer="backend"),
+            id="different-target-role",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(refusal=None),
+            id="ordinary-test-failure-no-bullet",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(refusal_line="- **Environment refusal:**\n"),
+            id="empty-bullet",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(
+                refusal_line="- **Environment refusal:** permission rule:\n"
+            ),
+            id="category-without-refusal-text",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(
+                refusal_line="- **Environment refusal:** flaky network: \"timeout\"\n"
+            ),
+            id="undocumented-category",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(
+                refusal_line=(
+                    "```markdown\n"
+                    '- **Environment refusal:** permission rule: "quoted template"\n'
+                    "```\n"
+                )
+            ),
+            id="bullet-inside-code-fence",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(work_packet=None),
+            id="prior-work-packet-missing",
+        ),
+        pytest.param(
+            _redispatch(work_packet=None),
+            "planner",
+            _refusal_handback(),
+            id="current-work-packet-missing",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(producer="auditor"),
+            id="non-implementer-prior-producer",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(status="blocked_missing_context", next_agent="user"),
+            id="prior-status-blocked-missing-context",
+        ),
+        pytest.param(
+            _redispatch(),
+            "planner",
+            _refusal_handback(status="ready_for_review", next_agent="auditor"),
+            id="gate-deferred-ready-for-review",
+        ),
+        pytest.param(
+            _redispatch(producer="tpm"),
+            "tpm",
+            _refusal_handback(),
+            id="non-planner-current-producer",
+        ),
+    ],
+)
+def test_planner_redispatch_after_refusal_stays_silent(
+    current: str, previous_agent: str, dispatched: str
+) -> None:
+    result = validator.validate_handoff_text(
+        current, previous_agent, dispatched_handoff_content=dispatched
+    )
+
+    assert _redispatch_warnings(result) == []
+
+
+def test_planner_redispatch_after_refusal_needs_the_dispatched_handoff() -> None:
+    # Without the handoff the planner read, prior_handoff_content (the
+    # story-list baseline) is never used for the warning.
+    result = validator.validate_handoff_text(
+        _redispatch(), "planner", prior_handoff_content=_refusal_handback()
+    )
+
+    assert _redispatch_warnings(result) == []
