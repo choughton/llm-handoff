@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `reconcile_user_escalations: true` now covers later cycles too (RECON-2).
+  An eligible non-planner user escalation gets its one bounded planner pass on
+  any cycle, at most once per handoff content SHA per run; the run-local guard
+  survives pause-recovery resets, so the same escalation coming back after
+  progress pauses without a second pass, while a distinct eligible escalation
+  gets its own. A planner-produced user route, including the planner's
+  reconfirmation, pauses with no pass and a pause reason that says
+  `reconciled by planner`. In Linear mode the pass instruction tells the
+  planner to post `user_attention_cleared` before advancing from a leased
+  issue whose latest evidence comment is `user_attention_requested`, and to
+  post nothing when it reconfirms the blocker. A dry run still dispatches,
+  records, and counts nothing. `CONFIGURATION.md`, both shipped configs, the
+  planner prompt, and `HANDBOOK.md` document the option.
 - New top-level `reconcile_user_escalations` config key (default `false`,
   RECON-1). When `true`, a first-cycle `next_agent: user` handoff with
   `status: escalate_to_user` or `blocked_missing_context` and a non-empty

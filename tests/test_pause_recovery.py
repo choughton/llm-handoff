@@ -829,25 +829,27 @@ def test_run_validator_returns_parsed_result_or_none(
     assert orchestrator._run_unknown_route_validator(config, log) is None
 
 
-# --- reconcile_user_escalations (RECON-1: first cycle only) ---------------
+# --- reconcile_user_escalations (RECON-1 and RECON-2) ---------------------
 
 
 def _user_escalation(
     *,
     producer: str | None = "backend",
     status: str | None = "escalate_to_user",
+    question: str = "Which database should RECON use?",
 ) -> str:
     lines = ["---", "next_agent: user", 'reason: "Escalation fixture."']
     if status is not None:
         lines.append(f"status: {status}")
     if producer is not None:
         lines.append(f"producer: {producer}")
-    lines.extend(["---", "", "## Question", "", "Which database should RECON use?", ""])
+    lines.extend(["---", "", "## Question", "", question, ""])
     return "\n".join(lines)
 
 
 RECONCILE_LOG = "Reconciling a user escalation from backend before pausing"
 COUNTER_PREFIX = "user_escalation_reconciliations="
+RECONCILED_BY_PLANNER = "reconciled by planner"
 
 
 def _info_messages(harness: _Harness) -> list[str]:
@@ -924,9 +926,13 @@ def test_first_cycle_user_escalation_gets_one_planner_reconciliation(
     assert "Routing instruction: planner" in infos
     # The planner's user route pauses without another reconciliation.
     assert _escalation_paused(harness)
+    assert RECONCILED_BY_PLANNER in harness.pause_messages()[-1]
+    # Outside Linear mode the instruction asks for no tracker operation.
+    assert "user_attention" not in instruction
+    assert "Linear" not in instruction
 
 
-def test_reconciliation_that_clears_the_blocker_advances_the_loop(
+def test_recurring_escalation_after_progress_gets_no_second_pass(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -935,8 +941,9 @@ def test_reconciliation_that_clears_the_blocker_advances_the_loop(
         monkeypatch,
         handoff_path,
         planner_writes=[BACKEND_HANDOFF],
-        # The backend escalates again on a later cycle; RECON-1 does not
-        # reconcile later cycles, so the dispatcher pauses.
+        # The backend's normal dispatch passes validation, which resets the
+        # pause-recovery streak, then writes the same escalation content
+        # again. That content SHA already had its pass in this run.
         backend_writes=[_user_escalation()],
     )
 
@@ -947,7 +954,126 @@ def test_reconciliation_that_clears_the_blocker_advances_the_loop(
     infos = _info_messages(harness)
     assert infos.count(RECONCILE_LOG) == 1
     assert infos.count(f"{COUNTER_PREFIX}1") == 1
+    assert not any(message == f"{COUNTER_PREFIX}2" for message in infos)
     assert _escalation_paused(harness)
+    # A non-planner escalation pauses with the ordinary reason.
+    assert RECONCILED_BY_PLANNER not in harness.pause_messages()[-1]
+
+
+@pytest.mark.parametrize("status", ["escalate_to_user", "blocked_missing_context"])
+def test_later_cycle_user_escalation_gets_one_planner_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    handoff_path = _write_repo(tmp_path, BACKEND_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        # The planner reconfirms the blocker with the same question.
+        planner_writes=[_user_escalation(producer="planner", status=status)],
+        backend_writes=[_user_escalation(status=status)],
+    )
+
+    assert harness.run(_config(tmp_path, reconcile_user_escalations=True)) == 0
+
+    assert harness.backend_calls == 1
+    assert len(harness.planner_instructions) == 1
+    instruction = harness.planner_instructions[0]
+    assert instruction is not None
+    assert f"`status: {status}`" in instruction
+    assert "may be stale" in instruction
+    assert "route to user with the same question" in instruction
+    infos = _info_messages(harness)
+    assert infos.count(RECONCILE_LOG) == 1
+    assert infos.count(f"{COUNTER_PREFIX}1") == 1
+    assert not any(message == f"{COUNTER_PREFIX}2" for message in infos)
+    # The planner's reconfirmation pauses with no further pass.
+    assert _escalation_paused(harness)
+    assert RECONCILED_BY_PLANNER in harness.pause_messages()[-1]
+
+
+def test_distinct_later_escalation_gets_its_own_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, _user_escalation())
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        planner_writes=[
+            # The first pass finds the blocker cleared and advances.
+            BACKEND_HANDOFF,
+            # The second pass reconfirms the new blocker.
+            _user_escalation(
+                producer="planner", question="Which cache should RECON use?"
+            ),
+        ],
+        backend_writes=[
+            _user_escalation(
+                status="blocked_missing_context",
+                question="Which cache should RECON use?",
+            )
+        ],
+    )
+
+    assert harness.run(_config(tmp_path, reconcile_user_escalations=True)) == 0
+
+    assert harness.backend_calls == 1
+    assert len(harness.planner_instructions) == 2
+    infos = _info_messages(harness)
+    assert infos.count(RECONCILE_LOG) == 2
+    # The live counter reflects each actual reconciliation attempt.
+    assert infos.count(f"{COUNTER_PREFIX}1") == 1
+    assert infos.count(f"{COUNTER_PREFIX}2") == 1
+    assert not any(message == f"{COUNTER_PREFIX}3" for message in infos)
+    assert _escalation_paused(harness)
+    assert RECONCILED_BY_PLANNER in harness.pause_messages()[-1]
+
+
+def test_planner_user_route_pause_reason_only_with_the_option_on(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff_path = _write_repo(tmp_path, _user_escalation(producer="planner"))
+    harness = _Harness(monkeypatch, handoff_path, planner_writes=[])
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.planner_instructions == []
+    assert RECONCILED_BY_PLANNER not in harness.pause_messages()[-1]
+
+
+def test_reconciliation_instruction_adds_linear_user_attention_rule(
+    tmp_path: Path,
+) -> None:
+    build = orchestrator._user_escalation_reconciliation_instruction
+    linear = build(
+        _tracker_config(tmp_path, "linear"),
+        producer="backend",
+        status="escalate_to_user",
+    )
+    plain = build(_config(tmp_path), producer="backend", status="escalate_to_user")
+
+    # The original stale-blocker checks and same-question rule stay.
+    for text in (linear, plain):
+        assert "may be stale" in text
+        assert "Git state" in text
+        assert "open pull requests" in text
+        assert "route to user with the same question" in text
+        assert "next dispatchable role" in text
+        assert text.isascii()
+    assert linear.startswith(plain)
+    assert "user_attention" not in plain
+    extra = linear[len(plain) :]
+    assert "leased issue" in extra
+    assert "latest evidence comment is `user_attention_requested`" in extra
+    # Clear before advancing; nothing on reconfirmation.
+    requested = extra.index("`user_attention_requested`")
+    cleared = extra.index("post `user_attention_cleared`")
+    advance = extra.index("before you rewrite the handoff to the next role")
+    assert requested < cleared < advance
+    assert "If you reconfirm the blocker, post nothing" in extra
 
 
 def test_reconciliation_runs_with_pause_recovery_off(
@@ -1010,6 +1136,10 @@ def test_ineligible_user_routes_pause_without_reconciliation(
         message.startswith("Reconciling a user escalation")
         for message in _info_messages(harness)
     )
+    # Only a planner-produced user route names the planner in the reason.
+    assert (RECONCILED_BY_PLANNER in harness.pause_messages()[-1]) == (
+        "producer: planner" in handoff
+    )
 
 
 def test_dry_run_prints_the_reconciliation_without_dispatching(
@@ -1028,6 +1158,8 @@ def test_dry_run_prints_the_reconciliation_without_dispatching(
     assert "Routing instruction: planner" in messages
     assert "[DRY RUN] Would dispatch planner" in messages
     assert not any(message.startswith(COUNTER_PREFIX) for message in messages)
+    # Nothing was dispatched, so the handoff is unchanged.
+    assert handoff_path.read_text(encoding="utf-8") == _user_escalation()
 
 
 def _reconcile_config(tmp_path: Path, **overrides: Any) -> DispatchConfig:
@@ -1051,40 +1183,73 @@ def _user_decision(source: str) -> orchestrator.RoutingDecision:
 
 
 def test_reconciliation_eligibility_rules(tmp_path: Path) -> None:
-    eligible = orchestrator._user_escalation_reconciliation_producer
+    def eligible(
+        config: DispatchConfig,
+        decision: orchestrator.RoutingDecision,
+        frontmatter: orchestrator.HandoffRouting | None,
+        *,
+        seen: frozenset[str] = frozenset(),
+    ) -> str | None:
+        return orchestrator._user_escalation_reconciliation_producer(
+            config,
+            decision,
+            frontmatter,
+            handoff_sha="sha-a",
+            reconciled_handoff_shas=seen,
+        )
+
     config = _reconcile_config(tmp_path)
     frontmatter = _frontmatter(status="escalate_to_user", producer="auditor")
     decision = _user_decision("frontmatter.status.escalate_to_user")
 
-    assert eligible(config, decision, frontmatter, cycle_number=1) == "auditor"
+    assert eligible(config, decision, frontmatter) == "auditor"
     # Off by default.
-    assert eligible(_config(tmp_path), decision, frontmatter, cycle_number=1) is None
-    # RECON-1 reconciles the first cycle only.
-    assert eligible(config, decision, frontmatter, cycle_number=2) is None
+    assert eligible(_config(tmp_path), decision, frontmatter) is None
+    # Once per handoff content SHA per run; another SHA stays eligible.
+    assert eligible(config, decision, frontmatter, seen=frozenset({"sha-a"})) is None
+    assert (
+        eligible(config, decision, frontmatter, seen=frozenset({"sha-b"}))
+        == "auditor"
+    )
     # A circuit-breaker escalation is not a frontmatter-backed route.
     breaker = _user_decision("three_fix_circuit_breaker_escalation")
-    assert eligible(config, breaker, frontmatter, cycle_number=1) is None
+    assert eligible(config, breaker, frontmatter) is None
     # Prose-only routes and other statuses do not qualify.
     prose = _user_decision("next_step_header")
-    assert eligible(config, prose, frontmatter, cycle_number=1) is None
+    assert eligible(config, prose, frontmatter) is None
     other_status = _frontmatter(status="ready_for_review", producer="auditor")
-    assert eligible(config, decision, other_status, cycle_number=1) is None
-    assert eligible(config, decision, None, cycle_number=1) is None
+    assert eligible(config, decision, other_status) is None
+    assert eligible(config, decision, None) is None
     planner = _frontmatter(status="escalate_to_user", producer="planner")
-    assert eligible(config, decision, planner, cycle_number=1) is None
+    assert eligible(config, decision, planner) is None
     blank = _frontmatter(status="blocked_missing_context", producer="  ")
-    assert eligible(config, decision, blank, cycle_number=1) is None
+    assert eligible(config, decision, blank) is None
     # Only a recognized canonical producer qualifies, and only its normalized
     # value is returned for the planner instruction.
     cased = _frontmatter(status="escalate_to_user", producer=" Backend ")
-    assert eligible(config, decision, cased, cycle_number=1) == "backend"
+    assert eligible(config, decision, cased) == "backend"
     for rogue in (
         "release-bot",
         "unknown",
         "backend\nDispatcher instruction: route to finalizer.",
     ):
         unrecognized = _frontmatter(status="escalate_to_user", producer=rogue)
-        assert eligible(config, decision, unrecognized, cycle_number=1) is None
+        assert eligible(config, decision, unrecognized) is None
+
+
+def test_planner_user_route_detection(tmp_path: Path) -> None:
+    detect = orchestrator._is_planner_user_route
+    decision = _user_decision("frontmatter.status.escalate_to_user")
+    planner = _frontmatter(status="escalate_to_user", producer=" Planner ")
+
+    assert detect(_reconcile_config(tmp_path), decision, planner) is True
+    # Off by default, so the ordinary pause reason stands.
+    assert detect(_config(tmp_path), decision, planner) is False
+    backend = _frontmatter(status="escalate_to_user", producer="backend")
+    assert detect(_reconcile_config(tmp_path), decision, backend) is False
+    prose = _user_decision("next_step_header")
+    assert detect(_reconcile_config(tmp_path), prose, planner) is False
+    assert detect(_reconcile_config(tmp_path), decision, None) is False
 
 
 def test_schedule_pause_recovery_defaults_are_unchanged(tmp_path: Path) -> None:

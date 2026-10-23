@@ -13,8 +13,9 @@ history.
 - **Active Epic:** ESCALATION-RECONCILE (epic 16), picked by fit after
   ACTIVE-PLANNER (epic 18) closed at `d33abfd` and merged in PR #293
   (`0b18d66`): small, independent, and unblocked. RECON-1 (config and
-  first-cycle pass) is implemented and in review; RECON-2 (later cycles and
-  the no-loop guard) is next.
+  first-cycle pass) was approved at `9100a57` and merged in PR #294
+  (`8f5d698`). RECON-2 (later cycles and the no-loop guard), the last story,
+  is implemented and in review.
 - **Parked Epic:** None.
 - **Other Open Epics:** WORK-INTAKE (epic 14, INTAKE-1 through INTAKE-3)
   waits on its pre-INTAKE-1 user design check, taken once no open epic has
