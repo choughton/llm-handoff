@@ -131,7 +131,13 @@ def verification_whitespace_problem(text: str) -> str | None:
 
 SCANNER_TIMEOUT_MS = 300_000
 SCANNER_PLACEHOLDERS = frozenset(
-    {"diff_range", "changed_files", "changed_py_files", "repo_root"}
+    {
+        "diff_range",
+        "changed_files",
+        "changed_py_files",
+        "changed_js_files",
+        "repo_root",
+    }
 )
 _SCANNER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -225,7 +231,9 @@ AgentRole = Literal[
 ProviderName = Literal["codex", "claude", "antigravity", "openai"]
 EnvMode = Literal["allowlist", "inherit"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
-AuditReviewer = Literal["quality", "security"]
+# `codex-local` is opt-in: `codex exec review` run next to the other reviewers,
+# for a repository the ChatGPT Codex connector cannot read.
+AuditReviewer = Literal["quality", "security", "codex-local"]
 SecurityReviewProvider = Literal["claude", "codex", "antigravity"]
 BlockSeverity = Literal["critical", "high", "medium", "low"]
 # Who commits an implementer's work: the agent itself, or the dispatcher after
@@ -724,6 +732,12 @@ class AuditConfig(BaseModel):
                 "audit.reviewers must include `quality`; the quality reviewer "
                 "decides the forward route."
             )
+        if "codex-local" in value and "security" not in value:
+            raise ValueError(
+                "audit.reviewers lists `codex-local`, which runs in the audit "
+                "fan-out next to the security reviewer; add `security` to "
+                "audit.reviewers."
+            )
         return value
 
     @field_validator("review_timeout_ms", mode="after")
@@ -736,6 +750,10 @@ class AuditConfig(BaseModel):
     @property
     def security_enabled(self) -> bool:
         return "security" in self.reviewers
+
+    @property
+    def codex_local_enabled(self) -> bool:
+        return "codex-local" in self.reviewers
 
 
 def scanner_command_placeholders(command: str) -> frozenset[str]:

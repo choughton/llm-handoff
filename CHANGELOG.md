@@ -6,6 +6,27 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Scanner commands can use a new `{changed_js_files}` placeholder: the
+  `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, and `.cts` subset of
+  `{changed_files}`. Like `{changed_py_files}`, a scanner that uses it is
+  skipped on claims where the list is empty, and `llm-handoff doctor` names
+  it in the scanner's condition. CONFIGURATION.md adds a Node.js scanner
+  example (gitleaks, semgrep, `npx --yes=false -- eslint`, and `npm audit`).
+- `audit.reviewers` accepts the opt-in `codex-local` reviewer for a
+  repository the ChatGPT Codex connector cannot read. Listed next to
+  `quality` and `security` (which it requires), it runs
+  `codex exec --sandbox read-only review --base <review scope base SHA>`
+  concurrently with them, in every publish mode, with HEAD at the scope's
+  head commit or above it on handoff-only commits. Its findings map P0-P3 to critical/high/medium/low and merge
+  under `audit.block_severity`; a `fail` with only sub-threshold findings
+  does not block, like a security `fail`. The audit handoff gains
+  `## Codex Local Review` and `## Codex Local Findings` or `Notes`
+  sections, which the merge commit and pull request report repeat. A
+  message that lists review comments the dispatcher cannot read is a
+  reviewer error, never a pass, and startup stops when the Codex CLI is not
+  on PATH. This replaces the earlier `publish.wait_for_reviewers:
+  [codex-local]` pull request gate, which is removed. New module
+  `llm_handoff/codex_review.py`.
 - The dispatcher now runs the ACTIVE-3 verification preflight itself
   (ACTIVE-4): once at startup on the handoff on disk, and in every cycle that
   dispatches `backend` or `frontend` on the assignment that cycle dispatches,

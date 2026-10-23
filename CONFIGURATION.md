@@ -1718,9 +1718,9 @@ run it: `PASS` when its executable is on `PATH`, `FAIL` when a
 applies to would fail with `scanner_missing:<name>`), and `WARN` when a
 `required: false` scanner's executable is missing, when the command does not
 start with a plain program name doctor can look up, or when scanners are
-configured but the gate is off. When the command uses `{changed_files}` or
-`{changed_py_files}`, the gate skips the scanner on claims where that list is
-empty, and doctor's message says the outcome applies only to claims where the
+configured but the gate is off. When the command uses `{changed_files}`,
+`{changed_py_files}`, or `{changed_js_files}`, the gate skips the scanner on
+claims where that list is empty, and doctor's message says the outcome applies only to claims where the
 list is nonempty. Doctor looks the executable up the same way the gate does
 and never runs a scanner command.
 
@@ -1761,6 +1761,50 @@ database. `semgrep` with a local ruleset and `--metrics off` does not need to
 download rules; `--config auto` would, and its results could change between
 runs without a commit.
 
+For Node.js repositories, `gitleaks`, `semgrep` with a pinned JavaScript and
+TypeScript ruleset, and the repository's own ESLint or Biome config are the
+recommended starting set, with `npm audit` as the dependency audit:
+
+```yaml
+enforce_work_packet: true
+scanners:
+  - name: gitleaks
+    command: gitleaks git --no-banner --redact --log-opts="{diff_range}" {repo_root}
+    timeout_ms: 300000
+    required: true
+  - name: semgrep
+    # A ruleset committed to the repository, for example built from the
+    # javascript/ and typescript/ security rules.
+    command: semgrep scan --config <local ruleset path> --metrics off --error --quiet {changed_files}
+    timeout_ms: 300000
+    required: true
+  - name: eslint
+    command: npx --yes=false -- eslint --no-warn-ignored --max-warnings 0 {changed_js_files}
+    timeout_ms: 180000
+    required: true
+  - name: npm-audit
+    command: npm audit --audit-level=high
+    timeout_ms: 300000
+    required: false
+```
+
+The gate looks up a scanner's executable on `PATH` or by absolute path, never
+by a relative path such as `node_modules/.bin/eslint`, so run locally
+installed tools through `npx`. `--yes=false` makes `npx` fail instead of
+downloading a package that is not installed, which keeps the result tied to
+the version pinned in `package.json` and the lockfile. The `--` is required:
+without it `npx` parses the tool's own options as npm options, so
+`npx --no eslint --version` prints the npm version and exits 0, and
+`--max-warnings 0` never reaches ESLint. A scanner written that way can pass
+without scanning anything. `--no-warn-ignored` keeps ESLint from warning
+about a changed file its config ignores, which `--max-warnings 0` would
+otherwise turn into a failure. For Biome, use
+`npx --yes=false -- biome check --no-errors-on-unmatched {changed_js_files}`.
+`npm audit` needs network access and is not diff-shaped, like `pip-audit`; use
+`pnpm audit` or `yarn npm audit` for those package managers. A TypeScript type
+check such as `tsc --noEmit` covers the whole project, so put it in the Work
+Packet Verification command instead of the scanner list.
+
 Fields:
 
 - `name`: label used in log lines and error prefixes; letters, digits, `.`,
@@ -1779,14 +1823,20 @@ Placeholders:
 | `{diff_range}` | `<pre-dispatch HEAD>..<scope_sha>`, ready for `git log` or `git diff` options |
 | `{changed_files}` | space-separated, shell-quoted repository-relative paths changed in that range that still exist |
 | `{changed_py_files}` | the `.py` subset of `{changed_files}` |
+| `{changed_js_files}` | the JavaScript and TypeScript subset of `{changed_files}`: `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, and `.cts` |
 | `{repo_root}` | the shell-quoted absolute repository root |
 
-Scope gitleaks, semgrep, and bandit to the diff or the changed files as shown.
-Run pip-audit unscoped, because a dependency audit is not diff-shaped. Literal
-braces in a command must be doubled (`{{` and `}}`). A command that references
-an unknown placeholder fails config load with `scanner_config_invalid:<name>`.
-A scanner whose command references `{changed_files}` or `{changed_py_files}`
-is skipped with an INFO log line when that list is empty for the claim.
+Suffixes match case-sensitively. `{changed_js_files}` leaves out framework
+files such as `.vue` and `.svelte`; use `{changed_files}` for a linter that
+handles them.
+
+Scope gitleaks, semgrep, bandit, and ESLint to the diff or the changed files
+as shown. Run pip-audit and npm audit unscoped, because a dependency audit is
+not diff-shaped. Literal braces in a command must be doubled (`{{` and `}}`).
+A command that references an unknown placeholder fails config load with
+`scanner_config_invalid:<name>`. A scanner whose command references
+`{changed_files}`, `{changed_py_files}`, or `{changed_js_files}` is skipped
+with an INFO log line when that list is empty for the claim.
 
 Scanners run only after the `scope_sha`, diff-scope, and working-tree checks
 pass; there is no value in scanning out-of-bounds work. They run in config
@@ -2994,7 +3044,7 @@ written reason.
 
 ```yaml
 audit:
-  reviewers: [quality, security]  # the default
+  reviewers: [quality, security]  # the default; add codex-local to opt in
   security_provider: null       # claude | codex | antigravity; null = auto
   security_model: null          # claude reviewer only; null = borrowed
   block_severity: high          # critical | high | medium | low
@@ -3003,7 +3053,7 @@ audit:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `audit.reviewers` | `[quality, security]` | Reviewers on the auditor route. Must include `quality`. Supported values are `quality` and `security`. Leaving out `security` needs `audit.security_opt_out_reason`. |
+| `audit.reviewers` | `[quality, security]` | Reviewers on the auditor route. Must include `quality`. Supported values are `quality`, `security`, and the opt-in `codex-local`, which needs `security` too (see below). Leaving out `security` needs `audit.security_opt_out_reason`. |
 | `audit.security_opt_out_reason` | unset | Required, non-empty text when `audit.reviewers` leaves out `security`; rejected while `security` is listed. |
 | `audit.security_provider` | auto | CLI used for the security reviewer. When unset, see the automatic choice below. |
 | `audit.security_model` | unset (borrowed from the first `claude` role, else the built-in Claude default) | Model the claude security reviewer passes as `--model`. Applies only to the claude reviewer; see below. |
@@ -3148,6 +3198,66 @@ With `security` enabled, the auditor route works differently:
   rate limit, other non-zero exits, malformed verdict) count toward
   `max_consecutive_failures`. Either way the dispatcher writes no audit
   verdict, so a missing verdict is never a pass.
+
+### The codex-local Reviewer
+
+The ChatGPT Codex connector reviews only repositories it is installed on.
+For a repository it cannot read, add the opt-in `codex-local` reviewer, which
+runs the Codex CLI's own review command on your machine with your Codex CLI
+login:
+
+```yaml
+audit:
+  reviewers: [quality, security, codex-local]
+```
+
+It is off unless listed, and it needs `security` in the list, because it
+runs inside the fan-out above. It works in every publish mode (`local`,
+`merge-commit`, and `pr`), because it reviews the audit's commit range, not
+a pull request. With it listed, a third reviewer runs concurrently with the
+quality and security reviewers, in the repository:
+
+```text
+codex exec --sandbox read-only review --base <review scope base SHA> \
+  -c web_search="disabled" --json --ephemeral \
+  --output-last-message logs/dispatch/codex-review/last-message.txt
+```
+
+- HEAD must be the review scope's head commit, because `codex exec review`
+  reviews the checked-out HEAD against the merge-base with the base SHA.
+  As in the work-claim gate, HEAD may also sit above it on commits that
+  change only the handoff file (a handoff committed after `scope_sha`); the
+  review then also sees those handoff changes. Otherwise the reviewer fails
+  closed without launching.
+- It uses the binary and environment of the first role whose provider is
+  `codex`, else the `codex` binary on `PATH` with the default environment
+  allowlist. At startup, `run` checks that this CLI is on `PATH`; a missing
+  CLI stops the run with a `codex_local_reviewer_failed:` error.
+  `llm-handoff doctor` prints `PASS codex-local review:` when it is on.
+- `codex exec review` ignores `--output-schema`. The dispatcher reads its
+  final message: an overall explanation, then, when there are findings, one
+  `- [P<n>] <title> - <path>:<start>-<end>` entry per finding (the separator
+  is an em dash). A message that lists review comments the dispatcher
+  cannot read is a reviewer error, never a pass.
+- Each finding's priority sets its severity: P0 `critical`, P1 `high`, P2
+  `medium`, P3 `low`. Like a security `fail`, a codex-local `fail` blocks
+  only through `audit.block_severity`: with the default `high`, P0 and P1
+  findings block, as on the Codex connector, and P2 and P3 findings are
+  listed under `## Codex Local Notes`. Set `block_severity: medium` to block
+  on P2 findings too; Codex rates many real bugs P2.
+- A blocked audit lists the reviewer's findings under
+  `## Codex Local Findings`; every audit has a `## Codex Local Review`
+  section with Codex's explanation, which the merge commit or pull request
+  report repeats. Its output and verdict are logged with the other
+  reviewers under `logs/dispatch/audit/`.
+- A non-zero exit, timeout (`audit.review_timeout_ms`), usage limit, or
+  unreadable message is a reviewer error, handled like any other reviewer
+  error above.
+- It runs in Codex's read-only sandbox, so it cannot run tests that need to
+  write files. Like the other reviewers, it is an LLM reading agent-written
+  code and is not hardened against prompt injection in that code. It is the
+  Codex CLI's review command, not the connector's reviewer, so its findings
+  can differ from what the connector would post.
 
 In Linear mode (`tracker.provider: linear`) the fan-out adds a post-verdict
 Linear evidence step. With `tracker.provider: none`, or with

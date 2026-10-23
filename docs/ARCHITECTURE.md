@@ -220,7 +220,7 @@ for a `status: ready_for_review` handoff from `backend` or `frontend`:
 4. Run the configured `scanners` (for example gitleaks, semgrep, bandit, and
    pip-audit) in config order, each through the shell in `repo_root` with its
    own `timeout_ms`, with `{diff_range}`, `{changed_files}`,
-   `{changed_py_files}`, and `{repo_root}` substituted from the values the
+   `{changed_py_files}`, `{changed_js_files}`, and `{repo_root}` substituted from the values the
    earlier checks already computed. Scanners run only when steps 2 and 3
    passed, and every scanner runs even after one fails so a single bounce
    carries every finding. A non-zero exit is `scanner_failed:<name>`, a

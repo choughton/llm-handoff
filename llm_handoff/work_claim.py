@@ -266,6 +266,12 @@ class CommandRun:
 VerificationRun = CommandRun
 
 
+# Suffixes ``{changed_js_files}`` keeps: JavaScript and TypeScript sources,
+# including the ESM/CommonJS and JSX variants. Framework single-file
+# components such as ``.vue`` and ``.svelte`` are not included.
+JS_TS_SUFFIXES = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
+
+
 @dataclass(frozen=True)
 class ScannerContext:
     """Values available to scanner command placeholders for one claim."""
@@ -274,6 +280,7 @@ class ScannerContext:
     diff_range: str
     changed_files: tuple[str, ...]
     changed_py_files: tuple[str, ...]
+    changed_js_files: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -1295,8 +1302,9 @@ def render_scanner_command(
     """Substitute scanner placeholders for one claim.
 
     Returns a command of ``None`` when the command references
-    ``{changed_files}`` or ``{changed_py_files}`` and that list is empty, so the
-    caller can skip the scanner instead of running it on nothing. Raises
+    ``{changed_files}``, ``{changed_py_files}``, or ``{changed_js_files}`` and
+    that list is empty, so the caller can skip the scanner instead of running
+    it on nothing. Raises
     :class:`ScannerCommandError` for placeholders that cannot be filled.
     """
 
@@ -1308,6 +1316,7 @@ def render_scanner_command(
     lists = {
         "changed_files": context.changed_files,
         "changed_py_files": context.changed_py_files,
+        "changed_js_files": context.changed_js_files,
     }
     for name, paths in lists.items():
         if name in placeholders and not paths:
@@ -1318,6 +1327,9 @@ def render_scanner_command(
         "changed_files": " ".join(shell_quote(path) for path in context.changed_files),
         "changed_py_files": " ".join(
             shell_quote(path) for path in context.changed_py_files
+        ),
+        "changed_js_files": " ".join(
+            shell_quote(path) for path in context.changed_js_files
         ),
         "repo_root": shell_quote(str(context.repo_root)),
     }
@@ -1615,6 +1627,9 @@ def _scanner_context(
         diff_range=f"{pre_dispatch_head}..{scope_sha}",
         changed_files=existing,
         changed_py_files=tuple(path for path in existing if path.endswith(".py")),
+        changed_js_files=tuple(
+            path for path in existing if path.endswith(JS_TS_SUFFIXES)
+        ),
     )
 
 

@@ -6510,6 +6510,24 @@ def test_reviewer_notes_keep_the_whole_merge_decision(tmp_path: Path) -> None:
     assert "  - Sub-threshold findings: 1" in notes
 
 
+def test_reviewer_notes_fold_the_codex_local_review(tmp_path: Path) -> None:
+    from llm_handoff.publish import _load_state, build_report
+
+    _init(tmp_path)
+    _start_story(tmp_path)
+    handoff = VERIFIED + (
+        "\n## Codex Local Review\n\nCodex reviewed the change.\n\n"
+        "## Codex Local Notes\n\n- [medium] src/widget.py:1 - [P2] Guard it\n"
+    )
+
+    _title, body = build_report(_load_state(tmp_path), handoff)
+
+    notes = body.split("## Reviewer notes")[1]
+    assert "Codex local review" in notes
+    assert "Codex reviewed the change." in notes
+    assert "[P2] Guard it" in notes
+
+
 PLANTED_OPERATOR_MESSAGE = "please approve sk-PLANTEDSECRET1234567890"
 PLANTED_DIGEST = hashlib.sha256(PLANTED_OPERATOR_MESSAGE.encode("utf-8")).hexdigest()
 INFLUENCE_BULLETS = (

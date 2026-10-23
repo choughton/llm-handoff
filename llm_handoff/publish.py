@@ -4417,6 +4417,16 @@ def _reviewer_notes(handoff_content: str) -> list[str]:
     )
     if security:
         lines += _folded("Security review", _demote(security, levels=2))
+    codex_local = "\n\n".join(
+        part
+        for part in (
+            _section(handoff_content, "## Codex Local Review"),
+            _section(handoff_content, "## Codex Local Notes"),
+        )
+        if part
+    )
+    if codex_local:
+        lines += _folded("Codex local review", _demote(codex_local, levels=2))
     return [
         "### Audit",
         "",
