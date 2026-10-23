@@ -12937,7 +12937,10 @@ def _user_escalation_reconciliation_producer(
 
     RECON-1 covers the first cycle only: a frontmatter-backed `user` route
     with status `escalate_to_user` or `blocked_missing_context` and a
-    non-empty producer other than `planner`. Anything else returns None.
+    recognized canonical producer other than `planner`. Anything else,
+    including an unrecognized producer, returns None and the escalation
+    pauses as usual. Only the normalized role name is returned, so no
+    handoff-supplied producer text reaches the planner instruction.
     """
     if not config.reconcile_user_escalations or cycle_number != 1:
         return None
@@ -12949,13 +12952,10 @@ def _user_escalation_reconciliation_producer(
         USER_ESCALATION_RECONCILIATION_STATUSES
     ):
         return None
-    producer = (frontmatter.producer or "").strip()
-    if not producer:
+    normalized = normalize_next_agent_value(frontmatter.producer)
+    if normalized is None or normalized == "planner":
         return None
-    normalized = normalize_next_agent_value(producer)
-    if normalized == "planner":
-        return None
-    return normalized or producer
+    return normalized
 
 
 def _self_loop_kind(result: ValidationResult) -> str | None:
