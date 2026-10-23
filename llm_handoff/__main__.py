@@ -41,12 +41,7 @@ from llm_handoff.init_workflow import (
     REFERENCE_MAPPING,
     TRACKER_NONE,
     InitConflictError,
-    InvalidTrackerOptionsError,
-    InvalidVerificationCommandError,
-    TrackerRequiresFreshRepoError,
-    UnknownProviderError,
-    UnknownTemplateError,
-    UnknownTrackerError,
+    InitWorkflowError,
     init_reference_workflow,
     is_interpreter_executable,
     verification_executable,
@@ -466,21 +461,16 @@ def init_command(
             tracker_label=tracker_label,
             tracker_mcp_server=tracker_mcp_server,
         )
-    except (
-        UnknownTemplateError,
-        UnknownProviderError,
-        InvalidVerificationCommandError,
-        UnknownTrackerError,
-        InvalidTrackerOptionsError,
-        TrackerRequiresFreshRepoError,
-    ) as exc:
-        typer.echo(_terminal_safe(str(exc)), err=True)
-        raise typer.Exit(2) from exc
     except InitConflictError as exc:
         typer.echo("Initialization aborted: target files already exist.", err=True)
         typer.echo("Review conflicts; --force only overwrites non-managed files.", err=True)
         typer.echo(_format_path_list(exc.conflicts), err=True)
         raise typer.Exit(1) from exc
+    except InitWorkflowError as exc:
+        # Option errors, the initialized-target preflight, and the fresh-repo
+        # rule all report one line and exit 2.
+        typer.echo(_terminal_safe(" ".join(str(exc).split())), err=True)
+        raise typer.Exit(2) from exc
 
     action = "DRY RUN" if result.dry_run else "Initialized"
     typer.echo(f"{action}: {result.template} in {result.target_root}")

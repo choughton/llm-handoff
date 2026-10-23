@@ -10,19 +10,13 @@ history.
 
 ## Current Status
 
-- **Active Epic:** LOOSE-ENDS (epic 22). LOOSE-1 (config resume settings
-  work without CLI flags) is approved at `0585fb4`
-  (`0585fb4d19a04354a52601470672567ccf8fb21b`) and merged in PR #284
-  (`9a94f35`, `9a94f3599cda149aec769c69b16789a925902b11`). LOOSE-2
-  (dispatcher log lines show on the console while the chat line is up) is
-  approved at `43a70e2` (`43a70e2b86a20d2bb802ee3b14becf3a4516571a`) and
-  merged in PR #285 (`080b29d`, `080b29d93c86a015997613032acea1f863023c48`).
-  LOOSE-3 (Windows `HANDOFF.md` replacement keeps the file's ACL) is
-  approved at `40fe4d8` (`40fe4d8ffa02bc13754af7ec3e65fbe1787d19ef`) and
-  merged in PR #286 (`3c4e37f`). LOOSE-4 (report-only validator launches
-  deny Linear writes explicitly) is implemented and awaits audit. TIDY
-  (epic 19) closed with TIDY-13,
-  approved at `7816ae6` and merged in PR #272 (`4e380f9`).
+- **Active Epic:** LINEAR-SWITCH (epic 11). Picked by fit after LOOSE-ENDS
+  (epic 22) closed with LOOSE-4, approved at `9f2526e`
+  (`9f2526ec66fecb648d5caf5b250bc3838902b413`) and merged in PR #287
+  (`7bfd742`): ACTIVE-PLANNER is parked on the operator, WORK-INTAKE needs a
+  design check, and ESCALATION-RECONCILE waits on its trigger. LIN-11 is
+  split into LIN-13 and LIN-14. LIN-13 (initialized-target safety preflight)
+  is implemented and in audit; LIN-14 and LIN-12 remain.
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
@@ -41,8 +35,8 @@ history.
   and ACTIVE-7 into both `planner.md` copies, and checking `auditor.md`),
   once the loop is ready to pause for the operator and writes the
   `logs/dispatch/operator/ACTIVE-8/` artifact.
-- **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger,
-  WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
+- **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger, and
+  WORK-INTAKE needs a design check.
 - **Epic Awaiting Close:** None.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
@@ -99,10 +93,20 @@ Closed epics, with their full intros and story lists, are in
 Fit: low urgency; only repositories that switch tracker modes need it.
 LINEAR-WORKFLOW is closed, so nothing blocks it.
 
-- LIN-11: `init --tracker linear` and `init --tracker none` switch an
-  initialized repository between modes, only between assignments and never
-  while `.dispatch.lock` exists; `--dry-run`; `--force` reports what is left
-  behind; a round trip is byte-identical.
+- LIN-13 (was LIN-11): Initialized-repository tracker switch safety
+  preflight. Before planning or writing any file for either `--tracker`
+  mode, `init` refuses an initialized target (one with `dispatch_config.yaml`)
+  whose config is a directory, a link, unreadable, invalid YAML, or fails
+  config validation; that has `.dispatch.lock` or dispatcher run-state files;
+  or whose configured handoff holds a `tracker_issue` lease, routes to an
+  implementing or reviewing role, or cannot be read as between assignments.
+  `--dry-run` and `--force` do not bypass it; the CLI exits 2 with one line.
+  Safe initialized targets keep the fresh-repo refusal for `--tracker linear`
+  until LIN-14. Status: implemented, in audit.
+- LIN-14 (was LIN-11): `init --tracker linear` and `init --tracker none`
+  switch an initialized repository between modes behind LIN-13's preflight;
+  `--dry-run`; conflicts; `--force` reports what is left behind; a round trip
+  is byte-identical.
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 
@@ -371,110 +375,6 @@ the `(was ...)` notes give the old IDs. None had started.
   planner, so there is no TIDY-7 batching work. The story stays last and
   operator-owned.
 
-### 22. LOOSE-ENDS - security followups and loop papercuts
-
-Fit: unblocked, independent, and needs no operator input. A good epic to
-work while ACTIVE-PLANNER is parked at ACTIVE-8 (its operator story), and
-after ACTIVE-PLANNER closes. Operator direction (2026-10-22): queue work the
-loop can finish overnight without a person at the console.
-
-Two medium security findings from epic-close audits, promoted from Open
-Followups, and two operator-reported papercuts from the 2026-10-21/22 runs.
-Each story is one behavior change with its own tests.
-
-- LOOSE-1: Config resume settings work without CLI flags. In
-  `llm_handoff/__main__.py` the `--use-backend-resume/--no-backend-resume`
-  and `--use-planner-resume/--no-planner-resume` options default to `True`
-  and `_run_dispatch` always passes them to `load_dispatch_config`
-  (`llm_handoff/config.py`), which overwrites the config file's
-  `backend_resume` and `planner_resume`. So `planner_resume: false` in the
-  file still prints `Planner session: MANAGED RESUME` unless the operator
-  also passes `--no-planner-resume` (seen live 2026-10-21). Make both options
-  tri-state (default `None`) so the file wins unless a flag is passed, keep
-  the flag names, and say in CONFIGURATION.md and the CLI help which one
-  applies. Decided (planner, 2026-10-22): for both `backend` and `planner`
-  the precedence is the CLI flag (or a non-None `load_dispatch_config`
-  caller override; source `--use-<role>-resume` / `--no-<role>-resume`) >
-  an explicit top-level `<role>_resume` (source `<role>_resume`) > an
-  explicit `agents.<role>.resume` read before provider defaults are merged,
-  or in the `model_fields_set` of a caller-supplied `AgentConfig` (source
-  `agents.<role>.resume`) > `True` (source `default`). Provider defaults
-  never count as explicit, and `AgentConfig.resume` is not rewritten from
-  the top-level setting. `DispatchConfig` stores `backend_resume_source`
-  and `planner_resume_source`, and both startup banner session lines end
-  `source: <source>`. Tests: file false and no flag gives stateless; file
-  false and `--use-planner-resume` resumes; no key and no flag keeps the
-  current default. Grooming (2026-10-22): scope is
-  `llm_handoff/__main__.py`, `llm_handoff/config.py`,
-  `llm_handoff/orchestrator.py`, `CONFIGURATION.md`, this file, and tests in
-  `tests/test_cli.py`, `tests/test_config.py`, and
-  `tests/ported/test_orchestrator.py`; verify both roles, both flag values,
-  top-level file settings without flags, the `agents.<role>.resume`
-  fallback, the top-level key winning over it, provider-default `resume`
-  falling through to `True` (`default`), and the banner `source:` output.
-  Progress: implemented 2026-10-23; `load_dispatch_config`
-  and a `DispatchConfig` before-validator share one resolver, a config
-  that sets `<role>_resume_source` fails to load, and CLI help and
-  CONFIGURATION.md (Runtime Controls, Provider Fields) state the precedence.
-  Approved at `0585fb4` and merged in PR #284 (`9a94f35`).
-- LOOSE-2: Dispatcher log lines show on the console while the chat line is
-  up. On 2026-10-22 the epic-close pre-audit verification logged `Dispatcher
-  verification (epic close): running Work Packet Verification command ...`
-  and `... exited 0 after 397.1s` to the dispatch log file, but the operator's
-  console showed nothing between `Dispatching audit fan-out` and the
-  reviewers starting about seven minutes later, so the run looked frozen.
-  Find why these lines did not reach the console while the `[auditor
-  running] chat>` line was drawn (the console chat line renderer and the
-  dispatch logger), make every logged line print above the chat line, and
-  add a test that logs while the chat line is attached. Grooming
-  (2026-10-22): `llm_handoff/logging_util.py` filters steady-state `INFO`
-  and `DEBUG` before console rendering, so inspect that filter along with
-  `llm_handoff/chat_line.py`; redrawing the prompt alone cannot recover a
-  filtered message. Progress: implemented 2026-10-23;
-  `DispatchLogger._should_write_console` lets every level through while a
-  chat line is attached, and the steady-state filter still governs the
-  direct console when none is attached, including after detachment.
-  Approved at `43a70e2` and merged in PR #285 (`080b29d`).
-- LOOSE-3: Windows `HANDOFF.md` replacement keeps the file's ACL. From the
-  CHAT-26 audit (medium, security reviewer): on Windows
-  `_write_handoff_durably` (`llm_handoff/orchestrator.py`) replaces
-  `HANDOFF.md` with a temporary file that takes the directory's inherited
-  ACL, so an explicit DACL on the old handoff is not kept. Copy the old
-  file's security descriptor onto the temporary file before the replace and
-  fail closed (keep the old file, log an ERROR) when it cannot be copied.
-  POSIX behavior is unchanged; Windows-only tests are skipped elsewhere.
-  Grooming (2026-10-22): `_write_handoff_durably` already copies POSIX
-  metadata before the replace; keep its cleanup and failure path when
-  adding Windows security descriptor preservation. Progress: implemented
-  2026-10-23; on Windows `_copy_handoff_metadata` reads the
-  old handoff's DACL and protection state (`GetNamedSecurityInfoW`) and sets
-  them on a `WRITE_DAC` reopen of the temporary file (`SetSecurityInfo`)
-  before fsync and replace. A read or copy failure raises `OSError`, so the
-  old file and its ACL stay, the temporary file is removed, and the re-audit
-  caller logs ERROR and keeps the chat change record. A first handoff takes
-  the directory's ACL as before. Approved at `40fe4d8` and merged in PR
-  #286 (`3c4e37f`).
-- LOOSE-4: Report-only validator launches deny Linear writes explicitly.
-  From the TIDY-15 audit (medium, security reviewer): removing the Linear
-  write tools from Claude `--allowedTools` for report-only validator
-  launches does not deny writes that inherited user or project permissions
-  already allow. Add explicit `--disallowedTools` entries for the configured
-  Linear MCP server's `save_comment` and `save_issue` on those launches,
-  covering fallback launches and keeping the existing denials. Tests cover
-  the primary and fallback launch arguments. Grooming (2026-10-22): the
-  Claude permission builder in `llm_handoff/agent_providers/claude.py`
-  emits the shared disallowed-tools list; keep those denials and add the
-  report-only `save_comment` and `save_issue` denials at primary and
-  fallback validator launches. Progress: implemented 2026-10-23, awaiting
-  audit; `without_linear_write_tools` now returns a derived copy of every
-  Claude launch (and Claude fallback) that carries both write tools as
-  report-only denials in a private attribute, even when the allowlist
-  grants neither, and `claude_permission_args` passes
-  `AgentConfig.claude_disallowed_tools` (the shared denials, then those
-  two) to `--disallowedTools` on stream-json and buffered launches. The
-  loaded config, routed repair launches, non-Claude providers, and
-  `unsafe_bypass` launches are unchanged; no configuration key was added.
-
 ## Open Followups
 
 Promoted to HARDENING stories and removed below: AUDIT-COST (a),
@@ -500,10 +400,6 @@ notes below; the remaining letters are unchanged.
     hierarchy (initiative, project, issue) with project-open and project-close
     gates. This repo has epic and story in `remaining_stories` plus this file;
     the TPM-ROLE epic scopes the picker to one epic for that reason.
-
-- The CHAT-26 audit finding (Windows `HANDOFF.md` ACL) is LOOSE-3.
-
-- The TIDY-15 audit finding (report-only validator Linear writes) is LOOSE-4.
 
 - From the ACTIVE-6 audit (medium, security, non-blocking): an implementer's
   `Environment refusal` bullet quotes the refusal text, which can carry

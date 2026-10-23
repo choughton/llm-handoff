@@ -12,6 +12,7 @@ from llm_handoff.__main__ import app
 from llm_handoff.config import load_dispatch_config
 from llm_handoff.init_workflow import (
     InitConflictError,
+    InitializedTargetError,
     InitWorkflowError,
     InvalidTrackerOptionsError,
     TrackerRequiresFreshRepoError,
@@ -157,7 +158,9 @@ def test_cli_tracker_option_errors_exit_2_with_one_line(
 
 
 def test_cli_fresh_repo_refusal_exits_2(tmp_path: Path) -> None:
-    (tmp_path / "dispatch_config.yaml").write_text("x: 1\n", encoding="utf-8")
+    # A safe, valid initialized target still gets the fresh-repo refusal
+    # until switching an initialized repository is supported.
+    _init(tmp_path, provider="claude")
     before = _snapshot(tmp_path)
     for extra in ((), ("--dry-run",)):
         result = _invoke(
@@ -254,15 +257,31 @@ def test_tracker_values_are_stripped_in_the_block(tmp_path: Path) -> None:
 # Check 3: fresh-repo refusal.
 
 
-@pytest.mark.parametrize("kind", ["file", "directory", "link"])
+@pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_existing_config_refuses_linear_init(
+def test_existing_valid_config_refuses_linear_init(
+    tmp_path: Path, dry_run: bool, force: bool
+) -> None:
+    _init(tmp_path, provider="claude")
+    before = _snapshot(tmp_path)
+    with pytest.raises(TrackerRequiresFreshRepoError) as excinfo:
+        _linear(tmp_path, provider="claude", dry_run=dry_run, force=force)
+    message = str(excinfo.value)
+    assert "--tracker linear only sets up a repository" in message
+    assert "no dispatch_config.yaml yet" in message
+    assert "switching an initialized repository is not supported yet" in message
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("kind", ["directory", "link"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_existing_unusable_config_refuses_linear_init(
     tmp_path: Path, kind: str, dry_run: bool
 ) -> None:
+    # The initialized-target preflight runs before the fresh-repo rule, so a
+    # config that is not a usable file gets the preflight's refusal.
     config_path = tmp_path / CONFIG
-    if kind == "file":
-        config_path.write_text("x: 1\n", encoding="utf-8")
-    elif kind == "directory":
+    if kind == "directory":
         config_path.mkdir()
     else:
         try:
@@ -270,12 +289,11 @@ def test_existing_config_refuses_linear_init(
         except OSError:
             pytest.skip("symlinks are not available")
     before = sorted(p.name for p in tmp_path.iterdir())
-    with pytest.raises(TrackerRequiresFreshRepoError) as excinfo:
+    with pytest.raises(InitializedTargetError) as excinfo:
         _linear(tmp_path, dry_run=dry_run)
     message = str(excinfo.value)
-    assert "--tracker linear only sets up a repository" in message
-    assert "no dispatch_config.yaml yet" in message
-    assert "switching an initialized repository is not supported yet" in message
+    assert "dispatch_config.yaml" in message
+    assert "\n" not in message
     assert sorted(p.name for p in tmp_path.iterdir()) == before
 
 
@@ -334,9 +352,26 @@ def test_cli_linear_with_auto_detected_agy_exits_2(
     assert not any(tmp_path.iterdir())
 
 
-def test_existing_config_does_not_affect_vanilla_init(tmp_path: Path) -> None:
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_existing_invalid_config_refuses_vanilla_init(
+    tmp_path: Path, dry_run: bool
+) -> None:
+    # An invalid existing config is no longer a vanilla conflict: the
+    # initialized-target preflight refuses it before anything is planned.
     (tmp_path / CONFIG).write_text("x: 1\n", encoding="utf-8")
-    result = _init(tmp_path, dry_run=True)
+    before = _snapshot(tmp_path)
+    with pytest.raises(InitializedTargetError, match="fails config validation"):
+        _init(tmp_path, dry_run=dry_run)
+    assert _snapshot(tmp_path) == before
+
+
+def test_existing_valid_config_with_local_edits_is_a_vanilla_conflict(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path, provider="claude")
+    config_path = tmp_path / CONFIG
+    config_path.write_bytes(config_path.read_bytes() + b"# local edit\n")
+    result = _init(tmp_path, provider="claude", dry_run=True)
     assert CONFIG in result.conflicts
 
 
@@ -1021,3 +1056,494 @@ def test_cli_dry_run_prints_tracker_linear(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "Tracker: linear" in result.stdout.splitlines()
     assert not any(tmp_path.iterdir())
+
+
+# Check 10: initialized-target safety preflight (LIN-13).
+
+HANDOFF = Path("docs/handoff/HANDOFF.md")
+LOCK = Path(".dispatch.lock")
+_MODE_KWARGS: dict[str, dict[str, str]] = {
+    "none": {"tracker": "none"},
+    "linear": {"tracker": "linear", "tracker_team": "ENG", "tracker_project": "P"},
+}
+_MODE_ARGS: dict[str, tuple[str, ...]] = {
+    "none": ("--tracker", "none"),
+    "linear": ("--tracker", "linear", "--tracker-team", "ENG", "--tracker-project", "P"),
+}
+_FLAGS = [(False, False), (True, False), (False, True), (True, True)]
+_FLAG_IDS = ["plain", "dry-run", "force", "dry-run-force"]
+
+
+def _tree(root: Path) -> dict[Path, bytes | None]:
+    """Every entry under root: file bytes, or None for directories and links."""
+    tree: dict[Path, bytes | None] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if path.is_symlink() or not path.is_file():
+            tree[relative] = None
+        else:
+            tree[relative] = path.read_bytes()
+    return tree
+
+
+def _handoff_text(
+    next_agent: str | None,
+    tracker_issue: str | None = None,
+    *,
+    extra: tuple[str, ...] = (),
+    reason: bool = True,
+) -> str:
+    lines = ["---"]
+    if next_agent is not None:
+        lines.append(f"next_agent: {next_agent}")
+    if reason:
+        lines.append('reason: "Test handoff."')
+    if tracker_issue is not None:
+        lines.append(f"tracker_issue: {tracker_issue}")
+    lines.extend(extra)
+    lines.extend(["producer: planner", "---", "", "# Handoff", ""])
+    return "\n".join(lines)
+
+
+def _write(root: Path, relative: Path, text: str) -> None:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _initialized(root: Path) -> Path:
+    _init(root, provider="claude")
+    return root
+
+
+def _assert_refused(
+    root: Path, mode: str, dry_run: bool, force: bool, phrase: str
+) -> InitializedTargetError:
+    before = _tree(root)
+    with pytest.raises(InitializedTargetError) as excinfo:
+        _init(
+            root, provider="claude", dry_run=dry_run, force=force, **_MODE_KWARGS[mode]
+        )
+    error = excinfo.value
+    assert isinstance(error, InitWorkflowError)
+    assert not isinstance(error, TrackerRequiresFreshRepoError)
+    message = str(error)
+    assert "\n" not in message
+    assert phrase in message
+    assert _tree(root) == before
+    return error
+
+
+def _make_symlink(link: Path, target: Path, *, directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+
+
+def _make_junction(link: Path, target: Path) -> None:
+    try:
+        import _winapi
+    except ImportError:
+        pytest.skip("junctions are Windows-only")
+    _winapi.CreateJunction(str(target), str(link))
+
+
+# Acceptance 1: dispatch_config.yaml must be a readable, valid config.
+
+
+_BAD_CONFIGS: dict[str, tuple[bytes, str]] = {
+    "invalid-yaml": (b"agents: [\n", "is not valid YAML"),
+    "not-a-mapping": (b"- one\n- two\n", "is not a YAML mapping"),
+    "unknown-key": (b"x: 1\n", "fails config validation"),
+    "bad-value": (b"poll_interval_seconds: soon\n", "fails config validation"),
+    "bad-handoff-path": (b"handoff_path: ../outside.md\n", "fails config validation"),
+    "not-utf8": (b"handoff_path: \xff\xfe\n", "cannot be read"),
+}
+
+
+@pytest.mark.parametrize(("dry_run", "force"), _FLAGS, ids=_FLAG_IDS)
+@pytest.mark.parametrize("mode", ["none", "linear"])
+@pytest.mark.parametrize("case", sorted(_BAD_CONFIGS))
+def test_preflight_refuses_invalid_config_before_writing(
+    tmp_path: Path, case: str, mode: str, dry_run: bool, force: bool
+) -> None:
+    content, phrase = _BAD_CONFIGS[case]
+    (tmp_path / CONFIG).write_bytes(content)
+    _assert_refused(tmp_path, mode, dry_run, force, phrase)
+
+
+@pytest.mark.parametrize(("dry_run", "force"), _FLAGS, ids=_FLAG_IDS)
+@pytest.mark.parametrize("mode", ["none", "linear"])
+def test_preflight_refuses_config_directory(
+    tmp_path: Path, mode: str, dry_run: bool, force: bool
+) -> None:
+    (tmp_path / CONFIG).mkdir()
+    _assert_refused(tmp_path, mode, dry_run, force, "is a directory")
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+@pytest.mark.parametrize("dangling", [False, True], ids=["live", "dangling"])
+def test_preflight_refuses_config_symlink(
+    tmp_path: Path, mode: str, dangling: bool
+) -> None:
+    target = tmp_path / "real.yaml"
+    if not dangling:
+        target.write_text("handoff_path: docs/handoff/HANDOFF.md\n", encoding="utf-8")
+    _make_symlink(tmp_path / CONFIG, target)
+    for dry_run, force in _FLAGS:
+        _assert_refused(tmp_path, mode, dry_run, force, "symbolic link or junction")
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+@pytest.mark.parametrize("dangling", [False, True], ids=["live", "dangling"])
+def test_preflight_refuses_config_junction(
+    tmp_path: Path, mode: str, dangling: bool
+) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    _make_junction(tmp_path / CONFIG, target)
+    if dangling:
+        target.rmdir()
+    for dry_run, force in _FLAGS:
+        _assert_refused(tmp_path, mode, dry_run, force, "symbolic link or junction")
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+def test_preflight_refuses_unreadable_config(
+    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _initialized(tmp_path)
+    before = _tree(tmp_path)
+    original = Path.read_text
+
+    def refuse(self: Path, *args, **kwargs):
+        if self.name == CONFIG.name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+    for dry_run, force in _FLAGS:
+        with pytest.raises(InitializedTargetError) as excinfo:
+            _init(
+                tmp_path,
+                provider="claude",
+                dry_run=dry_run,
+                force=force,
+                **_MODE_KWARGS[mode],
+            )
+        message = str(excinfo.value)
+        assert "cannot be read" in message
+        assert "\n" not in message
+    monkeypatch.undo()
+    assert _tree(tmp_path) == before
+
+
+# Acceptance 2: a dispatcher lock or run-state file blocks any change.
+
+
+_RUN_STATE = [
+    LOCK,
+    Path("logs/dispatch/in-flight.json"),
+    Path("logs/dispatch/story.json"),
+    Path("logs/dispatch/publish/story.json"),
+]
+
+
+@pytest.mark.parametrize(("dry_run", "force"), _FLAGS, ids=_FLAG_IDS)
+@pytest.mark.parametrize("mode", ["none", "linear"])
+@pytest.mark.parametrize("state", _RUN_STATE, ids=[p.as_posix() for p in _RUN_STATE])
+def test_preflight_refuses_lock_and_run_state(
+    tmp_path: Path, state: Path, mode: str, dry_run: bool, force: bool
+) -> None:
+    _initialized(tmp_path)
+    _write(tmp_path, state, "{}\n")
+    _assert_refused(tmp_path, mode, dry_run, force, state.as_posix())
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+def test_preflight_refuses_lock_directory(tmp_path: Path, mode: str) -> None:
+    _initialized(tmp_path)
+    (tmp_path / LOCK).mkdir()
+    for dry_run, force in _FLAGS:
+        _assert_refused(tmp_path, mode, dry_run, force, ".dispatch.lock")
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+def test_preflight_refuses_dangling_lock_symlink(tmp_path: Path, mode: str) -> None:
+    _initialized(tmp_path)
+    _make_symlink(tmp_path / LOCK, tmp_path / "gone")
+    for dry_run, force in _FLAGS:
+        _assert_refused(tmp_path, mode, dry_run, force, ".dispatch.lock")
+
+
+def test_lock_without_config_is_not_an_initialized_target(tmp_path: Path) -> None:
+    (tmp_path / LOCK).write_text("", encoding="utf-8")
+    assert init_workflow.preflight_initialized_target(tmp_path) is None
+
+
+# Acceptance 3: the configured handoff must be between assignments.
+
+
+_ACTIVE_HANDOFFS: dict[str, tuple[str, str]] = {
+    **{
+        f"next-{role}": (_handoff_text(role), f"next_agent: {role}")
+        for role in ("backend", "frontend", "auditor", "validator", "finalizer")
+    },
+    "next-Backend-label": (_handoff_text("Backend"), "next_agent: backend"),
+    "planner-lease": (_handoff_text("planner", "ENG-12"), "tracker_issue: ENG-12"),
+    "tpm-lease": (_handoff_text("tpm", "ENG-13"), "tracker_issue: ENG-13"),
+    "user-lease": (_handoff_text("user", "ENG-14"), "tracker_issue: ENG-14"),
+}
+_UNKNOWN_HANDOFFS: dict[str, tuple[str, str]] = {
+    "no-frontmatter": ("I made the edits.\n", "no YAML routing frontmatter"),
+    "unclosed": ("---\nnext_agent: planner\n", "does not show a between-assignments"),
+    "bad-yaml": ("---\nnext_agent: [\n---\n", "does not show a between-assignments"),
+    "no-next-agent": (_handoff_text(None), "next_agent is None"),
+    "unknown-next-agent": (_handoff_text("reviewer"), "next_agent is 'reviewer'"),
+    # A status that conflicts with an idle-looking next_agent, or one the
+    # router does not recognize, leaves the dispatcher with no route.
+    "planner-ready-for-review": (
+        _handoff_text("planner", extra=("status: ready_for_review",)),
+        "status `ready_for_review` routes to auditor",
+    ),
+    "user-blocked-implementation": (
+        _handoff_text("user", extra=("status: blocked_implementation_failure",)),
+        "status `blocked_implementation_failure` routes to planner",
+    ),
+    "planner-unknown-status": (
+        _handoff_text("planner", extra=("status: almost_done",)),
+        "status `almost_done` is not recognized",
+    ),
+    "planner-no-reason": (
+        _handoff_text("planner", reason=False),
+        "reason is required",
+    ),
+}
+
+
+@pytest.mark.parametrize(("dry_run", "force"), _FLAGS, ids=_FLAG_IDS)
+@pytest.mark.parametrize("mode", ["none", "linear"])
+@pytest.mark.parametrize("case", sorted(_ACTIVE_HANDOFFS))
+def test_preflight_refuses_active_handoff(
+    tmp_path: Path, case: str, mode: str, dry_run: bool, force: bool
+) -> None:
+    _initialized(tmp_path)
+    text, phrase = _ACTIVE_HANDOFFS[case]
+    _write(tmp_path, HANDOFF, text)
+    _assert_refused(tmp_path, mode, dry_run, force, phrase)
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+@pytest.mark.parametrize("case", sorted(_UNKNOWN_HANDOFFS))
+def test_preflight_refuses_handoff_without_between_assignments_state(
+    tmp_path: Path, case: str, mode: str
+) -> None:
+    _initialized(tmp_path)
+    text, phrase = _UNKNOWN_HANDOFFS[case]
+    _write(tmp_path, HANDOFF, text)
+    for dry_run, force in _FLAGS:
+        error = _assert_refused(tmp_path, mode, dry_run, force, phrase)
+        assert "between assignments" in str(error)
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+def test_preflight_refuses_unreadable_handoff(tmp_path: Path, mode: str) -> None:
+    _initialized(tmp_path)
+    handoff = tmp_path / HANDOFF
+    handoff.unlink()
+    handoff.mkdir()
+    for dry_run, force in _FLAGS:
+        _assert_refused(tmp_path, mode, dry_run, force, "cannot be read")
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+def test_preflight_refuses_non_utf8_handoff(tmp_path: Path, mode: str) -> None:
+    _initialized(tmp_path)
+    (tmp_path / HANDOFF).write_bytes(b"---\nnext_agent: planner\xff\n---\n")
+    for dry_run, force in _FLAGS:
+        _assert_refused(tmp_path, mode, dry_run, force, "is not UTF-8 text")
+
+
+def _use_custom_handoff_path(root: Path, relative: str) -> None:
+    config = root / CONFIG
+    text = config.read_text(encoding="utf-8")
+    old = "handoff_path: docs/handoff/HANDOFF.md\n"
+    assert old in text
+    config.write_text(text.replace(old, f"handoff_path: {relative}\n"), encoding="utf-8")
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+def test_preflight_reads_the_configured_handoff_path(tmp_path: Path, mode: str) -> None:
+    _initialized(tmp_path)
+    _use_custom_handoff_path(tmp_path, "work/LIVE.md")
+    # The default path looks idle; the configured one holds a lease on a
+    # planner route.
+    _write(tmp_path, Path("work/LIVE.md"), _handoff_text("planner", "ENG-7"))
+    for dry_run, force in _FLAGS:
+        error = _assert_refused(tmp_path, mode, dry_run, force, "tracker_issue: ENG-7")
+        assert "work/LIVE.md" in str(error)
+
+
+def test_preflight_ignores_an_active_handoff_outside_the_configured_path(
+    tmp_path: Path,
+) -> None:
+    _initialized(tmp_path)
+    _use_custom_handoff_path(tmp_path, "work/LIVE.md")
+    _write(tmp_path, HANDOFF, _handoff_text("backend"))
+    _write(tmp_path, Path("work/LIVE.md"), _handoff_text("user"))
+    config = init_workflow.preflight_initialized_target(tmp_path)
+    assert config is not None
+    assert config.handoff_path == Path("work/LIVE.md")
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["missing", "starter", "planner", "tpm", "user", "Planner-label"],
+)
+def test_preflight_allows_between_assignments_states(
+    tmp_path: Path, state: str
+) -> None:
+    _initialized(tmp_path)
+    handoff = tmp_path / HANDOFF
+    if state == "missing":
+        handoff.unlink()
+    elif state != "starter":
+        _write(tmp_path, HANDOFF, _handoff_text(state.removesuffix("-label")))
+    before = _tree(tmp_path)
+    config = init_workflow.preflight_initialized_target(tmp_path)
+    assert config is not None
+    assert config.handoff_path == HANDOFF
+    assert _tree(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("next_agent", "status"),
+    [
+        ("planner", "verified_pass"),
+        ("tpm", "verified_pass"),
+        ("planner", "blocked_implementation_failure"),
+        ("user", "blocked_missing_context"),
+        ("user", "escalate_to_user"),
+    ],
+)
+def test_preflight_allows_status_routes_that_stay_between_assignments(
+    tmp_path: Path, next_agent: str, status: str
+) -> None:
+    _initialized(tmp_path)
+    _write(tmp_path, HANDOFF, _handoff_text(next_agent, extra=(f"status: {status}",)))
+    before = _tree(tmp_path)
+    assert init_workflow.preflight_initialized_target(tmp_path) is not None
+    assert _tree(tmp_path) == before
+
+
+def test_preflight_allows_a_custom_missing_handoff(tmp_path: Path) -> None:
+    _initialized(tmp_path)
+    _use_custom_handoff_path(tmp_path, "work/LIVE.md")
+    assert init_workflow.preflight_initialized_target(tmp_path) is not None
+
+
+def test_preflight_returns_none_for_a_fresh_target(tmp_path: Path) -> None:
+    assert init_workflow.preflight_initialized_target(tmp_path / "missing") is None
+    assert init_workflow.preflight_initialized_target(tmp_path) is None
+    assert not any(tmp_path.iterdir())
+
+
+# Acceptance 4: API and CLI behavior for safe targets and refusals.
+
+
+@pytest.mark.parametrize(("dry_run", "force"), _FLAGS, ids=_FLAG_IDS)
+@pytest.mark.parametrize("state", ["missing", "starter", "planner", "tpm", "user"])
+def test_safe_target_keeps_the_fresh_repo_refusal_for_linear(
+    tmp_path: Path, state: str, dry_run: bool, force: bool
+) -> None:
+    _initialized(tmp_path)
+    if state == "missing":
+        (tmp_path / HANDOFF).unlink()
+    elif state != "starter":
+        _write(tmp_path, HANDOFF, _handoff_text(state))
+    before = _tree(tmp_path)
+    with pytest.raises(TrackerRequiresFreshRepoError):
+        _linear(tmp_path, provider="claude", dry_run=dry_run, force=force)
+    assert _tree(tmp_path) == before
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_safe_target_rerun_with_tracker_none_is_unchanged(
+    tmp_path: Path, dry_run: bool
+) -> None:
+    _initialized(tmp_path)
+    before = _tree(tmp_path)
+    result = _init(tmp_path, provider="claude", tracker="none", dry_run=dry_run)
+    assert result.conflicts == ()
+    assert result.copied == ()
+    assert result.merged == ()
+    assert _tree(tmp_path) == before
+
+
+def test_fresh_init_output_is_unchanged_by_the_preflight(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _init(first, provider="claude")
+    _init(second, provider="claude")
+    tree = _tree(first)
+    assert tree == _tree(second)
+    files = {path for path, content in tree.items() if content is not None}
+    assert files == set(init_workflow.template_files())
+    assert (first / HANDOFF).read_bytes() == (
+        init_workflow._TEMPLATE_ROOT / HANDOFF
+    ).read_bytes()
+
+
+_CLI_REFUSALS = {
+    "invalid-config": "fails config validation",
+    "lock": ".dispatch.lock",
+    "active-handoff": "next_agent: auditor",
+    "lease": "tracker_issue: ENG-9",
+    "status-conflict": "status `ready_for_review` routes to auditor",
+}
+
+
+def _set_up_cli_refusal(root: Path, case: str) -> None:
+    if case == "invalid-config":
+        (root / CONFIG).write_text("x: 1\n", encoding="utf-8")
+        return
+    _initialized(root)
+    if case == "lock":
+        _write(root, LOCK, "")
+    elif case == "active-handoff":
+        _write(root, HANDOFF, _handoff_text("auditor"))
+    elif case == "status-conflict":
+        _write(
+            root, HANDOFF, _handoff_text("planner", extra=("status: ready_for_review",))
+        )
+    else:
+        _write(root, HANDOFF, _handoff_text("user", "ENG-9"))
+
+
+@pytest.mark.parametrize("mode", ["none", "linear"])
+@pytest.mark.parametrize("case", sorted(_CLI_REFUSALS))
+def test_cli_preflight_refusal_exits_2_with_one_line(
+    tmp_path: Path, case: str, mode: str
+) -> None:
+    _set_up_cli_refusal(tmp_path, case)
+    before = _tree(tmp_path)
+    for extra in ((), ("--dry-run",), ("--force",), ("--dry-run", "--force")):
+        result = _invoke(str(tmp_path), "--provider", "claude", *_MODE_ARGS[mode], *extra)
+        assert result.exit_code == 2, result.output
+        assert result.stdout == ""
+        assert len(result.stderr.strip().splitlines()) == 1
+        assert "Traceback" not in result.output
+        assert "Refusing to change the initialized repository" in result.stderr
+        assert _CLI_REFUSALS[case] in result.stderr
+        assert _tree(tmp_path) == before
+
+
+def test_cli_conflict_still_exits_1(tmp_path: Path) -> None:
+    _initialized(tmp_path)
+    config = tmp_path / CONFIG
+    config.write_bytes(config.read_bytes() + b"# local edit\n")
+    result = _invoke(str(tmp_path), "--provider", "claude")
+    assert result.exit_code == 1, result.output
+    assert "Initialization aborted: target files already exist." in result.stderr
+    assert "dispatch_config.yaml" in result.stderr

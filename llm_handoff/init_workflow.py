@@ -16,12 +16,21 @@ from pydantic import ValidationError
 
 from llm_handoff.config import (
     CLAUDE_DEFAULT_ALLOWED_TOOLS,
+    IN_FLIGHT_STATE_PATH,
     INTERPRETER_EXECUTABLES,
     VERIFICATION_FORBIDDEN_CHARS,
+    DispatchConfig,
     TrackerConfig,
     linear_tools_for_role,
+    load_dispatch_config,
     verification_whitespace_problem,
 )
+from llm_handoff.roles import normalize_next_agent_value
+from llm_handoff.router import (
+    HandoffFrontmatterError,
+    parse_handoff_frontmatter_text,
+)
+from llm_handoff.router import route as route_handoff
 from llm_handoff.stack_detect import Candidate, detect_candidates
 from llm_handoff.tracker_prompts import (
     LINEAR_PROMPT_ROLES,
@@ -85,6 +94,23 @@ PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING)
 PROVIDER_CLIS = ("claude", "codex", "agy")
 _ANTIGRAVITY_CLI = "agy"
 _CONFIG_PATH = Path("dispatch_config.yaml")
+# Run-state files whose presence means a dispatcher run is active or was
+# interrupted, so an initialized target must not be changed. The lock lives
+# at the target root; in-flight.json is config.IN_FLIGHT_STATE_PATH;
+# publish/story.json is publish.STATE_PATH (not imported: publish pulls in the
+# whole publish stack), and logs/dispatch/story.json is checked as well.
+_DISPATCH_LOCK_PATH = Path(".dispatch.lock")
+_RUN_STATE_PATHS = (
+    IN_FLIGHT_STATE_PATH,
+    Path("logs") / "dispatch" / "story.json",
+    Path("logs") / "dispatch" / "publish" / "story.json",
+)
+# next_agent values that hold an active assignment. planner, tpm, and user
+# (with no tracker_issue) are between assignments.
+_ACTIVE_ASSIGNMENT_ROLES = frozenset(
+    {"backend", "frontend", "auditor", "validator", "finalizer"}
+)
+_BETWEEN_ASSIGNMENT_ROLES = frozenset({"planner", "tpm", "user"})
 _TEXT_MARKERS = {
     Path("AGENTS.md"): (b"<!-- llm-handoff:begin -->", b"<!-- llm-handoff:end -->"),
     Path(".gitignore"): (b"# llm-handoff:begin", b"# llm-handoff:end"),
@@ -457,6 +483,21 @@ class TrackerRequiresFreshRepoError(InitWorkflowError):
             "exists; switching an initialized repository is not supported yet."
         )
         self.target_root = target_root
+
+
+class InitializedTargetError(InitWorkflowError):
+    """An initialized target is not safe to change: refused before writing.
+
+    The message is a single line. ``problem`` holds the specific reason.
+    """
+
+    def __init__(self, target_root: Path, problem: str) -> None:
+        problem = _one_line(problem)
+        super().__init__(
+            f"Refusing to change the initialized repository {target_root}: {problem}"
+        )
+        self.target_root = target_root
+        self.problem = problem
 
 
 class InitConflictError(InitWorkflowError):
@@ -1177,6 +1218,213 @@ def _has_linked_destination(target_root: Path, relative_path: Path) -> bool:
     return False
 
 
+def _one_line(text: str) -> str:
+    return " ".join(str(text).split())
+
+
+def _is_link(metadata: os.stat_result) -> bool:
+    # Windows exposes junctions and other reparse points through
+    # st_file_attributes; do not follow them.
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+_CONFIG_FIX_HINT = "Fix or remove it, then run init again."
+_BETWEEN_ASSIGNMENTS_HINT = (
+    "Wait until the handoff is between assignments (next_agent planner, tpm, "
+    "or user with no tracker_issue), then run init again."
+)
+
+
+def _config_error_detail(exc: BaseException) -> str:
+    if isinstance(exc, ValidationError):
+        messages = []
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error.get("loc", ()))
+            message = str(error.get("msg", "")).removeprefix("Value error, ")
+            messages.append(f"{location}: {message}" if location else message)
+        return "; ".join(messages) or "the config is invalid"
+    return str(exc) or type(exc).__name__
+
+
+def _load_initialized_config(root: Path) -> DispatchConfig:
+    config_path = root / _CONFIG_PATH
+    name = _CONFIG_PATH.as_posix()
+    try:
+        metadata = config_path.lstat()
+    except OSError as exc:
+        raise InitializedTargetError(
+            root, f"{name} cannot be inspected ({exc}). {_CONFIG_FIX_HINT}"
+        ) from exc
+    if _is_link(metadata):
+        raise InitializedTargetError(
+            root,
+            f"{name} is a symbolic link or junction, not a regular file. "
+            f"{_CONFIG_FIX_HINT}",
+        )
+    if stat.S_ISDIR(metadata.st_mode):
+        raise InitializedTargetError(
+            root, f"{name} is a directory, not a config file. {_CONFIG_FIX_HINT}"
+        )
+    if not stat.S_ISREG(metadata.st_mode):
+        raise InitializedTargetError(
+            root, f"{name} is not a regular file. {_CONFIG_FIX_HINT}"
+        )
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise InitializedTargetError(
+            root, f"{name} cannot be read ({exc}). {_CONFIG_FIX_HINT}"
+        ) from exc
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise InitializedTargetError(
+            root, f"{name} is not valid YAML ({exc}). {_CONFIG_FIX_HINT}"
+        ) from exc
+    if loaded is not None and not isinstance(loaded, dict):
+        raise InitializedTargetError(
+            root, f"{name} is not a YAML mapping. {_CONFIG_FIX_HINT}"
+        )
+    try:
+        return load_dispatch_config(repo_root=root, config_path=config_path)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise InitializedTargetError(
+            root,
+            f"{name} fails config validation ({_config_error_detail(exc)}). "
+            f"{_CONFIG_FIX_HINT}",
+        ) from exc
+
+
+def _check_no_run_state(root: Path) -> None:
+    for relative in (_DISPATCH_LOCK_PATH, *_RUN_STATE_PATHS):
+        if os.path.lexists(root / relative):
+            raise InitializedTargetError(
+                root,
+                f"{relative.as_posix()} exists, so a dispatcher run is active or "
+                "was interrupted. Stop the run or finish its recovery, then run "
+                "init again.",
+            )
+
+
+def _starter_handoff_bytes() -> bytes | None:
+    try:
+        return (_TEMPLATE_ROOT / "docs" / "handoff" / "HANDOFF.md").read_bytes()
+    except OSError:
+        return None
+
+
+def _check_handoff_between_assignments(root: Path, config: DispatchConfig) -> None:
+    relative = Path(config.handoff_path)
+    name = relative.as_posix()
+    handoff = root / relative
+    if not os.path.lexists(handoff):
+        return
+    try:
+        content = handoff.read_bytes()
+    except OSError as exc:
+        raise InitializedTargetError(
+            root,
+            f"the handoff {name} cannot be read ({exc}), so init cannot tell "
+            f"whether an assignment is active. {_BETWEEN_ASSIGNMENTS_HINT}",
+        ) from exc
+    if content == _starter_handoff_bytes():
+        return
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise InitializedTargetError(
+            root,
+            f"the handoff {name} is not UTF-8 text ({exc}), so init cannot tell "
+            f"whether an assignment is active. {_BETWEEN_ASSIGNMENTS_HINT}",
+        ) from exc
+    unknown = (
+        f"the handoff {name} does not show a between-assignments state"
+    )
+    try:
+        frontmatter = parse_handoff_frontmatter_text(text)
+    except HandoffFrontmatterError as exc:
+        raise InitializedTargetError(
+            root, f"{unknown}: {exc} {_BETWEEN_ASSIGNMENTS_HINT}"
+        ) from exc
+    if frontmatter is None:
+        raise InitializedTargetError(
+            root,
+            f"{unknown}: it has no YAML routing frontmatter. "
+            f"{_BETWEEN_ASSIGNMENTS_HINT}",
+        )
+    if frontmatter.tracker_issue:
+        raise InitializedTargetError(
+            root,
+            f"the handoff {name} holds a tracker lease (tracker_issue: "
+            f"{frontmatter.tracker_issue}). {_BETWEEN_ASSIGNMENTS_HINT}",
+        )
+    next_agent = normalize_next_agent_value(frontmatter.next_agent)
+    if next_agent in _ACTIVE_ASSIGNMENT_ROLES:
+        raise InitializedTargetError(
+            root,
+            f"the handoff {name} has an active assignment (next_agent: "
+            f"{next_agent}). {_BETWEEN_ASSIGNMENTS_HINT}",
+        )
+    if next_agent not in _BETWEEN_ASSIGNMENT_ROLES:
+        raise InitializedTargetError(
+            root,
+            f"{unknown}: next_agent is {frontmatter.next_agent!r}. "
+            f"{_BETWEEN_ASSIGNMENTS_HINT}",
+        )
+    # The dispatcher routes on the validated frontmatter, where a status takes
+    # precedence over next_agent and an invalid or conflicting field routes
+    # nowhere. Classify that effective route, not next_agent alone.
+    decision = route_handoff(text)
+    if decision.route in _ACTIVE_ASSIGNMENT_ROLES:
+        raise InitializedTargetError(
+            root,
+            f"the handoff {name} has an active assignment (status: "
+            f"{frontmatter.status} routes to {decision.route}). "
+            f"{_BETWEEN_ASSIGNMENTS_HINT}",
+        )
+    if decision.route not in _BETWEEN_ASSIGNMENT_ROLES:
+        detail = " ".join(
+            (decision.warnings[0] if decision.warnings else decision.reasoning).split()
+        )
+        raise InitializedTargetError(
+            root,
+            f"{unknown}: the dispatcher cannot route it ({detail}). "
+            f"{_BETWEEN_ASSIGNMENTS_HINT}",
+        )
+
+
+def preflight_initialized_target(target_root: Path) -> DispatchConfig | None:
+    """Read-only safety check for a target that already has dispatch_config.yaml.
+
+    Returns ``None`` for a fresh target (no ``dispatch_config.yaml`` entry,
+    checked with ``os.path.lexists`` so a dangling link counts as present).
+    For an initialized target, returns its validated config when it is safe to
+    change, and otherwise raises ``InitializedTargetError`` with a single-line
+    message. It refuses a config that is a directory, a link, unreadable,
+    invalid YAML, or fails config validation; a present ``.dispatch.lock`` or
+    dispatcher run-state file; and a handoff (the config's ``handoff_path``)
+    that holds a ``tracker_issue`` lease, routes to an implementing or
+    reviewing role, or cannot be read as a between-assignments state. The
+    route is the one the dispatcher would take: a ``status`` takes precedence
+    over ``next_agent``, and frontmatter the router rejects (an unrecognized
+    status, a status that conflicts with ``next_agent``, a missing reason)
+    counts as unknown. A missing handoff, the starter template, and valid
+    frontmatter whose effective route is planner, tpm, or user with no
+    ``tracker_issue`` pass. Nothing is written.
+    """
+
+    root = target_root.expanduser().resolve()
+    if not os.path.lexists(root / _CONFIG_PATH):
+        return None
+    _check_no_run_state(root)
+    config = _load_initialized_config(root)
+    _check_handoff_between_assignments(root, config)
+    return config
+
+
 def init_reference_workflow(
     target_root: Path,
     *,
@@ -1198,8 +1446,9 @@ def init_reference_workflow(
     if not _TEMPLATE_ROOT.is_dir():
         raise InitWorkflowError(f"Template directory not found: {_TEMPLATE_ROOT}")
 
-    # Validate tracker options and the fresh-repo rule before any file is
-    # planned, so both errors also fire with dry_run.
+    # Validate tracker options, the initialized-target preflight, and the
+    # fresh-repo rule before any file is planned, so every refusal also fires
+    # with dry_run and force.
     tracker_config = build_tracker_config(
         tracker,
         team=tracker_team,
@@ -1207,10 +1456,12 @@ def init_reference_workflow(
         label=tracker_label,
         mcp_server=tracker_mcp_server,
     )
-    if tracker_config is not None:
-        resolved_root = target_root.expanduser().resolve()
-        if os.path.lexists(resolved_root / _CONFIG_PATH):
-            raise TrackerRequiresFreshRepoError(resolved_root)
+    resolved_root = target_root.expanduser().resolve()
+    initialized_config = preflight_initialized_target(resolved_root)
+    if tracker_config is not None and initialized_config is not None:
+        # Switching a safe initialized target to Linear mode lands later;
+        # until then only a fresh target may be set up for Linear.
+        raise TrackerRequiresFreshRepoError(resolved_root)
 
     executable = (
         None
