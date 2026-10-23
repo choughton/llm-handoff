@@ -125,6 +125,19 @@ After the gate passes, the dispatcher alone writes a
 `## Dispatcher Verification` section into the handoff; an implementer never
 writes or edits it. See Gate-Verified Handback in `docs/handoff/HANDBOOK.md`.
 
+## Environment Refusal
+
+When the environment, not the code, stops the work and you hand back
+`status: blocked_implementation_failure` (a permission rule refused a
+command, a binary is missing, or a command needed a TTY), add exactly one
+bullet in this shape to the handback body:
+
+`- **Environment refusal:** <permission rule | missing binary | no TTY>: <the refusal text, quoted>`
+
+Use one of the three category names as written and quote the refusal text
+the shell or tool returned. A failing test is not an environment refusal,
+and a gate-deferred `ready_for_review` handback does not need this bullet.
+
 ## Handling Audit Feedback
 
 Before acting on auditor feedback, verify the finding against the changed files,

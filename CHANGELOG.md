@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- An implementer that hands back `blocked_implementation_failure` because of
+  the environment now adds one `- **Environment refusal:** <permission rule |
+  missing binary | no TTY>: <the refusal text, quoted>` bullet (ACTIVE-6);
+  both implementer prompts and the non-Claude helper files, with their
+  reference-workflow copies, say so. The validator emits the advisory
+  `planner_redispatch_after_refusal` warning when a planner sends that
+  implementer the same unchanged Work Packet; the warning names only the
+  refusal category, never the refusal text, so credentials a refused
+  command carried stay out of the dispatcher logs. Routing and errors are
+  unchanged. The orchestrator passes the handoff the planner actually read
+  (`dispatched_handoff_content`), separate from the story-list baseline.
 - Scanner commands can use a new `{changed_js_files}` placeholder: the
   `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, and `.cts` subset of
   `{changed_files}`. Like `{changed_py_files}`, a scanner that uses it is
