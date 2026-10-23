@@ -4357,6 +4357,50 @@ def test_fan_out_codex_local_needs_head_at_the_scope_head(
     assert calls == []
 
 
+def test_fan_out_codex_local_accepts_a_handoff_commit_above_the_scope_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The work-claim gate accepts scope_sha below HEAD when the commits above
+    # it change only the handoff, so the codex-local reviewer does too.
+    repo, base, head, handoff = _fan_out_repo(tmp_path)
+    _git(repo, "add", "docs/handoff/HANDOFF.md")
+    _git(repo, "commit", "-q", "-m", "handoff")
+    calls = _fake_codex_review(monkeypatch, _local_review())
+
+    result, _log = _run_fan_out(
+        _codex_local_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    [call] = calls
+    assert call["base_ref"] == base
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None and frontmatter.scope_sha == head
+
+
+def test_fan_out_codex_local_refuses_other_commits_above_the_scope_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    _commit_file(repo, "src/other.py", "x = 1" + NL, "unaudited change")
+    calls = _fake_codex_review(monkeypatch, _local_review())
+
+    result, _log = _run_fan_out(
+        _codex_local_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert "does not reach it through handoff-only commits" in result.stderr
+    assert calls == []
+
+
 def test_startup_fails_when_the_codex_local_cli_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -3225,7 +3225,10 @@ codex exec --sandbox read-only review --base <review scope base SHA> \
 
 - HEAD must be the review scope's head commit, because `codex exec review`
   reviews the checked-out HEAD against the merge-base with the base SHA.
-  When it is not, the reviewer fails closed without launching.
+  As in the work-claim gate, HEAD may also sit above it on commits that
+  change only the handoff file (a handoff committed after `scope_sha`); the
+  review then also sees those handoff changes. Otherwise the reviewer fails
+  closed without launching.
 - It uses the binary and environment of the first role whose provider is
   `codex`, else the `codex` binary on `PATH` with the default environment
   allowlist. At startup, `run` checks that this CLI is on `PATH`; a missing

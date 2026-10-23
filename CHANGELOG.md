@@ -17,7 +17,7 @@ This project follows a simple pre-release changelog until the first public tag.
   `quality` and `security` (which it requires), it runs
   `codex exec --sandbox read-only review --base <review scope base SHA>`
   concurrently with them, in every publish mode, with HEAD at the scope's
-  head commit. Its findings map P0-P3 to critical/high/medium/low and merge
+  head commit or above it on handoff-only commits. Its findings map P0-P3 to critical/high/medium/low and merge
   under `audit.block_severity`; a `fail` with only sub-threshold findings
   does not block, like a security `fail`. The audit handoff gains
   `## Codex Local Review` and `## Codex Local Findings` or `Notes`

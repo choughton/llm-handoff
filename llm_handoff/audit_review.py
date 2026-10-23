@@ -76,6 +76,7 @@ from llm_handoff.audit_verification import (
 )
 from llm_handoff.work_claim import (
     extract_work_packet_section,
+    head_equivalent_commits,
     replace_dispatcher_verification_section,
 )
 
@@ -2165,14 +2166,18 @@ def _run_codex_local_reviewer(
     """Run ``codex exec review --base <scope base>`` and read its findings.
 
     ``codex exec review`` reviews the checked-out HEAD, so HEAD must be the
-    scope's head commit; otherwise the reviewer fails closed without
-    launching. It uses the Codex binary and environment of the first Codex
-    role, if any.
+    scope's head commit, or reach it only through commits that change
+    nothing but the handoff file (the work-claim gate accepts a handback
+    whose handoff was committed after ``scope_sha``); otherwise the reviewer
+    fails closed without launching. It uses the Codex binary and environment
+    of the first Codex role, if any.
     """
 
     start = time.monotonic()
     head = _git_rev_parse(config.repo_root, "HEAD")
-    if head != scope.head_sha:
+    if head is None or scope.head_sha not in head_equivalent_commits(
+        config.repo_root, head, config.handoff_path.as_posix()
+    ):
         return _ReviewerOutcome(
             run=ReviewerRun(
                 name="codex-local",
@@ -2185,7 +2190,8 @@ def _run_codex_local_reviewer(
                 error=(
                     "codex_local_reviewer_failed: `codex exec review` reviews "
                     f"the checked-out HEAD ({(head or 'unknown')[:12]}), but the "
-                    f"review scope ends at {scope.head_sha[:12]}."
+                    f"review scope ends at {scope.head_sha[:12]}, and HEAD does "
+                    "not reach it through handoff-only commits."
                 ),
             ),
             handoff_sha_after=_handoff_sha(handoff_path),
