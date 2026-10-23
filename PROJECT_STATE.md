@@ -317,6 +317,59 @@ the `(was ...)` notes give the old IDs. None had started.
   planner, so there is no TIDY-7 batching work. The story stays last and
   operator-owned.
 
+### 22. LOOSE-ENDS - security followups and loop papercuts
+
+Fit: unblocked, independent, and needs no operator input. A good epic to
+work while ACTIVE-PLANNER is parked at ACTIVE-8 (its operator story), and
+after ACTIVE-PLANNER closes. Operator direction (2026-10-22): queue work the
+loop can finish overnight without a person at the console.
+
+Two medium security findings from epic-close audits, promoted from Open
+Followups, and two operator-reported papercuts from the 2026-10-21/22 runs.
+Each story is one behavior change with its own tests.
+
+- LOOSE-1: Config resume settings work without CLI flags. In
+  `llm_handoff/__main__.py` the `--use-backend-resume/--no-backend-resume`
+  and `--use-planner-resume/--no-planner-resume` options default to `True`
+  and `_run_dispatch` always passes them to `load_dispatch_config`
+  (`llm_handoff/config.py`), which overwrites the config file's
+  `backend_resume` and `planner_resume`. So `planner_resume: false` in the
+  file still prints `Planner session: MANAGED RESUME` unless the operator
+  also passes `--no-planner-resume` (seen live 2026-10-21). Make both options
+  tri-state (default `None`) so the file wins unless a flag is passed, keep
+  the flag names, and say in CONFIGURATION.md and the CLI help which one
+  applies. Decide and document whether `agents.planner.resume` /
+  `agents.backend.resume` should feed the top-level setting; at least the
+  startup banner names the source. Tests: file false and no flag gives
+  stateless; file false and `--use-planner-resume` resumes; no key and no
+  flag keeps the current default.
+- LOOSE-2: Dispatcher log lines show on the console while the chat line is
+  up. On 2026-10-22 the epic-close pre-audit verification logged `Dispatcher
+  verification (epic close): running Work Packet Verification command ...`
+  and `... exited 0 after 397.1s` to the dispatch log file, but the operator's
+  console showed nothing between `Dispatching audit fan-out` and the
+  reviewers starting about seven minutes later, so the run looked frozen.
+  Find why these lines did not reach the console while the `[auditor
+  running] chat>` line was drawn (the console chat line renderer and the
+  dispatch logger), make every logged line print above the chat line, and
+  add a test that logs while the chat line is attached.
+- LOOSE-3: Windows `HANDOFF.md` replacement keeps the file's ACL. From the
+  CHAT-26 audit (medium, security reviewer): on Windows
+  `_write_handoff_durably` (`llm_handoff/orchestrator.py`) replaces
+  `HANDOFF.md` with a temporary file that takes the directory's inherited
+  ACL, so an explicit DACL on the old handoff is not kept. Copy the old
+  file's security descriptor onto the temporary file before the replace and
+  fail closed (keep the old file, log an ERROR) when it cannot be copied.
+  POSIX behavior is unchanged; Windows-only tests are skipped elsewhere.
+- LOOSE-4: Report-only validator launches deny Linear writes explicitly.
+  From the TIDY-15 audit (medium, security reviewer): removing the Linear
+  write tools from Claude `--allowedTools` for report-only validator
+  launches does not deny writes that inherited user or project permissions
+  already allow. Add explicit `--disallowedTools` entries for the configured
+  Linear MCP server's `save_comment` and `save_issue` on those launches,
+  covering fallback launches and keeping the existing denials. Tests cover
+  the primary and fallback launch arguments.
+
 ## Open Followups
 
 Promoted to HARDENING stories and removed below: AUDIT-COST (a),
@@ -343,19 +396,9 @@ notes below; the remaining letters are unchanged.
     gates. This repo has epic and story in `remaining_stories` plus this file;
     the TPM-ROLE epic scopes the picker to one epic for that reason.
 
-- From the CHAT-26 audit (medium, security reviewer): on Windows
-  `_write_handoff_durably` replaces `HANDOFF.md` with a temporary file that
-  takes the directory's inherited ACL, so an explicit DACL on the old
-  handoff is not kept. Fixing it means copying the security descriptor
-  before the replace and failing closed when it cannot be copied.
+- The CHAT-26 audit finding (Windows `HANDOFF.md` ACL) is LOOSE-3.
 
-- From the TIDY-15 audit (medium, security reviewer; kept in Open Followups
-  by the planner for a future hardening pass): removing the Linear write tools from Claude
-  `--allowedTools` for report-only validator launches does not deny writes
-  that inherited user or project permissions already allow. The reviewer
-  recommends explicit `--disallowedTools` entries for the configured
-  server's `save_comment` and `save_issue`, covering fallback launches and
-  keeping existing denials.
+- The TIDY-15 audit finding (report-only validator Linear writes) is LOOSE-4.
 
 ## Notes
 
