@@ -6165,18 +6165,165 @@ CHAT_REAUDIT_FAILED: Literal["failed"] = "failed"
 CHAT_REAUDIT_UNMARKED: Literal["unmarked"] = "unmarked"
 
 
+_WIN_SE_FILE_OBJECT = 1
+_WIN_DACL_SECURITY_INFORMATION = 0x00000004
+_WIN_PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+_WIN_UNPROTECTED_DACL_SECURITY_INFORMATION = 0x20000000
+_WIN_SE_DACL_PROTECTED = 0x1000
+_WIN_READ_CONTROL = 0x00020000
+_WIN_WRITE_DAC = 0x00040000
+_WIN_HANDOFF_ERROR_FILE_NOT_FOUND = 2
+
+_handoff_security_api_cache: tuple[object, object] | None = None
+
+
+def _handoff_security_api() -> tuple[object, object]:
+    """``advapi32`` and ``kernel32`` with the types the handoff DACL copy needs.
+
+    Loaded as separate library objects, so these argument types never clash
+    with the ones other dispatcher code sets on ``kernel32``.
+    """
+
+    global _handoff_security_api_cache
+    if _handoff_security_api_cache is not None:
+        return _handoff_security_api_cache
+    import ctypes
+    from ctypes import wintypes
+
+    pointer_out = ctypes.POINTER(ctypes.c_void_p)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        pointer_out,
+        pointer_out,
+        pointer_out,
+        pointer_out,
+        pointer_out,
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.GetSecurityDescriptorControl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.WORD),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+    advapi32.SetSecurityInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    advapi32.SetSecurityInfo.restype = wintypes.DWORD
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.ReOpenFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.ReOpenFile.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    _handoff_security_api_cache = (advapi32, kernel32)
+    return _handoff_security_api_cache
+
+
+def _copy_handoff_windows_dacl(path: Path, file_fd: int) -> None:
+    """Give the open file ``file_fd`` the existing ``path``'s Windows DACL.
+
+    ``tempfile.mkstemp`` creates its file with the directory's inherited ACL,
+    and ``os.replace`` installs that file as the handoff, so without this an
+    explicit or protected DACL on the handoff would be lost. The DACL is read
+    from ``path`` with its protection state and set on a second handle to the
+    open file that carries ``WRITE_DAC``. A protected DACL stays protected;
+    an unprotected one keeps inheriting from the same directory. The owner is
+    left as created. Does nothing when ``path`` does not exist yet. Any other
+    read or set failure raises ``OSError``, so the caller never replaces the
+    handoff with a file that has a different ACL.
+    """
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    advapi32, kernel32 = _handoff_security_api()
+    descriptor = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    code = advapi32.GetNamedSecurityInfoW(  # type: ignore[attr-defined]
+        str(path),
+        _WIN_SE_FILE_OBJECT,
+        _WIN_DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if code == _WIN_HANDOFF_ERROR_FILE_NOT_FOUND:
+        return
+    if code != 0:
+        raise _carry_over_win_error(path, code)
+    try:
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        if not advapi32.GetSecurityDescriptorControl(  # type: ignore[attr-defined]
+            descriptor, ctypes.byref(control), ctypes.byref(revision)
+        ):
+            raise _carry_over_win_error(path, ctypes.get_last_error())  # type: ignore[attr-defined]
+        if control.value & _WIN_SE_DACL_PROTECTED:
+            protection = _WIN_PROTECTED_DACL_SECURITY_INFORMATION
+        else:
+            protection = _WIN_UNPROTECTED_DACL_SECURITY_INFORMATION
+        # The descriptor-only handle shares every access, so it does not
+        # conflict with the open write handle; the creator owns the new file
+        # and so may open it for WRITE_DAC.
+        handle = kernel32.ReOpenFile(  # type: ignore[attr-defined]
+            msvcrt.get_osfhandle(file_fd),  # type: ignore[attr-defined]
+            _WIN_READ_CONTROL | _WIN_WRITE_DAC,
+            _WIN_FILE_SHARE_READ | _WIN_FILE_SHARE_WRITE | _WIN_FILE_SHARE_DELETE,
+            0,
+        )
+        if _carry_over_handle_is_invalid(handle):
+            raise _carry_over_win_error(path, ctypes.get_last_error())  # type: ignore[attr-defined]
+        try:
+            code = advapi32.SetSecurityInfo(  # type: ignore[attr-defined]
+                handle,
+                _WIN_SE_FILE_OBJECT,
+                _WIN_DACL_SECURITY_INFORMATION | protection,
+                None,
+                None,
+                dacl,
+                None,
+            )
+        finally:
+            kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+        if code != 0:
+            raise _carry_over_win_error(path, code)
+    finally:
+        kernel32.LocalFree(descriptor)  # type: ignore[attr-defined]
+
+
 def _copy_handoff_metadata(path: Path, file_fd: int) -> None:
-    """Give the open file ``file_fd`` the existing ``path``'s POSIX metadata.
+    """Give the open file ``file_fd`` the existing ``path``'s metadata.
 
     ``tempfile.mkstemp`` creates its file with mode 0600, and ``os.replace``
     installs that file as the handoff, so without this a 0644 handoff would
-    become 0600. The permission bits are copied, plus the owner and group and
-    the extended attributes (which hold POSIX ACLs on Linux) where this
-    process may set them. Does nothing on Windows, where the new file
-    inherits the directory's ACL, or when ``path`` does not exist yet.
+    become 0600. On POSIX the permission bits are copied, plus the owner and
+    group and the extended attributes (which hold POSIX ACLs on Linux) where
+    this process may set them. On Windows the DACL and its protection state
+    are copied (see ``_copy_handoff_windows_dacl``), and a failure raises.
+    Does nothing when ``path`` does not exist yet.
     """
 
     if sys.platform == "win32":
+        _copy_handoff_windows_dacl(path, file_fd)
         return
     try:
         existing = os.stat(path)
@@ -6229,7 +6376,9 @@ def _write_handoff_durably(path: Path, content: str) -> None:
 
     The content is written and fsynced to a temporary file in the same
     directory, which takes the existing handoff's mode, owner, and extended
-    attributes on POSIX, then replaces ``path``. On POSIX the directory is
+    attributes on POSIX, or its DACL on Windows, then replaces ``path``.
+    When that metadata cannot be read or copied, the error is raised before
+    the replace. On POSIX the directory is
     then fsynced, so the replacement is durable before this returns. When
     the write fails before the replace, the previous handoff survives
     unchanged and the temporary file is removed. When the directory fsync

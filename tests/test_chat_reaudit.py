@@ -603,6 +603,310 @@ def test_directory_fsync_skips_only_an_unsupported_directory_fsync(
         orchestrator._fsync_directory(tmp_path)
 
 
+# ---------------------------------------------------------------------------
+# Windows: the replacement keeps the handoff's DACL
+# ---------------------------------------------------------------------------
+
+
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows security descriptors"
+)
+
+_DACL_INFORMATION = 0x00000004
+_PROTECTED_DACL = 0x80000000
+_UNPROTECTED_DACL = 0x20000000
+_SE_DACL_PROTECTED = 0x1000
+# Everyone may read the file: an explicit ACE the temporary directory does
+# not grant.
+_EXPLICIT_DACL = "D:(A;;FR;;;WD)"
+# Inheritance blocked; Authenticated Users (so this test process) keep full
+# control, so pytest can still remove the file.
+_PROTECTED_DACL_SDDL = "D:P(A;;FA;;;AU)(A;;FR;;;WD)"
+
+
+def _security_api():
+    import ctypes
+    from ctypes import wintypes
+
+    pointer_out = ctypes.POINTER(ctypes.c_void_p)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        pointer_out,
+        pointer_out,
+        pointer_out,
+        pointer_out,
+        pointer_out,
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.c_void_p,
+    ]
+    advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = (
+        wintypes.BOOL
+    )
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        pointer_out,
+        ctypes.c_void_p,
+    ]
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = (
+        wintypes.BOOL
+    )
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        pointer_out,
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    advapi32.GetSecurityDescriptorControl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.WORD),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    return ctypes, wintypes, advapi32, kernel32
+
+
+def _dacl_sddl(path: Path) -> str:
+    """The file's DACL, with its protection and inheritance flags, as SDDL."""
+
+    ctypes, wintypes, advapi32, kernel32 = _security_api()
+    descriptor = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    code = advapi32.GetNamedSecurityInfoW(
+        str(path), 1, _DACL_INFORMATION, None, None,
+        ctypes.byref(dacl), None, ctypes.byref(descriptor),
+    )
+    assert code == 0, code
+    try:
+        text = wintypes.LPWSTR()
+        assert advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor, 1, _DACL_INFORMATION, ctypes.byref(text), None
+        ), ctypes.get_last_error()
+        try:
+            return str(text.value)
+        finally:
+            kernel32.LocalFree(text)
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _set_dacl(path: Path, sddl: str) -> None:
+    """Set ``sddl``'s DACL on ``path``, recomputing inherited ACEs if unprotected."""
+
+    ctypes, wintypes, advapi32, kernel32 = _security_api()
+    descriptor = ctypes.c_void_p()
+    assert advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, ctypes.byref(descriptor), None
+    ), ctypes.get_last_error()
+    try:
+        present = wintypes.BOOL()
+        defaulted = wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        assert advapi32.GetSecurityDescriptorDacl(
+            descriptor, ctypes.byref(present), ctypes.byref(dacl),
+            ctypes.byref(defaulted),
+        )
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        assert advapi32.GetSecurityDescriptorControl(
+            descriptor, ctypes.byref(control), ctypes.byref(revision)
+        )
+        protection = (
+            _PROTECTED_DACL
+            if control.value & _SE_DACL_PROTECTED
+            else _UNPROTECTED_DACL
+        )
+        code = advapi32.SetNamedSecurityInfoW(
+            str(path), 1, _DACL_INFORMATION | protection, None, None, dacl, None
+        )
+        assert code == 0, code
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _parent_default_sddl(directory: Path) -> str:
+    """The DACL a new file in ``directory`` gets by inheritance alone."""
+
+    probe = directory / "probe.txt"
+    probe.write_bytes(b"")
+    try:
+        return _dacl_sddl(probe)
+    finally:
+        probe.unlink()
+
+
+class _FailingCall:
+    """Forward to ``real``, except ``name``, which returns ``result``."""
+
+    def __init__(self, real: Any, name: str, result: Any, last_error: int = 0):
+        self._real = real
+        self._name = name
+        self._result = result
+        self._last_error = last_error
+
+    def __getattr__(self, attribute: str) -> Any:
+        if attribute != self._name:
+            return getattr(self._real, attribute)
+
+        def call(*_args: Any) -> Any:
+            import ctypes
+
+            ctypes.set_last_error(self._last_error)  # type: ignore[attr-defined]
+            return self._result
+
+        return call
+
+
+def _fail_security_call(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Make one Windows API call of the handoff DACL copy fail with access denied."""
+
+    import ctypes
+
+    advapi32, kernel32 = orchestrator._handoff_security_api()
+    access_denied = 5
+    if name == "ReOpenFile":
+        kernel32 = _FailingCall(
+            kernel32, name, ctypes.c_void_p(-1).value, access_denied
+        )
+    elif name == "GetSecurityDescriptorControl":
+        advapi32 = _FailingCall(advapi32, name, 0, access_denied)
+    else:
+        advapi32 = _FailingCall(advapi32, name, access_denied)
+    monkeypatch.setattr(
+        orchestrator, "_handoff_security_api", lambda: (advapi32, kernel32)
+    )
+
+
+@windows_only
+@pytest.mark.parametrize(
+    ("sddl", "protected"),
+    [(_EXPLICIT_DACL, False), (_PROTECTED_DACL_SDDL, True)],
+    ids=["explicit-inheriting", "protected"],
+)
+def test_durable_write_keeps_the_windows_handoff_dacl(
+    tmp_path: Path, sddl: str, protected: bool
+) -> None:
+    path, _original = _existing_handoff(tmp_path)
+    _set_dacl(path, sddl)
+    before = _dacl_sddl(path)
+    parent_default = _parent_default_sddl(tmp_path)
+    assert before != parent_default
+    assert "(A;;FR;;;WD)" in before
+    assert before.startswith("D:P") is protected
+    # An inheriting DACL still carries the directory's inherited ACEs; a
+    # protected one carries none.
+    assert (";ID;" in before) is not protected
+
+    orchestrator._write_handoff_durably(path, "# New handoff\n")
+
+    assert path.read_text(encoding="utf-8") == "# New handoff\n"
+    assert _dacl_sddl(path) == before
+    assert _leftover_temporaries(path) == []
+
+
+@windows_only
+def test_durable_write_creates_a_first_windows_handoff(tmp_path: Path) -> None:
+    path = tmp_path / "HANDOFF.md"
+    parent_default = _parent_default_sddl(tmp_path)
+
+    orchestrator._write_handoff_durably(path, "# First handoff\n")
+
+    assert path.read_text(encoding="utf-8") == "# First handoff\n"
+    assert _dacl_sddl(path) == parent_default
+    assert _leftover_temporaries(path) == []
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["HANDOFF.md"]
+
+
+@windows_only
+@pytest.mark.parametrize(
+    "failing",
+    [
+        "GetNamedSecurityInfoW",
+        "GetSecurityDescriptorControl",
+        "ReOpenFile",
+        "SetSecurityInfo",
+    ],
+)
+def test_durable_write_keeps_the_windows_handoff_when_the_dacl_copy_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    path, original = _existing_handoff(tmp_path)
+    _set_dacl(path, _EXPLICIT_DACL)
+    before = _dacl_sddl(path)
+    _fail_security_call(monkeypatch, failing)
+    calls: list[str] = []
+    real_replace = orchestrator.os.replace
+
+    def recording_replace(source: Any, destination: Any) -> None:
+        calls.append("replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(orchestrator.os, "replace", recording_replace)
+
+    with pytest.raises(OSError) as raised:
+        orchestrator._write_handoff_durably(path, "# New handoff\n")
+
+    assert getattr(raised.value, "winerror", None) == 5
+    assert calls == []
+    assert path.read_bytes() == original
+    assert _dacl_sddl(path) == before
+    assert _leftover_temporaries(path) == []
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["HANDOFF.md"]
+
+
+@windows_only
+@pytest.mark.parametrize("failing", ["GetNamedSecurityInfoW", "SetSecurityInfo"])
+def test_helper_keeps_the_record_when_the_windows_dacl_copy_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    repo, _base, implemented, assignment, record = _story_repo(tmp_path)
+    handoff_path = repo / HANDOFF
+    _set_dacl(handoff_path, _EXPLICIT_DACL)
+    before = handoff_path.read_bytes()
+    dacl_before = _dacl_sddl(handoff_path)
+    messages: list[tuple[str, str]] = []
+    _fail_security_call(monkeypatch, failing)
+
+    result = orchestrator._send_chat_changes_back_to_audit(
+        _config(repo), assignment, _collecting_log(messages)
+    )
+
+    assert result == orchestrator.CHAT_REAUDIT_FAILED
+    assert handoff_path.read_bytes() == before
+    assert _dacl_sddl(handoff_path) == dacl_before
+    assert record.exists()
+    assert load_chat_changes(record)
+    assert _git(repo, "rev-parse", "HEAD~1") == implemented
+    assert _leftover_temporaries(handoff_path) == []
+    errors = [message for level, message in messages if level == "ERROR"]
+    assert len(errors) == 1
+    assert "record is kept" in errors[0]
+    assert [level for level, _message in messages] == ["ERROR"]
+
+
 def test_helper_keeps_the_record_when_the_commit_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

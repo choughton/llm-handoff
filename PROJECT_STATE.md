@@ -15,7 +15,10 @@ history.
   (`0585fb4d19a04354a52601470672567ccf8fb21b`) and merged in PR #284
   (`9a94f35`, `9a94f3599cda149aec769c69b16789a925902b11`). LOOSE-2
   (dispatcher log lines show on the console while the chat line is up) is
-  implemented and awaits audit; LOOSE-3 and LOOSE-4 remain, in that order. TIDY (epic 19) closed with TIDY-13,
+  approved at `43a70e2` (`43a70e2b86a20d2bb802ee3b14becf3a4516571a`) and
+  merged in PR #285 (`080b29d`, `080b29d93c86a015997613032acea1f863023c48`).
+  LOOSE-3 (Windows `HANDOFF.md` replacement keeps the file's ACL) is
+  implemented and awaits audit; LOOSE-4 remains. TIDY (epic 19) closed with TIDY-13,
   approved at `7816ae6` and merged in PR #272 (`4e380f9`).
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
@@ -424,10 +427,11 @@ Each story is one behavior change with its own tests.
   (2026-10-22): `llm_handoff/logging_util.py` filters steady-state `INFO`
   and `DEBUG` before console rendering, so inspect that filter along with
   `llm_handoff/chat_line.py`; redrawing the prompt alone cannot recover a
-  filtered message. Progress: implemented 2026-10-23, awaiting audit;
+  filtered message. Progress: implemented 2026-10-23;
   `DispatchLogger._should_write_console` lets every level through while a
   chat line is attached, and the steady-state filter still governs the
   direct console when none is attached, including after detachment.
+  Approved at `43a70e2` and merged in PR #285 (`080b29d`).
 - LOOSE-3: Windows `HANDOFF.md` replacement keeps the file's ACL. From the
   CHAT-26 audit (medium, security reviewer): on Windows
   `_write_handoff_durably` (`llm_handoff/orchestrator.py`) replaces
@@ -438,7 +442,14 @@ Each story is one behavior change with its own tests.
   POSIX behavior is unchanged; Windows-only tests are skipped elsewhere.
   Grooming (2026-10-22): `_write_handoff_durably` already copies POSIX
   metadata before the replace; keep its cleanup and failure path when
-  adding Windows security descriptor preservation.
+  adding Windows security descriptor preservation. Progress: implemented
+  2026-10-23, awaiting audit; on Windows `_copy_handoff_metadata` reads the
+  old handoff's DACL and protection state (`GetNamedSecurityInfoW`) and sets
+  them on a `WRITE_DAC` reopen of the temporary file (`SetSecurityInfo`)
+  before fsync and replace. A read or copy failure raises `OSError`, so the
+  old file and its ACL stay, the temporary file is removed, and the re-audit
+  caller logs ERROR and keeps the chat change record. A first handoff takes
+  the directory's ACL as before.
 - LOOSE-4: Report-only validator launches deny Linear writes explicitly.
   From the TIDY-15 audit (medium, security reviewer): removing the Linear
   write tools from Claude `--allowedTools` for report-only validator

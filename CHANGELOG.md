@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- On Windows, the durable `HANDOFF.md` rewrite (the re-audit after chat
+  changes) now keeps the old handoff's DACL (LOOSE-3), explicit ACEs and its
+  protected or inheriting state, instead of giving the replacement the
+  directory's inherited ACL. If the DACL cannot be read or copied, the write
+  fails before the replace: the old handoff and its ACL stay, the temporary
+  file is removed, and the dispatcher logs an ERROR, keeps the chat change
+  record, and does not publish. A first handoff still takes the directory's
+  ACL, and POSIX behavior is unchanged. Uses standard-library `ctypes` only.
 - While the console chat line is attached, every dispatcher log level now
   prints above it after startup (LOOSE-2), including ordinary INFO and DEBUG
   lines, work-claim output tails, and the epic-close dispatcher verification
