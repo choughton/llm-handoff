@@ -230,7 +230,11 @@ server name defaults to `linear`; change it with `--tracker-mcp-server`. This
 writes a `tracker` block into `dispatch_config.yaml` and renders the Linear
 prompt sections into `AGENTS.md` and `docs/handoff/HANDBOOK.md` between
 `<!-- llm-handoff:linear:begin -->` and `<!-- llm-handoff:linear:end -->`
-markers.
+markers. After an applied init or switch to Linear, `init` prints the
+remaining setup steps: configure and authenticate the named MCP server in
+each provider CLI, then run `doctor` and the optional probe from the
+repository root. [docs/LINEAR.md](docs/LINEAR.md) walks through the whole
+path, from init to the first dispatcher run.
 
 Then check the connectors. `doctor` prints one `tracker connector` line per
 provider CLI, saying whether that CLI's MCP config defines the server. It
@@ -552,6 +556,7 @@ loop only advances when the handoff state parses, routes, and validates.
 | [WALKTHROUGH.md](WALKTHROUGH.md) | You want the two-repo model, what `init` copies, and common pauses explained. |
 | [INSTALL.md](INSTALL.md) | You are running from a source checkout or debugging the install. |
 | [CONFIGURATION.md](CONFIGURATION.md) | You are editing `dispatch_config.yaml`. Every supported key is here. |
+| [docs/LINEAR.md](docs/LINEAR.md) | You are setting up Linear mode: connectors, `doctor`, the probe, and the first run. |
 | [docs/INVENTORY.md](docs/INVENTORY.md) | You want the index of every doc, prompt file, agent template, and fixture in this repo. |
 | [docs/handoff/README.md](docs/handoff/README.md) | You are writing or debugging a handoff: frontmatter, status enum, Work Packet format. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | You want the module map and design constraints. |

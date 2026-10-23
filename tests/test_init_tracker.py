@@ -171,7 +171,11 @@ def test_cli_switches_a_safe_initialized_repo_to_linear(tmp_path: Path) -> None:
     index = next(i for i, line in enumerate(lines) if line.startswith("Provider mapping:"))
     assert lines[index] == "Provider mapping: kept from dispatch_config.yaml"
     assert lines[index + 1] == "Tracker: linear"
-    assert result.stdout.replace("Switched", "DRY RUN", 1) == dry.stdout
+    # The applied switch adds the Linear onboarding section after the summary
+    # the dry run prints (LIN-12).
+    summary, onboarding = result.stdout.split("\n\nLinear setup", 1)
+    assert summary.replace("Switched", "DRY RUN", 1) + "\n" == dry.stdout
+    assert "--probe-tracker ENG-123" in onboarding
     assert load_dispatch_config(repo_root=tmp_path).tracker.provider == "linear"
 
 
@@ -1054,6 +1058,102 @@ def test_cli_dry_run_prints_tracker_linear(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "Tracker: linear" in result.stdout.splitlines()
     assert not any(tmp_path.iterdir())
+    assert "Linear setup" not in result.output
+
+
+# LIN-12: Linear onboarding after an applied fresh init.
+
+ONBOARDING = "Linear setup (full guide: docs/LINEAR.md"
+
+
+def _onboarding(stdout: str) -> list[str]:
+    lines = stdout.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(ONBOARDING)]
+    assert len(starts) == 1, stdout
+    return lines[starts[0] :]
+
+
+def _refuse_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(f"init launched a process: {args!r}")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    monkeypatch.setattr(subprocess, "run", refuse)
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("server", [None, "team-linear"])
+def test_cli_fresh_linear_init_prints_onboarding_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, server: str | None
+) -> None:
+    _refuse_subprocess(monkeypatch)
+    extra = () if server is None else ("--tracker-mcp-server", server)
+    result = _invoke(
+        str(tmp_path),
+        "--provider",
+        provider,
+        "--tracker",
+        "linear",
+        "--tracker-team",
+        "ENG",
+        "--tracker-project",
+        "Platform",
+        *extra,
+    )
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    section = _onboarding(result.stdout)
+    start = len(lines) - len(section)
+    # After the whole result summary, including the candidate commands.
+    assert lines.index("Tracker: linear") < start
+    assert any(line.startswith("Candidate commands") for line in lines[:start])
+    assert lines[start - 1] == ""
+    text = "\n".join(section)
+    name = server or "linear"
+    assert f'configure and authenticate a Linear MCP server named "{name}"' in text
+    assert "every provider CLI that runs a role or fallback" in text
+    assert "init did not configure or authenticate any connector" in text
+    assert f"Change to the initialized repository root first: {tmp_path.resolve()}" in text
+    assert "  3. Run: llm-handoff doctor" in section
+    assert "does not prove that the connector authenticates" in text
+    assert "  4. Optional: llm-handoff doctor --probe-tracker ENG-123" in section
+    assert "Replace ENG-123 with a Linear issue you can access" in text
+    assert "at least one Claude role or fallback" in text
+    assert "a Codex-only setup cannot run it" in text
+    assert "does not check any other provider's connector" in text
+    assert all(line.isascii() for line in section)
+
+
+def test_init_result_names_the_mcp_server(tmp_path: Path) -> None:
+    assert _init(tmp_path / "none", dry_run=True).tracker_mcp_server is None
+    assert _linear(tmp_path / "default", dry_run=True).tracker_mcp_server == "linear"
+    custom = _linear(tmp_path / "custom", dry_run=True, tracker_mcp_server="lin-2")
+    assert custom.tracker_mcp_server == "lin-2"
+
+
+@pytest.mark.parametrize("args", [(), ("--tracker", "none")])
+def test_cli_file_mode_init_prints_no_onboarding(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    result = _invoke(str(tmp_path), "--provider", "claude", *args)
+    assert result.exit_code == 0, result.output
+    assert "Linear setup" not in result.output
+    assert "--probe-tracker" not in result.output
+
+
+def test_cli_failed_linear_init_prints_no_onboarding(tmp_path: Path) -> None:
+    (tmp_path / AGENTS).mkdir()
+    args = ("--tracker", "linear", "--tracker-team", "ENG", "--tracker-project", "P")
+    result = _invoke(str(tmp_path), "--provider", "claude", *args)
+    assert result.exit_code == 1, result.output
+    assert "Initialization aborted: target files already exist." in result.stderr
+    assert "Linear setup" not in result.output
+
+    bad = _invoke(str(tmp_path / "other"), "--provider", "claude", "--tracker", "linear")
+    assert bad.exit_code == 2, bad.output
+    assert "Linear setup" not in bad.output
 
 
 # Check 10: initialized-target safety preflight (LIN-13).

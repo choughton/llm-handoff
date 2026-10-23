@@ -2599,6 +2599,16 @@ On a fresh repository, `init` without `--tracker`, or with `--tracker none`,
 writes the same files as before, with no tracker block and no Linear markers.
 The output prints `Tracker: linear` or `Tracker: none`.
 
+After an applied `init --tracker linear`, fresh or as a switch (a same-mode
+rerun included), the output ends with a `Linear setup` section: configure
+and authenticate the `tracker.mcp_server` server in every provider CLI that
+runs a role or fallback, change to the repository root, run
+`llm-handoff doctor`, and optionally run
+`llm-handoff doctor --probe-tracker ENG-123` with an issue you can access.
+`--dry-run`, a refused or conflicting run, and file mode print no such
+section. `init` itself configures no connector and contacts nothing. The
+step-by-step guide is [docs/LINEAR.md](docs/LINEAR.md).
+
 Switching an initialized repository. `init --tracker <mode>` on a repository
 that has `dispatch_config.yaml` first runs the initialized-target safety
 check: it refuses (exit 2, one line, nothing written, with or without

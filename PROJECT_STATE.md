@@ -17,11 +17,11 @@ history.
   design check, and ESCALATION-RECONCILE waits on its trigger. LIN-11 is
   split into LIN-13 and LIN-14. LIN-13 (initialized-target safety preflight)
   is approved at `d35f9de` (`d35f9de16b21a4452a6341623de9b7fe850e447c`).
-  LIN-14 (tracker-mode switching) is implemented and in PR #289; its PR
-  review fix (`--force` to none removes the handbook Linear block instead of
-  leaving unguarded Linear rules) and its audit fix (malformed or repeated
-  handbook Linear markers on a switch to none now refuse even with
-  `--force`) are in audit; LIN-12 remains.
+  LIN-14 (tracker-mode switching) is approved at `6538275`
+  (`65382750c1cdd10da26179c48a5602783dff7bc5`) and merged in PR #289
+  (`f7b8d17`, `f7b8d175c7d577f0b1bea3e6860e3a720048eb7c`). LIN-12 (Linear
+  onboarding output after init and `docs/LINEAR.md`), the epic's last
+  story, is implemented and in audit.
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
@@ -110,12 +110,13 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 - LIN-14 (was LIN-11): `init --tracker linear` and `init --tracker none`
   switch an initialized repository between modes behind LIN-13's preflight;
   `--dry-run`; conflicts; `--force` reports what is left behind; a round trip
-  is byte-identical. Status: implemented in PR #289; review fix for
-  `--force` leaving the unguarded handbook Linear block in file mode, and
-  the audit fix refusing malformed or repeated handbook Linear markers on a
-  switch to none even with `--force`, in audit.
+  is byte-identical. Status: approved at `6538275` and merged in PR #289
+  (`f7b8d17`).
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
-  `doctor` command, and the probe command; add `docs/LINEAR.md`.
+  `doctor` command, and the probe command; add `docs/LINEAR.md`. Status:
+  implemented; an applied Linear init or switch (same-mode reruns included)
+  prints a `Linear setup` section naming the MCP server, and
+  `docs/LINEAR.md` is linked from README and CONFIGURATION; in audit.
 
 ### 14. WORK-INTAKE - turn a plain request into epics and stories
 
