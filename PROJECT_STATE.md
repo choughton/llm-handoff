@@ -10,18 +10,11 @@ history.
 
 ## Current Status
 
-- **Active Epic:** LINEAR-SWITCH (epic 11). Picked by fit after LOOSE-ENDS
-  (epic 22) closed with LOOSE-4, approved at `9f2526e`
-  (`9f2526ec66fecb648d5caf5b250bc3838902b413`) and merged in PR #287
-  (`7bfd742`): ACTIVE-PLANNER is parked on the operator, WORK-INTAKE needs a
-  design check, and ESCALATION-RECONCILE waits on its trigger. LIN-11 is
-  split into LIN-13 and LIN-14. LIN-13 (initialized-target safety preflight)
-  is approved at `d35f9de` (`d35f9de16b21a4452a6341623de9b7fe850e447c`).
-  LIN-14 (tracker-mode switching) is approved at `6538275`
-  (`65382750c1cdd10da26179c48a5602783dff7bc5`) and merged in PR #289
-  (`f7b8d17`, `f7b8d175c7d577f0b1bea3e6860e3a720048eb7c`). LIN-12 (Linear
-  onboarding output after init and `docs/LINEAR.md`), the epic's last
-  story, is implemented and in audit.
+- **Active Epic:** None. LINEAR-SWITCH (epic 11) closed with LIN-12,
+  approved at `7a57591` (`7a57591544c251de89d8a2c900b4fa86a0b28cf1`) and
+  merged in PR #290 (`28815f5`). The planner picks the next epic by fit:
+  ACTIVE-PLANNER is parked on the operator, WORK-INTAKE needs a design check,
+  and ESCALATION-RECONCILE waits on its trigger.
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
@@ -92,31 +85,6 @@ renumbered in execution order.
 
 Closed epics, with their full intros and story lists, are in
 `COMPLETED_WORK.md`; the open epics below keep their numbers.
-
-### 11. LINEAR-SWITCH - mode switching and onboarding
-
-Fit: low urgency; only repositories that switch tracker modes need it.
-LINEAR-WORKFLOW is closed, so nothing blocks it.
-
-- LIN-13 (was LIN-11): Initialized-repository tracker switch safety
-  preflight. Before planning or writing any file for either `--tracker`
-  mode, `init` refuses an initialized target (one with `dispatch_config.yaml`)
-  whose config is a directory, a link, unreadable, invalid YAML, or fails
-  config validation; that has `.dispatch.lock` or dispatcher run-state files;
-  or whose configured handoff holds a `tracker_issue` lease, routes to an
-  implementing or reviewing role, or cannot be read as between assignments.
-  `--dry-run` and `--force` do not bypass it; the CLI exits 2 with one line.
-  Status: approved at `d35f9de`.
-- LIN-14 (was LIN-11): `init --tracker linear` and `init --tracker none`
-  switch an initialized repository between modes behind LIN-13's preflight;
-  `--dry-run`; conflicts; `--force` reports what is left behind; a round trip
-  is byte-identical. Status: approved at `6538275` and merged in PR #289
-  (`f7b8d17`).
-- LIN-12: After `init --tracker linear`, print connector setup steps, the
-  `doctor` command, and the probe command; add `docs/LINEAR.md`. Status:
-  implemented; an applied Linear init or switch (same-mode reruns included)
-  prints a `Linear setup` section naming the MCP server, and
-  `docs/LINEAR.md` is linked from README and CONFIGURATION; in audit.
 
 ### 14. WORK-INTAKE - turn a plain request into epics and stories
 
