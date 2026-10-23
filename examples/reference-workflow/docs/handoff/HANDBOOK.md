@@ -294,6 +294,39 @@ match it:
 To ask the planner for a re-scope, use `blocked_implementation_failure`, not
 `blocked_missing_context`.
 
+**Environment refusal handbacks.** An implementer handback with
+`status: blocked_implementation_failure` and an `Environment refusal` bullet
+reports that the environment, not the code, stopped the work. Never route
+the same role an unchanged Work Packet after one: the same refusal stops it
+again. The validator's advisory `planner_redispatch_after_refusal` warning
+flags that re-dispatch, but the rule holds either way. The planner takes one
+of two paths:
+
+- **Gate-verified re-dispatch.** When the refused command is the Work
+  Packet's Verification command and the work-claim gate is on
+  (`enforce_work_packet: true`; dispatcher commit mode always runs the gate),
+  revise the Work Packet's Context or Objective to instruct the
+  Gate-Verified Handback above. Changing only the `reason` or the Next Step
+  leaves the Work Packet unchanged. Keep the Verification command exactly as
+  written, so the gate still runs it. The instruction requires a refusal
+  from the implementer's current turn and all five Verification Evidence
+  fields, with `Commands run` beginning `deferred to the work-claim gate:`
+  and quoting the refusal, and an `Output summary` that identifies it. A
+  failing test is not an environment refusal, and the instruction never
+  authorizes PASS evidence for a command that did not pass.
+- **Route to `user`.** When the gate is off (`enforce_work_packet: false`)
+  or cannot address the blocker, such as a refused command other than the
+  Verification command, route to `user` with `status: escalate_to_user` and
+  the one remedy for the reported refusal. For a `permission rule` refusal
+  of `python`, `python3`, or `pytest` on a default allowlist, name
+  `interpreter_grants: true`; otherwise name the exact rule, such as an
+  `allowed_tools` entry `Bash(npm test:*)` for a Claude role or the agy
+  `permissions.allow` grant. An allowlist setting cures neither a
+  `missing binary` nor a `no TTY` refusal: for a `missing binary`, name the
+  executable the operator must install or put on `PATH`; for `no TTY`, name
+  the interactive step the operator must run or the non-interactive form of
+  the command.
+
 ## Operator Stories
 
 An operator story is a story whose edits only a person can make, such as
