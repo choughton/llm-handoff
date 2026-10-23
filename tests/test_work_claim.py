@@ -1837,14 +1837,14 @@ def test_load_dispatch_config_accepts_changed_js_files_placeholder(
     config_path.write_text(
         "scanners:\n"
         "  - name: eslint\n"
-        "    command: npx --no eslint --max-warnings 0 {changed_js_files}\n",
+        "    command: npx --yes=false -- eslint --max-warnings 0 {changed_js_files}\n",
         encoding="utf-8",
     )
 
     config = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
     assert config.scanners[0].command == (
-        "npx --no eslint --max-warnings 0 {changed_js_files}"
+        "npx --yes=false -- eslint --max-warnings 0 {changed_js_files}"
     )
 
 

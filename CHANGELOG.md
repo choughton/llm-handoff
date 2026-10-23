@@ -11,7 +11,7 @@ This project follows a simple pre-release changelog until the first public tag.
   `{changed_files}`. Like `{changed_py_files}`, a scanner that uses it is
   skipped on claims where the list is empty, and `llm-handoff doctor` names
   it in the scanner's condition. CONFIGURATION.md adds a Node.js scanner
-  example (gitleaks, semgrep, `npx --no eslint`, and `npm audit`).
+  example (gitleaks, semgrep, `npx --yes=false -- eslint`, and `npm audit`).
 - The dispatcher now runs the ACTIVE-3 verification preflight itself
   (ACTIVE-4): once at startup on the handoff on disk, and in every cycle that
   dispatches `backend` or `frontend` on the assignment that cycle dispatches,

@@ -682,7 +682,7 @@ def test_doctor_names_changed_js_files_in_scanner_condition(
         repo,
         "scanners:\n"
         "  - name: eslint\n"
-        "    command: npx --no eslint --max-warnings 0 {changed_js_files}\n",
+        "    command: npx --yes=false -- eslint --max-warnings 0 {changed_js_files}\n",
     )
     _stub_which(monkeypatch, {"fake-codex", "fake-claude", "npx"})
 

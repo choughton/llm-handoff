@@ -1779,7 +1779,7 @@ scanners:
     timeout_ms: 300000
     required: true
   - name: eslint
-    command: npx --no eslint --no-warn-ignored --max-warnings 0 {changed_js_files}
+    command: npx --yes=false -- eslint --no-warn-ignored --max-warnings 0 {changed_js_files}
     timeout_ms: 180000
     required: true
   - name: npm-audit
@@ -1790,12 +1790,16 @@ scanners:
 
 The gate looks up a scanner's executable on `PATH` or by absolute path, never
 by a relative path such as `node_modules/.bin/eslint`, so run locally
-installed tools through `npx`. `--no` makes `npx` fail instead of downloading
-a package that is not installed, which keeps the result tied to the version
-pinned in `package.json` and the lockfile. `--no-warn-ignored` keeps ESLint
-from warning about a changed file its config ignores, which `--max-warnings 0`
-would otherwise turn into a failure. For Biome, use
-`npx --no biome check --no-errors-on-unmatched {changed_js_files}`.
+installed tools through `npx`. `--yes=false` makes `npx` fail instead of
+downloading a package that is not installed, which keeps the result tied to
+the version pinned in `package.json` and the lockfile. The `--` is required:
+without it `npx` parses the tool's own options as npm options, so
+`npx --no eslint --version` prints the npm version and exits 0, and
+`--max-warnings 0` never reaches ESLint. A scanner written that way can pass
+without scanning anything. `--no-warn-ignored` keeps ESLint from warning
+about a changed file its config ignores, which `--max-warnings 0` would
+otherwise turn into a failure. For Biome, use
+`npx --yes=false -- biome check --no-errors-on-unmatched {changed_js_files}`.
 `npm audit` needs network access and is not diff-shaped, like `pip-audit`; use
 `pnpm audit` or `yarn npm audit` for those package managers. A TypeScript type
 check such as `tsc --noEmit` covers the whole project, so put it in the Work

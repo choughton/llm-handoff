@@ -86,7 +86,7 @@ work_packet_verification_timeout_seconds: 600
 # `llm-handoff doctor` to see which configured scanners will run.
 # For Python repositories, bandit, pip-audit, and gitleaks are recommended.
 # For Node.js repositories, see the example in CONFIGURATION.md (gitleaks,
-# semgrep, `npx --no eslint ... {changed_js_files}`, and npm audit).
+# semgrep, `npx --yes=false -- eslint ... {changed_js_files}`, npm audit).
 # Use semgrep only with a pinned local ruleset kept in the repository
 # (--config <path to a ruleset in the repo>), not --config auto, which
 # downloads rules from the network at run time.
