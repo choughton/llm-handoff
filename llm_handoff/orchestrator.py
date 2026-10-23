@@ -13099,7 +13099,9 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
         _log(
             log,
             "INFO",
-            "Audit reviewers:    quality + security (read-only fan-out; "
+            "Audit reviewers:    quality + security"
+            + (" + codex-local" if config.audit.codex_local_enabled else "")
+            + " (read-only fan-out; "
             f"security provider: {config.audit.security_provider or 'auto'}; "
             f"security model: {describe_security_reviewer_model(config)}; "
             f"block severity: {config.audit.block_severity})",

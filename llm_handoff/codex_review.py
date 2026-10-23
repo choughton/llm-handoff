@@ -1,12 +1,10 @@
-"""Run ``codex exec review`` locally as the pull request reviewer.
+"""Run ``codex exec review`` locally for the ``codex-local`` audit reviewer.
 
-``publish.wait_for_reviewers: [codex-local]`` replaces the wait for the
-ChatGPT Codex connector's GitHub review with a review the dispatcher runs
-itself, for repositories the connector cannot read. The dispatcher runs
-``codex exec review --base <remote>/<base>`` in the repository, read-only,
-on the pushed head commit, and posts each finding to the pull request as an
-inline review comment so the correction round works as it does for the
-cloud review.
+``audit.reviewers: [quality, security, codex-local]`` adds the Codex CLI's
+own review command to the read-only audit fan-out, so a repository the
+ChatGPT Codex connector cannot read still gets a Codex review, in every
+publish mode. The audit runs ``codex exec review --base <scope base SHA>``
+in the repository, read-only, with HEAD at the review scope's head commit.
 
 ``codex exec review`` ignores ``--output-schema`` and always ends with the
 same text layout: an overall explanation, then (when there are findings) a
@@ -16,8 +14,8 @@ per finding, with an em dash before its location::
     - [P2] Restore the empty-input guard in mean <em dash> /repo/src/stats.py:2-2
       Calling `mean([])` now raises `ZeroDivisionError` ...
 
-Every finding counts, whatever its priority. A message that names review
-comments but yields no parsable finding is an error, never a clean review.
+A message that names review comments but yields no parsable finding is an
+error, never a clean review.
 """
 
 from __future__ import annotations
@@ -56,11 +54,7 @@ class LocalFinding:
     def location(self) -> str:
         if self.path and self.line:
             return f"{self.path}:{self.line}"
-        return self.path or "pull request"
-
-    def comment_body(self) -> str:
-        text = f"**[P{self.priority}] {self.title}**"
-        return f"{text}\n\n{self.body}" if self.body else text
+        return self.path or "(no file)"
 
 
 @dataclass(frozen=True)
@@ -73,6 +67,10 @@ class LocalReview:
 
 @dataclass(frozen=True)
 class LocalReviewRun:
+    command: tuple[str, ...]
+    exit_code: int
+    stdout: str
+    stderr: str
     review: LocalReview | None = None
     # Why the review did not finish; empty when ``review`` is set.
     error: str = ""
@@ -152,33 +150,45 @@ def run_codex_review(
     command_prefix: Sequence[str],
     repo_root: Path,
     base_ref: str,
-    timeout_seconds: int,
+    timeout_ms: int,
+    env: dict[str, str] | None = None,
+    stop_on_chat_takeover: bool = True,
 ) -> LocalReviewRun:
     """Run one read-only ``codex exec review`` of HEAD against ``base_ref``.
 
-    An empty ``command_prefix`` runs the configured Codex binary.
-
-    The run is not stopped by a chat takeover request: the dispatcher is
-    publishing, so it finishes the review first, as it does a ``gh`` call.
+    An empty ``command_prefix`` runs the configured Codex binary. ``env``
+    defaults to the allowlisted environment of a Codex role without an API
+    key. A chat takeover request stops the run, as it stops the other audit
+    reviewers, unless ``stop_on_chat_takeover`` is False.
     """
 
     command_prefix = tuple(command_prefix) or (config.CODEX_BINARY,)
     last_message_path = (repo_root / LAST_MESSAGE_PATH).resolve()
     last_message_path.parent.mkdir(parents=True, exist_ok=True)
     last_message_path.unlink(missing_ok=True)
+    command = build_review_command(command_prefix, base_ref, last_message_path)
+    if env is None:
+        env = build_agent_env(config.AgentConfig(provider="codex"))
     result = _run_command_streaming(
-        build_review_command(command_prefix, base_ref, last_message_path),
+        command,
         cwd=repo_root,
-        timeout_ms=timeout_seconds * 1000,
-        env=build_agent_env(config.AgentConfig(provider="codex")),
-        stop_on_chat_takeover=False,
+        timeout_ms=timeout_ms,
+        env=env,
+        stop_on_chat_takeover=stop_on_chat_takeover,
     )
+    outcome = {
+        "command": tuple(command),
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
     if result.exit_code != 0:
         reason = classify_fatal_failure(
             exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr
         )
         summary = redact_stderr_summary(result.stderr) if result.stderr.strip() else ""
         return LocalReviewRun(
+            **outcome,
             error=(
                 f"codex exec review exited with code {result.exit_code}"
                 + (f": {summary}" if summary else "")
@@ -191,9 +201,9 @@ def run_codex_review(
     except OSError:
         text = _last_agent_message(result.stdout)
     try:
-        return LocalReviewRun(review=parse_review_message(text, repo_root))
+        return LocalReviewRun(**outcome, review=parse_review_message(text, repo_root))
     except ValueError as exc:
-        return LocalReviewRun(error=str(exc))
+        return LocalReviewRun(**outcome, error=str(exc))
 
 
 def _last_agent_message(stdout: str) -> str:

@@ -12,6 +12,10 @@ dispatcher:
 4. merges the verdicts under ``audit.block_severity``; and
 5. writes ``HANDOFF.md`` itself.
 
+With ``codex-local`` also listed, a third reviewer, ``codex exec review`` of
+the same range, runs next to them, and its findings merge under the same
+``audit.block_severity``.
+
 Reviewers are told not to touch the handoff, and a changed handoff hash after
 a reviewer run is a hard error. Vendor security reviewers are LLM tools; they
 are not hardened against prompt injection in repository content, so this gate
@@ -57,6 +61,7 @@ from llm_handoff.agent_providers.claude import (
 from llm_handoff.agent_providers.codex import _build_codex_env, _run_codex_json_command
 from llm_handoff.agent_types import DispatchResult, LogFn, SubagentResult
 from llm_handoff.chat_takeover import ChatTakeover, takeover_requested
+from llm_handoff.codex_review import LocalReview, run_codex_review
 from llm_handoff.config import AgentConfig, AgentRole, DispatchConfig
 from llm_handoff.failover import classify_fatal_failure
 from llm_handoff.redaction import redact_stderr_summary
@@ -76,7 +81,7 @@ from llm_handoff.work_claim import (
 
 
 Severity = Literal["critical", "high", "medium", "low", "info"]
-ReviewerName = Literal["quality", "security"]
+ReviewerName = Literal["quality", "security", "codex-local"]
 SecurityReviewerKind = Literal[
     "claude", "codex-security", "codex-exec", "antigravity"
 ]
@@ -100,6 +105,22 @@ _SEVERITY_SYNONYMS: dict[str, str] = {
     "notice": "info",
 }
 AUDIT_LOG_DIRECTORY = Path("logs") / "dispatch" / "audit"
+# The audit severity of a `codex exec review` finding, by its P0-P3 priority;
+# a priority past P3 counts as low.
+CODEX_LOCAL_SEVERITY: dict[int, Severity] = {
+    0: "critical",
+    1: "high",
+    2: "medium",
+    3: "low",
+}
+# Reviewers whose `fail` does not block when every finding is below the
+# block severity; a quality `fail` always blocks.
+_THRESHOLD_ONLY_REVIEWERS = frozenset({"security", "codex-local"})
+# The handoff section that lists each reviewer's sub-threshold findings.
+_NOTES_HEADINGS: dict[str, str] = {
+    "security": "Security Notes",
+    "codex-local": "Codex Local Notes",
+}
 CODEX_SECURITY_BINARY = config_module._binary_name("codex-security")
 CLAUDE_SECURITY_ALLOWED_TOOLS: tuple[str, ...] = (
     "Read",
@@ -575,7 +596,12 @@ def run_audit_fan_out(
         log,
         "INFO",
         f"Audit review scope: {scope.range_text} ({len(scope.files)} file(s)); "
-        f"security reviewer: {security_provider} ({provider_origin}).",
+        f"security reviewer: {security_provider} ({provider_origin})"
+        + (
+            "; codex-local reviewer: codex exec review."
+            if config.audit.codex_local_enabled
+            else "."
+        ),
     )
     if not linear_mode and config.enforce_work_packet:
         # Linear mode keeps the reviewers' path unchanged: its evidence step
@@ -674,7 +700,15 @@ def run_audit_fan_out(
             log=log,
         )
 
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="audit-review") as pool:
+    def run_codex_local() -> _ReviewerOutcome:
+        return _run_codex_local_reviewer(
+            config, scope=scope, handoff_path=handoff_path
+        )
+
+    codex_local = config.audit.codex_local_enabled
+    with ThreadPoolExecutor(
+        max_workers=3 if codex_local else 2, thread_name_prefix="audit-review"
+    ) as pool:
         quality_future = pool.submit(_guarded, "quality", quality_provider, run_quality)
         security_future = pool.submit(
             _guarded,
@@ -682,8 +716,14 @@ def run_audit_fan_out(
             security_provider,
             run_security,
         )
-        quality_outcome = quality_future.result()
-        security_outcome = security_future.result()
+        codex_local_future = (
+            pool.submit(_guarded, "codex-local", "codex", run_codex_local)
+            if codex_local
+            else None
+        )
+        outcomes = [quality_future.result(), security_future.result()]
+        if codex_local_future is not None:
+            outcomes.append(codex_local_future.result())
 
     if takeover_requested():
         # A chat answer rewrote the handoff during the review. It is not a
@@ -692,7 +732,7 @@ def run_audit_fan_out(
         raise ChatTakeover
 
     runs: dict[str, ReviewerRun] = {}
-    for outcome in (quality_outcome, security_outcome):
+    for outcome in outcomes:
         run = outcome.run
         if outcome.handoff_sha_after != before_sha and run.error is None:
             run = _with_error(
@@ -1158,10 +1198,10 @@ def merge_review_verdicts(
     """Merge the reviewer verdicts under ``block_severity``.
 
     A finding at or above ``block_severity`` blocks. A quality ``fail``
-    always blocks. A security ``fail`` blocks only when it reports no
-    findings or a finding at or above ``block_severity``; a security fail
-    whose findings are all below it is recorded in ``non_blocking_fails``
-    and its findings stay notes.
+    always blocks. A security or codex-local ``fail`` blocks only when it
+    reports no findings or a finding at or above ``block_severity``; such a
+    fail whose findings are all below it is recorded in
+    ``non_blocking_fails`` and its findings stay notes.
     """
 
     threshold = SEVERITY_RANK[block_severity]
@@ -1169,7 +1209,7 @@ def merge_review_verdicts(
     notes: list[tuple[str, ReviewFinding]] = []
     reasons: list[str] = []
     non_blocking_fails: list[str] = []
-    for name in ("quality", "security"):
+    for name in ("quality", "security", "codex-local"):
         run = runs.get(name)
         if run is None or run.verdict is None:
             continue
@@ -1178,7 +1218,7 @@ def merge_review_verdicts(
             sub_threshold_only = bool(findings) and all(
                 SEVERITY_RANK[finding.severity] < threshold for finding in findings
             )
-            if name == "security" and sub_threshold_only:
+            if name in _THRESHOLD_ONLY_REVIEWERS and sub_threshold_only:
                 non_blocking_fails.append(
                     f"{name} reviewer returned fail with only findings below "
                     f"{block_severity}"
@@ -1382,6 +1422,8 @@ def render_audit_handoff(
     security_run = runs["security"]
     security_verdict = security_run.verdict
     assert security_verdict is not None
+    codex_local_run = runs.get("codex-local")
+    local_verdict = codex_local_run.verdict if codex_local_run else None
 
     if decision.blocked:
         next_agent = blocked_route(scope, implementer_role)
@@ -1410,9 +1452,13 @@ def render_audit_handoff(
     lines.append(f"# Audit Report - {story_summary}")
     lines.append("")
     lines.append("**Agent:** auditor")
+    reviewer_providers = (
+        f"quality: {quality_run.provider}, security: {security_run.provider}"
+        + (", codex-local: codex exec review" if local_verdict else "")
+    )
     lines.append(
         "**Audit mode:** read-only fan-out "
-        f"(quality: {quality_run.provider}, security: {security_run.provider}) "
+        f"({reviewer_providers}) "
         f"on `{scope.range_text}`; the dispatcher wrote this handoff from the "
         "reviewers' structured verdicts."
     )
@@ -1424,12 +1470,16 @@ def render_audit_handoff(
     lines.append("## Merge Decision")
     lines.append("")
     lines.append(f"- Quality reviewer verdict: {quality.verdict}")
+    non_blocking = f" (non-blocking: every finding is below {block_severity})"
     security_verdict_text = security_verdict.verdict
-    if decision.non_blocking_fails:
-        security_verdict_text += (
-            f" (non-blocking: every finding is below {block_severity})"
-        )
+    if _downgraded(decision, "security"):
+        security_verdict_text += non_blocking
     lines.append(f"- Security reviewer verdict: {security_verdict_text}")
+    if local_verdict is not None:
+        codex_local_text = local_verdict.verdict
+        if _downgraded(decision, "codex-local"):
+            codex_local_text += non_blocking
+        lines.append(f"- Codex-local reviewer verdict: {codex_local_text}")
     lines.append(f"- Block severity threshold: {block_severity}")
     lines.append(f"- Blocking findings: {len(decision.blocking)}")
     lines.append(f"- Sub-threshold findings: {len(decision.notes)}")
@@ -1473,6 +1523,25 @@ def render_audit_handoff(
         ]
         if security_notes:
             lines.extend(_finding_lines(security_notes))
+        else:
+            lines.append("- none")
+        lines.append("")
+    if local_verdict is not None:
+        lines.append("## Codex Local Review")
+        lines.append("")
+        lines.append(local_verdict.summary or "No summary provided.")
+        lines.append("")
+        if decision.blocked:
+            lines.append("## Codex Local Findings")
+            codex_local_findings = list(local_verdict.findings)
+        else:
+            lines.append("## Codex Local Notes")
+            codex_local_findings = [
+                finding for name, finding in decision.notes if name == "codex-local"
+            ]
+        lines.append("")
+        if codex_local_findings:
+            lines.extend(_finding_lines(codex_local_findings))
         else:
             lines.append("- none")
         lines.append("")
@@ -1522,6 +1591,29 @@ def render_audit_handoff(
 
 def extract_json_object(text: str, *, required_key: str = "verdict") -> dict | None:
     return _extract_json_object(text, required_key=required_key, depth=0)
+
+
+def codex_local_verdict(review: LocalReview) -> ReviewVerdict:
+    """The audit verdict of a finished ``codex exec review``.
+
+    Any finding makes it a ``fail``; ``merge_review_verdicts`` then decides
+    from the findings' severities whether it blocks.
+    """
+
+    return ReviewVerdict(
+        verdict="fail" if review.findings else "pass",
+        summary=review.explanation,
+        findings=[
+            ReviewFinding(
+                severity=CODEX_LOCAL_SEVERITY.get(finding.priority, "low"),
+                file=finding.path or "",
+                line=finding.line,
+                title=f"[P{finding.priority}] {finding.title}",
+                description=finding.body,
+            )
+            for finding in review.findings
+        ],
+    )
 
 
 def parse_security_verdict(text: str) -> ReviewVerdict:
@@ -2064,6 +2156,71 @@ def _run_security_reviewer(
     )
 
 
+def _run_codex_local_reviewer(
+    config: DispatchConfig,
+    *,
+    scope: ReviewScope,
+    handoff_path: Path,
+) -> _ReviewerOutcome:
+    """Run ``codex exec review --base <scope base>`` and read its findings.
+
+    ``codex exec review`` reviews the checked-out HEAD, so HEAD must be the
+    scope's head commit; otherwise the reviewer fails closed without
+    launching. It uses the Codex binary and environment of the first Codex
+    role, if any.
+    """
+
+    start = time.monotonic()
+    head = _git_rev_parse(config.repo_root, "HEAD")
+    if head != scope.head_sha:
+        return _ReviewerOutcome(
+            run=ReviewerRun(
+                name="codex-local",
+                provider="codex",
+                command=(),
+                exit_code=1,
+                elapsed_seconds=0.0,
+                stdout="",
+                stderr="",
+                error=(
+                    "codex_local_reviewer_failed: `codex exec review` reviews "
+                    f"the checked-out HEAD ({(head or 'unknown')[:12]}), but the "
+                    f"review scope ends at {scope.head_sha[:12]}."
+                ),
+            ),
+            handoff_sha_after=_handoff_sha(handoff_path),
+        )
+    local = run_codex_review(
+        command_prefix=(security_reviewer_binary(config, "codex"),),
+        repo_root=config.repo_root,
+        base_ref=scope.base_sha,
+        timeout_ms=config.audit.review_timeout_ms,
+        env=_build_codex_env(_provider_agent_config(config, "codex")),
+    )
+    verdict = codex_local_verdict(local.review) if local.review is not None else None
+    return _ReviewerOutcome(
+        run=ReviewerRun(
+            name="codex-local",
+            provider="codex",
+            command=local.command,
+            exit_code=local.exit_code,
+            elapsed_seconds=time.monotonic() - start,
+            stdout=local.stdout,
+            stderr=local.stderr,
+            verdict=verdict,
+            error=(
+                None
+                if verdict is not None
+                else f"codex_local_reviewer_failed: {local.error}"
+            ),
+            start_failure=_reviewer_start_failure(
+                local.exit_code, local.stdout, local.stderr
+            ),
+        ),
+        handoff_sha_after=_handoff_sha(handoff_path),
+    )
+
+
 def _run_antigravity_security_reviewer(
     plan: SecurityReviewerPlan,
     *,
@@ -2361,7 +2518,9 @@ def security_reviewer_startup_error(
     Checked once at startup so a reviewer that cannot launch stops the loop
     before an implementer cycle runs. Every provider is covered, configured
     or chosen automatically, for each implementer role: the binary must be
-    on PATH. The returned message starts with ``security_reviewer_failed:``.
+    on PATH. The returned message starts with ``security_reviewer_failed:``,
+    or ``codex_local_reviewer_failed:`` when the security reviewer can
+    launch but the ``codex-local`` reviewer's Codex CLI is missing.
     """
     if not config.audit.security_enabled:
         return None
@@ -2381,6 +2540,15 @@ def security_reviewer_startup_error(
         error = _security_provider_launch_error(config, provider)
         if error is not None:
             return error
+    if config.audit.codex_local_enabled and not _reviewer_cli_available(
+        config, "codex"
+    ):
+        binary = security_reviewer_binary(config, "codex")
+        return (
+            f"codex_local_reviewer_failed: the codex-local reviewer CLI "
+            f"`{binary}` was not found on PATH; install the Codex CLI or "
+            "remove `codex-local` from audit.reviewers."
+        )
     return None
 
 
@@ -2554,6 +2722,8 @@ def _commands_run_text(
     if not reviewer_commands:
         parts.append("no verification commands reported by the quality reviewer")
     parts.append(f"security reviewer: {runs['security'].command_summary}")
+    if "codex-local" in runs:
+        parts.append(f"codex-local reviewer: {runs['codex-local'].command_summary}")
     return "; ".join(parts)
 
 
@@ -2562,8 +2732,10 @@ def _output_summary_text(
     runs: Mapping[str, ReviewerRun],
 ) -> str:
     parts: list[str] = []
-    for name in ("quality", "security"):
-        run = runs[name]
+    for name in ("quality", "security", "codex-local"):
+        run = runs.get(name)
+        if run is None:
+            continue
         verdict = run.verdict
         finding_count = len(verdict.findings) if verdict is not None else 0
         verdict_text = verdict.verdict if verdict is not None else "none"
@@ -2605,9 +2777,19 @@ def _unresolved_text(quality: QualityReviewVerdict, decision: MergeDecision) -> 
         return "; ".join(titles)
     concerns = _single_line(quality.unresolved_concerns) or "none"
     if decision.non_blocking_fails:
-        downgraded = "; ".join(decision.non_blocking_fails) + " (see Security Notes)"
+        downgraded = "; ".join(
+            f"{fail} (see {_NOTES_HEADINGS.get(fail.split(' ', 1)[0], 'the notes')})"
+            for fail in decision.non_blocking_fails
+        )
         return downgraded if concerns.lower() == "none" else f"{concerns}; {downgraded}"
     return concerns
+
+
+def _downgraded(decision: MergeDecision, name: str) -> bool:
+    """Whether ``name``'s fail verdict did not block (every finding was
+    below the block severity)."""
+
+    return any(fail.startswith(f"{name} ") for fail in decision.non_blocking_fails)
 
 
 def _story_summary(frontmatter: HandoffRouting | None) -> str | None:
@@ -2829,6 +3011,7 @@ __all__ = [
     "extract_json_object",
     "merge_review_verdicts",
     "parse_claude_structured_verdict",
+    "codex_local_verdict",
     "parse_codex_security_output",
     "parse_quality_verdict",
     "parse_security_verdict",

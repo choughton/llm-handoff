@@ -100,10 +100,6 @@ def test_parse_reads_each_finding_relative_to_the_repository(tmp_path: Path) -> 
             line=9,
         ),
     )
-    assert review.findings[0].comment_body() == (
-        "**[P2] Restore the empty-input guard in mean**\n\n"
-        "Calling `mean([])` now raises `ZeroDivisionError`.\nRestore the guard."
-    )
 
 
 def test_parse_accepts_windows_paths_and_a_single_review_comment(
@@ -130,7 +126,7 @@ def test_parse_keeps_a_finding_without_a_location(tmp_path: Path) -> None:
     [finding] = parse_review_message(text, tmp_path).findings
 
     assert (finding.path, finding.line) == (None, None)
-    assert finding.location() == "pull request"
+    assert finding.location() == "(no file)"
     assert finding.body == "Add one."
 
 
@@ -178,7 +174,7 @@ def test_run_returns_the_parsed_review(tmp_path: Path) -> None:
         command_prefix=prefix,
         repo_root=tmp_path,
         base_ref="origin/main",
-        timeout_seconds=60,
+        timeout_ms=60000,
     )
 
     assert run.error == ""
@@ -201,7 +197,7 @@ def test_run_falls_back_to_the_last_agent_message(tmp_path: Path) -> None:
         command_prefix=prefix,
         repo_root=tmp_path,
         base_ref="origin/main",
-        timeout_seconds=60,
+        timeout_ms=60000,
     )
 
     assert run.review is not None and run.review.explanation == CLEAN
@@ -217,7 +213,7 @@ def test_run_does_not_reuse_an_earlier_last_message(tmp_path: Path) -> None:
         command_prefix=prefix,
         repo_root=tmp_path,
         base_ref="origin/main",
-        timeout_seconds=60,
+        timeout_ms=60000,
     )
 
     assert run.review is None
@@ -234,7 +230,7 @@ def test_run_reports_a_usage_limit(tmp_path: Path) -> None:
         command_prefix=prefix,
         repo_root=tmp_path,
         base_ref="origin/main",
-        timeout_seconds=60,
+        timeout_ms=60000,
     )
 
     assert run.review is None

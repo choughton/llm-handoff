@@ -30,6 +30,7 @@ from llm_handoff.audit_review import (
 )
 from llm_handoff.audit_verification import pre_audit_trigger
 from llm_handoff.config import DispatchConfig, load_dispatch_config
+from llm_handoff.codex_review import LocalFinding, LocalReview, LocalReviewRun
 from llm_handoff.router import parse_handoff_frontmatter_text, route
 from llm_handoff.validator import validate_handoff_text
 
@@ -131,10 +132,11 @@ def _fan_out_config(
     security_provider: str | None = "claude",
     block_severity: str = "high",
     agents: dict[str, Any] | None = None,
+    reviewers: tuple[str, ...] = ("quality", "security"),
     **overrides: Any,
 ) -> DispatchConfig:
     audit: dict[str, Any] = {
-        "reviewers": ["quality", "security"],
+        "reviewers": list(reviewers),
         "block_severity": block_severity,
     }
     if security_provider is not None:
@@ -4121,3 +4123,251 @@ def test_blocked_audit_with_committed_changes_still_routes_to_the_implementer(
     assert frontmatter is not None
     assert frontmatter.next_agent == "backend"
     assert "Routing to backend with status verified_fail" in log.text()
+
+
+# --------------------------------------------------------------------------
+# codex-local: `codex exec review` next to the quality and security reviewers
+# --------------------------------------------------------------------------
+
+
+def _codex_local_config(repo: Path, **overrides: Any) -> DispatchConfig:
+    return _fan_out_config(
+        repo, reviewers=("quality", "security", "codex-local"), **overrides
+    )
+
+
+def _local_review(*findings: LocalFinding) -> LocalReviewRun:
+    return LocalReviewRun(
+        command=("codex", "exec", "--sandbox", "read-only", "review"),
+        exit_code=0,
+        stdout="",
+        stderr="",
+        review=LocalReview(
+            explanation="Codex reviewed the change.", findings=tuple(findings)
+        ),
+    )
+
+
+def _local_finding(priority: int, title: str = "Guard the input") -> LocalFinding:
+    return LocalFinding(
+        priority=priority,
+        title=title,
+        body=f"{title} body.",
+        path="src/app.py",
+        line=1,
+    )
+
+
+def _fake_codex_review(
+    monkeypatch: pytest.MonkeyPatch, result: LocalReviewRun
+) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+
+    def fake(**kwargs: Any) -> LocalReviewRun:
+        calls.append(kwargs)
+        return result
+
+    monkeypatch.setattr(audit_review, "run_codex_review", fake)
+    monkeypatch.setattr(
+        audit_review,
+        "_run_logged_agent_command",
+        lambda _name, _command, **_kwargs: _process(
+            _claude_envelope(_security_payload())
+        ),
+    )
+    return calls
+
+
+def test_audit_config_accepts_codex_local_next_to_security(tmp_path: Path) -> None:
+    config = DispatchConfig(
+        repo_root=tmp_path,
+        audit={"reviewers": ["quality", "security", "codex-local"]},
+    )
+
+    assert config.audit.codex_local_enabled is True
+    assert DispatchConfig(repo_root=tmp_path).audit.codex_local_enabled is False
+
+
+def test_audit_config_rejects_codex_local_without_security(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="add `security` to audit.reviewers"):
+        DispatchConfig(
+            repo_root=tmp_path,
+            audit={
+                "reviewers": ["quality", "codex-local"],
+                "security_opt_out_reason": OPT_OUT_REASON,
+            },
+        )
+
+
+def test_fan_out_without_codex_local_runs_no_codex_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    calls = _fake_codex_review(monkeypatch, _local_review())
+
+    result, _log = _run_fan_out(
+        _fan_out_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == []
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    assert "Codex Local" not in written
+
+
+def test_fan_out_codex_local_finding_at_threshold_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, head, handoff = _fan_out_repo(tmp_path)
+    calls = _fake_codex_review(monkeypatch, _local_review(_local_finding(1)))
+
+    result, log = _run_fan_out(
+        _codex_local_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    [call] = calls
+    assert call["base_ref"] == base
+    assert call["repo_root"] == repo
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None
+    assert frontmatter.status == "verified_fail"
+    assert frontmatter.next_agent == "backend"
+    assert frontmatter.scope_sha == head
+    assert "codex-local: codex exec review" in written
+    assert "- Codex-local reviewer verdict: fail" in written
+    assert "## Codex Local Review" in written
+    assert "Codex reviewed the change." in written
+    assert "## Codex Local Findings" in written
+    assert "[high] src/app.py:1 - [P1] Guard the input" in written
+    assert "codex-local reviewer: codex exec --sandbox read-only review" in written
+    assert "Codex-local reviewer (codex) exited with code 0" in log.text()
+    review_log = json.loads(
+        next((repo / "logs" / "dispatch" / "audit").rglob("review.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert review_log["reviewers"]["codex-local"]["verdict"]["verdict"] == "fail"
+
+
+def test_fan_out_codex_local_finding_below_threshold_is_a_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    _fake_codex_review(monkeypatch, _local_review(_local_finding(2)))
+
+    result, log = _run_fan_out(
+        _codex_local_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None and frontmatter.status == "verified_pass"
+    assert (
+        "- Codex-local reviewer verdict: fail (non-blocking: every finding is "
+        "below high)" in written
+    )
+    assert "- Security reviewer verdict: pass" + NL in written
+    assert "## Codex Local Notes" in written
+    assert "[medium] src/app.py:1 - [P2] Guard the input" in written
+    assert "(see Codex Local Notes)" in written
+    assert "codex-local reviewer returned fail with only findings below high" in (
+        log.text()
+    )
+
+
+def test_fan_out_codex_local_p2_blocks_at_block_severity_medium(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    _fake_codex_review(monkeypatch, _local_review(_local_finding(2)))
+
+    result, _log = _run_fan_out(
+        _codex_local_config(repo, block_severity="medium"),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = (repo / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    frontmatter = parse_handoff_frontmatter_text(written)
+    assert frontmatter is not None and frontmatter.status == "verified_fail"
+    assert "[medium] src/app.py:1 - [P2] Guard the input" in written
+
+
+def test_fan_out_fails_closed_when_codex_local_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    _fake_codex_review(
+        monkeypatch,
+        LocalReviewRun(
+            command=("codex",),
+            exit_code=1,
+            stdout="",
+            stderr="stream error",
+            error="codex exec review exited with code 1: stream error",
+        ),
+    )
+
+    result, _log = _run_fan_out(
+        _codex_local_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert "codex_local_reviewer_failed: codex exec review exited" in result.stderr
+    assert (repo / "docs" / "handoff" / "HANDOFF.md").read_text(
+        encoding="utf-8"
+    ) == handoff
+
+
+def test_fan_out_codex_local_needs_head_at_the_scope_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base, _head, handoff = _fan_out_repo(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    calls = _fake_codex_review(monkeypatch, _local_review())
+
+    result, _log = _run_fan_out(
+        _codex_local_config(repo),
+        handoff,
+        quality_stdout=json.dumps(_quality_payload()),
+        base_sha=base,
+    )
+
+    assert result.exit_code == 1
+    assert "codex_local_reviewer_failed: `codex exec review` reviews the " in (
+        result.stderr
+    )
+    assert calls == []
+
+
+def test_startup_fails_when_the_codex_local_cli_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _installed_clis(monkeypatch, "claude")
+    config = _codex_local_config(tmp_path)
+
+    error = audit_review.security_reviewer_startup_error(config)
+
+    assert error is not None
+    assert error.startswith("codex_local_reviewer_failed:")
+    assert "remove `codex-local` from audit.reviewers" in error
+
+    _installed_clis(monkeypatch, "claude", "codex")
+    assert audit_review.security_reviewer_startup_error(config) is None

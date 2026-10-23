@@ -12,20 +12,20 @@ This project follows a simple pre-release changelog until the first public tag.
   skipped on claims where the list is empty, and `llm-handoff doctor` names
   it in the scanner's condition. CONFIGURATION.md adds a Node.js scanner
   example (gitleaks, semgrep, `npx --yes=false -- eslint`, and `npm audit`).
-- `publish.wait_for_reviewers` accepts `codex-local` for a repository the
-  ChatGPT Codex connector cannot read. In `pr` mode with `auto_merge`, the
-  dispatcher runs `codex exec --sandbox read-only review --base
-  <remote>/<base_branch>` on the pushed head commit, reads the findings from
-  its final message, and posts each one to the pull request as an inline
-  review comment (on its file when GitHub refuses the line), plus a summary
-  comment. Every finding counts, whatever its priority. Findings take the
-  usual correction round; a failed or timed-out run is run once more, then
-  `review_stall_action` applies, and a usage limit is never retried. A final
-  message that lists review comments the dispatcher cannot read is a failed
-  review, never a clean one. A restart after an interrupted retry runs no
-  third review of the same commit, and a failure to post a finding other
-  than GitHub refusing its position (HTTP 422) stops the publish. `codex`
-  and `codex-local` cannot be listed together. New module
+- `audit.reviewers` accepts the opt-in `codex-local` reviewer for a
+  repository the ChatGPT Codex connector cannot read. Listed next to
+  `quality` and `security` (which it requires), it runs
+  `codex exec --sandbox read-only review --base <review scope base SHA>`
+  concurrently with them, in every publish mode, with HEAD at the scope's
+  head commit. Its findings map P0-P3 to critical/high/medium/low and merge
+  under `audit.block_severity`; a `fail` with only sub-threshold findings
+  does not block, like a security `fail`. The audit handoff gains
+  `## Codex Local Review` and `## Codex Local Findings` or `Notes`
+  sections, which the merge commit and pull request report repeat. A
+  message that lists review comments the dispatcher cannot read is a
+  reviewer error, never a pass, and startup stops when the Codex CLI is not
+  on PATH. This replaces the earlier `publish.wait_for_reviewers:
+  [codex-local]` pull request gate, which is removed. New module
   `llm_handoff/codex_review.py`.
 - The dispatcher now runs the ACTIVE-3 verification preflight itself
   (ACTIVE-4): once at startup on the handoff on disk, and in every cycle that
