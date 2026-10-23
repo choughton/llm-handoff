@@ -28,7 +28,10 @@
   follow-up story (the dispatcher posts it, resolves the thread, and
   merges), or route to the user. Anything else pauses for a person. The
   dispatcher asks Codex for a review only to retry a failed one, never after
-  findings.
+  findings. ``wait_for_reviewers: [codex-local]`` works the same way, but
+  the dispatcher runs ``codex exec review`` itself on the pushed commit and
+  posts the findings as review comments, for a repository the Codex GitHub
+  connector cannot read; a retry runs the review again.
 
 In ``pr`` mode the dispatcher only auto-merges a pull request whose review
 threads are all resolved. Before each push it merges the remote base branch
@@ -71,6 +74,7 @@ from collections.abc import Callable, Sequence
 
 import yaml
 
+from llm_handoff.codex_review import LocalFinding, run_codex_review
 from llm_handoff.pr_review import (
     ReviewFinding,
     ReviewGate,
@@ -1015,19 +1019,22 @@ def publish_story(
             )
     stall_merge = False
     if review is not None and review.reviewers:
-        verdict = _wait_for_reviewers(
-            repo_root=repo_root,
-            state=state,
-            gh_command=gh_command,
-            review=review,
-            requested_at=requested_at,
-            url=url,
-            log=log,
-            sleep=sleep,
-            review_prompt=review_prompt,
-            remote=remote,
-            handoff_content=handoff_content,
-        )
+        try:
+            verdict = _wait_for_reviewers(
+                repo_root=repo_root,
+                state=state,
+                gh_command=gh_command,
+                review=review,
+                requested_at=requested_at,
+                url=url,
+                log=log,
+                sleep=sleep,
+                review_prompt=review_prompt,
+                remote=remote,
+                handoff_content=handoff_content,
+            )
+        except _ReviewPostError as exc:
+            return _stop(log, str(exc))
         stall_merge = verdict is _STALL_MERGE
         if verdict is not None and not stall_merge:
             return verdict
@@ -3643,6 +3650,14 @@ def _handoff_route(handoff_content: str) -> tuple[str | None, str | None]:
     return normalize_next_agent_value(frontmatter.next_agent), story_id
 
 
+# GitHub's answer when it will not attach a review comment where asked.
+_VALIDATION_FAILED_RE = re.compile(r"\bHTTP 422\b|Validation Failed", re.IGNORECASE)
+
+
+class _ReviewPostError(Exception):
+    """A ``gh`` call to post a local review's findings failed outright."""
+
+
 # What _wait_for_reviewers returns to merge without a Codex review under
 # ``review_stall_action: merge``.
 _STALL_MERGE = PublishOutcome(message="merge without a Codex review")
@@ -3710,6 +3725,16 @@ def _wait_for_reviewers(
         )
         return None
     def wait(since: datetime | None) -> ReviewResult:
+        if review.local:
+            return _run_local_review(
+                repo_root=repo_root,
+                gh_command=gh_command,
+                review=review,
+                base_ref=f"{remote}/{state.base_branch}",
+                pr_number=number,
+                head_sha=head_sha,
+                log=log,
+            )
         log(
             "INFO",
             f"Waiting up to {review.timeout_seconds}s for the Codex review of "
@@ -3735,11 +3760,22 @@ def _wait_for_reviewers(
             and not result.usage_limited
         )
 
+    # How a retry asks for the review again, for the log.
+    again = (
+        f"ran `codex exec review` of {url} again"
+        if review.local
+        else f"asked Codex to review {url} again with a pull request comment"
+    )
+
     def request_again() -> tuple[datetime | None, str]:
         nonlocal state
-        posted, error = _request_codex_review(gh_command, repo_root, number)
-        if posted is None:
-            return None, error
+        if review.local:
+            # The next wait runs the review itself; nothing to post.
+            posted: datetime | None = utc_now()
+        else:
+            posted, error = _request_codex_review(gh_command, repo_root, number)
+            if posted is None:
+                return None, error
         state = replace(
             state, review_retry_head=head_sha, review_retry_at=posted.isoformat()
         )
@@ -3752,7 +3788,19 @@ def _wait_for_reviewers(
         if state.review_retry_head == head_sha
         else None
     )
-    result = wait(retry_at)
+    if review.local and retry_at is not None:
+        # The local retry already ran (or was cut off) before the restart, and
+        # its result was not saved: running it again would exceed the one
+        # retry per head commit. The stall action or the operator decides.
+        result = ReviewResult(
+            "failed",
+            detail=(
+                f"the retried local Codex review of {head_sha[:12]} did not "
+                "finish before the dispatcher stopped"
+            ),
+        )
+    else:
+        result = wait(retry_at)
     problem = ""
     if unfinished(result) and retry_at is None:
         retry_at, problem = request_again()
@@ -3762,11 +3810,7 @@ def _wait_for_reviewers(
                 if result.outcome == "failed" and not result.unattributed
                 else result.detail
             )
-            log(
-                "AGENT",
-                f"{cause}; asked Codex to review {url} again with a pull "
-                "request comment.",
-            )
+            log("AGENT", f"{cause}; {again}.")
             result = wait(retry_at)
 
     refused = ""
@@ -3841,11 +3885,7 @@ def _wait_for_reviewers(
             break
         retry_at, problem = request_again()
         if retry_at is not None:
-            log(
-                "AGENT",
-                f"The operator asked to retry; asked Codex to review {url} "
-                "again with a pull request comment.",
-            )
+            log("AGENT", f"The operator asked to retry; {again}.")
             result = wait(retry_at)
     if result.outcome == "clean":
         _save_state(repo_root, replace(state, reviewed_head=head_sha))
@@ -3912,6 +3952,171 @@ def _request_codex_review(
     if posted is None:
         return None, error
     return _parse_timestamp(str(posted.get("created_at") or "")) or utc_now(), ""
+
+
+def _run_local_review(
+    *,
+    repo_root: Path,
+    gh_command: Sequence[str],
+    review: ReviewGate,
+    base_ref: str,
+    pr_number: int,
+    head_sha: str,
+    log: LogFn,
+) -> ReviewResult:
+    """Run ``codex exec review`` on the head commit and post what it found.
+
+    Each finding goes on the pull request as an inline review comment on the
+    head commit, so the correction round can reply to and resolve its
+    thread. A finding GitHub will not attach to its line goes on its file;
+    one it will not attach at all is listed in the summary comment and has
+    no thread. A summary comment records every finished review. Any other
+    failure to post a finding raises ``_ReviewPostError``, which stops the
+    publish: a finding without its thread would not block the merge.
+    """
+
+    log(
+        "INFO",
+        f"Running `codex exec review` of {head_sha[:12]} against {base_ref} "
+        f"(up to {review.timeout_seconds}s).",
+    )
+    run = run_codex_review(
+        command_prefix=review.codex_command,
+        repo_root=repo_root,
+        base_ref=base_ref,
+        timeout_seconds=review.timeout_seconds,
+    )
+    if run.review is None:
+        if run.usage_limited:
+            detail = (
+                "Codex reached a usage limit, so the local review of "
+                f"{head_sha[:12]} failed (wait for the limit to reset, then "
+                "review the pull request yourself)"
+            )
+        else:
+            detail = f"the local Codex review of {head_sha[:12]} failed: {run.error}"
+        log("INFO", f"PR review: {detail}.")
+        return ReviewResult(
+            "timeout" if run.timed_out else "failed",
+            detail=detail,
+            usage_limited=run.usage_limited,
+        )
+    note = (
+        f"_Local `codex exec review` of `{head_sha[:12]}` against `{base_ref}`. "
+        "Posted by the llm-handoff dispatcher._"
+    )
+    findings: list[ReviewFinding] = []
+    unattached: list[LocalFinding] = []
+    for local in run.review.findings:
+        posted = _post_review_comment(
+            gh_command,
+            repo_root,
+            pr_number,
+            head_sha,
+            local,
+            _without_mentions(local.comment_body() + "\n\n" + note),
+        )
+        if isinstance(posted, str):
+            raise _ReviewPostError(
+                f"could not post the local Codex review finding at "
+                f"{local.location()} on pull request #{pr_number}: {posted}"
+            )
+        if posted is None:
+            unattached.append(local)
+        comment_id = posted.get("id") if posted else None
+        html_url = posted.get("html_url") if posted else None
+        findings.append(
+            ReviewFinding(
+                body=local.comment_body(),
+                path=local.path,
+                line=local.line,
+                url=html_url if isinstance(html_url, str) and html_url else None,
+                comment_id=comment_id if isinstance(comment_id, int) else None,
+            )
+        )
+    summary = [
+        f"**Local Codex review** of `{head_sha[:12]}`: "
+        + (f"{len(findings)} finding(s)." if findings else "no findings."),
+        run.review.explanation,
+    ]
+    if unattached:
+        summary.append(
+            "GitHub did not attach these findings to a line or file:\n\n"
+            + "\n\n".join(
+                f"- `{local.location()}`: {local.comment_body()}"
+                for local in unattached
+            )
+        )
+    body = "\n\n".join(part for part in summary if part)
+    if len(body) > _REPORT_BODY_LIMIT:
+        body = body[:_REPORT_BODY_LIMIT] + "\n\n(review truncated)"
+    posted_summary, error = _post_issue_comment(
+        gh_command,
+        repo_root,
+        pr_number,
+        _without_mentions(body + "\n\n" + note) + "\n\n" + _FOOTER,
+    )
+    if posted_summary is None:
+        log(
+            "WARN",
+            "Could not post the local Codex review summary on pull request "
+            f"#{pr_number}: {error}.",
+        )
+    detail = (
+        f"the local Codex review of {head_sha[:12]} found {len(findings)} issue(s)"
+        if findings
+        else f"the local Codex review of {head_sha[:12]} found no issues"
+    )
+    log("INFO", f"PR review: {detail}.")
+    return ReviewResult("findings" if findings else "clean", tuple(findings), detail)
+
+
+def _post_review_comment(
+    gh_command: Sequence[str],
+    repo_root: Path,
+    pr_number: int,
+    head_sha: str,
+    finding: LocalFinding,
+    body: str,
+) -> dict[str, object] | str | None:
+    """Post ``body`` as a review comment on the finding's line, else its file.
+
+    Returns GitHub's response; ``None`` when GitHub refuses both as invalid
+    (HTTP 422: a line outside the diff, or a path the pull request does not
+    change); or the error of any other failure, such as an authentication,
+    permission, rate-limit, or server error.
+    """
+
+    if not finding.path:
+        return None
+    base = [
+        *gh_command,
+        "api",
+        "--method",
+        "POST",
+        f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
+        "-f",
+        f"body={body}",
+        "-f",
+        f"commit_id={head_sha}",
+        "-f",
+        f"path={finding.path}",
+    ]
+    attempts = [["-f", "subject_type=file"]]
+    if finding.line:
+        attempts.insert(0, ["-F", f"line={finding.line}", "-f", "side=RIGHT"])
+    for extra in attempts:
+        posted = _run([*base, *extra], repo_root, _GH_TIMEOUT_SECONDS)
+        if posted.returncode != 0:
+            if _VALIDATION_FAILED_RE.search(f"{posted.stderr}\n{posted.stdout}"):
+                continue
+            return _first_line(posted)
+        try:
+            data = json.loads(posted.stdout or "")
+        except ValueError:
+            data = {}
+        return data if isinstance(data, dict) else {}
+    return None
 
 
 def _unreviewed_merge_blocker(

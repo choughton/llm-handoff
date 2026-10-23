@@ -97,6 +97,15 @@ class ReviewGate:
     # "prompt" or "merge": what happens when the retried review does not
     # finish either (``publish.review_stall_action``).
     stall_action: str = "prompt"
+    # The Codex CLI for the ``codex-local`` reviewer; empty means the
+    # configured Codex binary.
+    codex_command: tuple[str, ...] = ()
+
+    @property
+    def local(self) -> bool:
+        """Whether the dispatcher runs the Codex review itself."""
+
+        return "codex-local" in self.reviewers
 
 
 @dataclass(frozen=True)
