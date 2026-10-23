@@ -10,14 +10,15 @@ history.
 
 ## Current Status
 
-- **Active Epic:** None. ACTIVE-PLANNER (epic 18) closed with ACTIVE-8,
-  approved at `d33abfd` (`d33abfd335422ef95bc8c021df1ac8b0bd5a0969`) and
-  merged in PR #293 (`0b18d66`). The planner picks the next epic by fit:
-  WORK-INTAKE needs a design check, and ESCALATION-RECONCILE waits on its
-  trigger.
+- **Active Epic:** ESCALATION-RECONCILE (epic 16), picked by fit after
+  ACTIVE-PLANNER (epic 18) closed at `d33abfd` and merged in PR #293
+  (`0b18d66`): small, independent, and unblocked. RECON-1 (config and
+  first-cycle pass) is implemented and in review; RECON-2 (later cycles and
+  the no-loop guard) is next.
 - **Parked Epic:** None.
-- **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger, and
-  WORK-INTAKE needs a design check.
+- **Other Open Epics:** WORK-INTAKE (epic 14, INTAKE-1 through INTAKE-3)
+  waits on its pre-INTAKE-1 user design check, taken once no open epic has
+  an unblocked story.
 - **Epic Awaiting Close:** None.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
@@ -128,6 +129,16 @@ normally with no second pass.
   `docs/handoff/PLANNER_HANDOFF_PROMPT.md` documents the pass, and the
   handbook's escalation section says a user escalation may be reconciled once
   when the key is on.
+
+Planner decision (RECON-1). `user_escalation_reconciliations` is a run-local
+counter in `_run_loop_cycles`, reported only as a dispatcher log line
+(`user_escalation_reconciliations=<n>`) on a live reconciliation dispatch; no
+telemetry module or persistence file. A dry run neither counts nor logs it.
+The pass is built with `_schedule_pause_recovery` (extended with optional
+arguments) and applied in the current cycle, not scheduled for the next one:
+the cycle routes to `planner` with source `user_escalation_reconciliation`,
+and a live run marks pause recovery and the operator prompt's planner attempt
+as used.
 
 ## Open Followups
 

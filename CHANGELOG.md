@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- New top-level `reconcile_user_escalations` config key (default `false`,
+  RECON-1). When `true`, a first-cycle `next_agent: user` handoff with
+  `status: escalate_to_user` or `blocked_missing_context` and a non-empty
+  producer other than `planner` gets one bounded planner pass before the
+  dispatcher pauses: the planner checks the handoff against the project state
+  file, Git, and open pull requests, then keeps the same user question or
+  routes to the next dispatchable role. It works independently of
+  `pause_recovery`. The log says `Reconciling a user escalation from
+  <producer> before pausing` and, on a live run, the run-local
+  `user_escalation_reconciliations=<n>` count; a dry run prints the planner
+  decision and dispatches nothing. Planner-produced user routes and
+  circuit-breaker escalations still pause at once, and later cycles are not
+  reconciled yet. With the key omitted or `false`, behavior is unchanged.
 - In `pr` mode, an operator story committed on the base branch right after a
   local-only finalizer epic close is now adopted and published instead of
   stopping the loop. Adoption accepts earlier unpublished non-merge commits

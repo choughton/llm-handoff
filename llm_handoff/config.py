@@ -1294,6 +1294,11 @@ class DispatchConfig(BaseModel):
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
     pause_recovery: PauseRecoveryMode = "planner"
+    # Opt-in. When true, a non-planner `next_agent: user` handoff with status
+    # `escalate_to_user` or `blocked_missing_context` gets one planner
+    # reconciliation pass on the first cycle before the dispatcher pauses.
+    # Independent of `pause_recovery`.
+    reconcile_user_escalations: bool = False
     # Show the operator prompt at pauses when stdin is a TTY, the run is not a
     # dry run, and poll_interval_seconds is above 0.
     interactive_pause: bool = True

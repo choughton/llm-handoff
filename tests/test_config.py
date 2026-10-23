@@ -689,6 +689,40 @@ def test_load_dispatch_config_rejects_unquoted_yaml_off(tmp_path: Path) -> None:
         load_dispatch_config(repo_root=tmp_path, config_path=config_path)
 
 
+def test_reconcile_user_escalations_defaults_to_false(tmp_path: Path) -> None:
+    assert DispatchConfig(repo_root=tmp_path).reconcile_user_escalations is False
+    assert (
+        load_dispatch_config(repo_root=tmp_path).reconcile_user_escalations is False
+    )
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text('pause_recovery: "planner"\n', encoding="utf-8")
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+    assert loaded.reconcile_user_escalations is False
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_reconcile_user_escalations_direct_construction(
+    tmp_path: Path, value: bool
+) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path, reconcile_user_escalations=value)
+
+    assert loaded.reconcile_user_escalations is value
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_load_dispatch_config_reads_reconcile_user_escalations(
+    tmp_path: Path, value: bool
+) -> None:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(
+        f"reconcile_user_escalations: {str(value).lower()}\n", encoding="utf-8"
+    )
+
+    loaded = load_dispatch_config(repo_root=tmp_path, config_path=config_path)
+
+    assert loaded.reconcile_user_escalations is value
+
+
 def test_interactive_pause_defaults_to_true(tmp_path: Path) -> None:
     assert DispatchConfig(repo_root=tmp_path).interactive_pause is True
     assert load_dispatch_config(repo_root=tmp_path).interactive_pause is True

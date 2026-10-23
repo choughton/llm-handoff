@@ -378,6 +378,29 @@ PAUSE_RECOVERY_INSTRUCTION_TEMPLATE = (
     "one specific question for the user."
 )
 PAUSE_RECOVERY_NO_DIAGNOSIS = "The validator returned no diagnosis."
+USER_ESCALATION_PAUSE_REASON = (
+    "ESCALATION DETECTED in HANDOFF.md. Resolve it manually; dispatch will "
+    "resume after the file changes."
+)
+# Opt-in (`reconcile_user_escalations: true`): one planner pass on a
+# non-planner user escalation before the dispatcher pauses on it.
+USER_ESCALATION_RECONCILIATION_KIND = "user_escalation_reconciliation"
+USER_ESCALATION_RECONCILIATION_STATUSES = frozenset(
+    {"escalate_to_user", "blocked_missing_context"}
+)
+USER_ESCALATION_RECONCILIATION_INSTRUCTION_TEMPLATE = (
+    "The dispatcher would pause on a user escalation. Pause reason: "
+    "{pause_reason} The {producer} role wrote this escalation with "
+    "`status: {status}`, and the handoff may be stale: the blocker it names "
+    "may already be resolved. This is a bounded planner reconciliation: you "
+    "get one pass before the dispatcher pauses. Check {handoff_path} against "
+    "{project_state_path}, the Git state (the branch, recent commits, and "
+    "uncommitted files), and open pull requests. If the blocker still holds, "
+    "rewrite {handoff_path} to route to user with the same question for the "
+    "user. If it no longer holds, rewrite {handoff_path} to route to the next "
+    "dispatchable role. Do not modify source, tests, project-state files, "
+    "ledger files, or completed work."
+)
 # In Linear mode a validator report must carry a well-formed LINEAR-EVIDENCE
 # row, in the same shape the validator's check-row parser reads. A missing or
 # malformed row counts as a failed evidence check, never as a pass. The match
@@ -952,6 +975,9 @@ def _run_loop_cycles(
     # Set when an unconfigured tpm route got its one planner repair; cleared
     # when any other route reaches dispatch.
     tpm_planner_repair_ran = False
+    # Run-local count of live user-escalation reconciliation dispatches
+    # (`reconcile_user_escalations`); reported only in the dispatcher log.
+    user_escalation_reconciliations = 0
     breaker_planner_seen: set[str] = set()
     planner_session_id: str | None = None
     planner_previous_handoff_sha: str | None = None
@@ -1612,15 +1638,74 @@ def _run_loop_cycles(
                         warnings=[],
                     )
 
+        reconcile_producer = _user_escalation_reconciliation_producer(
+            config,
+            decision,
+            cycle_frontmatter,
+            cycle_number=cycle_number,
+        )
+        if reconcile_producer is not None and cycle_frontmatter is not None:
+            # Opt-in: one planner pass checks whether a non-planner user
+            # escalation is stale before the dispatcher pauses on it. It is
+            # independent of `pause_recovery` and runs in this cycle.
+            _log(
+                log_fn,
+                "INFO",
+                f"Reconciling a user escalation from {reconcile_producer} "
+                "before pausing",
+            )
+            reconciliation = _schedule_pause_recovery(
+                config,
+                pause_reason=USER_ESCALATION_PAUSE_REASON,
+                validation_result=None,
+                log=log_fn,
+                additional_instruction=_render_prompt(
+                    USER_ESCALATION_RECONCILIATION_INSTRUCTION_TEMPLATE,
+                    config.handoff_path,
+                    pause_reason=USER_ESCALATION_PAUSE_REASON,
+                    producer=reconcile_producer,
+                    status=(cycle_frontmatter.status or "").strip(),
+                    project_state_path=Path(config.project_state_path).as_posix(),
+                ),
+                kind=USER_ESCALATION_RECONCILIATION_KIND,
+                announcement=(
+                    f"{USER_ESCALATION_PAUSE_REASON} User-escalation "
+                    "reconciliation: dispatching one bounded planner pass "
+                    "before pausing."
+                ),
+            )
+            decision = RoutingDecision(
+                route="planner",
+                confidence="HIGH",
+                source=USER_ESCALATION_RECONCILIATION_KIND,
+                reasoning=(
+                    f"The {reconcile_producer} role escalated to user; the "
+                    "planner checks whether the escalation is stale before "
+                    "the dispatcher pauses."
+                ),
+                warnings=[],
+            )
+            forced_additional_instruction = reconciliation.additional_instruction
+            active_planner_recovery_kind = reconciliation.kind
+            active_continue_saved_story = False
+            if not config.dry_run:
+                pause_recovery_used = True
+                operator_prompt.planner_tried = True
+                user_escalation_reconciliations += 1
+                _log(
+                    log_fn,
+                    "INFO",
+                    "user_escalation_reconciliations="
+                    f"{user_escalation_reconciliations}",
+                )
+
         if decision.route == "user":
             # `retry` on a user route re-reads the handoff, which still routes
             # to user, so the dispatcher pauses again at once.
             pause = _pause_at_dispatcher_pause(
                 config,
                 handoff_sha=handoff_sha,
-                reason=(
-                    "ESCALATION DETECTED in HANDOFF.md. Resolve it manually; dispatch will resume after the file changes."
-                ),
+                reason=USER_ESCALATION_PAUSE_REASON,
                 log=log_fn,
                 operator_prompt=operator_prompt,
                 stop_watch=stop_watch,
@@ -12807,23 +12892,70 @@ def _schedule_pause_recovery(
     pause_reason: str,
     validation_result: ValidationResult | None,
     log: LogFn,
+    additional_instruction: str | None = None,
+    kind: str = "pause",
+    announcement: str | None = None,
 ) -> PendingPlannerRecovery:
+    """Build one bounded planner recovery for a pause.
+
+    The optional arguments let another bounded planner pass, such as the
+    user-escalation reconciliation, reuse this builder with its own
+    instruction, kind, and log line; the defaults keep pause recovery as is.
+    """
     _log(
         log,
         "PAUSE",
-        f"{pause_reason} Pause recovery: scheduling one bounded planner recovery.",
+        announcement
+        if announcement is not None
+        else f"{pause_reason} Pause recovery: scheduling one bounded planner recovery.",
     )
     current_handoff_content = _read_required_text(config.handoff_full_path) or ""
     return PendingPlannerRecovery(
         handoff_sha=_content_sha(current_handoff_content),
-        additional_instruction=_render_prompt(
-            PAUSE_RECOVERY_INSTRUCTION_TEMPLATE,
-            config.handoff_path,
-            pause_reason=pause_reason,
-            diagnosis=_format_pause_diagnosis(validation_result),
+        additional_instruction=(
+            additional_instruction
+            if additional_instruction is not None
+            else _render_prompt(
+                PAUSE_RECOVERY_INSTRUCTION_TEMPLATE,
+                config.handoff_path,
+                pause_reason=pause_reason,
+                diagnosis=_format_pause_diagnosis(validation_result),
+            )
         ),
-        kind="pause",
+        kind=kind,
     )
+
+
+def _user_escalation_reconciliation_producer(
+    config: DispatchConfig,
+    decision: RoutingDecision,
+    frontmatter: HandoffRouting | None,
+    *,
+    cycle_number: int,
+) -> str | None:
+    """Return the producer of a user escalation eligible for reconciliation.
+
+    RECON-1 covers the first cycle only: a frontmatter-backed `user` route
+    with status `escalate_to_user` or `blocked_missing_context` and a
+    non-empty producer other than `planner`. Anything else returns None.
+    """
+    if not config.reconcile_user_escalations or cycle_number != 1:
+        return None
+    if decision.route != "user" or not decision.source.startswith("frontmatter."):
+        return None
+    if frontmatter is None:
+        return None
+    if (frontmatter.status or "").strip() not in (
+        USER_ESCALATION_RECONCILIATION_STATUSES
+    ):
+        return None
+    producer = (frontmatter.producer or "").strip()
+    if not producer:
+        return None
+    normalized = normalize_next_agent_value(producer)
+    if normalized == "planner":
+        return None
+    return normalized or producer
 
 
 def _self_loop_kind(result: ValidationResult) -> str | None:
