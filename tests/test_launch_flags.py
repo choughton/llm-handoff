@@ -1242,6 +1242,121 @@ def test_linear_mode_leaves_non_claude_and_bypass_agents_unchanged(
     )
 
 
+def _report_only_validator_config(tmp_path: Path, server: str) -> DispatchConfig:
+    _mcp_file(tmp_path)
+    agents: dict[str, object] = dict(config._default_agent_configs())
+    agents["planner"] = {"provider": "codex"}
+    agents["frontend"] = {"provider": "codex"}
+    agents["validator"] = {
+        "provider": "claude",
+        "fallback": {"provider": "claude", "model": "claude-sonnet-5"},
+    }
+    return _linear_config(
+        tmp_path, agents, claude_mcp_config="linear-mcp.json", mcp_server=server
+    )
+
+
+def _flag_value(command: list[str], flag: str) -> str:
+    return command[command.index(flag) + 1]
+
+
+@pytest.mark.parametrize("server", ["linear", "team-linear"])
+def test_report_only_validator_primary_and_fallback_commands_deny_linear_writes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, server: str
+) -> None:
+    loaded = _report_only_validator_config(tmp_path, server)
+    report_only = config.without_linear_write_tools(loaded.agents["validator"], server)
+    commands: list[list[str]] = []
+
+    def fake_stream(_name: str, command: list[str], **_kwargs: object):
+        commands.append(list(command))
+        if len(commands) == 1:
+            # A timeout is fatal, so the fallback launches next.
+            return _ProcessResult(
+                stdout="", stderr="Process timed out after 900 seconds.", exit_code=1
+            )
+        return _ProcessResult(stdout="VALID: YES", stderr="", exit_code=0)
+
+    monkeypatch.setattr(claude, "_run_claude_stream_json_command", fake_stream)
+
+    result = agent_roles.invoke_support_role(
+        "handoff-validator",
+        "validate",
+        role="validator",
+        handoff_path=tmp_path / "HANDOFF.md",
+        agent_config=report_only,
+        repo_root=tmp_path,
+    )
+
+    assert result.exit_code == 0
+    assert len(commands) == 2
+    assert _flag_value(commands[1], "--model") == "claude-sonnet-5"
+    denied = (
+        f"WebFetch,WebSearch,mcp__{server}__save_comment,mcp__{server}__save_issue"
+    )
+    for command in commands:
+        assert _flag_value(command, "--disallowedTools") == denied
+        allowed = _flag_value(command, "--allowedTools").split(",")
+        assert f"mcp__{server}__get_issue" in allowed
+        assert f"mcp__{server}__list_comments" in allowed
+        assert f"mcp__{server}__save_comment" not in allowed
+        assert f"mcp__{server}__save_issue" not in allowed
+        assert _flag_value(command, "--mcp-config") == str(
+            (tmp_path / "linear-mcp.json").resolve()
+        )
+    # The routed repair launch keeps its comment grant and the shared denials.
+    repair_args = orchestrator._launch_args_for_role(loaded, "validator")
+    assert _flag_value(repair_args, "--disallowedTools") == "WebFetch,WebSearch"
+    assert f"mcp__{server}__save_comment" in _flag_value(repair_args, "--allowedTools")
+
+
+def test_report_only_validator_buffered_launch_keeps_the_denials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    loaded = _report_only_validator_config(tmp_path, "linear")
+    report_only = config.without_linear_write_tools(
+        loaded.agents["validator"], "linear"
+    )
+    stream_commands: list[list[str]] = []
+    buffered_commands: list[list[str]] = []
+
+    def fake_stream(_name: str, command: list[str], **_kwargs: object):
+        stream_commands.append(list(command))
+        return _ProcessResult(
+            stdout="", stderr="error: unknown option '--output-format'", exit_code=1
+        )
+
+    def fake_buffered(_name: str, command: list[str], **_kwargs: object):
+        buffered_commands.append(list(command))
+        return _ProcessResult(stdout="VALID: YES", stderr="", exit_code=0)
+
+    monkeypatch.setattr(claude, "_run_claude_stream_json_command", fake_stream)
+    monkeypatch.setattr(claude, "_run_logged_agent_command", fake_buffered)
+
+    claude.invoke_claude_subagent(
+        "handoff-validator", "validate", repo_root=tmp_path, agent_config=report_only
+    )
+
+    [stream_command] = stream_commands
+    [buffered_command] = buffered_commands
+    assert _flag_value(buffered_command, "--disallowedTools") == (
+        "WebFetch,WebSearch,mcp__linear__save_comment,mcp__linear__save_issue"
+    )
+    permission_end = stream_command.index("--model")
+    assert buffered_command[:permission_end] == stream_command[:permission_end]
+
+
+def test_report_only_derivation_leaves_bypass_launch_unchanged() -> None:
+    bypass = AgentConfig(provider="claude", unsafe_bypass=True)
+
+    report_only = config.without_linear_write_tools(bypass, "linear")
+
+    assert report_only is bypass
+    assert claude.claude_permission_args(report_only) == [
+        "--dangerously-skip-permissions"
+    ]
+
+
 @pytest.mark.parametrize("with_mcp_config", [False, True])
 def test_linear_mode_security_reviewer_gets_no_linear_tools(
     tmp_path: Path, with_mcp_config: bool

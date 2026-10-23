@@ -5494,6 +5494,8 @@ def _run_validator(
         )
         # Report-only: the validator's `save_comment` grant is for routed
         # repair turns, so this launch can read Linear but not write to it.
+        # The derived copy (and its fallback) also denies both write tools
+        # through `--disallowedTools`; the loaded config is left as is.
         if config.tracker.mcp_server is not None:
             agent_config = without_linear_write_tools(
                 agent_config, config.tracker.mcp_server

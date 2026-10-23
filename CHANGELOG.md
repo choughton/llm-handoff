@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Report-only validator launches in Linear mode now deny the configured MCP
+  server's `save_comment` and `save_issue` explicitly through
+  `--disallowedTools` (LOOSE-4), after the shared `WebFetch,WebSearch`
+  denials, on both the primary and the fallback Claude launch, including the
+  buffered text-mode launch, even when no allowlist entry grants either tool.
+  Inherited user or project permissions can no longer approve those writes.
+  Exact, server-wide, and wildcard write grants are still removed from
+  `--allowedTools`. Routed validator repair turns keep their `save_comment`
+  grant, and non-Linear launches, other providers, and `unsafe_bypass`
+  launches are unchanged. No configuration key was added.
 - On Windows, the durable `HANDOFF.md` rewrite (the re-audit after chat
   changes) now keeps the old handoff's DACL (LOOSE-3), explicit ACEs and its
   protected or inheriting state, instead of giving the replacement the

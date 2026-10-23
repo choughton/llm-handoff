@@ -379,7 +379,8 @@ def claude_permission_args(
     or project settings cannot approve anything else), ``--strict-mcp-config``
     loads no MCP servers unless the list names an ``mcp__`` tool,
     ``--allowedTools`` pre-approves the listed rules, and web tools are always
-    denied. In Linear mode with ``tracker.claude_mcp_config`` the launch also
+    denied (a report-only validator launch also denies the Linear write
+    tools; ``AgentConfig.claude_disallowed_tools``). In Linear mode with ``tracker.claude_mcp_config`` the launch also
     passes ``--mcp-config <path> --strict-mcp-config`` so only that file's MCP
     servers load. ``unsafe_bypass`` restores the previous
     ``--dangerously-skip-permissions`` launch (or the role's
@@ -401,7 +402,10 @@ def claude_permission_args(
     ]
     if allowed_tools:
         args.extend(["--allowedTools", ",".join(allowed_tools)])
-    args.extend(["--disallowedTools", ",".join(config.CLAUDE_DISALLOWED_TOOLS)])
+    # The shared denials, plus the Linear write tools on a report-only
+    # validator launch (`config.without_linear_write_tools`).
+    disallowed_tools = agent_config.claude_disallowed_tools
+    args.extend(["--disallowedTools", ",".join(disallowed_tools)])
     guidance = claude_shell_guidance(allowed_tools)
     if guidance:
         args.extend(["--append-system-prompt", guidance])
