@@ -1526,12 +1526,15 @@ def _planner_redispatch_after_refusal_warnings(
         return []
     if prior_packet != current_packet:
         return []
-    category, text = refusal
+    # Name only the documented category. The refusal text can echo the
+    # refused command's arguments, credentials included, and this warning
+    # reaches the dispatcher logs; the text stays in the handoff.
+    category, _text = refusal
     return [
         "planner_redispatch_after_refusal: the planner routes the unchanged "
         f"Work Packet back to `{target}`, whose handback was blocked by an "
-        f"environment refusal ({category}: {_clip(text)}); the same refusal "
-        "will stop it again unless the Work Packet or the environment changes."
+        f"environment refusal ({category}); the same refusal will stop it "
+        "again unless the Work Packet or the environment changes."
     ]
 
 

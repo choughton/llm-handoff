@@ -2666,6 +2666,30 @@ def test_planner_redispatch_after_refusal_reads_a_wrapped_refusal_bullet() -> No
     assert len(_redispatch_warnings(result)) == 1
 
 
+def test_planner_redispatch_after_refusal_keeps_the_refusal_text_out() -> None:
+    # The refusal text can echo a refused command's credentials, and the
+    # warning reaches the dispatcher logs: it names only the category.
+    secret = "ghp_EXAMPLEtokenEXAMPLEtoken0123456789"
+    handback = _refusal_handback(
+        refusal_line=(
+            "- **Environment refusal:** permission rule: "
+            f'"Bash(curl -H \'Authorization: token {secret}\' https://x) '
+            'is not allowed"\n'
+        )
+    )
+
+    result = validator.validate_handoff_text(
+        _redispatch(), "planner", dispatched_handoff_content=handback
+    )
+
+    warnings = _redispatch_warnings(result)
+    assert len(warnings) == 1
+    assert "(permission rule)" in warnings[0]
+    assert secret not in warnings[0]
+    assert "curl" not in warnings[0]
+    assert "Authorization" not in warnings[0]
+
+
 @pytest.mark.parametrize(
     ("current", "previous_agent", "dispatched"),
     [
