@@ -195,6 +195,9 @@ Require the adoption shape only when `publish.mode: pr`, `base_branch`, and
 `branch_prefix` are configured and publishing would adopt the operator commit:
 the checkout is on the configured base branch, exactly one non-merge commit
 ahead of the fork point from `git merge-base <remote>/<base_branch> HEAD`.
+Unpublished non-merge commits below it that change only the project state and
+completed work files (such as a finalizer epic close) are allowed; the pull
+request carries them.
 Use the existing remote-tracking ref without fetching; being behind that ref
 is not itself a failure. If already on the story branch the dispatcher created
 for this story, audit there instead. In every other publish configuration,
