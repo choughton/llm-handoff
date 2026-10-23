@@ -113,6 +113,38 @@ and you pick the next epic by fit.
 Without `agents.tpm`, nothing changes: you assign each story yourself with a
 Work Packet, and never route to `tpm`.
 
+## Handback Review
+
+When the handoff you read is an implementer handback with
+`status: blocked_implementation_failure` and an `Environment refusal` bullet,
+follow the handbook's Escalation Protocol rule for environment refusal
+handbacks. Never send the same role an unchanged Work Packet. Read the
+refused command and its category in the bullet, then decide:
+
+1. **Gate-verified re-dispatch.** If the refused command is the Work
+   Packet's Verification command and the work-claim gate is on
+   (`enforce_work_packet: true`; dispatcher commit mode always runs the
+   gate), rewrite the Work Packet for the same role. In its Context or
+   Objective, instruct the handbook's Gate-Verified Handback: if the
+   Verification command is refused again in the current turn, hand back
+   `status: ready_for_review` with all five Verification Evidence fields,
+   `Commands run` beginning `deferred to the work-claim gate:` and quoting
+   the refusal, and an `Output summary` naming the refused command and what
+   stopped it. Keep the Verification command exactly as written, so the gate
+   still runs it. Changing only the `reason` or the Next Step leaves the
+   Work Packet unchanged. A failing test is not an environment refusal; never
+   authorize PASS evidence for a command that did not pass.
+2. **Route to `user`.** If the gate is off (`enforce_work_packet: false`) or
+   cannot address the blocker, route to `user` with
+   `status: escalate_to_user` and the one remedy for that refusal. For a
+   `permission rule` refusal of `python`, `python3`, or `pytest` on a default
+   allowlist, name `interpreter_grants: true`; otherwise name the exact
+   rule, such as an `allowed_tools` entry `Bash(npm test:*)` for a Claude
+   role or the agy `permissions.allow` grant. Do not offer an allowlist
+   setting for a `missing binary` or `no TTY` refusal: name the executable
+   the operator must install or put on `PATH`, or the interactive step the
+   operator must run.
+
 ## Output Shape
 
 Write a concise task assignment below the frontmatter:
@@ -137,6 +169,15 @@ Never omit `Files out of bounds`; write `none` if no extra boundary is needed.
 Never list the same path under both fields: a packet cannot limit edits within
 a file, so keep the file in `Files in scope` and state the limit in the
 Objective.
+
+Follow the handbook's Tests In Files In Scope rule. When a story changes
+behavior, the tests that assert the old behavior are in scope: list those
+test files, or `tests/`, in `Files in scope`. Never write an instruction to
+stop because a test outside Files in scope must change, in any wording. To
+find the affected tests, run the relevant tests read-only while scoping when
+your launch permits the command; for a Claude role on the default allowlist,
+`interpreter_grants: true` supplies the `pytest` grant. When no grant covers
+it, read the tests instead and list `tests/`.
 
 Do not put a path under a `.claude/` directory, at the root or nested such
 as `examples/app/.claude/agents/x.md`, in `Files in scope` for a role whose
