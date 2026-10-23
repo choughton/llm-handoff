@@ -277,7 +277,8 @@ to the end first. `--force` leaves those files as they are, or replaces or
 removes a managed block, and prints each one. A switch to files with
 `--force` removes a handbook Linear block, even an edited one, so no Linear
 instructions stay in file mode. It does not override a malformed
-`# llm-handoff:tracker` marker, a `tracker` key outside the managed block, or
+`# llm-handoff:tracker` marker, malformed or repeated Linear markers in the
+handbook on a switch to files, a `tracker` key outside the managed block, or
 a linked path. A switch to Linear and back restores the files byte for byte,
 and running the same mode again changes nothing.
 

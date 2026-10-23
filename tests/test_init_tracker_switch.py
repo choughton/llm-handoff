@@ -633,6 +633,18 @@ def _malformed_tracker_markers(root: Path) -> None:
     _append(root, CONFIG, f"{TRACKER_BEGIN}\n")
 
 
+def _stray_begin_after_handbook_block(root: Path) -> None:
+    # A real generated Linear block followed by one stray begin marker.
+    text = (root / HANDBOOK).read_text(encoding="utf-8")
+    assert text.count(LINEAR_BEGIN) == 1 and text.count(LINEAR_END) == 1
+    _append(root, HANDBOOK, f"{LINEAR_BEGIN}\n")
+
+
+def _repeated_handbook_block(root: Path) -> None:
+    # The real generated Linear block followed by a second marked block.
+    _append(root, HANDBOOK, f"{LINEAR_BEGIN}\nLocal copy.\n{LINEAR_END}\n")
+
+
 def _foreign_key_in_tracker_block(root: Path) -> None:
     path = root / CONFIG
     text = path.read_text(encoding="utf-8")
@@ -689,6 +701,18 @@ _HARD_CASES = {
         "none",
         _foreign_key_in_tracker_block,
         CONFIG,
+    ),
+    "stray-handbook-marker-to-none": (
+        "linear",
+        "none",
+        _stray_begin_after_handbook_block,
+        HANDBOOK,
+    ),
+    "repeated-handbook-markers-to-none": (
+        "linear",
+        "none",
+        _repeated_handbook_block,
+        HANDBOOK,
     ),
     "linked-agents": ("none", "linear", _linked_agents, AGENTS),
     "junction-agents-dir": ("none", "linear", _junction_agents_dir, PLANNER_AGENT),

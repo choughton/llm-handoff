@@ -22,8 +22,9 @@ This project follows a simple pre-release changelog until the first public tag.
   reports each one. On a switch to none it removes a Linear block that other
   content follows, keeping that content, and removes a locally edited
   handbook Linear block, which has no `tracker.provider` guard, so file mode
-  keeps no Linear instructions. It never resolves marker or unmanaged
-  `tracker` key conflicts or linked paths. `--provider` and `--verification-command` are
+  keeps no Linear instructions. It never resolves malformed tracker markers,
+  malformed or repeated handbook Linear markers on a switch to none, unmanaged
+  `tracker` key conflicts, or linked paths. `--provider` and `--verification-command` are
   refused with `--tracker` on an initialized repository. `init` without
   `--tracker` keeps the ordinary template update. `add_tracker_block` no
   longer adds an extra blank line before the block when the config text lacks

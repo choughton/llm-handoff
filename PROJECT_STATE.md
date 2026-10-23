@@ -19,7 +19,9 @@ history.
   is approved at `d35f9de` (`d35f9de16b21a4452a6341623de9b7fe850e447c`).
   LIN-14 (tracker-mode switching) is implemented and in PR #289; its PR
   review fix (`--force` to none removes the handbook Linear block instead of
-  leaving unguarded Linear rules) is in audit; LIN-12 remains.
+  leaving unguarded Linear rules) and its audit fix (malformed or repeated
+  handbook Linear markers on a switch to none now refuse even with
+  `--force`) are in audit; LIN-12 remains.
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
@@ -109,8 +111,9 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
   switch an initialized repository between modes behind LIN-13's preflight;
   `--dry-run`; conflicts; `--force` reports what is left behind; a round trip
   is byte-identical. Status: implemented in PR #289; review fix for
-  `--force` leaving the unguarded handbook Linear block in file mode in
-  audit.
+  `--force` leaving the unguarded handbook Linear block in file mode, and
+  the audit fix refusing malformed or repeated handbook Linear markers on a
+  switch to none even with `--force`, in audit.
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 

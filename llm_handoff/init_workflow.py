@@ -1789,6 +1789,20 @@ def _plan_linear_text_switch(
     try:
         span = _marker_span(raw, begin, end)
     except ValueError:
+        if desired is None and not guarded:
+            # The handbook has no tracker.provider guard, and init cannot tell
+            # which text between malformed markers is its own, so --force
+            # could neither remove the Linear instructions safely nor leave
+            # them behind in file mode. Refuse before any write.
+            return _SwitchItem(
+                relative,
+                _SWITCH_CONFLICT,
+                reason=(
+                    "its '<!-- llm-handoff:linear -->' markers are malformed "
+                    "or repeated, so init cannot remove its Linear section "
+                    "safely; fix the markers or remove the section by hand"
+                ),
+            )
         return _SwitchItem(
             relative,
             _SWITCH_CONFLICT,
