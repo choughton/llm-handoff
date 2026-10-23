@@ -156,6 +156,16 @@ split out of `PROJECT_STATE.md`.
   (PR #289, `f7b8d17`). Quality and security reviews passed with no findings.
   Verification: dispatcher ran the focused init tests and `git diff --check`
   at the audited SHA, exit 0.
+- **ACTIVE-PLANNER** - finish stories without a person at the console.
+  ACTIVE-1 `9197913`; ACTIVE-2 `9486d3c`; ACTIVE-3 `2de1b44`; ACTIVE-4
+  `d77b61f` (PR #276, `f7625f8`); ACTIVE-5 `98c3118` (PR #280, `0953fc3`);
+  ACTIVE-6 `527b1bb` (PR #282, `383a1b2`); ACTIVE-7 `7b1eb86` (PR #283,
+  `3702b46`); ACTIVE-8, the last story, approved at
+  `d33abfd335422ef95bc8c021df1ac8b0bd5a0969` and merged in PR #293
+  (`0b18d66`). Quality and security reviews passed with no findings.
+  Verification: dispatcher ran `python -m pytest
+  tests/test_reference_workflow.py tests/ported/test_handoff_docs.py -q` at
+  the audited SHA, exit 0.
 
 ## Status History
 
@@ -350,12 +360,223 @@ Current Status entries for closed or finished work, moved unchanged from
   (tracker-mode switching) approved at `6538275`, PR #289 (`f7b8d17`). LIN-12
   (Linear onboarding output and `docs/LINEAR.md`) approved at `7a57591`, PR
   #290 (`28815f5`); LINEAR-SWITCH closed.
+- **Parked ACTIVE-PLANNER (2026-10-23):** the epic was parked at ACTIVE-8
+  waiting on the operator applying the `.claude/agents/` edits; the operator
+  applied them and ACTIVE-8 was approved at `d33abfd`, PR #293 (`0b18d66`);
+  ACTIVE-PLANNER closed.
 
 ## Closed Epics
 
 Full sections of closed epics (intro, `Fit:` line, and story list), moved
 unchanged from the `PROJECT_STATE.md` backlog on 2026-10-21, most recent
 close first. The numbers are the epics' original labels.
+
+### 18. ACTIVE-PLANNER - finish stories without a person at the console
+
+Fit: pick it right after a run has paused on an implementer environment
+refusal (a permission rule, a missing binary) rather than on a question. The
+stories run in order; ACTIVE-5 and ACTIVE-7 change the planner's own
+protocol, so the epic goes before a feature. ACTIVE-8 is the operator's
+`.claude/` edit and goes last. Does not overlap ESCALATION-RECONCILE,
+which re-checks a stale `user` route; this epic keeps the loop from reaching
+`user` for a config line it could have named.
+
+On 2026-10-18 one story took three implementer dispatches and two planner
+passes before the auditor saw it, with no code problem: the backend's
+allowlist refused `python -m pytest`, so it could not post the fresh
+`Commands run` the handbook demands, handed back
+`blocked_implementation_failure`, and the planner re-dispatched the same
+Work Packet. The work-claim gate runs the Verification command itself
+whenever it applies (`verify_work_claim`, `llm_handoff/work_claim.py` ~line
+1498; `_work_claim_gate_applies`, `llm_handoff/orchestrator.py` ~line
+3174), so the implementer's own run is redundant evidence when the gate is
+on. The validator checks only that each evidence field is non-empty
+(`llm_handoff/validator.py` ~lines 646-669); the "fresh commands" rule
+lives in the handbook (`docs/handoff/HANDBOOK.md` ~lines 62-77), the
+implementer prompts (`docs/handoff/BACKEND_HANDOFF_PROMPT.md` ~line 61,
+`FRONTEND_HANDOFF_PROMPT.md` ~line 68), and the auditor. Nothing checks,
+before a dispatch, that the role can run the command it was given.
+
+Groomed on 2026-10-19 from four stories into eight, each one Work Packet;
+the `(was ...)` notes give the old IDs. None had started.
+
+- ACTIVE-1 (was part of ACTIVE-1): Gate-verified handback. When an
+  implementer cannot run the Work Packet's Verification command (a
+  permission refusal, a missing tool), it may still hand back
+  `status: ready_for_review` with a `## Verification Evidence` block whose
+  `Commands run` reads `deferred to the work-claim gate: <the refusal,
+  quoted>` and whose `Output summary` names the refusal; the other three
+  fields stay as today. This is legal only when `enforce_work_packet: true`;
+  without the gate the current rule stands. The validator accepts it as it
+  does now (the field is non-empty). The gate runs the command as it does
+  today and, on a pass, `record_passed_verification`
+  (`llm_handoff/work_claim.py` ~line 2390, called at
+  `llm_handoff/orchestrator.py` ~line 3367) writes the
+  `## Dispatcher Verification` section the auditor helper files already tell
+  the auditor to trust; that section is the evidence the auditor reads.
+  Update the handbook's Evidence Block Reference, both implementer prompts,
+  and the auditor prompt under `docs/handoff/` (a deferred `Commands run`
+  with a PASS section is not a finding). The backend and frontend
+  `verification deferred` patterns in
+  `llm_handoff/rationalization_patterns.yaml` (~lines 10-12 and 20-22) must
+  not match the new wording. Tests: the validator accepts the block, the
+  gate still runs the command on such a claim, and an auditor fixture with a
+  deferred `Commands run` plus a PASS section validates. Grooming
+  (2026-10-22): the story also mirrors the four protocol files into
+  `examples/reference-workflow/docs/handoff/` and adds detector regressions;
+  the existing validator and gate behavior is retained. Progress: approved
+  2026-10-22 at `9197913ef76de7aeb9b2143d393442b6fbfbb21e`.
+- ACTIVE-2 (was part of ACTIVE-1): Gate-verified handback in the non-Claude
+  helper files: the `llm-handoff` and `llm-handoff-frontend` Codex skills
+  and `backend.md` and `frontend.md` under `.agents/agents/` (root and
+  `examples/reference-workflow/` copies) describe the ACTIVE-1 wording.
+  Protected paths; list each in Files in scope. Progress: approved
+  2026-10-22 at `9486d3c31b63fde1839feee6dde0543ff50b5bde`; the Codex
+  skills' temporary-directory paragraph now follows the conditional
+  gate-verified rule.
+- ACTIVE-3 (was part of ACTIVE-2): Verification preflight in `doctor`.
+  Parse the live Work Packet when the handoff routes to an implementer
+  (`doctor._check_handoff`, `llm_handoff/doctor.py` ~line 1873, already reads
+  and routes it) and check that each command's leading executable
+  (`command_executable`, `llm_handoff/work_claim.py` ~line 1455) is allowed
+  by that role's launch, fallback included (`_role_launches`,
+  `llm_handoff/doctor.py` ~line 370): for Claude, the `Bash(prefix:*)` rules
+  of `claude_allowed_tools` (`llm_handoff/config.py` ~line 340, built from
+  `claude_default_allowed_tools` ~line 65 and per-role `allowed_tools` ~line
+  300, parsed as `_BASH_RULE_RE` does in
+  `llm_handoff/agent_providers/claude.py` ~line 22); for agy, the grants
+  `antigravity_allowed_commands` builds
+  (`llm_handoff/antigravity_permissions.py` ~line 111); for Codex, which runs
+  in a workspace-write sandbox with no command allowlist
+  (`codex_permission_args`, `llm_handoff/agent_providers/codex.py` ~line
+  294), only that the executable resolves. Also run
+  `verification_command_allowed` (`llm_handoff/work_claim.py` ~line 1833)
+  against the same commands. Report `WARN verification preflight: backend
+  (claude) cannot run python; set interpreter_grants: true or an
+  allowed_tools rule`, never FAIL. Put the check in one function the
+  dispatcher can call in ACTIVE-4. Tests in `tests/test_doctor.py`.
+  Progress: approved 2026-10-22 at
+  `2de1b447b30e3b283b67d316548a8e776724e26f` as
+  `doctor.check_verification_preflight`.
+- ACTIVE-4 (was part of ACTIVE-2): Verification preflight in the
+  dispatcher. Call the ACTIVE-3 check at startup (`run_loop`,
+  `llm_handoff/orchestrator.py` ~line 456, next to the pre-launch checks
+  there) and in every cycle that dispatches an implementer, next to
+  `capture_pre_dispatch_state` (~line 1170), because a Work Packet the
+  planner writes mid-run never passes startup. It logs the same WARN and
+  never blocks, so the planner can re-scope. Startup and per-cycle tests in
+  `tests/ported/test_orchestrator.py` with `--dry-run`. Progress:
+  implemented 2026-10-22, awaiting audit; startup checks the handoff on disk,
+  each backend or frontend cycle (dry-run preview included) checks the
+  assignment it dispatches, and the first cycle skips content startup
+  already checked. PR #276 review round 1: the cycle check now covers the
+  role the cycle dispatches (operator `@backend`/`@frontend` overrides
+  included), the startup skip applies only to the same role and content,
+  and manual frontend runs are not checked. Approved 2026-10-22 at
+  `d77b61f36fbc03295bb7601878e06629c4a367d1` and merged in PR #276
+  (`f7625f838f14d320c530f9ac65bd87bfeac5ee02`).
+- ACTIVE-5 (was ACTIVE-3): Test scope policy. In
+  `docs/handoff/PLANNER_HANDOFF_PROMPT.md` (the Work Packet section, ~lines
+  78-150) and the handbook: for a story that changes behaviour, tests that
+  assert the old behaviour are in scope by definition. The planner lists
+  `tests/` (a directory, which `path_matches_entry` in
+  `llm_handoff/work_claim.py` ~line 618 already supports) or the specific
+  test files, and never writes "stop if a test outside Files in scope must
+  change" or a variant. With `interpreter_grants: true` the planner's default
+  allowlist includes `pytest` (`claude_default_allowed_tools`,
+  `llm_handoff/config.py` ~line 65), so the prompt tells it to run the
+  relevant tests read-only while scoping, to find which files assert the old
+  behaviour. Add a `planner` pattern for the forbidden phrase in
+  `llm_handoff/rationalization_patterns.yaml` (~line 24; the validator
+  surfaces it through `_rationalization_warnings`,
+  `llm_handoff/validator.py` ~line 747) and mirror the rule in
+  `.codex/skills/llm-handoff-planner/SKILL.md` and `.agents/agents/planner.md`
+  (not `.gemini/agents/`, which GEM-5 deleted). Tests: `parse_work_packet`
+  accepts `tests/` as a Files in scope entry and the gate treats a new file
+  under it as in scope (`tests/test_work_claim.py`, next to the parser tests
+  at ~line 301), and `tests/test_rationalization_detector.py` catches the
+  phrase. Grooming (2026-10-22): the rule is mirrored into the four
+  `examples/reference-workflow/` copies (handbook, planner prompt, Codex
+  planner skill, `.agents/agents/planner.md`); the existing parser test
+  (`test_parse_work_packet_extracts_scope_and_command`, already `tests/`) and
+  dispatcher-commit test for new files under a directory entry are reused,
+  and one `verify_work_claim` case adds a new test under `tests/`. The
+  pattern stays advisory with existing status gating; no assignment-time
+  detector activation. Progress: implemented 2026-10-22; the handbook
+  carries a Tests In Files In Scope section. Approved 2026-10-22 at
+  `98c311812f777ad558706381316ebe84122f38b6` and merged in PR #280
+  (`0953fc32804a6b4b1adc1d27e53f7c91b5a0ece4`).
+- ACTIVE-6 (was part of ACTIVE-4): Environment refusal bullet and validator
+  warning. An implementer that hands back `blocked_implementation_failure`
+  for an environment reason writes one bullet in the handback body,
+  `- **Environment refusal:** <permission rule | missing binary | no TTY>:
+  <the refusal text, quoted>`; both implementer prompts under
+  `docs/handoff/` and the ACTIVE-2 helper files add it, and
+  `_bullet_field_values` (`llm_handoff/validator.py` ~line 834) already
+  parses bullets of that shape. The dispatcher's own refusal log lines
+  (`llm_handoff/agent_providers/claude.py` ~lines 203-208, `antigravity.py`
+  ~line 35) are not handoff content and cover only permission rules, so the
+  validator does not key on them. Add a validator warning
+  `planner_redispatch_after_refusal` when a planner handoff routes to the
+  implementer that produced the previous handoff, the Work Packet section
+  (`extract_work_packet_section`, `llm_handoff/work_claim.py` ~line 452) is
+  unchanged, and the previous handoff carries that bullet.
+  `validate_handoff_text` already takes `previous_route` and
+  `prior_handoff_content` (`llm_handoff/validator.py` ~lines 376-385); the
+  orchestrator passes the story baseline there (~line 1468), so the story
+  confirms that baseline is the implementer handback the planner read or
+  passes the handback separately. The `agent_self_loop` check (~line 466)
+  does not cover this case, since planner to backend is a different role.
+  Tests in `tests/ported/test_validator.py`. Grooming (2026-10-22): the
+  validator argument is `previous_agent`, not the stale `previous_route`
+  reference above; the story still checks that the prior content is the
+  actual implementer handback rather than assuming the story baseline
+  supplies it. Progress: implemented 2026-10-22; the
+  validator takes the handoff the planner was dispatched on as
+  `dispatched_handoff_content`, separate from the story-list baseline, and
+  the orchestrator passes it on post-dispatch validation and producer repair.
+  Approved 2026-10-22 at `527b1bbf272c8dedc57a1d405df9527f18ae741d` and
+  merged in PR #282 (`383a1b23eb43a59dfc9e95cb664ed7f1e345ef77`).
+- ACTIVE-7 (was part of ACTIVE-4): No pointless re-dispatch, planner side.
+  When the planner receives `blocked_implementation_failure` whose handback
+  carries the ACTIVE-6 bullet, it must not re-dispatch the same role with an
+  unchanged Work Packet: it either applies ACTIVE-1 (re-dispatch with an
+  instruction to hand back gate-verified) or routes to `user` with the exact
+  config line to add, such as `interpreter_grants: true`. Encode this in the
+  planner prompt's handback review, the handbook's Escalation Protocol
+  (`docs/handoff/HANDBOOK.md` ~lines 125-142), and the ACTIVE-5 planner
+  helper files outside `.claude/`. Grooming (2026-10-22): the rule is
+  mirrored into the four `examples/reference-workflow/` copies (handbook,
+  planner prompt, Codex planner skill, `.agents/agents/planner.md`), and
+  verification focuses on both decision paths: the gate-verified path
+  revises the Work Packet's Context or Objective with the ACTIVE-1 handback
+  instruction and keeps the Verification command, and the `user` path names
+  a remedy matching the refusal category. The ACTIVE-6 warning stays
+  advisory and is reused. Progress: implemented 2026-10-22;
+  the handbook's Escalation Protocol carries the shared rule, each planner
+  file a Handback Review section, `tests/ported/test_handoff_docs.py` checks
+  all eight files and both paths, and `tests/ported/test_validator.py` shows
+  the revised Work Packet validates without `planner_redispatch_after_refusal`
+  while the unchanged one still warns. Approved 2026-10-22 at
+  `7b1eb86f8f33111d1206c7dfcb66748bcd69980e` and merged in PR #283
+  (`3702b469678bf5842d7a86ff979c599ff2cab89d`).
+- ACTIVE-8: Operator edit of the Claude helper files (routes to `user`).
+  Claude roles cannot write `.claude/`, so the planner writes the exact
+  edits into the handoff, as GEM-5c did: the ACTIVE-1 and ACTIVE-6 wording in
+  `backend.md` and `frontend.md`, and the ACTIVE-5 and ACTIVE-7 rules in
+  `planner.md`, under `.claude/agents/` (root and
+  `examples/reference-workflow/` copies). The auditor helper already trusts
+  the PASS section (`.claude/agents/auditor.md` ~line 46), so it needs no
+  change unless ACTIVE-1's auditor prompt wording must be mirrored. If
+  TIDY-7 is still open, list its edits in the same handoff (operator
+  batching, 2026-10-20). Grooming (2026-10-22): use the handbook's Operator
+  Stories artifact contract under `logs/dispatch/operator/ACTIVE-8/`, with
+  complete files or an applyable patch and an apply command; prose-only
+  edits in the handoff are insufficient. TIDY-7 is already closed per the
+  planner, so there is no TIDY-7 batching work. The story stays last and
+  operator-owned. Progress: operator applied the edits and the story was
+  approved 2026-10-23 at `d33abfd335422ef95bc8c021df1ac8b0bd5a0969`, merged
+  in PR #293 (`0b18d66`).
 
 ### 11. LINEAR-SWITCH - mode switching and onboarding
 
