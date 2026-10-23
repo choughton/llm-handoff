@@ -213,6 +213,139 @@ def test_removed_planner_api_key_env_flag_exits_2_before_any_dispatch(
     assert not (tmp_path / ".dispatch.lock").exists()
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        ([], {"backend_resume": None, "planner_resume": None}),
+        (["--use-backend-resume"], {"backend_resume": True, "planner_resume": None}),
+        (["--no-backend-resume"], {"backend_resume": False, "planner_resume": None}),
+        (["--use-planner-resume"], {"backend_resume": None, "planner_resume": True}),
+        (["--no-planner-resume"], {"backend_resume": None, "planner_resume": False}),
+    ],
+)
+def test_resume_flags_forward_none_when_omitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected: dict[str, bool | None],
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run_dispatch(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(main_module, "_run_dispatch", fake_run_dispatch)
+
+    assert main_module.main([*argv, "--repo-root", str(tmp_path)]) == 0
+
+    assert len(calls) == 1
+    assert {key: calls[0][key] for key in expected} == expected
+
+
+def _run_cli_with_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_text: str,
+    argv: list[str],
+):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "dispatch_config.yaml").write_text(config_text, encoding="utf-8")
+    seen: list[object] = []
+
+    class FakeDispatchLogger:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __call__(self, level: str, message: str) -> None:
+            pass
+
+        def mark_startup_complete(self) -> None:
+            pass
+
+    def fake_run_loop(config, *, log=None) -> int:
+        seen.append(config)
+        return 0
+
+    monkeypatch.setattr(main_module, "DispatchLogger", FakeDispatchLogger)
+    monkeypatch.setattr(main_module, "run_loop", fake_run_loop)
+    monkeypatch.setattr(
+        main_module, "_set_dispatch_console_title", lambda: (None, False)
+    )
+    monkeypatch.setattr(
+        main_module, "_restore_console_title", lambda *_a, **_k: None
+    )
+
+    assert main_module.main([*argv, "--dry-run", "--repo-root", str(tmp_path)]) == 0
+    assert len(seen) == 1
+    return seen[0]
+
+
+@pytest.mark.parametrize("role", ["backend", "planner"])
+@pytest.mark.parametrize(
+    ("config_text", "argv", "expected_value", "expected_source"),
+    [
+        ("{role}_resume: false\n", [], False, "{role}_resume"),
+        ("{role}_resume: false\n", ["--use-{role}-resume"], True, "--use-{role}-resume"),
+        ("{role}_resume: true\n", ["--no-{role}-resume"], False, "--no-{role}-resume"),
+        (
+            "agents:\n  {role}:\n    resume: false\n",
+            [],
+            False,
+            "agents.{role}.resume",
+        ),
+        (
+            "{role}_resume: true\nagents:\n  {role}:\n    resume: false\n",
+            [],
+            True,
+            "{role}_resume",
+        ),
+        ("handoff_path: HANDOFF.md\n", [], True, "default"),
+    ],
+)
+def test_cli_resume_resolution_uses_config_unless_a_flag_is_passed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    config_text: str,
+    argv: list[str],
+    expected_value: bool,
+    expected_source: str,
+) -> None:
+    config = _run_cli_with_config(
+        tmp_path,
+        monkeypatch,
+        config_text.format(role=role),
+        [arg.format(role=role) for arg in argv],
+    )
+
+    assert getattr(config, f"{role}_resume") is expected_value
+    assert getattr(config, f"{role}_resume_source") == expected_source.format(
+        role=role
+    )
+
+
+def test_resume_flag_help_describes_precedence(capsys) -> None:
+    import typer
+
+    assert main_module.main(["--help"]) == 0
+    output = capsys.readouterr().out
+    command = typer.main.get_command(main_module.app)
+    help_by_flag = {
+        opt: param.help or ""
+        for param in command.params
+        for opt in getattr(param, "opts", [])
+    }
+
+    for role in ("backend", "planner"):
+        assert f"--use-{role}-resume" in output
+        assert f"--no-{role}-resume" in output
+        assert (
+            f"overrides the top-level {role}_resume key, which overrides "
+            f"agents.{role}.resume; with none of them set, the default is true"
+        ) in help_by_flag[f"--use-{role}-resume"]
+
+
 def test_removed_planner_api_key_env_flag_is_hidden_from_help(capsys) -> None:
     assert main_module.main(["--help"]) == 0
 

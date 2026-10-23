@@ -135,6 +135,29 @@ backend_resume: true
 planner_resume: true
 ```
 
+The dispatcher resolves whether the backend and planner reuse a session from
+these sources, highest first:
+
+1. The command-line flag, when passed: `--use-backend-resume` or
+   `--no-backend-resume`, and `--use-planner-resume` or
+   `--no-planner-resume`. With no flag, the config decides.
+2. The top-level `backend_resume` or `planner_resume` key.
+3. An explicit `agents.backend.resume` or `agents.planner.resume` key, as
+   `llm-handoff init` writes. A provider default for `resume`, filled in when
+   the role sets only `provider`, does not count here.
+4. The default, `true`.
+
+`false` is a real setting at every level, and a `null` value counts as unset.
+So `planner_resume: false` at the top level wins over a template's
+`agents.planner.resume: true`, and passing `--use-planner-resume` wins over
+both. The startup banner names the source it used, for example
+`Planner session:    STATELESS (new session per dispatch; source: planner_resume)`
+or `backend session:      MANAGED RESUME (persisted thread id; source: default)`.
+The source is one of the flag names, the top-level key, the role key (such as
+`agents.backend.resume`), or `default`. The dispatcher sets
+`backend_resume_source` and `planner_resume_source` itself; a config that sets
+either key fails to load.
+
 Provider-named runtime keys from the source extraction are not supported in the
 public config. Use the role-based keys shown above.
 
@@ -3001,7 +3024,13 @@ Common fields:
 - `binary`: command name or absolute executable path.
 - `agent_name`: optional display/subagent name for logs or provider-specific
   role selection.
-- `resume`: whether the adapter may reuse a prior session.
+- `resume`: whether the adapter may reuse a prior session. For `backend` and
+  `planner`, an explicit `resume` key is the fallback for the runtime setting:
+  the `--use-<role>-resume`/`--no-<role>-resume` flag overrides the top-level
+  `backend_resume` or `planner_resume` key, which overrides an explicit
+  `agents.backend.resume` or `agents.planner.resume`, and with none of them
+  set the default is `true`. A provider default for `resume` never counts as
+  explicit. See [Runtime Controls](#runtime-controls).
 - `timeout_ms`: process timeout for a single dispatch.
 - `idle_timeout_ms`: optional limit on how long the process may write no
   output before it is killed. Off by default. See

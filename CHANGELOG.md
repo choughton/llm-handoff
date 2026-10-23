@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Config resume settings now apply without command-line flags (LOOSE-1).
+  `--use-backend-resume/--no-backend-resume` and
+  `--use-planner-resume/--no-planner-resume` default to unset, so a top-level
+  `backend_resume: false` or `planner_resume: false` is no longer overridden
+  by an implicit `true`. Precedence is the flag, then the top-level key, then
+  an explicit `agents.backend.resume` or `agents.planner.resume` (a provider
+  default does not count), then `true`. The two startup banner session lines
+  name the source, such as `source: planner_resume` or `source: default`.
+  `AgentConfig.resume` is unchanged; CLI help and CONFIGURATION.md describe
+  the same precedence.
 - The planner no longer sends an implementer the same unchanged Work Packet
   after a `blocked_implementation_failure` handback with an
   `Environment refusal` bullet (ACTIVE-7). The handbook's Escalation Protocol
@@ -41,10 +51,10 @@ This project follows a simple pre-release changelog until the first public tag.
   `quality` and `security` (which it requires), it runs
   `codex exec --sandbox read-only review --base <review scope base SHA>`
   concurrently with them, in every publish mode, with HEAD at the scope's
-  head commit or above it on handoff-only commits. Its findings map P0-P3 to critical/high/medium/low and merge
-  under `audit.block_severity`; a `fail` with only sub-threshold findings
-  does not block, like a security `fail`. The audit handoff gains
-  `## Codex Local Review` and `## Codex Local Findings` or `Notes`
+  head commit or above it on handoff-only commits. Its findings map P0-P3
+  to critical/high/medium/low and merge under `audit.block_severity`; a
+  `fail` with only sub-threshold findings does not block, like a security
+  `fail`. The audit handoff gains `## Codex Local Review` and `## Codex Local Findings` or `Notes`
   sections, which the merge commit and pull request report repeat. A
   message that lists review comments the dispatcher cannot read is a
   reviewer error, never a pass, and startup stops when the Codex CLI is not

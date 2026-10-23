@@ -3494,14 +3494,121 @@ def test_run_loop_dry_run_skips_dispatch_and_logs_startup_banner(
     assert any("Frontend agent:" in message for _, message in log_messages)
     assert (
         "INFO",
-        "backend session:      MANAGED RESUME (persisted thread id)",
+        "backend session:      MANAGED RESUME (persisted thread id; "
+        "source: backend_resume)",
     ) in log_messages
     assert (
         "INFO",
-        "Planner session:    MANAGED RESUME (in-memory session id)",
+        "Planner session:    MANAGED RESUME (in-memory session id; "
+        "source: planner_resume)",
     ) in log_messages
     assert not any("Planner API env:" in message for _, message in log_messages)
     assert any("[DRY RUN]" in message for _, message in log_messages)
+
+
+def _startup_banner_session_lines(config: Any) -> list[str]:
+    orchestrator = _load_orchestrator_module()
+    log_messages: list[tuple[str, str]] = []
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+    assert exit_code == 0
+    return [
+        message
+        for level, message in log_messages
+        if level == "INFO"
+        and message.startswith(("backend session:", "Planner session:"))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("config_text", "flags", "expected"),
+    [
+        (
+            "",
+            {},
+            [
+                "backend session:      MANAGED RESUME (persisted thread id; "
+                "source: default)",
+                "Planner session:    MANAGED RESUME (in-memory session id; "
+                "source: default)",
+            ],
+        ),
+        (
+            "backend_resume: false\nplanner_resume: false\n",
+            {},
+            [
+                "backend session:      STATELESS (new session per dispatch; "
+                "source: backend_resume)",
+                "Planner session:    STATELESS (new session per dispatch; "
+                "source: planner_resume)",
+            ],
+        ),
+        (
+            "agents:\n  backend:\n    resume: false\n  planner:\n    resume: false\n",
+            {},
+            [
+                "backend session:      STATELESS (new session per dispatch; "
+                "source: agents.backend.resume)",
+                "Planner session:    STATELESS (new session per dispatch; "
+                "source: agents.planner.resume)",
+            ],
+        ),
+        (
+            "backend_resume: false\nplanner_resume: false\n",
+            {"backend_resume": True, "planner_resume": True},
+            [
+                "backend session:      MANAGED RESUME (persisted thread id; "
+                "source: --use-backend-resume)",
+                "Planner session:    MANAGED RESUME (in-memory session id; "
+                "source: --use-planner-resume)",
+            ],
+        ),
+        (
+            "",
+            {"backend_resume": False, "planner_resume": False},
+            [
+                "backend session:      STATELESS (new session per dispatch; "
+                "source: --no-backend-resume)",
+                "Planner session:    STATELESS (new session per dispatch; "
+                "source: --no-planner-resume)",
+            ],
+        ),
+    ],
+)
+def test_startup_banner_reports_resolved_resume_source(
+    tmp_path: Path,
+    config_text: str,
+    flags: dict[str, bool],
+    expected: list[str],
+) -> None:
+    repo_root, _ = _write_repo(
+        tmp_path,
+        """## Next Step
+
+- **backend:** Preview the dispatch.
+""",
+    )
+    config_path = repo_root / "dispatch_config.yaml"
+    config_path.write_text(
+        config_text
+        + "pause_recovery: \"off\"\n"
+        + "poll_interval_seconds: 0\n"
+        + "audit:\n"
+        + "  reviewers: [quality]\n"
+        + "  security_opt_out_reason: Tests cover the single-auditor route.\n",
+        encoding="utf-8",
+    )
+    config_module = importlib.import_module("llm_handoff.config")
+    config = config_module.load_dispatch_config(
+        repo_root=repo_root,
+        config_path=config_path,
+        dry_run=True,
+        **flags,
+    )
+
+    assert _startup_banner_session_lines(config) == expected
 
 
 def test_run_loop_uses_manual_frontend_for_frontend_when_enabled(
@@ -4200,6 +4307,8 @@ def test_main_parses_cli_flags_and_dispatches_config(
     assert config.use_manual_frontend is True
     assert config.backend_resume is True
     assert config.planner_resume is True
+    assert config.backend_resume_source == "default"
+    assert config.planner_resume_source == "default"
     assert captured["logger_repo_root"] == tmp_path
     assert (
         captured["logger_max_consecutive_failures"] == config.max_consecutive_failures
@@ -4386,8 +4495,10 @@ def test_main_supports_opting_out_of_backend_resume(
 
     assert exit_code == 0
     assert captured["config"].backend_resume is False
+    assert captured["config"].backend_resume_source == "--no-backend-resume"
     assert captured["logger_backend_resume"] is False
     assert captured["config"].planner_resume is True
+    assert captured["config"].planner_resume_source == "default"
     assert captured["logger_planner_resume"] is True
 
 
@@ -4443,8 +4554,10 @@ def test_main_supports_opting_out_of_planner_resume(
 
     assert exit_code == 0
     assert captured["config"].planner_resume is False
+    assert captured["config"].planner_resume_source == "--no-planner-resume"
     assert captured["logger_planner_resume"] is False
     assert captured["config"].backend_resume is True
+    assert captured["config"].backend_resume_source == "default"
     assert captured["logger_backend_resume"] is True
 
 

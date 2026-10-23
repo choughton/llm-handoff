@@ -1128,6 +1128,82 @@ def _agent_defaults_for_provider(role: str, provider: object) -> dict[str, objec
     return {"provider": provider}
 
 
+# Where the runtime backend_resume / planner_resume value came from, in
+# precedence order: a CLI flag (or a load_dispatch_config caller override),
+# the top-level key, the explicit agents.<role>.resume key, then the default.
+BackendResumeSource = Literal[
+    "--use-backend-resume",
+    "--no-backend-resume",
+    "backend_resume",
+    "agents.backend.resume",
+    "default",
+]
+PlannerResumeSource = Literal[
+    "--use-planner-resume",
+    "--no-planner-resume",
+    "planner_resume",
+    "agents.planner.resume",
+    "default",
+]
+_RESUME_ROLES: tuple[str, ...] = ("backend", "planner")
+_RESUME_DEFAULTS: dict[str, bool] = {
+    "backend": True,
+    "planner": PLANNER_RESUME_DEFAULT,
+}
+
+
+def _explicit_role_resume(agents: object, role: str) -> object | None:
+    """Return the explicitly set ``agents.<role>.resume`` value, or None.
+
+    A raw mapping counts only when it carries a non-None ``resume`` key. An
+    ``AgentConfig`` counts only when ``resume`` is in its ``model_fields_set``,
+    so provider defaults never count as an explicit setting.
+    """
+
+    if not isinstance(agents, dict):
+        return None
+    configured = agents.get(role)
+    if isinstance(configured, AgentConfig):
+        if "resume" in configured.model_fields_set:
+            return configured.resume
+        return None
+    if isinstance(configured, dict):
+        return configured.get("resume")
+    return None
+
+
+def _resolve_resume_setting(
+    data: dict[str, object],
+    role: str,
+    *,
+    override: bool | None,
+    role_resume: object | None,
+) -> None:
+    """Set ``<role>_resume`` and ``<role>_resume_source`` in ``data``.
+
+    Precedence: caller override (CLI flag) > top-level ``<role>_resume`` >
+    explicit ``agents.<role>.resume`` > the built-in default (True).
+    """
+
+    key = f"{role}_resume"
+    top_level = data.get(key)
+    value: object
+    if override is not None:
+        value = override
+        source = f"--use-{role}-resume" if override else f"--no-{role}-resume"
+    elif top_level is not None:
+        value = top_level
+        source = key
+    elif role_resume is not None:
+        value = role_resume
+        source = f"agents.{role}.resume"
+    else:
+        value = _RESUME_DEFAULTS[role]
+        source = "default"
+    data[key] = value
+    data[f"{key}_source"] = source
+
+
 def _repo_relative_path_error(key: str, value: str, rule: str) -> str:
     return (
         f"{key} {value!r} must be a relative path inside the repository: "
@@ -1170,6 +1246,10 @@ class DispatchConfig(BaseModel):
     use_manual_frontend: bool = False
     backend_resume: bool = True
     planner_resume: bool = PLANNER_RESUME_DEFAULT
+    # Set by the resume resolver (see _resolve_resume_settings); not a
+    # dispatch_config.yaml key.
+    backend_resume_source: BackendResumeSource = "default"
+    planner_resume_source: PlannerResumeSource = "default"
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
     pause_recovery: PauseRecoveryMode = "planner"
@@ -1212,6 +1292,28 @@ class DispatchConfig(BaseModel):
             "the auto_push key from the config; publish.mode controls whether "
             "the dispatcher pushes."
         )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_resume_settings(cls, value: object) -> object:
+        # Resolve backend_resume / planner_resume for direct construction:
+        # top-level key > explicit agents.<role>.resume > default True.
+        # load_dispatch_config resolves both itself (it also applies the CLI
+        # override and reads role keys before merging provider defaults) and
+        # passes the source, which is kept as given.
+        if not isinstance(value, dict):
+            return value
+        resolved = dict(value)
+        for role in _RESUME_ROLES:
+            if f"{role}_resume_source" in resolved:
+                continue
+            _resolve_resume_setting(
+                resolved,
+                role,
+                override=None,
+                role_resume=_explicit_role_resume(resolved.get("agents"), role),
+            )
+        return resolved
 
     @model_validator(mode="before")
     @classmethod
@@ -1592,14 +1694,30 @@ def load_dispatch_config(
 ) -> DispatchConfig:
     resolved_repo_root = Path(repo_root).resolve()
     data = _read_config_file(resolved_repo_root, config_path)
+    for role in _RESUME_ROLES:
+        source_key = f"{role}_resume_source"
+        if source_key in data:
+            raise ValueError(
+                f"{source_key} is not a dispatch config key: the dispatcher sets "
+                f"it from the --use-{role}-resume/--no-{role}-resume flag, "
+                f"{role}_resume, or agents.{role}.resume. Delete it from the "
+                "config."
+            )
+    # Read explicit agents.<role>.resume before provider defaults are merged,
+    # so a provider default never counts as an explicit role setting.
+    role_resume = {
+        role: _explicit_role_resume(data.get("agents"), role)
+        for role in _RESUME_ROLES
+    }
     data["repo_root"] = resolved_repo_root
     data["dry_run"] = dry_run
     data["use_manual_frontend"] = use_manual_frontend
     _merge_agent_defaults(data)
-    if backend_resume is not None:
-        data["backend_resume"] = backend_resume
-    if planner_resume is not None:
-        data["planner_resume"] = planner_resume
+    overrides = {"backend": backend_resume, "planner": planner_resume}
+    for role in _RESUME_ROLES:
+        _resolve_resume_setting(
+            data, role, override=overrides[role], role_resume=role_resume[role]
+        )
     if interactive_pause is not None:
         data["interactive_pause"] = interactive_pause
     return DispatchConfig.model_validate(data)

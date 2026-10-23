@@ -231,8 +231,8 @@ def _run_dispatch(
     *,
     dry_run: bool,
     use_manual_frontend: bool,
-    backend_resume: bool = True,
-    planner_resume: bool = True,
+    backend_resume: bool | None = None,
+    planner_resume: bool | None = None,
     repo_root: Path | None = None,
     config_path: Path | None = None,
     no_interactive_pause: bool = False,
@@ -692,20 +692,26 @@ def _dispatch_callback(
         hidden=True,
         help="Removed with the gemini provider; passing it exits with code 2.",
     ),
-    backend_resume: bool = typer.Option(
-        True,
+    backend_resume: bool | None = typer.Option(
+        None,
         "--use-backend-resume/--no-backend-resume",
+        show_default=False,
         help=(
             "Reuse the managed backend session, or start a fresh stateless backend "
-            "session for this dispatch."
+            "session for this dispatch. When passed, overrides the top-level "
+            "backend_resume key, which overrides agents.backend.resume; with "
+            "none of them set, the default is true."
         ),
     ),
-    planner_resume: bool = typer.Option(
-        True,
+    planner_resume: bool | None = typer.Option(
+        None,
         "--use-planner-resume/--no-planner-resume",
+        show_default=False,
         help=(
             "Reuse the in-memory managed planner session, or run the planner "
-            "statelessly for this dispatch."
+            "statelessly for this dispatch. When passed, overrides the top-level "
+            "planner_resume key, which overrides agents.planner.resume; with "
+            "none of them set, the default is true."
         ),
     ),
     no_interactive_pause: bool = typer.Option(
