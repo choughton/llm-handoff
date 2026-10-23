@@ -26,7 +26,11 @@ from llm_handoff.config import (
     verification_whitespace_problem,
 )
 from llm_handoff.roles import normalize_next_agent_value
-from llm_handoff.router import HandoffFrontmatterError, parse_handoff_frontmatter_text
+from llm_handoff.router import (
+    HandoffFrontmatterError,
+    parse_handoff_frontmatter_text,
+)
+from llm_handoff.router import route as route_handoff
 from llm_handoff.stack_detect import Candidate, detect_candidates
 from llm_handoff.tracker_prompts import (
     LINEAR_PROMPT_ROLES,
@@ -1370,6 +1374,26 @@ def _check_handoff_between_assignments(root: Path, config: DispatchConfig) -> No
             f"{unknown}: next_agent is {frontmatter.next_agent!r}. "
             f"{_BETWEEN_ASSIGNMENTS_HINT}",
         )
+    # The dispatcher routes on the validated frontmatter, where a status takes
+    # precedence over next_agent and an invalid or conflicting field routes
+    # nowhere. Classify that effective route, not next_agent alone.
+    decision = route_handoff(text)
+    if decision.route in _ACTIVE_ASSIGNMENT_ROLES:
+        raise InitializedTargetError(
+            root,
+            f"the handoff {name} has an active assignment (status: "
+            f"{frontmatter.status} routes to {decision.route}). "
+            f"{_BETWEEN_ASSIGNMENTS_HINT}",
+        )
+    if decision.route not in _BETWEEN_ASSIGNMENT_ROLES:
+        detail = " ".join(
+            (decision.warnings[0] if decision.warnings else decision.reasoning).split()
+        )
+        raise InitializedTargetError(
+            root,
+            f"{unknown}: the dispatcher cannot route it ({detail}). "
+            f"{_BETWEEN_ASSIGNMENTS_HINT}",
+        )
 
 
 def preflight_initialized_target(target_root: Path) -> DispatchConfig | None:
@@ -1383,9 +1407,13 @@ def preflight_initialized_target(target_root: Path) -> DispatchConfig | None:
     invalid YAML, or fails config validation; a present ``.dispatch.lock`` or
     dispatcher run-state file; and a handoff (the config's ``handoff_path``)
     that holds a ``tracker_issue`` lease, routes to an implementing or
-    reviewing role, or cannot be read as a between-assignments state. A
-    missing handoff, the starter template, and a planner, tpm, or user route
-    with no ``tracker_issue`` pass. Nothing is written.
+    reviewing role, or cannot be read as a between-assignments state. The
+    route is the one the dispatcher would take: a ``status`` takes precedence
+    over ``next_agent``, and frontmatter the router rejects (an unrecognized
+    status, a status that conflicts with ``next_agent``, a missing reason)
+    counts as unknown. A missing handoff, the starter template, and valid
+    frontmatter whose effective route is planner, tpm, or user with no
+    ``tracker_issue`` pass. Nothing is written.
     """
 
     root = target_root.expanduser().resolve()

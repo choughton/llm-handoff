@@ -1087,14 +1087,20 @@ def _tree(root: Path) -> dict[Path, bytes | None]:
 
 
 def _handoff_text(
-    next_agent: str | None, tracker_issue: str | None = None
+    next_agent: str | None,
+    tracker_issue: str | None = None,
+    *,
+    extra: tuple[str, ...] = (),
+    reason: bool = True,
 ) -> str:
     lines = ["---"]
     if next_agent is not None:
         lines.append(f"next_agent: {next_agent}")
-    lines.append('reason: "Test handoff."')
+    if reason:
+        lines.append('reason: "Test handoff."')
     if tracker_issue is not None:
         lines.append(f"tracker_issue: {tracker_issue}")
+    lines.extend(extra)
     lines.extend(["producer: planner", "---", "", "# Handoff", ""])
     return "\n".join(lines)
 
@@ -1295,6 +1301,24 @@ _UNKNOWN_HANDOFFS: dict[str, tuple[str, str]] = {
     "bad-yaml": ("---\nnext_agent: [\n---\n", "does not show a between-assignments"),
     "no-next-agent": (_handoff_text(None), "next_agent is None"),
     "unknown-next-agent": (_handoff_text("reviewer"), "next_agent is 'reviewer'"),
+    # A status that conflicts with an idle-looking next_agent, or one the
+    # router does not recognize, leaves the dispatcher with no route.
+    "planner-ready-for-review": (
+        _handoff_text("planner", extra=("status: ready_for_review",)),
+        "status `ready_for_review` routes to auditor",
+    ),
+    "user-blocked-implementation": (
+        _handoff_text("user", extra=("status: blocked_implementation_failure",)),
+        "status `blocked_implementation_failure` routes to planner",
+    ),
+    "planner-unknown-status": (
+        _handoff_text("planner", extra=("status: almost_done",)),
+        "status `almost_done` is not recognized",
+    ),
+    "planner-no-reason": (
+        _handoff_text("planner", reason=False),
+        "reason is required",
+    ),
 }
 
 
@@ -1393,6 +1417,26 @@ def test_preflight_allows_between_assignments_states(
     assert _tree(tmp_path) == before
 
 
+@pytest.mark.parametrize(
+    ("next_agent", "status"),
+    [
+        ("planner", "verified_pass"),
+        ("tpm", "verified_pass"),
+        ("planner", "blocked_implementation_failure"),
+        ("user", "blocked_missing_context"),
+        ("user", "escalate_to_user"),
+    ],
+)
+def test_preflight_allows_status_routes_that_stay_between_assignments(
+    tmp_path: Path, next_agent: str, status: str
+) -> None:
+    _initialized(tmp_path)
+    _write(tmp_path, HANDOFF, _handoff_text(next_agent, extra=(f"status: {status}",)))
+    before = _tree(tmp_path)
+    assert init_workflow.preflight_initialized_target(tmp_path) is not None
+    assert _tree(tmp_path) == before
+
+
 def test_preflight_allows_a_custom_missing_handoff(tmp_path: Path) -> None:
     _initialized(tmp_path)
     _use_custom_handoff_path(tmp_path, "work/LIVE.md")
@@ -1456,6 +1500,7 @@ _CLI_REFUSALS = {
     "lock": ".dispatch.lock",
     "active-handoff": "next_agent: auditor",
     "lease": "tracker_issue: ENG-9",
+    "status-conflict": "status `ready_for_review` routes to auditor",
 }
 
 
@@ -1468,6 +1513,10 @@ def _set_up_cli_refusal(root: Path, case: str) -> None:
         _write(root, LOCK, "")
     elif case == "active-handoff":
         _write(root, HANDOFF, _handoff_text("auditor"))
+    elif case == "status-conflict":
+        _write(
+            root, HANDOFF, _handoff_text("planner", extra=("status: ready_for_review",))
+        )
     else:
         _write(root, HANDOFF, _handoff_text("user", "ENG-9"))
 
