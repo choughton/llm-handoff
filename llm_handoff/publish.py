@@ -4769,7 +4769,7 @@ def _adopt_base_branch_story(
             return keep(ahead)
         outside = _commits_outside(repo_root, f"{fork_sha}..HEAD~1", ledger)
         if outside is None:
-            return keep("git log failed")
+            return keep("git diff-tree failed")
         if outside:
             return keep(
                 f"{ahead}; commit(s) {', '.join(outside)} do not change only "
@@ -4849,20 +4849,32 @@ def _commits_outside(
     repo_root: Path, revisions: str, allowed: Sequence[str]
 ) -> list[str] | None:
     """Return short SHAs of commits in ``revisions`` that change a path not in
-    ``allowed``, or change nothing. ``None`` when ``git log`` fails."""
+    ``allowed``, or change nothing. ``None`` when Git fails."""
 
-    listed = _git(
-        repo_root,
-        ["log", "--format=%x00%h", "--name-only", "--no-renames", revisions],
-    )
+    listed = _git(repo_root, ["rev-list", "--reverse", revisions])
     if listed.returncode != 0:
         return None
     outside = []
-    for entry in listed.stdout.split("\0")[1:]:
-        sha, _, names = entry.partition("\n")
-        paths = [line.strip() for line in names.splitlines() if line.strip()]
+    for sha in listed.stdout.split():
+        # -z keeps non-ASCII paths literal instead of quoted (core.quotePath).
+        changed = _git(
+            repo_root,
+            [
+                "diff-tree",
+                "-z",
+                "-r",
+                "--root",
+                "--no-commit-id",
+                "--name-only",
+                "--no-renames",
+                sha,
+            ],
+        )
+        if changed.returncode != 0:
+            return None
+        paths = [path for path in changed.stdout.split("\0") if path]
         if not paths or any(path not in allowed for path in paths):
-            outside.append(sha.strip())
+            outside.append(sha[:12])
     return outside
 
 

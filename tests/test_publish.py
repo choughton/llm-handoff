@@ -4228,6 +4228,24 @@ def test_an_operator_story_on_a_local_epic_close_carries_it_into_the_pr(
     )
 
 
+def test_a_non_ascii_ledger_path_counts_as_ledger_only(tmp_path: Path) -> None:
+    from llm_handoff import publish as publish_module
+
+    # Git quotes non-ASCII paths by default (core.quotePath).
+    _init(tmp_path)
+    _git(tmp_path, "config", "core.quotePath", "true")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _commit_all(tmp_path, {"docs/état.md": "E1 closed.\n"}, "Close E1")
+    _commit_all(tmp_path, {"notes.md": "not ledger\n"}, "Other")
+    other = _git(tmp_path, "rev-parse", "HEAD")
+
+    outside = publish_module._commits_outside(
+        tmp_path, f"{base}..HEAD", ["docs/état.md"]
+    )
+
+    assert outside == [other[:12]]
+
+
 @pytest.mark.parametrize(
     ("earlier", "options", "warning"),
     [
