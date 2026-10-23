@@ -370,7 +370,7 @@ def _format_detail_list(lines: tuple[str, ...]) -> str:
 
 _SWITCH_CONFLICT_HINT = (
     "Review conflicts; --force leaves conflicting files as they are, or "
-    "replaces or removes the tracker block, and reports each one. It never "
+    "replaces or removes a managed block, and reports each one. It never "
     "resolves dispatch_config.yaml marker or key conflicts or linked paths."
 )
 

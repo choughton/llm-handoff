@@ -17,9 +17,9 @@ history.
   design check, and ESCALATION-RECONCILE waits on its trigger. LIN-11 is
   split into LIN-13 and LIN-14. LIN-13 (initialized-target safety preflight)
   is approved at `d35f9de` (`d35f9de16b21a4452a6341623de9b7fe850e447c`).
-  LIN-14 (tracker-mode switching) is implemented; its audit fix (a block
-  that other content follows is a conflict on a switch to none, so round
-  trips stay byte-identical) is in re-audit; LIN-12 remains.
+  LIN-14 (tracker-mode switching) is implemented and in PR #289; its PR
+  review fix (`--force` to none removes the handbook Linear block instead of
+  leaving unguarded Linear rules) is in audit; LIN-12 remains.
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
@@ -108,8 +108,9 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
 - LIN-14 (was LIN-11): `init --tracker linear` and `init --tracker none`
   switch an initialized repository between modes behind LIN-13's preflight;
   `--dry-run`; conflicts; `--force` reports what is left behind; a round trip
-  is byte-identical. Status: implemented; audit fix for blocks followed by
-  user text in re-audit.
+  is byte-identical. Status: implemented in PR #289; review fix for
+  `--force` leaving the unguarded handbook Linear block in file mode in
+  audit.
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 

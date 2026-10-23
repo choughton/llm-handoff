@@ -380,6 +380,16 @@ def _edit_agents_block(root: Path) -> None:
     )
 
 
+def _edit_handbook_block(root: Path) -> None:
+    path = root / HANDBOOK
+    text = path.read_text(encoding="utf-8")
+    assert text.count(LINEAR_END) == 1
+    path.write_text(
+        text.replace(LINEAR_END, f"Local handbook Linear note.\n{LINEAR_END}"),
+        encoding="utf-8",
+    )
+
+
 def _edit_tools_line(root: Path) -> None:
     path = root / BACKEND_AGENT
     line = _tools_line(root, BACKEND_AGENT)
@@ -429,19 +439,33 @@ _SOFT_CASES = {
     "malformed-agents-markers": ("none", "linear", _malformed_agents, AGENTS, False),
     "duplicate-handbook-markers": ("none", "linear", _duplicate_handbook, HANDBOOK, False),
     "missing-agents": ("none", "linear", _remove_agents, AGENTS, False),
+    "edited-handbook-block-to-none": (
+        "linear",
+        "none",
+        _edit_handbook_block,
+        HANDBOOK,
+        True,
+    ),
+    "edited-handbook-block-rerun": (
+        "linear",
+        "linear",
+        _edit_handbook_block,
+        HANDBOOK,
+        False,
+    ),
     "notes-after-agents-block-to-none": (
         "linear",
         "none",
         _notes_after_agents_block,
         AGENTS,
-        False,
+        True,
     ),
     "notes-after-handbook-block-to-none": (
         "linear",
         "none",
         _notes_after_handbook_block,
         HANDBOOK,
-        False,
+        True,
     ),
     "edited-tracker-block-to-none": ("linear", "none", _edit_tracker_block, CONFIG, True),
     "edited-tracker-block-rerun": ("linear", "linear", _edit_tracker_block, CONFIG, True),
@@ -480,7 +504,19 @@ def test_local_edits_conflict_and_force_reports_them(tmp_path: Path, case: str) 
     after = _tree(tmp_path)
     if rewritten:
         assert path in real.merged
-        assert "not kept" in real.forced[0]
+        assert "removed" in real.forced[0] or "replaced" in real.forced[0]
+        if path != CONFIG and target == "none":
+            # No Linear section is left behind in file mode, and the user
+            # text outside it is kept.
+            text = (tmp_path / path).read_text(encoding="utf-8")
+            assert LINEAR_BEGIN not in text
+            assert LINEAR_END not in text
+            if path == HANDBOOK:
+                assert "Local handbook text." in text
+            else:
+                assert "Keep this paragraph." in text
+            if case.startswith("notes-after"):
+                assert NOTES_AFTER_BLOCK.strip() in text
     else:
         assert path not in real.merged
         assert after.get(path) == before.get(path)
@@ -526,17 +562,41 @@ def test_user_text_after_linear_blocks_keeps_the_round_trip(
         _switch(tmp_path, "none")
     assert _tree(tmp_path) == linear
 
-    # --force leaves both sections in place, so the trip back is identical.
+    # --force removes both sections and keeps the text after them, so no
+    # Linear instructions are left behind in file mode.
     forced = _switch(tmp_path, "none", force=True)
     assert {item.split(":")[0] for item in forced.forced} == {
         AGENTS.as_posix(),
         HANDBOOK.as_posix(),
     }
+    assert all("at the end of the file" in item for item in forced.forced)
+    assert {AGENTS, HANDBOOK} <= set(forced.merged)
     assert load_dispatch_config(repo_root=tmp_path).tracker.provider == "none"
+    files = _tree(tmp_path)
+    newline = b"\r\n" if crlf else b"\n"
+    note = b"Keep this after the managed section."
     for relative in (AGENTS, HANDBOOK):
-        assert (tmp_path / relative).read_bytes() == linear[relative]
-    _switch(tmp_path, "linear")
-    assert _tree(tmp_path) == linear
+        data = files[relative]
+        assert LINEAR_BEGIN.encode("ascii") not in data
+        assert LINEAR_END.encode("ascii") not in data
+        assert note in data
+        if crlf:
+            assert data.replace(b"\r\n", b"").count(b"\n") == 0
+        assert data.endswith(newline)
+
+    # The trip back adds each section at the end, after the kept text, and
+    # that layout now round-trips byte for byte without a conflict.
+    back = _switch(tmp_path, "linear")
+    assert back.conflicts == ()
+    relinked = _tree(tmp_path)
+    for relative in (AGENTS, HANDBOOK):
+        data = relinked[relative]
+        assert data.rstrip(b"\r\n").endswith(LINEAR_END.encode("ascii"))
+        assert data.index(note) < data.index(
+            LINEAR_BEGIN.encode("ascii")
+        )
+    _switch(tmp_path, "none")
+    assert _tree(tmp_path) == files
 
 
 def test_config_text_after_the_tracker_block_conflicts_on_to_none(

@@ -2642,10 +2642,15 @@ lists each file with its reason, and `--dry-run` reports the same list:
   markers, a Linear block that other content follows when switching to none
   (a switch back adds the block at the end of the file, so removing it could
   not be undone byte for byte), and a subagent `tools:` line that matches
-  neither the template line nor the current Linear line. `--force` leaves
-  each of these files as it is and reports it under
-  `Left behind or replaced by --force`; a Linear block left in place tells
-  agents to ignore it outside Linear mode;
+  neither the template line nor the current Linear line. `--force` reports
+  each of these files under `Left behind or replaced by --force`. On a
+  switch to none it removes a Linear block that other content follows and
+  keeps that content (a switch back adds the block at the end of the file),
+  and it removes a locally edited `HANDBOOK.md` Linear block without keeping
+  the edits, because every role reads the handbook and its Linear block does
+  not check `tracker.provider`. It leaves every other such file as it is; a
+  locally edited `AGENTS.md` Linear block left in place tells agents to
+  ignore it outside Linear mode;
 - hand edits inside the managed tracker block (any value or key that init
   would not write). `--force` replaces the block (Linear) or removes it
   (none), reports that its old settings are not kept, and leaves the

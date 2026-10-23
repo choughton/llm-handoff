@@ -1494,7 +1494,7 @@ _SWITCH_CHANGE = "change"
 _SWITCH_CONFLICT = "conflict"
 _SWITCH_FORCE_HINT = (
     "--force leaves conflicting files as they are, or replaces or removes "
-    "the tracker block, and reports each one."
+    "a managed block, and reports each one."
 )
 
 
@@ -1758,12 +1758,17 @@ def _plan_linear_text_switch(
     relative: Path,
     desired: str | None,
     known: tuple[str, ...],
+    *,
+    guarded: bool,
 ) -> _SwitchItem:
     """Plan the Linear block of AGENTS.md or HANDBOOK.md.
 
     ``desired`` is the block text for Linear mode, or None to remove the
     block. ``known`` lists every block text init may have written, so a block
     that matches none of them (in LF or CRLF) counts as locally edited.
+    ``guarded`` says whether the block text tells agents to ignore it when
+    ``tracker.provider`` is not ``linear`` (AGENTS.md); --force may leave only
+    a guarded, locally edited block behind on a switch to none.
     """
 
     if _unsafe_destination(root, relative):
@@ -1809,13 +1814,17 @@ def _plan_linear_text_switch(
         for newline in (b"\n", b"\r\n")
     }
     if desired is None:
+        removed = _remove_text_block(raw, span)
         if block in known_blocks:
-            removed = _remove_text_block(raw, span)
             if _text_block_restorable(raw, removed, block):
                 return _SwitchItem(relative, _SWITCH_CHANGE, content=removed)
+            # --force removes the known block and keeps the content after
+            # it, like the config's tracker block, so no Linear instructions
+            # are left behind in file mode.
             return _SwitchItem(
                 relative,
                 _SWITCH_CONFLICT,
+                content=removed,
                 reason=(
                     "other content follows its Linear section, so a switch "
                     "back to Linear could not put the section back in place; "
@@ -1823,19 +1832,33 @@ def _plan_linear_text_switch(
                 ),
                 forceable=True,
                 force_note=(
-                    "left as it is; the Linear section stays in place (it "
-                    "tells agents to ignore it when tracker.provider is not "
-                    "linear)"
+                    "removed the Linear section and kept the content after "
+                    "it; a switch back to Linear adds the section at the end "
+                    "of the file"
                 ),
             )
+        if guarded:
+            return _SwitchItem(
+                relative,
+                _SWITCH_CONFLICT,
+                reason="its Linear section has local edits",
+                forceable=True,
+                force_note=(
+                    "left as it is; the locally edited Linear section stays (it "
+                    "tells agents to ignore it when tracker.provider is not linear)"
+                ),
+            )
+        # An unguarded section (the handbook's) that every role reads would
+        # keep giving Linear instructions in file mode, so --force removes it.
         return _SwitchItem(
             relative,
             _SWITCH_CONFLICT,
+            content=removed,
             reason="its Linear section has local edits",
             forceable=True,
             force_note=(
-                "left as it is; the locally edited Linear section stays (it "
-                "tells agents to ignore it when tracker.provider is not linear)"
+                "removed the locally edited Linear section; its edits are not "
+                "kept, because the section has no tracker.provider guard"
             ),
         )
     wanted = _with_newline(_linear_block(desired), _block_newline(block))
@@ -1985,6 +2008,7 @@ def _switch_tracker_mode(
             _AGENTS_PATH,
             None if tracker is None else linear_agents_section(),
             (linear_agents_section(),),
+            guarded=True,
         )
     )
     items.append(
@@ -1998,6 +2022,7 @@ def _switch_tracker_mode(
                 _linear_handbook_text(tpm_configured=False),
                 _linear_handbook_text(tpm_configured=True),
             ),
+            guarded=False,
         )
     )
     # dispatch_config.yaml is planned and written last, so the selected mode
