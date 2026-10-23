@@ -18,6 +18,21 @@ This project follows a simple pre-release changelog until the first public tag.
   message that lists review comments the dispatcher cannot read is a failed
   review, never a clean one. `codex` and `codex-local` cannot be listed
   together. New module `llm_handoff/codex_review.py`.
+- The dispatcher now runs the ACTIVE-3 verification preflight itself
+  (ACTIVE-4): once at startup on the handoff on disk, and in every cycle that
+  dispatches `backend` or `frontend` on the assignment that cycle dispatches,
+  so a Work Packet the planner writes mid-run is checked too. The `--dry-run`
+  preview runs the same per-cycle check. Each WARN line from
+  `doctor.check_verification_preflight` is logged as a `WARN` with the
+  `verification preflight` name and the shared message; a PASS line is logged
+  as `INFO`. The cycle check covers the role that cycle dispatches, so an
+  operator `@backend` or `@frontend` dispatch on a handoff routed elsewhere is
+  checked for that role; the first cycle skips only the same role and content
+  startup already checked. A manual frontend run (`use_manual_frontend`)
+  launches no frontend provider and is not checked. The preflight stays
+  advisory: it never pauses, reroutes, changes the exit code,
+  runs a Verification command, or changes the work-claim gate, and an error
+  inside it is logged as a warning while dispatch continues.
 - `llm-handoff doctor` now runs a warning-only verification preflight
   (ACTIVE-3) when the live handoff routes to `backend` or `frontend`. The
   reusable `doctor.check_verification_preflight(config, handoff_content)`
