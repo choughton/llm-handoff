@@ -13,8 +13,9 @@ history.
 - **Active Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
-  preflight in `doctor`) is implemented and awaits audit; ACTIVE-4 through
-  ACTIVE-8 remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
+  preflight in `doctor`) is approved at `2de1b44`. ACTIVE-4 (verification
+  preflight in the dispatcher) is implemented and awaits audit; ACTIVE-5
+  through ACTIVE-8 remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
   merged in PR #272 (`4e380f9`).
 - **Parked Epic:** None.
 - **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger,
@@ -226,8 +227,9 @@ the `(was ...)` notes give the old IDs. None had started.
   (claude) cannot run python; set interpreter_grants: true or an
   allowed_tools rule`, never FAIL. Put the check in one function the
   dispatcher can call in ACTIVE-4. Tests in `tests/test_doctor.py`.
-  Progress: implemented 2026-10-22 as
-  `doctor.check_verification_preflight`, awaiting audit.
+  Progress: approved 2026-10-22 at
+  `2de1b447b30e3b283b67d316548a8e776724e26f` as
+  `doctor.check_verification_preflight`.
 - ACTIVE-4 (was part of ACTIVE-2): Verification preflight in the
   dispatcher. Call the ACTIVE-3 check at startup (`run_loop`,
   `llm_handoff/orchestrator.py` ~line 456, next to the pre-launch checks
@@ -235,7 +237,11 @@ the `(was ...)` notes give the old IDs. None had started.
   `capture_pre_dispatch_state` (~line 1170), because a Work Packet the
   planner writes mid-run never passes startup. It logs the same WARN and
   never blocks, so the planner can re-scope. Startup and per-cycle tests in
-  `tests/ported/test_orchestrator.py` with `--dry-run`.
+  `tests/ported/test_orchestrator.py` with `--dry-run`. Progress:
+  implemented 2026-10-22, awaiting audit; startup checks the handoff on disk,
+  each backend or frontend cycle (dry-run preview included) checks the
+  assignment it dispatches, and the first cycle skips content startup
+  already checked.
 - ACTIVE-5 (was ACTIVE-3): Test scope policy. In
   `docs/handoff/PLANNER_HANDOFF_PROMPT.md` (the Work Packet section, ~lines
   78-150) and the handbook: for a story that changes behaviour, tests that

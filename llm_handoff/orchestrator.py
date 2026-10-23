@@ -80,6 +80,10 @@ from llm_handoff.dispatch_record import (
     dispatch_record_path,
     record_dispatch,
 )
+from llm_handoff.doctor import (
+    VERIFICATION_PREFLIGHT_CHECK_NAME,
+    check_verification_preflight,
+)
 from llm_handoff.ledger import (
     bounce_count,
     record_status_transition,
@@ -834,6 +838,11 @@ def _run_loop_cycles(
         if reviewer_launch_error is not None:
             _log(log_fn, "ERROR", reviewer_launch_error)
             return 1
+    # Warning-only: an implementer Work Packet whose Verification commands its
+    # launch cannot run is reported, never blocked, so the planner can
+    # re-scope. Cycles re-check every implementer assignment, because a Work
+    # Packet the planner writes mid-run never passes through startup.
+    preflight_startup_sha = _log_startup_verification_preflight(config, log_fn)
     _restore_bounce_counts(config, log_fn)
     # A dry run neither clears nor writes the dispatch record.
     dispatch_record_state = (
@@ -1793,6 +1802,13 @@ def _run_loop_cycles(
                     f"[DRY RUN] Would pause: {pre_dispatch_pause_reason}",
                 )
             else:
+                preflight_startup_sha = _log_cycle_verification_preflight(
+                    config,
+                    current_cycle.route,
+                    handoff_content,
+                    log_fn,
+                    startup_sha=preflight_startup_sha,
+                )
                 if active_planner_recovery_kind == OPERATOR_EDIT_RECOVERY_KIND:
                     _log(
                         log_fn,
@@ -2224,6 +2240,16 @@ def _run_loop_cycles(
                     resumed_assignment
                     if resumed_assignment is not None
                     else _interrupted_handback_assignment(resumed_handback)
+                )
+            else:
+                # The assignment this implementer is about to work from; a
+                # resumed handback already ran its dispatch and is not checked.
+                preflight_startup_sha = _log_cycle_verification_preflight(
+                    config,
+                    current_cycle.route,
+                    assignment_content,
+                    log_fn,
+                    startup_sha=preflight_startup_sha,
                 )
             if (
                 config.publish.mode != "local"
@@ -12799,6 +12825,76 @@ def _log_validation(
         )
         return
     _log(log, "AGENT", f"Post-dispatch gate PASSED for {previous_agent}.")
+
+
+_PREFLIGHT_IMPLEMENTER_ROUTES = frozenset({"backend", "frontend"})
+
+
+def _log_verification_preflight(
+    config: DispatchConfig, handoff_content: str, log: LogFn
+) -> None:
+    """Log ``doctor.check_verification_preflight`` lines for one assignment.
+
+    Advisory only: a WARN line is logged as WARN with the check name and the
+    shared message, a PASS line as INFO. Nothing here pauses, reroutes,
+    changes the exit code, or runs a Verification command; an error inside
+    the check is logged as a warning and the dispatch continues.
+    """
+    try:
+        checks = check_verification_preflight(config, handoff_content)
+    except Exception as exc:  # noqa: BLE001 - the preflight never blocks.
+        _log(
+            log,
+            "WARN",
+            f"{VERIFICATION_PREFLIGHT_CHECK_NAME}: the check could not run "
+            f"({type(exc).__name__}: {exc}); dispatch continues without it.",
+        )
+        return
+    for check in checks:
+        level = "INFO" if check.status == "PASS" else "WARN"
+        _log(log, level, f"{check.name}: {check.message}")
+
+
+def _log_startup_verification_preflight(
+    config: DispatchConfig, log: LogFn
+) -> str | None:
+    """Run the verification preflight on the handoff found at startup.
+
+    Returns the checked content's sha when it routes to an implementer, so
+    the first cycle does not log the same lines again for that content.
+    """
+    try:
+        handoff_content = _read_required_text(config.handoff_full_path)
+    except (OSError, UnicodeError):
+        # Handoff validation reports an unreadable handoff in the cycle.
+        return None
+    if handoff_content is None:
+        return None
+    _log_verification_preflight(config, handoff_content, log)
+    return _content_sha(handoff_content)
+
+
+def _log_cycle_verification_preflight(
+    config: DispatchConfig,
+    route: RouteName,
+    assignment_content: str | None,
+    log: LogFn,
+    *,
+    startup_sha: str | None,
+) -> str | None:
+    """Run the verification preflight before a backend or frontend dispatch.
+
+    Checks the assignment this cycle dispatches, not the startup content, so
+    a Work Packet written mid-run is checked too. The first implementer cycle
+    skips content startup already checked. Returns the startup sha still
+    pending that skip.
+    """
+    if route not in _PREFLIGHT_IMPLEMENTER_ROUTES or assignment_content is None:
+        return startup_sha
+    if startup_sha is not None and _content_sha(assignment_content) == startup_sha:
+        return None
+    _log_verification_preflight(config, assignment_content, log)
+    return None
 
 
 def _log_dry_run(config: DispatchConfig, route: RouteName, log: LogFn) -> None:

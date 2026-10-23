@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The dispatcher now runs the ACTIVE-3 verification preflight itself
+  (ACTIVE-4): once at startup on the handoff on disk, and in every cycle that
+  dispatches `backend` or `frontend` on the assignment that cycle dispatches,
+  so a Work Packet the planner writes mid-run is checked too. The `--dry-run`
+  preview runs the same per-cycle check. Each WARN line from
+  `doctor.check_verification_preflight` is logged as a `WARN` with the
+  `verification preflight` name and the shared message; a PASS line is logged
+  as `INFO`. The first cycle skips content startup already checked. The
+  preflight stays advisory: it never pauses, reroutes, changes the exit code,
+  runs a Verification command, or changes the work-claim gate, and an error
+  inside it is logged as a warning while dispatch continues.
 - `llm-handoff doctor` now runs a warning-only verification preflight
   (ACTIVE-3) when the live handoff routes to `backend` or `frontend`. The
   reusable `doctor.check_verification_preflight(config, handoff_content)`
