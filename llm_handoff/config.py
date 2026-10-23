@@ -359,6 +359,24 @@ class AgentConfig(BaseModel):
     # Set only by the Linear-mode derivation when it builds `allowed_tools` on
     # the flag-aware default list (the role left `allowed_tools` unset).
     _allowed_tools_from_default: bool = PrivateAttr(default=False)
+    # Set only by `without_linear_write_tools` on a derived report-only launch
+    # config: tools this Claude launch denies on top of the shared denials.
+    _report_only_denials: tuple[str, ...] = PrivateAttr(default=())
+
+    @property
+    def claude_disallowed_tools(self) -> tuple[str, ...]:
+        """The tools this Claude launch passes to ``--disallowedTools``.
+
+        The shared ``CLAUDE_DISALLOWED_TOOLS``, then any write tools a
+        report-only launch denies explicitly (``without_linear_write_tools``).
+        """
+
+        extra = tuple(
+            tool
+            for tool in self._report_only_denials
+            if tool not in CLAUDE_DISALLOWED_TOOLS
+        )
+        return (*CLAUDE_DISALLOWED_TOOLS, *extra)
 
     @property
     def claude_mcp_config_path(self) -> Path | None:
@@ -935,7 +953,10 @@ def _grants_any(entry: str, removed: frozenset[str], server_grant: str) -> bool:
 
 
 def _without_tools(
-    agent_config: AgentConfig, removed: frozenset[str], server_grant: str = ""
+    agent_config: AgentConfig,
+    removed: frozenset[str],
+    server_grant: str = "",
+    denied: tuple[str, ...] = (),
 ) -> AgentConfig:
     if agent_config.provider != "claude" or agent_config.unsafe_bypass:
         return agent_config
@@ -943,12 +964,22 @@ def _without_tools(
     kept = tuple(
         tool for tool in base if not _grants_any(tool, removed, server_grant)
     )
-    if kept == base:
+    denials = (
+        *agent_config._report_only_denials,
+        *(tool for tool in denied if tool not in agent_config._report_only_denials),
+    )
+    if kept == base and denials == agent_config._report_only_denials:
         return agent_config
-    derived = agent_config.model_copy(update={"allowed_tools": kept})
+    update: dict[str, object] = {}
+    if kept != base:
+        update["allowed_tools"] = kept
+    derived = agent_config.model_copy(update=update)
     derived._claude_mcp_config = agent_config._claude_mcp_config
     derived._interpreter_grants = agent_config._interpreter_grants
-    derived._allowed_tools_from_default = agent_config.uses_default_allowed_tools
+    derived._allowed_tools_from_default = agent_config._allowed_tools_from_default
+    if kept != base:
+        derived._allowed_tools_from_default = agent_config.uses_default_allowed_tools
+    derived._report_only_denials = denials
     return derived
 
 
@@ -962,25 +993,35 @@ def without_linear_write_tools(
     Linear but cannot change it. Entries that would still grant a write tool
     go too: the bare ``mcp__<mcp_server>`` server grant and wildcard entries
     that match a write tool, such as ``mcp__<mcp_server>__*``,
-    ``mcp__<mcp_server>__save_*``, ``mcp__*``, or ``*``. Other providers,
-    ``unsafe_bypass`` launches, and allowlists without such entries come back
-    unchanged.
+    ``mcp__<mcp_server>__save_*``, ``mcp__*``, or ``*``.
+
+    Every Claude launch it derives also denies both write tools explicitly
+    through ``--disallowedTools`` (``AgentConfig.claude_disallowed_tools``),
+    even when no allowlist entry grants them, so user or project settings
+    cannot approve them either. The denials live on the derived copy only;
+    the loaded config keeps its grants for routed repair turns. Other
+    providers and ``unsafe_bypass`` launches come back unchanged.
     """
 
-    removed = frozenset(f"mcp__{mcp_server}__{tool}" for tool in LINEAR_WRITE_TOOLS)
+    write_tools = tuple(f"mcp__{mcp_server}__{tool}" for tool in LINEAR_WRITE_TOOLS)
+    removed = frozenset(write_tools)
     server_grant = f"mcp__{mcp_server}"
-    updated = _without_tools(agent_config, removed, server_grant)
+    updated = _without_tools(agent_config, removed, server_grant, write_tools)
     fallback = agent_config.fallback
     if fallback is not None:
-        stripped_fallback = _without_tools(fallback, removed, server_grant)
+        stripped_fallback = _without_tools(
+            fallback, removed, server_grant, write_tools
+        )
         if stripped_fallback is not fallback:
             private = updated._claude_mcp_config
             grants = updated._interpreter_grants
             from_default = updated._allowed_tools_from_default
+            denials = updated._report_only_denials
             updated = updated.model_copy(update={"fallback": stripped_fallback})
             updated._claude_mcp_config = private
             updated._interpreter_grants = grants
             updated._allowed_tools_from_default = from_default
+            updated._report_only_denials = denials
     return updated
 
 

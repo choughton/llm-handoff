@@ -18,7 +18,10 @@ history.
   approved at `43a70e2` (`43a70e2b86a20d2bb802ee3b14becf3a4516571a`) and
   merged in PR #285 (`080b29d`, `080b29d93c86a015997613032acea1f863023c48`).
   LOOSE-3 (Windows `HANDOFF.md` replacement keeps the file's ACL) is
-  implemented and awaits audit; LOOSE-4 remains. TIDY (epic 19) closed with TIDY-13,
+  approved at `40fe4d8` (`40fe4d8ffa02bc13754af7ec3e65fbe1787d19ef`) and
+  merged in PR #286 (`3c4e37f`). LOOSE-4 (report-only validator launches
+  deny Linear writes explicitly) is implemented and awaits audit. TIDY
+  (epic 19) closed with TIDY-13,
   approved at `7816ae6` and merged in PR #272 (`4e380f9`).
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
@@ -443,13 +446,14 @@ Each story is one behavior change with its own tests.
   Grooming (2026-10-22): `_write_handoff_durably` already copies POSIX
   metadata before the replace; keep its cleanup and failure path when
   adding Windows security descriptor preservation. Progress: implemented
-  2026-10-23, awaiting audit; on Windows `_copy_handoff_metadata` reads the
+  2026-10-23; on Windows `_copy_handoff_metadata` reads the
   old handoff's DACL and protection state (`GetNamedSecurityInfoW`) and sets
   them on a `WRITE_DAC` reopen of the temporary file (`SetSecurityInfo`)
   before fsync and replace. A read or copy failure raises `OSError`, so the
   old file and its ACL stay, the temporary file is removed, and the re-audit
   caller logs ERROR and keeps the chat change record. A first handoff takes
-  the directory's ACL as before.
+  the directory's ACL as before. Approved at `40fe4d8` and merged in PR
+  #286 (`3c4e37f`).
 - LOOSE-4: Report-only validator launches deny Linear writes explicitly.
   From the TIDY-15 audit (medium, security reviewer): removing the Linear
   write tools from Claude `--allowedTools` for report-only validator
@@ -461,7 +465,15 @@ Each story is one behavior change with its own tests.
   Claude permission builder in `llm_handoff/agent_providers/claude.py`
   emits the shared disallowed-tools list; keep those denials and add the
   report-only `save_comment` and `save_issue` denials at primary and
-  fallback validator launches.
+  fallback validator launches. Progress: implemented 2026-10-23, awaiting
+  audit; `without_linear_write_tools` now returns a derived copy of every
+  Claude launch (and Claude fallback) that carries both write tools as
+  report-only denials in a private attribute, even when the allowlist
+  grants neither, and `claude_permission_args` passes
+  `AgentConfig.claude_disallowed_tools` (the shared denials, then those
+  two) to `--disallowedTools` on stream-json and buffered launches. The
+  loaded config, routed repair launches, non-Claude providers, and
+  `unsafe_bypass` launches are unchanged; no configuration key was added.
 
 ## Open Followups
 

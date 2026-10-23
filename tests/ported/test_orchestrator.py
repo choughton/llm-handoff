@@ -5229,10 +5229,52 @@ def test_run_validator_launches_without_linear_write_tools(
     assert "mcp__linear__list_comments" in tools
     assert "mcp__linear__save_comment" not in tools
     assert "mcp__linear__save_issue" not in tools
+    # Both write tools are denied explicitly, after the shared denials.
+    assert launched[0].claude_disallowed_tools == (
+        "WebFetch",
+        "WebSearch",
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    )
     # The routed repair turn keeps the comment grant on the loaded config.
     assert "mcp__linear__save_comment" in (
         config.agents["validator"].claude_allowed_tools
     )
+    assert config.agents["validator"].claude_disallowed_tools == (
+        "WebFetch",
+        "WebSearch",
+    )
+
+
+def test_run_validator_command_denies_linear_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_handoff.agent_providers import claude as claude_provider
+    from llm_handoff.agent_types import _ProcessResult
+
+    repo_root, _handoff_path = _write_repo(tmp_path, _LINEAR_VALIDATOR_HANDOFF)
+    orchestrator = _load_orchestrator_module()
+    config = _linear_validator_config(repo_root)
+    commands: list[list[str]] = []
+
+    def fake_stream(_name: str, command: list[str], **_kwargs: object):
+        commands.append(list(command))
+        return _ProcessResult(stdout="", stderr="", exit_code=1)
+
+    monkeypatch.setattr(claude_provider, "_run_claude_stream_json_command", fake_stream)
+    orchestrator._run_validator(
+        config, "handoff-validator", "base prompt", "Validator", lambda *_: None
+    )
+
+    [command] = commands
+    denied = command[command.index("--disallowedTools") + 1]
+    assert denied == (
+        "WebFetch,WebSearch,mcp__linear__save_comment,mcp__linear__save_issue"
+    )
+    allowed = command[command.index("--allowedTools") + 1].split(",")
+    assert "mcp__linear__get_issue" in allowed
+    assert "mcp__linear__save_comment" not in allowed
 
 
 def test_run_validator_keeps_vanilla_agent_config(

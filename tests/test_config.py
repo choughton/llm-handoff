@@ -1602,8 +1602,14 @@ def test_without_linear_write_tools_keeps_reads_and_drops_writes(
         assert agent.claude_mcp_config_path == mcp_file.resolve()
         assert agent.interpreter_grants is True
         assert agent.uses_default_allowed_tools is True
+        assert agent.claude_disallowed_tools == (
+            *config_module.CLAUDE_DISALLOWED_TOOLS,
+            "mcp__linear__save_comment",
+            "mcp__linear__save_issue",
+        )
     # The loaded config keeps the comment grant for routed repair turns.
     assert "mcp__linear__save_comment" in validator.claude_allowed_tools
+    assert validator.claude_disallowed_tools == config_module.CLAUDE_DISALLOWED_TOOLS
     assert validator.fallback is not None
     assert "mcp__linear__save_comment" in validator.fallback.claude_allowed_tools
 
@@ -1676,7 +1682,14 @@ def test_without_linear_write_tools_keeps_other_server_wildcards() -> None:
         allowed_tools=("Read", "mcp__linear-docs__*", "mcp__linear__list_*"),
     )
 
-    assert config_module.without_linear_write_tools(agent, "linear") is agent
+    derived = config_module.without_linear_write_tools(agent, "linear")
+
+    assert derived.claude_allowed_tools == agent.claude_allowed_tools
+    assert derived.claude_disallowed_tools == (
+        *config_module.CLAUDE_DISALLOWED_TOOLS,
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    )
 
 
 def test_without_linear_write_tools_leaves_other_launches_unchanged() -> None:
@@ -1686,12 +1699,90 @@ def test_without_linear_write_tools_leaves_other_launches_unchanged() -> None:
         unsafe_bypass=True,
         allowed_tools=("Read", "mcp__linear__save_comment"),
     )
-    no_writes = config_module.AgentConfig(
-        provider="claude", allowed_tools=("Read", "mcp__linear__get_issue")
+
+    for agent in (codex, bypass):
+        assert config_module.without_linear_write_tools(agent, "linear") is agent
+
+
+@pytest.mark.parametrize("server", ["linear", "team-linear"])
+def test_without_linear_write_tools_denies_writes_on_read_only_allowlist(
+    server: str,
+) -> None:
+    read_only = (
+        "Read",
+        f"mcp__{server}__get_issue",
+        f"mcp__{server}__list_comments",
+        "mcp__other__save_comment",
+    )
+    fallback = config_module.AgentConfig(
+        provider="claude", model="other", allowed_tools=read_only
+    )
+    agent = config_module.AgentConfig(
+        provider="claude", allowed_tools=read_only, fallback=fallback
     )
 
-    for agent in (codex, bypass, no_writes):
-        assert config_module.without_linear_write_tools(agent, "linear") is agent
+    derived = config_module.without_linear_write_tools(agent, server)
+
+    expected_denials = (
+        *config_module.CLAUDE_DISALLOWED_TOOLS,
+        f"mcp__{server}__save_comment",
+        f"mcp__{server}__save_issue",
+    )
+    assert derived is not agent
+    assert derived.claude_allowed_tools == read_only
+    assert derived.claude_disallowed_tools == expected_denials
+    assert derived.fallback is not None
+    assert derived.fallback.claude_allowed_tools == read_only
+    assert derived.fallback.claude_disallowed_tools == expected_denials
+    # The source config and its fallback keep only the shared denials.
+    assert agent.claude_disallowed_tools == config_module.CLAUDE_DISALLOWED_TOOLS
+    assert fallback.claude_disallowed_tools == config_module.CLAUDE_DISALLOWED_TOOLS
+
+
+@pytest.mark.parametrize("grant", ["mcp__team-linear__*", "mcp__*", "*"])
+def test_without_linear_write_tools_denies_writes_after_wildcard_removal(
+    grant: str,
+) -> None:
+    agent = config_module.AgentConfig(
+        provider="claude", allowed_tools=("Read", grant, "mcp__team-linear__get_issue")
+    )
+
+    derived = config_module.without_linear_write_tools(agent, "team-linear")
+
+    assert derived.claude_allowed_tools == ("Read", "mcp__team-linear__get_issue")
+    assert derived.claude_disallowed_tools[-2:] == (
+        "mcp__team-linear__save_comment",
+        "mcp__team-linear__save_issue",
+    )
+
+
+def test_without_linear_write_tools_is_idempotent_on_denials() -> None:
+    agent = config_module.AgentConfig(provider="claude", allowed_tools=("Read",))
+
+    once = config_module.without_linear_write_tools(agent, "linear")
+    twice = config_module.without_linear_write_tools(once, "linear")
+
+    assert twice is once
+    assert twice.claude_disallowed_tools == (
+        *config_module.CLAUDE_DISALLOWED_TOOLS,
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    )
+
+
+def test_without_linear_write_tools_denies_writes_on_claude_fallback_only() -> None:
+    fallback = config_module.AgentConfig(provider="claude", allowed_tools=("Read",))
+    codex = config_module.AgentConfig(provider="codex", fallback=fallback)
+
+    derived = config_module.without_linear_write_tools(codex, "linear")
+
+    assert derived.provider == "codex"
+    assert derived.fallback is not None
+    assert derived.fallback.claude_disallowed_tools[-2:] == (
+        "mcp__linear__save_comment",
+        "mcp__linear__save_issue",
+    )
+    assert codex.fallback is fallback
 
 
 def test_linear_mode_mcp_config_path_lives_on_derived_agent(tmp_path: Path) -> None:
