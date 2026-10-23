@@ -142,7 +142,14 @@ split out of `PROJECT_STATE.md`.
   findings. Verification: dispatcher ran `python -m pytest
   tests/test_config.py -q` and `git diff --check` at the audited SHA, exit 0.
   The TIDY-15 security follow-up (explicit `--disallowedTools` for report-only
-  validator launches) stays open in `PROJECT_STATE.md`.
+  validator launches) became LOOSE-4.
+- **LOOSE-ENDS** - security followups and loop papercuts. LOOSE-4, the last
+  story, was approved at `9f2526ec66fecb648d5caf5b250bc3838902b413` and
+  merged in PR #287 (merge `7bfd742`); LOOSE-1 `0585fb4` (PR #284,
+  `9a94f35`), LOOSE-2 `43a70e2` (PR #285, `080b29d`), LOOSE-3 `40fe4d8`
+  (PR #286, `3c4e37f`). Quality and security reviews passed with no
+  findings. Verification: dispatcher ran the Work Packet pytest command and
+  `git diff --check` at the audited SHA, exit 0.
 
 ## Status History
 
@@ -323,11 +330,64 @@ Current Status entries for closed or finished work, moved unchanged from
   line) approved at `3cb5ef1`, PR #271 (`c8566bf`). TIDY-13 (example config
   tpm comment) approved at `7816ae6`, PR #272 (`4e380f9`); TIDY closed.
 
+- **Active Epic (2026-10-23):** LOOSE-ENDS (epic 22). LOOSE-1 (config resume
+  settings work without CLI flags) approved at `0585fb4`, PR #284
+  (`9a94f35`). LOOSE-2 (dispatcher log lines on the console) approved at
+  `43a70e2`, PR #285 (`080b29d`). LOOSE-3 (Windows `HANDOFF.md` ACL) approved
+  at `40fe4d8`, PR #286 (`3c4e37f`). LOOSE-4 (report-only validator launches
+  deny Linear writes) approved at `9f2526e`, PR #287 (`7bfd742`); LOOSE-ENDS
+  closed.
+
 ## Closed Epics
 
 Full sections of closed epics (intro, `Fit:` line, and story list), moved
 unchanged from the `PROJECT_STATE.md` backlog on 2026-10-21, most recent
 close first. The numbers are the epics' original labels.
+
+### 22. LOOSE-ENDS - security followups and loop papercuts
+
+Status: CLOSED. LOOSE-1 through LOOSE-4 are done; the last, LOOSE-4, was
+approved at `9f2526e` and merged in PR #287 (`7bfd742`).
+
+Fit: unblocked, independent, and needs no operator input. A good epic to
+work while ACTIVE-PLANNER is parked at ACTIVE-8 (its operator story), and
+after ACTIVE-PLANNER closes. Operator direction (2026-10-22): queue work the
+loop can finish overnight without a person at the console.
+
+Two medium security findings from epic-close audits, promoted from Open
+Followups, and two operator-reported papercuts from the 2026-10-21/22 runs.
+Each story is one behavior change with its own tests.
+
+- LOOSE-1: Config resume settings work without CLI flags. The
+  `--use-backend-resume/--no-backend-resume` and
+  `--use-planner-resume/--no-planner-resume` options became tri-state so the
+  config file wins unless a flag is passed. Precedence for both roles: CLI
+  flag (or non-None `load_dispatch_config` caller override) > explicit
+  top-level `<role>_resume` > explicit `agents.<role>.resume` > `True`
+  (`default`); provider defaults never count as explicit. `DispatchConfig`
+  stores `backend_resume_source` and `planner_resume_source`, and both
+  startup banner session lines end `source: <source>`. Implemented
+  2026-10-23. Approved at `0585fb4` and merged in PR #284 (`9a94f35`).
+- LOOSE-2: Dispatcher log lines show on the console while the chat line is
+  up. `DispatchLogger._should_write_console` lets every level through while a
+  chat line is attached, and the steady-state filter still governs the
+  direct console when none is attached. Implemented 2026-10-23. Approved at
+  `43a70e2` and merged in PR #285 (`080b29d`).
+- LOOSE-3: Windows `HANDOFF.md` replacement keeps the file's ACL. On Windows
+  `_copy_handoff_metadata` reads the old handoff's DACL and protection state
+  and sets them on the temporary file before fsync and replace; a failure
+  raises `OSError`, so the old file and its ACL stay. Implemented
+  2026-10-23. Approved at `40fe4d8` and merged in PR #286 (`3c4e37f`).
+- LOOSE-4: Report-only validator launches deny Linear writes explicitly.
+  `without_linear_write_tools` returns a derived copy of every Claude launch
+  (and Claude fallback) carrying `save_comment` and `save_issue` as
+  report-only denials, and `claude_permission_args` passes
+  `AgentConfig.claude_disallowed_tools` to `--disallowedTools` on
+  stream-json and buffered launches. The loaded config, routed repair
+  launches, non-Claude providers, and `unsafe_bypass` launches are
+  unchanged; no configuration key was added. Implemented 2026-10-23.
+  Approved at `9f2526ec66fecb648d5caf5b250bc3838902b413` and merged in PR
+  #287 (`7bfd742`).
 
 ### 19. TIDY - small fixes from epic-close audits
 
