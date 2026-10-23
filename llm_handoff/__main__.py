@@ -369,8 +369,8 @@ def _format_detail_list(lines: tuple[str, ...]) -> str:
 
 
 _SWITCH_CONFLICT_HINT = (
-    "Review conflicts; --force leaves locally edited files as they are, or "
-    "replaces an edited tracker block, and reports each one. It never "
+    "Review conflicts; --force leaves conflicting files as they are, or "
+    "replaces or removes the tracker block, and reports each one. It never "
     "resolves dispatch_config.yaml marker or key conflicts or linked paths."
 )
 
@@ -420,8 +420,8 @@ def init_command(
         "--overwrite",
         help=(
             "Overwrite non-managed files; preserve user content in managed "
-            "files. In a tracker switch, leave locally edited files as they "
-            "are (an edited tracker block is replaced or removed) and report "
+            "files. In a tracker switch, leave conflicting files as they "
+            "are (a conflicting tracker block is replaced or removed) and report "
             "each one; linked paths and tracker marker or key conflicts still "
             "stop the switch."
         ),

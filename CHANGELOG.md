@@ -15,9 +15,11 @@ This project follows a simple pre-release changelog until the first public tag.
   config, user text, and `HANDOFF.md` are kept. A round trip restores every
   file byte for byte, including line endings, and a same-mode rerun changes
   nothing. The planned config must pass the dispatcher's config validation.
-  Local edits are conflicts (exit 1, nothing written); `--force` leaves those
-  files as they are, or replaces or removes an edited tracker block, and
-  reports each one, but never resolves marker or unmanaged `tracker` key
+  Local edits are conflicts (exit 1, nothing written), and so is a switch to
+  none when other content follows a managed block, since a switch back adds
+  the block at the end of the file and could not restore its place; `--force`
+  leaves those files as they are, or replaces or removes the tracker block,
+  and reports each one, but never resolves marker or unmanaged `tracker` key
   conflicts or linked paths. `--provider` and `--verification-command` are
   refused with `--tracker` on an initialized repository. `init` without
   `--tracker` keeps the ordinary template update. `add_tracker_block` no

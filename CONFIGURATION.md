@@ -2639,13 +2639,20 @@ lists each file with its reason, and `--dry-run` reports the same list:
 
 - locally edited text inside a Linear block, a missing `AGENTS.md` or
   `HANDBOOK.md` when switching to Linear, malformed or repeated Linear
-  markers, and a subagent `tools:` line that matches neither the template
-  line nor the current Linear line. `--force` leaves each of these files as it
-  is and reports it under `Left behind or replaced by --force`;
+  markers, a Linear block that other content follows when switching to none
+  (a switch back adds the block at the end of the file, so removing it could
+  not be undone byte for byte), and a subagent `tools:` line that matches
+  neither the template line nor the current Linear line. `--force` leaves
+  each of these files as it is and reports it under
+  `Left behind or replaced by --force`; a Linear block left in place tells
+  agents to ignore it outside Linear mode;
 - hand edits inside the managed tracker block (any value or key that init
   would not write). `--force` replaces the block (Linear) or removes it
   (none), reports that its old settings are not kept, and leaves the
   requested mode selected;
+- a managed tracker block that other config follows when switching to none.
+  `--force` removes the block, keeps the config after it, and reports that a
+  switch back adds the block at the end of the file;
 - malformed or repeated `# llm-handoff:tracker` markers, a `tracker` key
   outside the managed block (except a hand-written `provider: none` block on
   a switch to none, which is kept), anything other than one `tracker` mapping

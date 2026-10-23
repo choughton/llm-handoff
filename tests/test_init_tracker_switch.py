@@ -408,6 +408,17 @@ def _remove_agents(root: Path) -> None:
     (root / AGENTS).unlink()
 
 
+NOTES_AFTER_BLOCK = "\n## Local notes\n\nKeep this after the managed section.\n"
+
+
+def _notes_after_agents_block(root: Path) -> None:
+    _append(root, AGENTS, NOTES_AFTER_BLOCK)
+
+
+def _notes_after_handbook_block(root: Path) -> None:
+    _append(root, HANDBOOK, NOTES_AFTER_BLOCK)
+
+
 # case -> (start mode, target mode, edit, conflicting path, forced-file bytes
 # change under --force)
 _SOFT_CASES = {
@@ -418,6 +429,20 @@ _SOFT_CASES = {
     "malformed-agents-markers": ("none", "linear", _malformed_agents, AGENTS, False),
     "duplicate-handbook-markers": ("none", "linear", _duplicate_handbook, HANDBOOK, False),
     "missing-agents": ("none", "linear", _remove_agents, AGENTS, False),
+    "notes-after-agents-block-to-none": (
+        "linear",
+        "none",
+        _notes_after_agents_block,
+        AGENTS,
+        False,
+    ),
+    "notes-after-handbook-block-to-none": (
+        "linear",
+        "none",
+        _notes_after_handbook_block,
+        HANDBOOK,
+        False,
+    ),
     "edited-tracker-block-to-none": ("linear", "none", _edit_tracker_block, CONFIG, True),
     "edited-tracker-block-rerun": ("linear", "linear", _edit_tracker_block, CONFIG, True),
 }
@@ -468,6 +493,76 @@ def test_local_edits_conflict_and_force_reports_them(tmp_path: Path, case: str) 
     if path != AGENTS:
         assert USER_AGENTS_TEXT in (tmp_path / AGENTS).read_text(encoding="utf-8")
     assert set(after) == set(before)
+
+
+@pytest.mark.parametrize("crlf", [False, True], ids=["lf", "crlf"])
+@pytest.mark.parametrize("fresh_linear", [False, True], ids=["switched", "fresh"])
+def test_user_text_after_linear_blocks_keeps_the_round_trip(
+    tmp_path: Path, crlf: bool, fresh_linear: bool
+) -> None:
+    if fresh_linear:
+        _fresh(
+            tmp_path,
+            provider="claude",
+            tracker="linear",
+            tracker_team="ENG",
+            tracker_project="Platform",
+        )
+    else:
+        _fresh(tmp_path, provider="claude")
+        _switch(tmp_path, "linear")
+    _notes_after_agents_block(tmp_path)
+    _notes_after_handbook_block(tmp_path)
+    if crlf:
+        _to_crlf(tmp_path)
+    linear = _tree(tmp_path)
+
+    # Removing a block that user text follows could not be undone in place,
+    # so it is a conflict and nothing is written.
+    dry = _switch(tmp_path, "none", dry_run=True)
+    assert dry.conflicts == (AGENTS, HANDBOOK)
+    assert all("follows its Linear section" in detail for detail in dry.conflict_details)
+    with pytest.raises(TrackerSwitchConflictError):
+        _switch(tmp_path, "none")
+    assert _tree(tmp_path) == linear
+
+    # --force leaves both sections in place, so the trip back is identical.
+    forced = _switch(tmp_path, "none", force=True)
+    assert {item.split(":")[0] for item in forced.forced} == {
+        AGENTS.as_posix(),
+        HANDBOOK.as_posix(),
+    }
+    assert load_dispatch_config(repo_root=tmp_path).tracker.provider == "none"
+    for relative in (AGENTS, HANDBOOK):
+        assert (tmp_path / relative).read_bytes() == linear[relative]
+    _switch(tmp_path, "linear")
+    assert _tree(tmp_path) == linear
+
+
+def test_config_text_after_the_tracker_block_conflicts_on_to_none(
+    tmp_path: Path,
+) -> None:
+    _fresh(tmp_path, provider="claude")
+    _switch(tmp_path, "linear")
+    _append(tmp_path, CONFIG, CUSTOM_CONFIG_TEXT)
+    before = _tree(tmp_path)
+
+    dry = _switch(tmp_path, "none", dry_run=True)
+    assert dry.conflicts == (CONFIG,)
+    assert "follows its managed tracker block" in dry.conflict_details[0]
+    with pytest.raises(TrackerSwitchConflictError):
+        _switch(tmp_path, "none")
+    assert _tree(tmp_path) == before
+
+    # --force removes the block, keeps the text after it, and says where a
+    # switch back puts the block.
+    forced = _switch(tmp_path, "none", force=True)
+    assert CONFIG in forced.merged
+    assert "at the end of the file" in forced.forced[0]
+    config = load_dispatch_config(repo_root=tmp_path)
+    assert config.tracker.provider == "none"
+    assert config.poll_interval_seconds == 7
+    assert TRACKER_BEGIN not in (tmp_path / CONFIG).read_text(encoding="utf-8")
 
 
 def _unmanaged_tracker(root: Path) -> None:

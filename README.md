@@ -271,8 +271,10 @@ when the existing config would not load in Linear mode, for example with an
 `antigravity` role; change that by hand first.
 
 Files you edited inside those managed parts are conflicts, and nothing is
-written. `--force` leaves those files as they are, or replaces or removes an
-edited tracker block, and prints each one; it does not override a malformed
+written. So is a switch to files when your own text follows a managed block,
+because a switch back adds the block at the end of the file; move the block
+to the end first. `--force` leaves those files as they are, or replaces or
+removes a tracker block, and prints each one; it does not override a malformed
 `# llm-handoff:tracker` marker, a `tracker` key outside the managed block, or
 a linked path. A switch to Linear and back restores the files byte for byte,
 and running the same mode again changes nothing.

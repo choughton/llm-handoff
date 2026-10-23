@@ -1493,8 +1493,8 @@ _SWITCH_UNCHANGED = "unchanged"
 _SWITCH_CHANGE = "change"
 _SWITCH_CONFLICT = "conflict"
 _SWITCH_FORCE_HINT = (
-    "--force leaves locally edited files as they are, or replaces an edited "
-    "tracker block, and reports each one."
+    "--force leaves conflicting files as they are, or replaces or removes "
+    "the tracker block, and reports each one."
 )
 
 
@@ -1566,6 +1566,31 @@ def _remove_text_block(content: bytes, span: tuple[int, int]) -> bytes:
     elif content[stop : stop + 1] == b"\n":
         stop += 1
     return content[:start] + content[stop:]
+
+
+def _text_block_restorable(original: bytes, removed: bytes, block: bytes) -> bool:
+    """Whether a switch back to Linear would rebuild ``original`` exactly.
+
+    A switch to Linear appends the block at the end of ``removed`` in the
+    file's line endings (`_insert_text_block`), so a block that other content
+    follows cannot be put back in its place.
+    """
+
+    newline = _first_line_ending(removed)
+    again = _with_newline(block.replace(b"\r\n", b"\n"), newline)
+    return _insert_text_block(removed, again, newline) == original
+
+
+def _config_block_restorable(original: bytes, removed: bytes, block: bytes) -> bool:
+    """Whether a switch back to Linear would rebuild ``original`` exactly.
+
+    The config counterpart of `_text_block_restorable`: `_plan_config_switch`
+    appends the tracker block after a line ending, at the end of the file.
+    """
+
+    newline = _first_line_ending(removed)
+    again = _with_newline(block.replace(b"\r\n", b"\n"), newline)
+    return removed + newline + again + newline == original
 
 
 def _remove_config_block(content: bytes, span: tuple[int, int]) -> bytes:
@@ -1683,6 +1708,23 @@ def _plan_config_switch(
                     "settings are not kept"
                 ),
             )
+        if not _config_block_restorable(raw, base, block):
+            return _SwitchItem(
+                relative,
+                _SWITCH_CONFLICT,
+                content=base,
+                reason=(
+                    "other content follows its managed tracker block, so a "
+                    "switch back to Linear could not put the block back in "
+                    "place; move the block to the end of the file"
+                ),
+                forceable=True,
+                force_note=(
+                    "removed the managed tracker block; a switch back to "
+                    "Linear adds it at the end of the file, after the content "
+                    "that followed it"
+                ),
+            )
         return _SwitchItem(relative, _SWITCH_CHANGE, content=base)
     if span is None:
         newline = _first_line_ending(raw)
@@ -1768,8 +1810,23 @@ def _plan_linear_text_switch(
     }
     if desired is None:
         if block in known_blocks:
+            removed = _remove_text_block(raw, span)
+            if _text_block_restorable(raw, removed, block):
+                return _SwitchItem(relative, _SWITCH_CHANGE, content=removed)
             return _SwitchItem(
-                relative, _SWITCH_CHANGE, content=_remove_text_block(raw, span)
+                relative,
+                _SWITCH_CONFLICT,
+                reason=(
+                    "other content follows its Linear section, so a switch "
+                    "back to Linear could not put the section back in place; "
+                    "move the section to the end of the file"
+                ),
+                forceable=True,
+                force_note=(
+                    "left as it is; the Linear section stays in place (it "
+                    "tells agents to ignore it when tracker.provider is not "
+                    "linear)"
+                ),
             )
         return _SwitchItem(
             relative,
