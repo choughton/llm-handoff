@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 import io
 from pathlib import Path
 
+import pytest
+
 from llm_handoff.chat_line import ChatLine, display_width
 from llm_handoff.logging_util import LEVEL_TO_COLOR, RESET_COLOR, DispatchLogger
 
@@ -363,6 +365,162 @@ def test_replacing_chat_line_clears_previous_prompt(tmp_path: Path) -> None:
 
     assert stream.getvalue() == "[backend running] chat> " + ERASE
     assert old_line.drawn is False
+
+
+def _attached_steady_state_logger(
+    tmp_path: Path,
+) -> tuple[DispatchLogger, ChatLine, io.StringIO, io.StringIO]:
+    console = io.StringIO()
+    chat_stream = io.StringIO()
+    chat_line = ChatLine(chat_stream, terminal_columns=lambda: 120)
+    logger = DispatchLogger(
+        repo_root=tmp_path,
+        console=console,
+        now=lambda: FIXED_NOW,
+    )
+    logger.mark_startup_complete()
+    logger.attach_chat_line(chat_line)
+    chat_line.set_role("auditor")
+    chat_line.set_buffer("half typed")
+    chat_stream.seek(0)
+    chat_stream.truncate()
+    return logger, chat_line, chat_stream, console
+
+
+AUDITOR_PROMPT = "[auditor running] chat> half typed"
+
+
+@pytest.mark.parametrize("level", sorted(LEVEL_TO_COLOR))
+def test_attached_chat_line_prints_every_level_once_after_startup(
+    tmp_path: Path,
+    level: str,
+) -> None:
+    logger, chat_line, chat_stream, console = _attached_steady_state_logger(
+        tmp_path
+    )
+
+    logger.log(level, "Steady-state detail")
+
+    expected_line = f"[2026-04-17T12:34:56] [{level}] Steady-state detail"
+    rendered = f"{LEVEL_TO_COLOR[level]}{expected_line}{RESET_COLOR}"
+    assert chat_stream.getvalue() == ERASE + rendered + "\n" + AUDITOR_PROMPT
+    assert chat_stream.getvalue().count(expected_line) == 1
+    assert console.getvalue() == ""
+    assert chat_line.role == "auditor"
+    assert chat_line.buffer == "half typed"
+    assert chat_line.drawn is True
+    assert logger.log_file_path.read_text(encoding="utf-8").endswith(
+        expected_line + "\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("level", "message"),
+    [
+        pytest.param(
+            "INFO",
+            "Dispatcher verification (epic close): running Work Packet "
+            "Verification command before the audit: python -m pytest tests -q",
+            id="epic-close-verification-running",
+        ),
+        pytest.param(
+            "INFO",
+            "Dispatcher verification: `python -m pytest tests -q` exited 0 "
+            "after 12.3s.",
+            id="epic-close-verification-exited",
+        ),
+        pytest.param(
+            "INFO",
+            "Steady-state detail that the direct console omits",
+            id="ordinary-info",
+        ),
+        pytest.param("DEBUG", "Debug detail after startup", id="ordinary-debug"),
+        pytest.param(
+            "INFO",
+            "work-claim | 2674 passed, 20 skipped in 188.9s",
+            id="work-claim-output-tail",
+        ),
+        pytest.param(
+            "INFO",
+            "work-claim | gitleaks | no leaks found",
+            id="work-claim-scanner-tail",
+        ),
+    ],
+)
+def test_attached_chat_line_shows_previously_file_only_messages(
+    tmp_path: Path,
+    level: str,
+    message: str,
+) -> None:
+    logger, chat_line, chat_stream, console = _attached_steady_state_logger(
+        tmp_path
+    )
+
+    logger.log(level, message)
+
+    expected_line = f"[2026-04-17T12:34:56] [{level}] {message}"
+    rendered = f"{LEVEL_TO_COLOR[level]}{expected_line}{RESET_COLOR}"
+    assert chat_stream.getvalue() == ERASE + rendered + "\n" + AUDITOR_PROMPT
+    assert console.getvalue() == ""
+    assert chat_line.buffer == "half typed"
+    assert logger.log_file_path.read_text(encoding="utf-8").endswith(
+        expected_line + "\n"
+    )
+
+
+@pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+def test_attached_chat_line_escapes_control_characters_in_newly_visible_levels(
+    tmp_path: Path,
+    level: str,
+) -> None:
+    logger, chat_line, chat_stream, console = _attached_steady_state_logger(
+        tmp_path
+    )
+    spoof = "\x1b]0;owned\x07 \x1b[31mred \rPASS ‮abc\n[fake] [AGENT] PASSED"
+    message = f"work-claim | {spoof}"
+
+    logger.log(level, message)
+
+    chat_text = chat_stream.getvalue()
+    assert "\x1b]0;owned" not in chat_text
+    assert "\x1b[31m" not in chat_text
+    assert "‮" not in chat_text
+    # Only the erase sequence's carriage return remains.
+    assert chat_text.count("\r") == 1
+    assert chat_text.count("\n") == 1
+    # Trusted sequences only: the erase, the level color, and the reset.
+    assert chat_text.count("\x1b") == 3
+    assert chat_text.startswith(ERASE + LEVEL_TO_COLOR[level])
+    assert chat_text.endswith(RESET_COLOR + "\n" + AUDITOR_PROMPT)
+    assert "work-claim | \\x1b]0;owned\\x07 \\x1b[31mred \\rPASS" in chat_text
+    assert console.getvalue() == ""
+    assert chat_line.buffer == "half typed"
+    file_text = logger.log_file_path.read_bytes().decode("utf-8")
+    assert message in file_text
+
+
+@pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+def test_detached_logger_keeps_steady_state_filter(
+    tmp_path: Path,
+    level: str,
+) -> None:
+    logger, chat_line, chat_stream, console = _attached_steady_state_logger(
+        tmp_path
+    )
+    logger.attach_chat_line(None)
+    chat_stream.seek(0)
+    chat_stream.truncate()
+
+    logger.log(level, "Steady-state detail after detach")
+    logger.info("--- Cycle 2 ---")
+
+    expected_line = f"[2026-04-17T12:34:56] [{level}] Steady-state detail after detach"
+    assert chat_stream.getvalue() == ""
+    assert console.getvalue() == (
+        f"{LEVEL_TO_COLOR['INFO']}[2026-04-17T12:34:56] [INFO] --- Cycle 2 ---"
+        f"{RESET_COLOR}\n"
+    )
+    assert expected_line + "\n" in logger.log_file_path.read_text(encoding="utf-8")
 
 
 def test_reattaching_same_chat_line_keeps_prompt(tmp_path: Path) -> None:

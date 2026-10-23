@@ -6,6 +6,14 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- While the console chat line is attached, every dispatcher log level now
+  prints above it after startup (LOOSE-2), including ordinary INFO and DEBUG
+  lines, work-claim output tails, and the epic-close dispatcher verification
+  running and exit messages. Each line prints once, keeps its level color and
+  terminal-safe escaping, and redraws the prompt with the active role and
+  any partly typed input; the log file still keeps the raw text. Without an
+  attached chat line, including after it detaches, the direct console keeps
+  the existing steady-state filter.
 - Config resume settings now apply without command-line flags (LOOSE-1).
   `--use-backend-resume/--no-backend-resume` and
   `--use-planner-resume/--no-planner-resume` default to unset, so a top-level
