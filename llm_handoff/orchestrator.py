@@ -12855,13 +12855,61 @@ def _log_verification_preflight(
         _log(log, level, f"{check.name}: {check.message}")
 
 
+def _preflight_applies(config: DispatchConfig, route: str) -> bool:
+    """Return whether ``route`` launches a provider the preflight can check.
+
+    A manual frontend run pauses for GUI work instead of launching the
+    configured frontend provider, so its grants say nothing about it.
+    """
+    if route not in _PREFLIGHT_IMPLEMENTER_ROUTES:
+        return False
+    return not (route == "frontend" and config.use_manual_frontend)
+
+
+def _preflight_key(route: str, content: str) -> str:
+    """Identify one preflight: the dispatched route and the checked content."""
+    return f"{route}:{_content_sha(content)}"
+
+
+def _preflight_content_for_route(content: str, route: str) -> str:
+    """Return ``content`` routed to ``route`` for the shared preflight.
+
+    ``check_verification_preflight`` derives the route from the content. An
+    operator `@backend` or `@frontend` dispatch runs that role on a handoff
+    routed elsewhere, so the check gets a copy whose only frontmatter names
+    the dispatched role, followed by the original body and its Work Packet.
+    """
+    try:
+        content_route = route_handoff(content).route
+    except (HandoffFrontmatterError, ValueError):
+        content_route = None
+    if content_route == route:
+        return content
+    lines = content.lstrip("﻿").splitlines(keepends=True)
+    body = content
+    if lines and lines[0].strip() == "---":
+        for index, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                body = "".join(lines[index + 1 :])
+                break
+    return (
+        "---\n"
+        f"next_agent: {route}\n"
+        'reason: "Verification preflight for the dispatched role."\n'
+        "---\n" + body
+    )
+
+
 def _log_startup_verification_preflight(
     config: DispatchConfig, log: LogFn
 ) -> str | None:
     """Run the verification preflight on the handoff found at startup.
 
-    Returns the checked content's sha when it routes to an implementer, so
-    the first cycle does not log the same lines again for that content.
+    Returns a key for the checked route and content only when the content
+    routes to an implementer the preflight checks, so the first cycle
+    dispatching that same role on that same content does not log the same
+    lines again. Any other content returns None and leaves the cycle check
+    in place.
     """
     try:
         handoff_content = _read_required_text(config.handoff_full_path)
@@ -12870,8 +12918,14 @@ def _log_startup_verification_preflight(
         return None
     if handoff_content is None:
         return None
+    try:
+        route = route_handoff(handoff_content).route
+    except (HandoffFrontmatterError, ValueError):
+        return None
+    if not _preflight_applies(config, route):
+        return None
     _log_verification_preflight(config, handoff_content, log)
-    return _content_sha(handoff_content)
+    return _preflight_key(route, handoff_content)
 
 
 def _log_cycle_verification_preflight(
@@ -12885,15 +12939,21 @@ def _log_cycle_verification_preflight(
     """Run the verification preflight before a backend or frontend dispatch.
 
     Checks the assignment this cycle dispatches, not the startup content, so
-    a Work Packet written mid-run is checked too. The first implementer cycle
-    skips content startup already checked. Returns the startup sha still
-    pending that skip.
+    a Work Packet written mid-run is checked too, and checks it for the role
+    this cycle dispatches, so an operator-chosen implementer is checked even
+    when the handoff routes elsewhere. The first implementer cycle skips only
+    the route and content startup already checked. Returns the startup key
+    still pending that skip.
     """
-    if route not in _PREFLIGHT_IMPLEMENTER_ROUTES or assignment_content is None:
+    if not _preflight_applies(config, route) or assignment_content is None:
         return startup_sha
-    if startup_sha is not None and _content_sha(assignment_content) == startup_sha:
+    if startup_sha is not None and _preflight_key(route, assignment_content) == (
+        startup_sha
+    ):
         return None
-    _log_verification_preflight(config, assignment_content, log)
+    _log_verification_preflight(
+        config, _preflight_content_for_route(assignment_content, route), log
+    )
     return None
 
 

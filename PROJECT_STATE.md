@@ -241,7 +241,10 @@ the `(was ...)` notes give the old IDs. None had started.
   implemented 2026-10-22, awaiting audit; startup checks the handoff on disk,
   each backend or frontend cycle (dry-run preview included) checks the
   assignment it dispatches, and the first cycle skips content startup
-  already checked.
+  already checked. PR #276 review round 1: the cycle check now covers the
+  role the cycle dispatches (operator `@backend`/`@frontend` overrides
+  included), the startup skip applies only to the same role and content,
+  and manual frontend runs are not checked.
 - ACTIVE-5 (was ACTIVE-3): Test scope policy. In
   `docs/handoff/PLANNER_HANDOFF_PROMPT.md` (the Work Packet section, ~lines
   78-150) and the handbook: for a story that changes behaviour, tests that

@@ -5571,6 +5571,118 @@ def test_verification_preflight_silent_without_implementer_work_packet(
     assert _preflight_lines(log_messages) == []
 
 
+@pytest.mark.parametrize("route", ["backend", "frontend"])
+def test_cycle_verification_preflight_checks_operator_chosen_implementer(
+    tmp_path: Path,
+    route: str,
+) -> None:
+    # A handoff routed to `user` that the operator answers with `@backend` or
+    # `@frontend`: startup checks nothing and records no skip key, and the
+    # cycle checks the Work Packet for the role the operator dispatched.
+    content = _preflight_packet(
+        f"{_PREFLIGHT_MISSING_TOOL} --operator", next_agent="user", producer="user"
+    )
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    routed = _preflight_packet(f"{_PREFLIGHT_MISSING_TOOL} --operator", next_agent=route)
+    expected = _expected_preflight_warnings(config, routed)
+    log_messages: list[tuple[str, str]] = []
+
+    def log(level: str, message: str) -> None:
+        log_messages.append((level, message))
+
+    startup_key = orchestrator._log_startup_verification_preflight(config, log)
+
+    assert startup_key is None
+    assert _preflight_lines(log_messages) == []
+
+    pending = orchestrator._log_cycle_verification_preflight(
+        config, route, content, log, startup_sha=startup_key
+    )
+
+    assert pending is None
+    assert _preflight_lines(log_messages) == expected
+    assert all(f"{route} (" in message for _l, message in expected)
+
+
+def test_cycle_verification_preflight_skip_needs_same_route(
+    tmp_path: Path,
+) -> None:
+    # Startup checked this content for backend; an operator `@frontend` on
+    # the same content is a different launch and is still checked.
+    content = _preflight_packet(f"{_PREFLIGHT_MISSING_TOOL} --check")
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root)
+    log_messages: list[tuple[str, str]] = []
+
+    def log(level: str, message: str) -> None:
+        log_messages.append((level, message))
+
+    startup_key = orchestrator._log_startup_verification_preflight(config, log)
+    backend_lines = _preflight_lines(log_messages)
+
+    assert startup_key is not None
+    assert backend_lines == _expected_preflight_warnings(config, content)
+
+    pending = orchestrator._log_cycle_verification_preflight(
+        config, "frontend", content, log, startup_sha=startup_key
+    )
+
+    assert pending is None
+    frontend_lines = _preflight_lines(log_messages)[len(backend_lines) :]
+    assert frontend_lines == _expected_preflight_warnings(
+        config,
+        _preflight_packet(f"{_PREFLIGHT_MISSING_TOOL} --check", next_agent="frontend"),
+    )
+
+    log_messages.clear()
+    # The same role on the same content is skipped once.
+    assert (
+        orchestrator._log_cycle_verification_preflight(
+            config, "backend", content, log, startup_sha=startup_key
+        )
+        is None
+    )
+    assert _preflight_lines(log_messages) == []
+
+
+def test_verification_preflight_skips_manual_frontend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A manual frontend run never launches the configured frontend provider,
+    # so no provider-grant warning is logged for it.
+    content = _preflight_packet("python -m pytest tests -q", next_agent="frontend")
+    repo_root, _handoff_path = _write_repo(tmp_path, content)
+    orchestrator = _load_orchestrator_module()
+    config = _dispatch_config(repo_root, dry_run=True, use_manual_frontend=True)
+    _expected_preflight_warnings(config, content)
+    _forbid_agents_and_verification(orchestrator, monkeypatch)
+    log_messages: list[tuple[str, str]] = []
+
+    exit_code = orchestrator.run_loop(
+        config,
+        log=lambda level, message: log_messages.append((level, message)),
+    )
+
+    assert exit_code == 0
+    assert _preflight_lines(log_messages) == []
+    assert any(message.startswith("[DRY RUN] Would") for _l, message in log_messages)
+    assert (
+        orchestrator._log_cycle_verification_preflight(
+            config,
+            "frontend",
+            content,
+            lambda level, message: log_messages.append((level, message)),
+            startup_sha=None,
+        )
+        is None
+    )
+    assert _preflight_lines(log_messages) == []
+
+
 def test_verification_preflight_logs_pass_as_info_and_survives_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
