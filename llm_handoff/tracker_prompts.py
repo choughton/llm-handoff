@@ -3,8 +3,9 @@
 The Markdown files under ``llm_handoff/prompt_templates/linear/`` are static
 text: they name settings by their ``dispatch_config.yaml`` keys and embed no
 values. This module loads them; ``llm-handoff init --tracker linear``
-renders them into a fresh repository as managed blocks in ``AGENTS.md`` and
-``docs/handoff/HANDBOOK.md``. ``linear_issue_template()`` returns the example
+renders them as managed blocks in ``AGENTS.md`` and
+``docs/handoff/HANDBOOK.md``, in a fresh repository or when it switches an
+initialized one to Linear mode (``init --tracker none`` removes them again). ``linear_issue_template()`` returns the example
 Linear issue description whose ``## Work Packet`` labels match the Work Packet
 parser; the planner copies those fields into ``HANDOFF.md``.
 """

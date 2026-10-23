@@ -2565,10 +2565,11 @@ to the validator prompt, from its recorded dispatcher-handoff digest; the
 validator skips the `producer`, `next_agent`, and `status` comparison for a
 `producer: validator` handoff only when that line says `true`.
 
-`llm-handoff init --tracker linear` renders this text. It only sets up a
-fresh repository, one with no `dispatch_config.yaml` yet; if that path exists,
-`init` stops with exit code 2 and writes nothing, with or without `--dry-run`.
-Switching an initialized repository between modes is not supported yet.
+`llm-handoff init --tracker linear` renders this text. On a fresh repository,
+one with no `dispatch_config.yaml` yet, it sets up the whole workflow. On an
+initialized repository, `init --tracker linear` and `init --tracker none`
+switch it between modes instead (see "Switching an initialized repository"
+below).
 
 - `--tracker-team <key>` is required.
 - Give exactly one of `--tracker-project <name>` and `--tracker-label <name>`.
@@ -2594,9 +2595,63 @@ is written. `init` then writes:
   `<!-- llm-handoff:linear:... -->` markers.
   Every role prompt already reads the handbook.
 
-`init` without `--tracker`, or with `--tracker none`, writes the same files as
-before, with no tracker block and no Linear markers. The output prints
-`Tracker: linear` or `Tracker: none`.
+On a fresh repository, `init` without `--tracker`, or with `--tracker none`,
+writes the same files as before, with no tracker block and no Linear markers.
+The output prints `Tracker: linear` or `Tracker: none`.
+
+Switching an initialized repository. `init --tracker <mode>` on a repository
+that has `dispatch_config.yaml` first runs the initialized-target safety
+check: it refuses (exit 2, one line, nothing written, with or without
+`--dry-run` and `--force`) a config that is a directory, a link, unreadable,
+invalid YAML, or fails validation; a `.dispatch.lock` or dispatcher run-state
+file; and a configured handoff that holds a `tracker_issue` lease, routes to
+an implementing or reviewing role, or cannot be read as between assignments.
+`init` without `--tracker` on an initialized repository keeps the ordinary
+template update and does not switch.
+
+A switch plans every file before writing any and changes only:
+
+- the managed tracker block of `dispatch_config.yaml`, added (to Linear),
+  replaced (Linear with new `--tracker-*` values), or removed (to none);
+- the Linear blocks of `AGENTS.md` and `docs/handoff/HANDBOOK.md`, added,
+  re-rendered, or removed. The handbook block includes the tpm section and
+  the tpm-configured planner text when the config defines `agents.tpm`;
+- the `tools:` line of each Claude subagent that `init --tracker linear`
+  renders (`planner`, `tpm`, `frontend`, `backend`, `auditor`,
+  `ledger-updater`, `handoff-validator`, and `handoff-router`), set to the
+  Linear tools for `--tracker-mcp-server` or back to the template line. A
+  missing subagent file is skipped.
+
+The agents block, the rest of the config, text outside the managed blocks,
+and `HANDOFF.md` are kept, and the new blocks use each file's line endings.
+Switching to Linear and back, or back and forth with the same `--tracker-*`
+values, restores every file byte for byte; running the mode the repository
+already has changes nothing. `--provider` and `--verification-command` are
+refused with `--tracker` on an initialized repository (exit 2). The planned
+config is loaded with the dispatcher's own validation before anything is
+written, so a config that would not load in the new mode (an `antigravity`
+role or `enforce_work_packet: false` in Linear mode) stops the switch with
+exit 2. No Linear call, credential, connector setup, issue migration, or
+handoff rewrite is part of a switch.
+
+Conflicts. These stop the switch with exit 1 and write nothing; the output
+lists each file with its reason, and `--dry-run` reports the same list:
+
+- locally edited text inside a Linear block, a missing `AGENTS.md` or
+  `HANDBOOK.md` when switching to Linear, malformed or repeated Linear
+  markers, and a subagent `tools:` line that matches neither the template
+  line nor the current Linear line. `--force` leaves each of these files as it
+  is and reports it under `Left behind or replaced by --force`;
+- hand edits inside the managed tracker block (any value or key that init
+  would not write). `--force` replaces the block (Linear) or removes it
+  (none), reports that its old settings are not kept, and leaves the
+  requested mode selected;
+- malformed or repeated `# llm-handoff:tracker` markers, a `tracker` key
+  outside the managed block (except a hand-written `provider: none` block on
+  a switch to none, which is kept), anything other than one `tracker` mapping
+  inside the managed block, and a destination that is a link, junction, hard
+  link, or directory or has a linked parent. `--force` does not resolve
+  these.
 
 ```yaml
 tracker:

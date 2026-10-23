@@ -39,9 +39,10 @@ from llm_handoff.doctor import run_doctor
 from llm_handoff.init_workflow import (
     DEFAULT_TRACKER_MCP_SERVER,
     REFERENCE_MAPPING,
-    TRACKER_NONE,
     InitConflictError,
+    InitResult,
     InitWorkflowError,
+    TrackerSwitchConflictError,
     init_reference_workflow,
     is_interpreter_executable,
     verification_executable,
@@ -363,6 +364,40 @@ def _format_path_list(paths: tuple[Path, ...]) -> str:
     return "\n".join(f"  - {path.as_posix()}" for path in paths)
 
 
+def _format_detail_list(lines: tuple[str, ...]) -> str:
+    return "\n".join(f"  - {_terminal_safe(line)}" for line in lines)
+
+
+_SWITCH_CONFLICT_HINT = (
+    "Review conflicts; --force leaves locally edited files as they are, or "
+    "replaces an edited tracker block, and reports each one. It never "
+    "resolves dispatch_config.yaml marker or key conflicts or linked paths."
+)
+
+
+def _echo_tracker_switch(result: InitResult) -> None:
+    """Print a tracker switch result: changes, conflicts, and --force actions."""
+    action = "DRY RUN" if result.dry_run else "Switched"
+    typer.echo(
+        f"{action}: tracker {result.switched_from} -> {result.tracker} in "
+        f"{result.target_root}"
+    )
+    typer.echo("Provider mapping: kept from dispatch_config.yaml")
+    typer.echo(f"Tracker: {result.tracker}")
+    typer.echo(f"Change: {len(result.merged)} file(s)")
+    if result.merged:
+        typer.echo(_format_path_list(result.merged))
+    if result.skipped:
+        typer.echo(f"Skip identical: {len(result.skipped)} file(s)")
+    if result.conflicts:
+        typer.echo(f"Conflict: {len(result.conflicts)} file(s)")
+        typer.echo(_format_detail_list(result.conflict_details))
+        typer.echo(_SWITCH_CONFLICT_HINT)
+    if result.forced:
+        typer.echo(f"Left behind or replaced by --force: {len(result.forced)} file(s)")
+        typer.echo(_format_detail_list(result.forced))
+
+
 @app.command("init")
 def init_command(
     target_root: Path = typer.Argument(
@@ -383,7 +418,13 @@ def init_command(
         False,
         "--force",
         "--overwrite",
-        help="Overwrite non-managed files; preserve user content in managed files.",
+        help=(
+            "Overwrite non-managed files; preserve user content in managed "
+            "files. In a tracker switch, leave locally edited files as they "
+            "are (an edited tracker block is replaced or removed) and report "
+            "each one; linked paths and tracker marker or key conflicts still "
+            "stop the switch."
+        ),
     ),
     provider: str | None = typer.Option(
         None,
@@ -405,12 +446,16 @@ def init_command(
             "which need the interpreter_grants opt-in."
         ),
     ),
-    tracker: str = typer.Option(
-        TRACKER_NONE,
+    tracker: str | None = typer.Option(
+        None,
         "--tracker",
         help=(
-            "Issue tracker mode: none (default) or linear. linear only sets "
-            "up a repository that has no dispatch_config.yaml yet."
+            "Issue tracker mode: none (default) or linear. On a repository "
+            "that already has dispatch_config.yaml, switches it to that mode: "
+            "only the managed tracker block, the Linear blocks of AGENTS.md "
+            "and HANDBOOK.md, and the Claude subagent tools lines change, and "
+            "--provider and --verification-command are refused. The switch "
+            "runs only between assignments, with no dispatcher running."
         ),
     ),
     tracker_team: str | None = typer.Option(
@@ -461,16 +506,25 @@ def init_command(
             tracker_label=tracker_label,
             tracker_mcp_server=tracker_mcp_server,
         )
+    except TrackerSwitchConflictError as exc:
+        typer.echo("Tracker switch aborted: nothing was changed.", err=True)
+        typer.echo(_format_detail_list(exc.details), err=True)
+        typer.echo(_SWITCH_CONFLICT_HINT, err=True)
+        raise typer.Exit(1) from exc
     except InitConflictError as exc:
         typer.echo("Initialization aborted: target files already exist.", err=True)
         typer.echo("Review conflicts; --force only overwrites non-managed files.", err=True)
         typer.echo(_format_path_list(exc.conflicts), err=True)
         raise typer.Exit(1) from exc
     except InitWorkflowError as exc:
-        # Option errors, the initialized-target preflight, and the fresh-repo
-        # rule all report one line and exit 2.
+        # Option errors, the initialized-target preflight, and tracker switch
+        # refusals all report one line and exit 2.
         typer.echo(_terminal_safe(" ".join(str(exc).split())), err=True)
         raise typer.Exit(2) from exc
+
+    if result.switched_from is not None:
+        _echo_tracker_switch(result)
+        return
 
     action = "DRY RUN" if result.dry_run else "Initialized"
     typer.echo(f"{action}: {result.template} in {result.target_root}")

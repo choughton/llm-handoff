@@ -97,8 +97,8 @@ read-only, so a Codex implementer asked to commit its own work hands back
 commits the in-scope files for it.
 
 To track work in Linear instead of in files, add the tracker flags here. See
-[Files Or Linear](#files-or-linear-where-work-is-tracked) first, because this
-choice is hard to change later.
+[Files Or Linear](#files-or-linear-where-work-is-tracked) first. You can
+switch later with `init --tracker`, but only between stories.
 
 ### 3. Run the preflight check
 
@@ -217,8 +217,9 @@ of work and where evidence is recorded.
 
 ### Starting in Linear mode
 
-Add the tracker flags to `init`. It only works on a repository that has no
-`dispatch_config.yaml` yet:
+Add the tracker flags to `init`. On a repository that already has
+`dispatch_config.yaml`, the same command switches it instead; see
+[Switching modes later](#switching-modes-later):
 
 ```bash
 llm-handoff init path/to/your-project --tracker linear --tracker-team ENG --tracker-project Platform
@@ -250,23 +251,37 @@ write the lease.
 
 ### Switching modes later
 
-`init` does not switch an initialized repository. Switching is a manual
-config edit, done between stories, when `HANDOFF.md` has no active lease:
+Run `init --tracker` on the initialized repository, between stories, with no
+dispatcher running:
 
-- **Linear to files.** In `dispatch_config.yaml`, set `tracker.provider:
-  none` and remove every other `tracker.*` key; a half-configured block is
-  rejected at load. The Linear prompt sections say to ignore themselves when
-  the provider is not `linear`, so the marked blocks can stay. Write a fresh
-  planner handoff describing the next epic.
-- **Files to Linear.** Add a `tracker` block to `dispatch_config.yaml`
-  (copy the shape from [dispatch_config.example.yaml](dispatch_config.example.yaml)).
-  Render the prompt text by running `init --tracker linear ...` into an empty
-  scratch directory and copying the marked blocks from its `AGENTS.md` and
-  `docs/handoff/HANDBOOK.md` into yours. Then empty `HANDOFF.md` and start
-  the dispatcher; the planner rebuilds the lease from the pool.
+```bash
+llm-handoff init path/to/your-project --tracker linear --tracker-team ENG --tracker-project Platform --dry-run
+llm-handoff init path/to/your-project --tracker none --dry-run
+```
 
-Run `doctor` after either change. The full key reference and validation rules
-are in [Tracker (Optional Linear Mode)](CONFIGURATION.md#tracker-optional-linear-mode).
+`init` first refuses a repository that is not safe to change: a dispatcher
+lock or run-state file, a handoff that holds a `tracker_issue` lease or an
+active assignment, or a config that does not load. A switch then changes
+only the managed tracker block of `dispatch_config.yaml`, the Linear blocks
+of `AGENTS.md` and `docs/handoff/HANDBOOK.md`, and the `tools:` line of each
+Claude subagent. It keeps your agents block, so `--provider` and
+`--verification-command` are refused with `--tracker` here. It does not
+rewrite `HANDOFF.md`, move issues, or call Linear. Going to Linear fails
+when the existing config would not load in Linear mode, for example with an
+`antigravity` role; change that by hand first.
+
+Files you edited inside those managed parts are conflicts, and nothing is
+written. `--force` leaves those files as they are, or replaces or removes an
+edited tracker block, and prints each one; it does not override a malformed
+`# llm-handoff:tracker` marker, a `tracker` key outside the managed block, or
+a linked path. A switch to Linear and back restores the files byte for byte,
+and running the same mode again changes nothing.
+
+After switching to files, write a planner handoff describing the next epic.
+After switching to Linear, empty `HANDOFF.md` and start the dispatcher; the
+planner rebuilds the lease from the pool. Run `doctor` after either change.
+The full key reference and validation rules are in
+[Tracker (Optional Linear Mode)](CONFIGURATION.md#tracker-optional-linear-mode).
 
 ## Gotchas
 
@@ -519,8 +534,10 @@ loop only advances when the handoff state parses, routes, and validates.
 - Registered runtime adapters are `claude`, `codex`, and `antigravity`.
   Provider-specific prompt files and local auth are the
   user's responsibility.
-- Switching an initialized repository between file mode and Linear mode is
-  a manual edit; `init` does not do it.
+- `init --tracker` switches an initialized repository between file mode and
+  Linear mode only through its managed blocks and subagent `tools:` lines.
+  Hand-written tracker settings outside the managed block, and issue or
+  handoff migration, stay manual.
 
 ## Further Reading
 

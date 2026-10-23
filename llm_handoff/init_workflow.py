@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import stat
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import resources
@@ -85,6 +86,9 @@ _EXCLUDED_TEMPLATE_FILES = frozenset({Path("README.md")})
 # `codex` puts every role on the Codex CLI; `antigravity` puts every role on
 # the Antigravity CLI (`agy`).
 REFERENCE_MAPPING = "reference"
+# A tracker switch keeps the initialized repository's agents block; its
+# InitResult reports this instead of a mapping.
+KEPT_MAPPING = "kept"
 CLAUDE_MAPPING = "claude"
 CODEX_MAPPING = "codex"
 ANTIGRAVITY_MAPPING = "antigravity"
@@ -413,6 +417,13 @@ class InitResult:
     # auto-detect finds `agy` on its own through `detected_providers`.
     antigravity_detected: bool = False
     tracker: str = TRACKER_NONE
+    # Set only by a tracker switch of an initialized repository: the mode the
+    # repository was in, one "path: reason" line per conflict, and one
+    # "path: what --force did" line per conflict --force resolved by leaving
+    # a file as it is or by replacing an edited tracker block.
+    switched_from: str | None = None
+    conflict_details: tuple[str, ...] = ()
+    forced: tuple[str, ...] = ()
 
 
 class InitWorkflowError(RuntimeError):
@@ -475,14 +486,20 @@ class TrackerUnsupportedMappingError(InvalidTrackerOptionsError):
         self.mapping = mapping
 
 
-class TrackerRequiresFreshRepoError(InitWorkflowError):
-    def __init__(self, target_root: Path) -> None:
+class TrackerSwitchError(InitWorkflowError):
+    """A tracker switch of an initialized repository cannot run as asked.
+
+    Raised before anything is written, with ``dry_run`` and ``force`` too. The
+    message is a single line.
+    """
+
+    def __init__(self, target_root: Path, problem: str) -> None:
+        problem = _one_line(problem)
         super().__init__(
-            "--tracker linear only sets up a repository that has no "
-            f"dispatch_config.yaml yet, but {target_root / _CONFIG_PATH} "
-            "exists; switching an initialized repository is not supported yet."
+            f"Cannot switch the tracker mode of {target_root}: {problem}"
         )
         self.target_root = target_root
+        self.problem = problem
 
 
 class InitializedTargetError(InitWorkflowError):
@@ -501,9 +518,29 @@ class InitializedTargetError(InitWorkflowError):
 
 
 class InitConflictError(InitWorkflowError):
-    def __init__(self, conflicts: tuple[Path, ...]) -> None:
-        super().__init__("Target files already exist with different content.")
+    def __init__(
+        self,
+        conflicts: tuple[Path, ...],
+        message: str = "Target files already exist with different content.",
+        details: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
         self.conflicts = conflicts
+        self.details = details
+
+
+class TrackerSwitchConflictError(InitConflictError):
+    """A tracker switch found files it cannot change safely; nothing was written.
+
+    ``details`` holds one "path: reason" line per conflict.
+    """
+
+    def __init__(self, conflicts: tuple[Path, ...], details: tuple[str, ...]) -> None:
+        super().__init__(
+            conflicts,
+            "Tracker switch conflicts; nothing was changed.",
+            details,
+        )
 
 
 def template_files(template_root: Path = _TEMPLATE_ROOT) -> tuple[Path, ...]:
@@ -934,25 +971,34 @@ def _tracker_mapping(tracker: TrackerConfig) -> dict[str, str]:
     return data
 
 
+def _tracker_block_text(tracker: TrackerConfig, newline: str) -> str:
+    """The managed tracker block, markers included, without a final newline."""
+
+    dumped = yaml.safe_dump(
+        {"tracker": _tracker_mapping(tracker)},
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    begin, end = _TRACKER_CONFIG_MARKERS
+    body = "".join(f"{line}{newline}" for line in dumped.splitlines())
+    return f"{begin}{newline}{body}{end}"
+
+
 def add_tracker_block(config_text: str, tracker: TrackerConfig) -> str:
     """Append the managed `tracker` block to dispatch_config.yaml text.
 
-    The block uses the template text's line ending. The rest of the text,
-    including the commented `# tracker:` example, is unchanged.
+    The block uses the template text's line ending and is written as one line
+    ending, the block, and one line ending, so removing exactly those bytes
+    restores the original text (a text ending in a newline gets a blank line
+    before the block). The rest of the text, including the commented
+    `# tracker:` example, is unchanged.
     """
 
     lines = config_text.splitlines(keepends=True)
     newline = (_line_ending(lines[0]) if lines else "") or "\n"
     mapping = _tracker_mapping(tracker)
-    dumped = yaml.safe_dump(
-        {"tracker": mapping}, sort_keys=False, default_flow_style=False
-    )
-    begin, end = _TRACKER_CONFIG_MARKERS
-    body = "".join(f"{line}{newline}" for line in dumped.splitlines())
-    separator = newline if config_text and not config_text.endswith("\n") else ""
-    rendered = (
-        f"{config_text}{separator}{newline}{begin}{newline}{body}{end}{newline}"
-    )
+    block = _tracker_block_text(tracker, newline)
+    rendered = f"{config_text}{newline}{block}{newline}"
     try:
         data = yaml.safe_load(rendered)
     except yaml.YAMLError as exc:
@@ -1037,15 +1083,8 @@ def render_linear_agent_tools(
     holds exactly one line that starts with `tools: `.
     """
 
-    role, base_tools = _LINEAR_AGENT_TOOLS[relative_path]
     lines = template.splitlines(keepends=True)
-    tools_indexes: list[int] = []
-    if lines and lines[0].rstrip(b"\r\n") == b"---":
-        for index in range(1, len(lines)):
-            if lines[index].rstrip(b"\r\n") == b"---":
-                break
-            if lines[index].startswith(b"tools: "):
-                tools_indexes.append(index)
+    tools_indexes = _frontmatter_tools_indexes(lines)
     if len(tools_indexes) != 1:
         raise InitWorkflowError(
             f"Template {relative_path.as_posix()} must have exactly one "
@@ -1054,9 +1093,29 @@ def render_linear_agent_tools(
     index = tools_indexes[0]
     line = lines[index]
     ending = line[len(line.rstrip(b"\r\n")) :]
-    tools = ", ".join(linear_tools_for_role(role, mcp_server))
-    lines[index] = f"tools: {base_tools}, {tools}".encode("utf-8") + ending
+    lines[index] = _linear_tools_line(relative_path, mcp_server) + ending
     return b"".join(lines)
+
+
+def _frontmatter_tools_indexes(lines: list[bytes]) -> list[int]:
+    """Indexes of the `tools: ` lines inside a leading `---` frontmatter."""
+
+    indexes: list[int] = []
+    if lines and lines[0].rstrip(b"\r\n") == b"---":
+        for index in range(1, len(lines)):
+            if lines[index].rstrip(b"\r\n") == b"---":
+                break
+            if lines[index].startswith(b"tools: "):
+                indexes.append(index)
+    return indexes
+
+
+def _linear_tools_line(relative_path: Path, mcp_server: str) -> bytes:
+    """The Linear-mode `tools:` line of one subagent file, without an ending."""
+
+    role, base_tools = _LINEAR_AGENT_TOOLS[relative_path]
+    tools = ", ".join(linear_tools_for_role(role, mcp_server))
+    return f"tools: {base_tools}, {tools}".encode("utf-8")
 
 
 def _config_is_rendered(
@@ -1425,6 +1484,524 @@ def preflight_initialized_target(target_root: Path) -> DispatchConfig | None:
     return config
 
 
+# Tracker switch of an initialized repository (LIN-14). The switch is a
+# bounded transformation: it edits only the managed tracker block of
+# dispatch_config.yaml, the Linear blocks of AGENTS.md and HANDBOOK.md, and
+# the `tools:` line of each Claude subagent in _LINEAR_AGENT_TOOLS. Every
+# destination is planned before anything is written.
+_SWITCH_UNCHANGED = "unchanged"
+_SWITCH_CHANGE = "change"
+_SWITCH_CONFLICT = "conflict"
+_SWITCH_FORCE_HINT = (
+    "--force leaves locally edited files as they are, or replaces an edited "
+    "tracker block, and reports each one."
+)
+
+
+@dataclass(frozen=True)
+class _SwitchItem:
+    path: Path
+    action: str
+    # Bytes to write for a change, or for a conflict --force resolves by
+    # rewriting the file (an edited tracker block). None for a conflict
+    # --force resolves by leaving the file as it is.
+    content: bytes | None = None
+    reason: str = ""
+    # Whether --force may resolve this conflict. dispatch_config.yaml marker
+    # and key conflicts and unsafe paths are never forceable.
+    forceable: bool = False
+    force_note: str = ""
+
+
+def _first_line_ending(content: bytes) -> bytes:
+    lines = content.splitlines(keepends=True)
+    if lines:
+        line = lines[0]
+        if line.endswith(b"\r\n"):
+            return b"\r\n"
+        if line.endswith(b"\n"):
+            return b"\n"
+    return b"\n"
+
+
+def _with_newline(block: bytes, newline: bytes) -> bytes:
+    return block.replace(b"\n", b"\r\n") if newline == b"\r\n" else block
+
+
+def _block_newline(block: bytes) -> bytes:
+    return b"\r\n" if b"\r\n" in block else b"\n"
+
+
+def _unsafe_destination(root: Path, relative: Path) -> bool:
+    return _has_linked_destination(root, relative) or (root / relative).is_dir()
+
+
+def _unsafe_item(relative: Path) -> _SwitchItem:
+    return _SwitchItem(
+        relative,
+        _SWITCH_CONFLICT,
+        reason=(
+            "is a link, junction, hard link, or directory, or has a "
+            "non-directory or linked parent; init never writes through it"
+        ),
+    )
+
+
+def _insert_text_block(content: bytes, block: bytes, newline: bytes) -> bytes:
+    """Append a Linear block so `_remove_text_block` restores ``content``."""
+
+    if not content or content.endswith(b"\n"):
+        return content + block + newline
+    return content + newline + block
+
+
+def _remove_text_block(content: bytes, span: tuple[int, int]) -> bytes:
+    start, stop = span
+    if stop == len(content) and start > 0:
+        # A block at the end with no line ending after it: drop the line
+        # ending before it instead.
+        start -= 2 if content[start - 2 : start] == b"\r\n" else 1
+    elif content[stop : stop + 2] == b"\r\n":
+        stop += 2
+    elif content[stop : stop + 1] == b"\n":
+        stop += 1
+    return content[:start] + content[stop:]
+
+
+def _remove_config_block(content: bytes, span: tuple[int, int]) -> bytes:
+    """Remove the tracker block with the line endings `add_tracker_block` adds."""
+
+    start, stop = span
+    if start > 0:
+        start -= 2 if content[start - 2 : start] == b"\r\n" else 1
+    if content[stop : stop + 2] == b"\r\n":
+        stop += 2
+    elif content[stop : stop + 1] == b"\n":
+        stop += 1
+    return content[:start] + content[stop:]
+
+
+def _canonical_tracker_block(mapping: object, newline: bytes) -> bytes | None:
+    """The block init writes for these tracker values, or None if it cannot."""
+
+    if not isinstance(mapping, dict):
+        return None
+    values = {key: mapping.get(key) for key in ("team", "project", "label", "mcp_server")}
+    if not all(value is None or isinstance(value, str) for value in values.values()):
+        return None
+    try:
+        tracker = build_tracker_config(
+            TRACKER_LINEAR,
+            team=values["team"],
+            project=values["project"],
+            label=values["label"],
+            mcp_server=values["mcp_server"],
+        )
+    except InitWorkflowError:
+        return None
+    if tracker is None:
+        return None
+    return _tracker_block_text(tracker, newline.decode("ascii")).encode("utf-8")
+
+
+def _plan_config_switch(
+    root: Path, config: DispatchConfig, tracker: TrackerConfig | None
+) -> _SwitchItem:
+    relative = _CONFIG_PATH
+    if _unsafe_destination(root, relative):
+        return _unsafe_item(relative)
+    raw = (root / relative).read_bytes()
+    begin, end = (marker.encode("utf-8") for marker in _TRACKER_CONFIG_MARKERS)
+    try:
+        span = _marker_span(raw, begin, end)
+    except ValueError:
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            reason=(
+                "its '# llm-handoff:tracker' markers are malformed or repeated; "
+                "fix them by hand"
+            ),
+        )
+    base = raw if span is None else _remove_config_block(raw, span)
+    try:
+        base_data = yaml.safe_load(base.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            reason="the config outside the managed tracker block is not valid YAML",
+        )
+    if isinstance(base_data, dict) and "tracker" in base_data:
+        if span is None and tracker is None and config.tracker.provider == TRACKER_NONE:
+            # A hand-written `tracker: {provider: none}` already selects none.
+            return _SwitchItem(relative, _SWITCH_UNCHANGED)
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            reason=(
+                "it has a tracker key outside the '# llm-handoff:tracker' "
+                "block, which init does not manage; remove it by hand"
+            ),
+        )
+    edited = False
+    block = b""
+    if span is not None:
+        block = raw[span[0] : span[1]]
+        try:
+            block_data = yaml.safe_load(block.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError):
+            block_data = None
+        if (
+            not isinstance(block_data, dict)
+            or set(block_data) != {"tracker"}
+            or not isinstance(block_data["tracker"], dict)
+        ):
+            return _SwitchItem(
+                relative,
+                _SWITCH_CONFLICT,
+                reason=(
+                    "its managed tracker block holds something other than one "
+                    "tracker mapping; move other settings out of the block"
+                ),
+            )
+        edited = block != _canonical_tracker_block(
+            block_data["tracker"], _block_newline(block)
+        )
+    if tracker is None:
+        if span is None:
+            return _SwitchItem(relative, _SWITCH_UNCHANGED)
+        if edited:
+            return _SwitchItem(
+                relative,
+                _SWITCH_CONFLICT,
+                content=base,
+                reason="its managed tracker block has local edits",
+                forceable=True,
+                force_note=(
+                    "removed the locally edited managed tracker block; its "
+                    "settings are not kept"
+                ),
+            )
+        return _SwitchItem(relative, _SWITCH_CHANGE, content=base)
+    if span is None:
+        newline = _first_line_ending(raw)
+        desired = _tracker_block_text(tracker, newline.decode("ascii")).encode("utf-8")
+        return _SwitchItem(
+            relative, _SWITCH_CHANGE, content=raw + newline + desired + newline
+        )
+    desired = _tracker_block_text(
+        tracker, _block_newline(block).decode("ascii")
+    ).encode("utf-8")
+    if block == desired:
+        return _SwitchItem(relative, _SWITCH_UNCHANGED)
+    replaced = raw[: span[0]] + desired + raw[span[1] :]
+    if edited:
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            content=replaced,
+            reason="its managed tracker block has local edits",
+            forceable=True,
+            force_note=(
+                "replaced the locally edited managed tracker block; its old "
+                "settings are not kept"
+            ),
+        )
+    return _SwitchItem(relative, _SWITCH_CHANGE, content=replaced)
+
+
+def _plan_linear_text_switch(
+    root: Path,
+    relative: Path,
+    desired: str | None,
+    known: tuple[str, ...],
+) -> _SwitchItem:
+    """Plan the Linear block of AGENTS.md or HANDBOOK.md.
+
+    ``desired`` is the block text for Linear mode, or None to remove the
+    block. ``known`` lists every block text init may have written, so a block
+    that matches none of them (in LF or CRLF) counts as locally edited.
+    """
+
+    if _unsafe_destination(root, relative):
+        return _unsafe_item(relative)
+    path = root / relative
+    if not path.exists():
+        if desired is None:
+            return _SwitchItem(relative, _SWITCH_UNCHANGED)
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            reason="it is missing; run init without --tracker to restore it",
+            forceable=True,
+            force_note="left missing; the Linear section was not added",
+        )
+    raw = path.read_bytes()
+    begin, end = _LINEAR_TEXT_MARKERS
+    try:
+        span = _marker_span(raw, begin, end)
+    except ValueError:
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            reason="its '<!-- llm-handoff:linear -->' markers are malformed or repeated",
+            forceable=True,
+            force_note=(
+                "left as it is, with its malformed Linear markers"
+                + ("; the Linear section was not added" if desired is not None else "")
+            ),
+        )
+    if span is None:
+        if desired is None:
+            return _SwitchItem(relative, _SWITCH_UNCHANGED)
+        newline = _first_line_ending(raw)
+        block = _with_newline(_linear_block(desired), newline)
+        return _SwitchItem(
+            relative, _SWITCH_CHANGE, content=_insert_text_block(raw, block, newline)
+        )
+    block = raw[span[0] : span[1]]
+    known_blocks = {
+        _with_newline(_linear_block(text), newline)
+        for text in known
+        for newline in (b"\n", b"\r\n")
+    }
+    if desired is None:
+        if block in known_blocks:
+            return _SwitchItem(
+                relative, _SWITCH_CHANGE, content=_remove_text_block(raw, span)
+            )
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            reason="its Linear section has local edits",
+            forceable=True,
+            force_note=(
+                "left as it is; the locally edited Linear section stays (it "
+                "tells agents to ignore it when tracker.provider is not linear)"
+            ),
+        )
+    wanted = _with_newline(_linear_block(desired), _block_newline(block))
+    if block == wanted:
+        return _SwitchItem(relative, _SWITCH_UNCHANGED)
+    if block in known_blocks:
+        return _SwitchItem(
+            relative,
+            _SWITCH_CHANGE,
+            content=raw[: span[0]] + wanted + raw[span[1] :],
+        )
+    return _SwitchItem(
+        relative,
+        _SWITCH_CONFLICT,
+        reason="its Linear section has local edits",
+        forceable=True,
+        force_note="left as it is; the locally edited Linear section was not updated",
+    )
+
+
+def _template_tools_line(relative: Path) -> bytes:
+    lines = (_TEMPLATE_ROOT / relative).read_bytes().splitlines(keepends=True)
+    indexes = _frontmatter_tools_indexes(lines)
+    if len(indexes) != 1:
+        raise InitWorkflowError(
+            f"Template {relative.as_posix()} must have exactly one "
+            "'tools: ' line in its frontmatter."
+        )
+    return lines[indexes[0]].rstrip(b"\r\n")
+
+
+def _plan_agent_tools_switch(
+    root: Path,
+    relative: Path,
+    old_server: str | None,
+    new_server: str | None,
+) -> _SwitchItem | None:
+    """Plan the `tools:` line of one Claude subagent file.
+
+    ``old_server`` is the current Linear MCP server name (None in file mode)
+    and ``new_server`` the one to write (None to switch to file mode). A
+    missing subagent file has nothing to grant, so it is not planned.
+    """
+
+    if _unsafe_destination(root, relative):
+        return _unsafe_item(relative)
+    path = root / relative
+    if not path.exists():
+        return None
+    raw = path.read_bytes()
+    lines = raw.splitlines(keepends=True)
+    indexes = _frontmatter_tools_indexes(lines)
+    if len(indexes) != 1:
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            reason="its frontmatter does not have exactly one 'tools: ' line",
+            forceable=True,
+            force_note="left as it is; its tools line was not changed",
+        )
+    index = indexes[0]
+    line = lines[index]
+    current = line.rstrip(b"\r\n")
+    file_line = _template_tools_line(relative)
+    known = {file_line}
+    if old_server is not None:
+        known.add(_linear_tools_line(relative, old_server))
+    wanted = file_line if new_server is None else _linear_tools_line(relative, new_server)
+    if current == wanted:
+        return _SwitchItem(relative, _SWITCH_UNCHANGED)
+    if current not in known:
+        material = (
+            "it keeps its locally modified tools line, which may still list "
+            "Linear MCP tools"
+            if new_server is None
+            else "it keeps its locally modified tools line without the Linear "
+            "MCP tools for this server"
+        )
+        return _SwitchItem(
+            relative,
+            _SWITCH_CONFLICT,
+            reason="its tools line has local edits",
+            forceable=True,
+            force_note=f"left as it is; {material}",
+        )
+    lines[index] = wanted + line[len(current) :]
+    return _SwitchItem(relative, _SWITCH_CHANGE, content=b"".join(lines))
+
+
+def _validate_switched_config(root: Path, content: bytes, mode: str) -> None:
+    """Load the planned config with the dispatcher's own validation.
+
+    The bytes go to a temporary file outside the target, so nothing in the
+    target is written.
+    """
+
+    name = _CONFIG_PATH.as_posix()
+    with tempfile.TemporaryDirectory(prefix="llm-handoff-switch-") as scratch:
+        candidate = Path(scratch) / _CONFIG_PATH.name
+        candidate.write_bytes(content)
+        try:
+            loaded = load_dispatch_config(repo_root=root, config_path=candidate)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            raise TrackerSwitchError(
+                root,
+                f"{name} would fail config validation in {mode} mode "
+                f"({_config_error_detail(exc)}). Change it by hand, then run "
+                "init again. Nothing was changed.",
+            ) from exc
+    if loaded.tracker.provider != mode:
+        raise TrackerSwitchError(
+            root,
+            f"{name} would select tracker mode {loaded.tracker.provider}, not "
+            f"{mode}. Nothing was changed.",
+        )
+
+
+def _switch_tracker_mode(
+    root: Path,
+    config: DispatchConfig,
+    tracker: TrackerConfig | None,
+    *,
+    template: str,
+    dry_run: bool,
+    force: bool,
+) -> InitResult:
+    old_mode = config.tracker.provider
+    new_mode = TRACKER_NONE if tracker is None else TRACKER_LINEAR
+    old_server = (
+        (config.tracker.mcp_server or DEFAULT_TRACKER_MCP_SERVER)
+        if old_mode == TRACKER_LINEAR
+        else None
+    )
+    new_server = (
+        None if tracker is None else (tracker.mcp_server or DEFAULT_TRACKER_MCP_SERVER)
+    )
+    tpm_configured = "tpm" in config.agents
+
+    items: list[_SwitchItem] = []
+    for relative in _LINEAR_AGENT_TOOLS:
+        item = _plan_agent_tools_switch(root, relative, old_server, new_server)
+        if item is not None:
+            items.append(item)
+    items.append(
+        _plan_linear_text_switch(
+            root,
+            _AGENTS_PATH,
+            None if tracker is None else linear_agents_section(),
+            (linear_agents_section(),),
+        )
+    )
+    items.append(
+        _plan_linear_text_switch(
+            root,
+            _HANDBOOK_PATH,
+            None
+            if tracker is None
+            else _linear_handbook_text(tpm_configured=tpm_configured),
+            (
+                _linear_handbook_text(tpm_configured=False),
+                _linear_handbook_text(tpm_configured=True),
+            ),
+        )
+    )
+    # dispatch_config.yaml is planned and written last, so the selected mode
+    # changes only after every other file.
+    config_item = _plan_config_switch(root, config, tracker)
+    items.append(config_item)
+
+    config_writes = config_item.content is not None and (
+        config_item.action == _SWITCH_CHANGE
+        or (force and config_item.action == _SWITCH_CONFLICT and config_item.forceable)
+    )
+    if config_writes:
+        _validate_switched_config(root, config_item.content or b"", new_mode)
+
+    changed: list[Path] = []
+    skipped: list[Path] = []
+    conflicts: list[Path] = []
+    details: list[str] = []
+    forced: list[str] = []
+    writes: list[tuple[Path, bytes]] = []
+    for item in items:
+        if item.action == _SWITCH_UNCHANGED:
+            skipped.append(item.path)
+            continue
+        if item.action == _SWITCH_CHANGE:
+            changed.append(item.path)
+            writes.append((item.path, item.content or b""))
+            continue
+        if force and item.forceable:
+            forced.append(f"{item.path.as_posix()}: {item.force_note}")
+            if item.content is not None:
+                changed.append(item.path)
+                writes.append((item.path, item.content))
+            continue
+        conflicts.append(item.path)
+        details.append(f"{item.path.as_posix()}: {item.reason}")
+
+    result = InitResult(
+        template=template,
+        target_root=root,
+        copied=(),
+        skipped=tuple(skipped),
+        conflicts=tuple(conflicts),
+        dry_run=dry_run,
+        force=force,
+        provider_mapping=KEPT_MAPPING,
+        merged=tuple(changed),
+        tracker=new_mode,
+        switched_from=old_mode,
+        conflict_details=tuple(details),
+        forced=tuple(forced),
+    )
+    if conflicts and not dry_run:
+        raise TrackerSwitchConflictError(result.conflicts, result.conflict_details)
+    if dry_run:
+        return result
+    for relative, content in writes:
+        (root / relative).write_bytes(content)
+    return result
+
+
 def init_reference_workflow(
     target_root: Path,
     *,
@@ -1435,22 +2012,33 @@ def init_reference_workflow(
     available_providers: Iterable[str] | None = None,
     verification_command: str | None = None,
     antigravity_available: bool | None = None,
-    tracker: str = TRACKER_NONE,
+    tracker: str | None = None,
     tracker_team: str | None = None,
     tracker_project: str | None = None,
     tracker_label: str | None = None,
     tracker_mcp_server: str | None = None,
 ) -> InitResult:
+    """Copy the reference workflow into a target, or switch its tracker mode.
+
+    ``tracker`` None means no ``--tracker`` option: a fresh target is set up in
+    file mode and an initialized one gets the ordinary template update. An
+    explicit ``tracker`` on an initialized target (one with
+    ``dispatch_config.yaml``) switches it to that mode instead: only the
+    managed tracker block, the Linear blocks of ``AGENTS.md`` and
+    ``docs/handoff/HANDBOOK.md``, and the Claude subagent ``tools:`` lines
+    change, and the agents block is kept, so ``provider`` and
+    ``verification_command`` are refused there.
+    """
+
     if template != REFERENCE_TEMPLATE:
         raise UnknownTemplateError(template)
     if not _TEMPLATE_ROOT.is_dir():
         raise InitWorkflowError(f"Template directory not found: {_TEMPLATE_ROOT}")
 
-    # Validate tracker options, the initialized-target preflight, and the
-    # fresh-repo rule before any file is planned, so every refusal also fires
-    # with dry_run and force.
+    # Validate tracker options and the initialized-target preflight before
+    # any file is planned, so every refusal also fires with dry_run and force.
     tracker_config = build_tracker_config(
-        tracker,
+        TRACKER_NONE if tracker is None else tracker,
         team=tracker_team,
         project=tracker_project,
         label=tracker_label,
@@ -1458,10 +2046,31 @@ def init_reference_workflow(
     )
     resolved_root = target_root.expanduser().resolve()
     initialized_config = preflight_initialized_target(resolved_root)
-    if tracker_config is not None and initialized_config is not None:
-        # Switching a safe initialized target to Linear mode lands later;
-        # until then only a fresh target may be set up for Linear.
-        raise TrackerRequiresFreshRepoError(resolved_root)
+    if initialized_config is not None and tracker is not None:
+        given = [
+            name
+            for name, value in (
+                ("--provider", provider),
+                ("--verification-command", verification_command),
+            )
+            if value is not None
+        ]
+        if given:
+            raise TrackerSwitchError(
+                resolved_root,
+                f"{' and '.join(given)} cannot be combined with --tracker on "
+                "an initialized repository: a tracker switch keeps the "
+                "existing agents and verification settings. Drop "
+                f"{' and '.join(given)}, or run init without --tracker.",
+            )
+        return _switch_tracker_mode(
+            resolved_root,
+            initialized_config,
+            tracker_config,
+            template=template,
+            dry_run=dry_run,
+            force=force,
+        )
 
     executable = (
         None

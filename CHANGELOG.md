@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `init --tracker linear` and `init --tracker none` now switch an initialized
+  repository between modes (LIN-14) instead of refusing it, after the LIN-13
+  safety check. A switch plans every file first and changes only the managed
+  tracker block of `dispatch_config.yaml`, the Linear blocks of `AGENTS.md`
+  and `docs/handoff/HANDBOOK.md` (with the tpm sections when `agents.tpm` is
+  set), and the Claude subagent `tools:` lines; the agents block, other
+  config, user text, and `HANDOFF.md` are kept. A round trip restores every
+  file byte for byte, including line endings, and a same-mode rerun changes
+  nothing. The planned config must pass the dispatcher's config validation.
+  Local edits are conflicts (exit 1, nothing written); `--force` leaves those
+  files as they are, or replaces or removes an edited tracker block, and
+  reports each one, but never resolves marker or unmanaged `tracker` key
+  conflicts or linked paths. `--provider` and `--verification-command` are
+  refused with `--tracker` on an initialized repository. `init` without
+  `--tracker` keeps the ordinary template update. `add_tracker_block` no
+  longer adds an extra blank line before the block when the config text lacks
+  a final newline.
 - Report-only validator launches in Linear mode now deny the configured MCP
   server's `save_comment` and `save_issue` explicitly through
   `--disallowedTools` (LOOSE-4), after the shared `WebFetch,WebSearch`
