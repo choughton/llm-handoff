@@ -1107,6 +1107,15 @@ def _check_security_review(
             f"{audit.security_provider or 'auto'})",
         )
     )
+    if audit.codex_local_enabled:
+        checks.append(
+            DoctorCheck(
+                "PASS",
+                "codex-local review",
+                "the codex-local reviewer is on: the audit also runs "
+                "`codex exec review` of the review range",
+            )
+        )
 
 
 def _check_work_claim_gate(

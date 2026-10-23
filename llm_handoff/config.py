@@ -231,7 +231,9 @@ AgentRole = Literal[
 ProviderName = Literal["codex", "claude", "antigravity", "openai"]
 EnvMode = Literal["allowlist", "inherit"]
 UnknownNormalizerPolicy = Literal["fail_closed"]
-AuditReviewer = Literal["quality", "security"]
+# `codex-local` is opt-in: `codex exec review` run next to the other reviewers,
+# for a repository the ChatGPT Codex connector cannot read.
+AuditReviewer = Literal["quality", "security", "codex-local"]
 SecurityReviewProvider = Literal["claude", "codex", "antigravity"]
 BlockSeverity = Literal["critical", "high", "medium", "low"]
 # Who commits an implementer's work: the agent itself, or the dispatcher after
@@ -240,12 +242,9 @@ CommitMode = Literal["agent", "dispatcher"]
 # What happens to audited work: stay local, merge a story branch with a report
 # commit, or push it and open a pull request.
 PublishMode = Literal["local", "merge-commit", "pr"]
-# Pull request reviewers whose review of the head commit must finish, without
-# findings, before the dispatcher merges a story's pull request: `codex` is the
-# ChatGPT Codex connector's GitHub review; `codex-local` is a `codex exec
-# review` the dispatcher runs itself, for a repository the connector cannot
-# read.
-PublishReviewer = Literal["codex", "codex-local"]
+# GitHub pull request reviewers whose review of the head commit must finish,
+# without findings, before the dispatcher merges a story's pull request.
+PublishReviewer = Literal["codex"]
 # What the dispatcher does at a non-user pause: schedule one bounded planner
 # recovery per pause streak, or pause and wait for a HANDOFF.md edit.
 PauseRecoveryMode = Literal["planner", "off"]
@@ -611,12 +610,6 @@ class PublishConfig(BaseModel):
             )
         if len(set(self.wait_for_reviewers)) != len(self.wait_for_reviewers):
             raise ValueError("publish.wait_for_reviewers must not repeat a reviewer.")
-        if {"codex", "codex-local"} <= set(self.wait_for_reviewers):
-            raise ValueError(
-                "publish.wait_for_reviewers takes `codex` or `codex-local`, not "
-                "both: `codex-local` runs the Codex review locally in place of "
-                "the GitHub one."
-            )
         for name in (
             "review_timeout_seconds",
             "review_poll_seconds",
@@ -739,6 +732,12 @@ class AuditConfig(BaseModel):
                 "audit.reviewers must include `quality`; the quality reviewer "
                 "decides the forward route."
             )
+        if "codex-local" in value and "security" not in value:
+            raise ValueError(
+                "audit.reviewers lists `codex-local`, which runs in the audit "
+                "fan-out next to the security reviewer; add `security` to "
+                "audit.reviewers."
+            )
         return value
 
     @field_validator("review_timeout_ms", mode="after")
@@ -751,6 +750,10 @@ class AuditConfig(BaseModel):
     @property
     def security_enabled(self) -> bool:
         return "security" in self.reviewers
+
+    @property
+    def codex_local_enabled(self) -> bool:
+        return "codex-local" in self.reviewers
 
 
 def scanner_command_placeholders(command: str) -> frozenset[str]:

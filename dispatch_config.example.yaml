@@ -55,10 +55,7 @@ commit_mode: agent
 # review_stall_seconds with no result, is requested again once; if that one
 # does not finish either, review_stall_action decides: prompt (ask the
 # operator) or merge (merge without the review when the audit passed for the
-# head commit and no review thread is unresolved). For a repository the Codex
-# GitHub connector cannot read, wait_for_reviewers: [codex-local] runs
-# `codex exec review` locally and posts its findings to the pull request
-# instead. See CONFIGURATION.md.
+# head commit and no review thread is unresolved). See CONFIGURATION.md.
 publish:
   mode: local
   # review_stall_seconds: 600
@@ -221,6 +218,9 @@ normalizer:
 #   reviewers: [quality]
 #   security_opt_out_reason: "<why this repository skips security review>"
 # Every dispatcher start and `llm-handoff doctor` warn with that reason.
+# Opt in to a third reviewer, `codex exec review` of the same range, for a
+# repository the ChatGPT Codex connector cannot read (needs `security`):
+#   reviewers: [quality, security, codex-local]
 audit:
   reviewers: [quality, security]
   # security_provider: claude   # claude | codex | antigravity; unset = auto
