@@ -6,6 +6,18 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `publish.wait_for_reviewers` accepts `codex-local` for a repository the
+  ChatGPT Codex connector cannot read. In `pr` mode with `auto_merge`, the
+  dispatcher runs `codex exec --sandbox read-only review --base
+  <remote>/<base_branch>` on the pushed head commit, reads the findings from
+  its final message, and posts each one to the pull request as an inline
+  review comment (on its file when GitHub refuses the line), plus a summary
+  comment. Every finding counts, whatever its priority. Findings take the
+  usual correction round; a failed or timed-out run is run once more, then
+  `review_stall_action` applies, and a usage limit is never retried. A final
+  message that lists review comments the dispatcher cannot read is a failed
+  review, never a clean one. `codex` and `codex-local` cannot be listed
+  together. New module `llm_handoff/codex_review.py`.
 - `llm-handoff doctor` now runs a warning-only verification preflight
   (ACTIVE-3) when the live handoff routes to `backend` or `frontend`. The
   reusable `doctor.check_verification_preflight(config, handoff_content)`
