@@ -31,6 +31,34 @@ planner:
   # Missing verification specificity.
   - pattern: "\\b(run relevant tests|write tests for this|verify as appropriate)\\b"
     failure_mode: "planner omitted concrete verification command"
+  # Stop instruction for a test outside Files in scope. Tests that assert the
+  # behavior a story changes belong in Files in scope. Two orders: "stop if a
+  # test outside ... must change" and "if a test outside ... must change, stop".
+  # A quoted stop word does not match. Neither does a stop word with a
+  # negation or prohibition ("not", "never", "n't", "prohibit", ...) anywhere
+  # earlier in its clause, so policy text such as "Never write an instruction
+  # to stop because ..." is not flagged. Each branch starts at a line start or
+  # after "." or ";" and allows no negation word before the stop word; the
+  # escaped line breaks below join the pattern without spaces.
+  - pattern: "\
+      (?:^|[.;])\
+      (?:(?!\\b(?:not|never|no|nor|cannot|without|avoid\\w*|prohibit\\w*|forbid\\w*|forbade)\\b|n't\\b)[^.;\\n])*?\
+      (?<!['\"`])\\b(stop|halt|pause|abort)\\b\
+      [^.;\\n]{0,60}?\\b(if|when|whenever|because|once)\\b\
+      [^.;\\n]{0,30}?\\btests?\\b[^.;\\n]{0,40}?\\boutside\\b\
+      [^.;\\n]{0,40}?\\b(must|needs?|has to|have to|requires?)\\b\
+      [^.;\\n]{0,20}?\\b(chang|updat|edit|modif)\\w*\
+      |\
+      (?:^|[.;])\
+      (?:(?!\\b(?:not|never|no|nor|cannot|without|avoid\\w*|prohibit\\w*|forbid\\w*|forbade)\\b|n't\\b)[^.;\\n])*?\
+      \\b(if|when|whenever)\\b\
+      (?:(?!\\b(?:not|never|no|nor|cannot|without|avoid\\w*|prohibit\\w*|forbid\\w*|forbade)\\b|n't\\b)[^.;\\n]){0,30}?\\btests?\\b\
+      (?:(?!\\b(?:not|never|no|nor|cannot|without|avoid\\w*|prohibit\\w*|forbid\\w*|forbade)\\b|n't\\b)[^.;\\n]){0,40}?\\boutside\\b\
+      (?:(?!\\b(?:not|never|no|nor|cannot|without|avoid\\w*|prohibit\\w*|forbid\\w*|forbade)\\b|n't\\b)[^.;\\n]){0,40}?\\b(must|needs?|has to|have to|requires?)\\b\
+      (?:(?!\\b(?:not|never|no|nor|cannot|without|avoid\\w*|prohibit\\w*|forbid\\w*|forbade)\\b|n't\\b)[^.;\\n]){0,20}?\\b(chang|updat|edit|modif)\\w*\
+      (?:(?!\\b(?:not|never|no|nor|cannot|without|avoid\\w*|prohibit\\w*|forbid\\w*|forbade)\\b|n't\\b)[^.;\\n]){0,30}?\
+      (?<!['\"`])\\b(stop|halt|pause|abort)\\b"
+    failure_mode: "planner told the implementer to stop for a test outside Files in scope"
 
 tpm:
   # Vague assignment language in a routine story pick.

@@ -469,6 +469,30 @@ def test_verify_work_claim_passes_for_in_scope_commit_at_head(tmp_path: Path) ->
     assert result.verification_runs[0].exit_code == 0
 
 
+def test_verify_work_claim_accepts_new_test_under_tests_directory_scope(
+    tmp_path: Path,
+) -> None:
+    # A story that changes behavior lists `tests/`, so a new test file the
+    # implementer adds there is in scope without naming it in advance.
+    assignment = _assignment(files_in_scope="src/app.py, tests/")
+    _init_repo(tmp_path, assignment)
+    state = capture_pre_dispatch_state(tmp_path)
+    _write(tmp_path / "src" / "app.py", "VALUE = 2\n")
+    _write(
+        tmp_path / "tests" / "test_value_two.py",
+        "def test_value_two():\n    assert True\n",
+    )
+    head = _commit_all(tmp_path, "set value and add test")
+    _write(tmp_path / HANDOFF_RELATIVE_PATH, _claim(head))
+
+    result = _verify(tmp_path, assignment=assignment, claim=_claim(head), state=state)
+
+    assert result.errors == ()
+    assert result.passed
+    assert result.changed_files == ("src/app.py", "tests/test_value_two.py")
+    assert _outcomes(result)["diff_scope"] == "PASS"
+
+
 def test_verify_work_claim_rejects_pre_existing_commit_as_scope_sha(
     tmp_path: Path,
 ) -> None:

@@ -14,8 +14,9 @@ history.
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
   preflight in `doctor`) is approved at `2de1b44`. ACTIVE-4 (verification
-  preflight in the dispatcher) is implemented and awaits audit; ACTIVE-5
-  through ACTIVE-8 remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
+  preflight in the dispatcher) is approved at `d77b61f` and merged in PR #276
+  (`f7625f8`). ACTIVE-5 (test scope policy) is implemented and awaits audit;
+  ACTIVE-6 through ACTIVE-8 remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
   merged in PR #272 (`4e380f9`).
 - **Parked Epic:** None.
 - **Other Open Epics:** LOOSE-ENDS (epic 22) is unblocked and needs no
@@ -246,7 +247,9 @@ the `(was ...)` notes give the old IDs. None had started.
   already checked. PR #276 review round 1: the cycle check now covers the
   role the cycle dispatches (operator `@backend`/`@frontend` overrides
   included), the startup skip applies only to the same role and content,
-  and manual frontend runs are not checked.
+  and manual frontend runs are not checked. Approved 2026-10-22 at
+  `d77b61f36fbc03295bb7601878e06629c4a367d1` and merged in PR #276
+  (`f7625f838f14d320c530f9ac65bd87bfeac5ee02`).
 - ACTIVE-5 (was ACTIVE-3): Test scope policy. In
   `docs/handoff/PLANNER_HANDOFF_PROMPT.md` (the Work Packet section, ~lines
   78-150) and the handbook: for a story that changes behaviour, tests that
@@ -267,7 +270,15 @@ the `(was ...)` notes give the old IDs. None had started.
   accepts `tests/` as a Files in scope entry and the gate treats a new file
   under it as in scope (`tests/test_work_claim.py`, next to the parser tests
   at ~line 301), and `tests/test_rationalization_detector.py` catches the
-  phrase.
+  phrase. Grooming (2026-10-22): the rule is mirrored into the four
+  `examples/reference-workflow/` copies (handbook, planner prompt, Codex
+  planner skill, `.agents/agents/planner.md`); the existing parser test
+  (`test_parse_work_packet_extracts_scope_and_command`, already `tests/`) and
+  dispatcher-commit test for new files under a directory entry are reused,
+  and one `verify_work_claim` case adds a new test under `tests/`. The
+  pattern stays advisory with existing status gating; no assignment-time
+  detector activation. Progress: implemented 2026-10-22, awaiting audit;
+  the handbook carries a Tests In Files In Scope section.
 - ACTIVE-6 (was part of ACTIVE-4): Environment refusal bullet and validator
   warning. An implementer that hands back `blocked_implementation_failure`
   for an environment reason writes one bullet in the handback body,
