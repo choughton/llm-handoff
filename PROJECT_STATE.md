@@ -18,8 +18,10 @@ history.
   through ACTIVE-8 remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
   merged in PR #272 (`4e380f9`).
 - **Parked Epic:** None.
-- **Other Open Epics:** ESCALATION-RECONCILE still waits on its trigger,
-  WORK-INTAKE needs a design check, and LINEAR-SWITCH has low urgency.
+- **Other Open Epics:** LOOSE-ENDS (epic 22) is unblocked and needs no
+  operator input, so it is the epic to work while ACTIVE-PLANNER is parked at
+  ACTIVE-8; ESCALATION-RECONCILE still waits on its trigger, WORK-INTAKE
+  needs a design check, and LINEAR-SWITCH has low urgency.
 - **Epic Awaiting Close:** None.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
