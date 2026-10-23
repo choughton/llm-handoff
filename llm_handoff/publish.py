@@ -1019,19 +1019,22 @@ def publish_story(
             )
     stall_merge = False
     if review is not None and review.reviewers:
-        verdict = _wait_for_reviewers(
-            repo_root=repo_root,
-            state=state,
-            gh_command=gh_command,
-            review=review,
-            requested_at=requested_at,
-            url=url,
-            log=log,
-            sleep=sleep,
-            review_prompt=review_prompt,
-            remote=remote,
-            handoff_content=handoff_content,
-        )
+        try:
+            verdict = _wait_for_reviewers(
+                repo_root=repo_root,
+                state=state,
+                gh_command=gh_command,
+                review=review,
+                requested_at=requested_at,
+                url=url,
+                log=log,
+                sleep=sleep,
+                review_prompt=review_prompt,
+                remote=remote,
+                handoff_content=handoff_content,
+            )
+        except _ReviewPostError as exc:
+            return _stop(log, str(exc))
         stall_merge = verdict is _STALL_MERGE
         if verdict is not None and not stall_merge:
             return verdict
@@ -3647,6 +3650,14 @@ def _handoff_route(handoff_content: str) -> tuple[str | None, str | None]:
     return normalize_next_agent_value(frontmatter.next_agent), story_id
 
 
+# GitHub's answer when it will not attach a review comment where asked.
+_VALIDATION_FAILED_RE = re.compile(r"\bHTTP 422\b|Validation Failed", re.IGNORECASE)
+
+
+class _ReviewPostError(Exception):
+    """A ``gh`` call to post a local review's findings failed outright."""
+
+
 # What _wait_for_reviewers returns to merge without a Codex review under
 # ``review_stall_action: merge``.
 _STALL_MERGE = PublishOutcome(message="merge without a Codex review")
@@ -3777,7 +3788,19 @@ def _wait_for_reviewers(
         if state.review_retry_head == head_sha
         else None
     )
-    result = wait(retry_at)
+    if review.local and retry_at is not None:
+        # The local retry already ran (or was cut off) before the restart, and
+        # its result was not saved: running it again would exceed the one
+        # retry per head commit. The stall action or the operator decides.
+        result = ReviewResult(
+            "failed",
+            detail=(
+                f"the retried local Codex review of {head_sha[:12]} did not "
+                "finish before the dispatcher stopped"
+            ),
+        )
+    else:
+        result = wait(retry_at)
     problem = ""
     if unfinished(result) and retry_at is None:
         retry_at, problem = request_again()
@@ -3947,7 +3970,9 @@ def _run_local_review(
     head commit, so the correction round can reply to and resolve its
     thread. A finding GitHub will not attach to its line goes on its file;
     one it will not attach at all is listed in the summary comment and has
-    no thread. A summary comment records every finished review.
+    no thread. A summary comment records every finished review. Any other
+    failure to post a finding raises ``_ReviewPostError``, which stops the
+    publish: a finding without its thread would not block the merge.
     """
 
     log(
@@ -3991,10 +4016,15 @@ def _run_local_review(
             local,
             _without_mentions(local.comment_body() + "\n\n" + note),
         )
+        if isinstance(posted, str):
+            raise _ReviewPostError(
+                f"could not post the local Codex review finding at "
+                f"{local.location()} on pull request #{pr_number}: {posted}"
+            )
         if posted is None:
             unattached.append(local)
-        comment_id = posted.get("id") if posted is not None else None
-        html_url = posted.get("html_url") if posted is not None else None
+        comment_id = posted.get("id") if posted else None
+        html_url = posted.get("html_url") if posted else None
         findings.append(
             ReviewFinding(
                 body=local.comment_body(),
@@ -4048,11 +4078,13 @@ def _post_review_comment(
     head_sha: str,
     finding: LocalFinding,
     body: str,
-) -> dict[str, object] | None:
+) -> dict[str, object] | str | None:
     """Post ``body`` as a review comment on the finding's line, else its file.
 
-    Returns GitHub's response, or ``None`` when neither is accepted (a line
-    outside the diff, or a path the pull request does not change).
+    Returns GitHub's response; ``None`` when GitHub refuses both as invalid
+    (HTTP 422: a line outside the diff, or a path the pull request does not
+    change); or the error of any other failure, such as an authentication,
+    permission, rate-limit, or server error.
     """
 
     if not finding.path:
@@ -4076,7 +4108,9 @@ def _post_review_comment(
     for extra in attempts:
         posted = _run([*base, *extra], repo_root, _GH_TIMEOUT_SECONDS)
         if posted.returncode != 0:
-            continue
+            if _VALIDATION_FAILED_RE.search(f"{posted.stderr}\n{posted.stdout}"):
+                continue
+            return _first_line(posted)
         try:
             data = json.loads(posted.stdout or "")
         except ValueError:

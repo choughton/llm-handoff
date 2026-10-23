@@ -171,6 +171,8 @@ elif args[:3] == ["api", "--method", "POST"]:
             if flag in ("-f", "-F"):
                 key, _, field = value.partition("=")
                 fields.setdefault(key, field)
+        if state.get("fail_review_comment"):
+            sys.exit("HTTP 403: Resource not accessible by integration")
         if "line" in fields and state.get("fail_line_comment"):
             sys.exit("HTTP 422: pull_request_review_thread.line must be part of the diff")
         posted = state.setdefault("posted", [])
@@ -7034,6 +7036,44 @@ def test_codex_local_failed_review_runs_once_more_then_pauses(
     )
 
 
+def test_codex_local_restart_after_an_interrupted_retry_runs_no_third_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_handoff import publish as publish_module
+
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    gate, codex_state = _local_gate(tmp_path, {"exit": 1, "stderr": "stream error"})
+    _entries, log = _logs()
+    real_review = publish_module._run_local_review
+    reviews: list[int] = []
+
+    def interrupted_retry(**kwargs):
+        # The operator stops the dispatcher while the retry runs.
+        reviews.append(1)
+        if len(reviews) == 2:
+            raise KeyboardInterrupt
+        return real_review(**kwargs)
+
+    monkeypatch.setattr(publish_module, "_run_local_review", interrupted_retry)
+    with pytest.raises(KeyboardInterrupt):
+        _publish_with_review(repo, gh, log, gate=gate)
+    monkeypatch.setattr(publish_module, "_run_local_review", real_review)
+    state = json.loads((repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert state["review_retry_head"] == head
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    # The retry for this head is on record, so the restart runs no review.
+    assert outcome.stop is True
+    assert "did not finish before the dispatcher stopped" in outcome.message
+    assert len(_local_runs(codex_state)) == 1
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
 def test_codex_local_usage_limit_is_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7051,4 +7091,29 @@ def test_codex_local_usage_limit_is_not_retried(
     assert outcome.stop is True
     assert "usage limit" in outcome.message
     assert len(_local_runs(codex_state)) == 1
+    assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]
+
+
+def test_codex_local_stops_when_a_finding_cannot_be_posted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _remote, gh, env = _with_remote(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _start_story(repo)
+    path = tmp_path / "gh_state.json"
+    path.write_text(json.dumps({"fail_review_comment": True}), encoding="utf-8")
+    gate, codex_state = _local_gate(tmp_path, {"message": _local_finding(repo)})
+    _entries, log = _logs()
+
+    outcome = _publish_with_review(repo, gh, log, gate=gate)
+
+    # Only GitHub refusing the line (HTTP 422) falls back; a permission error
+    # stops the publish instead of saving a finding without its thread.
+    assert outcome.stop is True and outcome.exit_code == 1
+    assert outcome.handoff is None
+    assert "could not post the local Codex review finding" in outcome.message
+    assert "HTTP 403" in outcome.message
+    assert len(_local_runs(codex_state)) == 1
+    assert _all_posted(tmp_path) == []
     assert ["pr", "merge"] not in [call[:2] for call in _gh_calls(tmp_path)]

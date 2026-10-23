@@ -16,8 +16,11 @@ This project follows a simple pre-release changelog until the first public tag.
   usual correction round; a failed or timed-out run is run once more, then
   `review_stall_action` applies, and a usage limit is never retried. A final
   message that lists review comments the dispatcher cannot read is a failed
-  review, never a clean one. `codex` and `codex-local` cannot be listed
-  together. New module `llm_handoff/codex_review.py`.
+  review, never a clean one. A restart after an interrupted retry runs no
+  third review of the same commit, and a failure to post a finding other
+  than GitHub refusing its position (HTTP 422) stops the publish. `codex`
+  and `codex-local` cannot be listed together. New module
+  `llm_handoff/codex_review.py`.
 - The dispatcher now runs the ACTIVE-3 verification preflight itself
   (ACTIVE-4): once at startup on the handoff on disk, and in every cycle that
   dispatches `backend` or `frontend` on the assignment that cycle dispatches,

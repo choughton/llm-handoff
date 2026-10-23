@@ -1703,7 +1703,15 @@ Differences from the GitHub review:
 - A run that exits non-zero, or whose message cannot be read, is a failed
   review. The retry runs `codex exec review` once more instead of posting
   `@codex review`; after that, `review_stall_action` applies as above. A
-  usage limit is never retried or merged without a review.
+  usage limit is never retried or merged without a review. When the
+  dispatcher is stopped during the retry or at the operator prompt, the next
+  start runs no third review of that commit: it treats the retry as
+  unfinished and goes straight to `review_stall_action`.
+- Only GitHub refusing a comment's position (HTTP 422) falls back to the
+  file or the summary comment. Any other failure to post a finding, such as
+  an authentication, permission, rate-limit, or server error, stops the
+  publish with the error and leaves the pull request open, because a finding
+  without its review thread would not block the merge.
 - The review runs in Codex's read-only sandbox, with the agent environment
   allowlist and no `OPENAI_API_KEY`, so it cannot run tests that need to
   write files. Like the audit reviewers, it is an LLM reading
