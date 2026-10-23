@@ -2797,6 +2797,50 @@ def test_planner_redispatch_after_refusal_stays_silent(
     assert _redispatch_warnings(result) == []
 
 
+# ACTIVE-7: the planner's gate-verified path revises the Work Packet's Context
+# with the ACTIVE-1 handback instruction and keeps the Verification command.
+_GATE_VERIFIED_WORK_PACKET = _REFUSED_WORK_PACKET.replace(
+    "- **Context:** Preserve the existing `WidgetError` contract.\n",
+    "- **Context:** Preserve the existing `WidgetError` contract. The work-claim "
+    "gate is on and runs the Verification command itself. If the Verification "
+    "command is refused again in the current turn, hand back "
+    "`status: ready_for_review` under the handbook's Gate-Verified Handback: "
+    "keep all five Verification Evidence fields, start `Commands run` with "
+    "`deferred to the work-claim gate:` and quote the refusal, and name the "
+    "refused command and what stopped it in `Output summary`. A failing test "
+    "is not an environment refusal.\n",
+)
+
+
+@pytest.mark.parametrize("role", ["backend", "frontend"])
+def test_planner_gate_verified_work_packet_validates_without_redispatch_warning(
+    role: str,
+) -> None:
+    assert _GATE_VERIFIED_WORK_PACKET != _REFUSED_WORK_PACKET
+    assert (
+        "- **Verification command:** python -m pytest tests/test_bar.py -q\n"
+        in _GATE_VERIFIED_WORK_PACKET
+    )
+    handback = _refusal_handback(producer=role)
+
+    revised = validator.validate_handoff_text(
+        _redispatch(role, work_packet=_GATE_VERIFIED_WORK_PACKET),
+        "planner",
+        dispatched_handoff_content=handback,
+    )
+    unchanged = validator.validate_handoff_text(
+        _redispatch(role), "planner", dispatched_handoff_content=handback
+    )
+
+    assert revised.errors == []
+    assert revised.routing_instruction == role
+    assert _redispatch_warnings(revised) == []
+    # The unchanged packet still warns, and the warning stays advisory.
+    assert len(_redispatch_warnings(unchanged)) == 1
+    assert unchanged.errors == []
+    assert unchanged.routing_instruction == role
+
+
 def test_planner_redispatch_after_refusal_needs_the_dispatched_handoff() -> None:
     # Without the handoff the planner read, prior_handoff_content (the
     # story-list baseline) is never used for the warning.

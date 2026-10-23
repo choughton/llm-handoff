@@ -17,8 +17,9 @@ history.
   preflight in the dispatcher) is approved at `d77b61f` and merged in PR #276
   (`f7625f8`). ACTIVE-5 (test scope policy) is approved at `98c3118` and
   merged in PR #280 (`0953fc3`). ACTIVE-6 (environment refusal bullet and
-  validator warning) is implemented and awaits audit; ACTIVE-7 and ACTIVE-8
-  remain. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
+  validator warning) is approved at `527b1bb` and merged in PR #282
+  (`383a1b2`). ACTIVE-7 (no pointless re-dispatch, planner side) is
+  implemented and awaits audit; ACTIVE-8 remains. TIDY (epic 19) closed with TIDY-13, approved at `7816ae6` and
   merged in PR #272 (`4e380f9`).
 - **Parked Epic:** None.
 - **Other Open Epics:** LOOSE-ENDS (epic 22) is unblocked and needs no
@@ -308,10 +309,12 @@ the `(was ...)` notes give the old IDs. None had started.
   validator argument is `previous_agent`, not the stale `previous_route`
   reference above; the story still checks that the prior content is the
   actual implementer handback rather than assuming the story baseline
-  supplies it. Progress: implemented 2026-10-22, awaiting audit; the
+  supplies it. Progress: implemented 2026-10-22; the
   validator takes the handoff the planner was dispatched on as
   `dispatched_handoff_content`, separate from the story-list baseline, and
   the orchestrator passes it on post-dispatch validation and producer repair.
+  Approved 2026-10-22 at `527b1bbf272c8dedc57a1d405df9527f18ae741d` and
+  merged in PR #282 (`383a1b23eb43a59dfc9e95cb664ed7f1e345ef77`).
 - ACTIVE-7 (was part of ACTIVE-4): No pointless re-dispatch, planner side.
   When the planner receives `blocked_implementation_failure` whose handback
   carries the ACTIVE-6 bullet, it must not re-dispatch the same role with an
@@ -320,7 +323,19 @@ the `(was ...)` notes give the old IDs. None had started.
   config line to add, such as `interpreter_grants: true`. Encode this in the
   planner prompt's handback review, the handbook's Escalation Protocol
   (`docs/handoff/HANDBOOK.md` ~lines 125-142), and the ACTIVE-5 planner
-  helper files outside `.claude/`.
+  helper files outside `.claude/`. Grooming (2026-10-22): the rule is
+  mirrored into the four `examples/reference-workflow/` copies (handbook,
+  planner prompt, Codex planner skill, `.agents/agents/planner.md`), and
+  verification focuses on both decision paths: the gate-verified path
+  revises the Work Packet's Context or Objective with the ACTIVE-1 handback
+  instruction and keeps the Verification command, and the `user` path names
+  a remedy matching the refusal category. The ACTIVE-6 warning stays
+  advisory and is reused. Progress: implemented 2026-10-22, awaiting audit;
+  the handbook's Escalation Protocol carries the shared rule, each planner
+  file a Handback Review section, `tests/ported/test_handoff_docs.py` checks
+  all eight files and both paths, and `tests/ported/test_validator.py` shows
+  the revised Work Packet validates without `planner_redispatch_after_refusal`
+  while the unchanged one still warns.
 - ACTIVE-8: Operator edit of the Claude helper files (routes to `user`).
   Claude roles cannot write `.claude/`, so the planner writes the exact
   edits into the handoff, as GEM-5c did: the ACTIVE-1 and ACTIVE-6 wording in
@@ -419,6 +434,13 @@ notes below; the remaining letters are unchanged.
 - The CHAT-26 audit finding (Windows `HANDOFF.md` ACL) is LOOSE-3.
 
 - The TIDY-15 audit finding (report-only validator Linear writes) is LOOSE-4.
+
+- From the ACTIVE-6 audit (medium, security, non-blocking): an implementer's
+  `Environment refusal` bullet quotes the refusal text, which can carry
+  credentials or sensitive command arguments into `HANDOFF.md`. A future
+  bounded change must require redaction in the implementer prompts and their
+  helper and template copies, while keeping the refusal category and a
+  sanitized diagnostic. Not yet scheduled; no epic is opened for it here.
 
 ## Notes
 

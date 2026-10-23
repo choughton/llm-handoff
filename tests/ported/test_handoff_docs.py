@@ -284,6 +284,117 @@ def test_architecture_documents_subagents_and_circuit_breaker() -> None:
     assert "THREE_FIX_CIRCUIT_BREAKER" in content
 
 
+# ACTIVE-7: after an implementer's environment-refused handback, the planner
+# never re-sends an unchanged Work Packet. The handbook carries the shared rule
+# in its Escalation Protocol; each planner file carries the decision in a
+# Handback Review section. Root files and their reference-workflow copies.
+REFUSAL_REVIEW_PLANNER_FILES = (
+    "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
+    ".codex/skills/llm-handoff-planner/SKILL.md",
+    ".agents/agents/planner.md",
+)
+REFUSAL_REVIEW_ROOTS = (REPO_ROOT, REPO_ROOT / "examples" / "reference-workflow")
+REFUSAL_REVIEW_FILES = [
+    pytest.param(root / relative_path, id=f"{root.name}:{relative_path}")
+    for root in REFUSAL_REVIEW_ROOTS
+    for relative_path in ("docs/handoff/HANDBOOK.md", *REFUSAL_REVIEW_PLANNER_FILES)
+]
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _section(content: str, heading: str) -> str:
+    start = content.index(f"\n{heading}\n")
+    end = content.find("\n## ", start + len(heading) + 2)
+    return content[start : end if end != -1 else len(content)]
+
+
+def _refusal_review_text(path: Path) -> str:
+    content = path.read_text(encoding="utf-8")
+    if path.name == "HANDBOOK.md":
+        return _flat(_section(content, "## Escalation Protocol"))
+    return _flat(_section(content, "## Handback Review"))
+
+
+@pytest.mark.parametrize("path", REFUSAL_REVIEW_FILES)
+def test_refusal_review_states_trigger_and_forbids_unchanged_redispatch(
+    path: Path,
+) -> None:
+    text = _refusal_review_text(path)
+
+    assert "`status: blocked_implementation_failure`" in text
+    assert "`Environment refusal` bullet" in text
+    assert "the same role an unchanged Work Packet" in text
+    assert "Never" in text
+
+
+@pytest.mark.parametrize("path", REFUSAL_REVIEW_FILES)
+def test_refusal_review_gate_verified_path(path: Path) -> None:
+    text = _refusal_review_text(path)
+
+    assert "Gate-verified re-dispatch." in text
+    assert "the refused command is the Work Packet's Verification command" in text
+    assert "`enforce_work_packet: true`" in text
+    assert "dispatcher commit mode always runs the gate" in text
+    assert "Context or Objective" in text
+    assert "Gate-Verified Handback" in text
+    assert "Changing only the `reason` or the Next Step" in text
+    assert "Keep the Verification command exactly as written" in text
+    assert "current turn" in text
+    assert "all five Verification Evidence fields" in text
+    assert "`Commands run` beginning `deferred to the work-claim gate:`" in text
+    assert "quoting the refusal" in text
+    assert "`Output summary`" in text
+    assert "A failing test is not an environment refusal" in text
+    assert "PASS evidence for a command that did not pass" in text
+
+
+@pytest.mark.parametrize("path", REFUSAL_REVIEW_FILES)
+def test_refusal_review_user_path_names_a_matching_remedy(path: Path) -> None:
+    text = _refusal_review_text(path)
+
+    assert "Route to `user`." in text
+    assert "`enforce_work_packet: false`" in text
+    assert "cannot address the blocker" in text
+    assert "`status: escalate_to_user`" in text
+    assert "`interpreter_grants: true`" in text
+    assert "`allowed_tools` entry" in text
+    # The allowlist remedy is never offered for a missing binary or no TTY.
+    assert "`missing binary`" in text
+    assert "`no TTY`" in text
+    assert "install or put on `PATH`" in text
+    assert "interactive step the operator must run" in text
+    assert "allowlist setting" in text
+
+
+def test_refusal_review_planner_sections_point_at_the_handbook_rule() -> None:
+    handbook = (HANDOFF_DIR / "HANDBOOK.md").read_text(encoding="utf-8")
+    escalation = _section(handbook, "## Escalation Protocol")
+
+    assert "**Environment refusal handbacks.**" in escalation
+    assert "`planner_redispatch_after_refusal`" in escalation
+    for root in REFUSAL_REVIEW_ROOTS:
+        for relative_path in REFUSAL_REVIEW_PLANNER_FILES:
+            text = _refusal_review_text(root / relative_path)
+            assert (
+                "handbook's Escalation Protocol rule for environment refusal "
+                "handbacks" in text
+            ), relative_path
+
+
+@pytest.mark.parametrize(
+    "relative_path", ("docs/handoff/HANDBOOK.md", *REFUSAL_REVIEW_PLANNER_FILES)
+)
+def test_refusal_review_root_and_reference_copies_match(relative_path: str) -> None:
+    root, reference = REFUSAL_REVIEW_ROOTS
+
+    assert _refusal_review_text(root / relative_path) == _refusal_review_text(
+        reference / relative_path
+    )
+
+
 def test_contributing_documents_review_feedback() -> None:
     content = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
 

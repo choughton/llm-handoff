@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The planner no longer sends an implementer the same unchanged Work Packet
+  after a `blocked_implementation_failure` handback with an
+  `Environment refusal` bullet (ACTIVE-7). The handbook's Escalation Protocol
+  states the shared rule, and the planner prompt, the Codex planner skill,
+  and `.agents/agents/planner.md`, with their reference-workflow copies, add
+  a Handback Review section with two paths: when the Verification command
+  was refused and the work-claim gate is on, revise the Work Packet's
+  Context or Objective to instruct the gate-verified handback and keep the
+  Verification command as written; otherwise route to `user` with a remedy
+  matching the refusal (`interpreter_grants: true` or an exact allowlist
+  rule for a permission rule, an install for a missing binary, an
+  interactive step for no TTY). Instructions only; the validator and
+  dispatcher are unchanged.
 - An implementer that hands back `blocked_implementation_failure` because of
   the environment now adds one `- **Environment refusal:** <permission rule |
   missing binary | no TTY>: <the refusal text, quoted>` bullet (ACTIVE-6);
