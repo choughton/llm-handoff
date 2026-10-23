@@ -13090,16 +13090,20 @@ def _log_startup_banner(config: DispatchConfig, log: LogFn) -> None:
     _log(
         log,
         "INFO",
-        "backend session:      MANAGED RESUME (persisted thread id)"
+        "backend session:      MANAGED RESUME (persisted thread id; "
+        f"source: {config.backend_resume_source})"
         if config.backend_resume_enabled
-        else "backend session:      STATELESS (new session per dispatch)",
+        else "backend session:      STATELESS (new session per dispatch; "
+        f"source: {config.backend_resume_source})",
     )
     _log(
         log,
         "INFO",
-        "Planner session:    MANAGED RESUME (in-memory session id)"
+        "Planner session:    MANAGED RESUME (in-memory session id; "
+        f"source: {config.planner_resume_source})"
         if config.planner_resume_enabled
-        else "Planner session:    STATELESS (new session per dispatch)",
+        else "Planner session:    STATELESS (new session per dispatch; "
+        f"source: {config.planner_resume_source})",
     )
     if config.audit.security_enabled:
         _log(

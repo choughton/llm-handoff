@@ -1868,3 +1868,253 @@ def test_completed_work_path_must_differ_from_the_other_state_files(
             repo_root=tmp_path,
             **{key: Path("STATE.md"), "completed_work_path": Path("STATE.md")},
         )
+
+
+# LOOSE-1: resume precedence is CLI flag (caller override) > top-level
+# <role>_resume > explicit agents.<role>.resume > default True.
+
+RESUME_ROLES = ("backend", "planner")
+
+
+def _load_resume_config(
+    tmp_path: Path, text: str, **overrides: bool | None
+) -> DispatchConfig:
+    config_path = tmp_path / "dispatch_config.yaml"
+    config_path.write_text(text, encoding="utf-8")
+    return load_dispatch_config(
+        repo_root=tmp_path, config_path=config_path, **overrides
+    )
+
+
+def _agents_with(role: str, agent: object) -> dict[str, object]:
+    agents: dict[str, object] = dict(config_module._default_agent_configs())
+    agents[role] = agent
+    return agents
+
+
+def _resume_state(loaded: DispatchConfig, role: str) -> tuple[bool, str]:
+    return (
+        getattr(loaded, f"{role}_resume"),
+        getattr(loaded, f"{role}_resume_source"),
+    )
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_top_level_resume_false_applies_without_cli_flags(
+    tmp_path: Path, role: str
+) -> None:
+    loaded = _load_resume_config(tmp_path, f"{role}_resume: false\n")
+
+    assert _resume_state(loaded, role) == (False, f"{role}_resume")
+    assert getattr(loaded, f"{role}_resume_enabled") is False
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_positive_cli_flag_overrides_top_level_false(
+    tmp_path: Path, role: str
+) -> None:
+    loaded = _load_resume_config(
+        tmp_path, f"{role}_resume: false\n", **{f"{role}_resume": True}
+    )
+
+    assert _resume_state(loaded, role) == (True, f"--use-{role}-resume")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_negative_cli_flag_overrides_top_level_true(
+    tmp_path: Path, role: str
+) -> None:
+    loaded = _load_resume_config(
+        tmp_path, f"{role}_resume: true\n", **{f"{role}_resume": False}
+    )
+
+    assert _resume_state(loaded, role) == (False, f"--no-{role}-resume")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_cli_flags_override_explicit_role_resume(tmp_path: Path, role: str) -> None:
+    text = f"agents:\n  {role}:\n    resume: false\n"
+
+    loaded = _load_resume_config(tmp_path, text, **{f"{role}_resume": True})
+
+    assert _resume_state(loaded, role) == (True, f"--use-{role}-resume")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_explicit_role_resume_false_applies_when_nothing_higher_is_set(
+    tmp_path: Path, role: str
+) -> None:
+    loaded = _load_resume_config(
+        tmp_path, f"agents:\n  {role}:\n    resume: false\n"
+    )
+
+    assert _resume_state(loaded, role) == (False, f"agents.{role}.resume")
+    assert loaded.agents[role].resume is False
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+@pytest.mark.parametrize(("top_level", "role_level"), [(False, True), (True, False)])
+def test_top_level_resume_wins_over_role_resume(
+    tmp_path: Path, role: str, top_level: bool, role_level: bool
+) -> None:
+    text = (
+        f"{role}_resume: {str(top_level).lower()}\n"
+        f"agents:\n  {role}:\n    resume: {str(role_level).lower()}\n"
+    )
+
+    loaded = _load_resume_config(tmp_path, text)
+
+    assert _resume_state(loaded, role) == (top_level, f"{role}_resume")
+    # The top-level setting never rewrites the role's AgentConfig.resume.
+    assert loaded.agents[role].resume is role_level
+
+
+@pytest.mark.parametrize("text", ["", "handoff_path: HANDOFF.md\n"])
+def test_absent_resume_keys_default_to_true(tmp_path: Path, text: str) -> None:
+    loaded = _load_resume_config(tmp_path, text)
+
+    for role in RESUME_ROLES:
+        assert _resume_state(loaded, role) == (True, "default")
+
+
+def test_absent_config_file_defaults_resume_to_true(tmp_path: Path) -> None:
+    loaded = load_dispatch_config(repo_root=tmp_path)
+
+    for role in RESUME_ROLES:
+        assert _resume_state(loaded, role) == (True, "default")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_null_resume_keys_count_as_absent(tmp_path: Path, role: str) -> None:
+    text = f"{role}_resume: null\nagents:\n  {role}:\n    resume: null\n"
+
+    loaded = _load_resume_config(tmp_path, text)
+
+    assert _resume_state(loaded, role) == (True, "default")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_provider_default_resume_false_is_not_an_explicit_role_setting(
+    tmp_path: Path, role: str
+) -> None:
+    loaded = _load_resume_config(
+        tmp_path, f"agents:\n  {role}:\n    provider: claude\n"
+    )
+
+    # The claude provider default is resume: false on the AgentConfig ...
+    assert loaded.agents[role].resume is False
+    # ... but it does not count as agents.<role>.resume for the runtime value.
+    assert _resume_state(loaded, role) == (True, "default")
+
+
+def test_antigravity_backend_provider_default_falls_through_to_default(
+    tmp_path: Path,
+) -> None:
+    loaded = _load_resume_config(
+        tmp_path, "agents:\n  backend:\n    provider: antigravity\n"
+    )
+
+    assert loaded.agents["backend"].resume is False
+    assert _resume_state(loaded, "backend") == (True, "default")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+@pytest.mark.parametrize("override", [True, False])
+def test_load_dispatch_config_caller_override_reports_flag_source(
+    tmp_path: Path, role: str, override: bool
+) -> None:
+    loaded = load_dispatch_config(
+        repo_root=tmp_path, **{f"{role}_resume": override}
+    )
+
+    flag = f"--use-{role}-resume" if override else f"--no-{role}-resume"
+    assert _resume_state(loaded, role) == (override, flag)
+    other = "planner" if role == "backend" else "backend"
+    assert _resume_state(loaded, other) == (True, "default")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_resume_source_is_not_a_config_file_key(tmp_path: Path, role: str) -> None:
+    with pytest.raises(ValueError, match=f"{role}_resume_source is not a dispatch"):
+        _load_resume_config(tmp_path, f"{role}_resume_source: default\n")
+
+
+def test_direct_dispatch_config_defaults_resume_to_true(tmp_path: Path) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path)
+
+    for role in RESUME_ROLES:
+        assert _resume_state(loaded, role) == (True, "default")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_direct_dispatch_config_top_level_false_is_a_real_setting(
+    tmp_path: Path, role: str
+) -> None:
+    loaded = DispatchConfig(repo_root=tmp_path, **{f"{role}_resume": False})
+
+    assert _resume_state(loaded, role) == (False, f"{role}_resume")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_direct_dispatch_config_explicit_agent_config_resume_is_a_fallback(
+    tmp_path: Path, role: str
+) -> None:
+    agent = config_module.AgentConfig(provider="codex", resume=False)
+
+    loaded = DispatchConfig(repo_root=tmp_path, agents=_agents_with(role, agent))
+
+    assert _resume_state(loaded, role) == (False, f"agents.{role}.resume")
+    assert loaded.agents[role].resume is False
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_direct_dispatch_config_agent_config_without_resume_is_not_explicit(
+    tmp_path: Path, role: str
+) -> None:
+    agent = config_module.AgentConfig(provider="claude")
+
+    loaded = DispatchConfig(repo_root=tmp_path, agents=_agents_with(role, agent))
+
+    assert loaded.agents[role].resume is None
+    assert _resume_state(loaded, role) == (True, "default")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_direct_dispatch_config_role_mapping_resume_is_a_fallback(
+    tmp_path: Path, role: str
+) -> None:
+    agents: dict[str, object] = {
+        name: agent.model_dump(exclude_none=True)
+        for name, agent in config_module._default_agent_configs().items()
+        if name != role
+    }
+    agents[role] = {"provider": "codex", "resume": False}
+
+    loaded = DispatchConfig.model_validate({"repo_root": tmp_path, "agents": agents})
+
+    assert _resume_state(loaded, role) == (False, f"agents.{role}.resume")
+
+
+@pytest.mark.parametrize("role", RESUME_ROLES)
+def test_direct_dispatch_config_top_level_wins_over_agent_config(
+    tmp_path: Path, role: str
+) -> None:
+    agent = config_module.AgentConfig(provider="codex", resume=False)
+
+    loaded = DispatchConfig(
+        repo_root=tmp_path,
+        agents=_agents_with(role, agent),
+        **{f"{role}_resume": True},
+    )
+
+    assert _resume_state(loaded, role) == (True, f"{role}_resume")
+    assert loaded.agents[role].resume is False
+
+
+def test_resolved_resume_source_survives_a_dump_round_trip(tmp_path: Path) -> None:
+    loaded = load_dispatch_config(repo_root=tmp_path, backend_resume=False)
+
+    again = DispatchConfig.model_validate(loaded.model_dump())
+
+    assert _resume_state(again, "backend") == (False, "--no-backend-resume")
+    assert _resume_state(again, "planner") == (True, "default")
