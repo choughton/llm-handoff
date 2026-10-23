@@ -6,6 +6,29 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `init --tracker linear` and `init --tracker none` now switch an initialized
+  repository between modes (LIN-14) instead of refusing it, after the LIN-13
+  safety check. A switch plans every file first and changes only the managed
+  tracker block of `dispatch_config.yaml`, the Linear blocks of `AGENTS.md`
+  and `docs/handoff/HANDBOOK.md` (with the tpm sections when `agents.tpm` is
+  set), and the Claude subagent `tools:` lines; the agents block, other
+  config, user text, and `HANDOFF.md` are kept. A round trip restores every
+  file byte for byte, including line endings, and a same-mode rerun changes
+  nothing. The planned config must pass the dispatcher's config validation.
+  Local edits are conflicts (exit 1, nothing written), and so is a switch to
+  none when other content follows a managed block, since a switch back adds
+  the block at the end of the file and could not restore its place; `--force`
+  leaves those files as they are, or replaces or removes a managed block, and
+  reports each one. On a switch to none it removes a Linear block that other
+  content follows, keeping that content, and removes a locally edited
+  handbook Linear block, which has no `tracker.provider` guard, so file mode
+  keeps no Linear instructions. It never resolves malformed tracker markers,
+  malformed or repeated handbook Linear markers on a switch to none, unmanaged
+  `tracker` key conflicts, or linked paths. `--provider` and `--verification-command` are
+  refused with `--tracker` on an initialized repository. `init` without
+  `--tracker` keeps the ordinary template update. `add_tracker_block` no
+  longer adds an extra blank line before the block when the config text lacks
+  a final newline.
 - Report-only validator launches in Linear mode now deny the configured MCP
   server's `save_comment` and `save_issue` explicitly through
   `--disallowedTools` (LOOSE-4), after the shared `WebFetch,WebSearch`

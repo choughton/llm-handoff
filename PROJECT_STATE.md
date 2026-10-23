@@ -16,7 +16,12 @@ history.
   (`7bfd742`): ACTIVE-PLANNER is parked on the operator, WORK-INTAKE needs a
   design check, and ESCALATION-RECONCILE waits on its trigger. LIN-11 is
   split into LIN-13 and LIN-14. LIN-13 (initialized-target safety preflight)
-  is implemented and in audit; LIN-14 and LIN-12 remain.
+  is approved at `d35f9de` (`d35f9de16b21a4452a6341623de9b7fe850e447c`).
+  LIN-14 (tracker-mode switching) is implemented and in PR #289; its PR
+  review fix (`--force` to none removes the handbook Linear block instead of
+  leaving unguarded Linear rules) and its audit fix (malformed or repeated
+  handbook Linear markers on a switch to none now refuse even with
+  `--force`) are in audit; LIN-12 remains.
 - **Parked Epic:** ACTIVE-PLANNER (epic 18). ACTIVE-1 (gate-verified
   handback) is approved at `9197913`. ACTIVE-2 (the same contract in the
   non-Claude helper files) is approved at `9486d3c`. ACTIVE-3 (verification
@@ -101,12 +106,14 @@ LINEAR-WORKFLOW is closed, so nothing blocks it.
   or whose configured handoff holds a `tracker_issue` lease, routes to an
   implementing or reviewing role, or cannot be read as between assignments.
   `--dry-run` and `--force` do not bypass it; the CLI exits 2 with one line.
-  Safe initialized targets keep the fresh-repo refusal for `--tracker linear`
-  until LIN-14. Status: implemented, in audit.
+  Status: approved at `d35f9de`.
 - LIN-14 (was LIN-11): `init --tracker linear` and `init --tracker none`
   switch an initialized repository between modes behind LIN-13's preflight;
   `--dry-run`; conflicts; `--force` reports what is left behind; a round trip
-  is byte-identical.
+  is byte-identical. Status: implemented in PR #289; review fix for
+  `--force` leaving the unguarded handbook Linear block in file mode, and
+  the audit fix refusing malformed or repeated handbook Linear markers on a
+  switch to none even with `--force`, in audit.
 - LIN-12: After `init --tracker linear`, print connector setup steps, the
   `doctor` command, and the probe command; add `docs/LINEAR.md`.
 

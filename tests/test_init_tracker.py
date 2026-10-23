@@ -15,7 +15,6 @@ from llm_handoff.init_workflow import (
     InitializedTargetError,
     InitWorkflowError,
     InvalidTrackerOptionsError,
-    TrackerRequiresFreshRepoError,
     TrackerUnsupportedMappingError,
     UnknownTrackerError,
     init_reference_workflow,
@@ -157,27 +156,23 @@ def test_cli_tracker_option_errors_exit_2_with_one_line(
         assert not any(tmp_path.iterdir())
 
 
-def test_cli_fresh_repo_refusal_exits_2(tmp_path: Path) -> None:
-    # A safe, valid initialized target still gets the fresh-repo refusal
-    # until switching an initialized repository is supported.
+def test_cli_switches_a_safe_initialized_repo_to_linear(tmp_path: Path) -> None:
     _init(tmp_path, provider="claude")
     before = _snapshot(tmp_path)
-    for extra in ((), ("--dry-run",)):
-        result = _invoke(
-            str(tmp_path),
-            "--tracker",
-            "linear",
-            "--tracker-team",
-            "ENG",
-            "--tracker-project",
-            "P",
-            *extra,
-        )
-        assert result.exit_code == 2, result.output
-        assert len(result.stderr.strip().splitlines()) == 1
-        assert "no dispatch_config.yaml yet" in result.stderr
-        assert "not supported yet" in result.stderr
+    args = ("--tracker", "linear", "--tracker-team", "ENG", "--tracker-project", "P")
+    dry = _invoke(str(tmp_path), *args, "--dry-run")
+    assert dry.exit_code == 0, dry.output
+    assert dry.stdout.splitlines()[0].startswith("DRY RUN: tracker none -> linear")
     assert _snapshot(tmp_path) == before
+    result = _invoke(str(tmp_path), *args)
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("Switched: tracker none -> linear")
+    index = next(i for i, line in enumerate(lines) if line.startswith("Provider mapping:"))
+    assert lines[index] == "Provider mapping: kept from dispatch_config.yaml"
+    assert lines[index + 1] == "Tracker: linear"
+    assert result.stdout.replace("Switched", "DRY RUN", 1) == dry.stdout
+    assert load_dispatch_config(repo_root=tmp_path).tracker.provider == "linear"
 
 
 def test_cli_help_lists_tracker_options() -> None:
@@ -254,23 +249,26 @@ def test_tracker_values_are_stripped_in_the_block(tmp_path: Path) -> None:
     assert "team: ENG\n" in text
 
 
-# Check 3: fresh-repo refusal.
+# Check 3: an initialized repository is switched, not regenerated.
 
 
 @pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_existing_valid_config_refuses_linear_init(
+def test_existing_valid_config_is_switched_to_linear(
     tmp_path: Path, dry_run: bool, force: bool
 ) -> None:
     _init(tmp_path, provider="claude")
     before = _snapshot(tmp_path)
-    with pytest.raises(TrackerRequiresFreshRepoError) as excinfo:
-        _linear(tmp_path, provider="claude", dry_run=dry_run, force=force)
-    message = str(excinfo.value)
-    assert "--tracker linear only sets up a repository" in message
-    assert "no dispatch_config.yaml yet" in message
-    assert "switching an initialized repository is not supported yet" in message
-    assert _snapshot(tmp_path) == before
+    result = _linear(tmp_path, dry_run=dry_run, force=force)
+    assert result.switched_from == "none"
+    assert result.tracker == "linear"
+    assert result.conflicts == ()
+    assert result.forced == ()
+    assert result.copied == ()
+    if dry_run:
+        assert _snapshot(tmp_path) == before
+    else:
+        assert load_dispatch_config(repo_root=tmp_path).tracker.provider == "linear"
 
 
 @pytest.mark.parametrize("kind", ["directory", "link"])
@@ -278,8 +276,8 @@ def test_existing_valid_config_refuses_linear_init(
 def test_existing_unusable_config_refuses_linear_init(
     tmp_path: Path, kind: str, dry_run: bool
 ) -> None:
-    # The initialized-target preflight runs before the fresh-repo rule, so a
-    # config that is not a usable file gets the preflight's refusal.
+    # The initialized-target preflight runs before any switch is planned, so
+    # a config that is not a usable file gets the preflight's refusal.
     config_path = tmp_path / CONFIG
     if kind == "directory":
         config_path.mkdir()
@@ -1126,7 +1124,6 @@ def _assert_refused(
         )
     error = excinfo.value
     assert isinstance(error, InitWorkflowError)
-    assert not isinstance(error, TrackerRequiresFreshRepoError)
     message = str(error)
     assert "\n" not in message
     assert phrase in message
@@ -1454,7 +1451,7 @@ def test_preflight_returns_none_for_a_fresh_target(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(("dry_run", "force"), _FLAGS, ids=_FLAG_IDS)
 @pytest.mark.parametrize("state", ["missing", "starter", "planner", "tpm", "user"])
-def test_safe_target_keeps_the_fresh_repo_refusal_for_linear(
+def test_safe_target_switches_to_linear_and_keeps_the_handoff(
     tmp_path: Path, state: str, dry_run: bool, force: bool
 ) -> None:
     _initialized(tmp_path)
@@ -1463,9 +1460,16 @@ def test_safe_target_keeps_the_fresh_repo_refusal_for_linear(
     elif state != "starter":
         _write(tmp_path, HANDOFF, _handoff_text(state))
     before = _tree(tmp_path)
-    with pytest.raises(TrackerRequiresFreshRepoError):
-        _linear(tmp_path, provider="claude", dry_run=dry_run, force=force)
-    assert _tree(tmp_path) == before
+    result = _linear(tmp_path, dry_run=dry_run, force=force)
+    assert result.switched_from == "none"
+    assert result.conflicts == ()
+    after = _tree(tmp_path)
+    assert after.get(HANDOFF) == before.get(HANDOFF)
+    if dry_run:
+        assert after == before
+    else:
+        assert set(after) == set(before)
+        assert load_dispatch_config(repo_root=tmp_path).tracker.provider == "linear"
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -1474,7 +1478,7 @@ def test_safe_target_rerun_with_tracker_none_is_unchanged(
 ) -> None:
     _initialized(tmp_path)
     before = _tree(tmp_path)
-    result = _init(tmp_path, provider="claude", tracker="none", dry_run=dry_run)
+    result = _init(tmp_path, tracker="none", dry_run=dry_run)
     assert result.conflicts == ()
     assert result.copied == ()
     assert result.merged == ()
