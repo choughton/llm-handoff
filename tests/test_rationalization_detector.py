@@ -88,6 +88,9 @@ TEST_SCOPE_STOP_FAILURE = (
         "- HALT and route to planner when any tests outside the listed scope "
         "need updating.",
         "- If a test outside Files in scope has to be changed, stop and report.",
+        # A negation in an earlier clause does not cover a later stop clause.
+        "- Do not edit other files. Stop if a test outside Files in scope "
+        "must change.",
     ],
 )
 def test_planner_test_scope_stop_instruction_is_flagged(line: str) -> None:
@@ -107,6 +110,21 @@ def test_planner_test_scope_stop_instruction_is_flagged(line: str) -> None:
         "`tests/` in Files in scope.",
         "- Do not stop because a test outside the listed files needs updating; "
         "update it.",
+        # The policy sentences themselves, as the planner artifacts and the
+        # handbook state them: the negation is several words before "stop".
+        "Never write an instruction to stop because a test outside Files in "
+        "scope must change, in any wording.",
+        "Never write an instruction to stop because a test outside Files in "
+        "scope must change",
+        "A Work Packet never tells the implementer to stop because a test "
+        "outside Files in scope must change, in that wording or any other.",
+        "- Prohibit instructions to stop because a test outside Files in scope "
+        "must change.",
+        "- Don't tell the implementer to halt when a test outside the listed "
+        "scope needs updating.",
+        "- If a test outside Files in scope must change, do not stop; update it.",
+        'The planner never writes "stop if a test outside Files in scope must '
+        'change" or a variant.',
     ],
 )
 def test_planner_affirmative_test_scope_wording_is_not_flagged(line: str) -> None:
