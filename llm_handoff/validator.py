@@ -120,13 +120,15 @@ _VALIDATOR_ALWAYS_REJECTED_STATUSES = (HandoffStatus.READY_FOR_REVIEW.value,)
 # An operator-directed chat takeover rewrite plays the planner's part, so it
 # may name the operator (`user`) or the planner as producer, and no other role.
 _CHAT_TAKEOVER_PRODUCERS = ("planner", "user")
-_REQUIRED_EVIDENCE_FIELDS = {
+# The five Verification Evidence labels, in the order prompts list them.
+EVIDENCE_FIELD_ORDER: tuple[str, ...] = (
     "Commands run",
     "Output summary",
     "Commit SHA verified",
     "Files changed or reviewed",
     "Unresolved concerns",
-}
+)
+_REQUIRED_EVIDENCE_FIELDS = set(EVIDENCE_FIELD_ORDER)
 # The planner prompt contract: a ``## Work Packet`` section with exactly
 # these six bold bullet fields. ``## Task Assignment`` with ``Objective`` and
 # ``Acceptance Criteria`` headings is the pre-extraction shape and is only

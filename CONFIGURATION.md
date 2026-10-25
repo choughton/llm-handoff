@@ -430,11 +430,17 @@ Routing:
   line.
 - An invalid handoff a role wrote is not an operator edit and keeps its
   existing path: post-dispatch validation and bounded planner recovery.
-- If the interpretation does not leave a handoff that passes full
-  post-dispatch validation, including a planner run that exits nonzero, the
-  dispatcher pauses with `OPERATOR EDIT NOT INTERPRETED` and does not retry
-  automatically. Edit `HANDOFF.md` again, which counts as a new edit with its
-  own interpretation, or answer at the operator prompt.
+- If the interpretation's handoff fails post-dispatch validation only on
+  errors the one-shot producer repair handles (for example `EVIDENCE_MISSING`,
+  a missing `reason` or `producer`, or a missing or unparseable Work Packet),
+  the planner gets that repair once, in a fresh session, with the errors
+  listed; an evidence error also gets the exact five `## Verification
+  Evidence` labels. Other planner validation failures do not get this
+  repair. If the result still does not pass, including a planner run that
+  exits nonzero or errors the repair does not handle, the dispatcher pauses
+  with `OPERATOR EDIT NOT INTERPRETED` and does not retry further. Edit
+  `HANDOFF.md` again, which counts as a new edit with its own
+  interpretation, or answer at the operator prompt.
 - `--dry-run` logs
   `[DRY RUN] Would dispatch the planner once to interpret the operator's HANDOFF.md edit.`
   and dispatches nothing.
