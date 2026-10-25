@@ -166,6 +166,7 @@ from llm_handoff.router import (
 )
 from llm_handoff.text_io import read_dispatch_text
 from llm_handoff.validator import (
+    EVIDENCE_FIELD_ORDER,
     ValidationResult,
     clear_dispatcher_handoff,
     dispatcher_handoff_digest,
@@ -279,6 +280,21 @@ POST_DISPATCH_ROUTING_RECOVERY_INSTRUCTION_TEMPLATE = (
     "current HANDOFF.md and determine the correct next step. Rewrite "
     "HANDOFF.md with either a canonical dispatchable route for the next agent "
     "or an explicit user section if the work cannot be routed safely."
+)
+# The exact Verification Evidence shape the validator accepts
+# (`validator.EVIDENCE_FIELD_ORDER`): a role asked for the block without the
+# labels guesses them, and the validator matches them literally.
+VERIFICATION_EVIDENCE_FORMAT = (
+    "a `## Verification Evidence` section with exactly these five bullets, "
+    "each label in bold with its colon inside the bold: "
+    + ", ".join(f"`- **{label}:**`" for label in EVIDENCE_FIELD_ORDER[:-1])
+    + f", and `- **{EVIDENCE_FIELD_ORDER[-1]}:**`. Fill every bullet; "
+    "`Commit SHA verified` is a concrete commit SHA, never `HEAD`, and "
+    "`Unresolved concerns` says `none` when there are none"
+)
+# Added to the producer repair prompt when a listed error is about evidence.
+POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_EVIDENCE_NOTE = (
+    " Write the evidence as " + VERIFICATION_EVIDENCE_FORMAT + "."
 )
 POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE = (
     "Repair only {handoff_path} from your immediately preceding "
@@ -591,7 +607,8 @@ OPERATOR_EDIT_INTERPRETATION_TEMPLATE = (
     "out the operator's request yourself. If the operator's intent is "
     "unclear, route to user with `status: escalate_to_user` and one plain "
     "question for the operator. The dispatcher runs this interpretation once "
-    "for this edit; if your rewrite is not valid, it waits for the operator."
+    "for this edit. If your rewrite is not valid, you get one repair pass for "
+    "its listed validation errors, and then it waits for the operator."
 )
 OPERATOR_EDIT_PREVIOUS_SAVED = (
     "The last valid handoff the dispatcher saw before this edit is between "
@@ -645,9 +662,10 @@ OPERATOR_STORY_TEMPLATE = (
     "`scope_sha:` the concrete SHA that `git rev-parse HEAD` prints (never "
     "`HEAD`), and `close_type: {close_type}` {close_reason}. Keep the previous "
     "handoff's epic_id, story_id, and story_title, copy its remaining_stories "
-    "forward unchanged, carry its `## Work Packet` section, and add a "
-    "`## Verification Evidence` block with its five fields that names the Git "
-    "commands you ran and the HEAD SHA as the commit verified. Only the "
+    "forward unchanged, carry its `## Work Packet` section, and add "
+    + VERIFICATION_EVIDENCE_FORMAT.replace("{", "{{").replace("}", "}}")
+    + ". Name the Git commands you ran under `Commands run` and the HEAD SHA "
+    "under `Commit SHA verified`. Only the "
     "auditor approves the work: do not write `status: verified_pass` or say "
     "that an audit passed.\n"
     "If any check fails, route to user with `status: escalate_to_user`, keep "
@@ -3155,38 +3173,6 @@ def _run_loop_cycles(
                     "scope_sha stays empty; skipping the handoff repair and "
                     "letting the work-claim gate report the claim.",
                 )
-            elif (
-                validation_result.verdict == "NO"
-                and active_planner_recovery_kind == OPERATOR_EDIT_RECOVERY_KIND
-            ):
-                # The operator edit's one interpretation failed: no producer
-                # repair, cleanup pass, or pause recovery follows for it.
-                pause_reason = (
-                    "OPERATOR EDIT NOT INTERPRETED: the planner's one "
-                    "interpretation of the operator's HANDOFF.md edit failed "
-                    f"validation: {_format_validation_errors(validation_result)}. "
-                    "The dispatcher does not retry it automatically. Edit "
-                    "HANDOFF.md or answer at the operator prompt; dispatch will "
-                    "resume after the file changes."
-                )
-                _log(log_fn, "ERROR", pause_reason)
-                pause = _pause_at_dispatcher_pause(
-                    config,
-                    handoff_sha=_content_sha(
-                        _read_required_text(config.handoff_full_path) or ""
-                    ),
-                    reason=pause_reason,
-                    log=log_fn,
-                    operator_prompt=operator_prompt,
-                    stop_watch=stop_watch,
-                )
-                if pause.stop:
-                    return 1 if pause.kind == "stop" else 0
-                previous_cycle = None if pause.kind == "retry" else current_cycle
-                consecutive_failures = 0
-                if pause.pending_planner_recovery is not None:
-                    pending_planner_recovery = pause.pending_planner_recovery
-                continue
             elif validation_result.verdict == "NO":
                 if active_planner_recovery_kind == "handoff_hygiene":
                     _log(
@@ -3213,6 +3199,9 @@ def _run_loop_cycles(
                     log=log_fn,
                     story_check_baseline=story_check_baseline,
                     dispatched_handoff_content=handoff_content,
+                    repair_planner=(
+                        active_planner_recovery_kind == OPERATOR_EDIT_RECOVERY_KIND
+                    ),
                 )
                 if repair_attempt.attempted:
                     story_baseline = _next_story_baseline(
@@ -3286,6 +3275,33 @@ def _run_loop_cycles(
                         _log(log_fn, "INFO", f"--- End of cycle {cycle_number} ---")
                         _log(log_fn, "INFO", "")
                         continue
+
+                if active_planner_recovery_kind == OPERATOR_EDIT_RECOVERY_KIND:
+                    # The operator edit's interpretation failed, and so did
+                    # the one-shot producer repair when one applied. No
+                    # cleanup pass or pause recovery follows: wait for the
+                    # operator.
+                    pause_reason = _operator_edit_failed_pause_reason(
+                        validation_result, repair_attempt
+                    )
+                    _log(log_fn, "ERROR", pause_reason)
+                    pause = _pause_at_dispatcher_pause(
+                        config,
+                        handoff_sha=_content_sha(
+                            _read_required_text(config.handoff_full_path) or ""
+                        ),
+                        reason=pause_reason,
+                        log=log_fn,
+                        operator_prompt=operator_prompt,
+                        stop_watch=stop_watch,
+                    )
+                    if pause.stop:
+                        return 1 if pause.kind == "stop" else 0
+                    previous_cycle = None if pause.kind == "retry" else current_cycle
+                    consecutive_failures = 0
+                    if pause.pending_planner_recovery is not None:
+                        pending_planner_recovery = pause.pending_planner_recovery
+                    continue
 
                 if (
                     repair_attempt.attempted
@@ -4602,6 +4618,28 @@ def _invoke_epic_close(
         _record_loop_handoff_write(config.handoff_full_path)
 
 
+def _operator_edit_failed_pause_reason(
+    validation_result: ValidationResult, repair_attempt: HandoffRepairAttempt
+) -> str:
+    """The pause reason when an operator edit could not be interpreted."""
+
+    errors = _format_validation_errors(
+        repair_attempt.validation_result or validation_result
+    )
+    tried = (
+        "The one-shot repair of that rewrite also failed"
+        if repair_attempt.attempted
+        else "No automatic repair applies to these errors"
+    )
+    return (
+        "OPERATOR EDIT NOT INTERPRETED: the planner's one interpretation of "
+        f"the operator's HANDOFF.md edit failed validation: {errors}. {tried}, "
+        "and the dispatcher does not retry it further. Edit HANDOFF.md or "
+        "answer at the operator prompt; dispatch will resume after the file "
+        "changes."
+    )
+
+
 def _attempt_post_dispatch_handoff_hygiene_repair(
     *,
     config: DispatchConfig,
@@ -4610,7 +4648,14 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
     log: LogFn,
     story_check_baseline: str | None = None,
     dispatched_handoff_content: str | None = None,
+    repair_planner: bool = False,
 ) -> HandoffRepairAttempt:
+    """Give the producer one repair pass for repairable handoff errors.
+
+    ``repair_planner`` lets the planner be that producer; only an operator
+    edit's interpretation uses it, so other planner failures keep their
+    planner-recovery and pause paths.
+    """
     handoff_content = _read_required_text(config.handoff_full_path) or ""
     if not _is_repairable_handoff_hygiene_failure(
         validation_result,
@@ -4651,6 +4696,7 @@ def _attempt_post_dispatch_handoff_hygiene_repair(
         previous_agent=previous_agent,
         validation_result=validation_result,
         log=log,
+        repair_planner=repair_planner,
     )
     if git_before is not None:
         undo = undo_planner_handoff_commits(
@@ -4796,6 +4842,7 @@ def _dispatch_handoff_hygiene_repair(
     previous_agent: str,
     validation_result: ValidationResult,
     log: LogFn,
+    repair_planner: bool = False,
 ) -> DispatchResult | None:
     repair_prompt = _render_prompt(
         POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_PROMPT_TEMPLATE,
@@ -4808,6 +4855,8 @@ def _dispatch_handoff_hygiene_repair(
             config.handoff_path,
         ),
     )
+    if any(error.startswith("EVIDENCE_MISSING:") for error in validation_result.errors):
+        repair_prompt += POST_DISPATCH_HANDOFF_HYGIENE_REPAIR_EVIDENCE_NOTE
     previous_agent_lower = previous_agent.lower()
     if "auditor" in previous_agent_lower and "audit" in previous_agent_lower:
         return _dispatch_from_subagent(
@@ -4845,6 +4894,19 @@ def _dispatch_handoff_hygiene_repair(
             agent_config=config.agents["frontend"],
             repo_root=config.repo_root,
             **_failover_kwargs(config, "frontend"),
+        )
+    if previous_agent == "planner" and repair_planner:
+        # A fresh planner session: the repair prompt names the errors and
+        # the rules, and the handoff it repairs is on disk.
+        return _invoke_dispatch_callable(
+            invoke_planner_role,
+            config.handoff_full_path,
+            additional_instruction=repair_prompt,
+            use_resume=False,
+            log=log,
+            agent_config=config.agents["planner"],
+            repo_root=config.repo_root,
+            **_failover_kwargs(config, "planner"),
         )
     return None
 
