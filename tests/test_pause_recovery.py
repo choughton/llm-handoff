@@ -863,6 +863,16 @@ def _escalation_paused(harness: _Harness) -> bool:
     )
 
 
+def _last_pause_reason(harness: _Harness) -> str:
+    """The last escalation pause reason; the handoff preview follows it."""
+
+    return [
+        message
+        for message in harness.pause_messages()
+        if message.startswith("ESCALATION DETECTED in HANDOFF.md.")
+    ][-1]
+
+
 @pytest.mark.parametrize("overrides", [{}, {"reconcile_user_escalations": False}])
 def test_user_escalation_pauses_without_reconciliation_by_default(
     tmp_path: Path,
@@ -926,7 +936,7 @@ def test_first_cycle_user_escalation_gets_one_planner_reconciliation(
     assert "Routing instruction: planner" in infos
     # The planner's user route pauses without another reconciliation.
     assert _escalation_paused(harness)
-    assert RECONCILED_BY_PLANNER in harness.pause_messages()[-1]
+    assert RECONCILED_BY_PLANNER in _last_pause_reason(harness)
     # Outside Linear mode the instruction asks for no tracker operation.
     assert "user_attention" not in instruction
     assert "Linear" not in instruction
@@ -957,7 +967,7 @@ def test_recurring_escalation_after_progress_gets_no_second_pass(
     assert not any(message == f"{COUNTER_PREFIX}2" for message in infos)
     assert _escalation_paused(harness)
     # A non-planner escalation pauses with the ordinary reason.
-    assert RECONCILED_BY_PLANNER not in harness.pause_messages()[-1]
+    assert RECONCILED_BY_PLANNER not in _last_pause_reason(harness)
 
 
 @pytest.mark.parametrize("status", ["escalate_to_user", "blocked_missing_context"])
@@ -990,7 +1000,7 @@ def test_later_cycle_user_escalation_gets_one_planner_reconciliation(
     assert not any(message == f"{COUNTER_PREFIX}2" for message in infos)
     # The planner's reconfirmation pauses with no further pass.
     assert _escalation_paused(harness)
-    assert RECONCILED_BY_PLANNER in harness.pause_messages()[-1]
+    assert RECONCILED_BY_PLANNER in _last_pause_reason(harness)
 
 
 def test_distinct_later_escalation_gets_its_own_pass(
@@ -1028,7 +1038,7 @@ def test_distinct_later_escalation_gets_its_own_pass(
     assert infos.count(f"{COUNTER_PREFIX}2") == 1
     assert not any(message == f"{COUNTER_PREFIX}3" for message in infos)
     assert _escalation_paused(harness)
-    assert RECONCILED_BY_PLANNER in harness.pause_messages()[-1]
+    assert RECONCILED_BY_PLANNER in _last_pause_reason(harness)
 
 
 def test_planner_user_route_pause_reason_only_with_the_option_on(
@@ -1041,7 +1051,7 @@ def test_planner_user_route_pause_reason_only_with_the_option_on(
     assert harness.run(_config(tmp_path)) == 0
 
     assert harness.planner_instructions == []
-    assert RECONCILED_BY_PLANNER not in harness.pause_messages()[-1]
+    assert RECONCILED_BY_PLANNER not in _last_pause_reason(harness)
 
 
 def test_reconciliation_instruction_adds_linear_user_attention_rule(
@@ -1137,7 +1147,7 @@ def test_ineligible_user_routes_pause_without_reconciliation(
         for message in _info_messages(harness)
     )
     # Only a planner-produced user route names the planner in the reason.
-    assert (RECONCILED_BY_PLANNER in harness.pause_messages()[-1]) == (
+    assert (RECONCILED_BY_PLANNER in _last_pause_reason(harness)) == (
         "producer: planner" in handoff
     )
 

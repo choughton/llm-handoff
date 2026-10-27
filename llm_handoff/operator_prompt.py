@@ -22,6 +22,7 @@ import re
 import threading
 import time
 from typing import Any, Callable, Literal, Protocol, TextIO
+import unicodedata
 
 from llm_handoff.text_io import read_dispatch_text
 
@@ -430,6 +431,202 @@ def _read_handoff(path: Path) -> str | None:
     if not path.exists():
         return None
     return read_dispatch_text(path)
+
+
+# --- user-pause preview ---------------------------------------------------
+#
+# At a user-route pause the operator reads the handoff's `## Proposed
+# Backlog`, or the escalation body when there is none, in the terminal. The
+# preview is bounded by both limits so one huge handoff or one huge line
+# cannot flood the terminal; the full text stays in the handoff file.
+PREVIEW_MAX_LINES = 40
+PREVIEW_MAX_CHARS = 4000
+PROPOSED_BACKLOG_TITLE = "proposed backlog"
+PREVIEW_INDENT = "  "
+_PREVIEW_TAB = "    "
+_ATX_HEADING_RE = re.compile(r" {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*")
+_HEADING_CLOSING_HASHES_RE = re.compile(r"(?:^|[ \t]+)#+$")
+_FENCE_OPEN_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+# Bidirectional overrides and isolates can reorder what a terminal shows.
+_BIDI_CONTROLS = frozenset(
+    "؜‎‏‪‫‬‭‮"
+    "⁦⁧⁨⁩"
+)
+
+
+def _split_frontmatter(content: str) -> str:
+    """Return the handoff body without its YAML frontmatter.
+
+    An unterminated frontmatter block yields an empty body, so routing
+    fields never reach the preview.
+    """
+
+    lines = content.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return content
+    for index in range(1, len(lines)):
+        if lines[index].strip() in ("---", "..."):
+            return "\n".join(lines[index + 1 :])
+    return ""
+
+
+def _heading(line: str) -> tuple[int, str] | None:
+    match = _ATX_HEADING_RE.fullmatch(line)
+    if match is None:
+        return None
+    title = _HEADING_CLOSING_HASHES_RE.sub("", match.group(2) or "")
+    return len(match.group(1)), title.strip()
+
+
+def _proposed_backlog(lines: list[str]) -> list[str] | None:
+    """The first nonempty `## Proposed Backlog` section, heading included.
+
+    The section runs through the line before the next level-one or
+    level-two heading. Heading-like lines inside fenced blocks are text.
+    """
+
+    fence: tuple[str, int] | None = None
+    section: list[str] | None = None
+    for line in lines:
+        if fence is not None:
+            if section is not None:
+                section.append(line)
+            stripped = line.strip()
+            char, length = fence
+            if (
+                stripped
+                and set(stripped) == {char}
+                and len(stripped) >= length
+                and len(line) - len(line.lstrip(" ")) <= 3
+            ):
+                fence = None
+            continue
+        fence_match = _FENCE_OPEN_RE.fullmatch(line)
+        if fence_match is not None:
+            marker = fence_match.group(1)
+            fence = (marker[0], len(marker))
+            if section is not None:
+                section.append(line)
+            continue
+        heading = _heading(line)
+        if heading is not None and heading[0] <= 2:
+            if section is not None and any(item.strip() for item in section[1:]):
+                return section
+            section = (
+                [line]
+                if heading[0] == 2 and heading[1].lower() == PROPOSED_BACKLOG_TITLE
+                else None
+            )
+            continue
+        if section is not None:
+            section.append(line)
+    if section is not None and any(item.strip() for item in section[1:]):
+        return section
+    return None
+
+
+def _escape_char(char: str) -> str:
+    code = ord(char)
+    if code <= 0xFF:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}"
+
+
+def escape_terminal_controls(text: str) -> str:
+    """Escape characters that could drive or garble a terminal.
+
+    Line breaks stay readable: CRLF and CR become LF. Tabs become spaces.
+    Every other control character, the Unicode line and paragraph
+    separators, and bidirectional controls are shown as escapes.
+    """
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    escaped: list[str] = []
+    for char in text:
+        if char == "\n":
+            escaped.append(char)
+        elif char == "\t":
+            escaped.append(_PREVIEW_TAB)
+        elif (
+            unicodedata.category(char) in ("Cc", "Zl", "Zp")
+            or char in _BIDI_CONTROLS
+        ):
+            escaped.append(_escape_char(char))
+        else:
+            escaped.append(char)
+    return "".join(escaped)
+
+
+def _trim_blank_edges(lines: list[str]) -> list[str]:
+    start = 0
+    end = len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[start:end]
+
+
+def _bound_lines(lines: list[str]) -> tuple[list[str], bool]:
+    """Keep at most PREVIEW_MAX_LINES lines and PREVIEW_MAX_CHARS characters.
+
+    Line breaks count as one character each. Returns the kept lines and
+    whether anything was cut.
+    """
+
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if len(kept) >= PREVIEW_MAX_LINES:
+            return kept, True
+        separator = 1 if kept else 0
+        remaining = PREVIEW_MAX_CHARS - used - separator
+        if remaining <= 0:
+            return kept, True
+        if len(line) > remaining:
+            kept.append(line[:remaining])
+            return kept, True
+        kept.append(line)
+        used += separator + len(line)
+    return kept, False
+
+
+def user_pause_preview(content: str, handoff_path: str) -> list[str]:
+    """Bounded preview lines for a user-route pause; empty when none fits.
+
+    Prefers the first nonempty `## Proposed Backlog` section; otherwise the
+    escalation body after the YAML frontmatter. An empty body returns no
+    lines, so the caller shows only its pause reason. Control characters
+    are escaped before the bounds apply. The full handoff is never returned
+    as a fallback: a truncated preview ends with a notice naming
+    ``handoff_path`` instead.
+    """
+
+    body = _split_frontmatter(content.lstrip("﻿").replace("\r\n", "\n"))
+    body_lines = body.split("\n")
+    section = _proposed_backlog(body_lines)
+    if section is not None:
+        header = f"Proposed backlog from {handoff_path}:"
+        selected = section
+    else:
+        header = f"Escalation from {handoff_path}:"
+        selected = body_lines
+    escaped = escape_terminal_controls("\n".join(selected)).split("\n")
+    trimmed = _trim_blank_edges(escaped)
+    if not trimmed:
+        return []
+    kept, truncated = _bound_lines(trimmed)
+    preview = [escape_terminal_controls(header).replace("\n", " ")]
+    preview.extend(f"{PREVIEW_INDENT}{line}" if line else "" for line in kept)
+    if truncated:
+        preview.append(
+            escape_terminal_controls(
+                f"Preview truncated at {PREVIEW_MAX_LINES} lines or "
+                f"{PREVIEW_MAX_CHARS} characters; read the full text in "
+                f"{handoff_path}."
+            ).replace("\n", " ")
+        )
+    return preview
 
 
 REVIEW_CHOICES: tuple[str, ...] = ("merge", "retry", "quit")
