@@ -17,6 +17,22 @@ This project follows a simple pre-release changelog until the first public tag.
   terminal control characters before the cap applies, and ends with a notice
   naming the handoff path when cut. An empty body shows only the pause reason.
   Other pauses show no preview, and the prompt's actions are unchanged.
+- Operator-story and repair prompts name the exact Verification Evidence
+  labels. The operator-story instruction asked for a `## Verification
+  Evidence` block "with its five fields" without naming them, so a planner
+  that did not read its role file guessed labels such as `Commands` and
+  `Files`, and the validator, which matches the labels literally, rejected
+  each guess. The instruction now lists the five bullets in the exact form
+  the validator accepts, built from `validator.EVIDENCE_FIELD_ORDER`, and
+  the one-shot producer repair prompt adds the same list when an error is
+  `EVIDENCE_MISSING`.
+- A failed operator-edit interpretation gets the one-shot producer repair.
+  Before, any validation failure of the planner's interpretation paused at
+  once with `OPERATOR EDIT NOT INTERPRETED`. Now, when every error is one
+  the producer repair handles, the planner gets one repair pass in a fresh
+  session with the errors listed, and the loop continues if the repaired
+  handoff passes. Other errors, a failed repair, or a nonzero exit still
+  pause. Planner validation failures outside operator edits are unchanged.
 - `reconcile_user_escalations: true` now covers later cycles too (RECON-2).
   An eligible non-planner user escalation gets its one bounded planner pass on
   any cycle, at most once per handoff content SHA per run; the run-local guard

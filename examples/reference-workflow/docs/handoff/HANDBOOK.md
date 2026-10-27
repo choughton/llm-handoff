@@ -397,9 +397,11 @@ was stopped is not treated as a person's edit.
   not carry out the request itself, and its handoff passes the same
   validation as any other. When the intent is unclear, it routes to `user`
   with `status: escalate_to_user` and one plain question.
-- **A failed interpretation.** If that one pass does not leave a handoff that
-  passes validation, the dispatcher pauses and does not retry. Edit the file
-  again or answer at the operator prompt.
+- **A failed interpretation.** If that pass leaves a handoff with only
+  formatting errors, such as a `## Verification Evidence` block with the
+  wrong labels, the planner gets one repair pass for them. If the handoff
+  still does not pass validation, the dispatcher pauses and does not retry
+  further. Edit the file again or answer at the operator prompt.
 - **Role output.** An invalid handoff a role wrote is not a person's edit and
   keeps its existing repair path.
 

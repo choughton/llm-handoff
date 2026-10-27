@@ -21,7 +21,7 @@ from llm_handoff import chat_session, orchestrator
 from llm_handoff.agent_types import DispatchResult, SubagentResult
 from llm_handoff.config import DispatchConfig
 from llm_handoff.operator_prompt import HandoffChanged, OperatorAction
-from llm_handoff.validator import ValidationResult
+from llm_handoff.validator import EVIDENCE_FIELD_ORDER, ValidationResult
 
 
 HANDOFF_RELATIVE_PATH = Path("docs/handoff/HANDOFF.md")
@@ -1742,7 +1742,9 @@ def test_story_guidance_follows_only_an_operator_story_predecessor(
     assert _quoted_previous(OPERATOR_STORY) in story
     # The guidance follows the whole HUMAN-2 instruction.
     head, _, _ = story.partition(STORY_GUIDANCE)
-    assert head.endswith("if your rewrite is not valid, it waits for the operator.\n\n")
+    assert head.endswith(
+        "its listed validation errors, and then it waits for the operator.\n\n"
+    )
     assert _quoted_edit(FREE_FORM) in head
 
     for previous in (None, ASSIGN_BACKEND, USER_ESCALATION, OPERATOR_TO_PLANNER):
@@ -1892,7 +1894,13 @@ def test_a_clean_result_routes_to_the_auditor_with_the_right_close(
         )
         assert "copy its remaining_stories forward unchanged" in instruction
         assert "carry its `## Work Packet` section" in instruction
-        assert "`## Verification Evidence` block with its five fields" in instruction
+        # The exact labels the validator matches, never "its five fields".
+        assert "`## Verification Evidence` section with exactly these five bullets" in (
+            instruction
+        )
+        for label in EVIDENCE_FIELD_ORDER:
+            assert f"`- **{label}:**`" in instruction
+        assert "five fields" not in instruction
     assert "`close_type: story` " + orchestrator.OPERATOR_STORY_CLOSE_STORY_REASON in story
     assert "`close_type: epic`" not in story.replace(
         "use `close_type: story` instead", ""
@@ -2061,3 +2069,120 @@ def test_an_operator_story_note_in_a_dry_run_dispatches_nothing(
     assert ("DISPATCH", "[DRY RUN] Would dispatch planner") in logs.entries
     assert _handoff(repo).read_text(encoding="utf-8") == FREE_FORM
     assert not _snapshot(repo).exists()
+
+
+# --- one-shot repair of a failed interpretation ----------------------------
+
+PLANNER_ROUTES_BACKEND = """---
+next_agent: backend
+reason: "The operator answered; implement story one."
+epic_id: EDIT
+story_id: EDIT-1
+story_title: Story one
+producer: planner
+---
+
+## Next Step
+
+- **backend:** Implement story one.
+"""
+# A marker the validation stub reads as broken evidence.
+PLANNER_BAD_EVIDENCE = PLANNER_ROUTES_BACKEND + "\nBAD-EVIDENCE\n"
+EVIDENCE_ERROR = (
+    "EVIDENCE_MISSING: status ready_for_review requires populated evidence "
+    "fields at line 9: missing Commands run."
+)
+
+
+def _interpretation_then_repair(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, repair_writes: str
+) -> _Roles:
+    """The interpretation leaves broken evidence; the repair writes and commits."""
+
+    roles = _Roles(monkeypatch, backend_writes=[BACKEND_ESCALATES])
+    writes = [PLANNER_BAD_EVIDENCE, repair_writes]
+
+    def planner(path: Path, **kwargs: Any) -> DispatchResult:
+        roles.calls.append("planner")
+        roles.planner_instructions.append(kwargs.get("additional_instruction"))
+        path.write_text(writes.pop(0), encoding="utf-8")
+        if not writes:
+            # The repair commits exactly the handoff, as its prompt asks.
+            _git(repo, "add", HANDOFF_RELATIVE_PATH.as_posix())
+            _git(repo, "commit", "-q", "-m", "repair handoff")
+        return _dispatch_result()
+
+    def validate(path: Path, previous_agent: str, **_kwargs: Any) -> ValidationResult:
+        content = Path(path).read_text(encoding="utf-8")
+        if previous_agent == "planner" and "BAD-EVIDENCE" in content:
+            return ValidationResult(verdict="NO", warnings=[], errors=[EVIDENCE_ERROR])
+        return ValidationResult(verdict="YES", warnings=[], errors=[])
+
+    monkeypatch.setattr(orchestrator, "invoke_planner_role", planner)
+    monkeypatch.setattr(orchestrator, "validate_handoff", validate)
+    return roles
+
+
+def _run_with_free_form_edit(repo: Path, max_cycles: int) -> tuple[int, _Logs]:
+    logs = _Logs()
+
+    def log(level: str, text: str) -> None:
+        logs(level, text)
+        if text == "--- End of cycle 1 ---":
+            _write(_handoff(repo), FREE_FORM)
+
+    exit_code = orchestrator.run_loop(_config(repo), max_cycles=max_cycles, log=log)
+    return exit_code, logs
+
+
+def test_a_repairable_interpretation_failure_gets_one_planner_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    roles = _interpretation_then_repair(monkeypatch, repo, PLANNER_ROUTES_BACKEND)
+
+    exit_code, logs = _run_with_free_form_edit(repo, max_cycles=3)
+
+    assert exit_code == 0
+    assert roles.calls[:3] == ["backend", "planner", "planner"]
+    # The repaired handoff routed on: the next cycle dispatched backend.
+    assert roles.calls[3:] == ["backend"]
+    assert _interpretations(logs) == 1
+    repair = roles.planner_instructions[1] or ""
+    assert repair.startswith("Repair only docs/handoff/HANDOFF.md")
+    assert EVIDENCE_ERROR in repair
+    # The evidence error gets the exact labels the validator matches.
+    for label in EVIDENCE_FIELD_ORDER:
+        assert f"`- **{label}:**`" in repair
+    assert any(
+        "Running one-shot producer repair" in text for _level, text in logs.entries
+    )
+    assert not any(
+        text.startswith("OPERATOR EDIT NOT INTERPRETED:")
+        for _level, text in logs.entries
+    )
+
+
+def test_a_failed_interpretation_repair_pauses_for_the_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path / "repo", ASSIGN_BACKEND)
+    roles = _interpretation_then_repair(
+        monkeypatch, repo, PLANNER_BAD_EVIDENCE + "still broken\n"
+    )
+
+    exit_code, logs = _run_with_free_form_edit(repo, max_cycles=4)
+
+    # The pause has no polling here, so the failed repair ends the run.
+    assert exit_code == 1
+    assert roles.calls == ["backend", "planner", "planner"]
+    pauses = [text for level, text in logs.entries if level == "PAUSE"]
+    assert any(
+        text.startswith("OPERATOR EDIT NOT INTERPRETED:")
+        and "failed validation: EVIDENCE_MISSING" in text
+        and "The one-shot repair of that rewrite also failed" in text
+        for text in pauses
+    )
+    assert not any(
+        "Pause recovery: scheduling" in text for _level, text in logs.entries
+    )
