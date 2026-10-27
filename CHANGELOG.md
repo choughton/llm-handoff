@@ -6,6 +6,17 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A user-route pause now prints a bounded preview of the current handoff
+  (INTAKE-1): the first nonempty `## Proposed Backlog` section, nested
+  headings included, through the next level-one or level-two heading outside
+  fenced blocks; otherwise the escalation body after the YAML frontmatter.
+  The preview is printed once per pause entry, after the pause reason, at
+  ordinary and `reconciled by planner` user pauses, with or without the
+  operator prompt. It is capped at 40 lines and 4000 characters
+  (`PREVIEW_MAX_LINES`, `PREVIEW_MAX_CHARS` in `operator_prompt.py`), escapes
+  terminal control characters before the cap applies, and ends with a notice
+  naming the handoff path when cut. An empty body shows only the pause reason.
+  Other pauses show no preview, and the prompt's actions are unchanged.
 - `reconcile_user_escalations: true` now covers later cycles too (RECON-2).
   An eligible non-planner user escalation gets its one bounded planner pass on
   any cycle, at most once per handoff content SHA per run; the run-local guard

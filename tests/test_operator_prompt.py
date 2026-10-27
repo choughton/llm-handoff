@@ -2037,3 +2037,429 @@ def test_an_edit_at_the_operator_prompt_is_logged_once_and_saves_the_previous(
     assert harness.logs.count(("INFO", "Operator edited HANDOFF.md.")) == 1
     snapshot = tmp_path / "logs" / "dispatch" / "operator-edit" / "previous-handoff.md"
     assert snapshot.read_text(encoding="utf-8") == USER_HANDOFF
+
+
+# --- user-pause preview ---------------------------------------------------
+
+PREVIEW_PATH = "docs/handoff/HANDOFF.md"
+PROPOSAL_HEADER = f"Proposed backlog from {PREVIEW_PATH}:"
+ESCALATION_HEADER = f"Escalation from {PREVIEW_PATH}:"
+TRUNCATION_NOTICE = (
+    f"Preview truncated at {operator_prompt.PREVIEW_MAX_LINES} lines or "
+    f"{operator_prompt.PREVIEW_MAX_CHARS} characters; read the full text in "
+    f"{PREVIEW_PATH}."
+)
+PROPOSAL_HANDOFF = """---
+next_agent: user
+reason: "Review the proposed backlog."
+status: escalate_to_user
+producer: planner
+---
+
+# Proposal
+
+Intro text that is not part of the backlog.
+
+## Proposed Backlog
+
+### Epic: PUPPIES - a page about puppies
+
+- **Goal:** Ship one page.
+
+```markdown
+## Not A Heading Inside A Fence
+# Also not a heading
+```
+
+#### Stories
+
+- PUP-1: Static page.
+
+## Next Step
+
+- **user:** Approve or revise.
+"""
+
+
+def _preview(content: str) -> list[str]:
+    return operator_prompt.user_pause_preview(content, PREVIEW_PATH)
+
+
+def test_preview_selects_the_proposed_backlog_section() -> None:
+    preview = _preview(PROPOSAL_HANDOFF)
+
+    assert preview[0] == PROPOSAL_HEADER
+    body = preview[1:]
+    assert body[0] == "  ## Proposed Backlog"
+    assert "  ### Epic: PUPPIES - a page about puppies" in body
+    # Heading-like lines in a fence do not end the section.
+    assert "  ## Not A Heading Inside A Fence" in body
+    assert "  # Also not a heading" in body
+    assert "  #### Stories" in body
+    assert body[-1] == "  - PUP-1: Static page."
+    joined = "\n".join(preview)
+    assert "Next Step" not in joined
+    assert "Intro text" not in joined
+    assert "next_agent" not in joined
+    assert TRUNCATION_NOTICE not in preview
+
+
+def test_preview_skips_an_empty_proposed_backlog_for_a_later_one() -> None:
+    content = (
+        "---\nnext_agent: user\n---\n\n## Proposed Backlog\n\n\n"
+        "## Proposed Backlog\n\n- EPIC-A\n\n# Top\n\nafter\n"
+    )
+
+    assert _preview(content) == [
+        PROPOSAL_HEADER,
+        "  ## Proposed Backlog",
+        "",
+        "  - EPIC-A",
+    ]
+
+
+def test_preview_level_one_heading_ends_the_section_and_level_three_does_not() -> (
+    None
+):
+    content = (
+        "## Proposed Backlog ##\n\n### Nested\n\n- kept\n\n# Other\n\n- dropped\n"
+    )
+
+    preview = _preview(content)
+
+    assert preview[0] == PROPOSAL_HEADER
+    assert "  - kept" in preview
+    assert "  - dropped" not in preview
+
+
+def test_preview_falls_back_to_the_escalation_body() -> None:
+    preview = _preview(USER_HANDOFF)
+
+    assert preview == [
+        ESCALATION_HEADER,
+        "  ## Question",
+        "",
+        "  Which story should run next?",
+    ]
+
+
+def test_preview_heading_only_proposal_falls_back_to_the_escalation_body() -> None:
+    content = "---\nnext_agent: user\n---\n\n## Question\n\nWhy?\n\n## Proposed Backlog\n"
+
+    preview = _preview(content)
+
+    assert preview[0] == ESCALATION_HEADER
+    assert "  Why?" in preview
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "---\nnext_agent: user\nreason: \"x\"\n---\n",
+        "---\nnext_agent: user\nreason: \"x\"\n---\n\n   \n\t\n",
+        "",
+        # An unterminated frontmatter block never leaks routing fields.
+        "---\nnext_agent: user\nreason: \"x\"\n",
+    ],
+    ids=["frontmatter_only", "blank_body", "empty_file", "unterminated"],
+)
+def test_preview_is_empty_for_an_empty_body(content: str) -> None:
+    assert _preview(content) == []
+
+
+def test_preview_bounds_many_lines() -> None:
+    lines = [f"line {index}" for index in range(100)]
+    content = "---\nnext_agent: user\n---\n" + "\n".join(lines) + "\n"
+
+    preview = _preview(content)
+
+    assert preview[0] == ESCALATION_HEADER
+    assert preview[-1] == TRUNCATION_NOTICE
+    body = preview[1:-1]
+    assert len(body) == operator_prompt.PREVIEW_MAX_LINES
+    assert body[-1] == f"  line {operator_prompt.PREVIEW_MAX_LINES - 1}"
+    assert "  line 99" not in preview
+
+
+def test_preview_bounds_characters_across_lines() -> None:
+    lines = ["x" * 300 for _ in range(30)]
+    content = "\n".join(lines)
+
+    preview = _preview(content)
+
+    assert preview[-1] == TRUNCATION_NOTICE
+    body = [line[len(operator_prompt.PREVIEW_INDENT) :] for line in preview[1:-1]]
+    assert len(body) < operator_prompt.PREVIEW_MAX_LINES
+    assert len("\n".join(body)) == operator_prompt.PREVIEW_MAX_CHARS
+
+
+def test_preview_bounds_one_enormous_line() -> None:
+    content = "## Proposed Backlog\n\n" + "y" * 50_000 + "\n"
+
+    preview = _preview(content)
+
+    assert preview[0] == PROPOSAL_HEADER
+    assert preview[-1] == TRUNCATION_NOTICE
+    total = sum(
+        len(line[len(operator_prompt.PREVIEW_INDENT) :]) for line in preview[1:-1]
+    ) + len(preview[1:-1]) - 1
+    assert total == operator_prompt.PREVIEW_MAX_CHARS
+    assert sum(len(line) for line in preview) < 5000
+
+
+def test_preview_escapes_control_characters_and_keeps_line_breaks() -> None:
+    content = (
+        "## Question\r\n\r\nred \x1b[31mtext\x1b[0m bell\x07 del\x7f "
+        "csi\x9b bidi‮ end sep\rlone\ttab\n"
+    )
+
+    preview = _preview(content)
+
+    joined = "\n".join(preview)
+    for raw in ("\x1b", "\x07", "\x7f", "\x9b", "‮", " ", "\r", "\t"):
+        assert raw not in joined
+    assert preview == [
+        ESCALATION_HEADER,
+        "  ## Question",
+        "",
+        "  red \\x1b[31mtext\\x1b[0m bell\\x07 del\\x7f csi\\x9b bidi\\u202e "
+        "end\\u2028sep",
+        "  lone    tab",
+    ]
+
+
+def test_preview_escapes_before_bounding() -> None:
+    # Each escape sequence is four visible characters, so the bound applies
+    # to the escaped text, not the raw one.
+    content = "\x1b" * 2000
+
+    preview = _preview(content)
+
+    assert preview[-1] == TRUNCATION_NOTICE
+    assert "\x1b" not in "".join(preview)
+    assert len(preview[1]) == (
+        len(operator_prompt.PREVIEW_INDENT) + operator_prompt.PREVIEW_MAX_CHARS
+    )
+
+
+def test_operator_prompt_module_does_not_import_the_orchestrator() -> None:
+    source = Path(operator_prompt.__file__).read_text(encoding="utf-8")
+
+    assert "llm_handoff.orchestrator" not in source.replace(
+        "must not import ``llm_handoff.orchestrator``", ""
+    )
+
+
+def _preview_block(pauses: list[str], header: str) -> list[str]:
+    start = pauses.index(header)
+    end = start + 1
+    while end < len(pauses) and (
+        pauses[end].startswith(operator_prompt.PREVIEW_INDENT) or pauses[end] == ""
+    ):
+        end += 1
+    return pauses[start:end]
+
+
+def test_interactive_user_pause_prints_the_proposal_once_before_the_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["quit"])
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    pauses = harness.pause_messages()
+    assert pauses.count(PROPOSAL_HEADER) == 1
+    reason_index = pauses.index("ESCALATION DETECTED in HANDOFF.md.")
+    header_index = pauses.index(PROPOSAL_HEADER)
+    assert header_index == reason_index + 1
+    block = _preview_block(pauses, PROPOSAL_HEADER)
+    assert pauses[header_index + len(block)] == PROMPT_LINE
+    assert "  - PUP-1: Static page." in block
+    assert all("next_agent" not in line for line in block)
+    assert (
+        "PAUSE",
+        "The operator stopped the dispatcher from the prompt.",
+    ) in harness.logs
+
+
+def test_interactive_user_pause_shows_the_escalation_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, USER_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["quit"])
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    pauses = harness.pause_messages()
+    assert _preview_block(pauses, ESCALATION_HEADER) == [
+        ESCALATION_HEADER,
+        "  ## Question",
+        "",
+        "  Which story should run next?",
+    ]
+    assert PROPOSAL_HEADER not in pauses
+
+
+def test_empty_user_escalation_body_keeps_the_reason_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = USER_HANDOFF.split("## Question")[0]
+    handoff_path = _write_repo(tmp_path, content)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["quit"])
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    pauses = harness.pause_messages()
+    assert ESCALATION_HEADER not in pauses
+    assert PROPOSAL_HEADER not in pauses
+    reason_index = pauses.index("ESCALATION DETECTED in HANDOFF.md.")
+    assert pauses[reason_index + 1] == PROMPT_LINE
+
+
+def test_reconciled_user_pause_prints_the_proposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["quit"])
+
+    assert harness.run(_config(tmp_path, reconcile_user_escalations=True)) == 0
+
+    assert harness.planner_instructions == []
+    pauses = harness.pause_messages()
+    reason = orchestrator._prompt_display_reason(
+        orchestrator.USER_ESCALATION_RECONCILED_PAUSE_REASON
+    )
+    assert "reconciled by planner" in reason
+    assert pauses.index(PROPOSAL_HEADER) == pauses.index(reason) + 1
+    assert pauses.count(PROPOSAL_HEADER) == 1
+
+
+def test_preview_returns_after_the_operator_planner_turn_once_per_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    revised = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-1: Revised page.")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["make it smaller", "quit"],
+        planner_writes=[revised],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    pauses = harness.pause_messages()
+    assert harness.prompt_count() == 2
+    assert pauses.count(PROPOSAL_HEADER) == 2
+    assert "  - PUP-1: Static page." in pauses
+    second = pauses.index(PROPOSAL_HEADER, pauses.index(PROPOSAL_HEADER) + 1)
+    assert "  - PUP-1: Revised page." in _preview_block(pauses[second:], PROPOSAL_HEADER)
+    instruction = harness.planner_instructions[0]
+    assert instruction is not None
+    assert "Operator guidance: make it smaller" in instruction
+
+
+@pytest.mark.parametrize(
+    ("overrides", "tty"),
+    [
+        ({"interactive_pause": False}, True),
+        ({}, False),
+        ({"dry_run": True}, True),
+    ],
+    ids=["interactive_pause_false", "non_tty", "dry_run"],
+)
+def test_noninteractive_user_pause_prints_the_preview_once_while_polling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, Any],
+    tty: bool,
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["quit"], tty=tty)
+    sleeps: list[float] = []
+
+    def sleep_then_stop(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) >= 4:
+            raise _StopPolling
+
+    monkeypatch.setattr(orchestrator.time, "sleep", sleep_then_stop)
+
+    with pytest.raises(_StopPolling):
+        harness.run(_config(tmp_path, **overrides))
+
+    assert len(sleeps) == 4
+    assert harness.stream_requests == 0
+    assert harness.prompt_count() == 0
+    pauses = harness.pause_messages()
+    assert pauses.count(PROPOSAL_HEADER) == 1
+    waiting = "Waiting for HANDOFF.md to change; polling every 1s."
+    assert pauses[-1] == waiting
+    block = _preview_block(pauses, PROPOSAL_HEADER)
+    assert pauses.index(PROPOSAL_HEADER) + len(block) == pauses.index(waiting)
+
+
+def test_interactive_polling_does_not_repeat_the_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    # No operator line: the input closes, and the prompt keeps polling the
+    # handoff file.
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=[])
+    polls: list[Path] = []
+    real_read = operator_prompt._read_handoff
+
+    def counting_read(path: Path) -> str | None:
+        polls.append(path)
+        if len(polls) >= 5:
+            raise _StopPolling
+        return real_read(path)
+
+    monkeypatch.setattr(operator_prompt, "_read_handoff", counting_read)
+    monkeypatch.setattr(operator_prompt.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(_StopPolling):
+        harness.run(_config(tmp_path))
+
+    assert len(polls) == 5
+    pauses = harness.pause_messages()
+    assert pauses.count(PROPOSAL_HEADER) == 1
+    assert harness.prompt_count() == 1
+
+
+def test_generic_pause_with_a_proposal_heading_shows_no_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = NO_ROUTE_HANDOFF + "\n## Proposed Backlog\n\n- EPIC-A: Something.\n"
+    handoff_path = _write_repo(tmp_path, content)
+    harness = _Harness(monkeypatch, handoff_path, operator_lines=["quit"])
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    pauses = harness.pause_messages()
+    assert "No routing instruction found in HANDOFF.md." in pauses
+    assert PROPOSAL_HEADER not in pauses
+    assert ESCALATION_HEADER not in pauses
+    assert not any("EPIC-A" in message for message in pauses)
+
+
+def test_stale_route_pause_with_a_proposal_shows_no_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = BACKEND_HANDOFF + "\n## Proposed Backlog\n\n- EPIC-A: Something.\n"
+    handoff_path = _write_repo(tmp_path, content)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["quit"],
+        backend_writes=[None],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.backend_calls == 1
+    pauses = harness.pause_messages()
+    assert any(message.startswith("STALE ROUTING DETECTED") for message in pauses)
+    assert PROPOSAL_HEADER not in pauses
+    assert not any("EPIC-A" in message for message in pauses)

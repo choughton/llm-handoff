@@ -113,6 +113,7 @@ from llm_handoff.operator_prompt import (
     OperatorInputReader,
     StopRequested,
     ask_operator_choice,
+    user_pause_preview,
     wait_for_operator_or_handoff_change,
 )
 from llm_handoff.in_flight import (
@@ -1732,6 +1733,7 @@ def _run_loop_cycles(
                 log=log_fn,
                 operator_prompt=operator_prompt,
                 stop_watch=stop_watch,
+                show_handoff_preview=True,
             )
             if pause.stop:
                 return 0
@@ -11882,13 +11884,19 @@ def _pause_until_handoff_changes(
     reason: str,
     log: LogFn,
     stop_watch: _StopRequestWatch | None = None,
+    preview_lines: list[str] | None = None,
 ) -> bool:
-    """Wait for a HANDOFF.md change; False when the run should stop instead."""
+    """Wait for a HANDOFF.md change; False when the run should stop instead.
+
+    ``preview_lines`` are logged once, after the reason, before any polling.
+    """
 
     # A pause wait is not a role's cycle: a console Ctrl+C stops at once.
     console_interrupt.set_active_role(None)
     chat_session.set_role(None)
     _log(log, "PAUSE", reason)
+    for line in preview_lines or ():
+        _log(log, "PAUSE", line)
     if config.poll_interval_seconds <= 0:
         return False
 
@@ -12628,6 +12636,20 @@ def _prompt_display_reason(reason: str) -> str:
 
     return _PROMPT_REDUNDANT_TAIL.sub("", reason) or reason
 
+
+def _user_pause_preview_lines(config: DispatchConfig) -> list[str]:
+    """The bounded user-pause preview of the current handoff on disk.
+
+    Empty when the handoff is missing or has no proposal or escalation
+    body, so the pause shows only its reason.
+    """
+
+    content = _read_required_text(config.handoff_full_path)
+    if content is None:
+        return []
+    return user_pause_preview(content, Path(config.handoff_path).as_posix())
+
+
 def _review_prompt(
     config: DispatchConfig,
     operator_prompt: _OperatorPromptState,
@@ -12682,12 +12704,17 @@ def _pause_at_dispatcher_pause(
     log: LogFn,
     operator_prompt: _OperatorPromptState,
     stop_watch: _StopRequestWatch | None = None,
+    show_handoff_preview: bool = False,
 ) -> PauseOutcome:
     """Pause for a HANDOFF.md edit, or for the operator prompt at a TTY.
 
     A stop request seen before or during the pause ends the run instead.
     Once a scheduled planner or role dispatch has run in this pause streak,
     the prompt also offers the manual HANDOFF.md edit.
+
+    ``show_handoff_preview`` is set only at user-route pauses: the bounded
+    `## Proposed Backlog` or escalation preview from the current handoff is
+    logged once, after the reason, when the pause begins.
 
     With the run's operator-edit watch, the handoff on disk is observed when
     the pause begins and again when it ends (other than by stopping), so a
@@ -12707,6 +12734,7 @@ def _pause_at_dispatcher_pause(
         log=log,
         operator_prompt=operator_prompt,
         stop_watch=stop_watch,
+        show_handoff_preview=show_handoff_preview,
     )
     if edit_watch is not None and not outcome.stop:
         edit_watch.observe_on_disk(config, log)
@@ -12721,6 +12749,7 @@ def _wait_at_dispatcher_pause(
     log: LogFn,
     operator_prompt: _OperatorPromptState,
     stop_watch: _StopRequestWatch | None = None,
+    show_handoff_preview: bool = False,
 ) -> PauseOutcome:
     """The pause itself; see ``_pause_at_dispatcher_pause``."""
 
@@ -12737,6 +12766,9 @@ def _wait_at_dispatcher_pause(
         _log(log, "PAUSE", reason)
         return stop_or("stop")
 
+    preview_lines = (
+        _user_pause_preview_lines(config) if show_handoff_preview else []
+    )
     if not _operator_prompt_enabled(config):
         if _pause_until_handoff_changes(
             config,
@@ -12744,6 +12776,7 @@ def _wait_at_dispatcher_pause(
             reason=reason,
             log=log,
             stop_watch=stop_watch,
+            preview_lines=preview_lines,
         ):
             return PauseOutcome(kind="resume")
         return stop_or("stop")
@@ -12762,11 +12795,14 @@ def _wait_at_dispatcher_pause(
             reason=reason,
             log=log,
             stop_watch=stop_watch,
+            preview_lines=preview_lines,
         ):
             return PauseOutcome(kind="resume")
         return stop_or("stop")
 
     _log(log, "PAUSE", _prompt_display_reason(reason))
+    for line in preview_lines:
+        _log(log, "PAUSE", line)
     result = wait_for_operator_or_handoff_change(
         reader,
         config.handoff_full_path,

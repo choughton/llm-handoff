@@ -10,13 +10,13 @@ history.
 
 ## Current Status
 
-- **Active Epic:** None. ESCALATION-RECONCILE (epic 16) closed with RECON-2
-  approved at `0427989` and merged in PR #295 (`3b37cb7`). The planner picks
-  the next epic by fit.
+- **Active Epic:** WORK-INTAKE (epic 14), on INTAKE-1 (bounded proposal or
+  escalation previews at user pauses). The planner chose it by fit after
+  ESCALATION-RECONCILE (epic 16) closed with RECON-2 approved at `0427989`
+  and merged in PR #295 (`3b37cb7`); the pre-INTAKE-1 design check is
+  resolved by the planner-approved redesign below.
 - **Parked Epic:** None.
-- **Other Open Epics:** WORK-INTAKE (epic 14, INTAKE-1 through INTAKE-3)
-  waits on its pre-INTAKE-1 user design check, taken once no open epic has
-  an unblocked story.
+- **Other Open Epics:** None.
 - **Epic Awaiting Close:** None.
 - **Current Blocker:** None.
 - **Active Branch:** main (story branches `llm-handoff/*`, one pull request per
@@ -70,21 +70,107 @@ Closed epics, with their full intros and story lists, are in
 
 ### 14. WORK-INTAKE - turn a plain request into epics and stories
 
-Fit: needs a user design check before INTAKE-1. INTAKE-2 rewrites how the
-planner turns a request into this file's epics, so take TPM-ROLE first and
-write the intake rules once for the planner/tpm split.
+Intro: turn a plain-language request typed at the operator prompt during a
+user pause into reviewed epics and story outlines, record the approved plan
+in `PROJECT_STATE.md` (or create Linear issues in Linear mode), and open the
+first epic by fit without requiring the user to edit `HANDOFF.md`,
+`PROJECT_STATE.md`, or Work Packets by hand.
 
-Before scoping INTAKE-1, route to `user` for a short design check.
+Fit: unblocked and ready to open. The pre-INTAKE-1 design check is resolved,
+TPM-ROLE and ESCALATION-RECONCILE are closed, and no other open epic remains
+in the backlog.
 
-- INTAKE-1: A command that takes a plain-language request ("build me a web page
-  about puppies") when no work is queued, writes it into `HANDOFF.md` as a
-  request, and routes to `planner`. Refuse while an assignment is active or
-  `.dispatch.lock` exists.
-- INTAKE-2: Planner intake rules: architect the request, break it into epics
-  and stories, add them to this file's Backlog (vanilla mode), then start the
-  first story. Users never write Work Packets by hand.
-- INTAKE-3: In Linear mode, the planner creates the epics and stories as Linear
-  issues instead (after LINEAR-WORKFLOW).
+Goal: let an operator type a plain-language request at a user pause, read the
+planner's `## Proposed Backlog` (or an escalation's question) directly in the
+terminal, revise it by typing changes or approve it by pressing Enter, have
+the planner record the approved epics in `PROJECT_STATE.md` (with the
+dispatcher committing `PROJECT_STATE.md` only in `commit_mode: dispatcher`,
+or creating Linear issues in Linear mode) and open the first epic by fit.
+
+Boundaries:
+
+- Do not add a `request` CLI subcommand; requests arrive through the existing
+  operator prompt at a pause.
+- Proposal handoffs (`## Proposed Backlog`) contain epics (intro, goal,
+  boundaries, `Fit:` line) and story outlines only, never Work Packets, and do
+  not edit `PROJECT_STATE.md` or create Linear issues until the operator
+  approves.
+- Terminal display of a user escalation's question or `## Proposed Backlog`
+  at a user pause must be bounded in length so the terminal stays readable
+  without opening `HANDOFF.md`.
+- At a proposal review (`## Proposed Backlog` on a user pause), the operator
+  prompt line tells the operator to press Enter to approve/start the plan or
+  type changes to revise it. Pressing Enter sends an explicit approval
+  instruction to the planner (not `OPERATOR_BEST_JUDGMENT_REQUEST`) that
+  permits editing `PROJECT_STATE.md` (`config.project_state_path`). Typed text
+  sends revision guidance back to the planner, which revises
+  `## Proposed Backlog` and routes to `user` again (no automatic loop bound).
+- In `commit_mode: dispatcher`, after the approval turn, the dispatcher
+  commits `config.project_state_path` (`PROJECT_STATE.md`) and only that file
+  (same local, ledger-only commit shape as a finalizer epic-close commit,
+  published with the next story's pull request). If the approval turn leaves
+  any other file (besides `HANDOFF.md`) changed, the dispatcher pauses
+  instead of committing.
+- On approval, the planner opens the first epic by fit: it routes to `tpm`
+  when `agents.tpm` is configured (so the `tpm` sizes stories and writes Work
+  Packets) and otherwise writes the first Work Packet itself. If a request
+  was proposed and approved while another epic was open, the approved epics
+  are added to the backlog and the planner keeps choosing the next epic by
+  fit.
+- In Linear mode, the planner creates the Linear issues at approval, never
+  during proposal/revision drafts.
+- Follow the `.claude/` rule above: Claude roles cannot write `.claude/`, so
+  any `.claude/` agent/template edits needed by prompt stories are split into
+  an operator story routed to `user` at the end of the epic rather than mixed
+  with code or Claude-dispatched packets.
+
+Stories, in execution order (INTAKE-2 was split into INTAKE-5 and INTAKE-6 to
+separate planner protocol changes from operator-only Claude file edits):
+
+- INTAKE-1: Bounded proposal or escalation previews at user pauses: print
+  the current handoff's nonempty `## Proposed Backlog`, or its escalation
+  body, once per user-route pause, capped by lines and characters with
+  control characters escaped.
+- INTAKE-5 (was INTAKE-2): Planner intake/revision protocol in the handbook,
+  planner initial/handoff prompts, `.agents/agents/planner.md`,
+  `.codex/skills/llm-handoff-planner/SKILL.md`, and corresponding
+  reference-workflow copies. When no epic has an unblocked story, invite a
+  request at the operator prompt. Recognize plain-language new-work requests,
+  propose epics with intro, goal, boundaries, Fit and story outlines under
+  `## Proposed Backlog`, and revise on guidance. Drafts route to user without
+  Work Packets, project-state edits, or Linear mutations. Approval requires
+  the explicit instruction supplied by INTAKE-3. Verification focus:
+  prompt/template parity and draft mutation boundaries. Excludes `.claude/`;
+  INTAKE-6 carries those copies.
+- INTAKE-3: Proposal approval transaction in `operator_prompt.py`,
+  `orchestrator.py`, and `dispatcher_commit.py` with tests and supporting
+  docs. Distinguish Enter approval from typed revision and explicitly
+  authorize the planner to record the approved backlog in
+  `config.project_state_path`. Preserve ordinary pause behavior. Open the
+  first epic by fit, routing to tpm when configured, otherwise assigning its
+  Work Packet; preserve existing open work when adding approved epics. In
+  dispatcher commit mode commit only the configured project-state file,
+  excluding HANDOFF.md; pause without committing if any other file changed.
+  Reuse the finalizer ledger-only commit pattern without permitting
+  completed-work edits. Verification focus: the approval transaction
+  authorizes exactly the project-state change; drafts/revisions never
+  authorize it. Approval and its commit guard stay together as one behavior.
+- INTAKE-4: Linear approval integration through `llm_handoff/init_workflow.py`,
+  `llm_handoff/prompt_templates/linear/`, generated instruction sections,
+  tests and docs. Drafts and revisions remain in HANDOFF.md without Linear
+  calls; approval creates the approved epics/stories in Linear and starts the
+  first issue under the existing Linear workflow. Verification focus:
+  generated Linear planner instructions and approval-only mutation. Any
+  `.claude/` copy edits belong to INTAKE-6.
+- INTAKE-6 (was INTAKE-2): Final operator story synchronizing
+  `.claude/agents/planner.md` and
+  `examples/reference-workflow/.claude/agents/planner.md` with completed
+  intake/revision/approval rules, including applicable Linear parity from
+  INTAKE-4. Prepare complete file artifacts or an applyable patch under
+  `logs/dispatch/operator/INTAKE-6/` and route to user under the handbook
+  Operator Stories contract. No runtime changes. Verification focus: Claude
+  planner copy parity after the operator applies the artifact. This story
+  stays last; full provider parity is not complete until it is applied.
 
 ## Open Followups
 
