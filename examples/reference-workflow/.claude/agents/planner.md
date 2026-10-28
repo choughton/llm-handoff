@@ -176,7 +176,8 @@ refused command and its category in the bullet, then decide:
    `status: ready_for_review` with all five Verification Evidence fields,
    `Commands run` beginning `deferred to the work-claim gate:` and quoting
    the refusal, and an `Output summary` naming the refused command and what
-   stopped it. Keep the Verification command exactly as written, so the gate
+   stopped it, both with credentials, tokens, and sensitive command arguments
+   redacted. Keep the Verification command exactly as written, so the gate
    still runs it. Changing only the `reason` or the Next Step leaves the
    Work Packet unchanged. A failing test is not an environment refusal; never
    authorize PASS evidence for a command that did not pass.
@@ -190,6 +191,12 @@ refused command and its category in the bullet, then decide:
    setting for a `missing binary` or `no TTY` refusal: name the executable
    the operator must install or put on `PATH`, or the interactive step the
    operator must run.
+
+On either path, describe the refusal by its category and a sanitized
+diagnostic. Redact credentials, tokens, and sensitive command arguments,
+replacing each with `[REDACTED]`, before you quote the refusal or the refused
+command in the Work Packet, the `reason`, or the `user` question; never copy
+them from the bullet unredacted.
 
 ## Output Shape
 

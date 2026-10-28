@@ -80,7 +80,7 @@ mode always runs the gate), you may still hand back
 
 - Keep all five `## Verification Evidence` fields.
 - Under `Commands run`, write
-  `deferred to the work-claim gate: <the refusal, quoted>`.
+  `deferred to the work-claim gate: <the refusal, redacted and quoted>`.
 - Under `Output summary`, name the refused command and whether a permission
   rule or a missing tool stopped it.
 - In dispatcher commit mode, leave `scope_sha` empty and set
@@ -105,10 +105,17 @@ session refused a command, a binary is missing, or a command needed a TTY,
 include this bullet in the handback body so the validator and planner can
 tell an environment refusal from a code or test failure:
 
-`- **Environment refusal:** <permission rule | missing binary | no TTY>: <the refusal text, quoted>`
+`- **Environment refusal:** <permission rule | missing binary | no TTY>: <the refusal text, redacted and quoted>`
 
 A failing test is not an environment refusal, and a gate-deferred
 `ready_for_review` handback does not need this bullet.
+
+Redact before quoting: in this bullet, the
+`deferred to the work-claim gate:` entry, and the refused command named in
+`Output summary`, redact credentials, tokens, and sensitive command
+arguments, replacing each with `[REDACTED]`. Keep the refusal category and a
+sanitized diagnostic that still shows what stopped the command. The
+dispatcher does not sanitize handoff text for you.
 
 ## Completion Checklist
 
