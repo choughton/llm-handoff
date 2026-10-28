@@ -10,10 +10,11 @@ history.
 
 ## Current Status
 
-- **Active Epic:** None. WORK-INTAKE (epic 14) closed with INTAKE-6 approved
-  at `989f2902c44a62fdff96ec31bdb6e0c96744f159` and merged in PR #304
-  (`e5a6ea4`). No open epic remains in the backlog; the planner selects or
-  proposes the next bounded assignment.
+- **Active Epic:** REFUSAL-REDACTION (epic 23), opened after operator approval
+  of the Work Intake proposal; routed to `tpm` for story grooming and the first
+  Work Packet. WORK-INTAKE (epic 14) closed with INTAKE-6 approved at
+  `989f2902c44a62fdff96ec31bdb6e0c96744f159` and merged in PR #304
+  (`e5a6ea4`).
 - **Parked Epic:** None.
 - **Other Open Epics:** None.
 - **Epic Awaiting Close:** None.
@@ -67,8 +68,54 @@ renumbered in execution order.
 Closed epics, with their full intros and story lists, are in
 `COMPLETED_WORK.md`; the open epics below keep their numbers.
 
-No open epics. The planner may propose new work from a plain-language request
-at a user pause (see the Work Intake section of the handbook).
+### 23. REFUSAL-REDACTION - redact sensitive values in environment-refusal diagnostics
+
+Intro: From the ACTIVE-6 and ACTIVE-7 security audits (medium, non-blocking):
+implementer `Environment refusal` bullets and gate-deferred `Commands run`
+entries quote raw refusal text, which can copy credentials, tokens, or
+sensitive command arguments into `HANDOFF.md`, where the handbook and planner
+prompts also instruct agents to quote it.
+
+Fit: Unblocked, self-contained security hardening, and the only actionable item
+remaining in `PROJECT_STATE.md`.
+
+Goal: Require redacting credentials, tokens, and sensitive command arguments in
+quoted `Environment refusal` bullets and `deferred to the work-claim gate:`
+refusal diagnostics across the handbook, implementer prompts, planner prompts,
+and helper/template copies (root and `examples/reference-workflow/`), while
+preserving the refusal category (`permission rule`, `missing binary`,
+`no TTY`) and a sanitized diagnostic; remove the closed followup from
+`PROJECT_STATE.md`.
+
+Boundaries:
+
+- Keep the existing `- **Environment refusal:** <permission rule | missing binary | no TTY>: <...>`
+  and `deferred to the work-claim gate: <...>` syntax so validator parsing
+  (`_environment_refusal`, `planner_redispatch_after_refusal`) and existing
+  valid handoffs continue to work.
+- Update root and `examples/reference-workflow/` copies of protocol docs, role
+  prompts, `.agents/agents/`, and `.codex/skills/` together with
+  `tests/test_reference_workflow.py` and `tests/ported/test_handoff_docs.py`.
+- Keep `.claude/agents/` edits (`backend.md`, `frontend.md`, `planner.md` in
+  root and `examples/reference-workflow/`) in a separate final operator story
+  routed to `user` with an operator artifact under `logs/dispatch/operator/`.
+
+Stories:
+
+- REDACT-1: Require redacting credentials and sensitive arguments in
+  `Environment refusal` bullets and `deferred to the work-claim gate:`
+  diagnostics across `docs/handoff/` (`HANDBOOK.md`, `README.md`,
+  `BACKEND_HANDOFF_PROMPT.md`, `FRONTEND_HANDOFF_PROMPT.md`,
+  `AUDITOR_HANDOFF_PROMPT.md`, `PLANNER_HANDOFF_PROMPT.md`,
+  `PLANNER_INITIAL_PROMPT.md`), `.agents/agents/{backend,frontend,planner}.md`,
+  `.codex/skills/{llm-handoff,llm-handoff-frontend,llm-handoff-planner}/SKILL.md`,
+  and their `examples/reference-workflow/` copies; update
+  `tests/test_reference_workflow.py`, `tests/ported/test_handoff_docs.py`,
+  `PROJECT_STATE.md`, and `CHANGELOG.md`.
+- REDACT-2: Operator story synchronizing
+  `.claude/agents/{backend,frontend,planner}.md` and
+  `examples/reference-workflow/.claude/agents/{backend,frontend,planner}.md`
+  with the `REDACT-1` redaction wording.
 
 ## Open Followups
 
