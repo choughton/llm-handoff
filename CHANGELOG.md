@@ -6,6 +6,10 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The README has an Evidence So Far section with the self-hosting review
+  numbers: how often same-vendor and cross-vendor reviewers failed Claude's
+  work, and how often the GitHub code review still found something after
+  both in-loop reviews passed, with the limits of that comparison.
 - Linear-mode Work Intake (INTAKE-4). The generated `## Linear Mode: planner`
   sections (with and without a tpm) and the shared Linear `AGENTS.md` block
   now say proposal and revision turns stay in `HANDOFF.md` and make no Linear

@@ -26,6 +26,7 @@ service orchestrator.
 - [Agent Safety Defaults](#agent-safety-defaults)
 - [What This Is And Is Not](#what-this-is-and-is-not)
 - [Why Not LangGraph, AutoGen, Or CrewAI?](#why-not-langgraph-autogen-or-crewai)
+- [Evidence So Far](#evidence-so-far)
 - [Known Limitations](#known-limitations)
 - [Further Reading](#further-reading)
 - [License](#license)
@@ -544,6 +545,29 @@ narrower: one repo, one branch, one handoff file, one agent at a time. The
 differentiator is not a graph runtime. It is the inversion that prompts are
 advisory while validators are authoritative. The router can propose, but the
 loop only advances when the handoff state parses, routes, and validates.
+
+## Evidence So Far
+
+`llm-handoff` has built itself through its own loop since 2026-10-14. These
+numbers come from that repository's dispatch logs for October 14 to 27, with
+Claude Code implementing every story:
+
+| Reviewer of Claude's code | Quality audit failed | Security review failed |
+| --- | --- | --- |
+| Claude (same vendor) | 4 of 95 (4%) | 0 of 84 (0%) |
+| Codex (different vendor) | 48 of 263 (18%) | 42 of 281 (15%) |
+
+After 45 of the 48 Codex quality failures, the implementer changed code
+before the next audit. After both in-loop reviews passed, the Codex code
+review on GitHub still left at least one finding on 102 of 188 story pull
+requests (142 findings, 42 of them rated P1).
+
+This is not a controlled comparison. The same-vendor reviews come from the
+first three days, with different stories and prompts. A changed commit does
+not prove that a finding was a real defect. After October 17 the GitHub
+reviewer and the in-loop auditor were the same vendor. Read it as one
+repository's evidence that a second vendor's review catches what the first
+misses, not as a benchmark.
 
 ## Known Limitations
 
