@@ -10,15 +10,18 @@ history.
 
 ## Current Status
 
-- **Active Epic:** WORK-INTAKE (epic 14), on INTAKE-5 (planner intake and
-  revision protocol). INTAKE-1 (bounded proposal or escalation previews at
-  user pauses) was approved by the auditor at `893b59a` and merged in PR
-  #297 (`4338c2d`). INTAKE-5 adds the Work Intake rule to the handbook and
-  the non-Claude planner instructions and their reference copies; the
-  approval transaction (INTAKE-3), Linear approval (INTAKE-4), and the
-  Claude planner copies (INTAKE-6) remain. The planner chose this epic by
-  fit after ESCALATION-RECONCILE (epic 16) closed with RECON-2 approved at
-  `0427989` and merged in PR #295 (`3b37cb7`).
+- **Active Epic:** WORK-INTAKE (epic 14), on INTAKE-3 (proposal approval
+  transaction). INTAKE-1 (bounded proposal or escalation previews at user
+  pauses) was approved by the auditor at `893b59a` and merged in PR #297
+  (`4338c2d`). INTAKE-5 (planner intake and revision protocol) was approved
+  at `19849101ab713bd49ffde37a132381288c2c706f` and merged in PR #298
+  (`378790a`). INTAKE-3 is implemented and awaiting audit: a proposal
+  review prompt where Enter sends the dispatcher's approval instruction and
+  typed text revises, and, in dispatcher commit mode, a commit of the
+  configured project state file alone after a valid approval turn. Linear
+  approval (INTAKE-4) and the Claude planner copies (INTAKE-6) remain. The
+  planner chose this epic by fit after ESCALATION-RECONCILE (epic 16) closed
+  with RECON-2 approved at `0427989` and merged in PR #295 (`3b37cb7`).
 - **Parked Epic:** None.
 - **Other Open Epics:** None.
 - **Epic Awaiting Close:** None.

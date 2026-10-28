@@ -6,6 +6,36 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The proposal approval commit now disables repository hooks for the whole
+  transaction, including the change listing and `git add`, so a
+  `post-index-change` hook cannot change the checkout while
+  `project_state_path` is staged. The dispatcher also lists the changes
+  again after staging and refuses the commit when any other path changed,
+  unstaging the file if it staged it (INTAKE-3 pull request review fix).
+- The proposal approval commit (`commit_approved_project_state`) now
+  disables every repository hook with a command-scoped empty
+  `core.hooksPath`, since `--no-verify` leaves `prepare-commit-msg` and
+  `post-commit` running, and checks that the new commit sits on the previous
+  HEAD and changes only `project_state_path`. A commit that fails that check
+  pauses with a review reason and is left in place, not undone (INTAKE-3
+  audit fix).
+- A user-route pause whose handoff holds a nonempty `## Proposed Backlog`
+  is now a proposal review (INTAKE-3). The prompt line says Enter approves
+  the plan and typed text revises it. Enter schedules one planner dispatch
+  with a dispatcher-written approval instruction that quotes the proposal
+  shown, names `project_state_path`, and asks the planner to record the
+  approved epics, keep existing open work, and open the next epic by fit
+  (routing to `tpm` when configured, otherwise writing the Work Packet).
+  Typed text, `@planner`, and every other action stay non-approval; typed
+  text gets a note that it is revision guidance. The approval is bound to
+  the shown handoff content and dropped if the handoff changes first, and
+  the planner session is not resumed after it. In `commit_mode: dispatcher`,
+  after a valid approval turn the dispatcher commits `project_state_path`
+  alone as a local ledger-only commit (`commit_approved_project_state` in
+  `dispatcher_commit.py`), never the handoff, makes no commit when the file
+  is unchanged, and pauses without committing when any other file changed,
+  on a Git failure, or when the approval turn failed or left an invalid
+  handoff.
 - The README, `AGENTS.md`, `CONTRIBUTING.md`, and the package description
   call `llm-handoff` a file-based handoff dispatcher instead of a reference
   implementation, and the README's Known Limitations say it has been
