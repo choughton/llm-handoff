@@ -7,7 +7,7 @@ test suite. The first-run steps (initialize a target repository, write a
 handoff, dry run, run) are in the [README quick start](README.md#quick-start),
 with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
 
-`llm-handoff` is in pre-release extraction and is not yet published to PyPI.
+`llm-handoff` 0.1.0 is published on PyPI as `llm-handoff`.
 
 ## Requirements
 
@@ -21,8 +21,10 @@ with per-platform commands in [QUICKSTART.md](QUICKSTART.md).
   Claude Code, so it needs all three. With `init --tracker linear` the
   reference mapping puts `planner` and `frontend` on Claude Code instead
   (Linear mode does not support `antigravity` roles), so it needs only
-  Claude Code and Codex. A single-vendor setup (`init --provider claude`,
-  `codex`, or `antigravity`) needs only that one CLI. For all-Codex, `init`
+  Claude Code and Codex. With two of the three CLIs installed, `init` writes
+  a [two-CLI mapping](CONFIGURATION.md#two-cli-mappings) that uses only
+  those two. A single-vendor setup (`init --provider claude`, `codex`, or
+  `antigravity`) needs only that one CLI. For all-Codex, `init`
   writes `commit_mode: dispatcher` into `dispatch_config.yaml`; keep it, and
   keep the work-claim gate on (see
   [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits)).
@@ -37,8 +39,20 @@ commands are in [QUICKSTART.md](QUICKSTART.md#0-check-prerequisites);
 
 ## Install As A Package
 
-The repository ships a `pyproject.toml`, so you can install it from a checkout
-or straight from Git.
+From PyPI, with `pipx` (an isolated install with `llm-handoff` on `PATH`):
+
+```bash
+pipx install llm-handoff
+```
+
+Or with pip, inside a virtual environment:
+
+```bash
+python -m pip install llm-handoff
+```
+
+The repository also ships a `pyproject.toml`, so you can install the latest
+`main` from a checkout or straight from Git.
 
 From a local checkout:
 

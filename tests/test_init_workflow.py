@@ -12,7 +12,10 @@ from llm_handoff import init_workflow as init_workflow_module
 from llm_handoff.config import CLAUDE_DEFAULT_ALLOWED_TOOLS, load_dispatch_config
 from llm_handoff.init_workflow import (
     ANTIGRAVITY_MAPPING,
+    CLAUDE_ANTIGRAVITY_MAPPING,
+    CLAUDE_CODEX_MAPPING,
     CLAUDE_MAPPING,
+    CODEX_ANTIGRAVITY_MAPPING,
     CODEX_MAPPING,
     REFERENCE_MAPPING,
     InitConflictError,
@@ -494,17 +497,13 @@ def test_init_auto_detects_a_claude_only_machine(tmp_path: Path) -> None:
     "available",
     [
         (),
-        ("claude", "codex"),
         ("codex", "gemini"),
-        ("claude", "codex", "gemini"),
         ("gemini",),
-        ("claude", "agy"),
-        ("codex", "agy"),
         ("agy", "gemini"),
         ("claude", "codex", "agy"),
     ],
 )
-def test_init_keeps_the_reference_mapping_unless_a_single_provider(
+def test_init_keeps_the_reference_mapping_with_all_three_or_no_providers(
     tmp_path: Path,
     available: tuple[str, ...],
 ) -> None:
@@ -717,7 +716,7 @@ def test_init_with_claude_and_codex_writes_dispatcher_commits(
         tmp_path, available_providers=("claude", "codex")
     )
 
-    assert result.provider_mapping == REFERENCE_MAPPING
+    assert result.provider_mapping == CLAUDE_CODEX_MAPPING
     config = load_dispatch_config(
         repo_root=tmp_path,
         config_path=tmp_path / "dispatch_config.yaml",
@@ -725,6 +724,129 @@ def test_init_with_claude_and_codex_writes_dispatcher_commits(
     assert config.agents["backend"].provider == "codex"
     assert config.commit_mode == "dispatcher"
     assert config.enforce_work_packet is True
+
+
+@pytest.mark.parametrize(
+    ("available", "mapping", "providers", "commit_mode", "normalizer"),
+    [
+        (
+            ("claude", "codex"),
+            CLAUDE_CODEX_MAPPING,
+            {
+                "planner": "claude",
+                "backend": "codex",
+                "frontend": "codex",
+                "auditor": "claude",
+                "validator": "claude",
+                "finalizer": "claude",
+            },
+            "dispatcher",
+            "claude",
+        ),
+        (
+            ("claude", "agy"),
+            CLAUDE_ANTIGRAVITY_MAPPING,
+            {
+                "planner": "antigravity",
+                "backend": "antigravity",
+                "frontend": "antigravity",
+                "auditor": "claude",
+                "validator": "claude",
+                "finalizer": "claude",
+            },
+            "agent",
+            "claude",
+        ),
+        (
+            ("codex", "agy"),
+            CODEX_ANTIGRAVITY_MAPPING,
+            {
+                "planner": "antigravity",
+                "backend": "codex",
+                "frontend": "codex",
+                "auditor": "antigravity",
+                "validator": "antigravity",
+                "finalizer": "antigravity",
+            },
+            "dispatcher",
+            "codex",
+        ),
+    ],
+)
+def test_init_with_two_provider_clis_uses_only_those_clis(
+    tmp_path: Path,
+    available: tuple[str, ...],
+    mapping: str,
+    providers: dict[str, str],
+    commit_mode: str,
+    normalizer: str,
+) -> None:
+    result = init_reference_workflow(tmp_path, available_providers=available)
+
+    assert result.provider_mapping == mapping
+    config = load_dispatch_config(
+        repo_root=tmp_path,
+        config_path=tmp_path / "dispatch_config.yaml",
+    )
+    assert {
+        role: config.agents[role].provider for role in providers
+    } == providers
+    binaries = {"claude": "claude", "codex": "codex", "antigravity": "agy"}
+    assert {
+        binaries[config.agents[role].provider] for role in providers
+    } == set(available)
+    # The quality auditor never shares a vendor with an implementer.
+    auditor = config.agents["auditor"].provider
+    assert auditor not in {
+        config.agents["backend"].provider,
+        config.agents["frontend"].provider,
+    }
+    assert config.commit_mode == commit_mode
+    assert config.normalizer.provider == normalizer
+    # The security reviewer stays on auto, which picks a different vendor.
+    assert config.audit.security_provider is None
+
+
+def test_two_cli_mapping_keeps_the_rest_of_the_template(tmp_path: Path) -> None:
+    template = (TEMPLATE_ROOT / "dispatch_config.yaml").read_text(encoding="utf-8")
+
+    rendered = init_workflow_module.render_config(template, CLAUDE_CODEX_MAPPING)
+
+    before = template[: template.index("agents:\n")]
+    after = template[template.index("normalizer:\n") :]
+    assert rendered.startswith(before)
+    assert rendered.endswith(after)
+    assert "  # Written by `llm-handoff init` for Claude Code and Codex" in rendered
+    assert "    skill_name: llm-handoff-frontend\n" in rendered
+
+
+@pytest.mark.parametrize(
+    ("available", "mapping"),
+    [
+        (("claude", "agy"), CLAUDE_MAPPING),
+        (("codex", "agy"), CODEX_MAPPING),
+    ],
+)
+def test_linear_init_replaces_a_two_cli_mapping_with_agy(
+    tmp_path: Path,
+    available: tuple[str, ...],
+    mapping: str,
+) -> None:
+    result = init_reference_workflow(
+        tmp_path,
+        available_providers=available,
+        tracker="linear",
+        tracker_team="ENG",
+        tracker_project="Backlog",
+    )
+
+    assert result.provider_mapping == mapping
+    assert result.detected_providers == available
+    config = load_dispatch_config(
+        repo_root=tmp_path,
+        config_path=tmp_path / "dispatch_config.yaml",
+    )
+    assert {agent.provider for agent in config.agents.values()} == {mapping}
 
 
 def test_init_provider_codex_writes_a_loadable_all_codex_config(
@@ -1285,7 +1407,7 @@ def test_resolve_provider_mapping_prefers_an_explicit_choice() -> None:
     assert resolve_provider_mapping(None, ("claude", "gemini")) == REFERENCE_MAPPING
     assert resolve_provider_mapping("codex", ("claude",)) == CODEX_MAPPING
     assert resolve_provider_mapping(None, ("codex",)) == CODEX_MAPPING
-    assert resolve_provider_mapping(None, ("claude", "codex")) == REFERENCE_MAPPING
+    assert resolve_provider_mapping(None, ("claude", "codex")) == CLAUDE_CODEX_MAPPING
     assert resolve_provider_mapping(None, ("codex", "gemini")) == REFERENCE_MAPPING
     assert resolve_provider_mapping(None, ("gemini",)) == REFERENCE_MAPPING
     assert (
@@ -1293,7 +1415,13 @@ def test_resolve_provider_mapping_prefers_an_explicit_choice() -> None:
         == ANTIGRAVITY_MAPPING
     )
     assert resolve_provider_mapping(None, ("agy",)) == ANTIGRAVITY_MAPPING
-    assert resolve_provider_mapping(None, ("claude", "agy")) == REFERENCE_MAPPING
+    assert (
+        resolve_provider_mapping(None, ("claude", "agy")) == CLAUDE_ANTIGRAVITY_MAPPING
+    )
+    assert (
+        resolve_provider_mapping(None, ("agy", "codex")) == CODEX_ANTIGRAVITY_MAPPING
+    )
+    assert resolve_provider_mapping(None, ("claude", "codex", "agy")) == REFERENCE_MAPPING
     assert resolve_provider_mapping(None, ("agy", "gemini")) == REFERENCE_MAPPING
     assert resolve_provider_mapping(None, ()) == REFERENCE_MAPPING
 
@@ -1338,7 +1466,7 @@ def _fake_which(names: set[str]):
     return fake_which
 
 
-def test_init_detects_agy_beside_claude_as_the_reference_mapping(
+def test_init_detects_agy_beside_claude_as_the_claude_antigravity_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -1349,7 +1477,7 @@ def test_init_detects_agy_beside_claude_as_the_reference_mapping(
 
     assert result.antigravity_detected is True
     assert result.detected_providers == ("claude", "agy")
-    assert result.provider_mapping == REFERENCE_MAPPING
+    assert result.provider_mapping == CLAUDE_ANTIGRAVITY_MAPPING
 
 
 def test_init_detects_an_agy_only_path_as_the_antigravity_mapping(

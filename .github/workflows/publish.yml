@@ -1,0 +1,74 @@
+# Publishes llm-handoff to PyPI when a version tag (v0.1.0, ...) is pushed.
+# PyPI trusted publishing authenticates this workflow, so no API token is
+# stored anywhere. One-time setup on PyPI: add a trusted publisher for
+# owner choughton, repository llm-handoff, workflow publish.yml, and
+# environment pypi.
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Configure Git for tests that commit
+        run: |
+          git config --global user.name "llm-handoff tests"
+          git config --global user.email "tests@example.invalid"
+      - name: Run the test suite
+        run: python -m pytest tests -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Check the tag matches the package version
+        shell: bash
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${version}." >&2
+            exit 1
+          fi
+      - name: Build the sdist and wheel
+        run: |
+          python -m pip install build
+          python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/llm-handoff/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

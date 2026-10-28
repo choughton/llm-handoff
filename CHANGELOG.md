@@ -2,10 +2,32 @@
 
 All notable changes to `llm-handoff` will be documented here.
 
-This project follows a simple pre-release changelog until the first public tag.
+## 0.1.0 - 2026-10-28
 
-## Unreleased
+The first tagged release and the first one on PyPI (`pipx install
+llm-handoff`). The entries below cover everything since the 2026-10-19
+pre-release snapshot.
 
+- `init` with two of the three provider CLIs on `PATH` (Claude Code, Codex,
+  `agy`) now writes a mapping that uses only those two, instead of the
+  reference mapping with roles on the missing CLI. It moves only the roles
+  the missing CLI held and keeps the quality auditor on a different vendor
+  from both implementers: Claude and Codex put `planner` on Claude and
+  `frontend` on Codex; Claude and `agy` put `backend` on `agy` with
+  `commit_mode: agent`; Codex and `agy` put `frontend` on Codex and the
+  `auditor`, `validator`, and `finalizer` on `agy`, with the normalizer on
+  Codex. With `--tracker linear` the two mappings with `agy` become
+  all-Claude or all-Codex. All three CLIs, or none, still give the reference
+  mapping, and `--provider` is unchanged.
+- `--help` and usage errors name the command `llm-handoff` when it runs as
+  the installed console script, and `python -m llm_handoff` otherwise.
+- Package metadata for PyPI: version 0.1.0, author, keywords, classifiers,
+  and links to the repository, issues, and changelog. The README, INSTALL.md,
+  and QUICKSTART.md install from PyPI, and the README Status describes the
+  0.1.0 release.
+- A GitHub Actions workflow publishes to PyPI through trusted publishing
+  when a `v*` tag is pushed, after the test suite passes on Python 3.11 and
+  3.14 and the tag matches the package version.
 - The README has an Evidence So Far section with the self-hosting review
   numbers: how often same-vendor and cross-vendor reviewers failed Claude's
   work, and how often the GitHub code review still found something after
@@ -2133,7 +2155,3 @@ and `CONFIGURATION.md`.
 - Behavior change: the dispatcher no longer follows a symlink or junction at
   or above the carry-over record. It writes and deletes the record through
   pinned directory handles, or keeps it in memory where it cannot.
-
-## 0.0.0
-
-- No public release tag has been published yet.

@@ -6,7 +6,7 @@ explains each step; this page only lists what to type. Replace
 `C:\path\to\your-project` or `/path/to/your-project` with your target
 repository.
 
-This is pre-release software. Read the [README status](README.md#status)
+This is a 0.x release. Read the [README status](README.md#status)
 before using it against a repository with sensitive or production work.
 
 ## 0. Check Prerequisites
@@ -32,18 +32,19 @@ run the dispatcher inside WSL2 or a container with no push credential.
 Windows PowerShell:
 
 ```powershell
-python -m pip install git+https://github.com/choughton/llm-handoff.git
+pipx install llm-handoff
 llm-handoff --help
 ```
 
 macOS or Linux:
 
 ```bash
-python -m pip install git+https://github.com/choughton/llm-handoff.git
+pipx install llm-handoff
 llm-handoff --help
 ```
 
-If you installed into a virtual environment that is not activated, call the
+Without `pipx`, `python -m pip install llm-handoff` inside a virtual
+environment works too. If you installed into a virtual environment that is not activated, call the
 command by path: `.\.venv\Scripts\llm-handoff.exe` on Windows,
 `.venv/bin/llm-handoff` on macOS or Linux.
 

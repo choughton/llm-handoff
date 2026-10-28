@@ -6,9 +6,8 @@ contract.
 
 ## Current State
 
-The current repository is a pre-release scaffold. The full dispatcher test
-suite now runs as one public gate, including the ported migration coverage and
-the focused public-default tests.
+The full dispatcher test suite runs as one public gate, including the ported
+migration coverage and the focused public-default tests.
 
 One test, `test_timed_out_cmd_shim_child_is_killed_with_its_tree` in
 `tests/test_process_tree.py`, launches a real Windows `.cmd` shim process tree

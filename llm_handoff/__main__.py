@@ -38,12 +38,12 @@ from llm_handoff.config import (
 from llm_handoff.doctor import run_doctor
 from llm_handoff.init_workflow import (
     DEFAULT_TRACKER_MCP_SERVER,
-    REFERENCE_MAPPING,
     TRACKER_LINEAR,
     InitConflictError,
     InitResult,
     InitWorkflowError,
     TrackerSwitchConflictError,
+    describe_provider_mapping,
     init_reference_workflow,
     is_interpreter_executable,
     verification_executable,
@@ -436,8 +436,10 @@ def init_command(
             "Put every role on one provider CLI: claude, codex, or "
             "antigravity. Default: claude when Claude Code is the only provider "
             "CLI on PATH, codex when Codex is the only provider CLI on PATH, "
-            "antigravity when agy is the only provider CLI on PATH, otherwise "
-            "the reference mapping. Linear mode does not support antigravity."
+            "antigravity when agy is the only provider CLI on PATH, a two-CLI "
+            "mapping that keeps the auditor on a different vendor from every "
+            "implementer when two are, otherwise the reference mapping. Linear "
+            "mode does not support antigravity."
         ),
     ),
     verification_command: str | None = typer.Option(
@@ -533,11 +535,7 @@ def init_command(
     action = "DRY RUN" if result.dry_run else "Initialized"
     typer.echo(f"{action}: {result.template} in {result.target_root}")
     detected = ", ".join(result.detected_providers) or "none"
-    mapping_note = (
-        "reference (mixed providers)"
-        if result.provider_mapping == REFERENCE_MAPPING
-        else f"all roles on {result.provider_mapping}"
-    )
+    mapping_note = describe_provider_mapping(result.provider_mapping)
     typer.echo(f"Provider mapping: {mapping_note}; provider CLIs found: {detected}")
     typer.echo(f"Tracker: {result.tracker}")
     typer.echo(f"Copy: {len(result.copied)} file(s)")
@@ -828,12 +826,22 @@ def _dispatch_callback(
     )
 
 
+def _prog_name() -> str:
+    """Name the command the way it was started, for usage and help text."""
+
+    # The console script runs as llm-handoff (llm-handoff.exe on Windows).
+    script = sys.argv[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if Path(script).stem.lower() == "llm-handoff":
+        return "llm-handoff"
+    return "python -m llm_handoff"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     command = typer.main.get_command(app)
     try:
         result = command.main(
             args=list(argv) if argv is not None else None,
-            prog_name="python -m llm_handoff",
+            prog_name=_prog_name(),
             standalone_mode=False,
         )
     except click.exceptions.Exit as exc:

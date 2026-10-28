@@ -4,12 +4,32 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-handoff"
-version = "0.0.0"
+version = "0.1.0"
 description = "A file-based handoff dispatcher for multi-CLI agent workflows."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Chad Houghton" }]
+keywords = [
+    "ai-agents",
+    "antigravity",
+    "claude-code",
+    "codex",
+    "handoff",
+    "llm",
+    "multi-agent",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Quality Assurance",
+]
 # Runtime dependencies mirror requirements-dev.txt without the test and lint
 # tools (pytest, pytest-xdist, pre-commit, ruff) and the build backend
 # (hatchling).
@@ -22,6 +42,12 @@ dependencies = [
     "PyYAML",
     "typer",
 ]
+
+[project.urls]
+Homepage = "https://github.com/choughton/llm-handoff"
+Repository = "https://github.com/choughton/llm-handoff"
+Issues = "https://github.com/choughton/llm-handoff/issues"
+Changelog = "https://github.com/choughton/llm-handoff/blob/main/CHANGELOG.md"
 
 [project.scripts]
 llm-handoff = "llm_handoff.__main__:main"
