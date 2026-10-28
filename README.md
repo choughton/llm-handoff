@@ -2,10 +2,10 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-`llm-handoff` is a reference implementation of a file-based dispatch loop for
-multi-CLI AI coding workflows. It runs one agent CLI at a time against a
-single repository, passes work between them through one Markdown file, and
-only advances when that file parses, routes, and validates.
+`llm-handoff` is a file-based dispatch loop for multi-CLI AI coding workflows.
+It runs one agent CLI at a time against a single repository, passes work
+between them through one Markdown file, and only advances when that file
+parses, routes, and validates.
 
 > Prompts are advisory. Validators are authoritative.
 
@@ -535,7 +535,7 @@ loop only advances when the handoff state parses, routes, and validates.
 
 ## Known Limitations
 
-- The reference implementation has been validated primarily in one workflow.
+- `llm-handoff` has been validated in three repositories so far.
 - Provider CLI behavior can change underneath the dispatcher. The default
   permission and sandbox flags follow each CLI's documentation but have not
   been run against every CLI version and platform.
