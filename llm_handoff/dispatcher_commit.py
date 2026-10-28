@@ -26,9 +26,10 @@ paths on their own with the same marker.
 
 After a Work Intake proposal approval turn, ``commit_approved_project_state``
 commits the configured project state file alone, as a local ledger-only
-commit with every repository hook disabled, refuses when any other file
-besides the handoff changed, and checks that the new commit holds only that
-file.
+commit with every repository hook disabled for the whole transaction
+(listing, staging, and committing), refuses when any other file besides the
+handoff changed, before or after staging, and checks that the new commit
+holds only that file.
 """
 
 from __future__ import annotations
@@ -362,16 +363,19 @@ _STATUS_FIELDS_BEFORE_PATH = {"1": 8, "2": 9, "u": 10, "?": 1}
 
 def _changed_paths(
     repo_root: Path,
+    git_options: Sequence[str] = (),
 ) -> tuple[set[str], set[str]] | None:
     """Every path changed in the index or the working tree, untracked files
     included, and the unmerged ones among them; None when Git fails.
 
     Both sides of a rename or copy are listed, so a staged rename into or
-    out of an allowed path is still seen.
+    out of an allowed path is still seen. ``git_options`` go before the
+    subcommand, such as the ``-c core.hooksPath=...`` hook override.
     """
 
     status = _git(
-        repo_root, ["status", "--porcelain=v2", "--untracked-files=all", "-z"]
+        repo_root,
+        [*git_options, "status", "--porcelain=v2", "--untracked-files=all", "-z"],
     )
     if status.returncode != 0:
         return None
@@ -412,17 +416,44 @@ def commit_approved_project_state(
     included, may hold changes only to ``handoff_path`` and
     ``project_state_path``. Any other changed path stops the commit, and
     nothing is staged, discarded, or absorbed. The commit holds exactly
-    ``project_state_path`` (``--only``, with every repository hook disabled
-    through a command-scoped empty ``core.hooksPath``), never the handoff,
-    and is local: nothing is pushed. The new commit is then checked: when
-    its parent is not the previous HEAD or it changes any other path, the
-    result carries its ``sha`` and an ``error``, and nothing is undone. A
-    project state file with no change makes no commit.
+    ``project_state_path`` (``--only``), never the handoff, and is local:
+    nothing is pushed. Every Git command of the transaction, from the first
+    status listing through staging to the commit, runs with every
+    repository hook disabled through a command-scoped empty
+    ``core.hooksPath``, so no hook (``post-index-change`` on an index write,
+    ``prepare-commit-msg``, ``post-commit``) can change the checkout midway.
+    The changed paths are listed again after staging, just before the
+    commit, and any other changed path still stops it. The new commit is
+    then checked: when its parent is not the previous HEAD or it changes any
+    other path, the result carries its ``sha`` and an ``error``, and nothing
+    is undone. A project state file with no change makes no commit.
     """
 
     handoff = normalize_repo_path(Path(handoff_path).as_posix())
     state = normalize_repo_path(Path(project_state_path).as_posix())
-    listed = _changed_paths(repo_root)
+    # `--no-verify` skips only pre-commit and commit-msg, and `git add` or a
+    # status refresh that writes the index runs post-index-change. A
+    # command-scoped `core.hooksPath` pointing at a fresh empty directory
+    # disables every repository hook, on every platform, for each command
+    # below. The checks after staging and after the commit still confirm the
+    # checkout and what was committed.
+    with tempfile.TemporaryDirectory(prefix="llm-handoff-no-hooks-") as no_hooks:
+        return _commit_project_state_without_hooks(
+            repo_root=repo_root,
+            handoff=handoff,
+            state=state,
+            no_hooks=("-c", f"core.hooksPath={Path(no_hooks).as_posix()}"),
+        )
+
+
+def _commit_project_state_without_hooks(
+    *,
+    repo_root: Path,
+    handoff: str,
+    state: str,
+    no_hooks: tuple[str, ...],
+) -> ProjectStateCommitResult:
+    listed = _changed_paths(repo_root, no_hooks)
     if listed is None:
         return ProjectStateCommitResult(
             error="git status failed; the working tree could not be listed"
@@ -440,12 +471,16 @@ def commit_approved_project_state(
             error=f"{state} was deleted or is not a file; nothing was committed"
         )
 
-    add = _git(repo_root, [*_LITERAL_PATHSPECS, "add", "--", state])
+    staged_before = _git(
+        repo_root,
+        [*no_hooks, *_LITERAL_PATHSPECS, "diff", "--cached", "--quiet", "--", state],
+    )
+    add = _git(repo_root, [*no_hooks, *_LITERAL_PATHSPECS, "add", "--", state])
     if add.returncode != 0:
         return ProjectStateCommitResult(error=f"git add failed: {_first_line(add)}")
     staged = _git(
         repo_root,
-        [*_LITERAL_PATHSPECS, "diff", "--cached", "--quiet", "--", state],
+        [*no_hooks, *_LITERAL_PATHSPECS, "diff", "--cached", "--quiet", "--", state],
     )
     if staged.returncode == 0:
         # Only a line-ending or stat difference: no content to commit.
@@ -454,6 +489,24 @@ def commit_approved_project_state(
         return ProjectStateCommitResult(
             error=f"git diff --cached failed: {_first_line(staged)}"
         )
+    # Recheck the scope after staging: anything that changed another path
+    # since the first listing still stops the commit, which the commit check
+    # below cannot see when the change stays in the working tree.
+    relisted = _changed_paths(repo_root, no_hooks)
+    if relisted is None:
+        return ProjectStateCommitResult(
+            error="git status failed after staging; nothing was committed"
+        )
+    others = tuple(sorted(relisted[0] - {handoff, state}))
+    if others:
+        if staged_before.returncode == 0:
+            # The project state file was not staged before this transaction,
+            # so its staging is undone; the working tree keeps its edits.
+            _git(
+                repo_root,
+                [*no_hooks, *_LITERAL_PATHSPECS, "reset", "-q", "--", state],
+            )
+        return ProjectStateCommitResult(other_changes=others)
     subject = f"Record the approved backlog in {state}"
     body = (
         "Committed by the llm-handoff dispatcher after the planner's proposal "
@@ -462,30 +515,22 @@ def commit_approved_project_state(
         f"next story.\n\nFiles:\n- {state}"
     )
     head_before = git_head(repo_root)
-    # `--no-verify` skips only pre-commit and commit-msg; prepare-commit-msg
-    # and post-commit still run, after the scope check above, and can change
-    # the commit's index, the real index, or the working tree. A
-    # command-scoped `core.hooksPath` pointing at a fresh empty directory
-    # disables every repository hook, on every platform. The check after the
-    # commit still confirms what was committed.
-    with tempfile.TemporaryDirectory(prefix="llm-handoff-no-hooks-") as no_hooks:
-        commit = _git(
-            repo_root,
-            [
-                "-c",
-                f"core.hooksPath={Path(no_hooks).as_posix()}",
-                *_LITERAL_PATHSPECS,
-                "commit",
-                "--no-verify",
-                "--only",
-                "-m",
-                subject,
-                "-m",
-                body,
-                "--",
-                state,
-            ],
-        )
+    commit = _git(
+        repo_root,
+        [
+            *no_hooks,
+            *_LITERAL_PATHSPECS,
+            "commit",
+            "--no-verify",
+            "--only",
+            "-m",
+            subject,
+            "-m",
+            body,
+            "--",
+            state,
+        ],
+    )
     if commit.returncode != 0:
         return ProjectStateCommitResult(
             error=f"git commit failed: {_first_line(commit)}"

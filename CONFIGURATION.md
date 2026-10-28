@@ -354,9 +354,13 @@ With `commit_mode: dispatcher`, after an approval dispatch that exits 0 and
 whose handoff passes validation, the dispatcher lists every change in the
 index and working tree, untracked files included. When only the handoff and
 `project_state_path` changed, it commits `project_state_path` alone, never
-the handoff. Every repository hook is disabled for that commit, not only
-the ones `--no-verify` skips: the command sets `core.hooksPath` to a fresh
-empty directory, so no `prepare-commit-msg` or `post-commit` hook runs. The
+the handoff. Every repository hook is disabled for the whole transaction,
+not only the ones `--no-verify` skips: each Git command, from the change
+listing through `git add` to the commit, sets `core.hooksPath` to a fresh
+empty directory, so no `post-index-change`, `prepare-commit-msg`, or
+`post-commit` hook runs. After staging, the dispatcher lists the changes
+again, and any other changed path still stops the commit; it unstages
+`project_state_path` when it staged that file itself. The
 dispatcher then checks the new commit; if its parent is not the previous
 HEAD or it changes any other path, it pauses and leaves the commit in place
 for the operator to inspect. The commit stays local, like a finalizer

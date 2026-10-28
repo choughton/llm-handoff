@@ -6,6 +6,12 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The proposal approval commit now disables repository hooks for the whole
+  transaction, including the change listing and `git add`, so a
+  `post-index-change` hook cannot change the checkout while
+  `project_state_path` is staged. The dispatcher also lists the changes
+  again after staging and refuses the commit when any other path changed,
+  unstaging the file if it staged it (INTAKE-3 pull request review fix).
 - The proposal approval commit (`commit_approved_project_state`) now
   disables every repository hook with a command-scoped empty
   `core.hooksPath`, since `--no-verify` leaves `prepare-commit-msg` and

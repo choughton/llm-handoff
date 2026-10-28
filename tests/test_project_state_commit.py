@@ -242,6 +242,102 @@ def test_repository_hooks_do_not_run_and_cannot_widen_the_commit(
     assert status.splitlines() == ["M docs/handoff/HANDOFF.md"]
 
 
+def _install_post_index_change_hook(repo: Path) -> Path:
+    """A post-index-change hook that rewrites src.py and leaves a marker."""
+
+    marker = repo / ".git" / "index-hook-ran"
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    hook = hooks / "post-index-change"
+    hook.write_bytes(
+        (
+            "#!/bin/sh\n"
+            f"echo post-index-change >> '{marker.as_posix()}'\n"
+            "echo 'x = 99' > src.py\n"
+        ).encode("utf-8")
+    )
+    hook.chmod(0o755)
+    _git(repo, "config", "core.hooksPath", hooks.as_posix())
+    return marker
+
+
+def test_git_add_alone_runs_the_post_index_change_hook(tmp_path: Path) -> None:
+    # Control for the next test: staging writes the index, which runs
+    # post-index-change and lets it change an unrelated file.
+    repo = _repo(tmp_path)
+    marker = _install_post_index_change_hook(repo)
+    _approve(repo)
+
+    _git(repo, "add", "--", "PROJECT_STATE.md")
+
+    if not marker.exists():
+        pytest.skip("this Git does not run post-index-change")
+    assert (repo / "src.py").read_text(encoding="utf-8").strip() == "x = 99"
+
+
+def test_post_index_change_hook_does_not_run_during_staging(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    marker = _install_post_index_change_hook(repo)
+    head_before = _git(repo, "rev-parse", "HEAD")
+    _approve(repo)
+
+    result = _commit(repo)
+
+    assert result.error is None
+    assert result.other_changes == ()
+    assert result.sha == _git(repo, "rev-parse", "HEAD")
+    assert _git(repo, "rev-parse", "HEAD~1") == head_before
+    assert _head_files(repo) == ["PROJECT_STATE.md"]
+    assert not marker.exists()
+    assert (repo / "src.py").read_text(encoding="utf-8") == "x = 1\n"
+    status = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    assert status.splitlines() == ["M docs/handoff/HANDOFF.md"]
+
+
+@pytest.mark.parametrize("state_staged_before", [False, True])
+def test_a_change_appearing_during_staging_stops_the_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state_staged_before: bool
+) -> None:
+    # Simulate anything that changes another path while the project state
+    # file is staged, after the first scope check.
+    import llm_handoff.dispatcher_commit as dispatcher_commit
+
+    repo = _repo(tmp_path)
+    head_before = _git(repo, "rev-parse", "HEAD")
+    _approve(repo)
+    if state_staged_before:
+        _git(repo, "add", "--", STATE.as_posix())
+    real_git = dispatcher_commit._git
+    calls: list[list[str]] = []
+
+    def changing_git(repo_root: Path, args: list[str]):
+        calls.append(list(args))
+        result = real_git(repo_root, args)
+        if "add" in args:
+            (repo / "src.py").write_text("x = 2\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(dispatcher_commit, "_git", changing_git)
+
+    result = _commit(repo)
+
+    assert result.sha is None
+    assert result.other_changes == ("src.py",)
+    assert _git(repo, "rev-parse", "HEAD") == head_before
+    assert not any("commit" in args for args in calls)
+    # Every Git command of the transaction ran with hooks disabled.
+    assert calls and all(
+        args[0] == "-c" and args[1].startswith("core.hooksPath=") for args in calls
+    )
+    # The staging is undone only when this transaction made it; the edits
+    # stay in the working tree either way.
+    staged = _git(repo, "diff", "--cached", "--name-only").splitlines()
+    assert staged == (["PROJECT_STATE.md"] if state_staged_before else [])
+    assert "NEW-EPIC" in (repo / STATE).read_text(encoding="utf-8")
+
+
 def test_a_commit_holding_another_path_is_reported_not_undone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
