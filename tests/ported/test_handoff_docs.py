@@ -369,6 +369,61 @@ def test_refusal_review_user_path_names_a_matching_remedy(path: Path) -> None:
     assert "allowlist setting" in text
 
 
+# REDACT-1: a refusal can echo the refused command's credentials, so the
+# planner redacts it before quoting it in a re-dispatch or a user question.
+@pytest.mark.parametrize("path", REFUSAL_REVIEW_FILES)
+def test_refusal_review_requires_redaction_before_quoting(path: Path) -> None:
+    text = _refusal_review_text(path)
+
+    assert "and an `Output summary`" in text
+    if path.name == "HANDBOOK.md":
+        assert (
+            'redacts any refusal it quotes, per "Redact before quoting" above'
+        ) in text
+        assert "that identifies it, both redacted" in text
+        return
+    assert (
+        "both with credentials, tokens, and sensitive command arguments redacted"
+    ) in text
+    assert "describe the refusal by its category and a sanitized diagnostic" in text
+    assert "replacing each with `[REDACTED]`" in text
+    assert "in the Work Packet, the `reason`, or the `user` question" in text
+    assert "never copy them from the bullet unredacted" in text
+
+
+def test_handbook_states_the_redaction_rule_for_refusal_diagnostics() -> None:
+    for root in REFUSAL_REVIEW_ROOTS:
+        handbook = _flat(
+            _section(
+                (root / "docs/handoff/HANDBOOK.md").read_text(encoding="utf-8"),
+                "## Evidence Block Reference",
+            )
+        )
+        assert "**Redact before quoting.** In both fields and in an " in handbook
+        assert "`Environment refusal` bullet, replace credentials, tokens, and " in (
+            handbook
+        )
+        assert "sensitive command arguments with `[REDACTED]`" in handbook
+        assert "keeping the refusal category and a sanitized diagnostic" in handbook
+
+
+@pytest.mark.parametrize("root", REFUSAL_REVIEW_ROOTS)
+def test_initial_planner_prompt_redacts_refusal_diagnostics(root: Path) -> None:
+    content = (root / "docs/handoff/PLANNER_INITIAL_PROMPT.md").read_text(
+        encoding="utf-8"
+    )
+    text = _flat(_section(content, "## Environment Refusals"))
+
+    assert "`status: blocked_implementation_failure`" in text
+    assert "`Environment refusal` bullet" in text
+    assert "handbook's Escalation Protocol rule for environment refusal" in text
+    assert "(`permission rule`, `missing binary`, or `no TTY`)" in text
+    assert "sanitized diagnostic" in text
+    assert "credentials, tokens, and sensitive command arguments" in text
+    assert "`[REDACTED]`" in text
+    assert "never copy them from the bullet unredacted" in text
+
+
 def test_refusal_review_planner_sections_point_at_the_handbook_rule() -> None:
     handbook = (HANDOFF_DIR / "HANDBOOK.md").read_text(encoding="utf-8")
     escalation = _section(handbook, "## Escalation Protocol")

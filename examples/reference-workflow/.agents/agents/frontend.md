@@ -87,8 +87,9 @@ Verification command, and the dispatcher runs with
 `status: ready_for_review`. Keep all five `## Verification Evidence` fields
 and change two:
 
-- `Commands run` reads `deferred to the work-claim gate: <the refusal, quoted>`,
-  quoting the refusal text the shell or tool returned.
+- `Commands run` reads
+  `deferred to the work-claim gate: <the refusal, redacted and quoted>`,
+  quoting the refusal text the shell or tool returned after redaction.
 - `Output summary` identifies the refusal: the refused command and whether a
   permission rule or a missing tool stopped it.
 
@@ -114,11 +115,19 @@ When the environment, not the code, stops the work and you hand back
 command, a binary is missing, or a command needed a TTY), add exactly one
 bullet in this shape to the handback body:
 
-`- **Environment refusal:** <permission rule | missing binary | no TTY>: <the refusal text, quoted>`
+`- **Environment refusal:** <permission rule | missing binary | no TTY>: <the refusal text, redacted and quoted>`
 
 Use one of the three category names as written and quote the refusal text
-the shell or tool returned. A failing test is not an environment refusal,
-and a gate-deferred `ready_for_review` handback does not need this bullet.
+the shell or tool returned, redacted. A failing test is not an environment
+refusal, and a gate-deferred `ready_for_review` handback does not need this
+bullet.
+
+Redact before quoting: in this bullet, the
+`deferred to the work-claim gate:` entry, and the refused command named in
+`Output summary`, redact credentials, tokens, and sensitive command
+arguments, replacing each with `[REDACTED]`. Keep the refusal category and a
+sanitized diagnostic that still shows what stopped the command. The
+dispatcher does not sanitize handoff text for you.
 
 ## Completion Checklist
 

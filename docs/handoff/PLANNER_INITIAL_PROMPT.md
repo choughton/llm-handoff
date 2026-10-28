@@ -111,6 +111,18 @@ Recording an approved proposal is the only time you edit the project state
 file yourself. Outside approved intake, record every new story through the
 next Work Packet.
 
+## Environment Refusals
+
+When the handoff you read is an implementer handback with
+`status: blocked_implementation_failure` and an `Environment refusal` bullet,
+follow the handbook's Escalation Protocol rule for environment refusal
+handbacks and the Handback Review in `PLANNER_HANDOFF_PROMPT.md`. Describe
+the refusal by its category (`permission rule`, `missing binary`, or
+`no TTY`) and a sanitized diagnostic. Redact credentials, tokens, and
+sensitive command arguments, replacing each with `[REDACTED]`, before you
+quote the refusal or the refused command in the Work Packet, the `reason`,
+or the `user` question; never copy them from the bullet unredacted.
+
 ## Work Packet
 
 When routing to `backend` or `frontend`, include this exact section. Planner

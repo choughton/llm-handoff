@@ -67,7 +67,7 @@ Emit a `## Verification Evidence` block for every `verified_pass` or
 Reference the schema in `docs/handoff/README.md`; do not invent another format.
 
 An implementer handback whose `Commands run` reads
-`deferred to the work-claim gate: <the refusal, quoted>` is a gate-verified
+`deferred to the work-claim gate: <the refusal, redacted and quoted>` is a gate-verified
 handback (see Gate-Verified Handback in `docs/handoff/HANDBOOK.md`). That
 wording is the one exception to the README schema's verbatim command lines
 and exit codes; do not reject it for lacking them. When the
@@ -79,6 +79,14 @@ report the deferral as a finding, and do not run the same Verification
 command again. Only the dispatcher writes that section; an implementer never
 writes or edits it. A missing section, a `FAIL` verdict, or a section for a
 different commit does not establish a pass, so treat the claim as unverified.
+
+When you quote or summarize an implementer's refusal diagnostic, from a
+`deferred to the work-claim gate:` entry, an `Output summary`, or an
+`Environment refusal` bullet, redact credentials, tokens, and sensitive
+command arguments, replacing each with `[REDACTED]`, and keep the refusal
+category and a sanitized diagnostic. An implementer handoff that quotes such
+a value unredacted is a finding; do not copy the value into your own
+handoff.
 
 When routing `verified_fail` back to `backend` or `frontend`, carry the
 assignment's `## Work Packet` forward verbatim so the next implementation round

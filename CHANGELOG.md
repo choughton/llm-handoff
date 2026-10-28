@@ -6,6 +6,19 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Environment-refusal diagnostics are now quoted redacted (REDACT-1). The
+  handbook, `docs/handoff/README.md`, the implementer, auditor, and planner
+  prompts (including `PLANNER_INITIAL_PROMPT.md`), and the `.agents/` and
+  `.codex/` helpers, root and reference workflow, tell roles to replace
+  credentials, tokens, and sensitive command arguments with `[REDACTED]`
+  before quoting a refusal in an `Environment refusal` bullet, a
+  `deferred to the work-claim gate:` entry, the refused command in
+  `Output summary`, or a planner re-dispatch or user question, while keeping
+  the refusal category and a sanitized diagnostic. The placeholders now read
+  `<the refusal, redacted and quoted>` and `<the refusal text, redacted and
+  quoted>`; the bullet and deferral syntax and the validator's parsing are
+  unchanged. This is an instruction to the writing roles: the dispatcher does
+  not sanitize handoff text. Claude agent copies are pending REDACT-2.
 - Linear-mode Work Intake (INTAKE-4). The generated `## Linear Mode: planner`
   sections (with and without a tpm) and the shared Linear `AGENTS.md` block
   now say proposal and revision turns stay in `HANDOFF.md` and make no Linear
