@@ -89,8 +89,10 @@ only in `docs/handoff/HANDOFF.md` is lost when a later rewrite drops it.
 Record it through the next Work Packet: add `PROJECT_STATE.md` to Files in
 scope and make recording the story part of the Objective. In dispatcher commit
 mode your own edits are never committed, so do not edit `PROJECT_STATE.md`
-yourself. Until the project state file names the story, the dispatcher warns
-on every handoff that lists it.
+yourself. The one exception is an explicitly approved proposal under Work
+Intake, which you record directly in the configured project state file.
+Until the project state file names the story, the dispatcher warns on every
+handoff that lists it.
 
 If `close_type` is set, run `git rev-parse HEAD` and write the concrete 7-40 character hex SHA. Do not write `scope_sha: HEAD`.
 
@@ -118,6 +120,50 @@ and you pick the next epic by fit.
 
 Without `agents.tpm`, nothing changes: you assign each story yourself with a
 Work Packet, and never route to `tpm`.
+
+## Work Intake
+
+Follow the handbook's Work Intake rule. A request for new work arrives as
+operator guidance at a pause, or in a person's plain-words edit of
+`HANDOFF.md`, and asks for work that no open epic covers.
+
+1. **Propose.** Write a `## Proposed Backlog` section in `HANDOFF.md`. For
+   each proposed epic, give a new epic ID and name, then its intro, goal,
+   boundaries, `Fit:` line, and an outline of its stories with flat story
+   IDs. Story outlines are your scope; when `agents.tpm` is configured, do
+   not size or split them, because the tpm does that after approval.
+2. **Route the draft to `user`.** Use `next_agent: user` and
+   `status: escalate_to_user`, and end by asking the operator to approve
+   the proposal or type changes. A proposal or revision handoff carries no
+   Work Packet and changes no file but `HANDOFF.md`: do not edit the project
+   state file and do not create or change Linear issues. Copy the active
+   `epic_id`, `story_id`, `story_title`, and `remaining_stories` forward
+   unchanged; proposed stories join `remaining_stories` only after approval.
+3. **Revise.** When the current handoff holds a `## Proposed Backlog` and
+   the operator types guidance, revise the proposal to match and route to
+   `user` again the same way. There is no automatic revision limit.
+4. **Record only on explicit approval.** Approval exists only when the
+   dispatcher's instruction for this turn explicitly says the operator
+   approved the proposed backlog. The best-judgment request (the operator
+   pressed Enter with no guidance), typed guidance, a plain-words
+   interpretation pass, and a user escalation reconciliation pass are not
+   approval; with a proposal pending, route it to `user` again unrecorded.
+   On approval, record the approved epics, with their intros, goals,
+   boundaries, `Fit:` lines, and story outlines, directly in the configured
+   project state file (`project_state_path`, `PROJECT_STATE.md` by
+   default). Keep every existing open epic and story; an epic already open
+   stays open. Then open the next epic by fit: route to `tpm` when
+   `agents.tpm` is configured, otherwise write its first Work Packet
+   yourself. In dispatcher commit mode, leave the project state edit for the
+   dispatcher; never stage or commit it.
+5. **Invite a request.** When you route to `user` because no open epic has
+   an unblocked story, tell the operator they may type a plain-language
+   request for new work at the operator prompt. Do not ask them to edit the
+   project state file or `HANDOFF.md` by hand.
+
+Recording an approved proposal is the only time you edit the project state
+file yourself. Outside approved intake, record every new story through the
+next Work Packet.
 
 ## Handback Review
 
@@ -170,6 +216,10 @@ Write a concise task assignment below the frontmatter:
 ## Next Step
 - **<role>:** <exact work to perform>
 ```
+
+A Work Intake proposal or revision routed to `user` uses the
+`## Proposed Backlog` shape from Work Intake instead and carries no Work
+Packet.
 
 Never omit `Files out of bounds`; write `none` if no extra boundary is needed.
 Never list the same path under both fields: a packet cannot limit edits within
@@ -227,4 +277,4 @@ committed; a person's reply needs no frontmatter.
 
 ## Finishing
 
-Commit exactly `docs/handoff/HANDOFF.md` if the repository protocol asks agents to commit locally and the dispatcher has not said that dispatcher commit mode is on; in that mode, leave it uncommitted. Then return control. Do not start the assigned work yourself.
+Commit exactly `docs/handoff/HANDOFF.md`, plus the configured project state file after an explicitly approved Work Intake proposal, if the repository protocol asks agents to commit locally and the dispatcher has not said that dispatcher commit mode is on; in that mode, leave them uncommitted. Then return control. Do not start the assigned work yourself.

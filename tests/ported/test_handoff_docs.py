@@ -395,6 +395,184 @@ def test_refusal_review_root_and_reference_copies_match(relative_path: str) -> N
     )
 
 
+# INTAKE-5: the planner turns a plain-language new-work request into a
+# `## Proposed Backlog` draft, revises it on guidance, and records it in the
+# project state file only on an explicit approval instruction. The handbook
+# carries the shared rule; each planner file carries a Work Intake section.
+# The Claude planner copies are synchronized later by an operator story, so
+# they are deliberately not listed here.
+INTAKE_PLANNER_FILES = (
+    "docs/handoff/PLANNER_INITIAL_PROMPT.md",
+    "docs/handoff/PLANNER_HANDOFF_PROMPT.md",
+    ".agents/agents/planner.md",
+    ".codex/skills/llm-handoff-planner/SKILL.md",
+)
+INTAKE_RELATIVE_FILES = ("docs/handoff/HANDBOOK.md", *INTAKE_PLANNER_FILES)
+INTAKE_FILES = [
+    pytest.param(root / relative_path, id=f"{root.name}:{relative_path}")
+    for root in REFUSAL_REVIEW_ROOTS
+    for relative_path in INTAKE_RELATIVE_FILES
+]
+INTAKE_PLANNER_PATHS = [
+    pytest.param(root / relative_path, id=f"{root.name}:{relative_path}")
+    for root in REFUSAL_REVIEW_ROOTS
+    for relative_path in INTAKE_PLANNER_FILES
+]
+
+
+def _intake_text(path: Path) -> str:
+    return _flat(_section(path.read_text(encoding="utf-8"), "## Work Intake"))
+
+
+@pytest.mark.parametrize("path", INTAKE_FILES)
+def test_work_intake_proposal_structure(path: Path) -> None:
+    text = _intake_text(path)
+
+    assert "`## Proposed Backlog`" in text
+    for part in ("intro", "goal", "boundaries", "`Fit:` line", "outline"):
+        assert part in text, part
+    assert "planner scope" in text or "your scope" in text
+    assert "tpm" in text
+
+
+@pytest.mark.parametrize("path", INTAKE_FILES)
+def test_work_intake_drafts_route_to_user_and_change_only_the_handoff(
+    path: Path,
+) -> None:
+    text = _intake_text(path)
+
+    assert "`user`" in text
+    assert "`status: escalate_to_user`" in text
+    assert "carries no Work Packet" in text
+    assert "no file but `HANDOFF.md`" in text
+    assert "project state file" in text
+    assert "Linear issues" in text
+    assert "`remaining_stories`" in text
+    assert "unchanged" in text
+
+
+@pytest.mark.parametrize("path", INTAKE_FILES)
+def test_work_intake_revision_returns_to_user_without_a_limit(path: Path) -> None:
+    text = _intake_text(path)
+
+    assert "to `user` again" in text
+    assert "no automatic revision limit" in text
+
+
+@pytest.mark.parametrize("path", INTAKE_FILES)
+def test_work_intake_requires_explicit_approval(path: Path) -> None:
+    text = _intake_text(path)
+
+    assert "explicit" in text
+    assert "approved the proposed backlog" in text
+    # Ordinary Enter, typed guidance, and handoff-only passes are not approval.
+    for not_approval in (
+        "best-judgment request",
+        "typed guidance",
+        "plain-words interpretation pass",
+        "user escalation reconciliation pass",
+    ):
+        assert not_approval in text, not_approval
+    assert "are not" in text
+    assert "`project_state_path`" in text
+    assert "existing open" in text
+    assert "by fit" in text
+    assert "to `tpm` when `agents.tpm` is configured" in text
+    assert "Work Packet" in text
+    assert "dispatcher commit mode" in text
+    assert "never stage" in text
+    assert "Outside approved intake" in text
+    assert "next Work Packet" in text
+
+
+@pytest.mark.parametrize("path", INTAKE_FILES)
+def test_work_intake_invites_a_request_when_no_story_is_unblocked(
+    path: Path,
+) -> None:
+    text = _intake_text(path)
+
+    assert "no open epic has an unblocked story" in text
+    assert "plain-language request" in text
+    assert "operator prompt" in text
+
+
+@pytest.mark.parametrize("path", INTAKE_PLANNER_PATHS)
+def test_planner_state_rule_names_only_the_approved_intake_exception(
+    path: Path,
+) -> None:
+    content = path.read_text(encoding="utf-8")
+    outside_intake = _flat(content.replace(_section(content, "## Work Intake"), ""))
+
+    assert (
+        "The one exception is an explicitly approved proposal under Work Intake"
+        in outside_intake
+    )
+    assert "through the next Work Packet" in outside_intake
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        pytest.param(root / relative_path, id=f"{root.name}:{relative_path}")
+        for root in REFUSAL_REVIEW_ROOTS
+        for relative_path in (
+            ".agents/agents/planner.md",
+            ".codex/skills/llm-handoff-planner/SKILL.md",
+        )
+    ],
+)
+def test_planner_output_shape_and_finishing_cover_intake(path: Path) -> None:
+    content = path.read_text(encoding="utf-8")
+    # The Output Shape template holds fenced `##` headings, so slice it up to
+    # the next real section instead of the next `##` line.
+    start = content.index("\n## Output Shape\n")
+    output_shape = _flat(content[start : content.index("\n## Operator Stories\n")])
+    finishing = _flat(_section(content, "## Finishing"))
+
+    # The implementation-assignment Work Packet stays required.
+    assert "## Work Packet" in output_shape
+    assert "Never omit `Files out of bounds`" in output_shape
+    assert "proposal or revision routed to `user`" in output_shape
+    assert "carries no Work Packet" in output_shape
+    assert "explicitly approved Work Intake proposal" in finishing
+
+
+def test_handoff_only_passes_are_not_proposal_approval() -> None:
+    for root in REFUSAL_REVIEW_ROOTS:
+        handbook = (root / "docs/handoff/HANDBOOK.md").read_text(encoding="utf-8")
+        escalation = _flat(_section(handbook, "## Escalation Protocol"))
+        plain_words = _flat(_section(handbook, "## Editing HANDOFF.md In Plain Words"))
+        failures = _flat(_section(handbook, "## Common Failure Modes"))
+        assert "not proposal approval" in escalation
+        assert "never approves one" in plain_words
+        assert "Planner assignments without a concrete work packet." in failures
+        assert "proposal or revision routed to `user` carries none" in failures
+
+        prompt = (root / "docs/handoff/PLANNER_HANDOFF_PROMPT.md").read_text(
+            encoding="utf-8"
+        )
+        reconciliation = _flat(_section(prompt, "## User Escalation Reconciliation"))
+        assert "not proposal approval" in reconciliation
+        assert "Work Intake proposal or revision" in _flat(
+            _section(prompt, "## Routing Guidance")
+        )
+
+
+def test_planner_work_intake_sections_match_each_other() -> None:
+    sections = {_intake_text(REPO_ROOT / path) for path in INTAKE_PLANNER_FILES}
+
+    assert len(sections) == 1
+
+
+@pytest.mark.parametrize("relative_path", INTAKE_RELATIVE_FILES)
+def test_work_intake_root_and_reference_copies_match(relative_path: str) -> None:
+    root, reference = REFUSAL_REVIEW_ROOTS
+
+    assert _intake_text(root / relative_path) == _intake_text(
+        reference / relative_path
+    )
+
+
 def test_contributing_documents_review_feedback() -> None:
     content = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
 

@@ -6,6 +6,21 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The handbook and the planner prompts, the agy planner agent, the Codex
+  planner skill, and their reference-workflow copies define one Work Intake
+  protocol (INTAKE-5). The planner answers a plain-language new-work request
+  with a `## Proposed Backlog` (each epic's intro, goal, boundaries, `Fit:`
+  line, and story outline) and routes it to `user` with
+  `status: escalate_to_user`. Drafts and revisions carry no Work Packet and
+  change only `HANDOFF.md`: no project state edits and no Linear issues.
+  Typed guidance revises the proposal with no automatic limit. Only an
+  explicit dispatcher approval instruction lets the planner record the
+  approved epics in `project_state_path` and open the next epic by fit; the
+  best-judgment request, typed guidance, and the plain-words and
+  reconciliation passes are not approval. When no open epic has an unblocked
+  story, the planner invites a request at the operator prompt. The approval
+  instruction itself, Linear approval, and the Claude planner copies are not
+  part of this change.
 - A user-route pause now prints a bounded preview of the current handoff
   (INTAKE-1): the first nonempty `## Proposed Backlog` section, nested
   headings included, through the next level-one or level-two heading outside
