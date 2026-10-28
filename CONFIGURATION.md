@@ -319,6 +319,52 @@ are listed here:
   which still routes to `user`, so the dispatcher pauses again.
 - `quit`: stop the dispatcher with exit code 0.
 
+Proposal review: at a `next_agent: user` pause whose handoff holds a
+nonempty `## Proposed Backlog` section (the Work Intake proposal; the same
+section the pause preview prints, so an empty heading or a heading inside a
+fenced block, block quote, or indented code does not count), the prompt line
+is instead:
+
+```text
+Press Enter to approve this proposed backlog and start the plan, or type changes for the planner to revise it and press Enter.
+```
+
+- Enter approves. The dispatcher schedules one planner dispatch with an
+  approval instruction it writes itself: it quotes the proposal the
+  operator was shown, names the configured `project_state_path`, and tells
+  the planner to record the approved epics there, keep existing open work,
+  and open the next epic by fit, routing to `tpm` when `agents.tpm` is
+  configured or writing the first Work Packet itself otherwise. This is the
+  only instruction that permits a project state edit, and it applies to
+  that one dispatch. The planner's session is not resumed afterwards.
+- Typed text, including text that says it approves, and `@planner` with or
+  without a message, are revision guidance: the planner gets the ordinary
+  operator instruction, which forbids project state changes, plus a note
+  that the message is not approval. Revisions may repeat; there is no
+  automatic limit.
+- `retry`, `quit`, `@<role>` targets, `HANDOFF.md` edits, and stop requests
+  behave as at any other pause and never approve. Without the prompt (no
+  TTY, `interactive_pause: false`, or `--dry-run`) nothing is approved.
+- The approval is bound to the content of the handoff the pause showed. If
+  `HANDOFF.md` changes while the prompt waits or before the approval
+  dispatch runs, the approval is dropped and the current handoff is routed
+  again.
+
+With `commit_mode: dispatcher`, after an approval dispatch that exits 0 and
+whose handoff passes validation, the dispatcher lists every change in the
+index and working tree, untracked files included. When only the handoff and
+`project_state_path` changed, it commits `project_state_path` alone (hooks
+skipped), never the handoff. The commit stays local, like a finalizer
+ledger commit: it is not pushed and opens no pull request, and the next
+story's pull request carries it. An unchanged project state file makes no
+commit. Any other changed file, `COMPLETED_WORK.md` included, pauses without
+a commit and without staging, discarding, or absorbing anything; so does a
+Git failure, with its diagnostic. An approval dispatch that exits non-zero
+or leaves an invalid handoff also pauses: nothing is committed, no repair
+or recovery pass runs, and the next role does not start. In each pause the
+project state edit stays uncommitted for the operator. Without
+`commit_mode: dispatcher` the dispatcher stages and commits nothing here.
+
 Editing `HANDOFF.md` still resumes the loop, as it does without the prompt;
 an edit in plain words is handled as described in
 [Operator Edits](#operator-edits). The planner instruction states the pause reason and that a person at the

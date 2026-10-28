@@ -6,6 +6,23 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- A user-route pause whose handoff holds a nonempty `## Proposed Backlog`
+  is now a proposal review (INTAKE-3). The prompt line says Enter approves
+  the plan and typed text revises it. Enter schedules one planner dispatch
+  with a dispatcher-written approval instruction that quotes the proposal
+  shown, names `project_state_path`, and asks the planner to record the
+  approved epics, keep existing open work, and open the next epic by fit
+  (routing to `tpm` when configured, otherwise writing the Work Packet).
+  Typed text, `@planner`, and every other action stay non-approval; typed
+  text gets a note that it is revision guidance. The approval is bound to
+  the shown handoff content and dropped if the handoff changes first, and
+  the planner session is not resumed after it. In `commit_mode: dispatcher`,
+  after a valid approval turn the dispatcher commits `project_state_path`
+  alone as a local ledger-only commit (`commit_approved_project_state` in
+  `dispatcher_commit.py`), never the handoff, makes no commit when the file
+  is unchanged, and pauses without committing when any other file changed,
+  on a Git failure, or when the approval turn failed or left an invalid
+  handoff.
 - The handbook and the planner prompts, the agy planner agent, the Codex
   planner skill, and their reference-workflow copies define one Work Intake
   protocol (INTAKE-5). The planner answers a plain-language new-work request

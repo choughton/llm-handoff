@@ -23,6 +23,10 @@ Work Packet scope or when it was dirty before dispatch, and the commit body
 carries the operator marker (message time and SHA-256, never the text).
 After a non-implementer role, ``commit_chat_changes`` commits those chat
 paths on their own with the same marker.
+
+After a Work Intake proposal approval turn, ``commit_approved_project_state``
+commits the configured project state file alone, as a local ledger-only
+commit, and refuses when any other file besides the handoff changed.
 """
 
 from __future__ import annotations
@@ -326,6 +330,154 @@ def commit_chat_changes(
         chat_committed=owned,
         chat_influences=chat_influences,
     )
+
+
+@dataclass(frozen=True)
+class ProjectStateCommitResult:
+    """What ``commit_approved_project_state`` did.
+
+    ``sha`` is set only when a commit was made. ``unchanged`` means the
+    project state file had no change to commit. ``other_changes`` lists the
+    changed paths, other than the handoff and the project state file, that
+    stopped the commit; ``error`` is a Git or file-state failure.
+    """
+
+    sha: str | None = None
+    unchanged: bool = False
+    other_changes: tuple[str, ...] = ()
+    error: str | None = None
+
+
+# `git status --porcelain=v2 -z` entries: ordinary ("1"), renamed or copied
+# ("2", followed by the original path as its own entry), unmerged ("u"), and
+# untracked ("?"). The number is how many space-separated fields precede the
+# path.
+_STATUS_FIELDS_BEFORE_PATH = {"1": 8, "2": 9, "u": 10, "?": 1}
+
+
+def _changed_paths(
+    repo_root: Path,
+) -> tuple[set[str], set[str]] | None:
+    """Every path changed in the index or the working tree, untracked files
+    included, and the unmerged ones among them; None when Git fails.
+
+    Both sides of a rename or copy are listed, so a staged rename into or
+    out of an allowed path is still seen.
+    """
+
+    status = _git(
+        repo_root, ["status", "--porcelain=v2", "--untracked-files=all", "-z"]
+    )
+    if status.returncode != 0:
+        return None
+    changed: set[str] = set()
+    unmerged: set[str] = set()
+    entries = iter(status.stdout.split("\0"))
+    for entry in entries:
+        if not entry:
+            continue
+        kind = entry[:1]
+        fields = _STATUS_FIELDS_BEFORE_PATH.get(kind)
+        if fields is None:
+            continue
+        parts = entry.split(" ", fields)
+        if len(parts) <= fields:
+            continue
+        path = normalize_repo_path(parts[fields])
+        changed.add(path)
+        if kind == "u":
+            unmerged.add(path)
+        if kind == "2":
+            original = next(entries, None)
+            if original:
+                changed.add(normalize_repo_path(original))
+    return changed, unmerged
+
+
+def commit_approved_project_state(
+    *,
+    repo_root: Path,
+    handoff_path: Path,
+    project_state_path: Path,
+) -> ProjectStateCommitResult:
+    """Commit the project state file alone after a proposal approval turn.
+
+    Runs only in dispatcher commit mode, after the planner's approval turn
+    passed validation. The index and the working tree, untracked files
+    included, may hold changes only to ``handoff_path`` and
+    ``project_state_path``. Any other changed path stops the commit, and
+    nothing is staged, discarded, or absorbed. The commit holds exactly
+    ``project_state_path`` (``--only``, hooks skipped), never the handoff,
+    and is local: nothing is pushed. A project state file with no change
+    makes no commit.
+    """
+
+    handoff = normalize_repo_path(Path(handoff_path).as_posix())
+    state = normalize_repo_path(Path(project_state_path).as_posix())
+    listed = _changed_paths(repo_root)
+    if listed is None:
+        return ProjectStateCommitResult(
+            error="git status failed; the working tree could not be listed"
+        )
+    changed, unmerged = listed
+    others = tuple(sorted(changed - {handoff, state}))
+    if others:
+        return ProjectStateCommitResult(other_changes=others)
+    if state in unmerged:
+        return ProjectStateCommitResult(error=f"{state} has unresolved merge conflicts")
+    if state not in changed:
+        return ProjectStateCommitResult(unchanged=True)
+    if not (Path(repo_root) / state).is_file():
+        return ProjectStateCommitResult(
+            error=f"{state} was deleted or is not a file; nothing was committed"
+        )
+
+    add = _git(repo_root, [*_LITERAL_PATHSPECS, "add", "--", state])
+    if add.returncode != 0:
+        return ProjectStateCommitResult(error=f"git add failed: {_first_line(add)}")
+    staged = _git(
+        repo_root,
+        [*_LITERAL_PATHSPECS, "diff", "--cached", "--quiet", "--", state],
+    )
+    if staged.returncode == 0:
+        # Only a line-ending or stat difference: no content to commit.
+        return ProjectStateCommitResult(unchanged=True)
+    if staged.returncode != 1:
+        return ProjectStateCommitResult(
+            error=f"git diff --cached failed: {_first_line(staged)}"
+        )
+    subject = f"Record the approved backlog in {state}"
+    body = (
+        "Committed by the llm-handoff dispatcher after the planner's proposal "
+        "approval turn. The operator approved the proposed backlog at the "
+        f"operator prompt. Local ledger-only commit; it is published with the "
+        f"next story.\n\nFiles:\n- {state}"
+    )
+    commit = _git(
+        repo_root,
+        [
+            *_LITERAL_PATHSPECS,
+            "commit",
+            "--no-verify",
+            "--only",
+            "-m",
+            subject,
+            "-m",
+            body,
+            "--",
+            state,
+        ],
+    )
+    if commit.returncode != 0:
+        return ProjectStateCommitResult(
+            error=f"git commit failed: {_first_line(commit)}"
+        )
+    sha = git_head(repo_root)
+    if sha is None:
+        return ProjectStateCommitResult(
+            error="git rev-parse HEAD failed after the commit"
+        )
+    return ProjectStateCommitResult(sha=sha)
 
 
 def _utc_marker_time(recorded_at: str) -> str | None:

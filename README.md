@@ -164,6 +164,11 @@ When the loop pauses and you are at a terminal, an operator prompt lets you
 press Enter to send the planner back in, type `@backend`, `@frontend`,
 `@auditor`, or `@tpm` (when a tpm is configured) with a message to dispatch
 that role directly, or type `retry` or `quit`. Editing `HANDOFF.md` by hand also resumes it.
+When the pause shows a planner's `## Proposed Backlog`, Enter approves it
+instead and typed text revises it; on approval the planner records the
+approved epics in the project state file, and with
+`commit_mode: dispatcher` the dispatcher commits that file alone as a local
+commit. See [Operator Prompt](CONFIGURATION.md#operator-prompt).
 
 At any pause you may also replace `HANDOFF.md` with plain words, for example
 `I made the edits.` A person needs no frontmatter; every handoff an agent

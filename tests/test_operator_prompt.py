@@ -20,6 +20,7 @@ from llm_handoff.config import DispatchConfig
 from llm_handoff.operator_prompt import (
     PROMPT_LINE,
     PROMPT_PLANNER_TRIED_LINE,
+    PROPOSAL_PROMPT_LINE,
     REVIEW_CHOICES,
     REVIEW_PROMPT_HELP_LINES,
     ROLE_TARGET_INVALID,
@@ -638,7 +639,7 @@ class _PromptStream:
         self._closed = False
 
     def on_log(self, level: str, message: str) -> None:
-        if level == "PAUSE" and message == PROMPT_LINE:
+        if level == "PAUSE" and message in (PROMPT_LINE, PROPOSAL_PROMPT_LINE):
             self._release.release()
 
     def readline(self) -> str:
@@ -712,6 +713,7 @@ class _Harness:
         tty: bool = True,
         stream_isatty: bool = False,
         on_log: Callable[[str, str], None] | None = None,
+        planner_side_effects: list[Callable[[], int | None] | None] | None = None,
     ) -> None:
         self.handoff_path = handoff_path
         self.planner_instructions: list[str | None] = []
@@ -726,11 +728,19 @@ class _Harness:
         self.stream_requests = 0
         planner_queue = list(planner_writes or [])
         backend_queue = list(backend_writes or [])
+        effect_queue = list(planner_side_effects or [])
 
         def fake_planner(path: Path, **kwargs: Any) -> DispatchResult:
             self.planner_instructions.append(kwargs.get("additional_instruction"))
             if planner_queue:
                 path.write_text(planner_queue.pop(0), encoding="utf-8")
+            # A side effect may change other files and return an exit code.
+            effect = effect_queue.pop(0) if effect_queue else None
+            exit_code = effect() if effect is not None else None
+            if exit_code:
+                return DispatchResult(
+                    stdout="", stderr="", exit_code=exit_code, elapsed_seconds=0.01
+                )
             return _dispatch_result()
 
         def fake_backend(path: Path, **kwargs: Any) -> DispatchResult:
@@ -809,6 +819,9 @@ class _Harness:
 
     def prompt_count(self) -> int:
         return self.pause_messages().count(PROMPT_LINE)
+
+    def proposal_prompt_count(self) -> int:
+        return self.pause_messages().count(PROPOSAL_PROMPT_LINE)
 
 
 def test_enter_on_user_pause_dispatches_planner_with_best_judgment(
@@ -2274,7 +2287,8 @@ def test_interactive_user_pause_prints_the_proposal_once_before_the_prompt(
     header_index = pauses.index(PROPOSAL_HEADER)
     assert header_index == reason_index + 1
     block = _preview_block(pauses, PROPOSAL_HEADER)
-    assert pauses[header_index + len(block)] == PROMPT_LINE
+    assert pauses[header_index + len(block)] == PROPOSAL_PROMPT_LINE
+    assert PROMPT_LINE not in pauses
     assert "  - PUP-1: Static page." in block
     assert all("next_agent" not in line for line in block)
     assert (
@@ -2350,7 +2364,8 @@ def test_preview_returns_after_the_operator_planner_turn_once_per_pause(
     assert harness.run(_config(tmp_path)) == 0
 
     pauses = harness.pause_messages()
-    assert harness.prompt_count() == 2
+    assert harness.proposal_prompt_count() == 2
+    assert harness.prompt_count() == 0
     assert pauses.count(PROPOSAL_HEADER) == 2
     assert "  - PUP-1: Static page." in pauses
     second = pauses.index(PROPOSAL_HEADER, pauses.index(PROPOSAL_HEADER) + 1)
@@ -2425,7 +2440,7 @@ def test_interactive_polling_does_not_repeat_the_preview(
     assert len(polls) == 5
     pauses = harness.pause_messages()
     assert pauses.count(PROPOSAL_HEADER) == 1
-    assert harness.prompt_count() == 1
+    assert harness.proposal_prompt_count() == 1
 
 
 def test_generic_pause_with_a_proposal_heading_shows_no_preview(
@@ -2463,3 +2478,601 @@ def test_stale_route_pause_with_a_proposal_shows_no_preview(
     assert any(message.startswith("STALE ROUTING DETECTED") for message in pauses)
     assert PROPOSAL_HEADER not in pauses
     assert not any("EPIC-A" in message for message in pauses)
+
+
+# --- proposal review and approval (INTAKE-3) --------------------------------
+
+APPROVAL_MARKER = "the operator approved the proposed backlog"
+APPROVAL_SCHEDULED = (
+    "Operator prompt: the operator approved the proposed backlog; scheduling "
+    "the planner approval dispatch."
+)
+REVISION_NOTE_TEXT = "the operator's message is revision guidance, not approval"
+
+
+def _is_approval(instruction: str | None) -> bool:
+    return instruction is not None and APPROVAL_MARKER in instruction
+
+
+def test_pending_proposal_returns_the_whole_section() -> None:
+    proposal = operator_prompt.pending_proposal(PROPOSAL_HANDOFF)
+
+    assert proposal is not None
+    assert proposal.startswith("## Proposed Backlog")
+    assert proposal.endswith("- PUP-1: Static page.")
+    assert "## Not A Heading Inside A Fence" in proposal
+    assert "Next Step" not in proposal
+    assert "Intro text" not in proposal
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "---\nnext_agent: user\n---\n\n## Proposed Backlog\n\n## Next Step\n\nx\n",
+        "---\nnext_agent: user\n---\n\n```\n## Proposed Backlog\n\n- EPIC-A\n```\n",
+        "---\nnext_agent: user\n---\n\n> ## Proposed Backlog\n>\n> - EPIC-A\n",
+        "---\nnext_agent: user\n---\n\n    ## Proposed Backlog\n\n    - EPIC-A\n",
+        "---\nnext_agent: user\n---\n\n### Proposed Backlog\n\n- EPIC-A\n",
+        USER_HANDOFF,
+    ],
+    ids=["empty", "fenced", "quoted", "indented", "level_three", "none"],
+)
+def test_pending_proposal_ignores_empty_and_lookalike_sections(content: str) -> None:
+    assert operator_prompt.pending_proposal(content) is None
+
+
+def test_pending_proposal_handles_crlf_and_bom() -> None:
+    content = "﻿" + PROPOSAL_HANDOFF.replace("\n", "\r\n")
+
+    proposal = operator_prompt.pending_proposal(content)
+
+    assert proposal is not None
+    assert "\r" not in proposal
+    assert proposal.endswith("- PUP-1: Static page.")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("\n", OperatorAction(kind="approve")),
+        ("   \n", OperatorAction(kind="approve")),
+        ("I approve\n", OperatorAction(kind="planner", text="I approve")),
+        ("@planner\n", OperatorAction(kind="planner", text=None)),
+        ("retry\n", OperatorAction(kind="retry")),
+        ("quit\n", OperatorAction(kind="quit")),
+        ("@backend go\n", OperatorAction(kind="role", role="backend", text="go")),
+    ],
+)
+def test_proposal_review_wait_approves_only_on_an_empty_line(
+    tmp_path: Path, text: str, expected: OperatorAction
+) -> None:
+    path = _handoff(tmp_path, PROPOSAL_HANDOFF)
+    logs, log = _logs()
+
+    result = wait_for_operator_or_handoff_change(
+        OperatorInputReader(io.StringIO(text)),
+        path,
+        content_sha(PROPOSAL_HANDOFF),
+        0.01,
+        log,
+        proposal_review=True,
+    )
+
+    assert result == expected
+    assert [message for _level, message in logs] == [PROPOSAL_PROMPT_LINE]
+
+
+def test_parse_operator_input_never_approves() -> None:
+    assert parse_operator_input("").kind == "planner"
+    assert parse_operator_input("approve").kind == "planner"
+
+
+def test_enter_at_proposal_review_sends_the_approval_instruction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert len(harness.planner_instructions) == 1
+    instruction = harness.planner_instructions[0]
+    assert instruction is not None
+    assert instruction.isascii()
+    assert APPROVAL_MARKER in instruction
+    assert orchestrator.OPERATOR_BEST_JUDGMENT_REQUEST not in instruction
+    assert "Do not modify source, tests, project-state files" not in instruction
+    # The quoted proposal is exactly the section the operator was shown.
+    quoted = instruction.split("<<<APPROVED PROPOSAL>>>\n", 1)[1].split(
+        "\n<<<END APPROVED PROPOSAL>>>", 1
+    )[0]
+    assert quoted == operator_prompt.pending_proposal(PROPOSAL_HANDOFF)
+    assert orchestrator._content_sha(PROPOSAL_HANDOFF) in instruction
+    assert "in the project state file PROJECT_STATE.md" in instruction
+    assert "Preserve existing open work" in instruction
+    assert "choose the next epic by fit" in instruction
+    assert orchestrator.PROPOSAL_APPROVAL_PLANNER_ROUTING in instruction
+    assert orchestrator.PROPOSAL_APPROVAL_TPM_ROUTING not in instruction
+    # Agent commit mode: no dispatcher commit promise.
+    assert "Dispatcher commit mode is on" not in instruction
+    assert ("PAUSE", APPROVAL_SCHEDULED) in harness.logs
+    assert (
+        "INFO",
+        f"Routing source: {orchestrator.PROPOSAL_APPROVAL_SOURCE}",
+    ) in harness.logs
+    # The following plain escalation gets the ordinary prompt again.
+    assert harness.proposal_prompt_count() == 1
+    assert harness.prompt_count() == 1
+
+
+def test_approval_instruction_routes_to_a_configured_tpm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+    )
+    agents = {
+        **config_module._default_agent_configs(),
+        "tpm": config_module.AgentConfig(
+            provider="codex", skill_name="llm-handoff-tpm"
+        ),
+    }
+
+    assert harness.run(_config(tmp_path, agents=agents)) == 0
+
+    instruction = harness.planner_instructions[0]
+    assert _is_approval(instruction)
+    assert instruction is not None
+    assert orchestrator.PROPOSAL_APPROVAL_TPM_ROUTING in instruction
+    assert orchestrator.PROPOSAL_APPROVAL_PLANNER_ROUTING not in instruction
+
+
+def test_approval_instruction_names_a_custom_project_state_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+    )
+
+    config = _config(tmp_path, project_state_path="docs/state/STATE.md")
+    assert harness.run(config) == 0
+
+    instruction = harness.planner_instructions[0]
+    assert instruction is not None
+    assert "in the project state file docs/state/STATE.md" in instruction
+    assert "PROJECT_STATE.md" not in instruction
+
+
+def test_typed_text_at_proposal_review_revises_repeatedly_without_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    first = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-1: Smaller page.")
+    second = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-1: Tiny page.")
+    third = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-1: Approved?")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["make it smaller", "smaller still", "I approve, go", "@planner", "quit"],
+        planner_writes=[first, second, third, PROPOSAL_HANDOFF],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    instructions = harness.planner_instructions
+    assert len(instructions) == 4
+    for instruction in instructions:
+        assert instruction is not None
+        assert not _is_approval(instruction)
+        assert REVISION_NOTE_TEXT in instruction
+        assert "Do not modify source, tests, project-state files" in instruction
+        assert "do not edit project-state files or create tracker issues" in instruction
+    assert "Operator guidance: make it smaller" in (instructions[0] or "")
+    assert "Operator guidance: smaller still" in (instructions[1] or "")
+    # Text that claims approval stays quoted revision guidance.
+    assert "Operator guidance: I approve, go" in (instructions[2] or "")
+    assert orchestrator.OPERATOR_BEST_JUDGMENT_REQUEST in (instructions[3] or "")
+    assert harness.proposal_prompt_count() == 5
+    assert APPROVAL_SCHEDULED not in harness.pause_messages()
+
+
+def test_approval_does_not_leak_into_the_next_planner_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    revised = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-1: Next page.")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "", "quit"],
+        planner_writes=[USER_HANDOFF, revised],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    first, second = harness.planner_instructions
+    assert _is_approval(first)
+    # Enter at the plain escalation that followed is best judgment.
+    assert second is not None
+    assert not _is_approval(second)
+    assert orchestrator.OPERATOR_BEST_JUDGMENT_REQUEST in second
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        USER_HANDOFF + "\n```\n## Proposed Backlog\n\n- EPIC-A\n```\n",
+        USER_HANDOFF + "\n> ## Proposed Backlog\n>\n> - EPIC-A\n",
+        USER_HANDOFF + "\n## Proposed Backlog\n",
+    ],
+    ids=["fenced", "quoted", "empty"],
+)
+def test_lookalike_proposals_keep_the_ordinary_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    handoff_path = _write_repo(tmp_path, content)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.proposal_prompt_count() == 0
+    instruction = harness.planner_instructions[0]
+    assert instruction is not None
+    assert not _is_approval(instruction)
+    assert orchestrator.OPERATOR_BEST_JUDGMENT_REQUEST in instruction
+    assert REVISION_NOTE_TEXT not in instruction
+
+
+def test_handoff_change_while_input_is_pending_rejects_the_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    replacement = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-9: Other.")
+    changed: list[bool] = []
+
+    def change_on_first_prompt(level: str, message: str) -> None:
+        if level == "PAUSE" and message == PROPOSAL_PROMPT_LINE and not changed:
+            changed.append(True)
+            handoff_path.write_text(replacement, encoding="utf-8")
+
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        on_log=change_on_first_prompt,
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert not any(_is_approval(item) for item in harness.planner_instructions)
+    assert APPROVAL_SCHEDULED not in harness.pause_messages()
+    # The replacement is reviewed on its own: the next prompt shows it.
+    assert "  - PUP-9: Other." in harness.pause_messages()
+
+
+def test_handoff_change_before_the_approval_turn_drops_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    replacement = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-9: Other.")
+
+    def change_after_scheduling(level: str, message: str) -> None:
+        if level == "PAUSE" and message == APPROVAL_SCHEDULED:
+            handoff_path.write_text(replacement, encoding="utf-8")
+
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        on_log=change_after_scheduling,
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert harness.planner_instructions == []
+    assert any(
+        level == "WARN"
+        and message.startswith(
+            f"Dropped the scheduled {orchestrator.PROPOSAL_APPROVAL_KIND} planner "
+            "recovery because HANDOFF.md changed"
+        )
+        for level, message in harness.logs
+    )
+
+
+# Dispatcher commit mode: the approval turn's project state commit.
+
+APPROVED_STATE = "# PROJECT STATE\n\n### 20. PUPPIES - a page about puppies\n"
+
+
+def _tracked_handoff_repo(tmp_path: Path, handoff_content: str) -> Path:
+    """A repository that tracks the handoff, as a template copy."""
+
+    handoff_path = _write_repo(tmp_path, handoff_content)
+    (tmp_path / "COMPLETED_WORK.md").write_text("# Completed\n", encoding="utf-8")
+    (tmp_path / "src.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "llm-handoff tests")
+    _git(tmp_path, "config", "user.email", "tests@example.invalid")
+    _git(tmp_path, "config", "core.autocrlf", "false")
+    (tmp_path / ".gitignore").write_text("logs/\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "initial")
+    return handoff_path
+
+
+def _dispatcher_config(repo_root: Path, **overrides: Any) -> DispatchConfig:
+    return _config(
+        repo_root,
+        commit_mode="dispatcher",
+        enforce_work_packet=True,
+        work_packet_opt_out_reason=None,
+        **overrides,
+    )
+
+
+def _write_state(path: Path, content: str = APPROVED_STATE) -> Callable[[], None]:
+    def effect() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    return effect
+
+
+def _pause_reasons(harness: _Harness, prefix: str) -> list[str]:
+    return [message for message in harness.pause_messages() if message.startswith(prefix)]
+
+
+def test_dispatcher_commits_only_the_project_state_after_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _tracked_handoff_repo(tmp_path, PROPOSAL_HANDOFF)
+    head_before = _git(tmp_path, "rev-parse", "HEAD")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+        planner_side_effects=[_write_state(tmp_path / "PROJECT_STATE.md")],
+    )
+
+    assert harness.run(_dispatcher_config(tmp_path)) == 0
+
+    instruction = harness.planner_instructions[0]
+    assert _is_approval(instruction)
+    assert instruction is not None
+    assert "the dispatcher commits PROJECT_STATE.md alone, never the handoff" in (
+        instruction
+    )
+    assert _git(tmp_path, "rev-parse", "HEAD~1") == head_before
+    assert _git(tmp_path, "show", "--name-only", "--format=", "HEAD") == (
+        "PROJECT_STATE.md"
+    )
+    assert _git(tmp_path, "show", "HEAD:PROJECT_STATE.md") == APPROVED_STATE.strip()
+    # The handoff stays uncommitted in the working tree.
+    assert _git(tmp_path, "status", "--porcelain") == "M docs/handoff/HANDOFF.md"
+    assert any(
+        level == "INFO" and message.startswith("Proposal approval: committed PROJECT_STATE.md alone")
+        for level, message in harness.logs
+    )
+
+
+def test_dispatcher_commits_a_custom_project_state_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _tracked_handoff_repo(tmp_path, PROPOSAL_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+        planner_side_effects=[_write_state(tmp_path / "docs" / "state" / "STATE.md")],
+    )
+
+    config = _dispatcher_config(tmp_path, project_state_path="docs/state/STATE.md")
+    assert harness.run(config) == 0
+
+    assert _git(tmp_path, "show", "--name-only", "--format=", "HEAD") == (
+        "docs/state/STATE.md"
+    )
+
+
+def test_unchanged_project_state_makes_no_approval_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _tracked_handoff_repo(tmp_path, PROPOSAL_HANDOFF)
+    head_before = _git(tmp_path, "rev-parse", "HEAD")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+    )
+
+    assert harness.run(_dispatcher_config(tmp_path)) == 0
+
+    assert _git(tmp_path, "rev-parse", "HEAD") == head_before
+    assert (
+        "WARN",
+        "Proposal approval: PROJECT_STATE.md is unchanged after the approval "
+        "turn, so the dispatcher made no commit.",
+    ) in harness.logs
+
+
+@pytest.mark.parametrize(
+    "variant", ["staged", "unstaged", "untracked", "completed_work"]
+)
+def test_other_changes_after_approval_pause_without_a_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str
+) -> None:
+    handoff_path = _tracked_handoff_repo(tmp_path, PROPOSAL_HANDOFF)
+    head_before = _git(tmp_path, "rev-parse", "HEAD")
+    write_state = _write_state(tmp_path / "PROJECT_STATE.md")
+
+    def effect() -> None:
+        write_state()
+        if variant in {"staged", "unstaged"}:
+            (tmp_path / "src.py").write_text("x = 2\n", encoding="utf-8")
+            if variant == "staged":
+                _git(tmp_path, "add", "src.py")
+        elif variant == "untracked":
+            (tmp_path / "scratch.txt").write_text("tmp\n", encoding="utf-8")
+        else:
+            (tmp_path / "COMPLETED_WORK.md").write_text(
+                "# Completed\n- PUPPIES\n", encoding="utf-8"
+            )
+
+    # Enter at the proposal, then quit at the refusal pause.
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+        planner_side_effects=[effect],
+    )
+
+    assert harness.run(_dispatcher_config(tmp_path)) == 0
+
+    reasons = _pause_reasons(harness, "PROPOSAL APPROVAL NOT COMMITTED")
+    assert len(reasons) == 1
+    expected = {
+        "staged": "src.py",
+        "unstaged": "src.py",
+        "untracked": "scratch.txt",
+        "completed_work": "COMPLETED_WORK.md",
+    }[variant]
+    assert f"or working tree: {expected}." in reasons[0]
+    assert _git(tmp_path, "rev-parse", "HEAD") == head_before
+    # Nothing was staged, discarded, or absorbed.
+    status = _git(tmp_path, "status", "--porcelain", "--untracked-files=all")
+    assert "PROJECT_STATE.md" in status
+    assert expected in status
+    staged = _git(tmp_path, "diff", "--cached", "--name-only").splitlines()
+    assert staged == (["src.py"] if variant == "staged" else [])
+
+
+def test_failed_approval_turn_pauses_without_a_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _tracked_handoff_repo(tmp_path, PROPOSAL_HANDOFF)
+    head_before = _git(tmp_path, "rev-parse", "HEAD")
+    write_state = _write_state(tmp_path / "PROJECT_STATE.md")
+
+    def crash() -> int:
+        write_state()
+        return 1
+
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[BACKEND_HANDOFF],
+        planner_side_effects=[crash],
+    )
+
+    assert harness.run(_dispatcher_config(tmp_path)) == 0
+
+    reasons = _pause_reasons(harness, "PROPOSAL APPROVAL INCOMPLETE")
+    assert len(reasons) == 1
+    assert "exited with code 1" in reasons[0]
+    assert harness.backend_calls == 0
+    assert _git(tmp_path, "rev-parse", "HEAD") == head_before
+    assert "PROJECT_STATE.md" in _git(tmp_path, "status", "--porcelain")
+
+
+def test_invalid_approval_handoff_pauses_without_a_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _tracked_handoff_repo(tmp_path, PROPOSAL_HANDOFF)
+    head_before = _git(tmp_path, "rev-parse", "HEAD")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[BACKEND_HANDOFF],
+        planner_side_effects=[_write_state(tmp_path / "PROJECT_STATE.md")],
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "validate_handoff",
+        lambda *_a, **_k: ValidationResult(
+            verdict="NO", warnings=[], errors=["missing Work Packet"]
+        ),
+    )
+
+    assert harness.run(_dispatcher_config(tmp_path)) == 0
+
+    reasons = _pause_reasons(harness, "PROPOSAL APPROVAL INCOMPLETE")
+    assert len(reasons) == 1
+    assert "failed validation (missing Work Packet)" in reasons[0]
+    assert harness.backend_calls == 0
+    assert len(harness.planner_instructions) == 1
+    assert _git(tmp_path, "rev-parse", "HEAD") == head_before
+
+
+def test_git_failure_after_approval_pauses_with_the_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _tracked_handoff_repo(tmp_path, PROPOSAL_HANDOFF)
+    head_before = _git(tmp_path, "rev-parse", "HEAD")
+    write_state = _write_state(tmp_path / "PROJECT_STATE.md")
+
+    def lock_index() -> None:
+        write_state()
+        (tmp_path / ".git" / "index.lock").write_text("", encoding="utf-8")
+
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[BACKEND_HANDOFF],
+        planner_side_effects=[lock_index],
+    )
+
+    assert harness.run(_dispatcher_config(tmp_path)) == 0
+
+    reasons = _pause_reasons(harness, "PROPOSAL APPROVAL NOT COMMITTED")
+    assert len(reasons) == 1
+    assert "could not commit PROJECT_STATE.md" in reasons[0]
+    assert "git add failed" in reasons[0]
+    assert harness.backend_calls == 0
+    (tmp_path / ".git" / "index.lock").unlink()
+    assert _git(tmp_path, "rev-parse", "HEAD") == head_before
+
+
+def test_agent_commit_mode_makes_no_dispatcher_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _tracked_handoff_repo(tmp_path, PROPOSAL_HANDOFF)
+    head_before = _git(tmp_path, "rev-parse", "HEAD")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+        planner_side_effects=[_write_state(tmp_path / "PROJECT_STATE.md")],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    assert _is_approval(harness.planner_instructions[0])
+    assert _git(tmp_path, "rev-parse", "HEAD") == head_before
+    assert "PROJECT_STATE.md" in _git(tmp_path, "status", "--porcelain")
