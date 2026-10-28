@@ -75,11 +75,17 @@ def _make_repo(
     handoff: str | None = VALID_HANDOFF,
     commit: bool = True,
     normalizer_provider: str | None = None,
+    commit_mode: str | None = None,
 ) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q")
-    lines = ["agents:"]
+    # A Codex implementer cannot commit from its sandbox, so a config with one
+    # uses dispatcher commits unless the test asks for something else.
+    if commit_mode is None and "codex" in (providers["backend"], providers["frontend"]):
+        commit_mode = "dispatcher"
+    lines = [f"commit_mode: {commit_mode}"] if commit_mode else []
+    lines.append("agents:")
     for role in ROLES:
         provider = providers[role]
         lines.append(f"  {role}:")
@@ -135,6 +141,9 @@ MIXED = {
     "finalizer": "claude",
 }
 NO_GEMINI = {role: ("codex" if role == "backend" else "claude") for role in ROLES}
+# The gate-off tests use a Claude backend: a Codex implementer needs
+# dispatcher commits, which need the work-claim gate on.
+ALL_CLAUDE = {role: "claude" for role in ROLES}
 
 
 def test_doctor_happy_path_passes_every_check(
@@ -413,7 +422,7 @@ def test_doctor_reports_work_claim_gate_on_by_default(
 def test_doctor_warns_with_the_work_claim_gate_opt_out_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    repo = _make_repo(tmp_path, ALL_CLAUDE, handoff=None)
     config_path = repo / "dispatch_config.yaml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8")
@@ -440,7 +449,7 @@ def test_doctor_warns_with_the_work_claim_gate_opt_out_reason(
 def test_doctor_fails_on_work_claim_gate_opt_out_without_a_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    repo = _make_repo(tmp_path, ALL_CLAUDE, handoff=None)
     config_path = repo / "dispatch_config.yaml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8") + "enforce_work_packet: false\n",
@@ -453,6 +462,74 @@ def test_doctor_fails_on_work_claim_gate_opt_out_without_a_reason(
     assert exit_code == 1
     assert "FAIL config: dispatch config could not be loaded" in output
     assert "work_packet_opt_out_reason" in output
+
+
+@pytest.mark.parametrize("role", ["backend", "frontend"])
+def test_doctor_fails_a_codex_implementer_with_agent_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, role: str
+) -> None:
+    providers = dict(ALL_CLAUDE, **{role: "codex"})
+    repo = _make_repo(tmp_path, providers, handoff=None, commit_mode="agent")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    fail_lines = [
+        line for line in output.splitlines() if line.startswith("FAIL commit mode:")
+    ]
+    assert fail_lines == [
+        f"FAIL commit mode: {role} runs on Codex with commit_mode: agent, but "
+        "Codex's workspace-write sandbox keeps .git read-only, so every "
+        "implementer handback comes back as blocked_implementation_failure; "
+        "set commit_mode: dispatcher (it needs enforce_work_packet: true)"
+    ]
+
+
+def test_doctor_passes_a_codex_implementer_with_dispatcher_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None, commit_mode="dispatcher")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 0, output
+    assert "commit mode:" not in output
+
+
+def test_doctor_skips_codex_planner_and_bypassed_implementers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # Only a sandboxed Codex backend or frontend has to commit its own work.
+    blocks = {role: "provider: claude\nbinary: fake-claude" for role in ROLES}
+    blocks["planner"] = "provider: codex\nbinary: fake-codex"
+    blocks["backend"] = "provider: codex\nbinary: fake-codex\nunsafe_bypass: true"
+    repo = _make_repo(tmp_path, ALL_CLAUDE, handoff=None, commit=False)
+    _write_agents(repo, blocks, "commit_mode: agent\n")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert "commit mode:" not in output, output
+
+
+def test_doctor_fails_a_codex_fallback_for_an_implementer_with_agent_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    blocks = {role: "provider: claude\nbinary: fake-claude" for role in ROLES}
+    blocks["backend"] = (
+        "provider: claude\nbinary: fake-claude\n"
+        "fallback:\n  provider: codex\n  binary: fake-codex"
+    )
+    repo = _make_repo(tmp_path, ALL_CLAUDE, handoff=None, commit=False)
+    _write_agents(repo, blocks, "commit_mode: agent\n")
+    _stub_which(monkeypatch, {"fake-codex", "fake-claude"})
+
+    exit_code, output = _run(repo, capsys)
+
+    assert exit_code == 1, output
+    assert "FAIL commit mode: backend fallback runs on Codex" in output
 
 
 def test_doctor_warns_when_the_verification_allowlist_is_empty(
@@ -502,7 +579,7 @@ def test_doctor_passes_when_the_verification_allowlist_is_set(
 def test_doctor_omits_the_verification_allowlist_when_the_gate_is_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    repo = _make_repo(tmp_path, ALL_CLAUDE, handoff=None)
     config_path = repo / "dispatch_config.yaml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8")
@@ -565,7 +642,7 @@ def test_doctor_passes_scanners_when_none_are_configured(
 def test_doctor_warns_when_scanners_are_configured_but_the_gate_is_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    repo = _make_repo(tmp_path, NO_GEMINI, handoff=None)
+    repo = _make_repo(tmp_path, ALL_CLAUDE, handoff=None)
     _add_config(
         repo,
         "enforce_work_packet: false\n"
@@ -881,7 +958,7 @@ def test_doctor_accepts_handoff_without_work_packet_when_gate_is_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     repo = _make_repo(
-        tmp_path, NO_GEMINI, handoff=HANDOFF_WITHOUT_WORK_PACKET, commit=False
+        tmp_path, ALL_CLAUDE, handoff=HANDOFF_WITHOUT_WORK_PACKET, commit=False
     )
     config_path = repo / "dispatch_config.yaml"
     config_path.write_text(
@@ -1146,7 +1223,10 @@ def test_doctor_warns_on_dirty_tree_and_falls_back_to_default_config(
 
     exit_code, output = _run(repo, capsys)
 
-    assert exit_code == 0, output
+    # The built-in defaults also put backend on Codex with commit_mode: agent,
+    # which the commit mode check reports; `init` writes a config that does not.
+    assert exit_code == 1, output
+    assert "FAIL commit mode: backend runs on Codex with commit_mode: agent" in output
     assert "PASS config: no dispatch_config.yaml found" in output
     assert "WARN git working tree: working tree is dirty" in output
     assert "PASS role planner: provider antigravity" in output
@@ -3535,7 +3615,18 @@ def _interp_lines(output: str) -> list[str]:
 
 
 def _write_agents(repo: Path, blocks: dict[str, str], extra: str = "") -> None:
-    lines = ["agents:"]
+    # Same rule as _make_repo: a Codex implementer needs dispatcher commits.
+    codex_implementer = any(
+        "provider: codex" in blocks[role] for role in ("backend", "frontend")
+    )
+    # dispatcher commits need the gate on, so a gate-off extra keeps agent.
+    dispatcher = (
+        codex_implementer
+        and "commit_mode:" not in extra
+        and "enforce_work_packet: false" not in extra
+    )
+    lines = ["commit_mode: dispatcher"] if dispatcher else []
+    lines.append("agents:")
     for role in ROLES:
         lines.append(f"  {role}:")
         lines.extend(f"    {line}" for line in blocks[role].strip().splitlines())

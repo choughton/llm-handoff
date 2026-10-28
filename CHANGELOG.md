@@ -6,6 +6,16 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- `init` no longer writes a config whose Codex backend cannot commit. The
+  reference workflow's `dispatch_config.yaml` and `dispatch_config.example.yaml`
+  ship `commit_mode: dispatcher`, because their backend runs on Codex and the
+  Codex `workspace-write` sandbox keeps `.git` read-only; with
+  `commit_mode: agent` every backend story came back as
+  `blocked_implementation_failure`. The all-Claude and all-Antigravity
+  mappings switch back to `commit_mode: agent`. `llm-handoff doctor` adds a
+  `commit mode` check that fails when a sandboxed Codex `backend` or
+  `frontend` (or such a fallback) runs under `commit_mode: agent`, which also
+  flags the built-in defaults used when there is no `dispatch_config.yaml`.
 - The README, `AGENTS.md`, `CONTRIBUTING.md`, and the package description
   call `llm-handoff` a file-based handoff dispatcher instead of a reference
   implementation, and the README's Known Limitations say it has been

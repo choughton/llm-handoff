@@ -2112,7 +2112,10 @@ workspace and network access is off by default. The sandbox always keeps
 `sandbox_workspace_write.writable_roots`, so a sandboxed role cannot commit on
 its own. Use `commit_mode: dispatcher` for sandboxed Codex implementers: the
 dispatcher commits the in-scope files after the role finishes. The reference
-workflow ships `.codex/rules/llm-handoff.rules`, a Codex rules file (an
+workflow's `dispatch_config.yaml` sets it for its Codex backend, and
+`llm-handoff doctor` fails a config that leaves a sandboxed Codex `backend`
+or `frontend` (or such a fallback) on `commit_mode: agent`. The reference
+workflow also ships `.codex/rules/llm-handoff.rules`, a Codex rules file (an
 experimental Codex feature) that forbids `git push`. It does not let git
 writes run outside the sandbox: rules match command prefixes only, so an
 allow rule for `git commit` would also allow `git commit -a` or a trailing
@@ -2925,8 +2928,9 @@ with only Claude Code installed can run the whole loop:
 | `finalizer` | `.claude/agents/ledger-updater.md` |
 
 `llm-handoff init --provider claude` writes this mapping into
-`dispatch_config.yaml`, with every role on `provider: claude` and
-`audit.security_provider: claude`. Without `--provider`, `init` writes it
+`dispatch_config.yaml`, with every role on `provider: claude`,
+`audit.security_provider: claude`, and `commit_mode: agent` (no implementer
+runs on Codex, so the template's dispatcher commits are not needed). Without `--provider`, `init` writes it
 automatically when `claude` is the only provider CLI on `PATH`, and keeps the
 reference mapping otherwise. `init` prints the mapping it chose and the
 provider CLIs it found.
@@ -2965,7 +2969,8 @@ not migrated; that role starts a fresh session on its next resume.
 `dispatch_config.yaml`, with every role on `provider: codex`,
 `audit.security_provider: codex`, `normalizer.provider: codex` (the
 normalizer runs through the Codex CLI login, so no API key is needed), and
-`commit_mode: dispatcher` in place of the template's `commit_mode: agent`.
+`commit_mode: dispatcher`, which the template already sets for its Codex
+backend.
 Without `--provider`, `init` writes it automatically when `codex` is the only
 provider CLI on `PATH`. If both `claude` and `codex` are on `PATH`, `init`
 keeps the reference mapping; pass `--provider` to choose one.
@@ -3024,8 +3029,9 @@ dispatcher already names the validator and finalizer files:
 `binary: agy`, `audit.security_provider: antigravity`, and
 `normalizer.provider: antigravity` with no `model`, so the normalizer uses
 its default `gemini-3.8-flash-low` through the `agy` CLI login. No role gets
-`unsafe_bypass`, and `commit_mode` and the commented `interpreter_grants`
-line stay as the template has them. Without `--provider`, `init` writes it
+`unsafe_bypass`, `commit_mode` becomes `agent` because no implementer runs on
+Codex, and the commented `interpreter_grants` line stays as the template has
+it. Without `--provider`, `init` writes it
 automatically when `agy` is the only provider CLI on `PATH`; with `agy` and
 another provider CLI on `PATH`, `init` keeps the reference mapping.
 `--verification-command` changes no `agents:` entry under this mapping,
