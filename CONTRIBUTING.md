@@ -1,8 +1,8 @@
 # Contributing
 
-`llm-handoff` is a reference implementation, not an open-ended framework
-project. Contributions are welcome when they make the reference implementation
-clearer, safer, or easier to inspect.
+`llm-handoff` is a small, focused tool, not an open-ended framework project.
+Contributions are welcome when they make the tool clearer, safer, or easier to
+inspect.
 
 ## Good Contributions
 

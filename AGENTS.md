@@ -4,8 +4,8 @@ These instructions apply to the entire `llm-handoff` repository.
 
 ## Project Purpose
 
-`llm-handoff` is a reference implementation of a file-based dispatch loop for
-multi-CLI AI coding workflows. The core idea is:
+`llm-handoff` is a file-based dispatch loop for multi-CLI AI coding
+workflows. The core idea is:
 
 - prompts are advisory;
 - validators are authoritative;
@@ -40,8 +40,8 @@ Keep the tool small and inspectable.
 - Do not auto-push by default. Local commits are acceptable; remote pushes must
   be explicit user-controlled behavior.
 
-The public default workflow should be usable as a reference implementation even
-when users choose to fork or adapt it.
+The public default workflow should work as shipped, even when users choose to
+fork or adapt it.
 
 ## Naming
 
@@ -113,8 +113,7 @@ Be direct and conservative.
 Do not claim that this is production-ready for arbitrary repositories. The
 correct positioning is:
 
-> A reference implementation of a file-based handoff dispatcher for multi-CLI
-> agent workflows.
+> A file-based handoff dispatcher for multi-CLI agent workflows.
 
 Avoid hype terms and avoid implying self-healing. The dispatcher detects
 failure modes, dispatches validators, and pauses. Humans or configured agents
