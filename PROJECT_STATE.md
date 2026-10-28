@@ -10,14 +10,10 @@ history.
 
 ## Current Status
 
-- **Active Epic:** REFUSAL-REDACTION (epic 23), opened after operator approval
-  of the Work Intake proposal. The tpm groomed it with REDACT-1 and REDACT-2
-  kept in order and scope, no splits or additions. REDACT-1 (redaction wording
-  across the non-Claude protocol, prompt, and helper copies, with tests) is
-  implemented and awaiting audit; REDACT-2, the `.claude/agents/` operator
-  story, is pending. WORK-INTAKE (epic 14) closed with INTAKE-6 approved at
-  `989f2902c44a62fdff96ec31bdb6e0c96744f159` and merged in PR #304
-  (`e5a6ea4`).
+- **Active Epic:** None. REFUSAL-REDACTION (epic 23) closed with REDACT-2
+  approved at `88e20bb0b4191649a0e867b98f0fc5f7d0789e02` and merged in PR #306
+  (`68b782b`). No open epic remains in the backlog; the planner proposes the
+  next one.
 - **Parked Epic:** None.
 - **Other Open Epics:** None.
 - **Epic Awaiting Close:** None.
@@ -71,54 +67,7 @@ renumbered in execution order.
 Closed epics, with their full intros and story lists, are in
 `COMPLETED_WORK.md`; the open epics below keep their numbers.
 
-### 23. REFUSAL-REDACTION - redact sensitive values in environment-refusal diagnostics
-
-Intro: From the ACTIVE-6 and ACTIVE-7 security audits (medium, non-blocking):
-implementer `Environment refusal` bullets and gate-deferred `Commands run`
-entries quote raw refusal text, which can copy credentials, tokens, or
-sensitive command arguments into `HANDOFF.md`, where the handbook and planner
-prompts also instruct agents to quote it.
-
-Fit: Unblocked, self-contained security hardening, and the only actionable item
-remaining in `PROJECT_STATE.md`.
-
-Goal: Require redacting credentials, tokens, and sensitive command arguments in
-quoted `Environment refusal` bullets and `deferred to the work-claim gate:`
-refusal diagnostics across the handbook, implementer prompts, planner prompts,
-and helper/template copies (root and `examples/reference-workflow/`), while
-preserving the refusal category (`permission rule`, `missing binary`,
-`no TTY`) and a sanitized diagnostic; remove the closed followup from
-`PROJECT_STATE.md`.
-
-Boundaries:
-
-- Keep the existing `- **Environment refusal:** <permission rule | missing binary | no TTY>: <...>`
-  and `deferred to the work-claim gate: <...>` syntax so validator parsing
-  (`_environment_refusal`, `planner_redispatch_after_refusal`) and existing
-  valid handoffs continue to work.
-- Update root and `examples/reference-workflow/` copies of protocol docs, role
-  prompts, `.agents/agents/`, and `.codex/skills/` together with
-  `tests/test_reference_workflow.py` and `tests/ported/test_handoff_docs.py`.
-- Keep `.claude/agents/` edits (`backend.md`, `frontend.md`, `planner.md` in
-  root and `examples/reference-workflow/`) in a separate final operator story
-  routed to `user` with an operator artifact under `logs/dispatch/operator/`.
-
-Stories:
-
-- REDACT-1: Require redacting credentials and sensitive arguments in
-  `Environment refusal` bullets and `deferred to the work-claim gate:`
-  diagnostics across `docs/handoff/` (`HANDBOOK.md`, `README.md`,
-  `BACKEND_HANDOFF_PROMPT.md`, `FRONTEND_HANDOFF_PROMPT.md`,
-  `AUDITOR_HANDOFF_PROMPT.md`, `PLANNER_HANDOFF_PROMPT.md`,
-  `PLANNER_INITIAL_PROMPT.md`), `.agents/agents/{backend,frontend,planner}.md`,
-  `.codex/skills/{llm-handoff,llm-handoff-frontend,llm-handoff-planner}/SKILL.md`,
-  and their `examples/reference-workflow/` copies; update
-  `tests/test_reference_workflow.py`, `tests/ported/test_handoff_docs.py`,
-  `PROJECT_STATE.md`, and `CHANGELOG.md`.
-- REDACT-2: Operator story synchronizing
-  `.claude/agents/{backend,frontend,planner}.md` and
-  `examples/reference-workflow/.claude/agents/{backend,frontend,planner}.md`
-  with the `REDACT-1` redaction wording.
+No open epics remain.
 
 ## Open Followups
 
@@ -145,19 +94,6 @@ notes below; the remaining letters are unchanged.
     hierarchy (initiative, project, issue) with project-open and project-close
     gates. This repo has epic and story in `remaining_stories` plus this file;
     the TPM-ROLE epic scopes the picker to one epic for that reason.
-
-- From the ACTIVE-6 audit (medium, security, non-blocking): an implementer's
-  `Environment refusal` bullet quotes the refusal text, which can carry
-  credentials or sensitive command arguments into `HANDOFF.md`. The ACTIVE-7
-  audit widened the scope: the planner instructions and handbook copies
-  (`docs/handoff/HANDBOOK.md`, `docs/handoff/PLANNER_HANDOFF_PROMPT.md`,
-  their `examples/reference-workflow/` copies, and the planner helpers) also
-  ask agents to quote that refusal text. A future bounded change must
-  require redaction in the implementer prompts, the planner instructions,
-  the handbook, and their helper and template copies, while keeping the
-  refusal category and a sanitized diagnostic. Tracked by epic 23
-  (REFUSAL-REDACTION): REDACT-1 covers the non-Claude surfaces and REDACT-2
-  the `.claude/agents/` copies; remove this item when REDACT-2 completes.
 
 ## Notes
 
