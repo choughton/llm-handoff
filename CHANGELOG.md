@@ -30,6 +30,11 @@ This project follows a simple pre-release changelog until the first public tag.
   is unchanged, and pauses without committing when any other file changed,
   on a Git failure, or when the approval turn failed or left an invalid
   handoff.
+- The README, `AGENTS.md`, `CONTRIBUTING.md`, and the package description
+  call `llm-handoff` a file-based handoff dispatcher instead of a reference
+  implementation, and the README's Known Limitations say it has been
+  validated in three repositories. The `reference-workflow` template name
+  is unchanged.
 - The handbook and the planner prompts, the agy planner agent, the Codex
   planner skill, and their reference-workflow copies define one Work Intake
   protocol (INTAKE-5). The planner answers a plain-language new-work request

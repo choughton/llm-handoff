@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "llm-handoff"
 version = "0.0.0"
-description = "A reference implementation of a file-based handoff dispatcher for multi-CLI agent workflows."
+description = "A file-based handoff dispatcher for multi-CLI agent workflows."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
