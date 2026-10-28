@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
+import stat
 
 import pytest
 import yaml
@@ -1199,16 +1201,33 @@ _FLAGS = [(False, False), (True, False), (False, True), (True, True)]
 _FLAG_IDS = ["plain", "dry-run", "force", "dry-run-force"]
 
 
+def _is_link(path: Path) -> bool:
+    # is_junction() is 3.12+; a junction is a reparse point on every version.
+    attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    return path.is_symlink() or bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _tree(root: Path) -> dict[Path, bytes | None]:
-    """Every entry under root: file bytes, or None for directories and links."""
+    """Every entry under root: file bytes, or None for directories and links.
+
+    Links and junctions are listed but not entered. ``Path.rglob`` enters
+    junctions on Python 3.11 and fails on a dangling one.
+    """
     tree: dict[Path, bytes | None] = {}
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root)
-        if path.is_symlink() or not path.is_file():
-            tree[relative] = None
-        else:
-            tree[relative] = path.read_bytes()
-    return tree
+    pending = [root]
+    while pending:
+        for path in pending.pop().iterdir():
+            relative = path.relative_to(root)
+            if _is_link(path):
+                tree[relative] = None
+            elif path.is_dir():
+                tree[relative] = None
+                pending.append(path)
+            elif path.is_file():
+                tree[relative] = path.read_bytes()
+            else:
+                tree[relative] = None
+    return dict(sorted(tree.items()))
 
 
 def _handoff_text(

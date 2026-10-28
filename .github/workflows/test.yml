@@ -1,0 +1,31 @@
+# Runs the test suite on the same runner and Python versions as the publish
+# workflow, so a pull request shows CI-only failures before a release tag.
+name: Tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Configure Git for tests that commit
+        run: |
+          git config --global user.name "llm-handoff tests"
+          git config --global user.email "tests@example.invalid"
+      - name: Run the test suite
+        run: python -m pytest tests -q
