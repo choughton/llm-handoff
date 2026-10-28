@@ -2,6 +2,14 @@
 
 All notable changes to `llm-handoff` will be documented here.
 
+## Unreleased
+
+- `init` has a description in `llm-handoff --help` and `init --help`: it
+  copies the reference workflow into a target repository, or switches an
+  initialized one between file and Linear mode with `--tracker`. The
+  dispatcher's `--dry-run` and `--repo-root` flags have help text too, and a
+  test now requires help on every command and visible option.
+
 ## 0.1.0 - 2026-10-28
 
 The first tagged release and the first one on PyPI (`pipx install

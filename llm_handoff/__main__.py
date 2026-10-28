@@ -493,6 +493,15 @@ def init_command(
         ),
     ),
 ) -> None:
+    """Copy the reference workflow into a target repository.
+
+    Writes AGENTS.md, PROJECT_STATE.md, dispatch_config.yaml, the handoff
+    file, the role prompts, and the provider agent files, with a
+    role-to-provider mapping chosen from the provider CLIs on PATH. Identical
+    files are skipped; changed files stop the run unless --force is passed.
+    On a repository that already has dispatch_config.yaml, --tracker switches
+    it between file and Linear mode instead.
+    """
     _configure_stdio_encoding()
     if provider == "gemini":
         typer.echo(_INIT_GEMINI_REMOVED_MESSAGE, err=True)
@@ -757,7 +766,14 @@ def stop_command(
 @app.callback(invoke_without_command=True)
 def _dispatch_callback(
     ctx: typer.Context,
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Report the route and the provider CLI it would launch without "
+            "launching anything."
+        ),
+    ),
     use_manual_frontend: bool = typer.Option(
         False,
         "--manual-frontend",
@@ -799,7 +815,11 @@ def _dispatch_callback(
             "edit instead."
         ),
     ),
-    repo_root: Path | None = typer.Option(None, "--repo-root"),
+    repo_root: Path | None = typer.Option(
+        None,
+        "--repo-root",
+        help="Repository root to dispatch in. Defaults to the repo containing the CWD.",
+    ),
     config_path: Path | None = typer.Option(
         None,
         "--config",
