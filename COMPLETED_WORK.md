@@ -172,6 +172,16 @@ split out of `PROJECT_STATE.md`.
   (`3b37cb7`). Quality and security reviews passed with no findings.
   Verification: dispatcher ran `python -m pytest tests -q` and the focused
   config, pause-recovery, and orchestrator tests at the audited SHA, exit 0.
+- **WORK-INTAKE** - turn a plain request into epics and stories. INTAKE-1
+  `893b59a` (PR #297, `4338c2d`); INTAKE-5 `1984910` (PR #298, `378790a`);
+  INTAKE-3 `0754285` (PR #300, `5bee570`); INTAKE-4 `ec529c9` (PR #302,
+  `0fe29f0`); INTAKE-6, the last story, approved at
+  `989f2902c44a62fdff96ec31bdb6e0c96744f159` and merged in PR #304
+  (`e5a6ea4`). Quality and security reviews passed with no findings.
+  Verification: dispatcher ran `python -m pytest
+  tests/test_reference_workflow.py tests/ported/test_handoff_docs.py
+  tests/test_init_tracker.py tests/test_init_tracker_switch.py -q` at the
+  audited SHA, exit 0.
 
 ## Status History
 
@@ -375,12 +385,100 @@ Current Status entries for closed or finished work, moved unchanged from
   independent, and unblocked. RECON-1 approved at `9100a57`, PR #294
   (`8f5d698`). RECON-2, the last story, approved at `0427989`, PR #295
   (`3b37cb7`); ESCALATION-RECONCILE closed.
+- **Active Epic (2026-10-27):** WORK-INTAKE (epic 14), picked by fit after
+  ESCALATION-RECONCILE closed. INTAKE-1 approved at `893b59a` (PR #297,
+  `4338c2d`). INTAKE-5 approved at `1984910` (PR #298, `378790a`). INTAKE-3
+  approved at `0754285` (PR #300, `5bee570`). INTAKE-4 (Linear approval
+  integration) approved at `ec529c9` (PR #302, `0fe29f0`). INTAKE-6 (Claude
+  planner copies) approved at `989f290` (PR #304, `e5a6ea4`); WORK-INTAKE
+  closed.
 
 ## Closed Epics
 
 Full sections of closed epics (intro, `Fit:` line, and story list), moved
 unchanged from the `PROJECT_STATE.md` backlog on 2026-10-21, most recent
 close first. The numbers are the epics' original labels.
+
+### 14. WORK-INTAKE - turn a plain request into epics and stories
+
+Intro: turn a plain-language request typed at the operator prompt during a
+user pause into reviewed epics and story outlines, record the approved plan
+in `PROJECT_STATE.md` (or create Linear issues in Linear mode), and open the
+first epic by fit without requiring the user to edit `HANDOFF.md`,
+`PROJECT_STATE.md`, or Work Packets by hand.
+
+Fit: unblocked and ready to open. The pre-INTAKE-1 design check is resolved,
+TPM-ROLE and ESCALATION-RECONCILE are closed, and no other open epic remains
+in the backlog.
+
+Goal: let an operator type a plain-language request at a user pause, read the
+planner's `## Proposed Backlog` (or an escalation's question) directly in the
+terminal, revise it by typing changes or approve it by pressing Enter, have
+the planner record the approved epics in `PROJECT_STATE.md` (with the
+dispatcher committing `PROJECT_STATE.md` only in `commit_mode: dispatcher`,
+or creating Linear issues in Linear mode) and open the first epic by fit.
+
+Boundaries:
+
+- Do not add a `request` CLI subcommand; requests arrive through the existing
+  operator prompt at a pause.
+- Proposal handoffs (`## Proposed Backlog`) contain epics (intro, goal,
+  boundaries, `Fit:` line) and story outlines only, never Work Packets, and do
+  not edit `PROJECT_STATE.md` or create Linear issues until the operator
+  approves.
+- Terminal display of a user escalation's question or `## Proposed Backlog`
+  at a user pause must be bounded in length so the terminal stays readable
+  without opening `HANDOFF.md`.
+- At a proposal review (`## Proposed Backlog` on a user pause), the operator
+  prompt line tells the operator to press Enter to approve/start the plan or
+  type changes to revise it. Pressing Enter sends an explicit approval
+  instruction to the planner (not `OPERATOR_BEST_JUDGMENT_REQUEST`) that
+  permits editing `PROJECT_STATE.md` (`config.project_state_path`). Typed text
+  sends revision guidance back to the planner, which revises
+  `## Proposed Backlog` and routes to `user` again (no automatic loop bound).
+- In `commit_mode: dispatcher`, after the approval turn, the dispatcher
+  commits `config.project_state_path` (`PROJECT_STATE.md`) and only that file
+  (same local, ledger-only commit shape as a finalizer epic-close commit,
+  published with the next story's pull request). If the approval turn leaves
+  any other file (besides `HANDOFF.md`) changed, the dispatcher pauses
+  instead of committing.
+- On approval, the planner opens the first epic by fit: it routes to `tpm`
+  when `agents.tpm` is configured (so the `tpm` sizes stories and writes Work
+  Packets) and otherwise writes the first Work Packet itself. If a request
+  was proposed and approved while another epic was open, the approved epics
+  are added to the backlog and the planner keeps choosing the next epic by
+  fit.
+- In Linear mode, the planner creates the Linear issues at approval, never
+  during proposal/revision drafts.
+- Follow the `.claude/` rule above: Claude roles cannot write `.claude/`, so
+  any `.claude/` agent/template edits needed by prompt stories are split into
+  an operator story routed to `user` at the end of the epic rather than mixed
+  with code or Claude-dispatched packets.
+
+Stories, in execution order (INTAKE-2 was split into INTAKE-5 and INTAKE-6 to
+separate planner protocol changes from operator-only Claude file edits):
+
+- INTAKE-1: Bounded proposal or escalation previews at user pauses: print
+  the current handoff's nonempty `## Proposed Backlog`, or its escalation
+  body, once per user-route pause, capped by lines and characters with
+  control characters escaped.
+- INTAKE-5 (was INTAKE-2): Planner intake/revision protocol in the handbook,
+  planner initial/handoff prompts, `.agents/agents/planner.md`,
+  `.codex/skills/llm-handoff-planner/SKILL.md`, and corresponding
+  reference-workflow copies. Excludes `.claude/`; INTAKE-6 carries those
+  copies.
+- INTAKE-3: Proposal approval transaction in `operator_prompt.py`,
+  `orchestrator.py`, and `dispatcher_commit.py` with tests and supporting
+  docs. Enter approves, typed text revises; in dispatcher commit mode commit
+  only the configured project-state file, excluding HANDOFF.md.
+- INTAKE-4: Linear approval integration through `llm_handoff/init_workflow.py`,
+  `llm_handoff/prompt_templates/linear/`, generated instruction sections,
+  tests and docs. Drafts and revisions make no Linear calls; approval creates
+  the approved issues.
+- INTAKE-6 (was INTAKE-2): Final story synchronizing
+  `.claude/agents/planner.md` and
+  `examples/reference-workflow/.claude/agents/planner.md` with the completed
+  intake/revision/approval rules. No runtime changes.
 
 ### 16. ESCALATION-RECONCILE - a stale user escalation gets one planner pass
 
