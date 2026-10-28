@@ -302,7 +302,8 @@ before the dispatcher pauses: a frontmatter `next_agent: user` handoff with
 planner rewrites it to `user` with the same question when the blocker still
 holds, or to the next role when it does not. A planner-written user route
 gets no check and pauses as `reconciled by planner`. With the default
-`false`, every user route pauses at once.
+`false`, every user route pauses at once. The pass is not proposal approval
+(see Work Intake below).
 
 **Environment refusal handbacks.** An implementer handback with
 `status: blocked_implementation_failure` and an `Environment refusal` bullet
@@ -396,7 +397,8 @@ was stopped is not treated as a person's edit.
   only `HANDOFF.md` into a valid handoff for what the person meant. It does
   not carry out the request itself, and its handoff passes the same
   validation as any other. When the intent is unclear, it routes to `user`
-  with `status: escalate_to_user` and one plain question.
+  with `status: escalate_to_user` and one plain question. A request for new
+  work becomes a Work Intake proposal; the pass never approves one.
 - **A failed interpretation.** If that pass leaves a handoff with only
   formatting errors, such as a `## Verification Evidence` block with the
   wrong labels, the planner gets one repair pass for them. If the handoff
@@ -427,6 +429,34 @@ concrete `git rev-parse HEAD` SHA as `scope_sha`. Anything off routes back to
 artifact, commit exactly the requested edits, keep the artifact and
 `docs/handoff/HANDOFF.md` out of the commit, and only then leave the note.
 
+## Work Intake
+
+A person may ask for new work in plain words, typed at the operator prompt
+during a pause. The planner turns the request into a reviewable plan:
+
+- **Proposal.** A `## Proposed Backlog` section gives each proposed epic's
+  intro, goal, boundaries, `Fit:` line, and story outline. Story outlines
+  are planner scope; sizing and splitting stay with the tpm when configured.
+- **Drafts change only the handoff.** A proposal or revision routes to
+  `user` with `status: escalate_to_user` and carries no Work Packet. It
+  edits no file but `HANDOFF.md`: no project state file edits and no Linear
+  issues. Active work and `remaining_stories` carry forward unchanged.
+- **Revision.** Typed guidance on a pending proposal revises it and routes
+  to `user` again, with no automatic revision limit.
+- **Approval.** Only an explicit dispatcher instruction saying the operator
+  approved the proposed backlog is approval. The best-judgment request,
+  typed guidance, a plain-words interpretation pass, and a user escalation
+  reconciliation pass are not. On approval the planner records the approved
+  epics in the configured project state file (`project_state_path`), keeps
+  existing open work, and opens the next epic by fit: it routes to `tpm`
+  when `agents.tpm` is configured, otherwise it writes the Work Packet. In
+  dispatcher commit mode it leaves that edit for the dispatcher and never
+  stages or commits it. Outside approved intake, new stories are still
+  recorded through the next Work Packet.
+- **No unblocked story.** A planner that routes to `user` because no open
+  epic has an unblocked story invites a plain-language request at the
+  operator prompt instead of asking for hand edits.
+
 ## CHANGELOG Entries
 
 `CHANGELOG.md` grows with every story, and reading it whole costs tokens on
@@ -443,7 +473,8 @@ Work Packet asks you to change an older entry.
 - Provider names used as public workflow roles.
 - `scope_sha: HEAD` instead of a concrete SHA.
 - Completion claims without `## Verification Evidence`.
-- Planner assignments without a concrete work packet.
+- Planner assignments without a concrete work packet. A Work Intake
+  proposal or revision routed to `user` carries none.
 - A `Verification command` written as prose, such as `` `cmd1`, then
   `cmd2` ``, instead of one command per nested list item.
 - A `Verification command` that points `--basetemp`, `TMP`, or `TEMP`
