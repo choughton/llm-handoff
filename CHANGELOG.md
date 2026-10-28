@@ -6,6 +6,13 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- The proposal approval commit (`commit_approved_project_state`) now
+  disables every repository hook with a command-scoped empty
+  `core.hooksPath`, since `--no-verify` leaves `prepare-commit-msg` and
+  `post-commit` running, and checks that the new commit sits on the previous
+  HEAD and changes only `project_state_path`. A commit that fails that check
+  pauses with a review reason and is left in place, not undone (INTAKE-3
+  audit fix).
 - A user-route pause whose handoff holds a nonempty `## Proposed Backlog`
   is now a proposal review (INTAKE-3). The prompt line says Enter approves
   the plan and typed text revises it. Enter schedules one planner dispatch

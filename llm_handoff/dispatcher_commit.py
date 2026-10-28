@@ -26,7 +26,9 @@ paths on their own with the same marker.
 
 After a Work Intake proposal approval turn, ``commit_approved_project_state``
 commits the configured project state file alone, as a local ledger-only
-commit, and refuses when any other file besides the handoff changed.
+commit with every repository hook disabled, refuses when any other file
+besides the handoff changed, and checks that the new commit holds only that
+file.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from typing import TYPE_CHECKING
 
 from llm_handoff.chat_changes import ChatChangeEntry, chat_owned_paths
@@ -339,7 +342,9 @@ class ProjectStateCommitResult:
     ``sha`` is set only when a commit was made. ``unchanged`` means the
     project state file had no change to commit. ``other_changes`` lists the
     changed paths, other than the handoff and the project state file, that
-    stopped the commit; ``error`` is a Git or file-state failure.
+    stopped the commit; ``error`` is a Git or file-state failure. ``sha`` and
+    ``error`` are both set when a commit was made but is not a project-state
+    only commit on top of the previous HEAD.
     """
 
     sha: str | None = None
@@ -407,9 +412,12 @@ def commit_approved_project_state(
     included, may hold changes only to ``handoff_path`` and
     ``project_state_path``. Any other changed path stops the commit, and
     nothing is staged, discarded, or absorbed. The commit holds exactly
-    ``project_state_path`` (``--only``, hooks skipped), never the handoff,
-    and is local: nothing is pushed. A project state file with no change
-    makes no commit.
+    ``project_state_path`` (``--only``, with every repository hook disabled
+    through a command-scoped empty ``core.hooksPath``), never the handoff,
+    and is local: nothing is pushed. The new commit is then checked: when
+    its parent is not the previous HEAD or it changes any other path, the
+    result carries its ``sha`` and an ``error``, and nothing is undone. A
+    project state file with no change makes no commit.
     """
 
     handoff = normalize_repo_path(Path(handoff_path).as_posix())
@@ -453,21 +461,31 @@ def commit_approved_project_state(
         f"operator prompt. Local ledger-only commit; it is published with the "
         f"next story.\n\nFiles:\n- {state}"
     )
-    commit = _git(
-        repo_root,
-        [
-            *_LITERAL_PATHSPECS,
-            "commit",
-            "--no-verify",
-            "--only",
-            "-m",
-            subject,
-            "-m",
-            body,
-            "--",
-            state,
-        ],
-    )
+    head_before = git_head(repo_root)
+    # `--no-verify` skips only pre-commit and commit-msg; prepare-commit-msg
+    # and post-commit still run, after the scope check above, and can change
+    # the commit's index, the real index, or the working tree. A
+    # command-scoped `core.hooksPath` pointing at a fresh empty directory
+    # disables every repository hook, on every platform. The check after the
+    # commit still confirms what was committed.
+    with tempfile.TemporaryDirectory(prefix="llm-handoff-no-hooks-") as no_hooks:
+        commit = _git(
+            repo_root,
+            [
+                "-c",
+                f"core.hooksPath={Path(no_hooks).as_posix()}",
+                *_LITERAL_PATHSPECS,
+                "commit",
+                "--no-verify",
+                "--only",
+                "-m",
+                subject,
+                "-m",
+                body,
+                "--",
+                state,
+            ],
+        )
     if commit.returncode != 0:
         return ProjectStateCommitResult(
             error=f"git commit failed: {_first_line(commit)}"
@@ -477,7 +495,56 @@ def commit_approved_project_state(
         return ProjectStateCommitResult(
             error="git rev-parse HEAD failed after the commit"
         )
+    problem = _approval_commit_problem(repo_root, sha, head_before, state)
+    if problem is not None:
+        return ProjectStateCommitResult(sha=sha, error=problem)
     return ProjectStateCommitResult(sha=sha)
+
+
+def _approval_commit_problem(
+    repo_root: Path, sha: str, head_before: str | None, state: str
+) -> str | None:
+    """Why commit ``sha`` is not exactly ``state`` on top of ``head_before``.
+
+    None when the commit's only parent is ``head_before`` (no parent on an
+    unborn branch) and it changes ``state`` and no other path. The commit is
+    never undone here: the operator inspects it at the pause.
+    """
+
+    parents = _git(repo_root, ["rev-list", "--parents", "-n", "1", sha])
+    if parents.returncode != 0:
+        return f"git rev-list failed on the new commit {sha[:12]}: {_first_line(parents)}"
+    expected_parents = [head_before] if head_before else []
+    if parents.stdout.split()[1:] != expected_parents:
+        base = head_before[:12] if head_before else "the unborn branch"
+        return (
+            f"the new commit {sha[:12]} is not a single commit on top of "
+            f"{base}; inspect it before continuing"
+        )
+    listed = _git(
+        repo_root,
+        [
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "--no-renames",
+            "-r",
+            "--root",
+            "-z",
+            sha,
+        ],
+    )
+    if listed.returncode != 0:
+        return f"git diff-tree failed on the new commit {sha[:12]}: {_first_line(listed)}"
+    paths = {normalize_repo_path(path) for path in listed.stdout.split("\0") if path}
+    if paths != {state}:
+        others = ", ".join(sorted(paths - {state}))
+        found = f"it also changes {others}" if others else f"it does not change {state}"
+        return (
+            f"the new commit {sha[:12]} is not a {state}-only commit: {found}; "
+            "inspect it before continuing"
+        )
+    return None
 
 
 def _utc_marker_time(recorded_at: str) -> str | None:

@@ -568,6 +568,12 @@ PROPOSAL_APPROVAL_GIT_FAILURE_PAUSE_REASON = (
     "checkout and commit {project_state_path} yourself, then edit "
     "HANDOFF.md or answer at the prompt."
 )
+PROPOSAL_APPROVAL_UNEXPECTED_COMMIT_PAUSE_REASON = (
+    "PROPOSAL APPROVAL COMMIT NEEDS REVIEW: the dispatcher committed "
+    "{project_state_path} as {sha} after the approval turn, but {error}. "
+    "The commit was not undone. Inspect it, fix or reset it yourself, then "
+    "edit HANDOFF.md or answer at the prompt."
+)
 # Direct role dispatch requested with `@<role> <message>` at the operator
 # prompt. The operator text is passed as a keyword value, so braces in it are
 # not parsed again.
@@ -6315,6 +6321,14 @@ def _commit_approved_project_state(config: DispatchConfig, log: LogFn) -> str | 
             handoff_path=handoff_path,
             project_state_path=project_state_path,
             paths=", ".join(result.other_changes),
+        )
+        _log(log, "ERROR", reason)
+        return reason
+    if result.error is not None and result.sha is not None:
+        reason = PROPOSAL_APPROVAL_UNEXPECTED_COMMIT_PAUSE_REASON.format(
+            project_state_path=project_state_path,
+            sha=result.sha[:12],
+            error=result.error,
         )
         _log(log, "ERROR", reason)
         return reason

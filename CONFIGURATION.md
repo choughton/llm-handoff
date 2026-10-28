@@ -353,8 +353,13 @@ Press Enter to approve this proposed backlog and start the plan, or type changes
 With `commit_mode: dispatcher`, after an approval dispatch that exits 0 and
 whose handoff passes validation, the dispatcher lists every change in the
 index and working tree, untracked files included. When only the handoff and
-`project_state_path` changed, it commits `project_state_path` alone (hooks
-skipped), never the handoff. The commit stays local, like a finalizer
+`project_state_path` changed, it commits `project_state_path` alone, never
+the handoff. Every repository hook is disabled for that commit, not only
+the ones `--no-verify` skips: the command sets `core.hooksPath` to a fresh
+empty directory, so no `prepare-commit-msg` or `post-commit` hook runs. The
+dispatcher then checks the new commit; if its parent is not the previous
+HEAD or it changes any other path, it pauses and leaves the commit in place
+for the operator to inspect. The commit stays local, like a finalizer
 ledger commit: it is not pushed and opens no pull request, and the next
 story's pull request carries it. An unchanged project state file makes no
 commit. Any other changed file, `COMPLETED_WORK.md` included, pauses without
