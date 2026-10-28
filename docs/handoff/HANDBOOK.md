@@ -62,8 +62,7 @@ boundaries, and wrong or competing scope decisions route to `planner`.
 The dispatcher matches stories by their leading ID token and fails the
 post-dispatch gate when a rewrite for the same epic drops a story without such
 an entry. A new story belongs in `PROJECT_STATE.md` too; the dispatcher warns
-when `remaining_stories` names a story ID the project state file does not
-list.
+when `remaining_stories` names a story ID the project state file lacks.
 
 ## Status Enum Reference
 
@@ -172,10 +171,14 @@ current turn by an environment refusal, such as a permission refusal or a
 missing-tool error, may then still hand back `status: ready_for_review`. Its
 `## Verification Evidence` block keeps all five fields and changes two:
 
-- `Commands run` reads `deferred to the work-claim gate: <the refusal, quoted>`,
-  quoting the refusal text the shell or tool returned.
+- `Commands run` reads `deferred to the work-claim gate: <the refusal, redacted
+  and quoted>`, quoting the refusal text the shell or tool returned.
 - `Output summary` identifies the refusal: the refused command and whether a
   permission rule or a missing tool stopped it.
+
+**Redact before quoting.** In both fields and in an `Environment refusal`
+bullet, replace credentials, tokens, and sensitive command arguments with
+`[REDACTED]`, keeping the refusal category and a sanitized diagnostic.
 
 `Commit SHA verified`, `Files changed or reviewed`, and `Unresolved concerns`
 are filled as in any handback, and the `scope_sha` and dispatcher commit mode
@@ -183,8 +186,7 @@ conventions (an empty `scope_sha` and `pending-dispatcher-commit`) are
 unchanged. Run every command the environment allows and report it as usual;
 defer only the refused command. This wording is the one exception to the
 evidence schema in `docs/handoff/README.md`, which otherwise asks for verbatim
-command lines and exit codes: the deferred entry has neither, and it is still
-valid.
+command lines and exit codes: the deferred entry has neither, and it is valid.
 
 Without the gate (`enforce_work_packet: false`), nothing else runs the
 command, so the current rule stands: run it and report the result, or hand
@@ -232,8 +234,7 @@ planner decides each deferred finding:
 - Accept it as follow-up work: plan a follow-up story, then add a
   `## Deferred Finding Decisions` section with a `### Finding N` subsection
   that starts with `Follow-up:` and names that story. The dispatcher posts it
-  as the reply, resolves the thread, and merges once every thread is
-  resolved.
+  as the reply, resolves the thread, and merges once every thread is resolved.
 - Ask the user: route to `user` with one specific question.
 
 A finding the planner neither accepts nor sends back, or one deferred again
@@ -307,29 +308,29 @@ gets no check and pauses as `reconciled by planner`. With the default
 
 **Environment refusal handbacks.** An implementer handback with
 `status: blocked_implementation_failure` and an `Environment refusal` bullet
-reports that the environment, not the code, stopped the work. Never route
-the same role an unchanged Work Packet after one: the same refusal stops it
-again. The validator's advisory `planner_redispatch_after_refusal` warning
-flags that re-dispatch, but the rule holds either way. The planner takes one
-of two paths:
+reports that the environment, not the code, stopped the work. Never route the
+same role an unchanged Work Packet after one: the same refusal stops it again.
+The validator's advisory `planner_redispatch_after_refusal` warning flags that
+re-dispatch, but the rule holds either way. The planner takes one of two
+paths and redacts any refusal it quotes, per "Redact before quoting" above:
 
 - **Gate-verified re-dispatch.** When the refused command is the Work
   Packet's Verification command and the work-claim gate is on
   (`enforce_work_packet: true`; dispatcher commit mode always runs the gate),
-  revise the Work Packet's Context or Objective to instruct the
-  Gate-Verified Handback above. Changing only the `reason` or the Next Step
-  leaves the Work Packet unchanged. Keep the Verification command exactly as
-  written, so the gate still runs it. The instruction requires a refusal
-  from the implementer's current turn and all five Verification Evidence
-  fields, with `Commands run` beginning `deferred to the work-claim gate:`
-  and quoting the refusal, and an `Output summary` that identifies it. A
+  revise the Work Packet's Context or Objective to instruct the Gate-Verified
+  Handback above. Changing only the `reason` or the Next Step leaves the Work
+  Packet unchanged. Keep the Verification command exactly as written, so the
+  gate still runs it. The instruction requires a refusal from the
+  implementer's current turn and all five Verification Evidence fields, with
+  `Commands run` beginning `deferred to the work-claim gate:` and quoting the
+  refusal, and an `Output summary` that identifies it, both redacted. A
   failing test is not an environment refusal, and the instruction never
   authorizes PASS evidence for a command that did not pass.
-- **Route to `user`.** When the gate is off (`enforce_work_packet: false`)
-  or cannot address the blocker, such as a refused command other than the
+- **Route to `user`.** When the gate is off (`enforce_work_packet: false`) or
+  cannot address the blocker, such as a refused command other than the
   Verification command, route to `user` with `status: escalate_to_user` and
-  the one remedy for the reported refusal. For a `permission rule` refusal
-  of `python`, `python3`, or `pytest` on a default allowlist, name
+  the one remedy for the reported refusal. For a `permission rule` refusal of
+  `python`, `python3`, or `pytest` on a default allowlist, name
   `interpreter_grants: true`; otherwise name the exact rule, such as an
   `allowed_tools` entry `Bash(npm test:*)` for a Claude role or the agy
   `permissions.allow` grant. An allowlist setting cures neither a

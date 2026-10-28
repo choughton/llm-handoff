@@ -83,7 +83,7 @@ Rules:
   Verification command, and the dispatcher runs with
   `enforce_work_packet: true`, you may still hand back
   `status: ready_for_review`. Write `Commands run` as
-  `deferred to the work-claim gate: <the refusal, quoted>`, make
+  `deferred to the work-claim gate: <the refusal, redacted and quoted>`, make
   `Output summary` identify the refusal, and fill the other three fields and
   the SHA or dispatcher-commit values as usual. Without the gate, run the
   command or hand back a blocked status. A failing test is not an
@@ -99,7 +99,14 @@ Rules:
   `blocked_implementation_failure` handback (a permission rule refused a
   command, a binary is missing, or a command needed a TTY), add exactly one
   bullet in this shape to the handback body:
-  `- **Environment refusal:** <permission rule | missing binary | no TTY>: <the refusal text, quoted>`.
+  `- **Environment refusal:** <permission rule | missing binary | no TTY>: <the refusal text, redacted and quoted>`.
   Use one of the three category names as written and quote the refusal text
-  the shell or tool returned. A failing test is not an environment refusal,
-  and a gate-deferred `ready_for_review` handback does not need this bullet.
+  the shell or tool returned, redacted. A failing test is not an environment
+  refusal, and a gate-deferred `ready_for_review` handback does not need this
+  bullet.
+- Redact before quoting: in the `Environment refusal` bullet, the
+  `deferred to the work-claim gate:` entry, and the refused command named in
+  `Output summary`, redact credentials, tokens, and sensitive command
+  arguments, replacing each with `[REDACTED]`. Keep the refusal category and
+  a sanitized diagnostic that still shows what stopped the command. The
+  dispatcher does not sanitize handoff text for you.
