@@ -2335,8 +2335,9 @@ for `--verification-command` when given (unless its first word is `python`,
 `python3`, or `pytest`), and asks you to add the entries yourself and then
 run `llm-handoff doctor`.
 When `agy` is the only provider CLI on `PATH`, `init` writes the
-[All-Antigravity Mapping](#all-antigravity-mapping); otherwise `agy` does not
-change the provider mapping `init` picks. When any role or
+[All-Antigravity Mapping](#all-antigravity-mapping); beside one other
+provider CLI it selects one of the [Two-CLI Mappings](#two-cli-mappings).
+When any role or
 fallback has `provider: antigravity` without `unsafe_bypass: true`,
 `llm-handoff doctor` reads the settings file and reports one
 `antigravity permissions` result, with the allow list built from the default
@@ -2986,9 +2987,10 @@ with only Claude Code installed can run the whole loop:
 `dispatch_config.yaml`, with every role on `provider: claude`,
 `audit.security_provider: claude`, and `commit_mode: agent` (no implementer
 runs on Codex, so the template's dispatcher commits are not needed). Without `--provider`, `init` writes it
-automatically when `claude` is the only provider CLI on `PATH`, and keeps the
-reference mapping otherwise. `init` prints the mapping it chose and the
-provider CLIs it found.
+automatically when `claude` is the only provider CLI on `PATH`. With two
+provider CLIs it writes one of the [Two-CLI Mappings](#two-cli-mappings), and
+with all three the reference mapping. `init` prints the mapping it chose and
+the provider CLIs it found.
 
 With every role on Claude, the security reviewer runs on the same vendor as
 the implementer, so it is a second read-only review rather than an
@@ -3027,8 +3029,9 @@ normalizer runs through the Codex CLI login, so no API key is needed), and
 `commit_mode: dispatcher`, which the template already sets for its Codex
 backend.
 Without `--provider`, `init` writes it automatically when `codex` is the only
-provider CLI on `PATH`. If both `claude` and `codex` are on `PATH`, `init`
-keeps the reference mapping; pass `--provider` to choose one.
+provider CLI on `PATH`. If `codex` and one other provider CLI are on `PATH`,
+`init` writes one of the [Two-CLI Mappings](#two-cli-mappings); pass
+`--provider` to choose a single vendor instead.
 `--verification-command` changes no `agents:` entry under this mapping,
 because it only adds `allowed_tools` to Claude roles.
 
@@ -3088,7 +3091,8 @@ its default `gemini-3.8-flash-low` through the `agy` CLI login. No role gets
 Codex, and the commented `interpreter_grants` line stays as the template has
 it. Without `--provider`, `init` writes it
 automatically when `agy` is the only provider CLI on `PATH`; with `agy` and
-another provider CLI on `PATH`, `init` keeps the reference mapping.
+one other provider CLI on `PATH`, `init` writes one of the
+[Two-CLI Mappings](#two-cli-mappings).
 `--verification-command` changes no `agents:` entry under this mapping,
 because it only adds `allowed_tools` to Claude roles.
 
@@ -3118,6 +3122,35 @@ Linear mode does not support `provider: antigravity` (see
 `init --tracker linear` with this mapping, whether passed with `--provider
 antigravity` or detected from `PATH`, fails before writing any file and asks
 for `--provider claude`, `--provider codex`, or `--tracker none`.
+
+### Two-CLI Mappings
+
+Without `--provider`, when exactly two of `claude`, `codex`, and `agy` are on
+`PATH`, `init` starts from the reference mapping and moves only the roles the
+missing CLI held. Each move keeps the quality auditor on a different vendor
+from both implementers (`backend` and `frontend`):
+
+| CLIs on `PATH` | `planner` | `backend` | `frontend` | `auditor`, `validator`, `finalizer` |
+| --- | --- | --- | --- | --- |
+| `claude` and `codex` | claude | codex | codex | claude |
+| `claude` and `agy` | antigravity | antigravity | antigravity | claude |
+| `codex` and `agy` | antigravity | codex | codex | antigravity |
+
+A moved Codex `frontend` uses the `llm-handoff-frontend` skill, and moved
+`agy` roles use the agent files in `.agents/agents/`. Every other line of the
+template stays as it is, with these changes: the Claude-and-`agy` mapping has
+no Codex implementer, so it writes `commit_mode: agent`; the Codex-and-`agy`
+mapping has no Claude Code, so it writes `normalizer.provider: codex`. The
+other two keep the template's `commit_mode: dispatcher` for their Codex
+implementers. `audit.security_provider` stays unset in all three, so the
+security reviewer picks the installed CLI that differs from the implementer
+(see [Audit Fan-Out](#audit-fan-out)).
+
+`--provider` accepts only the single-vendor mappings; a two-CLI mapping is
+chosen only by detection. Linear mode does not support `antigravity` roles,
+so `init --tracker linear` writes the all-Claude mapping instead when
+`claude` and `agy` are detected, and the all-Codex mapping when `codex` and
+`agy` are; `claude` and `codex` keep the Claude-and-Codex mapping.
 
 ### Fallback Agents
 

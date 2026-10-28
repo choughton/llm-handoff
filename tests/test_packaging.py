@@ -45,6 +45,13 @@ def test_pyproject_declares_console_script_for_main_entry_point() -> None:
     assert project["license"] == "Apache-2.0"
 
 
+def test_pyproject_links_the_pypi_page_back_to_the_repository() -> None:
+    urls = _pyproject()["project"]["urls"]
+
+    assert urls["Repository"] == "https://github.com/choughton/llm-handoff"
+    assert all(url.startswith(urls["Repository"]) for url in urls.values())
+
+
 def test_pyproject_runtime_dependencies_drop_test_and_lint_tools() -> None:
     dev_requirements = {
         _requirement_name(line)

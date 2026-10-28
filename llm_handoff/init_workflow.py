@@ -84,7 +84,8 @@ _EXCLUDED_TEMPLATE_FILES = frozenset({Path("README.md")})
 # Provider mappings `init` can write into dispatch_config.yaml. `reference`
 # keeps the template's mixed mapping; `claude` puts every role on Claude Code;
 # `codex` puts every role on the Codex CLI; `antigravity` puts every role on
-# the Antigravity CLI (`agy`).
+# the Antigravity CLI (`agy`). The two-CLI mappings below are auto-detect
+# results only, not `--provider` choices.
 REFERENCE_MAPPING = "reference"
 # A tracker switch keeps the initialized repository's agents block; its
 # InitResult reports this instead of a mapping.
@@ -93,6 +94,13 @@ CLAUDE_MAPPING = "claude"
 CODEX_MAPPING = "codex"
 ANTIGRAVITY_MAPPING = "antigravity"
 PROVIDER_MAPPINGS = (CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING)
+# Auto-detect picks one of these when exactly two provider CLIs are on PATH.
+# Each starts from the reference mapping and moves only the roles the missing
+# CLI held, so that no implementer (backend, frontend) shares a vendor with
+# the quality auditor.
+CLAUDE_CODEX_MAPPING = "claude-codex"
+CLAUDE_ANTIGRAVITY_MAPPING = "claude-antigravity"
+CODEX_ANTIGRAVITY_MAPPING = "codex-antigravity"
 # Provider CLIs the mapping auto-detect looks for on PATH. `agy` selects the
 # antigravity mapping.
 PROVIDER_CLIS = ("claude", "codex", "agy")
@@ -385,7 +393,14 @@ _MAPPING_NORMALIZER_LINES = {
 }
 # Mappings that put a role on `provider: antigravity`; `init --tracker linear`
 # refuses them because config load rejects antigravity in Linear mode.
-_LINEAR_UNSUPPORTED_MAPPINGS = frozenset({ANTIGRAVITY_MAPPING})
+_LINEAR_UNSUPPORTED_MAPPINGS = frozenset(
+    {ANTIGRAVITY_MAPPING, CLAUDE_ANTIGRAVITY_MAPPING, CODEX_ANTIGRAVITY_MAPPING}
+)
+# Linear-mode replacements for the detected two-CLI mappings that use agy.
+_LINEAR_TWO_CLI_FALLBACKS = {
+    CLAUDE_ANTIGRAVITY_MAPPING: CLAUDE_MAPPING,
+    CODEX_ANTIGRAVITY_MAPPING: CODEX_MAPPING,
+}
 # The reference mapping puts these roles on antigravity. `init --tracker
 # linear` with that mapping rewrites their stanzas to claude so the written
 # config loads; the other roles keep the template's mapping.
@@ -404,6 +419,76 @@ _LINEAR_REFERENCE_CLAUDE_STANZA = (
 # `Bash(<exe>:*)` rule, so it must be a bare program name: no path separators,
 # shell operators, quotes, or whitespace.
 _EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_CLAUDE_PLANNER_STANZA = _LINEAR_REFERENCE_CLAUDE_STANZA
+_CODEX_FRONTEND_STANZA = (
+    "    provider: codex",
+    "    binary: codex",
+    "    skill_name: llm-handoff-frontend",
+    "    resume: false",
+    "    timeout_ms: 1200000",
+)
+_ANTIGRAVITY_BACKEND_STANZA = (
+    "    provider: antigravity",
+    "    binary: agy",
+    "    resume: false",
+    "    timeout_ms: 1200000",
+)
+_ANTIGRAVITY_REVIEW_STANZA = (
+    "    provider: antigravity",
+    "    binary: agy",
+    "    resume: false",
+    "    timeout_ms: 900000",
+)
+# Two-CLI mapping -> (comment written under `agents:`, role -> stanza that
+# replaces the reference stanza). Roles not listed keep the reference stanza.
+_TWO_CLI_AGENT_STANZAS: dict[
+    str, tuple[tuple[str, ...], dict[str, tuple[str, ...]]]
+] = {
+    CLAUDE_CODEX_MAPPING: (
+        (
+            "  # Written by `llm-handoff init` for Claude Code and Codex (no agy):",
+            "  # planner runs on Claude and frontend on Codex, so Claude reviews",
+            "  # every implementer.",
+        ),
+        {"planner": _CLAUDE_PLANNER_STANZA, "frontend": _CODEX_FRONTEND_STANZA},
+    ),
+    CLAUDE_ANTIGRAVITY_MAPPING: (
+        (
+            "  # Written by `llm-handoff init` for Claude Code and agy (no Codex):",
+            "  # backend runs on agy, so Claude reviews every implementer.",
+        ),
+        {"backend": _ANTIGRAVITY_BACKEND_STANZA},
+    ),
+    CODEX_ANTIGRAVITY_MAPPING: (
+        (
+            "  # Written by `llm-handoff init` for Codex and agy (no Claude Code):",
+            "  # frontend runs on Codex and the reviewing roles on agy, so agy",
+            "  # reviews every implementer.",
+        ),
+        {
+            "frontend": _CODEX_FRONTEND_STANZA,
+            "auditor": _ANTIGRAVITY_REVIEW_STANZA,
+            "validator": _ANTIGRAVITY_REVIEW_STANZA,
+            "finalizer": _ANTIGRAVITY_REVIEW_STANZA,
+        },
+    ),
+}
+_TWO_CLI_MAPPINGS = {
+    frozenset({"claude", "codex"}): CLAUDE_CODEX_MAPPING,
+    frozenset({"claude", _ANTIGRAVITY_CLI}): CLAUDE_ANTIGRAVITY_MAPPING,
+    frozenset({"codex", _ANTIGRAVITY_CLI}): CODEX_ANTIGRAVITY_MAPPING,
+}
+_TWO_CLI_NORMALIZER_LINES = {
+    CODEX_ANTIGRAVITY_MAPPING: (
+        "normalizer:\n"
+        "  # No Claude Code: the normalizer runs through the Codex CLI login.\n"
+        "  provider: codex\n"
+    ),
+}
+# Without Codex no implementer needs dispatcher commits.
+_TWO_CLI_COMMIT_MODE_LINES = {
+    CLAUDE_ANTIGRAVITY_MAPPING: _AGENT_COMMIT_MODE_LINE,
+}
 _AGENT_ROLE_RE = re.compile(r"^  ([A-Za-z_][A-Za-z0-9_-]*):\s*$")
 _AGENT_FIELD_RE = re.compile(r"^    (provider|binary):\s*(\S+)\s*$")
 _VERIFICATION_TIMEOUT_LINE_RE = re.compile(
@@ -587,9 +672,10 @@ def resolve_provider_mapping(
 ) -> str:
     """Pick the mapping to write: an explicit choice, else auto-detect.
 
-    Auto-detection switches to a single-provider mapping only when that
+    Auto-detection switches to a single-provider mapping when that
     provider's CLI (Claude Code, Codex, or `agy`) is the only provider CLI
-    installed; any other combination keeps the reference mapping.
+    installed, and to a two-CLI mapping when exactly two are installed; all
+    three, or none, keeps the reference mapping.
     """
 
     if provider is not None:
@@ -603,7 +689,24 @@ def resolve_provider_mapping(
         return CODEX_MAPPING
     if available == {_ANTIGRAVITY_CLI}:
         return ANTIGRAVITY_MAPPING
-    return REFERENCE_MAPPING
+    return _TWO_CLI_MAPPINGS.get(frozenset(available), REFERENCE_MAPPING)
+
+
+def describe_provider_mapping(mapping: str) -> str:
+    """Return the short mapping description `init` prints."""
+
+    if mapping == REFERENCE_MAPPING:
+        return "reference (mixed providers)"
+    if mapping == CLAUDE_CODEX_MAPPING:
+        return "claude and codex (planner on claude, frontend on codex)"
+    if mapping == CLAUDE_ANTIGRAVITY_MAPPING:
+        return "claude and antigravity (backend on antigravity)"
+    if mapping == CODEX_ANTIGRAVITY_MAPPING:
+        return (
+            "codex and antigravity (frontend on codex; auditor, validator, "
+            "and finalizer on antigravity)"
+        )
+    return f"all roles on {mapping}"
 
 
 def render_config(template_text: str, mapping: str) -> str:
@@ -611,6 +714,8 @@ def render_config(template_text: str, mapping: str) -> str:
 
     if mapping == REFERENCE_MAPPING:
         return template_text
+    if mapping in _TWO_CLI_AGENT_STANZAS:
+        return _render_two_cli_config(template_text, mapping)
     if mapping not in PROVIDER_MAPPINGS:
         raise UnknownProviderError(mapping)
     start = template_text.find("agents:\n")
@@ -652,6 +757,28 @@ def render_config(template_text: str, mapping: str) -> str:
     return rendered
 
 
+def _render_two_cli_config(template_text: str, mapping: str) -> str:
+    comment, stanzas = _TWO_CLI_AGENT_STANZAS[mapping]
+    rendered = _rewrite_agent_stanzas(template_text, stanzas, comment)
+    normalizer_lines = _TWO_CLI_NORMALIZER_LINES.get(mapping)
+    if normalizer_lines is not None:
+        if rendered.count(_REFERENCE_NORMALIZER_LINES) != 1:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has the expected "
+                "normalizer provider and model lines."
+            )
+        rendered = rendered.replace(_REFERENCE_NORMALIZER_LINES, normalizer_lines)
+    commit_mode_lines = _TWO_CLI_COMMIT_MODE_LINES.get(mapping)
+    if commit_mode_lines is not None:
+        if rendered.count(_REFERENCE_COMMIT_MODE_LINES) != 1:
+            raise InitWorkflowError(
+                "Template dispatch_config.yaml no longer has the expected "
+                "commit_mode: dispatcher lines."
+            )
+        rendered = rendered.replace(_REFERENCE_COMMIT_MODE_LINES, commit_mode_lines)
+    return rendered
+
+
 def render_linear_reference_agents(config_text: str) -> str:
     """Move the reference mapping's antigravity roles to claude for Linear mode.
 
@@ -662,20 +789,38 @@ def render_linear_reference_agents(config_text: str) -> str:
     block holds exactly one stanza for each role.
     """
 
+    return _rewrite_agent_stanzas(
+        config_text,
+        {role: _LINEAR_REFERENCE_CLAUDE_STANZA for role in _LINEAR_REFERENCE_CLAUDE_ROLES},
+        (_LINEAR_REFERENCE_CLAUDE_COMMENT,),
+    )
+
+
+def _rewrite_agent_stanzas(
+    config_text: str,
+    stanzas: dict[str, tuple[str, ...]],
+    comment: tuple[str, ...],
+) -> str:
+    """Replace role stanzas under the top-level `agents:` key.
+
+    Each listed role's stanza is replaced with the given lines, and the
+    comment lines are written right under `agents:`. The new lines use the
+    text's line ending; every other line is unchanged. Raises
+    InitWorkflowError unless the `agents:` block holds exactly one stanza for
+    each role.
+    """
+
     lines = config_text.splitlines(keepends=True)
     newline = (_line_ending(lines[0]) if lines else "") or "\n"
-    for role in _LINEAR_REFERENCE_CLAUDE_ROLES:
-        agents_indexes = [
-            index
-            for index, line in enumerate(lines)
-            if line.rstrip("\r\n") == "agents:"
-        ]
-        if len(agents_indexes) != 1:
-            raise InitWorkflowError(
-                "Template dispatch_config.yaml no longer has exactly one "
-                "agents: block."
-            )
-        block_start = agents_indexes[0] + 1
+    agents_indexes = [
+        index for index, line in enumerate(lines) if line.rstrip("\r\n") == "agents:"
+    ]
+    if len(agents_indexes) != 1:
+        raise InitWorkflowError(
+            "Template dispatch_config.yaml no longer has exactly one agents: block."
+        )
+    block_start = agents_indexes[0] + 1
+    for role, stanza in stanzas.items():
         block_end = block_start
         while block_end < len(lines) and (
             not lines[block_end].strip() or lines[block_end][0] in " \t#"
@@ -695,10 +840,9 @@ def render_linear_reference_agents(config_text: str) -> str:
         stop = header + 1
         while stop < block_end and lines[stop].startswith("    "):
             stop += 1
-        replacement = [f"  {role}:"] + list(_LINEAR_REFERENCE_CLAUDE_STANZA)
-        if role == "planner":
-            replacement.insert(0, _LINEAR_REFERENCE_CLAUDE_COMMENT)
+        replacement = [f"  {role}:"] + list(stanza)
         lines[header:stop] = [f"{line}{newline}" for line in replacement]
+    lines[block_start:block_start] = [f"{line}{newline}" for line in comment]
     return "".join(lines)
 
 
@@ -2194,6 +2338,10 @@ def init_reference_workflow(
         detect_provider_clis() if available_providers is None else available_providers
     )
     mapping = resolve_provider_mapping(provider, detected)
+    if tracker_config is not None and provider is None:
+        # Linear mode does not support antigravity roles, so a detected
+        # two-CLI mapping with agy falls back to the other CLI alone.
+        mapping = _LINEAR_TWO_CLI_FALLBACKS.get(mapping, mapping)
     if tracker_config is not None and mapping in _LINEAR_UNSUPPORTED_MAPPINGS:
         # The dispatcher would refuse to load the written config, so fail
         # before any file is planned (dry_run included).

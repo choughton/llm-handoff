@@ -1,6 +1,6 @@
 # llm-handoff
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/choughton/llm-handoff/blob/main/LICENSE)
 
 `llm-handoff` is a file-based dispatch loop for multi-CLI AI coding workflows.
 It runs one agent CLI at a time against a single repository, passes work
@@ -13,7 +13,7 @@ Built for solo developers coordinating Codex, Claude Code, or Antigravity
 (`agy`) on one repo without git worktrees, pull-request choreography, or a
 service orchestrator.
 
-![llm-handoff dispatch loop](docs/assets/llm-handoff-hero.png)
+![llm-handoff dispatch loop](https://raw.githubusercontent.com/choughton/llm-handoff/main/docs/assets/llm-handoff-hero.png)
 
 ## Contents
 
@@ -33,11 +33,10 @@ service orchestrator.
 
 ## Status
 
-Pre-release. The dispatcher is being extracted from a project-specific
-implementation into a public reference workflow, and names, configuration,
-and examples can still change before the first tagged release. It is not a
-production-certified tool for arbitrary repositories. See
-[CHANGELOG.md](CHANGELOG.md).
+Version 0.1.0, the first tagged release. It has been validated in three
+repositories so far. Names and configuration can still change between 0.x
+releases, and every change is listed in [CHANGELOG.md](CHANGELOG.md). It is
+not a production-certified tool for arbitrary repositories.
 
 ## Quick Start
 
@@ -58,13 +57,15 @@ package is installed.
 ### 1. Install
 
 ```bash
-python -m pip install git+https://github.com/choughton/llm-handoff.git
+pipx install llm-handoff
 llm-handoff --help
 ```
 
-Not on PyPI yet. To run from a source checkout instead, see
-[INSTALL.md](INSTALL.md); `python -m llm_handoff ...` then replaces
-`llm-handoff ...` in every command.
+`python -m pip install llm-handoff` inside a virtual environment works too.
+To install the latest `main` instead of the release, use
+`python -m pip install git+https://github.com/choughton/llm-handoff.git`. To
+run from a source checkout, see [INSTALL.md](INSTALL.md);
+`python -m llm_handoff ...` then replaces `llm-handoff ...` in every command.
 
 ### 2. Initialize the target repository
 
@@ -81,23 +82,34 @@ role prompts under `docs/handoff/`, and provider agent files under `.claude/`,
 `.codex/`, and `.agents/`. Existing identical files are skipped;
 changed files stop the run unless you pass `--force`.
 
-`init` picks a role-to-provider mapping for you. When only one of Claude
-Code, Codex, or Antigravity (`agy`) is on `PATH`, every role goes on that
-one CLI.
-Otherwise it writes the reference mapping (Antigravity `agy` planner and
-frontend, Codex backend, Claude auditor, validator, and finalizer). With
-`--tracker linear`, the reference mapping puts `planner` and `frontend` on
-Claude instead, because Linear mode does not support `antigravity` roles.
-Pass `--provider claude`, `--provider codex`, or `--provider antigravity` to
-force a single-vendor setup. The command prints the mapping it chose.
+`init` picks a role-to-provider mapping for you. With all three of Claude
+Code, Codex, and Antigravity (`agy`) on `PATH`, it writes the reference
+mapping (Antigravity `agy` planner and frontend, Codex backend, Claude
+auditor, validator, and finalizer). With two, it moves only the roles the
+missing CLI held, and keeps the quality auditor on a different vendor from
+both implementers:
+
+| CLIs on `PATH` | Moved roles |
+| --- | --- |
+| Claude Code and Codex | `planner` to Claude, `frontend` to Codex |
+| Claude Code and `agy` | `backend` to `agy` |
+| Codex and `agy` | `frontend` to Codex; `auditor`, `validator`, `finalizer` to `agy` |
+
+With only one, every role goes on that CLI. Linear mode does not support
+`antigravity` roles, so with `--tracker linear` the reference mapping puts
+`planner` and `frontend` on Claude, and the two mappings with `agy` become
+all-Claude or all-Codex. Pass `--provider claude`, `--provider codex`, or
+`--provider antigravity` to force a single-vendor setup. The command prints
+the mapping it chose. See
+[Two-CLI Mappings](CONFIGURATION.md#two-cli-mappings).
 
 Whenever `backend` or `frontend` runs on Codex, which includes the reference
 mapping, the written config uses `commit_mode: dispatcher`. Codex's sandbox
 keeps `.git` read-only, so a Codex implementer asked to commit its own work
 hands back `blocked_implementation_failure` instead. In dispatcher mode the
-dispatcher commits the in-scope files for it. The all-Claude and
-all-Antigravity mappings have no Codex implementer and use
-`commit_mode: agent`.
+dispatcher commits the in-scope files for it. The all-Claude,
+all-Antigravity, and Claude-and-`agy` mappings have no Codex implementer and
+use `commit_mode: agent`.
 
 To track work in Linear instead of in files, add the tracker flags here. See
 [Files Or Linear](#files-or-linear-where-work-is-tracked) first. You can
@@ -310,7 +322,8 @@ Things that stop a first run or quietly change what the loop does.
 
 - **Codex implementers need dispatcher commits.** Codex's `workspace-write`
   sandbox cannot write to `.git`, so whenever `backend` or `frontend` runs on
-  Codex (the reference mapping and `init --provider codex`), `init` writes
+  Codex (the reference mapping, both two-CLI mappings with Codex, and
+  `init --provider codex`), `init` writes
   `commit_mode: dispatcher` for you. Keep it, and keep the work-claim gate
   on (the default), which dispatcher commits require. With
   `commit_mode: agent` every implementer handback comes back as

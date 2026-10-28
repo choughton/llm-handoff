@@ -39,6 +39,24 @@ def test_help_text_names_public_dispatcher(capsys) -> None:
     assert LEGACY_PROJECT_NAME not in output
 
 
+@pytest.mark.parametrize(
+    ("argv0", "usage"),
+    [
+        ("/venv/bin/llm-handoff", "Usage: llm-handoff "),
+        ("C:\venv\Scripts\llm-handoff.exe", "Usage: llm-handoff "),
+        ("/repo/llm_handoff/__main__.py", "Usage: python -m llm_handoff "),
+    ],
+)
+def test_help_usage_names_the_command_as_it_was_started(
+    monkeypatch: pytest.MonkeyPatch, capsys, argv0: str, usage: str
+) -> None:
+    monkeypatch.setattr(main_module.sys, "argv", [argv0])
+
+    assert main_module.main(["--help"]) == 0
+
+    assert usage in capsys.readouterr().out
+
+
 def test_help_text_lists_doctor_subcommand(capsys) -> None:
     assert main_module.main(["--help"]) == 0
     assert "doctor" in capsys.readouterr().out
@@ -547,8 +565,8 @@ def test_init_dry_run_prints_agy_permissions_when_agy_is_on_path(
 
     lines = capsys.readouterr().out.splitlines()
     assert (
-        "Provider mapping: reference (mixed providers); provider CLIs found: "
-        "claude, agy"
+        "Provider mapping: claude and antigravity (backend on antigravity); "
+        "provider CLIs found: claude, agy"
     ) in lines
     start = lines.index(AGY_HEADER)
     assert lines[-1] == AGY_FOOTER
