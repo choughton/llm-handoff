@@ -41,9 +41,12 @@ interactive_pause: true
 #   enforce_work_packet: false
 #   work_packet_opt_out_reason: "<why>"
 enforce_work_packet: true
-# Who commits implementer work: agent (default) or dispatcher. dispatcher
-# keeps agents out of .git and needs enforce_work_packet: true.
-commit_mode: agent
+# Who commits implementer work: agent or dispatcher. dispatcher keeps agents
+# out of .git and needs enforce_work_packet: true.
+# This mapping runs backend on Codex, whose workspace-write sandbox keeps
+# .git read-only, so the dispatcher commits implementer work. Use agent only
+# when no backend or frontend role runs on Codex.
+commit_mode: dispatcher
 # What happens to audited work: local (default), merge-commit (story branch
 # merged with a report commit), or pr (story branch pushed as a pull request;
 # needs commit_mode: dispatcher and the gh CLI).

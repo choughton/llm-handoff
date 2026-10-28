@@ -185,6 +185,7 @@ def run_doctor(
         _check_normalizer(dispatch_config, resolved_root, checks)
         _check_security_review(dispatch_config, checks)
         _check_work_claim_gate(dispatch_config, checks)
+        _check_commit_mode(dispatch_config, checks)
         _check_scanners(dispatch_config, checks)
         _check_tracker_connectors(dispatch_config, resolved_root, checks)
         if probe_tracker_issue is not None:
@@ -1164,6 +1165,46 @@ def _check_work_claim_gate(
                 "prefixes you expect (for example `python -m pytest`)",
             )
         )
+
+
+_COMMIT_MODE_CHECK_NAME = "commit mode"
+_IMPLEMENTER_ROLES = frozenset({"backend", "frontend"})
+
+
+def _check_commit_mode(
+    dispatch_config: DispatchConfig,
+    checks: list[DoctorCheck],
+) -> None:
+    """FAIL when a sandboxed Codex implementer would have to commit its work.
+
+    Codex's workspace-write sandbox keeps ``.git`` read-only, so with
+    ``commit_mode: agent`` a Codex backend or frontend (or its fallback) hands
+    back ``blocked_implementation_failure`` on every story. ``unsafe_bypass``
+    turns the sandbox off, so those launches are not reported. Nothing is
+    reported when no launch is affected.
+    """
+    if dispatch_config.commit_mode != "agent":
+        return
+    affected = [
+        label
+        for label, agent_config in _role_launches(dispatch_config)
+        if label.split(" ", 1)[0] in _IMPLEMENTER_ROLES
+        and agent_config.provider == "codex"
+        and not agent_config.unsafe_bypass
+    ]
+    if not affected:
+        return
+    verb = "runs" if len(affected) == 1 else "run"
+    checks.append(
+        DoctorCheck(
+            "FAIL",
+            _COMMIT_MODE_CHECK_NAME,
+            f"{', '.join(affected)} {verb} on Codex with commit_mode: agent, but "
+            "Codex's workspace-write sandbox keeps .git read-only, so every "
+            "implementer handback comes back as blocked_implementation_failure; "
+            "set commit_mode: dispatcher (it needs enforce_work_packet: true)",
+        )
+    )
 
 
 _SCANNERS_CHECK_NAME = "scanners"

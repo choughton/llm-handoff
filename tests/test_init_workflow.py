@@ -638,31 +638,49 @@ def test_render_config_rejects_a_template_without_the_normalizer_lines(
         render_config(broken, mapping)
 
 
-def test_render_config_codex_switches_commit_mode_to_dispatcher() -> None:
-    template = _template_config_text()
-    rendered = render_config(template, CODEX_MAPPING)
+_REFERENCE_COMMIT_MODE_TEXT = (
+    "# This mapping runs backend on Codex, whose workspace-write sandbox keeps\n"
+    "# .git read-only, so the dispatcher commits implementer work. Use agent only\n"
+    "# when no backend or frontend role runs on Codex.\n"
+    "commit_mode: dispatcher\n"
+)
 
-    assert template.count("\ncommit_mode: agent\n") == 1
-    assert "\ncommit_mode: agent\n" not in rendered
-    assert rendered.count("\ncommit_mode: dispatcher\n") == 1
-    data = yaml.safe_load(rendered)
+
+def test_reference_template_ships_dispatcher_commits_for_its_codex_backend() -> None:
+    template = _template_config_text()
+    data = yaml.safe_load(template)
+
+    assert data["agents"]["backend"]["provider"] == "codex"
     assert data["commit_mode"] == "dispatcher"
     # dispatcher commits need the work-claim gate, which the template keeps on.
     assert data["enforce_work_packet"] is True
-    # The explanatory comment above the template line survives the swap.
-    assert "# Who commits implementer work: agent (default) or dispatcher." in rendered
-    assert "keeps .git read-only" in rendered
+    assert template.count(_REFERENCE_COMMIT_MODE_TEXT) == 1
+    assert render_config(template, REFERENCE_MAPPING) == template
 
 
-def test_render_config_commit_mode_stays_agent_outside_the_codex_mapping() -> None:
+def test_render_config_codex_keeps_dispatcher_commits() -> None:
+    template = _template_config_text()
+    rendered = render_config(template, CODEX_MAPPING)
+
+    assert rendered.count("\ncommit_mode: dispatcher\n") == 1
+    assert "commit_mode: agent\n" not in rendered
+    assert _REFERENCE_COMMIT_MODE_TEXT not in rendered
+    data = yaml.safe_load(rendered)
+    assert data["commit_mode"] == "dispatcher"
+    assert data["enforce_work_packet"] is True
+    # The general comment above the commit_mode lines survives the swap.
+    assert "# Who commits implementer work: agent or dispatcher." in rendered
+    assert "# All-Codex mapping: the Codex workspace-write sandbox" in rendered
+
+
+def test_render_config_without_a_codex_implementer_switches_to_agent_commits() -> None:
     template = _template_config_text()
 
-    assert yaml.safe_load(template)["commit_mode"] == "agent"
-    assert render_config(template, REFERENCE_MAPPING) == template
     for mapping in (CLAUDE_MAPPING, ANTIGRAVITY_MAPPING):
         rendered = render_config(template, mapping)
         assert rendered.count("\ncommit_mode: agent\n") == 1, mapping
         assert "commit_mode: dispatcher\n" not in rendered, mapping
+        assert "runs backend on Codex" not in rendered, mapping
         assert yaml.safe_load(rendered)["commit_mode"] == "agent", mapping
 
 
@@ -671,25 +689,42 @@ def test_render_config_commit_mode_stays_agent_outside_the_codex_mapping() -> No
     [
         "",
         "commit_mode: dispatcher\n",
-        "  commit_mode: agent\n",
-        "commit_mode: agent\ncommit_mode: agent\n",
-        "# commit_mode: agent\n",
+        "commit_mode: agent\n",
+        _REFERENCE_COMMIT_MODE_TEXT + _REFERENCE_COMMIT_MODE_TEXT,
     ],
 )
-def test_render_config_codex_rejects_a_template_without_the_commit_mode_line(
+@pytest.mark.parametrize(
+    "mapping", [CLAUDE_MAPPING, CODEX_MAPPING, ANTIGRAVITY_MAPPING]
+)
+def test_render_config_rejects_a_template_without_the_commit_mode_lines(
     replacement: str,
+    mapping: str,
 ) -> None:
     template = _template_config_text()
-    original = "commit_mode: agent\n"
-    assert template.count(original) == 1
-    broken = template.replace(original, replacement)
+    assert template.count(_REFERENCE_COMMIT_MODE_TEXT) == 1
+    broken = template.replace(_REFERENCE_COMMIT_MODE_TEXT, replacement)
 
-    with pytest.raises(InitWorkflowError, match="commit_mode: agent"):
-        render_config(broken, CODEX_MAPPING)
-    # The other mappings never touch the line, so they still render.
-    assert render_config(broken, CLAUDE_MAPPING)
-    assert render_config(broken, ANTIGRAVITY_MAPPING)
+    with pytest.raises(InitWorkflowError, match="commit_mode: dispatcher"):
+        render_config(broken, mapping)
+    # The reference mapping writes the template unchanged.
     assert render_config(broken, REFERENCE_MAPPING) == broken
+
+
+def test_init_with_claude_and_codex_writes_dispatcher_commits(
+    tmp_path: Path,
+) -> None:
+    result = init_reference_workflow(
+        tmp_path, available_providers=("claude", "codex")
+    )
+
+    assert result.provider_mapping == REFERENCE_MAPPING
+    config = load_dispatch_config(
+        repo_root=tmp_path,
+        config_path=tmp_path / "dispatch_config.yaml",
+    )
+    assert config.agents["backend"].provider == "codex"
+    assert config.commit_mode == "dispatcher"
+    assert config.enforce_work_packet is True
 
 
 def test_init_provider_codex_writes_a_loadable_all_codex_config(
@@ -809,7 +844,7 @@ def test_render_config_antigravity_puts_every_role_on_antigravity() -> None:
     assert "provider: codex" not in rendered
     assert "provider: gemini" not in rendered
     # Template defaults the mapping leaves alone.
-    assert data["commit_mode"] == reference["commit_mode"]
+    assert data["commit_mode"] == "agent"
     assert "interpreter_grants" not in data
     assert "# interpreter_grants: false\n" in rendered
 

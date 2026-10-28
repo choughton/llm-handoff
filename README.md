@@ -90,11 +90,13 @@ Claude instead, because Linear mode does not support `antigravity` roles.
 Pass `--provider claude`, `--provider codex`, or `--provider antigravity` to
 force a single-vendor setup. The command prints the mapping it chose.
 
-With every role on Codex, `init` also writes `commit_mode: dispatcher` in
-place of the template's `commit_mode: agent`. Codex's sandbox keeps `.git`
-read-only, so a Codex implementer asked to commit its own work hands back
-`blocked_implementation_failure` instead. In dispatcher mode the dispatcher
-commits the in-scope files for it.
+Whenever `backend` or `frontend` runs on Codex, which includes the reference
+mapping, the written config uses `commit_mode: dispatcher`. Codex's sandbox
+keeps `.git` read-only, so a Codex implementer asked to commit its own work
+hands back `blocked_implementation_failure` instead. In dispatcher mode the
+dispatcher commits the in-scope files for it. The all-Claude and
+all-Antigravity mappings have no Codex implementer and use
+`commit_mode: agent`.
 
 To track work in Linear instead of in files, add the tracker flags here. See
 [Files Or Linear](#files-or-linear-where-work-is-tracked) first. You can
@@ -109,7 +111,7 @@ llm-handoff doctor --repo-root path/to/your-project
 `doctor` checks the config, Git and the commit count, each configured role's
 CLI binary, the `agy` permission settings when a role runs on Antigravity,
 interpreter grants, the next-agent normalizer, the gate and reviewer settings,
-configured scanners, the Linear connectors in Linear mode, and whether the
+whether a Codex implementer has dispatcher commits, configured scanners, the Linear connectors in Linear mode, and whether the
 handoff file routes. It exits `1` on any error. Fix every `FAIL` before
 continuing; read the `WARN` lines too.
 
@@ -305,12 +307,13 @@ The full key reference and validation rules are in
 
 Things that stop a first run or quietly change what the loop does.
 
-- **All-Codex setups need dispatcher commits.** Codex's `workspace-write`
-  sandbox cannot write to `.git`, so `init --provider codex` writes
+- **Codex implementers need dispatcher commits.** Codex's `workspace-write`
+  sandbox cannot write to `.git`, so whenever `backend` or `frontend` runs on
+  Codex (the reference mapping and `init --provider codex`), `init` writes
   `commit_mode: dispatcher` for you. Keep it, and keep the work-claim gate
   on (the default), which dispatcher commits require. With
   `commit_mode: agent` every implementer handback comes back as
-  `blocked_implementation_failure`. See
+  `blocked_implementation_failure`, and `doctor` reports it as a `FAIL`. See
   [Dispatcher Commits](CONFIGURATION.md#dispatcher-commits).
 - **Two reviewers run on every audit by default.** A read-only security
   reviewer runs beside the quality auditor. It uses the first installed CLI
