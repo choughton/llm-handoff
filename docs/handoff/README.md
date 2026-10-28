@@ -106,9 +106,15 @@ still hand back `ready_for_review` with all five fields and two of them
 changed:
 
 ```markdown
-- **Commands run:** deferred to the work-claim gate: <the refusal, quoted>
-- **Output summary:** the refused command, and whether a permission rule or a missing tool stopped it
+- **Commands run:** deferred to the work-claim gate: <the refusal, redacted and quoted>
+- **Output summary:** the refused command, redacted, and whether a permission rule or a missing tool stopped it
 ```
+
+Redact before quoting: replace credentials, tokens, and sensitive command
+arguments in the refusal and the refused command with `[REDACTED]`, and keep
+the refusal category and a sanitized diagnostic. The same applies to an
+`Environment refusal` bullet in a blocked handback. The dispatcher does not
+sanitize handoff text; see "Redact before quoting" in `HANDBOOK.md`.
 
 That deferred entry has no verbatim command line and no exit code, and it is
 still valid: the gate runs the command itself on the claimed commit before the

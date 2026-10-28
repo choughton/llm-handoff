@@ -614,7 +614,17 @@ def test_implementer_prompts_carry_story_fields_forward() -> None:
         ) in content, relative_path
 
 
-GATE_DEFERRAL_WORDING = "`deferred to the work-claim gate: <the refusal, quoted>`"
+# REDACT-1: a refusal can echo a refused command's credentials, so every
+# placeholder asks for the refusal redacted before it is quoted.
+GATE_DEFERRAL_WORDING = (
+    "`deferred to the work-claim gate: <the refusal, redacted and quoted>`"
+)
+# The redaction rule each implementer surface states next to the placeholders.
+REDACTION_PHRASES = (
+    "credentials, tokens, and sensitive command arguments",
+    "`[REDACTED]`",
+    "the refusal category and a sanitized diagnostic",
+)
 
 
 @pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
@@ -631,12 +641,28 @@ def test_protocol_files_describe_the_gate_verified_handback(root: Path) -> None:
     assert "A failing test is not an environment refusal" in handbook
     assert "an implementer never writes or edits it" in handbook
     assert "does not establish a pass" in handbook
+    assert "**Redact before quoting.**" in handbook
+    assert "and in an `Environment refusal` bullet" in handbook
+    for phrase in REDACTION_PHRASES:
+        assert phrase in handbook, phrase
+
+    readme = text("README.md")
+    assert (
+        "deferred to the work-claim gate: <the refusal, redacted and quoted>"
+    ) in readme
+    assert "the refused command, redacted," in readme
+    assert "`Environment refusal` bullet in a blocked handback" in readme
+    assert "The dispatcher does not sanitize handoff text" in readme
+    for phrase in REDACTION_PHRASES:
+        assert phrase in readme, phrase
 
     for prompt in ("BACKEND_HANDOFF_PROMPT.md", "FRONTEND_HANDOFF_PROMPT.md"):
         content = text(prompt)
         assert GATE_DEFERRAL_WORDING in content, prompt
         assert "`enforce_work_packet: true`" in content, prompt
         assert "A failing test is not an environment refusal" in content, prompt
+        for phrase in REDACTION_PHRASES:
+            assert phrase in content, (prompt, phrase)
 
     auditor = text("AUDITOR_HANDOFF_PROMPT.md")
     assert GATE_DEFERRAL_WORDING in auditor
@@ -644,6 +670,13 @@ def test_protocol_files_describe_the_gate_verified_handback(root: Path) -> None:
     assert "do not report the deferral as a finding" in auditor
     assert "an implementer never writes or edits it" in auditor
     assert "does not establish a pass" in auditor
+    assert "quotes such a value unredacted is a finding" in auditor
+    for phrase in REDACTION_PHRASES:
+        assert phrase in auditor, phrase
+
+    # The placeholders that asked for the raw refusal text are gone.
+    for content in (handbook, readme, auditor):
+        assert "<the refusal, quoted>" not in content
 
 
 # The non-Claude implementer helpers. The Claude agents get the same
@@ -683,7 +716,7 @@ def test_helper_files_describe_the_gate_verified_handback(
 
 ENVIRONMENT_REFUSAL_BULLET = (
     "`- **Environment refusal:** <permission rule | missing binary | no TTY>: "
-    "<the refusal text, quoted>`"
+    "<the refusal text, redacted and quoted>`"
 )
 ENVIRONMENT_REFUSAL_FILES = (
     "docs/handoff/BACKEND_HANDOFF_PROMPT.md",
@@ -706,6 +739,29 @@ def test_implementer_files_require_the_environment_refusal_bullet(
     assert (
         "a gate-deferred `ready_for_review` handback does not need this bullet"
     ) in content, relative_path
+
+
+# The Claude implementer agents keep the raw-quotation wording until the
+# REDACT-2 operator story, so they are deliberately not listed here.
+@pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))
+@pytest.mark.parametrize("relative_path", ENVIRONMENT_REFUSAL_FILES)
+def test_implementer_files_require_redaction_before_quoting(
+    root: Path, relative_path: str
+) -> None:
+    content = " ".join((root / relative_path).read_text(encoding="utf-8").split())
+
+    assert "Redact before quoting:" in content, relative_path
+    # The rule covers the blocked bullet, the deferred entry, and the
+    # refused command named in `Output summary`.
+    assert "`deferred to the work-claim gate:` entry" in content, relative_path
+    assert "the refused command named in `Output summary`" in content
+    for phrase in REDACTION_PHRASES:
+        assert phrase in content, (relative_path, phrase)
+    assert "The dispatcher does not sanitize handoff text for you." in content
+    # The category names stay exactly as the validator parses them.
+    assert "<permission rule | missing binary | no TTY>" in content
+    assert "<the refusal text, quoted>" not in content, relative_path
+    assert "<the refusal, quoted>" not in content, relative_path
 
 
 @pytest.mark.parametrize("root", (REPO_ROOT, REFERENCE_WORKFLOW))

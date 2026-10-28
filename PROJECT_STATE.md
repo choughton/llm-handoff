@@ -11,8 +11,11 @@ history.
 ## Current Status
 
 - **Active Epic:** REFUSAL-REDACTION (epic 23), opened after operator approval
-  of the Work Intake proposal; routed to `tpm` for story grooming and the first
-  Work Packet. WORK-INTAKE (epic 14) closed with INTAKE-6 approved at
+  of the Work Intake proposal. The tpm groomed it with REDACT-1 and REDACT-2
+  kept in order and scope, no splits or additions. REDACT-1 (redaction wording
+  across the non-Claude protocol, prompt, and helper copies, with tests) is
+  implemented and awaiting audit; REDACT-2, the `.claude/agents/` operator
+  story, is pending. WORK-INTAKE (epic 14) closed with INTAKE-6 approved at
   `989f2902c44a62fdff96ec31bdb6e0c96744f159` and merged in PR #304
   (`e5a6ea4`).
 - **Parked Epic:** None.
@@ -152,8 +155,9 @@ notes below; the remaining letters are unchanged.
   ask agents to quote that refusal text. A future bounded change must
   require redaction in the implementer prompts, the planner instructions,
   the handbook, and their helper and template copies, while keeping the
-  refusal category and a sanitized diagnostic. Not yet scheduled; no epic is
-  opened for it here.
+  refusal category and a sanitized diagnostic. Tracked by epic 23
+  (REFUSAL-REDACTION): REDACT-1 covers the non-Claude surfaces and REDACT-2
+  the `.claude/agents/` copies; remove this item when REDACT-2 completes.
 
 ## Notes
 

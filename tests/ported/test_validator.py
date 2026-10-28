@@ -2570,6 +2570,16 @@ _REFUSAL_TEXTS = {
     "missing binary": '"python: command not found"',
     "no TTY": '"the input device is not a TTY"',
 }
+# REDACT-1: sanitized diagnostics, as the protocol now asks implementers to
+# write them. Synthetic only; `[REDACTED]` stands in for the removed values.
+_SANITIZED_REFUSAL_TEXTS = {
+    "permission rule": (
+        "\"Bash(curl -H 'Authorization: token [REDACTED]' https://example.invalid)"
+        ' is not in the allowlist"'
+    ),
+    "missing binary": '"deploy-cli: command not found" (arguments [REDACTED])',
+    "no TTY": '"the input device is not a TTY" (login --password [REDACTED])',
+}
 
 
 def _refusal_handback(
@@ -2649,6 +2659,48 @@ def test_planner_redispatch_after_refusal_warns_for_an_unchanged_work_packet(
     assert result.errors == baseline.errors == []
     assert result.routing_instruction == role
     assert not any(_REDISPATCH_WARNING in error for error in result.errors)
+
+
+@pytest.mark.parametrize("role", ["backend", "frontend"])
+@pytest.mark.parametrize("category", ["permission rule", "missing binary", "no TTY"])
+def test_planner_redispatch_after_refusal_warns_for_a_sanitized_refusal(
+    role: str, category: str
+) -> None:
+    # A redacted diagnostic keeps the bullet structure and the category, so
+    # the validator still recognizes it and the advisory warning still fires.
+    current = _redispatch(role)
+    baseline = validator.validate_handoff_text(current, "planner")
+    handback = _refusal_handback(
+        producer=role,
+        refusal_line=(
+            f"- **Environment refusal:** {category}: "
+            f"{_SANITIZED_REFUSAL_TEXTS[category]}\n"
+        ),
+    )
+
+    result = validator.validate_handoff_text(
+        current, "planner", dispatched_handoff_content=handback
+    )
+
+    warnings = _redispatch_warnings(result)
+    assert len(warnings) == 1
+    assert f"`{role}`" in warnings[0]
+    assert f"({category})" in warnings[0]
+    assert "[REDACTED]" not in warnings[0]
+    assert result.errors == baseline.errors == []
+    assert result.routing_instruction == role
+
+    # Redaction changes nothing the validator checks: the sanitized handback
+    # validates exactly like the raw-text one and parses to the same category.
+    raw = _refusal_handback(producer=role, refusal=category)
+    sanitized_result = validator.validate_handoff_text(handback, role)
+    raw_result = validator.validate_handoff_text(raw, role)
+    assert sanitized_result.errors == raw_result.errors
+    assert sanitized_result.routing_instruction == raw_result.routing_instruction
+    assert validator._environment_refusal(handback) == (
+        category,
+        _SANITIZED_REFUSAL_TEXTS[category],
+    )
 
 
 def test_planner_redispatch_after_refusal_reads_a_wrapped_refusal_bullet() -> None:
@@ -2807,8 +2859,9 @@ _GATE_VERIFIED_WORK_PACKET = _REFUSED_WORK_PACKET.replace(
     "`status: ready_for_review` under the handbook's Gate-Verified Handback: "
     "keep all five Verification Evidence fields, start `Commands run` with "
     "`deferred to the work-claim gate:` and quote the refusal, and name the "
-    "refused command and what stopped it in `Output summary`. A failing test "
-    "is not an environment refusal.\n",
+    "refused command and what stopped it in `Output summary`, both with "
+    "credentials, tokens, and sensitive command arguments redacted as "
+    "`[REDACTED]`. A failing test is not an environment refusal.\n",
 )
 
 
