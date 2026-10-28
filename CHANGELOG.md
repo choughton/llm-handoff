@@ -22,7 +22,8 @@ This project follows a simple pre-release changelog until the first public tag.
   `<the refusal, redacted and quoted>` and `<the refusal text, redacted and
   quoted>`; the bullet and deferral syntax and the validator's parsing are
   unchanged. This is an instruction to the writing roles: the dispatcher does
-  not sanitize handoff text. Claude agent copies are pending REDACT-2.
+  not sanitize handoff text. The Claude backend, frontend, and planner
+  agents, root and reference workflow, now say the same (REDACT-2).
 - Linear-mode Work Intake (INTAKE-4). The generated `## Linear Mode: planner`
   sections (with and without a tpm) and the shared Linear `AGENTS.md` block
   now say proposal and revision turns stay in `HANDOFF.md` and make no Linear
@@ -36,8 +37,8 @@ This project follows a simple pre-release changelog until the first public tag.
   now tracker-aware: file mode keeps "no tracker issues"; Linear mode adds
   the creation rule and a tpm or lease routing rule, and typed revisions in
   Linear mode forbid every Linear change. The empty-pool rule invites a
-  plain-language request instead of hand-created issues. Claude planner
-  copies are pending INTAKE-6.
+  plain-language request instead of hand-created issues. The Claude planner
+  agent, root and reference workflow, now says the same (INTAKE-6).
 - `init` no longer writes a config whose Codex backend cannot commit. The
   reference workflow's `dispatch_config.yaml` and `dispatch_config.example.yaml`
   ship `commit_mode: dispatcher`, because their backend runs on Codex and the
