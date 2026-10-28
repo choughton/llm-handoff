@@ -344,16 +344,29 @@ _ANTIGRAVITY_NORMALIZER_LINES = (
     "  # All-Antigravity mapping: the normalizer runs through the agy CLI login.\n"
     "  provider: antigravity\n"
 )
-# The template's top-level commit_mode line (anchored at the start of a line
-# so an indented key never matches). The all-Codex mapping switches it: the
-# Codex workspace-write sandbox keeps .git read-only, so an agent-mode
-# implementer hands back blocked_implementation_failure on its first story.
-_REFERENCE_COMMIT_MODE_RE = re.compile(r"^commit_mode: agent\n", re.MULTILINE)
+# The template's commit_mode lines. The reference mapping runs backend on
+# Codex, and the Codex workspace-write sandbox keeps .git read-only, so an
+# agent-mode Codex implementer hands back blocked_implementation_failure on its
+# first story; the template therefore ships commit_mode: dispatcher. Mappings
+# with no Codex implementer switch back to agent; the all-Codex mapping keeps
+# dispatcher with its own comment.
+_REFERENCE_COMMIT_MODE_LINES = (
+    "# This mapping runs backend on Codex, whose workspace-write sandbox keeps\n"
+    "# .git read-only, so the dispatcher commits implementer work. Use agent only\n"
+    "# when no backend or frontend role runs on Codex.\n"
+    "commit_mode: dispatcher\n"
+)
 _CODEX_COMMIT_MODE_LINE = (
     "# All-Codex mapping: the Codex workspace-write sandbox keeps .git read-only,\n"
     "# so the dispatcher commits implementer work.\n"
     "commit_mode: dispatcher\n"
 )
+_AGENT_COMMIT_MODE_LINE = "commit_mode: agent\n"
+_MAPPING_COMMIT_MODE_LINES = {
+    CLAUDE_MAPPING: _AGENT_COMMIT_MODE_LINE,
+    CODEX_MAPPING: _CODEX_COMMIT_MODE_LINE,
+    ANTIGRAVITY_MAPPING: _AGENT_COMMIT_MODE_LINE,
+}
 _MAPPING_AGENTS_BLOCKS = {
     CLAUDE_MAPPING: _CLAUDE_AGENTS_BLOCK,
     CODEX_MAPPING: _CODEX_AGENTS_BLOCK,
@@ -627,15 +640,15 @@ def render_config(template_text: str, mapping: str) -> str:
                 "normalizer provider and model lines."
             )
         rendered = rendered.replace(_REFERENCE_NORMALIZER_LINES, normalizer_lines)
-    if mapping == CODEX_MAPPING:
-        if len(_REFERENCE_COMMIT_MODE_RE.findall(rendered)) != 1:
-            raise InitWorkflowError(
-                "Template dispatch_config.yaml no longer has the expected "
-                "commit_mode: agent line."
-            )
-        rendered = _REFERENCE_COMMIT_MODE_RE.sub(
-            lambda _match: _CODEX_COMMIT_MODE_LINE, rendered
+    if rendered.count(_REFERENCE_COMMIT_MODE_LINES) != 1:
+        raise InitWorkflowError(
+            "Template dispatch_config.yaml no longer has the expected "
+            "commit_mode: dispatcher lines."
         )
+    rendered = rendered.replace(
+        _REFERENCE_COMMIT_MODE_LINES,
+        _MAPPING_COMMIT_MODE_LINES[mapping],
+    )
     return rendered
 
 
