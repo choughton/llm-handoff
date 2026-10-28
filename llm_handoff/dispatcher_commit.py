@@ -23,6 +23,13 @@ Work Packet scope or when it was dirty before dispatch, and the commit body
 carries the operator marker (message time and SHA-256, never the text).
 After a non-implementer role, ``commit_chat_changes`` commits those chat
 paths on their own with the same marker.
+
+After a Work Intake proposal approval turn, ``commit_approved_project_state``
+commits the configured project state file alone, as a local ledger-only
+commit with every repository hook disabled for the whole transaction
+(listing, staging, and committing), refuses when any other file besides the
+handoff changed, before or after staging, and checks that the new commit
+holds only that file.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from typing import TYPE_CHECKING
 
 from llm_handoff.chat_changes import ChatChangeEntry, chat_owned_paths
@@ -326,6 +334,262 @@ def commit_chat_changes(
         chat_committed=owned,
         chat_influences=chat_influences,
     )
+
+
+@dataclass(frozen=True)
+class ProjectStateCommitResult:
+    """What ``commit_approved_project_state`` did.
+
+    ``sha`` is set only when a commit was made. ``unchanged`` means the
+    project state file had no change to commit. ``other_changes`` lists the
+    changed paths, other than the handoff and the project state file, that
+    stopped the commit; ``error`` is a Git or file-state failure. ``sha`` and
+    ``error`` are both set when a commit was made but is not a project-state
+    only commit on top of the previous HEAD.
+    """
+
+    sha: str | None = None
+    unchanged: bool = False
+    other_changes: tuple[str, ...] = ()
+    error: str | None = None
+
+
+# `git status --porcelain=v2 -z` entries: ordinary ("1"), renamed or copied
+# ("2", followed by the original path as its own entry), unmerged ("u"), and
+# untracked ("?"). The number is how many space-separated fields precede the
+# path.
+_STATUS_FIELDS_BEFORE_PATH = {"1": 8, "2": 9, "u": 10, "?": 1}
+
+
+def _changed_paths(
+    repo_root: Path,
+    git_options: Sequence[str] = (),
+) -> tuple[set[str], set[str]] | None:
+    """Every path changed in the index or the working tree, untracked files
+    included, and the unmerged ones among them; None when Git fails.
+
+    Both sides of a rename or copy are listed, so a staged rename into or
+    out of an allowed path is still seen. ``git_options`` go before the
+    subcommand, such as the ``-c core.hooksPath=...`` hook override.
+    """
+
+    status = _git(
+        repo_root,
+        [*git_options, "status", "--porcelain=v2", "--untracked-files=all", "-z"],
+    )
+    if status.returncode != 0:
+        return None
+    changed: set[str] = set()
+    unmerged: set[str] = set()
+    entries = iter(status.stdout.split("\0"))
+    for entry in entries:
+        if not entry:
+            continue
+        kind = entry[:1]
+        fields = _STATUS_FIELDS_BEFORE_PATH.get(kind)
+        if fields is None:
+            continue
+        parts = entry.split(" ", fields)
+        if len(parts) <= fields:
+            continue
+        path = normalize_repo_path(parts[fields])
+        changed.add(path)
+        if kind == "u":
+            unmerged.add(path)
+        if kind == "2":
+            original = next(entries, None)
+            if original:
+                changed.add(normalize_repo_path(original))
+    return changed, unmerged
+
+
+def commit_approved_project_state(
+    *,
+    repo_root: Path,
+    handoff_path: Path,
+    project_state_path: Path,
+) -> ProjectStateCommitResult:
+    """Commit the project state file alone after a proposal approval turn.
+
+    Runs only in dispatcher commit mode, after the planner's approval turn
+    passed validation. The index and the working tree, untracked files
+    included, may hold changes only to ``handoff_path`` and
+    ``project_state_path``. Any other changed path stops the commit, and
+    nothing is staged, discarded, or absorbed. The commit holds exactly
+    ``project_state_path`` (``--only``), never the handoff, and is local:
+    nothing is pushed. Every Git command of the transaction, from the first
+    status listing through staging to the commit, runs with every
+    repository hook disabled through a command-scoped empty
+    ``core.hooksPath``, so no hook (``post-index-change`` on an index write,
+    ``prepare-commit-msg``, ``post-commit``) can change the checkout midway.
+    The changed paths are listed again after staging, just before the
+    commit, and any other changed path still stops it. The new commit is
+    then checked: when its parent is not the previous HEAD or it changes any
+    other path, the result carries its ``sha`` and an ``error``, and nothing
+    is undone. A project state file with no change makes no commit.
+    """
+
+    handoff = normalize_repo_path(Path(handoff_path).as_posix())
+    state = normalize_repo_path(Path(project_state_path).as_posix())
+    # `--no-verify` skips only pre-commit and commit-msg, and `git add` or a
+    # status refresh that writes the index runs post-index-change. A
+    # command-scoped `core.hooksPath` pointing at a fresh empty directory
+    # disables every repository hook, on every platform, for each command
+    # below. The checks after staging and after the commit still confirm the
+    # checkout and what was committed.
+    with tempfile.TemporaryDirectory(prefix="llm-handoff-no-hooks-") as no_hooks:
+        return _commit_project_state_without_hooks(
+            repo_root=repo_root,
+            handoff=handoff,
+            state=state,
+            no_hooks=("-c", f"core.hooksPath={Path(no_hooks).as_posix()}"),
+        )
+
+
+def _commit_project_state_without_hooks(
+    *,
+    repo_root: Path,
+    handoff: str,
+    state: str,
+    no_hooks: tuple[str, ...],
+) -> ProjectStateCommitResult:
+    listed = _changed_paths(repo_root, no_hooks)
+    if listed is None:
+        return ProjectStateCommitResult(
+            error="git status failed; the working tree could not be listed"
+        )
+    changed, unmerged = listed
+    others = tuple(sorted(changed - {handoff, state}))
+    if others:
+        return ProjectStateCommitResult(other_changes=others)
+    if state in unmerged:
+        return ProjectStateCommitResult(error=f"{state} has unresolved merge conflicts")
+    if state not in changed:
+        return ProjectStateCommitResult(unchanged=True)
+    if not (Path(repo_root) / state).is_file():
+        return ProjectStateCommitResult(
+            error=f"{state} was deleted or is not a file; nothing was committed"
+        )
+
+    staged_before = _git(
+        repo_root,
+        [*no_hooks, *_LITERAL_PATHSPECS, "diff", "--cached", "--quiet", "--", state],
+    )
+    add = _git(repo_root, [*no_hooks, *_LITERAL_PATHSPECS, "add", "--", state])
+    if add.returncode != 0:
+        return ProjectStateCommitResult(error=f"git add failed: {_first_line(add)}")
+    staged = _git(
+        repo_root,
+        [*no_hooks, *_LITERAL_PATHSPECS, "diff", "--cached", "--quiet", "--", state],
+    )
+    if staged.returncode == 0:
+        # Only a line-ending or stat difference: no content to commit.
+        return ProjectStateCommitResult(unchanged=True)
+    if staged.returncode != 1:
+        return ProjectStateCommitResult(
+            error=f"git diff --cached failed: {_first_line(staged)}"
+        )
+    # Recheck the scope after staging: anything that changed another path
+    # since the first listing still stops the commit, which the commit check
+    # below cannot see when the change stays in the working tree.
+    relisted = _changed_paths(repo_root, no_hooks)
+    if relisted is None:
+        return ProjectStateCommitResult(
+            error="git status failed after staging; nothing was committed"
+        )
+    others = tuple(sorted(relisted[0] - {handoff, state}))
+    if others:
+        if staged_before.returncode == 0:
+            # The project state file was not staged before this transaction,
+            # so its staging is undone; the working tree keeps its edits.
+            _git(
+                repo_root,
+                [*no_hooks, *_LITERAL_PATHSPECS, "reset", "-q", "--", state],
+            )
+        return ProjectStateCommitResult(other_changes=others)
+    subject = f"Record the approved backlog in {state}"
+    body = (
+        "Committed by the llm-handoff dispatcher after the planner's proposal "
+        "approval turn. The operator approved the proposed backlog at the "
+        f"operator prompt. Local ledger-only commit; it is published with the "
+        f"next story.\n\nFiles:\n- {state}"
+    )
+    head_before = git_head(repo_root)
+    commit = _git(
+        repo_root,
+        [
+            *no_hooks,
+            *_LITERAL_PATHSPECS,
+            "commit",
+            "--no-verify",
+            "--only",
+            "-m",
+            subject,
+            "-m",
+            body,
+            "--",
+            state,
+        ],
+    )
+    if commit.returncode != 0:
+        return ProjectStateCommitResult(
+            error=f"git commit failed: {_first_line(commit)}"
+        )
+    sha = git_head(repo_root)
+    if sha is None:
+        return ProjectStateCommitResult(
+            error="git rev-parse HEAD failed after the commit"
+        )
+    problem = _approval_commit_problem(repo_root, sha, head_before, state)
+    if problem is not None:
+        return ProjectStateCommitResult(sha=sha, error=problem)
+    return ProjectStateCommitResult(sha=sha)
+
+
+def _approval_commit_problem(
+    repo_root: Path, sha: str, head_before: str | None, state: str
+) -> str | None:
+    """Why commit ``sha`` is not exactly ``state`` on top of ``head_before``.
+
+    None when the commit's only parent is ``head_before`` (no parent on an
+    unborn branch) and it changes ``state`` and no other path. The commit is
+    never undone here: the operator inspects it at the pause.
+    """
+
+    parents = _git(repo_root, ["rev-list", "--parents", "-n", "1", sha])
+    if parents.returncode != 0:
+        return f"git rev-list failed on the new commit {sha[:12]}: {_first_line(parents)}"
+    expected_parents = [head_before] if head_before else []
+    if parents.stdout.split()[1:] != expected_parents:
+        base = head_before[:12] if head_before else "the unborn branch"
+        return (
+            f"the new commit {sha[:12]} is not a single commit on top of "
+            f"{base}; inspect it before continuing"
+        )
+    listed = _git(
+        repo_root,
+        [
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "--no-renames",
+            "-r",
+            "--root",
+            "-z",
+            sha,
+        ],
+    )
+    if listed.returncode != 0:
+        return f"git diff-tree failed on the new commit {sha[:12]}: {_first_line(listed)}"
+    paths = {normalize_repo_path(path) for path in listed.stdout.split("\0") if path}
+    if paths != {state}:
+        others = ", ".join(sorted(paths - {state}))
+        found = f"it also changes {others}" if others else f"it does not change {state}"
+        return (
+            f"the new commit {sha[:12]} is not a {state}-only commit: {found}; "
+            "inspect it before continuing"
+        )
+    return None
 
 
 def _utc_marker_time(recorded_at: str) -> str | None:

@@ -4,7 +4,9 @@ When the dispatcher pauses and waits for ``HANDOFF.md`` to change, and an
 operator is at a terminal, the orchestrator shows this prompt. The operator
 can send the planner a best-judgment instruction, send the planner free-text
 guidance, dispatch a role directly with ``@<role> <message>``, retry the
-cycle, or quit. Editing ``HANDOFF.md`` still resumes.
+cycle, or quit. Editing ``HANDOFF.md`` still resumes. At a proposal review
+(a user-route pause whose handoff holds a nonempty ``## Proposed Backlog``),
+Enter approves the proposal instead and typed text revises it.
 
 This module must not import ``llm_handoff.orchestrator``.
 """
@@ -27,7 +29,10 @@ import unicodedata
 from llm_handoff.text_io import read_dispatch_text
 
 
-OperatorActionKind = Literal["planner", "role", "retry", "quit", "invalid"]
+# `approve` comes only from an empty line at a proposal review prompt
+# (``wait_for_operator_or_handoff_change`` with ``proposal_review``); the
+# parser itself never returns it, so typed text can never approve.
+OperatorActionKind = Literal["planner", "role", "retry", "quit", "invalid", "approve"]
 LogFn = Callable[[str, str], None]
 
 # Roles an operator can dispatch directly with `@<role> <message>`.
@@ -60,6 +65,12 @@ PROMPT_LINE = (
 # the manual escape hatch for when the automatic path did not work.
 PROMPT_PLANNER_TRIED_LINE = (
     "Or edit HANDOFF.md yourself; the loop resumes when it changes."
+)
+# Shown instead of PROMPT_LINE at a user-route pause whose handoff holds a
+# nonempty `## Proposed Backlog` (Work Intake proposal review).
+PROPOSAL_PROMPT_LINE = (
+    "Press Enter to approve this proposed backlog and start the plan, or type "
+    "changes for the planner to revise it and press Enter."
 )
 _ROLE_TARGET_RE = re.compile(r"@(\S*)(.*)", re.DOTALL)
 
@@ -525,6 +536,23 @@ def _proposed_backlog(lines: list[str]) -> list[str] | None:
     return None
 
 
+def pending_proposal(content: str) -> str | None:
+    """The handoff's first nonempty `## Proposed Backlog` section, or None.
+
+    Uses the same section rules as the user-pause preview: the YAML
+    frontmatter is skipped, a heading-only section does not count, and
+    heading-like lines inside fenced blocks, block quotes, or indented code
+    are text. The section is returned whole, heading included and without
+    the preview bounds, so an approval can quote exactly what was proposed.
+    """
+
+    body = _split_frontmatter(content.lstrip("﻿").replace("\r\n", "\n"))
+    section = _proposed_backlog(body.split("\n"))
+    if section is None:
+        return None
+    return "\n".join(_trim_blank_edges(section))
+
+
 def _escape_char(char: str) -> str:
     code = ord(char)
     if code <= 0xFF:
@@ -689,12 +717,19 @@ def wait_for_operator_or_handoff_change(
     stop_requested: Callable[[], bool] | None = None,
     planner_tried: bool = False,
     tpm_configured: bool = False,
+    proposal_review: bool = False,
 ) -> HandoffChanged | StopRequested | OperatorAction:
     """Wait for an operator action, a HANDOFF.md change, or a stop request.
 
     ``planner_tried`` adds the edit-HANDOFF.md line under the prompt, for a
     pause the planner has already tried to resolve. ``tpm_configured`` is
     passed to ``parse_operator_input`` and makes ``@tpm`` a role target.
+
+    ``proposal_review`` is set only when the paused handoff holds a pending
+    `## Proposed Backlog`: the prompt line becomes ``PROPOSAL_PROMPT_LINE``
+    and an empty line returns an ``approve`` action instead of the
+    best-judgment planner action. Every other line parses as usual, so typed
+    text stays revision guidance whatever it says.
 
     Never returns an ``invalid`` action: those are logged and the wait goes on.
     After EOF on the operator stream it keeps polling the handoff file only.
@@ -707,7 +742,7 @@ def wait_for_operator_or_handoff_change(
             "PAUSE",
             f"Discarded {discarded} operator input line(s) typed before the prompt.",
         )
-    log("PAUSE", PROMPT_LINE)
+    log("PAUSE", PROPOSAL_PROMPT_LINE if proposal_review else PROMPT_LINE)
     if planner_tried:
         log("PAUSE", PROMPT_PLANNER_TRIED_LINE)
 
@@ -726,6 +761,8 @@ def wait_for_operator_or_handoff_change(
             time.sleep(poll_interval_seconds)
 
         if line is not None:
+            if proposal_review and not line.strip():
+                return OperatorAction(kind="approve")
             action = parse_operator_input(line, tpm_configured=tpm_configured)
             if action.kind == "invalid":
                 log("PAUSE", action.text or ROLE_TARGET_INVALID)
