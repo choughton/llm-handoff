@@ -594,9 +594,11 @@ def test_default_handbook_text_pins_the_tpm_absent_block() -> None:
 # Re-pinned by TIDY-14, which adds the `epic_closed` event and changes the
 # finalizer and validator sections (shared by both renderings), and by
 # TIDY-15, which adds the `handoff_repaired` event and lease-repair text to
-# the shared contract, planner, and validator sections.
+# the shared contract, planner, and validator sections. Re-pinned by
+# INTAKE-4, which adds the Work intake, approval, and creation-failure rules
+# to the planner section and the plain-language empty-pool invitation.
 TPM_ABSENT_HANDBOOK_SHA256 = (
-    "b163141a256563e256bb28c4b2d6a379b9e8ea72fc3d7261e068274da44f2913"
+    "e786c5311f9cc7050cbdeb85bd0367a3eea98e095966b3f3162df13656e9026e"
 )
 
 
@@ -606,6 +608,31 @@ def test_tpm_absent_handbook_text_is_byte_identical() -> None:
     assert digest == TPM_ABSENT_HANDBOOK_SHA256
     for phrase in ("Grooming.", "Epic direction.", "grooming rules"):
         assert phrase not in text, phrase
+
+
+def test_fresh_init_renders_linear_intake_rules(tmp_path: Path) -> None:
+    # INTAKE-4: the generated planner block keeps drafts out of Linear,
+    # creates only on the dispatcher's approval, and keeps lease repair.
+    _linear(tmp_path)
+    handbook = (tmp_path / HANDBOOK).read_text(encoding="utf-8")
+    block = handbook[handbook.index(LINEAR_BEGIN) :]
+    planner = block[
+        block.index("## Linear Mode: planner\n") : block.index(
+            "## Linear Mode: backend\n"
+        )
+    ]
+    flat = " ".join(planner.split())
+    for phrase in (
+        "On a proposal or revision turn make no Linear change",
+        "Only the dispatcher's explicit approval instruction",
+        "Then assign the next issue by the selection rules",
+        "do not claim success and open no lease",
+        "Repairing an existing lease is not selecting an issue",
+    ):
+        assert phrase in flat, phrase
+    assert "Then route the epic to `tpm`" not in flat
+    agents = " ".join((tmp_path / AGENTS).read_text(encoding="utf-8").split())
+    assert "Work intake proposals and revisions stay in `HANDOFF.md`" in agents
 
 
 def test_handbook_text_with_tpm_carries_grooming_rules() -> None:

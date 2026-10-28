@@ -2711,6 +2711,204 @@ def test_approval_does_not_leak_into_the_next_planner_turn(
     assert orchestrator.OPERATOR_BEST_JUDGMENT_REQUEST in second
 
 
+# --- Linear approval wording (INTAKE-4) -------------------------------------
+# These tests check the dispatcher's instruction text only. The dispatcher
+# never calls Linear; no live Linear call is made or claimed here.
+
+LINEAR_TRACKER = {
+    "provider": "linear",
+    "team": "ENG",
+    "project": "Platform",
+    "eligible_state": "Todo",
+    "in_progress_state": "In Progress",
+    "success_state": "In Review",
+    "mcp_server": "linear",
+}
+
+
+def _linear_agents(*, tpm: bool) -> dict[str, config_module.AgentConfig]:
+    # Linear mode rejects antigravity, the planner and frontend default.
+    agents = {
+        **config_module._default_agent_configs(),
+        "planner": config_module.AgentConfig(provider="codex"),
+        "frontend": config_module.AgentConfig(provider="codex"),
+    }
+    if tpm:
+        agents["tpm"] = config_module.AgentConfig(
+            provider="codex", skill_name="llm-handoff-tpm"
+        )
+    return agents
+
+
+def _approval_config(tmp_path: Path, *, linear: bool, tpm: bool) -> DispatchConfig:
+    overrides: dict[str, Any] = {}
+    if linear:
+        # Linear mode requires the work-claim gate.
+        overrides["tracker"] = LINEAR_TRACKER
+        overrides["agents"] = _linear_agents(tpm=tpm)
+        overrides["enforce_work_packet"] = True
+        overrides["work_packet_opt_out_reason"] = None
+    elif tpm:
+        overrides["agents"] = {
+            **config_module._default_agent_configs(),
+            "tpm": config_module.AgentConfig(
+                provider="codex", skill_name="llm-handoff-tpm"
+            ),
+        }
+    return _config(tmp_path, **overrides)
+
+
+def _approval_text(config: DispatchConfig) -> str:
+    return " ".join(
+        orchestrator._proposal_approval_instruction(
+            config,
+            proposal=operator_prompt.pending_proposal(PROPOSAL_HANDOFF) or "",
+            handoff_sha=orchestrator._content_sha(PROPOSAL_HANDOFF),
+        ).split()
+    )
+
+
+def _flat_constant(text: str) -> str:
+    return " ".join(text.split())
+
+
+@pytest.mark.parametrize("tpm", [False, True], ids=["no-tpm", "tpm"])
+def test_file_mode_approval_keeps_the_no_tracker_restriction(
+    tmp_path: Path, tpm: bool
+) -> None:
+    text = _approval_text(_approval_config(tmp_path, linear=False, tpm=tpm))
+
+    assert text.isascii()
+    assert (
+        "no source, tests, completed work, or ledger files, and no tracker "
+        "issues. Then choose the next epic by fit"
+    ) in text
+    assert "Linear" not in text
+    assert "lease" not in text
+
+
+@pytest.mark.parametrize("tpm", [False, True], ids=["no-tpm", "tpm"])
+def test_linear_mode_approval_authorizes_only_the_approved_backlog(
+    tmp_path: Path, tpm: bool
+) -> None:
+    text = _approval_text(_approval_config(tmp_path, linear=True, tpm=tpm))
+
+    assert text.isascii()
+    assert "no tracker issues" not in text
+    # The project-state and handoff file boundary is unchanged.
+    assert (
+        "Do not modify any file other than PROJECT_STATE.md and "
+        "docs/handoff/HANDOFF.md: no source, tests, completed work, or ledger "
+        "files. Linear mode is on"
+    ) in text
+    for phrase in (
+        "this approval also authorizes you to create exactly the approved "
+        "backlog in Linear through your own Linear MCP connector, with only the "
+        "tools your launch already grants; the dispatcher never calls Linear.",
+        "create one issue for each approved story outline, in execution order, "
+        "in `tracker.team` with the configured `tracker.project` or "
+        "`tracker.label` and in `tracker.eligible_state`",
+        "Create no project, team, or label, use only the identifiers the "
+        "connector returns, never invent one",
+        "If a creation fails or its result is unknown, do not claim success and "
+        "open no lease",
+        "list in docs/handoff/HANDOFF.md each issue the connector confirmed and "
+        "each unresolved creation, do not repeat a creation blindly",
+        "`status: blocked_missing_context`",
+    ):
+        assert phrase in text, phrase
+    linear_tpm = _flat_constant(orchestrator.PROPOSAL_APPROVAL_LINEAR_TPM_ROUTING)
+    linear_planner = _flat_constant(
+        orchestrator.PROPOSAL_APPROVAL_LINEAR_PLANNER_ROUTING
+    )
+    if tpm:
+        assert _flat_constant(orchestrator.PROPOSAL_APPROVAL_TPM_ROUTING) in text
+        assert linear_tpm in text
+        assert linear_planner not in text
+        assert "lease no issue when you route to `tpm`" in text
+        assert "grooming and issue selection stay with the tpm" in text
+    else:
+        assert _flat_constant(orchestrator.PROPOSAL_APPROVAL_PLANNER_ROUTING) in text
+        assert linear_planner in text
+        assert linear_tpm not in text
+        assert "post the `lease_opened` evidence comment" in text
+        assert "`tracker.in_progress_state`" in text
+
+
+def test_linear_approval_keeps_the_dispatcher_commit_rule(tmp_path: Path) -> None:
+    config = _approval_config(tmp_path, linear=True, tpm=False)
+    text = _approval_text(config.model_copy(update={"commit_mode": "dispatcher"}))
+
+    assert "the dispatcher commits PROJECT_STATE.md alone, never the handoff" in text
+    assert "pauses without committing if any other file changed" in text
+
+
+def test_linear_typed_revision_forbids_every_linear_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    revised = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-1: Smaller page.")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["I approve, go", "quit"],
+        planner_writes=[revised],
+    )
+
+    config = _approval_config(tmp_path, linear=True, tpm=False)
+    assert harness.run(config) == 0
+
+    (instruction,) = harness.planner_instructions
+    assert instruction is not None
+    assert not _is_approval(instruction)
+    assert REVISION_NOTE_TEXT in instruction
+    assert orchestrator.PROPOSAL_REVISION_LINEAR_NOTE in instruction
+    assert "Create, update, comment on, label, lease, or move no issue." in (
+        instruction
+    )
+
+
+def test_file_mode_typed_revision_has_no_linear_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    revised = PROPOSAL_HANDOFF.replace("PUP-1: Static page.", "PUP-1: Smaller page.")
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["make it smaller", "quit"],
+        planner_writes=[revised],
+    )
+
+    assert harness.run(_config(tmp_path)) == 0
+
+    (instruction,) = harness.planner_instructions
+    assert instruction is not None
+    assert REVISION_NOTE_TEXT in instruction
+    assert orchestrator.PROPOSAL_REVISION_LINEAR_NOTE not in instruction
+
+
+def test_enter_in_linear_mode_sends_the_linear_approval_instruction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff_path = _write_repo(tmp_path, PROPOSAL_HANDOFF)
+    harness = _Harness(
+        monkeypatch,
+        handoff_path,
+        operator_lines=["", "quit"],
+        planner_writes=[USER_HANDOFF],
+    )
+
+    assert harness.run(_approval_config(tmp_path, linear=True, tpm=True)) == 0
+
+    (instruction,) = harness.planner_instructions
+    assert _is_approval(instruction)
+    assert instruction is not None
+    flat = " ".join(instruction.split())
+    assert "Linear mode is on (`tracker.provider: linear`)" in flat
+    assert _flat_constant(orchestrator.PROPOSAL_APPROVAL_LINEAR_TPM_ROUTING) in flat
+
+
 @pytest.mark.parametrize(
     "content",
     [

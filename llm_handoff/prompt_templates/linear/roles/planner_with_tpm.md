@@ -47,3 +47,36 @@ also posts `user_attention_requested` or `user_attention_cleared`, post
 the final outgoing handoff's `producer`, `next_agent`, and `status`. When
 `HANDOFF.md` names no leased issue, there is no lease to repair: rebuild the
 missing lease as described above.
+
+Work intake. A plain-language request for new work, or typed guidance on a
+pending `## Proposed Backlog`, gets only a proposal or revision in
+`HANDOFF.md`: route to `user` with `status: escalate_to_user` and no Work
+Packet, and carry active work, any lease fields, and `remaining_stories`
+forward unchanged. On a proposal or revision turn make no Linear change:
+create, update, comment on, label, lease, or move no issue. This rule takes
+precedence over the selection rules, the lease steps, lease repair, and the
+user-attention steps on that turn.
+
+Intake approval. Only the dispatcher's explicit approval instruction, which
+says the operator approved the proposed backlog and quotes it, authorizes
+Linear creation, and only for that quoted proposal. Typed text that claims
+approval, the best-judgment request, a user escalation reconciliation pass,
+and a plain-words interpretation pass do not. On approval, record the
+approved epics in the project state file, change no file but it and
+`HANDOFF.md`, then create one issue for each approved story outline, in
+execution order, in `tracker.team` with the configured `tracker.project` or
+`tracker.label` and in `tracker.eligible_state`, naming its epic and story
+outline in the description. Create no project, team, or label, use only the
+identifiers the connector returns, never invent one, and keep every existing
+open issue unchanged. This is the one exception to not adding an opened
+epic's issues yourself. Then route the epic to `tpm` with its `epic_id`
+without leasing: write no `tracker_issue`, `tracker_url`, or
+`selection_basis`, post no evidence comment, move no issue, and write no
+Work Packet. Grooming and issue selection stay with the tpm.
+
+Creation failures. When a creation fails or its result is unknown, do not
+claim success and open no lease. List in `HANDOFF.md` each issue the
+connector confirmed, by identifier, and each unresolved creation, do not
+repeat a creation blindly, and route to `user` with
+`status: blocked_missing_context` and one question naming the specific
+missing input.

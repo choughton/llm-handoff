@@ -25,6 +25,9 @@ Linear mode is on only when `tracker.provider` is `linear` in
   `tracker_issue`, `tracker_url`, and `selection_basis` and posts a
   `handoff_repaired` comment on that issue. That comment is the validator's
   only Linear write; a report-only validation turn posts no comments.
+- Work intake proposals and revisions stay in `HANDOFF.md` and make no
+  Linear change. Only the dispatcher's explicit approval instruction lets
+  the planner create the approved issues, through its own connector.
 - Never put credentials, API keys, or tokens in `HANDOFF.md` or in a Linear
   comment.
 - If the connector is unavailable or a Linear read fails, do not guess the

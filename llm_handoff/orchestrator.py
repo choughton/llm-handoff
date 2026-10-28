@@ -487,7 +487,8 @@ OPERATOR_GUIDANCE_PREFIX = "Operator guidance: "
 # Work Intake proposal review (INTAKE-3). At a user-route pause whose handoff
 # holds a nonempty `## Proposed Backlog`, Enter is the operator's approval and
 # schedules one planner dispatch with the approval instruction below. It is
-# the only instruction that lets the planner edit the project state file, and
+# the only instruction that lets the planner edit the project state file (and,
+# in Linear mode, create the approved issues through its own connector), and
 # it applies to that one dispatch: the pending recovery that carries it is
 # bound to the content SHA of the handoff the operator was shown.
 PROPOSAL_APPROVAL_KIND = "proposal_approval"
@@ -509,10 +510,32 @@ PROPOSAL_APPROVAL_INSTRUCTION_TEMPLATE = (
     "{project_state_path}. Preserve existing open work there: keep every open "
     "epic, story, parked epic, and status note, and add the approved epics "
     "to the backlog. Do not modify any file other than {project_state_path} "
-    "and {handoff_path}: no source, tests, completed work, or ledger files, "
-    "and no tracker issues. Then choose the next epic by fit among all open "
+    "and {handoff_path}: no source, tests, completed work, or ledger files"
+    "{tracker_rule} Then choose the next epic by fit among all open "
     "epics, the approved ones included, and rewrite {handoff_path} for it. "
     "{routing_rule}{commit_rule}"
+)
+# File mode (no tracker): the approval never reaches a tracker.
+PROPOSAL_APPROVAL_FILE_TRACKER_RULE = ", and no tracker issues."
+# Linear mode (INTAKE-4): the same approval also lets the planner create
+# exactly the approved backlog through its own Linear MCP connector and the
+# tools its launch already grants. The dispatcher never calls Linear.
+PROPOSAL_APPROVAL_LINEAR_TRACKER_RULE = (
+    ". Linear mode is on (`tracker.provider: linear`): this approval also "
+    "authorizes you to create exactly the approved backlog in Linear through "
+    "your own Linear MCP connector, with only the tools your launch already "
+    "grants; the dispatcher never calls Linear. Follow the Work intake rules "
+    "in `## Linear Mode: planner`: after recording the approved epics, create "
+    "one issue for each approved story outline, in execution order, in "
+    "`tracker.team` with the configured `tracker.project` or `tracker.label` "
+    "and in `tracker.eligible_state`. Create no project, team, or label, use "
+    "only the identifiers the connector returns, never invent one, and change "
+    "no existing issue except as the routing rule below allows. If a creation "
+    "fails or its result is unknown, do not claim success and open no lease: "
+    "list in {handoff_path} each issue the connector confirmed and each "
+    "unresolved creation, do not repeat a creation blindly, and route to "
+    "`user` with `status: blocked_missing_context` and one question naming "
+    "the specific missing input."
 )
 PROPOSAL_APPROVAL_TPM_ROUTING = (
     "agents.tpm is configured: open that epic by routing to `tpm` with its "
@@ -522,6 +545,19 @@ PROPOSAL_APPROVAL_TPM_ROUTING = (
 PROPOSAL_APPROVAL_PLANNER_ROUTING = (
     "agents.tpm is not configured: write the first story's Work Packet "
     "yourself and route to the role that owns it; do not route to `tpm`."
+)
+PROPOSAL_APPROVAL_LINEAR_TPM_ROUTING = (
+    " In Linear mode, lease no issue when you route to `tpm`: write no "
+    "`tracker_issue`, `tracker_url`, or `selection_basis`, post no evidence "
+    "comment, and move no issue; grooming and issue selection stay with the "
+    "tpm."
+)
+PROPOSAL_APPROVAL_LINEAR_PLANNER_ROUTING = (
+    " In Linear mode, assign the first issue by the selection rules and lease "
+    "steps in `## Linear Mode: planner`: check its Verification command as "
+    "those rules require, post the `lease_opened` evidence comment, move it "
+    "to `tracker.in_progress_state`, and write the lease fields before you "
+    "route."
 )
 PROPOSAL_APPROVAL_DISPATCHER_COMMIT_RULE = (
     " Dispatcher commit mode is on: leave {project_state_path} and "
@@ -538,6 +574,11 @@ PROPOSAL_REVISION_NOTE = (
     "instruction approves a proposal. Revise the proposal in {handoff_path} "
     "and route to user with `status: escalate_to_user`; do not edit "
     "project-state files or create tracker issues."
+)
+# Appended after PROPOSAL_REVISION_NOTE in Linear mode.
+PROPOSAL_REVISION_LINEAR_NOTE = (
+    " Linear mode is on: make no Linear change on this turn. Create, update, "
+    "comment on, label, lease, or move no issue."
 )
 # Pauses after an approval turn. Each leaves the project state edit, if any,
 # uncommitted in the working tree for the operator.
@@ -12978,11 +13019,23 @@ def _proposal_approval_instruction(
 
     project_state_path = Path(config.project_state_path).as_posix()
     handoff_path = Path(config.handoff_path).as_posix()
+    tpm_configured = "tpm" in config.agents
     routing_rule = (
         PROPOSAL_APPROVAL_TPM_ROUTING
-        if "tpm" in config.agents
+        if tpm_configured
         else PROPOSAL_APPROVAL_PLANNER_ROUTING
     )
+    if config.tracker.provider == "linear":
+        tracker_rule = PROPOSAL_APPROVAL_LINEAR_TRACKER_RULE.format(
+            handoff_path=handoff_path
+        )
+        routing_rule += (
+            PROPOSAL_APPROVAL_LINEAR_TPM_ROUTING
+            if tpm_configured
+            else PROPOSAL_APPROVAL_LINEAR_PLANNER_ROUTING
+        )
+    else:
+        tracker_rule = PROPOSAL_APPROVAL_FILE_TRACKER_RULE
     commit_rule = (
         PROPOSAL_APPROVAL_DISPATCHER_COMMIT_RULE.format(
             project_state_path=project_state_path, handoff_path=handoff_path
@@ -12996,6 +13049,7 @@ def _proposal_approval_instruction(
         proposal_handoff_sha=handoff_sha,
         proposal=_quote_untrusted(APPROVED_PROPOSAL_LABEL, proposal),
         project_state_path=project_state_path,
+        tracker_rule=tracker_rule,
         routing_rule=routing_rule,
         commit_rule=commit_rule,
     )
@@ -13289,6 +13343,8 @@ def _wait_at_dispatcher_pause(
     if proposal is not None:
         # Typed text at the proposal review revises; it never approves.
         instruction += _render_prompt(PROPOSAL_REVISION_NOTE, config.handoff_path)
+        if config.tracker.provider == "linear":
+            instruction += PROPOSAL_REVISION_LINEAR_NOTE
         summary += " to revise the proposed backlog"
     pending = PendingPlannerRecovery(
         handoff_sha=_content_sha(current_handoff_content),

@@ -6,6 +6,21 @@ This project follows a simple pre-release changelog until the first public tag.
 
 ## Unreleased
 
+- Linear-mode Work Intake (INTAKE-4). The generated `## Linear Mode: planner`
+  sections (with and without a tpm) and the shared Linear `AGENTS.md` block
+  now say proposal and revision turns stay in `HANDOFF.md` and make no Linear
+  change, overriding selection, lease repair, and user-attention steps on
+  those turns. Only the dispatcher's approval instruction lets the planner
+  record the approved epics and create one issue per approved story outline
+  in the configured team and project or label, through its own connector
+  with its existing grants, then route to `tpm` without leasing or lease the
+  first issue by the selection rules. Failed or unknown creations are
+  reported, not claimed or blindly repeated. The runtime approval text is
+  now tracker-aware: file mode keeps "no tracker issues"; Linear mode adds
+  the creation rule and a tpm or lease routing rule, and typed revisions in
+  Linear mode forbid every Linear change. The empty-pool rule invites a
+  plain-language request instead of hand-created issues. Claude planner
+  copies are pending INTAKE-6.
 - The proposal approval commit now disables repository hooks for the whole
   transaction, including the change listing and `git add`, so a
   `post-index-change` hook cannot change the checkout while

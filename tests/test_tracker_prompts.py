@@ -870,6 +870,156 @@ def test_validator_and_finalizer_sections_name_no_write_tools(role: str) -> None
     assert "save_issue" not in text
 
 
+# INTAKE-4: Linear-mode Work Intake. Proposal and revision turns make no
+# Linear change; only the dispatcher's approval instruction lets the planner
+# create the approved backlog through its own connector. These assertions
+# cover the generated contract text; they do not exercise a live connector.
+INTAKE_SHARED_PARAGRAPHS = ("Work intake.", "Creation failures.")
+
+
+@pytest.mark.parametrize("tpm_configured", [False, True])
+def test_planner_work_intake_drafts_make_no_linear_change(
+    tpm_configured: bool,
+) -> None:
+    raw = linear_role_section("planner", tpm_configured=tpm_configured)
+    intake = _paragraph(raw, "Work intake.")
+    for phrase in (
+        "A plain-language request for new work, or typed guidance on a "
+        "pending `## Proposed Backlog`, gets only a proposal or revision in "
+        "`HANDOFF.md`",
+        "route to `user` with `status: escalate_to_user` and no Work Packet",
+        "carry active work, any lease fields, and `remaining_stories` forward "
+        "unchanged",
+        "On a proposal or revision turn make no Linear change: create, update, "
+        "comment on, label, lease, or move no issue.",
+        "This rule takes precedence over the selection rules, the lease "
+        "steps, lease repair, and the user-attention steps on that turn.",
+    ):
+        assert phrase in intake, phrase
+
+
+@pytest.mark.parametrize("prefix", INTAKE_SHARED_PARAGRAPHS)
+def test_planner_variants_share_intake_and_failure_paragraphs(prefix: str) -> None:
+    assert _paragraph(linear_role_section("planner"), prefix) == _paragraph(
+        linear_role_section("planner", tpm_configured=True), prefix
+    )
+
+
+APPROVAL_SHARED_PHRASES = (
+    "Only the dispatcher's explicit approval instruction, which says the "
+    "operator approved the proposed backlog and quotes it, authorizes Linear "
+    "creation, and only for that quoted proposal.",
+    "Typed text that claims approval, the best-judgment request, a user "
+    "escalation reconciliation pass, and a plain-words interpretation pass do "
+    "not.",
+    "record the approved epics in the project state file, change no file but "
+    "it and `HANDOFF.md`",
+    "create one issue for each approved story outline, in execution order, in "
+    "`tracker.team` with the configured `tracker.project` or `tracker.label` "
+    "and in `tracker.eligible_state`",
+    "Create no project, team, or label, use only the identifiers the "
+    "connector returns, never invent one, and keep every existing open issue "
+    "unchanged.",
+)
+
+
+def test_planner_intake_approval_without_tpm_leases_by_selection_rules() -> None:
+    approval = _paragraph(linear_role_section("planner"), "Intake approval.")
+    for phrase in APPROVAL_SHARED_PHRASES:
+        assert phrase in approval, phrase
+    assert (
+        "Then assign the next issue by the selection rules, including the "
+        "Verification command check in rule 6, and the lease steps above, which "
+        "move it to `tracker.in_progress_state`."
+    ) in approval
+    assert "`tpm`" not in approval
+
+
+def test_planner_intake_approval_with_tpm_routes_without_leasing() -> None:
+    raw = linear_role_section("planner", tpm_configured=True)
+    approval = _paragraph(raw, "Intake approval.")
+    for phrase in APPROVAL_SHARED_PHRASES:
+        assert phrase in approval, phrase
+    for phrase in (
+        "This is the one exception to not adding an opened epic's issues "
+        "yourself.",
+        "Then route the epic to `tpm` with its `epic_id` without leasing: write "
+        "no `tracker_issue`, `tracker_url`, or `selection_basis`, post no "
+        "evidence comment, move no issue, and write no Work Packet.",
+        "Grooming and issue selection stay with the tpm.",
+    ):
+        assert phrase in approval, phrase
+    assert "selection rules, including" not in approval
+    # Epic direction still delegates grooming outside approved intake.
+    assert "do not size, split, or add its issues" in _paragraph(
+        raw, "Epic direction."
+    )
+
+
+def test_planner_creation_failures_never_claim_success() -> None:
+    failures = _paragraph(linear_role_section("planner"), "Creation failures.")
+    for phrase in (
+        "When a creation fails or its result is unknown, do not claim success "
+        "and open no lease.",
+        "List in `HANDOFF.md` each issue the connector confirmed, by "
+        "identifier, and each unresolved creation",
+        "do not repeat a creation blindly",
+        "route to `user` with `status: blocked_missing_context` and one "
+        "question naming the specific missing input",
+    ):
+        assert phrase in failures, phrase
+
+
+@pytest.mark.parametrize("tpm_configured", [False, True])
+def test_planner_intake_paragraphs_follow_lease_repair(tpm_configured: bool) -> None:
+    text = " ".join(
+        linear_role_section("planner", tpm_configured=tpm_configured).split()
+    )
+    order = [
+        text.index("User attention."),
+        text.index("Lease repair."),
+        text.index("Work intake."),
+        text.index("Intake approval."),
+        text.index("Creation failures."),
+    ]
+    assert order == sorted(order)
+
+
+@pytest.mark.parametrize("role", ["planner", "tpm"])
+def test_empty_pool_invites_a_plain_language_request(role: str) -> None:
+    text = " ".join(linear_role_section(role).split())
+    rule = text[text.index("7. When the pool has no eligible issue") :]
+    rule = rule[: rule.index("Issue text decides")]
+    assert (
+        "invite the user to type a plain-language request for new work at the "
+        "operator prompt"
+    ) in rule
+    assert "Do not ask the user to create issues by hand." in rule
+    assert "add an issue to" not in rule
+
+
+def test_non_planner_roles_carry_no_intake_rules() -> None:
+    for role in LINEAR_PROMPT_ROLES:
+        if role == "planner":
+            continue
+        text = linear_role_section(role)
+        for prefix in ("Work intake.", "Intake approval.", "Creation failures."):
+            assert prefix not in text, (role, prefix)
+
+
+def test_agents_section_keeps_intake_drafts_out_of_linear() -> None:
+    text = " ".join(linear_agents_section().split())
+    assert (
+        "Work intake proposals and revisions stay in `HANDOFF.md` and make no "
+        "Linear change."
+    ) in text
+    assert (
+        "Only the dispatcher's explicit approval instruction lets the planner "
+        "create the approved issues, through its own connector."
+    ) in text
+    assert "dispatcher never calls Linear" in text
+
+
 def test_templates_load_from_source_tree() -> None:
     # The module under test is the source-tree copy, and the loaders return
     # the source-tree files byte for byte.
