@@ -182,6 +182,14 @@ split out of `PROJECT_STATE.md`.
   tests/test_reference_workflow.py tests/ported/test_handoff_docs.py
   tests/test_init_tracker.py tests/test_init_tracker_switch.py -q` at the
   audited SHA, exit 0.
+- **REFUSAL-REDACTION** - redact sensitive values in environment-refusal
+  diagnostics. REDACT-1 `881dc71` (PR #305, merge `881dc71`); REDACT-2, the
+  last story, approved at `88e20bb0b4191649a0e867b98f0fc5f7d0789e02` and
+  merged in PR #306 (`68b782b`). Quality and security reviews passed with no
+  findings. Verification: dispatcher ran `python -m pytest
+  tests/test_reference_workflow.py tests/ported/test_handoff_docs.py -q`, the
+  six-file wording and mirror assertions, and `git diff --check` at the
+  audited SHA, exit 0.
 
 ## Status History
 
@@ -392,12 +400,51 @@ Current Status entries for closed or finished work, moved unchanged from
   integration) approved at `ec529c9` (PR #302, `0fe29f0`). INTAKE-6 (Claude
   planner copies) approved at `989f290` (PR #304, `e5a6ea4`); WORK-INTAKE
   closed.
+- **Active Epic (2026-10-27):** REFUSAL-REDACTION (epic 23), opened after
+  operator approval of the Work Intake proposal; the tpm kept REDACT-1 and
+  REDACT-2 in order and scope. REDACT-1 (non-Claude surfaces) merged in PR #305
+  (`881dc71`). REDACT-2 (`.claude/agents/` copies) approved at `88e20bb` and
+  merged in PR #306 (`68b782b`); REFUSAL-REDACTION closed.
 
 ## Closed Epics
 
 Full sections of closed epics (intro, `Fit:` line, and story list), moved
 unchanged from the `PROJECT_STATE.md` backlog on 2026-10-21, most recent
 close first. The numbers are the epics' original labels.
+
+### 23. REFUSAL-REDACTION - redact sensitive values in environment-refusal diagnostics
+
+Status: CLOSED. REDACT-1 merged in PR #305 (`881dc71`); REDACT-2, the last,
+approved at `88e20bb` and merged in PR #306 (`68b782b`).
+
+Intro: From the ACTIVE-6 and ACTIVE-7 security audits (medium, non-blocking):
+implementer `Environment refusal` bullets and gate-deferred `Commands run`
+entries quote raw refusal text, which can copy credentials, tokens, or
+sensitive command arguments into `HANDOFF.md`, where the handbook and planner
+prompts also instruct agents to quote it.
+
+Fit: Unblocked, self-contained security hardening, and the only actionable item
+remaining in `PROJECT_STATE.md`.
+
+Goal: Require redacting credentials, tokens, and sensitive command arguments in
+quoted `Environment refusal` bullets and `deferred to the work-claim gate:`
+refusal diagnostics across the handbook, implementer prompts, planner prompts,
+and helper/template copies (root and `examples/reference-workflow/`), while
+preserving the refusal category (`permission rule`, `missing binary`,
+`no TTY`) and a sanitized diagnostic; remove the closed followup from
+`PROJECT_STATE.md`.
+
+Stories:
+
+- REDACT-1: Require redacting credentials and sensitive arguments in
+  `Environment refusal` bullets and `deferred to the work-claim gate:`
+  diagnostics across the non-Claude protocol docs, prompts, `.agents/agents/`
+  and `.codex/skills/` helpers, and their `examples/reference-workflow/`
+  copies, with tests. Status: merged in PR #305 (`881dc71`).
+- REDACT-2: Operator story synchronizing the `.claude/agents/` helpers
+  (`backend`, `frontend`, `planner`; root and `examples/reference-workflow/`)
+  with the REDACT-1 wording. Status: approved at `88e20bb` and merged in PR
+  #306 (`68b782b`).
 
 ### 14. WORK-INTAKE - turn a plain request into epics and stories
 
