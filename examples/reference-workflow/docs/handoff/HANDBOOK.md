@@ -453,6 +453,12 @@ during a pause. The planner turns the request into a reviewable plan:
   dispatcher commit mode it leaves that edit for the dispatcher and never
   stages or commits it. Outside approved intake, new stories are still
   recorded through the next Work Packet.
+- **Linear mode.** The same approval also lets a Linear-mode planner create
+  one issue per approved story outline through its own connector, by the
+  generated `## Linear Mode: planner` rules; the dispatcher never calls
+  Linear, and drafts make no Linear change. The planner then routes to `tpm`
+  without leasing, or without a tpm leases the first issue. A failed or
+  unconfirmed creation is reported, never claimed, and pauses for the user.
 - **No unblocked story.** A planner that routes to `user` because no open
   epic has an unblocked story invites a plain-language request at the
   operator prompt instead of asking for hand edits.

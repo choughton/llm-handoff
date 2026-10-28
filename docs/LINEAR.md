@@ -123,3 +123,34 @@ llm-handoff
 The dry run reports the route without launching a provider CLI. If a run
 pauses, the dispatcher reports why and waits; recovery is up to you or a
 configured agent.
+
+## 6. Ask For New Work
+
+When the pool has no eligible issue, the planner pauses and invites a
+plain-language request at the operator prompt instead of asking you to
+create issues by hand. Type the request; the planner answers with a
+`## Proposed Backlog` in `HANDOFF.md`. Proposals and revisions change only
+`HANDOFF.md`: the planner creates, updates, comments on, labels, leases, and
+moves no issue on those turns. Type changes to revise the proposal, or press
+Enter to approve it.
+
+Only the dispatcher's own approval instruction, sent when you press Enter at
+the proposal review, lets the planner create issues. It records the approved
+epics in the project state file, then creates one issue per approved story
+outline, in execution order, in the configured `tracker.team` with
+`tracker.project` or `tracker.label`, in `tracker.eligible_state`. It uses
+only identifiers the connector returns and creates no project, team, or
+label. With `agents.tpm` configured, the planner then routes the epic to the
+tpm without leasing; otherwise it leases the first issue by the usual
+selection rules. With `commit_mode: dispatcher`, the dispatcher commits the
+project state file alone.
+
+This needs the planner's Linear MCP connector with its write tool
+(`save_issue`), which the planner's Linear-mode grants already include; the
+dispatcher never calls Linear. If a creation fails or its result is unknown,
+the planner reports the issues the connector confirmed and the unresolved
+ones, does not repeat the creation blindly, and pauses with one question.
+The automated tests check the generated instructions and the dispatcher's
+approval text; they do not run a live Linear connector. The Claude planner
+agent files (`.claude/agents/planner.md`) do not carry these rules yet; a
+later operator story synchronizes them.

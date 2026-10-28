@@ -10,16 +10,20 @@ history.
 
 ## Current Status
 
-- **Active Epic:** WORK-INTAKE (epic 14), on INTAKE-3 (proposal approval
-  transaction). INTAKE-1 (bounded proposal or escalation previews at user
+- **Active Epic:** WORK-INTAKE (epic 14), on INTAKE-4 (Linear approval
+  integration). INTAKE-1 (bounded proposal or escalation previews at user
   pauses) was approved by the auditor at `893b59a` and merged in PR #297
   (`4338c2d`). INTAKE-5 (planner intake and revision protocol) was approved
   at `19849101ab713bd49ffde37a132381288c2c706f` and merged in PR #298
-  (`378790a`). INTAKE-3 is implemented and awaiting audit: a proposal
-  review prompt where Enter sends the dispatcher's approval instruction and
-  typed text revises, and, in dispatcher commit mode, a commit of the
-  configured project state file alone after a valid approval turn. Linear
-  approval (INTAKE-4) and the Claude planner copies (INTAKE-6) remain. The
+  (`378790a`). INTAKE-3 (proposal approval transaction) was approved at
+  `07542852283b18475e619e0cf06c8e8534aa203f` and merged in PR #300
+  (`5bee57050be0228bfb4bda11976527058b07cd19`). INTAKE-4 is implemented and
+  awaiting audit: generated Linear planner sections and the dispatcher's
+  approval text are tracker-aware, so Linear drafts and revisions make no
+  Linear change and only the dispatcher's approval lets the planner create
+  the approved issues through its own connector, then route to `tpm`
+  without leasing or lease the first issue. The Claude planner copies
+  (INTAKE-6) remain. The
   planner chose this epic by fit after ESCALATION-RECONCILE (epic 16) closed
   with RECON-2 approved at `0427989` and merged in PR #295 (`3b37cb7`).
 - **Parked Epic:** None.

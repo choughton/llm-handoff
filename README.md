@@ -170,7 +170,11 @@ When the pause shows a planner's `## Proposed Backlog`, Enter approves it
 instead and typed text revises it; on approval the planner records the
 approved epics in the project state file, and with
 `commit_mode: dispatcher` the dispatcher commits that file alone as a local
-commit. See [Operator Prompt](CONFIGURATION.md#operator-prompt).
+commit. In Linear mode the same approval also lets the planner create the
+approved issues through its own Linear MCP connector; proposals and
+revisions make no Linear change. See
+[Operator Prompt](CONFIGURATION.md#operator-prompt) and
+[docs/LINEAR.md](docs/LINEAR.md#6-ask-for-new-work).
 
 At any pause you may also replace `HANDOFF.md` with plain words, for example
 `I made the edits.` A person needs no frontmatter; every handoff an agent

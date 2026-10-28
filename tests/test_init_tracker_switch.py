@@ -126,6 +126,31 @@ def _result_view(result) -> tuple:
     )
 
 
+@pytest.mark.parametrize("tpm", [False, True], ids=["no-tpm", "tpm"])
+def test_switch_renders_linear_intake_rules_for_the_planner_variant(
+    tmp_path: Path, tpm: bool
+) -> None:
+    # INTAKE-4: the switched handbook carries the planner variant's intake
+    # approval rule; drafts make no Linear change in either variant.
+    _fresh(tmp_path, provider="claude")
+    if tpm:
+        _add_tpm(tmp_path)
+    _switch(tmp_path, "linear")
+    handbook = (tmp_path / HANDBOOK).read_text(encoding="utf-8")
+    planner = handbook[handbook.index("## Linear Mode: planner\n") :]
+    planner = planner[: planner.index("\n## Linear Mode: ")]
+    flat = " ".join(planner.split())
+    assert "On a proposal or revision turn make no Linear change" in flat
+    assert "Only the dispatcher's explicit approval instruction" in flat
+    assert "do not claim success and open no lease" in flat
+    routes_to_tpm = "Then route the epic to `tpm` with its `epic_id` without leasing"
+    assert (routes_to_tpm in flat) is tpm
+    assigns = "Then assign the next issue by the selection rules"
+    assert (assigns in flat) is not tpm
+    _switch(tmp_path, "none")
+    assert "Work intake." not in (tmp_path / HANDBOOK).read_text(encoding="utf-8")
+
+
 # Acceptance 1: both directions, library and CLI.
 
 
