@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 
 import pytest
+import typer.rich_utils
 
 import llm_handoff.agents as agents_facade
 from llm_handoff import audit_review
@@ -64,6 +65,15 @@ def _resync_agent_facade() -> None:
     agents_facade._sync_codex()
     agents_facade._sync_claude()
     agents_facade._sync_manual()
+
+
+@pytest.fixture(autouse=True)
+def _plain_help_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Typer forces Rich's terminal mode, with ANSI styling and box drawing,
+    # when GITHUB_ACTIONS, FORCE_COLOR, or PY_COLORS is set at import. Help
+    # tests match plain text, so use the default terminal detection, which
+    # sees captured output as not a terminal.
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", None)
 
 
 @pytest.fixture(autouse=True)

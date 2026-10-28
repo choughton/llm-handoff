@@ -960,10 +960,13 @@ def test_a_link_swapped_in_after_the_link_check_is_not_read(
     monkeypatch: pytest.MonkeyPatch,
     swapped: str,
 ) -> None:
-    # The path is clean when the preliminary link check runs; right after it,
-    # logs/dispatch (or the record itself) is swapped for a link to a valid
-    # record outside the repository. The reader walks the path again without
-    # following links, so the outside record is neither read nor deleted.
+    # The path is clean when the preliminary link and Git-ignore checks run;
+    # right after them, logs/dispatch (or the record itself) is swapped for a
+    # link to a valid record outside the repository. The reader walks the
+    # path again without following links, so the outside record is neither
+    # read nor deleted. The swap waits for the ignore check because newer Git
+    # for Windows will not check a path beyond a junction, which would stop
+    # recovery before the reader runs.
     if swapped == "file" and not _can_symlink_files(tmp_path):
         pytest.skip("cannot create a file symlink here")
     repo = tmp_path / "repo"
@@ -975,12 +978,12 @@ def test_a_link_swapped_in_after_the_link_check_is_not_read(
     original = external.read_text(encoding="utf-8")
     _write(repo / "src" / "app.py", "VALUE = 2\n")
     orchestrator = _orchestrator()
-    real_check = orchestrator._carry_over_path_traverses_link
+    real_check = orchestrator._in_flight_unavailable_reason
     swaps: list[str] = []
 
-    def check_then_swap(path: Path) -> bool:
-        result = real_check(path)
-        if not swaps and path.name == IN_FLIGHT_STATE_PATH.name:
+    def check_then_swap(config: DispatchConfig) -> str | None:
+        result = real_check(config)
+        if not swaps:
             swaps.append(swapped)
             if swapped == "directory":
                 dispatch_dir = repo / "logs" / "dispatch"
@@ -991,9 +994,7 @@ def test_a_link_swapped_in_after_the_link_check_is_not_read(
                 os.symlink(external, _record_path(repo))
         return result
 
-    monkeypatch.setattr(
-        orchestrator, "_carry_over_path_traverses_link", check_then_swap
-    )
+    monkeypatch.setattr(orchestrator, "_in_flight_unavailable_reason", check_then_swap)
     # A prompt would mean the outside record was read and accepted.
     _set_terminal(orchestrator, monkeypatch, interactive=True, operator_input=None)
     messages: list[tuple[str, str]] = []
