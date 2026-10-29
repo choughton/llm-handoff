@@ -9,6 +9,9 @@ All notable changes to `llm-handoff` will be documented here.
   initialized one between file and Linear mode with `--tracker`. The
   dispatcher's `--dry-run` and `--repo-root` flags have help text too, and a
   test now requires help on every command and visible option.
+- The `Tests` GitHub Actions workflow no longer runs on pull requests. Start
+  it by hand from the Actions tab before tagging a release; the publish
+  workflow still runs the suite on every `v*` tag.
 
 ## 0.1.0 - 2026-10-28
 
