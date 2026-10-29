@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import typer.main
 import yaml
 
 from llm_handoff import __main__ as main_module
@@ -55,6 +56,24 @@ def test_help_usage_names_the_command_as_it_was_started(
     assert main_module.main(["--help"]) == 0
 
     assert usage in capsys.readouterr().out
+
+
+def test_every_command_and_visible_parameter_has_help(capsys) -> None:
+    # Without help text, --help lists a command or flag by its bare name.
+    root = typer.main.get_command(main_module.app)
+    commands = {"": root, **root.commands}
+    for name, command in commands.items():
+        if name:
+            assert command.help, name
+        for param in command.params:
+            if not getattr(param, "hidden", False):
+                assert getattr(param, "help", None), f"{name or 'main'} {param.name}"
+
+    assert main_module.main(["--help"]) == 0
+    assert (
+        "Copy the reference workflow into a target repository."
+        in capsys.readouterr().out
+    )
 
 
 def test_help_text_lists_doctor_subcommand(capsys) -> None:
